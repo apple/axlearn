@@ -1,0 +1,29 @@
+# To run locally:
+# % pre-commit run -a
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v2.3.0
+  hooks:
+  - id: check-yaml
+  - id: end-of-file-fixer
+    # These files are generated.
+    exclude: "axlearn/experiments/testdata/.*"
+  - id: trailing-whitespace
+- repo: local
+  hooks:
+  - id: black
+    name: black
+    entry: black
+    language: system
+    types: [python]
+  - id: isort
+    name: isort
+    entry: isort
+    language: system
+    types: [python]
+  - id: pylint
+    name: pylint
+    entry: pylint
+    args: ["--output-format=parseable"]
+    language: system
+    types: [python]

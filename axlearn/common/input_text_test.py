@@ -1,0 +1,599 @@
+"""Tests text input processing."""
+# pylint: disable=no-self-use
+import os
+from typing import Dict, List, Mapping, Optional, Sequence, Union
+
+import numpy as np
+import pytest
+import seqio
+import tensorflow as tf
+from absl.testing import absltest, parameterized
+from seqio import SentencePieceVocabulary
+from transformers.models.bert.tokenization_bert import BasicTokenizer
+
+from axlearn.common import input_text, input_tf_data, test_utils
+from axlearn.common.config import InstantiableConfig, config_for_class, config_for_function
+from axlearn.common.input_text import TOKEN_TYPE_IDS, add_token_type_ids, strip_accents, tokenize
+from axlearn.common.vocabulary_bpe import BPEVocabulary
+
+tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
+
+
+def count_batches(dataset, max_batches=100):
+    count = 0
+    for _ in dataset:
+        if count >= max_batches:
+            return -1
+        count += 1
+    return count
+
+
+def make_ds_fn(
+    is_training: bool, texts: List[str], repeat: int = 100
+) -> input_tf_data.BuildDatasetFn:
+    del is_training
+
+    def ds_fn() -> tf.data.Dataset:
+        def data_gen():
+            for _ in range(repeat):
+                for index, text in enumerate(texts):
+                    yield {"text": text, "index": index}
+
+        return tf.data.Dataset.from_generator(
+            data_gen,
+            output_signature={
+                "text": tf.TensorSpec(shape=(), dtype=tf.string),
+                "index": tf.TensorSpec(shape=(), dtype=tf.uint32),
+            },
+        )
+
+    return ds_fn
+
+
+def make_ragged_ds_fn(
+    is_training: bool, texts: List[Dict], repeat: int = 100
+) -> input_tf_data.BuildDatasetFn:
+    del is_training
+
+    def ds_fn() -> tf.data.Dataset:
+        def data_gen():
+            for _ in range(repeat):
+                for index, item in enumerate(texts):
+                    yield {"text": tf.ragged.constant(item["text"]), "index": index}
+
+        return tf.data.Dataset.from_generator(
+            data_gen,
+            output_signature={
+                "text": tf.RaggedTensorSpec(shape=([None, None]), dtype=tf.string),
+                "index": tf.TensorSpec(shape=(), dtype=tf.int32),
+            },
+        )
+
+    return ds_fn
+
+
+def make_seq2seq_ds_fn(
+    is_training: bool,
+    sources: List[str],
+    targets: List[str],
+    repeat: int = 100,
+    source_key: str = "source",
+    target_key: str = "target",
+) -> input_tf_data.BuildDatasetFn:
+    del is_training
+
+    def ds_fn() -> tf.data.Dataset:
+        def data_gen():
+            for _ in range(repeat):
+                for index, (source, target) in enumerate(zip(sources, targets)):
+                    yield {source_key: source, target_key: target, "index": index}
+
+        return tf.data.Dataset.from_generator(
+            data_gen,
+            output_signature={
+                source_key: tf.TensorSpec(shape=(), dtype=tf.string),
+                target_key: tf.TensorSpec(shape=(), dtype=tf.string),
+                "index": tf.TensorSpec(shape=(), dtype=tf.int32),
+            },
+        )
+
+    return ds_fn
+
+
+def extract_text(example: Dict[str, tf.Tensor], input_key: str = "text") -> str:
+    return bytes.decode(example[input_key].numpy(), "utf-8")
+
+
+def assert_oneof(test_case: tf.test.TestCase, actual: tf.Tensor, candidates: Sequence[tf.Tensor]):
+    if not isinstance(test_case, tf.test.TestCase):
+        raise ValueError("test_case should be an instance of tf.test.TestCase")
+    for candidate in candidates:
+        try:
+            test_case.assertAllEqual(actual, candidate)
+            return
+        except AssertionError:
+            pass
+    raise AssertionError(f"Expected {actual} to be equal to one of {candidates}")
+
+
+def extract_text_ragged(example: Dict[str, tf.Tensor], input_key: str = "text") -> List[List[str]]:
+    result = []
+    for item in example[input_key].numpy():
+        sub_result = []
+        for sub_item in item:
+            sub_result.append(bytes.decode(sub_item, "utf-8"))
+        result.append(sub_result)
+    return result
+
+
+class StripAccentsTest(test_utils.TestCase):
+    @parameterized.product(
+        (
+            {"original": "El Capitán", "expected": "El Capitan"},
+            {
+                "original": "dômes granitiques spectaculaires",
+                "expected": "domes granitiques spectaculaires",
+            },
+            {"original": "Yosemite", "expected": "Yosemite"},
+            {"original": "优胜美地", "expected": "优胜美地"},
+        ),
+        normalization_form=("NFD", "NFKD"),
+    )
+    def test_strip_accents(self, original: str, expected: str, normalization_form: str):
+        def gen():
+            yield dict(text=original)
+
+        ds = tf.data.Dataset.from_generator(
+            gen,
+            output_signature={
+                "text": tf.TensorSpec(shape=(), dtype=tf.string),
+            },
+        )
+
+        no_accent_ds = strip_accents(fields=["text"], normalization_form=normalization_form)
+        actual = next(no_accent_ds(ds).as_numpy_iterator())["text"].decode("utf-8")
+        self.assertEqual(actual, expected)
+
+    @parameterized.parameters("NFC", "NFKC")
+    def test_strip_accents_invalid_normalization(self, normalization_form: str):
+        with self.assertRaises(AssertionError):
+            strip_accents(fields=["text"], normalization_form=normalization_form)
+
+
+class AddTokenTypeIDTest(test_utils.TestCase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.sample_seq_1 = "what is ChatGPT?"
+        self.sample_seq_2 = "ChatGPT is a language model developed by OpenAI."
+        self.sample_seq_3 = "openai.com"
+
+    def create_source_ds(self) -> tf.data.Dataset:
+        def gen():
+            yield dict(
+                query=[self.sample_seq_1],
+                answer=[self.sample_seq_2],
+                url=[self.sample_seq_3],
+            )
+
+        ds = tf.data.Dataset.from_generator(
+            gen,
+            output_signature={
+                "query": tf.TensorSpec(shape=(1,), dtype=tf.string),
+                "answer": tf.TensorSpec(shape=(1,), dtype=tf.string),
+                "url": tf.TensorSpec(shape=(1,), dtype=tf.string),
+            },
+        )
+        return ds
+
+    @parameterized.parameters(
+        # For ragged tensors, query has 11 tokens, answer has 33 tokens, and url has 9 tokens.
+        {
+            "input_key": "query",
+            "expected": [0] + [0] * 11 + [0],
+            "is_ragged": True,
+        },
+        {
+            "input_key": ["query", "answer"],
+            "expected": [0] + [0] * 11 + [0] + [1] * 33 + [1],
+            "is_ragged": True,
+        },
+        {
+            "input_key": ["query", "answer", "url"],
+            "expected": [0] + [0] * 11 + [0] + [1] * 33 + [1] + [2] * 9 + [2],
+            "is_ragged": True,
+        },
+        # For non-ragged tensors, we truncate to 3 tokens per field.
+        {
+            "input_key": "query",
+            "expected": [0] + [0] * 3 + [0],
+            "is_ragged": False,
+            "feature_lengths": dict(query=3),
+        },
+        {
+            "input_key": ["query", "answer"],
+            "expected": [0] + [0] * 3 + [0] + [1] * 3 + [1],
+            "is_ragged": False,
+            "feature_lengths": dict(query=3, answer=3),
+        },
+    )
+    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    def test_add_token_type_ids(
+        self,
+        input_key: Union[str, Sequence[str]],
+        expected: Sequence[int],
+        is_ragged: bool,
+        feature_lengths: Optional[Mapping[str, int]] = None,
+    ):
+        ds = self.create_source_ds()
+        vocab_file = os.path.join(tokenizers_dir, "sentencepiece", "spm-test-small-256.model")
+        vocab = SentencePieceVocabulary(vocab_file)
+        keys = [input_key] if isinstance(input_key, str) else input_key
+        ds = tokenize(
+            output_features={
+                key: seqio.Feature(
+                    vocab,
+                    add_eos=False,
+                    dtype=tf.int32,
+                )
+                for key in keys
+            },
+            with_eos=False,
+        )(ds)
+        if not is_ragged:
+            # pytype: disable=attribute-error
+            feature_lengths = {k: (1, v) for k, v in feature_lengths.items()}
+            # pytype: enable=attribute-error
+            ds = seqio.trim_and_pad_dataset(ds, feature_lengths=feature_lengths)
+        ds = add_token_type_ids(input_key=input_key)(ds)
+
+        for batch in ds:
+            token_type_ids = batch[TOKEN_TYPE_IDS][0].numpy().tolist()
+            self.assertEqual(token_type_ids, expected)
+
+
+class TokenizeExampleTest(test_utils.TestCase):
+    def _test_tokenize_example(self, *, vocab_cfg: InstantiableConfig, newlines_replaced_with: str):
+        vocab = vocab_cfg.instantiate()
+        newlines_replaced_with_id = vocab.encode(newlines_replaced_with).pop()
+
+        # Test tokenize_example replaces newlines.
+        tokens = input_text.tokenize_example(
+            "Hello\n", sp_vocab=vocab, replace_newlines_with=newlines_replaced_with
+        ).numpy()
+        self.assertNestedAllClose(
+            np.array([*vocab.encode("Hello"), newlines_replaced_with_id]), tokens
+        )
+
+    @parameterized.parameters(
+        dict(
+            vocab_cfg=config_for_class(BPEVocabulary).set(
+                sentencepiece_model_file=os.path.join(tokenizers_dir, "bpe/opt.model"),
+                id_map={0: 1, 1: 0},
+                decode_as_control=(0, 2),
+            ),
+            newlines_replaced_with="\n",
+        ),
+    )
+    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    def test_tokenize_example(self, vocab_cfg: InstantiableConfig, newlines_replaced_with: str):
+        self._test_tokenize_example(
+            vocab_cfg=vocab_cfg, newlines_replaced_with=newlines_replaced_with
+        )
+
+
+class NumBytesTest(test_utils.TestCase):
+    def _test_num_bytes(self, *, vocab_cfg: InstantiableConfig, newlines_replaced_with: str):
+        vocab = vocab_cfg.instantiate()
+
+        pad_id = vocab.pad_id
+        newline_id = vocab.encode("\n").pop()
+        newlines_replaced_with_id = vocab.encode(newlines_replaced_with).pop()
+
+        # Test num_bytes computes expected value.
+        ids = tf.constant(
+            [vocab.eos_id, newlines_replaced_with_id, newline_id, pad_id, pad_id, pad_id],
+            dtype=tf.int32,
+        )
+        self.assertEqual(
+            3,
+            input_text.num_bytes(
+                ids, sp_vocab=vocab, newlines_replaced_with=newlines_replaced_with
+            ),
+        )
+
+    @parameterized.parameters(
+        dict(
+            vocab_cfg=config_for_class(BPEVocabulary).set(
+                sentencepiece_model_file=os.path.join(tokenizers_dir, "bpe/opt.model"),
+                id_map={0: 1, 1: 0},
+                decode_as_control=(0, 2),
+            ),
+            newlines_replaced_with="\n",
+        ),
+    )
+    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    def test_num_bytes(self, vocab_cfg: InstantiableConfig, newlines_replaced_with: str):
+        self._test_num_bytes(vocab_cfg=vocab_cfg, newlines_replaced_with=newlines_replaced_with)
+
+
+class StringsPackUnpackByteArrayTest(test_utils.TestCase):
+    def test_pack_unpack_strings_is_lossless(self):
+        """Tests packing strings into byte array and then unpacking again."""
+        strings = ["", "What time is it?", "This is a red carpet."]
+        tf_strings = tf.convert_to_tensor(strings)
+        max_packed_byte_array_len = 30
+        packed_strings = input_text.pack_strings(tf_strings, max_packed_byte_array_len)
+        self.assertEqual(
+            tf.TensorShape((len(strings), max_packed_byte_array_len)), packed_strings.shape
+        )
+        unpacked_strings = input_text.unpack_strings(packed_strings)
+        self.assertEqual(len(strings), len(unpacked_strings))
+        self.assertEqual(set(strings), set(unpacked_strings))
+
+    def test_pack_too_long_string_raises(self):
+        """Tests that trying to pack a string that is too long will surface an error."""
+        strings = ["Once apon a time there was a"]
+        tf_strings = tf.convert_to_tensor(strings)
+        with self.assertRaisesRegex(
+            tf.errors.InvalidArgumentError, "Condition x <= y did not hold."
+        ):
+            input_text.pack_strings(tf_strings, max_packed_byte_array_len=5)
+
+
+class TestSplitSentences(parameterized.TestCase, tf.test.TestCase):
+    """Tests split_sentences."""
+
+    def test_split_sentences(self):
+        texts = [
+            "this is a pretty long sentence\n",
+            "this is sentence one.\n\n\nthis is sentence two. three.",
+        ]
+        ds_fn = make_ds_fn(False, texts, repeat=1)
+        split_fn = input_text.split_sentences()
+        ds = split_fn(ds_fn())
+
+        expected = [
+            "this is a pretty long sentence",
+            "",
+            "this is sentence one.",
+            "this is sentence two.",
+            "three.",
+            "",
+        ]
+        actual = [extract_text(x) for x in ds]
+        assert expected == actual
+
+    def test_split_sentences_keys(self):
+        texts = [
+            "this is a pretty long sentence\n",
+            "this is sentence one.\n\n\nthis is sentence two. three.",
+        ]
+        ds_fn = make_ds_fn(False, texts, repeat=1)
+        split_fn = input_text.split_sentences(input_key="text", passthrough_keys=["index"])
+        ds = split_fn(ds_fn())
+
+        expected = [
+            {"text": "this is a pretty long sentence", "index": 0},
+            {"text": "", "index": 0},
+            {"text": "this is sentence one.", "index": 1},
+            {"text": "this is sentence two.", "index": 1},
+            {"text": "three.", "index": 1},
+            {"text": "", "index": 1},
+        ]
+        for expect, actual in zip(expected, ds):
+            self.assertEqual(expect["text"], extract_text(actual))
+            self.assertEqual(expect["index"], actual["index"].numpy())
+
+    @parameterized.parameters(1, 2, 3, 4)
+    def test_split_sentences_sampling(self, max_sentences_per_example):
+        sentences = [
+            [],
+            ["one."],
+            ["one.", "two."],
+            ["one.", "two.", "three."],
+            ["one.", "two.", "three.", "four."],
+        ]
+        texts = [" ".join(s) for s in sentences]
+        ds_fn = make_ds_fn(False, texts, repeat=1)
+        split_fn = input_text.split_sentences(max_sentences_per_example=max_sentences_per_example)
+        ds = split_fn(ds_fn())
+
+        # Group outputs by documents.
+        actual = [extract_text(x) for x in ds]
+        split_idxs = [i + 1 for i, s in enumerate(actual) if len(s) == 0]
+        actual_sentences = np.split(actual, split_idxs)
+
+        # Compare.
+        for original, actual in zip(sentences, actual_sentences):
+            # Make sure the document is terminated with separator.
+            self.assertEqual(actual[-1], "")
+            actual = actual[:-1]
+            # Make sure number of sentences is as expected.
+            self.assertEqual(len(actual), min(len(original), max_sentences_per_example))
+            # Ensure that output sentences is a subset of the original.
+            self.assertContainsSubset(actual, original)
+            # Ensure that each output samples without replacement.
+            self.assertCountEqual(actual, set(actual))
+
+
+class TestRandomChunking(parameterized.TestCase, tf.test.TestCase):
+    """Tests random_chunking."""
+
+    def test_random_chunking(self):
+        chunk_size = 3
+        examples = [
+            {input_text.INPUT_IDS: []},
+            {input_text.INPUT_IDS: list(range(2))},
+            {input_text.INPUT_IDS: list(range(4))},
+            {input_text.INPUT_IDS: list(range(6))},
+        ]
+        # For each input, we may expect one of several valid outputs.
+        target_candidates = [
+            [tf.constant([], dtype=tf.int32)],
+            [[0, 1]],
+            [[0, 1, 2], [1, 2, 3]],
+            [[0, 1, 2], [1, 2, 3], [2, 3, 4], [3, 4, 5]],
+        ]
+        for example, expected_candidates in zip(examples, target_candidates):
+            # Create a singleton dataset.
+            ds = tf.data.Dataset.from_generator(
+                lambda ex=example: iter([ex]),
+                output_signature={
+                    input_text.INPUT_IDS: tf.TensorSpec(shape=(None), dtype=tf.int32),
+                },
+            )
+            # Apply chunking and compare the single output.
+            chunk_fn = input_text.random_chunking(max_len=chunk_size)
+            actual = next(chunk_fn(ds).as_numpy_iterator())
+            assert_oneof(self, actual[input_text.INPUT_IDS], expected_candidates)
+
+
+class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
+    """Tests normalization helpers."""
+
+    @parameterized.parameters(False, True)
+    def test_bert_normalize_against_hf(self, cased: bool):
+        # BasicTokenizer acts as a pre-tokenization step:
+        # https://github.com/google-research/bert/blob/eedf5716ce1268e56f0a50264a88cafad334ac61/tokenization.py#L172
+        # https://github.com/huggingface/transformers/blob/31ec2cb2badfbdd4c1ac9c6c9b8a74e974984206/src/transformers/models/bert/tokenization_bert.py#L223
+        hf_tokenizer = BasicTokenizer(
+            do_lower_case=not cased,
+            tokenize_chinese_chars=True,
+            strip_accents=False,
+        )
+        texts = [
+            # Huggingface BasicTokenizer test queries:
+            # https://github.com/huggingface/transformers/blob/31ec2cb2badfbdd4c1ac9c6c9b8a74e974984206/tests/bert/test_tokenization_bert.py#L121-L184
+            "ah\u535A\u63A8zz",
+            " \tHeLLo!how  \n Are yoU?  ",
+            # Custom tests.
+            "from bert: John Johanson's house",
+            # pylint: disable-next=line-too-long
+            f"from tf_text: 株式会社 ＫＡＤＯＫＡＷＡ this  {chr(0xFFFD)}\0  is, å tést! SenTence `🤗` \t\t\f,  ",
+        ]
+        ds_fn = make_ds_fn(is_training=False, texts=texts, repeat=1)
+        mapper_fn = input_text.bert_normalize(cased=cased)
+
+        expected = [" ".join(hf_tokenizer.tokenize(text)) for text in texts]
+        actual = [extract_text(x) for x in mapper_fn(ds_fn())]
+
+        self.assertEqual(expected, actual)
+
+    @parameterized.parameters(
+        dict(
+            normalizer=config_for_function(input_text.roberta_normalize).set(cased=False),
+            expected=["ah博推zz \thello!how  \n are you?"],
+        ),
+        dict(
+            normalizer=config_for_function(input_text.roberta_normalize).set(cased=True),
+            expected=["ah博推zz \tHeLLo!how  \n Are yoU?"],
+        ),
+        dict(
+            normalizer=config_for_function(input_text.bert_normalize).set(cased=False),
+            expected=["ah 博 推 zz hello ! how are you ?"],
+        ),
+        dict(
+            normalizer=config_for_function(input_text.bert_normalize).set(cased=True),
+            expected=["ah 博 推 zz HeLLo ! how Are yoU ?"],
+        ),
+    )
+    def test_normalize(self, normalizer: InstantiableConfig, expected: List[str]):
+        texts = ["ah\u535A\u63A8zz \tHeLLo!how  \n Are yoU?  "]
+        ds_fn = make_ds_fn(False, texts, repeat=1)
+        process_fn = normalizer.set(input_key="text").instantiate()
+        processed_ds = process_fn(ds_fn())
+        self.assertEqual(expected, [extract_text(x) for x in processed_ds])
+        # Ensure that other fields are not dropped.
+        self.assertTrue(all("index" in x for x in processed_ds))
+        # Test with multiple input keys.
+        ds_fn = make_seq2seq_ds_fn(False, texts, texts, repeat=1)
+        process_fn = normalizer.set(input_key=["source", "target"]).instantiate()
+        processed_ds = process_fn(ds_fn())
+        for key in ["source", "target"]:
+            self.assertEqual(expected, [extract_text(x, input_key=key) for x in processed_ds])
+
+    @parameterized.parameters(
+        dict(
+            normalizer=config_for_function(input_text.roberta_normalize).set(cased=False),
+            expected=[[["ah博推zz \thello!how  \n are you?"], ["i am good  <3", "what about you?!"]]],
+        ),
+        dict(
+            normalizer=config_for_function(input_text.roberta_normalize).set(cased=True),
+            expected=[[["ah博推zz \tHeLLo!how  \n Are yoU?"], ["I am good  <3", "What about you?!"]]],
+        ),
+        dict(
+            normalizer=config_for_function(input_text.bert_normalize).set(
+                cased=False, reduce_axis=-1
+            ),
+            expected=[
+                [["ah 博 推 zz hello ! how are you ?"], ["i am good < 3", "what about you ? !"]]
+            ],
+        ),
+        dict(
+            normalizer=config_for_function(input_text.bert_normalize).set(
+                cased=True, reduce_axis=-1
+            ),
+            expected=[
+                [["ah 博 推 zz HeLLo ! how Are yoU ?"], ["I am good < 3", "What about you ? !"]]
+            ],
+        ),
+    )
+    def test_normalize_ragged_input(self, normalizer: InstantiableConfig, expected: List[str]):
+        texts = [
+            {
+                "text": [
+                    ["ah\u535A\u63A8zz \tHeLLo!how  \n Are yoU?  "],
+                    ["I am good  <3", "What about you?!"],
+                ]
+            }
+        ]
+        ds_fn = make_ragged_ds_fn(False, texts, repeat=1)
+        process_fn = normalizer.set(input_key="text").instantiate()
+        processed_ds = process_fn(ds_fn())
+        self.assertEqual(expected, [extract_text_ragged(x) for x in processed_ds])
+        # Ensure that other fields are not dropped.
+        self.assertTrue(all("index" in x for x in processed_ds))
+
+
+class PreprocessTextTest(parameterized.TestCase):
+    """Tests preprocess_chunks."""
+
+    def test_preprocess_chunks(self):
+        texts = [
+            "x" * 10,
+            "y" * 15,
+        ]
+        ds_fn = make_ds_fn(False, texts, repeat=1)
+        ds = ds_fn()
+        processed_ds = input_text.preprocess_chunks(chunk_size=4)(ds)
+        expected = [
+            "xxxx",
+            "xxxx",
+            "xx",
+            "yyyy",
+            "yyyy",
+            "yyyy",
+            "yyy",
+        ]
+        actual = [extract_text(x) for x in processed_ds]
+        self.assertEqual(expected, actual)
+
+        processed_ds = input_text.preprocess_chunks(chunk_size=5)(ds)
+        expected = [
+            "xxxxx",
+            "xxxxx",
+            "yyyyy",
+            "yyyyy",
+            "yyyyy",
+        ]
+        actual = [extract_text(x) for x in processed_ds]
+        self.assertEqual(expected, actual)
+
+        processed_ds = input_text.preprocess_chunks(chunk_size=100)(ds)
+        expected = texts
+        actual = [extract_text(x) for x in processed_ds]
+        self.assertEqual(expected, actual)
+
+
+if __name__ == "__main__":
+    absltest.main()

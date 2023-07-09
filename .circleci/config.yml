@@ -1,0 +1,20 @@
+version: 2.1
+executors:
+  build-and-test-executor:
+    docker:
+      - image: cimg/base:stable
+jobs:
+  build-and-test-job:
+    executor: build-and-test-executor
+    resource_class: large
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          command: docker build -t axlearn --target=ci .
+          no_output_timeout: 1h
+workflows:
+  build-and-test-workflow:
+    jobs:
+      - build-and-test-job

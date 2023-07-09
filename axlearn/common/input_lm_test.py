@@ -1,0 +1,1410 @@
+"""Tests language modeling inputs."""
+# pylint: disable=no-self-use,too-many-lines
+import os
+from typing import Any, Dict, List, Literal, Optional
+
+import numpy as np
+import seqio
+import tensorflow as tf
+from absl.testing import absltest, parameterized
+
+from axlearn.common import input_tf_data, test_utils
+from axlearn.common.config import InstantiableConfig, config_for_class, config_for_function
+from axlearn.common.input_fake import fake_source
+from axlearn.common.input_lm import (
+    InputDataType,
+    ModelType,
+    _trim_and_pack_with_segments,
+    augment_text_from_inputs_targets_pretokenized,
+    joint_truncation_for_seq2seq_lm_input,
+    lm_from_seq2seq_text_preprocessor,
+    lm_text_preprocessor,
+    make_autoregressive_inputs,
+    text2text_lm_input,
+    text_to_lm_eval_input,
+    text_to_lm_training_input,
+)
+from axlearn.common.input_text_test import make_ds_fn, tokenizers_dir
+
+t5_sentence_piece_vocab_file = os.path.join(tokenizers_dir, "sentencepiece/t5-base")
+
+
+class BaseLmInputTest(test_utils.TestCase):
+    """Base class containing utilities for LmTrainingInputTest and LmEvalInputTest.
+
+    Inherited by other test files. DO NOT write test cases in this class.
+    """
+
+    newlines_replaced_with = "<n>"
+
+    def _lm_training_processor_config(
+        self,
+        *,
+        vocab_cfg: InstantiableConfig,
+        max_len: int,
+        window_size: int,
+        max_padding_fraction: float,
+    ):
+        return config_for_function(text_to_lm_training_input).set(
+            vocab_cfg=vocab_cfg,
+            max_len=max_len,
+            replace_newlines_with=self.newlines_replaced_with,
+            window_size=window_size,
+            max_padding_fraction=max_padding_fraction,
+        )
+
+    def _test_fake_text_lm_training_data(
+        self, *, vocab_cfg: InstantiableConfig, expected_batches: List[Dict[str, Any]]
+    ):
+        batch_size, max_len = 3, 6
+        cfg = input_tf_data.Input.default_config().set(
+            name="test_input",
+            is_training=True,
+            source=config_for_function(make_ds_fn).set(
+                texts=[
+                    "hello world\n",
+                    "hello moon\n",
+                    "hello tiger\n",
+                    "hello dog\n",
+                    "hello cat\n",
+                ],
+            ),
+            processor=self._lm_training_processor_config(
+                vocab_cfg=vocab_cfg,
+                max_len=max_len,
+                window_size=10,
+                max_padding_fraction=0.5,
+            ),
+            batcher=config_for_function(input_tf_data.batch).set(
+                global_batch_size=batch_size,
+                prefetch_buffer_size=2,
+                pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+        )
+        # Set TensorFlow seed.
+        tf.random.set_seed(123)
+        dataset = cfg.instantiate(parent=None)
+        for ix, batch in enumerate(dataset):
+            self.assertIsNotNone(batch)
+            if ix < len(expected_batches):
+                # Check for equality for provided batches.
+                batch = {k: v.tolist() for k, v in batch.items()}
+                print(batch)
+                self.assertNestedAllClose(expected_batches[ix], batch)
+            if ix >= 10 * len(expected_batches):
+                # Expect to be able to repeat forever.
+                break
+
+    def _lm_eval_processor_config(
+        self,
+        *,
+        vocab_cfg: InstantiableConfig,
+        max_len: int,
+        stride: int,
+        index_key: Optional[str] = None,
+    ):
+        return config_for_function(text_to_lm_eval_input).set(
+            vocab_cfg=vocab_cfg,
+            max_len=max_len,
+            replace_newlines_with=self.newlines_replaced_with,
+            stride=stride,
+            index_key=index_key,
+        )
+
+    def _test_fake_text_lm_eval_data(
+        self, *, vocab_cfg: InstantiableConfig, expected_batches: List[Dict[str, Any]]
+    ):
+        batch_size, max_len = 3, 12
+
+        cfg = input_tf_data.Input.default_config().set(
+            name="test_input",
+            is_training=False,
+            source=config_for_function(make_ds_fn).set(
+                texts=[
+                    "Lorem ipsum dolor sit amet, consectetur adipiscing elit\n",
+                    "sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+                ]
+            ),
+            processor=self._lm_eval_processor_config(
+                vocab_cfg=vocab_cfg, max_len=max_len, stride=2
+            ),
+            batcher=config_for_function(input_tf_data.batch).set(
+                global_batch_size=batch_size,
+                prefetch_buffer_size=2,
+                pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+        )
+
+        # Set TensorFlow seed.
+        tf.random.set_seed(123)
+        dataset = cfg.instantiate(parent=None)
+        for ix, batch in enumerate(dataset):
+            batch = {k: v.tolist() for k, v in batch.items()}
+            print(batch)
+            self.assertNestedAllClose(expected_batches[ix], batch)
+            if ix > 0:
+                # Check the first two batches.
+                break
+
+
+class LmTrainingInputTest(BaseLmInputTest):
+    @property
+    def vocab_cfg(self) -> InstantiableConfig:
+        return config_for_class(seqio.SentencePieceVocabulary).set(
+            sentencepiece_model_file=t5_sentence_piece_vocab_file,
+        )
+
+    @parameterized.parameters("Lorem ipsum dolor sit amet,", " consectetur adipiscing elit\n")
+    def test_training_lm_processor_single_example(self, text: str):
+        max_len = 32
+        processor = self._lm_training_processor_config(
+            vocab_cfg=self.vocab_cfg, max_len=max_len, window_size=3, max_padding_fraction=0.0
+        ).instantiate()
+        ds_fn = (
+            config_for_function(make_ds_fn)
+            .set(is_training=False, texts=[text] * 10, repeat=1)
+            .instantiate()
+        )
+        # Set TensorFlow seed.
+        tf.random.set_seed(123)
+        example = next(iter(processor(ds_fn())))
+        for key in ["input_ids", "target_labels"]:
+            # Shape is as expected.
+            self.assertEqual((max_len,), example[key].numpy().shape)
+        self.assertTrue("target_num_bytes" in example)
+        input_ids, target_labels = example["input_ids"].numpy(), example["target_labels"].numpy()
+        self.assertTrue(1 in input_ids)  # EOS somewhere in the inputs.
+        self.assertTrue(1 in target_labels)  # EOS somewhere in the targets.
+        # The inputs should be one-off the labels.
+        self.assertNestedAllClose(target_labels[:-1], input_ids[1:])
+
+    def test_fake_text_lm_training_data(self):
+        expected_batches = [
+            {
+                "input_ids": [
+                    [1, 21820, 296, 2, 29, 3155],
+                    [29, 3155, 1, 21820, 1782, 2],
+                    [1782, 2, 29, 3155, 1, 21820],
+                ],
+                "target_labels": [
+                    [21820, 296, 2, 29, 3155, 1],
+                    [3155, 1, 21820, 1782, 2, 29],
+                    [2, 29, 3155, 1, 21820, 1712],
+                ],
+                "target_num_bytes": [19, 18, 18],
+            },
+            {
+                "input_ids": [
+                    [1, 21820, 296, 2, 29, 3155],
+                    [29, 3155, 1, 21820, 296, 2],
+                    [29, 3155, 1, 21820, 1712, 2],
+                ],
+                "target_labels": [
+                    [21820, 296, 2, 29, 3155, 1],
+                    [3155, 1, 21820, 296, 2, 29],
+                    [3155, 1, 21820, 1712, 2, 29],
+                ],
+                "target_num_bytes": [19, 20, 18],
+            },
+        ]
+        self._test_fake_text_lm_training_data(
+            vocab_cfg=self.vocab_cfg, expected_batches=expected_batches
+        )
+
+        # Test lm_text_preprocessor. Expect same results.
+        batch_size, max_len = 3, 6
+        cfg = input_tf_data.Input.default_config().set(
+            name="test_input",
+            is_training=True,
+            source=config_for_function(make_ds_fn).set(
+                texts=[
+                    "hello world\n",
+                    "hello moon\n",
+                    "hello tiger\n",
+                    "hello dog\n",
+                    "hello cat\n",
+                ],
+            ),
+            processor=config_for_function(lm_text_preprocessor).set(
+                vocab_cfg=self.vocab_cfg,
+                max_sequence_length=max_len,
+                replace_newlines_with=self.newlines_replaced_with,
+                window_size=10,
+                max_padding_fraction=0.5,
+                shuffle_buffer_size=1024,
+            ),
+            batcher=config_for_function(input_tf_data.batch).set(
+                global_batch_size=batch_size,
+                prefetch_buffer_size=2,
+                pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+        )
+        # Set TensorFlow seed.
+        tf.random.set_seed(123)
+        dataset = cfg.instantiate(parent=None)
+        for ix, batch in enumerate(dataset):
+            if ix >= len(expected_batches):
+                break
+            batch = {k: v.tolist() for k, v in batch.items()}
+            print(batch)
+            self.assertNestedAllClose(expected_batches[ix], batch)
+
+    @parameterized.parameters(
+        {
+            "input_data_type": InputDataType.SEQ2SEQ_MASK,
+            "max_len": 11,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 296, 0],
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114, 0],
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17],
+                ],
+                target_labels=[
+                    [-1, -1, -1, -1, -1, -1, -1, 21820, 296, 1, -1],
+                    [-1, -1, -1, -1, -1, -1, -1, 21820, 8114, 1, -1],
+                    [-1, -1, -1, -1, -1, -1, -1, 21820, 3, 17, 4424],
+                ],
+                prefix=[[1], [1], [1]],
+            ),
+        },
+        {
+            "input_data_type": InputDataType.SEQ2SEQ_NO_MASK,
+            "max_len": 15,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 296, 0, 0, 0, 0, 0],
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114, 0, 0, 0, 0, 0],
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17, 4424, 0, 0, 0],
+                ],
+                target_labels=[
+                    [21820, 2, 29, 3155, 2, 29, 3155, 21820, 296, 1, -1, -1, -1, -1, -1],
+                    [21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114, 1, -1, -1, -1, -1, -1],
+                    [21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17, 4424, 1, -1, -1, -1],
+                ],
+                prefix=[[1], [1], [1]],
+            ),
+        },
+        # Test joint truncation.
+        {
+            "input_data_type": InputDataType.SEQ2SEQ_MASK,
+            "max_len": 5,
+            "expected_inputs": dict(
+                input_ids=[
+                    [2, 29, 3155, 21820, 296],
+                    [2, 29, 3155, 21820, 8114],
+                    [3155, 21820, 3, 17, 4424],
+                ],
+                target_labels=[
+                    [-1, -1, 21820, 296, 1],
+                    [-1, -1, 21820, 8114, 1],
+                    [21820, 3, 17, 4424, 1],
+                ],
+                prefix=[[1], [1], [1]],
+            ),
+            "joint_truncation": True,
+        },
+        {
+            "input_data_type": InputDataType.SEQ2SEQ_MASK,
+            "max_len": 11,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 296, 0],
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114, 0],
+                    [21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17, 4424],
+                ],
+                target_labels=[
+                    [-1, -1, -1, -1, -1, -1, -1, 21820, 296, 1, -1],
+                    [-1, -1, -1, -1, -1, -1, -1, 21820, 8114, 1, -1],
+                    [-1, -1, -1, -1, -1, -1, 21820, 3, 17, 4424, 1],
+                ],
+                prefix=[[1], [1], [1]],
+            ),
+            "joint_truncation": True,
+        },
+        {
+            "input_data_type": InputDataType.SEQ2SEQ_NO_MASK,
+            "max_len": 15,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 296, 0, 0, 0, 0, 0],
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114, 0, 0, 0, 0, 0],
+                    [1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17, 4424, 0, 0, 0],
+                ],
+                target_labels=[
+                    [21820, 2, 29, 3155, 2, 29, 3155, 21820, 296, 1, -1, -1, -1, -1, -1],
+                    [21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114, 1, -1, -1, -1, -1, -1],
+                    [21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17, 4424, 1, -1, -1, -1],
+                ],
+                prefix=[[1], [1], [1]],
+            ),
+            "joint_truncation": True,
+        },
+        # Test longer prefix.
+        {
+            "input_data_type": InputDataType.SEQ2SEQ_MASK,
+            "max_len": 11,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 296],
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114],
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 3],
+                ],
+                target_labels=[
+                    [-1, -1, -1, -1, -1, -1, -1, -1, 21820, 296, 1],
+                    [-1, -1, -1, -1, -1, -1, -1, -1, 21820, 8114, 1],
+                    [-1, -1, -1, -1, -1, -1, -1, -1, 21820, 3, 17],
+                ],
+                prefix=[[1, 1], [1, 1], [1, 1]],
+            ),
+        },
+        {
+            "input_data_type": InputDataType.SEQ2SEQ_NO_MASK,
+            "max_len": 15,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 296, 0, 0, 0, 0],
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114, 0, 0, 0, 0],
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17, 4424, 0, 0],
+                ],
+                target_labels=[
+                    [-1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 296, 1, -1, -1, -1, -1],
+                    [-1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114, 1, -1, -1, -1, -1],
+                    [-1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17, 4424, 1, -1, -1],
+                ],
+                prefix=[[1, 1], [1, 1], [1, 1]],
+            ),
+        },
+        # Test longer prefix + joint truncation.
+        {
+            "input_data_type": InputDataType.SEQ2SEQ_MASK,
+            "max_len": 5,
+            "expected_inputs": dict(
+                input_ids=[
+                    [2, 29, 3155, 21820, 296],
+                    [2, 29, 3155, 21820, 8114],
+                    [3155, 21820, 3, 17, 4424],
+                ],
+                target_labels=[
+                    [-1, -1, 21820, 296, 1],
+                    [-1, -1, 21820, 8114, 1],
+                    [21820, 3, 17, 4424, 1],
+                ],
+                prefix=[[1, 1], [1, 1], [1, 1]],
+            ),
+            "joint_truncation": True,
+        },
+        {
+            "input_data_type": InputDataType.SEQ2SEQ_MASK,
+            "max_len": 11,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 296],
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114],
+                    [21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17, 4424],
+                ],
+                target_labels=[
+                    [-1, -1, -1, -1, -1, -1, -1, -1, 21820, 296, 1],
+                    [-1, -1, -1, -1, -1, -1, -1, -1, 21820, 8114, 1],
+                    [-1, -1, -1, -1, -1, -1, 21820, 3, 17, 4424, 1],
+                ],
+                prefix=[[1, 1], [1, 1], [1, 1]],
+            ),
+            "joint_truncation": True,
+        },
+        {
+            "input_data_type": InputDataType.SEQ2SEQ_NO_MASK,
+            "max_len": 15,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 296, 0, 0, 0, 0],
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114, 0, 0, 0, 0],
+                    [1, 1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17, 4424, 0, 0],
+                ],
+                target_labels=[
+                    [-1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 296, 1, -1, -1, -1, -1],
+                    [-1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 8114, 1, -1, -1, -1, -1],
+                    [-1, 21820, 2, 29, 3155, 2, 29, 3155, 21820, 3, 17, 4424, 1, -1, -1],
+                ],
+                prefix=[[1, 1], [1, 1], [1, 1]],
+            ),
+            "joint_truncation": True,
+        },
+    )
+    def test_lm_from_seq2seq_text_preprocessor(
+        self,
+        input_data_type: InputDataType,
+        max_len: int,
+        expected_inputs: Dict[str, List[List[int]]],
+        is_training: bool = True,
+        source_key: str = "inputs_pretokenized",
+        target_key: str = "targets_pretokenized",
+        joint_truncation: bool = False,
+    ):
+        batch_size = 3
+
+        def ds_fn():
+            return fake_source(
+                is_training=False,
+                examples=[
+                    {
+                        source_key: "hello",
+                        target_key: "hello world",
+                        "prefix": tf.constant(expected_inputs["prefix"][0]),
+                    },
+                    {
+                        source_key: "hello",
+                        target_key: "hello moon",
+                        "prefix": tf.constant(expected_inputs["prefix"][1]),
+                    },
+                    {
+                        source_key: "hello",
+                        target_key: "hello tiger",
+                        "prefix": tf.constant(expected_inputs["prefix"][2]),
+                    },
+                ],
+            )
+
+        if joint_truncation:
+            preprocessor_cfg = config_for_function(input_tf_data.chain).set(
+                args=[
+                    joint_truncation_for_seq2seq_lm_input(max_sequence_length=max_len),
+                    make_autoregressive_inputs(
+                        model_type=ModelType.DECODER_ONLY, input_data_type=input_data_type
+                    ),
+                    input_tf_data.remove_fields(["prefix"]),
+                ],
+            )
+        else:
+            preprocessor_cfg = None
+
+        cfg = input_tf_data.Input.default_config().set(
+            name="test_input",
+            is_training=is_training,
+            source=config_for_function(ds_fn),
+            processor=config_for_function(lm_from_seq2seq_text_preprocessor).set(
+                is_training=True,
+                vocab_cfg=self.vocab_cfg,
+                max_sequence_length=max_len,
+                input_data_type=input_data_type,
+                replace_newlines_with=self.newlines_replaced_with,
+                source_key=source_key,
+                target_key=target_key,
+                autoregressive_processor_cfg=preprocessor_cfg,
+            ),
+            batcher=config_for_function(input_tf_data.batch).set(
+                global_batch_size=batch_size,
+                prefetch_buffer_size=2,
+                pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+        )
+
+        tf.random.set_seed(123)
+        dataset = cfg.instantiate(parent=None)
+        for batch in dataset:
+            print(batch)
+            for k in ["input_ids", "target_labels"]:
+                self.assertEqual(batch[k].tolist(), expected_inputs[k])
+            break
+
+    @parameterized.parameters(
+        dict(
+            replace_newlines_with="<n>",
+            source_key="inputs_pretokenized",
+            target_key="targets_pretokenized",
+            eos_id=1,
+            prompt="prompt ",
+            join_with="",
+            examples=[
+                {
+                    "inputs_pretokenized": "hello",
+                    "targets_pretokenized": "hello\nworld",
+                },
+                {
+                    "inputs_pretokenized": "hello",
+                    "targets_pretokenized": "hello moon",
+                },
+                {
+                    "inputs_pretokenized": "hello",
+                    "targets_pretokenized": "hello tiger",
+                },
+            ],
+            expected=[
+                {
+                    "inputs_pretokenized": tf.constant("prompt hello"),
+                    "targets_pretokenized": tf.constant("hello<n>world"),
+                    "prefix": tf.constant(1),
+                },
+                {
+                    "inputs_pretokenized": tf.constant("prompt hello"),
+                    "targets_pretokenized": tf.constant("hello moon"),
+                    "prefix": tf.constant(1),
+                },
+                {
+                    "inputs_pretokenized": tf.constant("prompt hello"),
+                    "targets_pretokenized": tf.constant("hello tiger"),
+                    "prefix": tf.constant(1),
+                },
+            ],
+        )
+    )
+    def test_augment_text_from_inputs_targets_pretokenized(
+        self,
+        replace_newlines_with,
+        source_key,
+        target_key,
+        eos_id,
+        prompt,
+        join_with,
+        examples,
+        expected,
+    ):
+        ds = fake_source(
+            is_training=False,
+            examples=examples,
+        )()
+        processor = augment_text_from_inputs_targets_pretokenized(
+            replace_newlines_with=replace_newlines_with,
+            source_key=source_key,
+            target_key=target_key,
+            eos_id=eos_id,
+            prompt=prompt,
+            join_with=join_with,
+        )
+        actual = list(processor(ds))
+        self.assertEqual(actual, expected)
+
+    @parameterized.parameters(
+        {
+            "expected_inputs": {
+                "prefix": [0],
+                "input_ids": [0, 4, 5, 6, 1, 2],
+                "target_labels": [4, 5, 6, 1, 2, 3],
+            },
+            "passthrough_keys": [],
+        },
+        {
+            "expected_inputs": {
+                "prefix": [0],
+                "input_ids": [0, 4, 5, 6, 1, 2],
+                "target_labels": [4, 5, 6, 1, 2, 3],
+            },
+            "passthrough_keys": ["id"],
+        },
+        {
+            "expected_inputs": {
+                "prefix": [0],
+                "input_ids": [0, 4, 5, 6, 1, 2],
+                "target_labels": [4, 5, 6, 1, 2, 3],
+            },
+            "passthrough_keys": ["input_ids"],
+        },
+        {
+            "expected_inputs": {
+                "prefix": [0],
+                "input_ids": [0, 4, 5, 6, 1, 2],
+                "target_labels": [4, 5, 6, 1, 2, 3],
+            },
+            "passthrough_keys": ["id", "input_ids"],
+        },
+        {
+            "expected_inputs": {
+                "prefix": [0],
+                "input_ids": [0, 4, 5, 6, 1, 2],
+                "target_labels": [4, 5, 6, 1, 2, 3],
+            },
+            "passthrough_keys": ["missing_key"],
+        },
+    )
+    def test_make_autoregressive_inputs_passthrough_keys(self, expected_inputs, passthrough_keys):
+        batch_size = 1
+        examples = [
+            {
+                "target_labels": tf.constant([1, 2, 3]),
+                "input_ids": tf.constant([4, 5, 6]),
+                "prefix": tf.constant([0]),
+                "id": tf.constant([7, 8, 9]),
+            },
+        ]
+
+        def ds_fn():
+            return fake_source(
+                is_training=False,
+                examples=examples,
+            )
+
+        cfg = input_tf_data.Input.default_config().set(
+            name="test_input",
+            is_training=False,
+            source=config_for_function(ds_fn),
+            processor=config_for_function(make_autoregressive_inputs).set(
+                model_type=ModelType.DECODER_ONLY,
+                input_data_type=InputDataType.SEQ2SEQ_NO_MASK,
+                passthrough_keys=passthrough_keys,
+            ),
+            batcher=config_for_function(input_tf_data.batch).set(
+                global_batch_size=batch_size,
+                prefetch_buffer_size=2,
+                pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+        )
+
+        tf.random.set_seed(123)
+        dataset = cfg.instantiate(parent=None)
+        for batch in dataset:
+            print(batch)
+            standard_keys = ["prefix", "input_ids", "target_labels"]
+
+            # Ensure standard keys equal expected.
+            for k in standard_keys:
+                if k not in passthrough_keys:
+                    self.assertEqual(batch[k][0].tolist(), expected_inputs[k])
+
+            # Ensure passthrough keys are not modified.
+            for k in passthrough_keys:
+                if k in examples[0]:
+                    self.assertEqual(batch[k][0].tolist(), examples[0][k].numpy().tolist())
+            break
+
+
+class LmEvalInputTest(BaseLmInputTest):
+    @property
+    def vocab_cfg(self) -> InstantiableConfig:
+        return config_for_class(seqio.SentencePieceVocabulary).set(
+            sentencepiece_model_file=t5_sentence_piece_vocab_file,
+        )
+
+    @parameterized.parameters(
+        ("How long is a piece of string?", "index"),
+        ("On the 20th of June", "not_index"),
+        ("Here we stand united", None),
+    )
+    def test_eval_lm_processor_single_example(self, text, index_key):
+        max_len = 12
+        processor = self._lm_eval_processor_config(
+            vocab_cfg=self.vocab_cfg, max_len=max_len, stride=None, index_key="index"
+        ).instantiate()
+        ds_fn = (
+            config_for_function(make_ds_fn)
+            .set(is_training=False, texts=[text], repeat=1)
+            .instantiate()
+        )
+        example = next(iter(processor(ds_fn())))
+        for key in ["input_ids", "target_labels"]:
+            # Shape is as expected.
+            self.assertEqual((max_len,), example[key].numpy().shape)
+        self.assertTrue("target_num_bytes" in example)
+        # Index should have been passed through only for set value of `index_key`.
+        self.assertEqual(index_key == "index", index_key in example)
+
+        input_ids, target_labels = example["input_ids"].numpy(), example["target_labels"].numpy()
+        self.assertEqual(1, input_ids[0])  # Start of example.
+        non_padded_length = target_labels.argmin()
+        self.assertNotEqual(1, target_labels[0])  # No EOS at start.
+        self.assertEqual(1, target_labels[non_padded_length - 1])  # EOS.
+        # The inputs should be one-off the labels.
+        self.assertNestedAllClose(
+            target_labels[: non_padded_length - 1], input_ids[1:non_padded_length]
+        )
+
+    def test_fake_text_lm_eval_data(self):
+        expected_batches = [
+            {
+                "input_ids": [
+                    [1, 8410, 15, 51, 3, 15432, 440, 103, 322, 2561, 3, 9],
+                    [15, 51, 3, 15432, 440, 103, 322, 2561, 3, 9, 3493, 6],
+                    [3, 15432, 440, 103, 322, 2561, 3, 9, 3493, 6, 975, 7549],
+                ],
+                "target_labels": [
+                    [8410, 15, 51, 3, 15432, 440, 103, 322, 2561, 3, 9, 3493],
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 975],
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7549, 17],
+                ],
+                "target_num_bytes": [26, 5, 4],
+            },
+            {
+                "input_ids": [
+                    [440, 103, 322, 2561, 3, 9, 3493, 6, 975, 7549, 17, 15],
+                    [322, 2561, 3, 9, 3493, 6, 975, 7549, 17, 15, 2905, 3],
+                    [3, 9, 3493, 6, 975, 7549, 17, 15, 2905, 3, 9, 21981],
+                ],
+                "target_labels": [
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 2905],
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 9],
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21981, 159],
+                ],
+                "target_num_bytes": [4, 1, 5],
+            },
+        ]
+        self._test_fake_text_lm_eval_data(
+            vocab_cfg=self.vocab_cfg, expected_batches=expected_batches
+        )
+
+
+class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
+    @property
+    def vocab_cfg(self) -> InstantiableConfig:
+        return config_for_class(seqio.SentencePieceVocabulary).set(
+            sentencepiece_model_file=t5_sentence_piece_vocab_file,
+        )
+
+    @parameterized.parameters(
+        # Encoder-decoder.
+        {
+            "is_training": False,
+            "model_type": ModelType.ENCODER_DECODER,
+            "max_len": 6,
+            "expected_inputs": dict(
+                source_ids=[
+                    [21820, 1, 0, 0, 0, 0],
+                    [21820, 1, 0, 0, 0, 0],
+                    [21820, 1, 0, 0, 0, 0],
+                ],
+                target_ids=[
+                    [1, 21820, 296, 0, 0, 0],
+                    [1, 21820, 8114, 0, 0, 0],
+                    [1, 21820, 3, 17, 4424, 0],
+                ],
+                target_labels=[
+                    [21820, 296, 1, -1, -1, -1],
+                    [21820, 8114, 1, -1, -1, -1],
+                    [21820, 3, 17, 4424, 1, -1],
+                ],
+                prefix=[[1], [1], [1]],
+            ),
+            "source_key": "source_ids",
+            "target_key": "target_labels",
+        },
+        # Truncation test. Note that truncated targets do not end in EOS.
+        {
+            "is_training": False,
+            "model_type": ModelType.ENCODER_DECODER,
+            "max_len": 4,
+            "expected_inputs": dict(
+                source_ids=[
+                    [21820, 1, 0, 0],
+                    [21820, 1, 0, 0],
+                    [21820, 1, 0, 0],
+                ],
+                target_ids=[
+                    [1, 21820, 296, 0],
+                    [1, 21820, 8114, 0],
+                    [1, 21820, 3, 17],
+                ],
+                target_labels=[
+                    [21820, 296, 1, -1],
+                    [21820, 8114, 1, -1],
+                    [21820, 3, 17, 4424],
+                ],
+                prefix=[[1], [1], [1]],
+            ),
+        },
+        # Source truncation test. Note that truncated sources do not end in EOS.
+        {
+            "is_training": False,
+            "model_type": ModelType.ENCODER_DECODER,
+            "max_len": 1,
+            "expected_inputs": dict(
+                source_ids=[[21820], [21820], [21820]],
+                target_ids=[[1], [1], [1]],
+                target_labels=[[21820], [21820], [21820]],
+                prefix=[[1], [1], [1]],
+            ),
+        },
+        # Prefix test.
+        {
+            "is_training": False,
+            "model_type": ModelType.ENCODER_DECODER,
+            "max_len": 6,
+            "expected_inputs": dict(
+                source_ids=[
+                    [21820, 1, 0, 0, 0, 0],
+                    [21820, 1, 0, 0, 0, 0],
+                    [21820, 1, 0, 0, 0, 0],
+                ],
+                target_ids=[
+                    [1, 1, 1, 21820, 296, 0],
+                    [1, 1, 1, 21820, 8114, 0],
+                    [1, 1, 1, 21820, 3, 17],
+                ],
+                target_labels=[
+                    [-1, -1, 21820, 296, 1, -1],
+                    [-1, -1, 21820, 8114, 1, -1],
+                    [-1, -1, 21820, 3, 17, 4424],
+                ],
+                prefix=[[1, 1, 1], [1, 1, 1], [1, 1, 1]],
+            ),
+        },
+        # Decoder-only.
+        {
+            "is_training": False,
+            "model_type": ModelType.DECODER_ONLY,
+            "max_len": 7,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 21820, 21820, 296, 0, 0, 0],
+                    [1, 21820, 21820, 8114, 0, 0, 0],
+                    [1, 21820, 21820, 3, 17, 4424, 0],
+                ],
+                target_labels=[
+                    [-1, 21820, 296, 1, -1, -1, -1],
+                    [-1, 21820, 8114, 1, -1, -1, -1],
+                    [-1, 21820, 3, 17, 4424, 1, -1],
+                ],
+                prefix=[[1], [1], [1]],
+            ),
+        },
+        # is_training as True
+        {
+            "is_training": True,
+            "model_type": ModelType.DECODER_ONLY,
+            "max_len": 6,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 21820, 21820, 296, 0, 0],
+                    [1, 21820, 21820, 8114, 0, 0],
+                    [1, 21820, 21820, 3, 17, 4424],
+                ],
+                target_labels=[
+                    [-1, 21820, 296, 1, -1, -1],
+                    [-1, 21820, 8114, 1, -1, -1],
+                    [-1, 21820, 3, 17, 4424, 1],
+                ],
+                prefix=[[1], [1], [1]],
+            ),
+        },
+        # Prefix test.
+        {
+            "is_training": False,
+            "model_type": ModelType.DECODER_ONLY,
+            "max_len": 7,
+            "expected_inputs": dict(
+                input_ids=[
+                    [1, 1, 21820, 21820, 296, 0, 0],
+                    [1, 1, 21820, 21820, 8114, 0, 0],
+                    [1, 1, 21820, 21820, 3, 17, 4424],
+                ],
+                target_labels=[
+                    [-1, -1, 21820, 296, 1, -1, -1],
+                    [-1, -1, 21820, 8114, 1, -1, -1],
+                    [-1, -1, 21820, 3, 17, 4424, 1],
+                ],
+                prefix=[[1, 1], [1, 1], [1, 1]],
+            ),
+        },
+    )
+    def test_fake_text2text_lm_input(
+        self,
+        is_training: bool,
+        model_type: str,
+        max_len: int,
+        expected_inputs: Dict[str, List[List[int]]],
+        source_key: str = "source",
+        target_key: str = "target",
+    ):
+        batch_size = 3
+
+        def ds_fn():
+            return fake_source(
+                is_training=is_training,
+                examples=[
+                    {
+                        source_key: "hello",
+                        target_key: "hello world",
+                        "prefix": tf.constant(expected_inputs["prefix"][0]),
+                    },
+                    {
+                        source_key: "hello",
+                        target_key: "hello moon",
+                        "prefix": tf.constant(expected_inputs["prefix"][1]),
+                    },
+                    {
+                        source_key: "hello",
+                        target_key: "hello tiger",
+                        "prefix": tf.constant(expected_inputs["prefix"][2]),
+                    },
+                ],
+            )
+
+        cfg = input_tf_data.Input.default_config().set(
+            name="test_input",
+            is_training=is_training,
+            source=config_for_function(ds_fn),
+            processor=config_for_function(text2text_lm_input).set(
+                target_sentence_piece_vocab=self.vocab_cfg,
+                max_target_length=max_len,
+                model_type=model_type,
+                source_key=source_key,
+                target_key=target_key,
+            ),
+            batcher=config_for_function(input_tf_data.batch).set(
+                global_batch_size=batch_size,
+                prefetch_buffer_size=2,
+                pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+        )
+
+        dataset = cfg.instantiate(parent=None)
+        for batch in dataset:
+            for key, value in expected_inputs.items():
+                np.testing.assert_array_equal(
+                    value,
+                    batch[key],
+                )
+            break
+
+    def test_original_keys(self):
+        # Ensure that keys besides source_key, target_key are returned unchanged.
+        processor_fn = text2text_lm_input(
+            is_training=False,
+            target_sentence_piece_vocab=self.vocab_cfg,
+            max_target_length=3,
+            source_key="source_text",
+            target_key="target_labels",
+        )
+        examples = [
+            {"source_text": "source", "target_labels": "target", "prefix": tf.constant([123])}
+        ]
+        ds = fake_source(is_training=False, examples=examples)()
+        ds = processor_fn(ds)
+        tf.nest.map_structure(
+            self.assertAllEqual,
+            next(iter(ds)),
+            {
+                "prefix": tf.constant([123]),
+                "source_ids": tf.constant([1391, 1, 0]),
+                "source_segment_ids": tf.constant([1, 1, 0]),
+                "source_positions": tf.constant([0, 1, 0]),
+                "target_labels": tf.constant([2387, 1, -1]),
+                # The 123 prefix from above is prepended.
+                "target_ids": tf.constant([123, 2387, 0]),
+                "target_segment_ids": tf.constant([1, 1, 0]),
+                "target_positions": tf.constant([0, 1, 0]),
+            },
+        )
+
+    @parameterized.parameters(
+        # Note: Inputs will be detokenized into strings before feeding into the processor.
+        # We keep them as pieces so that it's easier to visualize token lengths.
+        #
+        # Encoder-decoder: test when everything fits into one example.
+        {
+            "model_type": ModelType.ENCODER_DECODER,
+            "max_target_len": 6,
+            "inputs": [
+                {
+                    "source": ["▁short", "▁source"],
+                    "target": ["▁short", "▁target"],
+                    "prefix": tf.constant([1]),
+                },
+                {
+                    "source": ["▁short", "▁source"],
+                    "target": ["▁short", "▁target"],
+                    "prefix": tf.constant([1]),
+                },
+            ],
+            "expected": [
+                {
+                    "source_ids": ["▁short", "▁source", "</s>", "▁short", "▁source", "</s>"],
+                    "source_positions": [0, 1, 2, 0, 1, 2],
+                    "source_segment_ids": [1, 1, 1, 2, 2, 2],
+                    "target_labels": ["▁short", "▁target", "</s>", "▁short", "▁target", "</s>"],
+                    "target_ids": ["</s>", "▁short", "▁target", "</s>", "▁short", "▁target"],
+                    "target_positions": [0, 1, 2, 0, 1, 2],
+                    "target_segment_ids": [1, 1, 1, 2, 2, 2],
+                }
+            ],
+        },
+        # Encoder-decoder: test with source/target having different lengths.
+        {
+            "model_type": ModelType.ENCODER_DECODER,
+            "max_target_len": 8,
+            "inputs": [
+                {
+                    "source": ["▁short", "▁source"],
+                    "target": ["▁some", "▁longer", "▁target"],
+                    "prefix": tf.constant([1]),
+                },
+                {
+                    "source": ["▁source"],
+                    "target": ["▁short", "▁target"],
+                    "prefix": tf.constant([1]),
+                },
+            ],
+            "expected": [
+                {
+                    "source_ids": [
+                        "▁short",
+                        "▁source",
+                        "</s>",
+                        "▁source",
+                        "</s>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                    ],
+                    "source_positions": [0, 1, 2, 0, 1, 0, 0, 0],
+                    "source_segment_ids": [1, 1, 1, 2, 2, 0, 0, 0],
+                    "target_labels": [
+                        "▁some",
+                        "▁longer",
+                        "▁target",
+                        "</s>",
+                        "▁short",
+                        "▁target",
+                        "</s>",
+                        -1,
+                    ],
+                    "target_ids": [
+                        "</s>",
+                        "▁some",
+                        "▁longer",
+                        "▁target",
+                        "</s>",
+                        "▁short",
+                        "▁target",
+                        "<pad>",
+                    ],
+                    "target_positions": [0, 1, 2, 3, 0, 1, 2, 0],
+                    "target_segment_ids": [1, 1, 1, 1, 2, 2, 2, 0],
+                }
+            ],
+        },
+        # Encoder-decoder: test that long inputs are truncated, not packed.
+        {
+            "model_type": ModelType.ENCODER_DECODER,
+            "max_target_len": 2,
+            "inputs": [
+                {
+                    "source": ["▁short"],
+                    "target": ["▁some", "▁longer", "▁target"],
+                    "prefix": tf.constant([1]),
+                },
+                {
+                    "source": ["▁source"],
+                    "target": ["▁short", "▁target"],
+                    "prefix": tf.constant([1]),
+                },
+            ],
+            "expected": [
+                # First example. Note: "target_*" are truncated, and have no EOS.
+                {
+                    "source_ids": ["▁short", "</s>"],
+                    "source_positions": [0, 1],
+                    "source_segment_ids": [1, 1],
+                    "target_labels": ["▁some", "▁longer"],
+                    "target_ids": ["</s>", "▁some"],
+                    "target_positions": [0, 1],
+                    "target_segment_ids": [1, 1],
+                },
+                # Second example. Note: "target_*" are truncated, and have no EOS.
+                {
+                    "source_ids": ["▁source", "</s>"],
+                    "source_positions": [0, 1],
+                    "source_segment_ids": [1, 1],
+                    # Note: "target_*" are truncated.
+                    "target_labels": ["▁short", "▁target"],
+                    "target_ids": ["</s>", "▁short"],
+                    "target_positions": [0, 1],
+                    "target_segment_ids": [1, 1],
+                },
+            ],
+        },
+        # Encoder-decoder: test a longer prefix.
+        {
+            "model_type": ModelType.ENCODER_DECODER,
+            "max_target_len": 7,
+            "inputs": [
+                {
+                    "source": ["▁short", "▁source"],
+                    "target": ["▁target"],
+                    "prefix": tf.constant([1, 1]),
+                },
+                {
+                    "source": ["▁source"],
+                    "target": ["▁target"],
+                    "prefix": tf.constant([1, 1]),
+                },
+            ],
+            "expected": [
+                {
+                    "source_ids": [
+                        "▁short",
+                        "▁source",
+                        "</s>",
+                        "▁source",
+                        "</s>",
+                        "<pad>",
+                        "<pad>",
+                    ],
+                    "source_positions": [0, 1, 2, 0, 1, 0, 0],
+                    "source_segment_ids": [1, 1, 1, 2, 2, 0, 0],
+                    "target_labels": [
+                        -1,
+                        "▁target",
+                        "</s>",
+                        -1,
+                        "▁target",
+                        "</s>",
+                        -1,
+                    ],
+                    "target_ids": ["</s>", "</s>", "▁target", "</s>", "</s>", "▁target", "<pad>"],
+                    "target_positions": [0, 1, 2, 0, 1, 2, 0],
+                    "target_segment_ids": [1, 1, 1, 2, 2, 2, 0],
+                },
+            ],
+        },
+        # Encoder-decoder: test different max_{source,target}_len.
+        {
+            "model_type": ModelType.ENCODER_DECODER,
+            "max_source_len": 6,
+            "max_target_len": 4,
+            "inputs": [
+                {
+                    "source": ["▁some", "▁short", "▁source"],
+                    "target": ["▁target"],
+                    "prefix": tf.constant([1]),
+                },
+                {
+                    "source": ["▁source"],
+                    "target": ["▁target"],
+                    "prefix": tf.constant([1]),
+                },
+            ],
+            "expected": [
+                {
+                    "source_ids": ["▁some", "▁short", "▁source", "</s>", "▁source", "</s>"],
+                    "source_positions": [0, 1, 2, 3, 0, 1],
+                    "source_segment_ids": [1, 1, 1, 1, 2, 2],
+                    "target_labels": ["▁target", "</s>", "▁target", "</s>"],
+                    "target_ids": ["</s>", "▁target", "</s>", "▁target"],
+                    "target_positions": [0, 1, 0, 1],
+                    "target_segment_ids": [1, 1, 2, 2],
+                },
+            ],
+        },
+        # Encoder-decoder: test padding.
+        {
+            "model_type": ModelType.ENCODER_DECODER,
+            "max_source_len": 6,
+            "max_target_len": 4,
+            "inputs": [
+                {
+                    "source": ["▁some", "▁short", "▁source"],
+                    "target": ["▁target"],
+                    "prefix": tf.constant([1]),
+                },
+                {
+                    "source": ["▁source"],
+                    "target": ["▁target"],
+                    "prefix": tf.constant([1]),
+                },
+            ],
+            "expected": [
+                {
+                    "prefix": tf.constant([1]),
+                    "source_ids": ["▁some", "▁short", "▁source", "</s>", "<pad>", "<pad>"],
+                    "source_positions": [0, 1, 2, 3, 0, 0],
+                    "source_segment_ids": [1, 1, 1, 1, 0, 0],
+                    "target_labels": ["▁target", "</s>", -1, -1],
+                    "target_ids": ["</s>", "▁target", "<pad>", "<pad>"],
+                    "target_positions": [0, 1, 0, 0],
+                    "target_segment_ids": [1, 1, 0, 0],
+                },
+                {
+                    "prefix": tf.constant([1]),
+                    "source_ids": ["▁source", "</s>", "<pad>", "<pad>", "<pad>", "<pad>"],
+                    "source_positions": [0, 1, 0, 0, 0, 0],
+                    "source_segment_ids": [1, 1, 0, 0, 0, 0],
+                    "target_labels": ["▁target", "</s>", -1, -1],
+                    "target_ids": ["</s>", "▁target", "<pad>", "<pad>"],
+                    "target_positions": [0, 1, 0, 0],
+                    "target_segment_ids": [1, 1, 0, 0],
+                },
+            ],
+            "packing_mode": "pad",
+        },
+        # Decoder: test packing.
+        {
+            "model_type": ModelType.DECODER_ONLY,
+            "max_source_len": None,
+            "max_target_len": 8,
+            "inputs": [
+                {
+                    "source": ["▁short", "▁source"],
+                    "target": ["▁target"],
+                    "prefix": tf.constant([1]),
+                },
+                {
+                    "source": ["▁source"],
+                    "target": ["▁target"],
+                    "prefix": tf.constant([1]),
+                },
+                {
+                    "source": ["▁other", "▁source"],
+                    "target": ["▁some", "▁short", "▁target"],
+                    "prefix": tf.constant([1]),
+                },
+            ],
+            "expected": [
+                {
+                    "input_ids": [
+                        "</s>",
+                        "▁short",
+                        "▁source",
+                        "▁target",
+                        "</s>",
+                        "▁source",
+                        "▁target",
+                        "<pad>",
+                    ],
+                    "input_positions": [0, 1, 2, 3, 0, 1, 2, 0],
+                    "input_segment_ids": [1, 1, 1, 1, 2, 2, 2, 0],
+                    "target_labels": [-1, -1, "▁target", "</s>", -1, "▁target", "</s>", -1],
+                },
+                {
+                    "input_ids": [
+                        "</s>",
+                        "▁other",
+                        "▁source",
+                        "▁some",
+                        "▁short",
+                        "▁target",
+                        "<pad>",
+                        "<pad>",
+                    ],
+                    "input_positions": [0, 1, 2, 3, 4, 5, 0, 0],
+                    "input_segment_ids": [1, 1, 1, 1, 1, 1, 0, 0],
+                    "target_labels": [
+                        -1,
+                        -1,
+                        "▁some",
+                        "▁short",
+                        "▁target",
+                        "</s>",
+                        -1,
+                        -1,
+                    ],
+                },
+            ],
+            "packing_mode": "pack",
+        },
+    )
+    def test_packing(
+        self,
+        *,
+        model_type: ModelType,
+        inputs: List[Dict[str, Any]],
+        expected: List[Dict[str, Any]],
+        max_target_len: int,
+        max_source_len: Optional[int] = None,
+        packing_mode: Literal["pack", "pad", "none"] = "pack",
+    ):
+        vocab = self.vocab_cfg.instantiate()
+        source = fake_source(
+            is_training=False,
+            examples=[
+                {
+                    "source": tf.constant(vocab.tokenizer.decode_pieces(ex["source"])),
+                    "target": tf.constant(vocab.tokenizer.decode_pieces(ex["target"])),
+                    "prefix": ex["prefix"],
+                }
+                for ex in inputs
+            ],
+        )
+        processor = text2text_lm_input(
+            is_training=False,
+            model_type=model_type,
+            target_sentence_piece_vocab=self.vocab_cfg,
+            max_target_length=max_target_len,
+            max_source_length=max_source_len,
+            source_key="source",
+            target_key="target",
+            packing_mode=packing_mode,
+        )
+        ds = processor(source())
+        self.assertEqual(len(expected), len(list(ds)))
+        for expect, actual in zip(expected, ds):
+            # Convert pieces back to tf.Tensor of IDs.
+            for k, v in expect.items():
+                if k in ["input_ids", "source_ids", "target_ids", "target_labels"]:
+                    v = [vocab.tokenizer.piece_to_id(x) if isinstance(x, str) else x for x in v]
+                expect[k] = tf.constant(v)
+
+            for k, v in actual.items():
+                if k in ["input_ids", "source_ids", "target_ids", "target_labels"]:
+                    print(
+                        f"{k}: {[vocab.tokenizer.id_to_piece(int(x)) if x >= 0 else x for x in v]}"
+                    )
+                else:
+                    print(f"{k}: {v}")
+            tf.nest.map_structure(self.assertAllEqual, expect, actual)
+
+    @parameterized.parameters(
+        # Test packing with intermediate zeros.
+        {
+            "max_source_len": 8,
+            "max_target_len": 6,
+            "inputs": [
+                {"source_ids": [1, 0, 2, 3], "target_ids": [0, 0, 1]},
+                {"source_ids": [0, 0, 1], "target_ids": [2]},
+                # Note: all 0's are treated as non-zero.
+                {"source_ids": [0, 0, 0], "target_ids": [0, 3]},
+                # Note: trailing padding is not discarded.
+                {"source_ids": [1, 0], "target_ids": [0, 1]},
+                {"source_ids": [2, 3], "target_ids": []},
+            ],
+            "expected": [
+                {
+                    "source_ids": [1, 0, 2, 3, 0, 0, 1, 0],
+                    "source_ids_positions": [0, 1, 2, 3, 0, 1, 2, 0],
+                    "source_ids_segment_ids": [1, 1, 1, 1, 2, 2, 2, 0],
+                    "target_ids": [0, 0, 1, 2, 0, 0],
+                    "target_ids_positions": [0, 1, 2, 0, 0, 0],
+                    "target_ids_segment_ids": [1, 1, 1, 2, 0, 0],
+                },
+                {
+                    "source_ids": [0, 0, 0, 1, 0, 2, 3, 0],
+                    "source_ids_positions": [0, 1, 2, 0, 1, 0, 1, 0],
+                    "source_ids_segment_ids": [1, 1, 1, 2, 2, 3, 3, 0],
+                    "target_ids": [0, 3, 0, 1, 0, 0],
+                    "target_ids_positions": [0, 1, 0, 1, 0, 0],
+                    "target_ids_segment_ids": [1, 1, 2, 2, 0, 0],
+                },
+            ],
+        },
+    )
+    def test_trim_and_pack_with_segments(
+        self,
+        *,
+        inputs: List[Dict[str, Any]],
+        expected: List[Dict[str, Any]],
+        max_target_len: int,
+        max_source_len: Optional[int] = None,
+    ):
+        source = fake_source(
+            is_training=False,
+            examples=[
+                {
+                    "source_ids": tf.constant(ex["source_ids"], dtype=tf.int32),
+                    "target_ids": tf.constant(ex["target_ids"], dtype=tf.int32),
+                }
+                for ex in inputs
+            ],
+            spec={
+                "source_ids": tf.TensorSpec(shape=[None], dtype=tf.int32),
+                "target_ids": tf.TensorSpec(shape=[None], dtype=tf.int32),
+            },
+        )
+        processor = _trim_and_pack_with_segments(
+            {"source_ids": max_source_len, "target_ids": max_target_len}
+        )
+        ds = list(processor(source()))
+        self.assertEqual(len(expected), len(ds))
+        for expect, actual in zip(expected, ds):
+            self.assertEqual(expect.keys(), actual.keys())
+            for k, v in expect.items():
+                self.assertAllEqual(tf.constant(v), actual[k])
+
+
+if __name__ == "__main__":
+    absltest.main()
