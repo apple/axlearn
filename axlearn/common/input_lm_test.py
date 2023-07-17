@@ -6,6 +6,7 @@ import os
 from typing import Any, Dict, List, Literal, Optional
 
 import numpy as np
+import pytest
 import seqio
 import tensorflow as tf
 from absl.testing import absltest, parameterized
@@ -157,6 +158,9 @@ class LmTrainingInputTest(BaseLmInputTest):
         )
 
     @parameterized.parameters("Lorem ipsum dolor sit amet,", " consectetur adipiscing elit\n")
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_training_lm_processor_single_example(self, text: str):
         max_len = 32
         processor = self._lm_training_processor_config(
@@ -180,6 +184,9 @@ class LmTrainingInputTest(BaseLmInputTest):
         # The inputs should be one-off the labels.
         self.assertNestedAllClose(target_labels[:-1], input_ids[1:])
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_fake_text_lm_training_data(self):
         expected_batches = [
             {
@@ -432,6 +439,9 @@ class LmTrainingInputTest(BaseLmInputTest):
             "joint_truncation": True,
         },
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_lm_from_seq2seq_text_preprocessor(
         self,
         input_data_type: InputDataType,
@@ -680,6 +690,9 @@ class LmEvalInputTest(BaseLmInputTest):
         ("On the 20th of June", "not_index"),
         ("Here we stand united", None),
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_eval_lm_processor_single_example(self, text, index_key):
         max_len = 12
         processor = self._lm_eval_processor_config(
@@ -708,6 +721,9 @@ class LmEvalInputTest(BaseLmInputTest):
             target_labels[: non_padded_length - 1], input_ids[1:non_padded_length]
         )
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_fake_text_lm_eval_data(self):
         expected_batches = [
             {
@@ -894,6 +910,9 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             ),
         },
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_fake_text2text_lm_input(
         self,
         is_training: bool,
@@ -954,6 +973,9 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
                 )
             break
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_original_keys(self):
         # Ensure that keys besides source_key, target_key are returned unchanged.
         processor_fn = text2text_lm_input(
@@ -1290,6 +1312,9 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             ],
             "packing_mode": "pack",
         },
+    )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_packing(
         self,

@@ -6,6 +6,7 @@ import os
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
+import pytest
 import seqio
 import tensorflow as tf
 from absl.testing import absltest, parameterized
@@ -106,6 +107,9 @@ class InputGlueForRobertaTest(parameterized.TestCase, tf.test.TestCase):
         {"is_training": False, "bos_token": "▁test"},
         {"is_training": True, "bos_token": "▁test"},
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_fake_sentence(self, is_training, bos_token):
         examples = [
             {
@@ -155,6 +159,9 @@ class InputGlueForRobertaTest(parameterized.TestCase, tf.test.TestCase):
             break
 
     @parameterized.parameters(False, True)
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_fake_sentence_pair(self, is_training):
         examples = [
             {
@@ -203,6 +210,9 @@ class InputGlueForRobertaTest(parameterized.TestCase, tf.test.TestCase):
             break
 
     @parameterized.parameters(False, True)
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_fake_multiple_choice_preprocess(self, is_training):
         # Examples from COPA.
         examples = [
@@ -717,6 +727,9 @@ class InputGlueForT5Test(parameterized.TestCase, tf.test.TestCase):
                 target_labels=tf.constant([-1, 1]),
             ),
         ),
+    )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_make_glue_autoregressive_inputs(
         self,

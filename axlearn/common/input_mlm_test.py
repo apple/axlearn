@@ -6,6 +6,7 @@ import os
 from typing import Dict, Iterator, Optional
 
 import numpy as np
+import pytest
 import seqio
 import tensorflow as tf
 from absl.testing import absltest, parameterized
@@ -68,6 +69,9 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
     @parameterized.parameters(
         config_for_function(iid_mlm_actions),
         config_for_function(roberta_mlm_actions),
+    )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_apply_mlm_mask(self, actions_cfg: InstantiableConfig):
         vocab = self.vocab_cfg.instantiate()
@@ -157,6 +161,9 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
         self.assertAllEqual(actual["input_ids"][-tf.size(padding_ids) :], padding_ids)
         self.assertAllEqual(actual["target_labels"][-tf.size(padding_ids) :], padding_ids)
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_apply_mlm_mask_validation(self):
         """Tests some sanity checks for apply_mlm_mask."""
         vocab = self.vocab_cfg.instantiate()
@@ -191,6 +198,9 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
 
     # TODO(markblee): avoid depending on seed in tests.
     # pylint: disable-next=too-many-statements
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_whole_word_mask(self):
         vocab = self.vocab_cfg.instantiate()
         mask_id = vocab.vocab_size - 1
@@ -413,6 +423,9 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
         self.assertAllEqual(actual["input_ids"], expected["input_ids"])
         self.assertAllEqual(actual["target_labels"], expected["target_labels"])
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_ids_to_word_starts(self):
         vocab = seqio.SentencePieceVocabulary(t5_sentence_piece_vocab_file)
 
@@ -432,6 +445,9 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
         config_for_function(iid_mlm_actions),
         config_for_function(roberta_mlm_actions),
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_apply_mlm_mask_translation(self, actions_cfg: InstantiableConfig):
         vocab = self.vocab_cfg.instantiate()
         pad_id = vocab.pad_id
@@ -448,6 +464,9 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
         self.assertAllEqual(actual["input_ids"], input_ids)
         self.assertAllEqual(actual["target_labels"], input_ids)
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_apply_mlm_mask_element_spec(self):
         orig_ds = self._make_ds({"input_ids": tf.constant([1, 2, 3])})
         mask_fn = apply_mlm_mask(
@@ -501,6 +520,9 @@ class ApplyMLMTestCombinatorialNgram(parameterized.TestCase, tf.test.TestCase):
         for output_example in fn(input_ds).batch(num_of_examples):
             return output_example
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_apply_mlm_mask_combinatorial_ngram(self):
         vocab = self.vocab_cfg.instantiate()
         pad_id = vocab.pad_id
@@ -720,6 +742,9 @@ class MaskedLmInputTest(parameterized.TestCase, tf.test.TestCase):
         return config_for_function(text_to_mlm_input).set(**defaults)
 
     @parameterized.product(is_training=[True, False], truncate=[True, False])
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_fake_text_data(self, is_training: bool, truncate: bool):
         batch_size, max_len = 4, 16
         cfg = input_tf_data.Input.default_config().set(
@@ -819,6 +844,9 @@ class MaskedLmInputTest(parameterized.TestCase, tf.test.TestCase):
                 self.assertAllEqual(batch["target_labels"], tf.zeros_like(batch["target_labels"]))
             break
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_filtering(self):
         # Test that we filter out long sequences.
         texts = [
