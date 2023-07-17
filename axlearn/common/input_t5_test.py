@@ -7,6 +7,7 @@ import os
 from functools import partial
 from typing import Dict, List, Tuple
 
+import pytest
 import seqio
 import tensorflow as tf
 from absl.testing import absltest, parameterized
@@ -460,6 +461,9 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             expected=tf.constant([32099, 12, 13, 14, 15, 32098, 19]),
         ),
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_noise_span_to_unique_sentinel(
         self, input_ids: tf.Tensor, noise_mask: tf.Tensor, expected: tf.Tensor
     ):
@@ -511,6 +515,9 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             ),
             expected=tf.constant([10, 11, 32099, 16, 17, 18, 32098]),
         ),
+    )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_nonnoise_span_to_unique_sentinel(
         self, input_ids: tf.Tensor, noise_mask: tf.Tensor, expected: tf.Tensor
@@ -590,6 +597,9 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             #     )
             # ],
         ),
+    )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_apply_t5_mask(
         self,
@@ -703,6 +713,9 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             # ],
         ),
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_make_t5_autoregressive_inputs(self, examples: List[Dict[str, tf.Tensor]], **kwargs):
         tf.random.set_seed(1234)
         source = fake_source(
@@ -734,6 +747,9 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             # Due to how we construct our inputs, the interleaved IDs should be strictly increasing.
             assert_strictly_increasing(_interleave(vocab, source_ids, target_labels))
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_make_t5_autoregressive_inputs_validation(self):
         with self.assertRaisesRegex(ValueError, "exceeds max target"):
             make_t5_autoregressive_inputs(
