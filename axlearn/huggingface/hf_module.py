@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """HuggingFace module wrappers."""
 import json
 import os

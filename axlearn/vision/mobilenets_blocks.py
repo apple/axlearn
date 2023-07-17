@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# rwightman/efficientnet-jax:
+# Copyright 2020 Ross Wightman.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """MobileNetV3 blocks.
 
 Reference: https://arxiv.org/abs/1905.02244.

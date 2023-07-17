@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """This test compares against golden files to detect inadvertent changes."""
 # pylint: disable=no-self-use
 import enum

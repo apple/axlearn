@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# microsoft/unilm:
+# Copyright (c) 2021 Microsoft.
+# Licensed under The MIT License.
+
 """A mask generator implementation.
 
 Code reference: https://github.com/microsoft/unilm/blob/master/beit2/masking_generator.py

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Unittests for config.py."""
 # pylint: disable=too-many-public-methods
 import collections

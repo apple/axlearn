@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests factorized RMS."""
 from typing import Optional
 

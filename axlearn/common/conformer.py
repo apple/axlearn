@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# google/praxis:
+# Copyright 2022 The Pax Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """An implementation of Conformer layers.
 
 References:

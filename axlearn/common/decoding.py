@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/t5x:
+# Copyright 2023 The T5X Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# huggingface/transformers:
+# Copyright 2020 The HuggingFace Team Inc.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Beam search for inference from a trained model.
 
 Reference: https://github.com/google-research/t5x/blob/main/t5x/decoding.py

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Vision param converters."""
 import copy
 from typing import Optional, Type, Union

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Utilities to launch a trainer."""
 import os
 from typing import Any, Optional

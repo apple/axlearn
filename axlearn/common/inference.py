@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tools for running inference on AXLearn models.
 
 On compatible trainer checkpoints for `InferenceRunner`:

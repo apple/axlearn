@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests ResNet."""
 import jax.random
 import numpy as np

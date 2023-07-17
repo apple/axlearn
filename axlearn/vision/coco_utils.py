@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/tpu:
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Util functions related to pycocotools and COCO eval.
 
 The functions in this file have been borrowed from the tensorflow model garden's coco_utils.py.

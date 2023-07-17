@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Modules for configurable parameter initialization."""
 import re
 from typing import Any, Dict, NamedTuple, Optional, Sequence, Tuple, Union

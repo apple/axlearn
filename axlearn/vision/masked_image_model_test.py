@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests masked image modeling."""
 import jax
 import jax.numpy as jnp

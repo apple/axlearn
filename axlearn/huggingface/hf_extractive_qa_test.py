@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests HF Extractive QA wrappers."""
 import os
 from typing import Type

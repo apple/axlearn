@@ -1,3 +1,10 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# Copyright 2022 The SeqIO Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 # pylint: disable=too-many-lines
 """Input generator based on tf.data."""
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Union

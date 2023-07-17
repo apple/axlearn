@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests masked language modeling inputs."""
 # pylint: disable=no-self-use
 import os

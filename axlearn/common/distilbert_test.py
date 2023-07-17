@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests DistilBert layers."""
 # pylint: disable=no-self-use
 import jax

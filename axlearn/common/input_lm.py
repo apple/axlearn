@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 # pylint: disable=too-many-lines
 """Input processing for language modeling."""
 

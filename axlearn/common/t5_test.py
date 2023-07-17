@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests T5 layers."""
 # pylint: disable=no-self-use
 from typing import Dict

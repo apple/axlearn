@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# openai/gpt-2:
+# Copyright (c) 2019 OpenAI.
+# Licensed under a modified MIT license.
+
 """An implemention of GPT2 BPE as a seqio Vocabulary.
 
 Reference:

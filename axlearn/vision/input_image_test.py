@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests image input modules."""
 # pylint: disable=no-member,no-self-use
 import jax.numpy as jnp

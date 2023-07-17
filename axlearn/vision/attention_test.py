@@ -1,5 +1,6 @@
-"""Tests for vision attention layers.
-"""
+# Copyright © 2023 Apple Inc.
+
+"""Tests for vision attention layers."""
 import jax
 import jax.numpy as jnp
 import numpy as np

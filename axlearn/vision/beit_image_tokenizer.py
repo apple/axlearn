@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# microsoft/unilm:
+# Copyright (c) 2022 Microsoft.
+# Licensed under The MIT License.
+
 """BEiT-3 Image Tokenizer
 
 Sect. 2.2 of https://arxiv.org/pdf/2208.10442.pdf, BEiT-3 uses BEiT-v2 image tokenizer.

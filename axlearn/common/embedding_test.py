@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Test embedding layers."""
 # pylint: disable=no-self-use
 import itertools

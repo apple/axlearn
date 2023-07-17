@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# huggingface/transformers:
+# Copyright 2019-present, the HuggingFace Inc. team, The Google AI Language Team and Facebook, Inc.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """DistilBert Text Encoder
 
 The DistilBert configs a TextEmbeddingEncoder.

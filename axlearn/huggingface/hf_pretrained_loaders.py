@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """HuggingFace pretraiend loaders."""
 import torch
 

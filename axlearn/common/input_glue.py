@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/text-to-text-transfer-transformer:
+# Copyright 2022 The T5 Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# huggingface/transformers:
+# Copyright 2020 The HuggingFace Inc. team. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Input processing for GLUE benchmark.
 
 Reference:

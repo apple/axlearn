@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests DeBERTa implementation."""
 # pylint: disable=no-self-use
 from types import SimpleNamespace

@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# cocodataset/cocoapi:
+# Copyright (c) 2014, Piotr Dollar and Tsung-Yi Lin. All rights reserved.
+# Licensed under BSD 2-Clause License.
+
 # pylint: disable=consider-using-f-string
 """The COCO-style evaluator.
 

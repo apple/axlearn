@@ -1,3 +1,19 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/models:
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License")
+
+# baiivision/EVA:
+# Copyright (c) 2022 Beijing Academy of Artificial Intelligence (BAAI).
+# Licensed under The MIT License.
+#
+# facebookresearch/dinov2:
+# Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+# Licensed under CC-BY-NC 4.0 license.
+
 """Tests loss functions."""
 # pylint: disable=too-many-lines
 import math

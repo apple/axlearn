@@ -1,3 +1,24 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/bert:
+# Copyright 2018 The Google AI Language Team Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# facebookresearch/fairseq:
+# Copyright (c) Facebook, Inc. and its affiliates.
+# Licensed under the MIT license.
+#
+# huggingface/transformers:
+# Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
+# Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# tensorflow/tensorflow:
+# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """BERT layer implementations.
 
 https://arxiv.org/abs/1810.04805

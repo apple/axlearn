@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests PyTorch adapter layers."""
 # pylint: disable=too-many-lines
 import itertools

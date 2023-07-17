@@ -1,9 +1,9 @@
-# pylint: disable=line-too-long
+# Copyright © 2023 Apple Inc.
+
 """Tests inference.py.
 
 Some tests are intended to be run on TPU.
 """
-# pylint: enable=line-too-long
 import itertools
 import os
 import tempfile

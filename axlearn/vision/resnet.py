@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# pytorch/vision:
+# Copyright (c) Soumith Chintala 2016. All rights reserved.
+# Licensed under BSD 3-Clause License.
+#
+# tensorflow/tpu:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """An AXLearn implementation for ResNet and ResNet-RS.
 
 ResNet reference:

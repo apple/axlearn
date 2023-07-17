@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Retrieval metrics."""
 from typing import Dict, List, Optional, Tuple
 

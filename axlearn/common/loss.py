@@ -1,3 +1,31 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/t5x:
+# Copyright 2022 The T5X Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# keras-team/keras:
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# tensorflow/models:
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# tensorflow/tpu:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# deepmind/optax:
+# Copyright 2019 DeepMind Technologies Limited. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# facebookresearch/fvcore:
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Loss functions."""
 # pylint: disable=too-many-lines
 import enum

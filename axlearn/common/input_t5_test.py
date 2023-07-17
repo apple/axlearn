@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests T5 inputs."""
 import functools
 import logging

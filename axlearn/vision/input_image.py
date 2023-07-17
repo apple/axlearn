@@ -1,10 +1,31 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# pytorch/vision:
+# Copyright (c) Soumith Chintala 2016, All rights reserved.
+# Licensed under the BSD 3-Clause License.
+#
+# google/flax:
+# Copyright 2023 The Flax Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# google-research/vision_transformer:
+# Copyright 2023 Google LLC.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# tensorflow/models:
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Image input modules.
 
 References:
-https://github.com/pytorch/vision/blob/main/torchvision/prototype/models/resnet.py
-https://github.com/pytorch/vision/blob/main/references/classification/presets.py
-https://github.com/google/flax/blob/main/examples/imagenet/input_pipeline.py
-https://github.com/google-research/vision_transformer/blob/main/vit_jax/input_pipeline.py#L195-L241
+https://github.com/pytorch/vision/blob/29418e34a94e2c43f861a321265f7f21035e7b19/torchvision/models/resnet.py
+https://github.com/pytorch/vision/blob/29418e34a94e2c43f861a321265f7f21035e7b19/references/classification/presets.py
+https://github.com/google/flax/blob/ce98f350c22599b31cce1b787f5ed2d5510f0706/examples/imagenet/input_pipeline.py
+https://github.com/google-research/vision_transformer/blob/ac6e056f9da686895f9f0f6ac026d3b5a464e59e/vit_jax/input_pipeline.py#L195-L241
+https://github.com/tensorflow/models/blob/5a0305c41304e8136e2056c589ab490a807dffa0/official/legacy/image_classification/augment.py
 """
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -154,6 +175,11 @@ def randaugment(
     translate_const: float = 100.0,
     exclude_ops: Optional[List[str]] = None,
 ):
+    """Applies RandAugment from https://arxiv.org/abs/1909.13719.
+
+    Reference:
+    https://github.com/tensorflow/models/blob/5a0305c41304e8136e2056c589ab490a807dffa0/official/legacy/image_classification/augment.py
+    """
     logging.info("Applying randaugment with %s layers and magnitude %s.", num_layers, magnitude)
     available_ops = [
         "AutoContrast",

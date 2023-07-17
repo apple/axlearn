@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Base model definition."""
 from typing import Tuple
 

@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# deepmind/optax:
+# Copyright 2019 DeepMind Technologies Limited. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Factorized RMS.
 
 Adapted from optax factorized.py.

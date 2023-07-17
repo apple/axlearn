@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Classes to represent configs for ML layers, inputs, and models.
 
 Adapted from https://github.com/tensorflow/lingvo/blob/master/lingvo/core/hyperparams.py.

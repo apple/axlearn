@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# huggingface/transformers:
+# Copyright 2021 The Google Flax Team Authors and The HuggingFace Inc. team.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# bzhangGo/rmsnorm:
+# Copyright (c) 2019, Biao Zhang. All rights reserved.
+# Licensed under the BSD 3-Clause License.
+
 # pylint: disable=too-many-lines
 """Basic layers."""
 

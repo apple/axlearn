@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Encoder decoder model."""
 from typing import Callable, Dict, Optional, Tuple
 

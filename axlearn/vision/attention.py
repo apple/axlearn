@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# facebookresearch/mvit:
+# Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Attention layers for ViT variant vision transformers."""
 import math
 from typing import Dict, NamedTuple, Optional, Sequence, Tuple

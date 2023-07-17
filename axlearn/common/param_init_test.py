@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests param initializers."""
 # pylint: disable=duplicate-code
 import jax

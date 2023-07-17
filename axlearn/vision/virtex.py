@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# kdexd/virtex:
+# Copyright (c) 2020, Karan Desai.
+# Licensed under the MIT license.
+
 """VirTex model implementation.
 
 https://arxiv.org/abs/2006.06666

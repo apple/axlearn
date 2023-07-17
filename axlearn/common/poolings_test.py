@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# naver/splade:
+# Copyright (c) 2021-present NAVER Corp.
+# Licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
+
 """Tests pooling layers."""
 # pylint: disable=no-self-use
 import itertools

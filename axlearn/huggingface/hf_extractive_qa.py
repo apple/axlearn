@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# huggingface/transformers:
+# Copyright 2021 The Google Flax Team Authors and The HuggingFace Inc. team.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """AXLearn Wrapper for Hugging face Pretrained Models for Extractive Question Answering."""
 
 from typing import Any, Dict, Optional, Tuple

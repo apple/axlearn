@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/tpu:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """An AXLearn implementation of RetinaNet.
 
 Reference: https://arxiv.org/abs/1708.02002.

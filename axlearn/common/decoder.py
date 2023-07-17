@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Decoder layers."""
 import contextlib
 from typing import Callable, Dict, Optional, Tuple

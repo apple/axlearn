@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """HuggingFace sequence classification wrappers."""
 from typing import Any, Dict, Optional, Tuple
 

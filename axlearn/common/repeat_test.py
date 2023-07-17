@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests repeat layer."""
 import itertools
 from typing import Dict, Optional

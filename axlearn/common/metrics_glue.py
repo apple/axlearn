@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """GLUE metric calculators.
 
 https://arxiv.org/abs/1804.07461

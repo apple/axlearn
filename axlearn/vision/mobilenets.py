@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# rwightman/efficientnet-jax:
+# Copyright 2020 Ross Wightman.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Implementation of mobile networks containing MobileNetV3, EfficientNet and EfficientNet-Lite.
 
 Reference:
@@ -5,7 +13,6 @@ https://arxiv.org/abs/1905.02244
 https://arxiv.org/abs/1905.11946
 
 Implementation adapted from: https://github.com/rwightman/efficientnet-jax/.
-Copyright 2020 Ross Wightman (https://github.com/rwightman)
 """
 import contextlib
 import enum

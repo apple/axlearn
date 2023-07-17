@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google/praxis:
+# Copyright 2022 Google LLC.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Tests quantization layers and metrics."""
 # pylint: disable=no-self-use
 from typing import List

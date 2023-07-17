@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# openai/CLIP:
+# Copyright (c) 2021 OpenAI.
+# Licensed under the MIT license.
+
 """CLIP architecture implementation.
 
 Ref: https://github.com/openai/CLIP/blob/main/clip/model.py

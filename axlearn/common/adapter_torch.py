@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# bzhangGo/rmsnorm:
+# Copyright (c) 2019, Biao Zhang. All rights reserved.
+# Licensed under the BSD 3-Clause License.
+#
+# ofirpress/attention_with_linear_biases:
+# Copyright (c) Facebook, Inc. and its affiliates.
+# Licensed under the MIT license.
+
 """This file is intended to be a standalone PyTorch re-implementation of a subset
 of the layers + models available in AXLearn. As it is standalone, it should only
 depend on PyTorch and freely available Python libraries.

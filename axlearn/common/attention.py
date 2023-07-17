@@ -1,3 +1,35 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# google-research/t5x:
+# Copyright 2022 The T5X Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# huggingface/transformers:
+# Copyright 2021 The HuggingFace Inc. team. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# facebookresearch/deit:
+# Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# tensorflow/models:
+# Copyright 2023 The TensorFlow Authors. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# google/praxis:
+# Copyright 2022 The Pax Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# ofirpress/attention_with_linear_biases:
+# Copyright (c) Facebook, Inc. and its affiliates.
+# Licensed under the MIT license.
+
 """Attention layers with pjit partition specs.
 
 On `attention_logit_biases`:

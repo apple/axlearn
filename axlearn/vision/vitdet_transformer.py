@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# facebookresearch/detectron2:
+# Copyright 2019-2020, detectron2 contributors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """An AXLearn implementation of ViTDet transformer layers.
 
 ViTDet References:

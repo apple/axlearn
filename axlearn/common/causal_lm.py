@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Autoregressive decoder model, e.g. as seen in the GPT family."""
 import math
 from typing import Callable, Dict, Optional, Tuple, Union

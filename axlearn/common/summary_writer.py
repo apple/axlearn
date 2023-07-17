@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Utilities for writing summaries."""
 import contextlib
 import numbers

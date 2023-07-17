@@ -1,3 +1,10 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# microsoft/lora:
+# Copyright (c) Microsoft Corporation.
+
 """Low-Rank Adaptation (LoRA) for Large Language Models.
 
 RefA: original LoRA paper https://arxiv.org/abs/2106.09685

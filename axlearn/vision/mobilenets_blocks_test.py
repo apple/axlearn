@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests MobileNetV3 blocks."""
 # pylint: disable=no-self-use,too-many-lines,too-many-public-methods
 import jax.random

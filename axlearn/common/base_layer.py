@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Defines BaseLayer, the base class for layer implementations."""
 import dataclasses
 import math

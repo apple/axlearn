@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Base multistream model layer and supporting functions.
 
 input_batch: A dictionary with the following structures:

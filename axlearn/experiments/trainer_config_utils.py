@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Trainer config utilities."""
 from typing import Optional
 

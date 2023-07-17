@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests trainer config utilities."""
 import jax.numpy as jnp
 from absl.testing import absltest, parameterized

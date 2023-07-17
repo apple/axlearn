@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests Conformer layers."""
 import jax
 import numpy as np

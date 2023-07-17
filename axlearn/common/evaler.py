@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Evaler and base metric calculators."""
 import os.path
 import time

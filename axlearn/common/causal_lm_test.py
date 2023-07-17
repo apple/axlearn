@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests autoregressive models."""
 import jax.random
 import numpy as np

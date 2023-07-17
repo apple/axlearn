@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# facebookresearch/DiT:
+# Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+# Licensed under CC-BY-NC.
+
 """Tests DiT layers."""
 # pylint: disable=no-self-use
 import math

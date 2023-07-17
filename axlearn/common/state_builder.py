@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 # pylint: disable=too-many-lines
 """A library to build trainer states, e.g., from checkpoints of other models."""
 import copy

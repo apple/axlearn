@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests object detection inputs."""
 # pylint: disable=no-member,no-self-use
 import numpy as np

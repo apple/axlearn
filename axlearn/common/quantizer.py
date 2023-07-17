@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google/praxis:
+# Copyright 2022 Google LLC.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
+# facebookresearch/fairseq:
+# Copyright (c) Facebook, Inc. and its affiliates.
+# Licensed under the MIT license.
+
 """Vector quantization layer and metrics.
 
 Reference:

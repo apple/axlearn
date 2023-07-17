@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Input processing for reading comprehension.
 
 This module implements functions necessary to prepare reading comprehension datasets for training

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests GDA-related functions in utils.py.
 
 This is a separate test to avoid dependency on test_utils/torch.

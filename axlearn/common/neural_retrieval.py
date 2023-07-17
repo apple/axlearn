@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# huggingface/transformers:
+# Copyright 2018 DPR Authors, The Hugging Face Team.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Dense Passage Retrieval.
 
 Ref: https://arxiv.org/abs/2004.04906

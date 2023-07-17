@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests learner."""
 import jax.nn
 import numpy as np

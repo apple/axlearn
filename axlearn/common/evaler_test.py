@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Test evalers.
 
 Some tests are intended to be run on TPU.

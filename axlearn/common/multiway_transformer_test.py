@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests Multiway transformer layers."""
 # pylint: disable=no-member,no-self-use,duplicate-code
 import jax

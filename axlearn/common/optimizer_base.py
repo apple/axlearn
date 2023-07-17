@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """The optimizer API.
 
 The API largely follows that of optax, but with a few changes to support partition and

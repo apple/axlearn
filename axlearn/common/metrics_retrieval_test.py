@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests retrieval metrics."""
 import jax
 import jax.numpy as jnp

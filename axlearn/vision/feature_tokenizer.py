@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Feature tokenizers."""
 from typing import Dict, Optional, Tuple
 

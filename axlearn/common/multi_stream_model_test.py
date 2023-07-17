@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests multistream model."""
 # pylint: disable=no-self-use
 import copy

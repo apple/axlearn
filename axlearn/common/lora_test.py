@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests LoRa implementations."""
 # pylint: disable=no-self-use
 

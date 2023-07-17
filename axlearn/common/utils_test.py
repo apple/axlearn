@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests common utils."""
 # pylint: disable=no-self-use
 import sys

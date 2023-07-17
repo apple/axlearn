@@ -1,3 +1,16 @@
+# Copyright © 2023 Apple Inc.
+#
+# tensorflow/tpu:
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# facebookresearch/detectron2:
+# Copyright 2019-2020, detectron2 contributors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# zylo117/Yet-Another-EfficientDet-Pytorch:
+# Licensed under GNU Lesser General Public License Version 3.
+
 # pylint: disable=too-many-lines
 """An implementation of feature pyramid networks.
 

@@ -1,3 +1,23 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# deepmind/optax:
+# Copyright 2019 DeepMind Technologies Limited. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# google/praxis:
+# Copyright 2022 Google LLC.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# tensorflow/lingvo:
+# Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# google/automl:
+# Copyright 2023 Google Research. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 # pylint: disable=too-many-lines
 """Optimization modules."""
 import dataclasses

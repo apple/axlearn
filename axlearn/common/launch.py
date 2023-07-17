@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """A library with common flags to launch a trainer."""
 # pylint: disable=wrong-import-position,wrong-import-order
 import os

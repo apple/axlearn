@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Matchers for pairing anchors with groundtruth boxes.
 
 Matchers pair anchors with groundtruths based on similarity matrix. Object Detection models

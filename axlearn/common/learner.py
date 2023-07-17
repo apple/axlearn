@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """A Learner is responsible for computing and applying updates to model params, including:
 
 - Computing and applying updates from gradients through optimizer modules;

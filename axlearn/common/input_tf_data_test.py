@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests tf.data inputs."""
 # pylint: disable=no-self-use,too-many-lines
 from typing import Dict, List, Optional, Sequence, Type, Union

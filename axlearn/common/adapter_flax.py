@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Adapter layers to use Flax/Linen modules.
 
 FlaxLayer allows users to use flax.linen modules in an AXLearn module hierarchy.

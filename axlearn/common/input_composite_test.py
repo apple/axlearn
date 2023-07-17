@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests composite inputs."""
 # pylint: disable=no-self-use
 from typing import List

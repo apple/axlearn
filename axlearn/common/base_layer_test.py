@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests BaseLayer."""
 import math
 from functools import partial

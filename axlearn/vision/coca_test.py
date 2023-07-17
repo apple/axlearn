@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests CoCa implementations."""
 # pylint: disable=no-self-use
 from copy import deepcopy

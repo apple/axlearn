@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests mask generator."""
 import numpy as np
 from absl.testing import absltest, parameterized

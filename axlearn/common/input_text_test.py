@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests text input processing."""
 # pylint: disable=no-self-use
 import os

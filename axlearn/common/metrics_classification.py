@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# scikit-learn/scikit-learn:
+# Copyright (c) 2007-2023 The scikit-learn developers. All rights reserved.
+# Licensed under BSD 3 clause.
+
 """Classification metrics."""
 
 from typing import Dict, Optional, Tuple

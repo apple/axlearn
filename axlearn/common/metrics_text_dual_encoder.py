@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests dual encoder text metrics."""
 from typing import Dict, List, Optional
 

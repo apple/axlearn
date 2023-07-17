@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests spatial transform ops."""
 import numpy as np
 import pytest

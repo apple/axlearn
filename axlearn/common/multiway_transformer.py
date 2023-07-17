@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# microsoft/unilm:
+# Copyright (c) Microsoft Corporation.
+# Licensed under The MIT License.
+
 # pylint: disable=duplicate-code
 """Multiway transformer layers.
 

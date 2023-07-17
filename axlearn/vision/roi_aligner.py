@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/models:
+# Copyright 2022 Google LLC. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """ROI Align layer."""
 import jax
 

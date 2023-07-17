@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """A library to support writing inference outputs."""
 import json
 import os.path

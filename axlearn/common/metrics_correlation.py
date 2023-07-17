@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# scikit-learn/scikit-learn:
+# Copyright (c) 2007-2023 The scikit-learn developers. All rights reserved.
+# Licensed under BSD 3 clause.
+#
+# scipy/scipy:
+# Copyright (c) 2001-2002 Enthought, Inc. 2003-2023, SciPy Developers. All rights reserved.
+# Licensed under BSD 3 clause.
+
 """Correlation metrics like Pearson's r and Spearman's rho."""
 from typing import Optional
 

@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# microsoft/DeBERTa:
+# Copyright (c) Microsoft, Inc. 2020.
+# Licensed under the MIT license.
+#
+# huggingface/transformers:
+# Copyright 2020 Microsoft and the Hugging Face Inc. team.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """A replication of DeBERTa.
 
 References:

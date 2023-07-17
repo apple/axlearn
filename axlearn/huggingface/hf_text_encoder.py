@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """HuggingFace text encoders."""
 import os
 from enum import Enum, unique

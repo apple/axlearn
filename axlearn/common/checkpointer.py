@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """A simple checkpointer.
 
 Checkpointer uses jax.experimental.array_serialization as the storage layer and provides:

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Box coder, for converting between image and anchor coordinates."""
 import enum
 from typing import Tuple

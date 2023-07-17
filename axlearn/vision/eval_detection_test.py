@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 # pylint: disable=no-self-use
 """Tests for eval_detection.py"""
 from typing import Dict, Tuple

@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/lingvo:
+# Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Base class of modules.
 
 Design choices:
@@ -65,6 +73,7 @@ def _generate_seed_from_name(name: str) -> np.int64:
 
     Args:
         name: A string.
+
     Returns:
         An integer seed in the range [0, 2**31 - 1).
     """

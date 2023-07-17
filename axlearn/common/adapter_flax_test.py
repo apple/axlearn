@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests adapter flax layers."""
 import jax.random
 from absl.testing import absltest

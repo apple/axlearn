@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Metrics."""
 from typing import Any, Dict, NamedTuple
 

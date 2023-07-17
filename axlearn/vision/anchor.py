@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/models:
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Anchor generator and labeler definition.
 
 Reference: https://github.com/tensorflow/models/blob/master/official/vision/ops/anchor.py.

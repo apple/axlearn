@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests correlation metrics."""
 # pylint: disable=no-self-use
 import evaluate

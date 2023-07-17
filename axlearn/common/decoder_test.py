@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests decoder layers."""
 # pylint: disable=no-self-use,too-many-branches
 from typing import Literal, Optional

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests RCNN sampler."""
 import jax
 import numpy as np

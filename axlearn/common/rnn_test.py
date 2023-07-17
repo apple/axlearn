@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests RNN layers."""
 # pylint: disable=no-self-use
 import jax.random

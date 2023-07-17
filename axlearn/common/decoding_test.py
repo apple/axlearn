@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/t5x:
+# Copyright 2023 The T5X Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Tests for beam_search.
 
 Adapted from: https://github.com/google-research/t5x/blob/main/t5x/decoding_test.py

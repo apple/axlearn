@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# facebookresearch/fairseq:
+# Copyright (c) Facebook, Inc. and its affiliates.
+# Licensed under the MIT license.
+
 """Input processing for masked language modeling.
 
 References:

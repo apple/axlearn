@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Encoder layers."""
 import math
 from typing import Dict, Optional, Tuple

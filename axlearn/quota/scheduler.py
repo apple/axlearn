@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Utilities to decide whether to schedule jobs according to resource constraints.
 
 The main API is `Scheduler`, which takes run-or-not verdicts for each job, based on available

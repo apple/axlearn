@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """An inference pipeline consists of an input, a runner, and an output writer."""
 from typing import Optional, Tuple
 

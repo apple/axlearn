@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Defines SpmdTrainer, a trainer that supports partitioning of computation and data with GSPMD."""
 import math
 import os.path

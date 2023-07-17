@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/google-research:
+# Copyright 2022 The Google Research Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# google-research/text-to-text-transfer-transformer:
+# Copyright 2021 The T5 Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Input processing as seen in T5.
 
 References:

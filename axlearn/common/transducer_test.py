@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests tranducer layers."""
 # pylint: disable=duplicate-code,invalid-name
 from typing import Tuple

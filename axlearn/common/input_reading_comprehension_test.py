@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests reading comprehension inputs."""
 import json
 import os

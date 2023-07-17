@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests BERT layers."""
 from contextlib import nullcontext
 from typing import Optional

@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# mlperf/training_results_v0.7:
+# Copyright 2018 The MLPerf Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Non-max Suppression example. This script does non-max suppression used in models like SSD.
 
 Code reference:

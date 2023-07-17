@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """HuggingFace sequence classification tests."""
 from typing import Any, Callable, Dict, Tuple, Type
 

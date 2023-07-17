@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """An implementation of EfficientDet prediction heads.
 
 Reference: https://arxiv.org/abs/1911.09070

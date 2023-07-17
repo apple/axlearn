@@ -1,9 +1,18 @@
+# Copyright © 2023 Apple Inc.
+#
+# huggingface/transformers:
+# Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# facebookresearch/fairseq:
+# Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
+# Licensed under the MIT license.
+
 """Generic text input processing utilities.
 
 Note that while tfds is used, Hugging Face datasets can be loaded using `huggingface:` prefix.
 See: https://www.tensorflow.org/datasets/community_catalog/huggingface
 """
-
 import functools
 import random
 from typing import Callable, Dict, List, Optional, Sequence, Union

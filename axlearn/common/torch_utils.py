@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Utilities relating to PyTorch."""
 from typing import Optional, Type, Union
 

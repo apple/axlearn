@@ -1,4 +1,14 @@
-"""Object detection input modules."""
+# Copyright © 2023 Apple Inc.
+#
+# tensorflow/models:
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
+"""Object detection input modules.
+
+Reference:
+https://github.com/tensorflow/models/blob/5a0305c41304e8136e2056c589ab490a807dffa0/official/vision/dataloaders/retinanet_input.py
+"""
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np

@@ -1,3 +1,10 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# Copyright (c) 2015-present, Facebook, Inc. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """A collection of distillation methods."""
 from typing import Dict, Optional, Tuple
 

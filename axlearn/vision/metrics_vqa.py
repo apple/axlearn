@@ -1,3 +1,16 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tylin/coco-caption:
+# Copyright (c) 2015, Xinlei Chen, Hao Fang, Tsung-Yi Lin, and Ramakrishna Vedantam.
+# All rights reserved.
+# Licensed under the BSD 2-Clause License.
+#
+# GT-Vision-Lab/VQA:
+# Copyright (c) 2014, Aishwarya Agrawal. All rights reserved.
+# Licensed under the BSD 2-Clause License.
+
 """Visual question answering accuracy between a prediction and ground truth answers.
 
 Original code VQA implementation:

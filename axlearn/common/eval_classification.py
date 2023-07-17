@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Classification evaluation pipeline."""
 from typing import Dict, NamedTuple, Optional, Sequence
 
