@@ -402,13 +402,14 @@ class KmeansVectorQuantizer(BaseQuantizer):
     https://arxiv.org/pdf/1910.05453.pdf.
     https://github.com/google/praxis/blob/179774fb688aa8fe048307d2184c9f2b338e935f/praxis/layers/quantizer.py#L342
     Current implementation does not apply inputs or codebook normalization.
-    # ToDo(zhiyunlu): support l2 normalization.
     """
 
     @config_class
     class Config(BaseQuantizer.Config):
         # Scale of the commitment loss.
         beta: Required[float] = REQUIRED
+        normalize_codebook: bool = False
+        normalize_inputs: bool = False
 
     @classmethod
     def default_config(cls) -> Config:
@@ -469,8 +470,16 @@ class KmeansVectorQuantizer(BaseQuantizer):
         quantized_inputs = quantize_by_nearest_neighbor(
             inputs=inputs_by_group,
             codebook=self.parameters["codebook"],
-            metric=SimilarityMetric.L2_DISTANCE,
+            metric=SimilarityMetric.DOT_PRODUCT
+            if cfg.normalize_codebook
+            else SimilarityMetric.L2_DISTANCE,
         )
+        if cfg.normalize_inputs:
+            inputs_by_group = l2_normalize(inputs_by_group, axis=-1, eps=1e-12)
+        if cfg.normalize_codebook:
+            self.parameters["codebook"] = l2_normalize(
+                self.parameters["codebook"], axis=-1, eps=1e-12
+            )
         quantized_inputs = _apply_paddings(outputs=quantized_inputs, paddings=paddings)
 
         # [batch_size, seq_len, input_dim].
@@ -482,13 +491,22 @@ class KmeansVectorQuantizer(BaseQuantizer):
         denominator = jnp.maximum(num_frames * input_dim, 1)
         # Eq.3 of VQ-VAE paper https://arxiv.org/pdf/1711.00937.pdf.
         # The codebook is optimized by kmeans_loss only.
+        inputs_to_loss = (
+            jnp.reshape(inputs_by_group, [batch_size, seq_len, -1])
+            if cfg.normalize_inputs
+            else inputs
+        )
         kmeans_loss = (
-            jnp.sum((q_vecs - jax.lax.stop_gradient(inputs)) ** 2 * (1 - paddings)[:, :, None])
+            jnp.sum(
+                (q_vecs - jax.lax.stop_gradient(inputs_to_loss)) ** 2 * (1 - paddings)[:, :, None]
+            )
             / denominator
         )
         # The inputs receive gradients from commitment_loss.
         commitment_loss = (
-            jnp.sum((inputs - jax.lax.stop_gradient(q_vecs)) ** 2 * (1 - paddings)[:, :, None])
+            jnp.sum(
+                (inputs_to_loss - jax.lax.stop_gradient(q_vecs)) ** 2 * (1 - paddings)[:, :, None]
+            )
             / denominator
         )
         total_loss = kmeans_loss + cfg.beta * commitment_loss
