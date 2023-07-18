@@ -338,3 +338,27 @@ def linear_schedule_with_warmup(
         ],
         start_step=[warmup_steps],
     )
+
+
+def ema_schedule(decay: float = 0.9999, *, warmup_steps: int = 1) -> ScheduleFn:
+    """Ema decay schedule with warm-up.
+
+    The ema decay is 0, 1/2, 2/3, 3/4, 4/5, ... during warm-up, and then is constant at decay.
+
+    Args:
+        decay: ema decay.
+        warmup_steps: The number of steps of the warm-up schedule.
+
+    Returns:
+        A ema decay schedule.
+
+    Raises:
+        ValueError: If warmup_steps <= 0.
+    """
+    if warmup_steps <= 0:
+        raise ValueError("warmup_steps must be > 0.")
+
+    def fn(step):
+        return step / (1.0 + step) * (step < warmup_steps) + decay * (step >= warmup_steps)
+
+    return fn

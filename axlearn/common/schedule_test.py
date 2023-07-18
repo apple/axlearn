@@ -209,6 +209,24 @@ class ScheduleTest(absltest.TestCase):
         self.assertAlmostEqual(fn(100), 0)
         self.assertAlmostEqual(fn(200), 1 - (101) ** (-0.8))
 
+    def test_ema_schedule(self):
+        warmup_steps = 5
+        s = jax.jit(
+            schedule.ema_schedule(
+                warmup_steps=warmup_steps,
+            )
+        )
+        expected_warmup = [0.0, 1.0 / 2, 2.0 / 3, 3.0 / 4, 4.0 / 5]
+        expected_decay = 0.9999
+        for step in range(10):
+            value = s(step)
+            if step < warmup_steps:
+                # Test warmup.
+                self.assertAlmostEqual(expected_warmup[step], value)
+            else:
+                # Test inverse sqrt schedule.
+                self.assertAlmostEqual(expected_decay, value)
+
 
 if __name__ == "__main__":
     absltest.main()
