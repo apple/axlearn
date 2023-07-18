@@ -531,6 +531,43 @@ class KmeansVectorQuantizerTest(TestCase):
             rtol=1e-6,
         )
 
+    @parameterized.product(norm_inputs=(False, True), norm_codebook=(False, True))
+    def test_forward_with_normalization(self, norm_inputs, norm_codebook):
+        num_groups = 2
+        vocab_size, dim_from_all_codebooks = 4, 4
+        codebook_dim = dim_from_all_codebooks // num_groups
+        layer: KmeansVectorQuantizer = (
+            KmeansVectorQuantizer.default_config()
+            .set(
+                name="test",
+                codebook_dim=codebook_dim,
+                codebook_size=vocab_size,
+                num_codebooks=num_groups,
+                beta=0.1,
+                normalize_inputs=norm_inputs,
+                normalize_codebook=norm_codebook,
+            )
+            .instantiate(parent=None)
+        )
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        # [vocab_size, num_codebooks, codebook_dim].
+        layer_params["codebook"] = jnp.reshape(_CODE_BOOK, [vocab_size, num_groups, codebook_dim])
+        batch_size, seq_len = 2, 4
+        inputs = jax.random.uniform(
+            jax.random.PRNGKey(1), shape=(batch_size, seq_len, dim_from_all_codebooks)
+        )
+        paddings = jnp.arange(seq_len)[None, :] >= jnp.array([2, 3])[:, None]
+        inputs = inputs * (1 - paddings)[:, :, None]
+        F(
+            layer,
+            inputs=dict(inputs=inputs, paddings=paddings),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(1),
+            state=layer_params,
+            drop_output_collections=[],
+        )
+        # TODO(xianzhi): add tests against reference code and tests for backward pass.
+
     def test_backward(self):
         batch_size, seq_len = 4, 6
         dim_from_all_codebooks, vocab_size, num_groups = 15, 4, 3
