@@ -100,17 +100,17 @@ class PreventParamBroadcastTest(TestCase):
     def test_broadcast_blocked(self):
         def load_broadcastable_params():
             linear_torch_layer = Linear(in_features=6, out_features=10)
-            linear_ajax_layer = (
+            linear_axlearn_layer = (
                 AxlearnLinear.default_config()
                 .set(input_dim=1, output_dim=1, name="axlearn")
                 .instantiate(parent=None)
             )
-            linear_ajax_layer_state = linear_ajax_layer.initialize_parameters_recursively(
+            linear_axlearn_layer_state = linear_axlearn_layer.initialize_parameters_recursively(
                 prng_key=jax.random.PRNGKey(0)
             )
 
             linear_torch_layer.load_axlearn_state_dict(
-                create_axlearn_state_dict(linear_ajax_layer_state)
+                create_axlearn_state_dict(linear_axlearn_layer_state)
             )
 
         self.assertRaises(ValueError, load_broadcastable_params)
