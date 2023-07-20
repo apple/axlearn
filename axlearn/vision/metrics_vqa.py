@@ -157,7 +157,7 @@ EN_VQA_PUNCT = [
 
 def _en_normalizer(answer: str) -> str:
     def _process_punctuation(answer: str) -> str:
-        # https://github.com/GT-Vision-Lab/VQA/blob/master/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L130
+        # https://github.com/GT-Vision-Lab/VQA/blob/a013f0043c1e2cdc995922dfe257f7149aa9af06/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L130 
         normalized_answer = answer
         for p in EN_VQA_PUNCT:
             if (p + " " in answer or " " + p in answer) or (
@@ -170,7 +170,7 @@ def _en_normalizer(answer: str) -> str:
         return normalized_answer
 
     def _process_digit_article(answer: str) -> str:
-        # https://github.com/GT-Vision-Lab/VQA/blob/master/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L142
+        # https://github.com/GT-Vision-Lab/VQA/blob/a013f0043c1e2cdc995922dfe257f7149aa9af06/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L142 
         normalized_answer = []
         temp_text = answer.lower().split()
         for word in temp_text:
@@ -193,7 +193,7 @@ def _en_normalizer(answer: str) -> str:
 
 
 def _get_preprocessor() -> Callable[[str], str]:
-    # https://github.com/GT-Vision-Lab/VQA/blob/master/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L94
+    # https://github.com/GT-Vision-Lab/VQA/blob/a013f0043c1e2cdc995922dfe257f7149aa9af06/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L94 
     def _preprocessor(answer: str):
         answer = answer.replace("\n", " ")
         answer = answer.replace("\t", " ")
@@ -241,7 +241,7 @@ def vqa_accuracy_score(*, answer: str, gt_answers: List[str], lang: str = "en") 
     # If all human annotators agree and produce an identical answer, expectation is exact match.
     # References:
     # https://github.com/GT-Vision-Lab/VQA/issues/14
-    # https://github.com/GT-Vision-Lab/VQA/blob/master/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L98
+    # https://github.com/GT-Vision-Lab/VQA/blob/a013f0043c1e2cdc995922dfe257f7149aa9af06/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L98 
     normalizer = _get_normalizer(lang=lang)
     if len(set(gt_answers)) > 1:
         answer = normalizer(answer)
