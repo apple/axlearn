@@ -1002,18 +1002,13 @@ def _create_dummy_state(prng_key, model_config=DummyModel.default_config(), use_
 
         return fn
 
+    trainer_state = trainer.trainer_state
     if use_ema:
-        trainer_state = trainer.trainer_state
-        new_learner_ema = trainer_state.learner.ema._replace(
+        trainer_state.learner["ema"] = trainer_state.learner["ema"]._replace(
             ema=jax.tree_util.tree_map(
-                lambda p: -jnp.ones_like(p), trainer.trainer_state.learner.ema.ema
+                lambda p: -jnp.ones_like(p), trainer.trainer_state.learner["ema"].ema
             )
         )
-        new_learner = trainer_state.learner._replace(ema=new_learner_ema)
-        trainer_state = trainer_state._replace(learner=new_learner)
-    else:
-        trainer_state = trainer.trainer_state
-
     return config_for_function(trainer_cfg_fn), Builder.State(
         step=0, trainer_state=trainer_state, built_keys=set()
     )
@@ -1176,18 +1171,15 @@ class EmaParamsConverterTest(TestCase):
             .instantiate(parent=None)
         )
         convert_state, _ = converter.target_to_source(target_state)
-        # Test that model and optimizer are empty.
-        self.assertNestedAllClose(
-            convert_state.trainer_state.learner.optimizer,
-            optax.EmptyState(),
-        )
+        # Test that model is empty.
         self.assertNestedAllClose(
             convert_state.trainer_state.model,
             optax.EmptyState(),
         )
+        self.assertEqual(["ema"], list(convert_state.trainer_state.learner.keys()))
         # Target model is copied to convert state ema.
         self.assertNestedAllClose(
-            convert_state.trainer_state.learner.ema.ema,
+            convert_state.trainer_state.learner["ema"].ema,
             target_state.trainer_state.model,
         )
 
@@ -1195,13 +1187,13 @@ class EmaParamsConverterTest(TestCase):
 
         self.assertNestedAllClose(
             output_state.trainer_state.model,
-            source_state.trainer_state.learner.ema.ema,
+            source_state.trainer_state.learner["ema"].ema,
         )
 
         if target_ema:
             self.assertNestedAllClose(
-                output_state.trainer_state.learner.ema,
-                source_state.trainer_state.learner.ema,
+                output_state.trainer_state.learner["ema"],
+                source_state.trainer_state.learner["ema"],
             )
 
 

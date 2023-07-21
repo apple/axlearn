@@ -37,7 +37,6 @@ from axlearn.common import utils
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import CheckpointValidationType
 from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.learner import LearnerState
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.state_builder import Builder, TensorStoreStateStorageBuilder
@@ -145,7 +144,7 @@ class _InferenceRunnerState(NamedTuple):
 
     prng_key: Union[jax.random.KeyArray, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
-    learner: Optional[Union[LearnerState, NestedPartitionSpec]] = None
+    learner: Optional[Union[NestedTensor, NestedPartitionSpec]] = None
 
 
 class InferenceRunner(Module):

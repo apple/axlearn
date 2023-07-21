@@ -9,7 +9,7 @@
 
 import dataclasses
 import enum
-from typing import NamedTuple, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import jax
 import optax
@@ -27,6 +27,7 @@ from axlearn.common.module import Module
 from axlearn.common.optimizer_base import NestedOptParam, PartitionedGradientTransformation
 from axlearn.common.optimizers import param_ema
 from axlearn.common.utils import (
+    NestedPartitionSpec,
     NestedTensor,
     Tensor,
     flatten_items,
@@ -34,11 +35,6 @@ from axlearn.common.utils import (
     register_per_param_settings,
     tree_paths,
 )
-
-
-class LearnerState(NamedTuple):
-    optimizer: optax.OptState
-    ema: optax.OptState
 
 
 class UpdateType(enum.Enum):
@@ -68,10 +64,6 @@ class UpdateType(enum.Enum):
     ALL_UPDATES = "all_updates"
 
 
-def update_type_from_rules(path: str, *, rules: Sequence[Tuple[str, UpdateType]]):
-    return match_regex_rules(path, rules=rules, default_value=UpdateType.ALL_UPDATES)
-
-
 def should_update_with_optimizers(update_type: UpdateType) -> bool:
     return update_type in (UpdateType.OPTIMIZERS, UpdateType.ALL_UPDATES)
 
@@ -80,11 +72,57 @@ def should_apply_state_updates(update_type: UpdateType) -> bool:
     return update_type in (UpdateType.STATE_UPDATES, UpdateType.ALL_UPDATES)
 
 
-class Learner(Module):
+class BaseLearner(Module):
+    """The base class of a learner."""
+
+    def init(self, model_params: NestedOptParam) -> NestedTensor:
+        """Initializes learner state."""
+        raise NotImplementedError(type(self))
+
+    def create_state_partition_specs(
+        self, model_param_specs: NestedParameterSpec
+    ) -> NestedPartitionSpec:
+        """Creates learner state partition_specs."""
+        raise NotImplementedError(type(self))
+
+    def update(
+        self, *, model_params: NestedOptParam, gradients: NestedTensor, state_updates: NestedTensor
+    ) -> NestedTensor:
+        """Computes `model_params` updates with `gradients` and `state_updates`.
+
+        Args:
+            model_params: A nested structure with OptParams as leaf nodes.
+            gradients: Gradients on model_params. Must have the same structure as `model_params`
+                except that the leaf values will be None for parameters not to be updated by
+                optimizers.
+            state_updates: The updated values for non-learnable parameters in `model_params`.
+                A potentially trimmed tree of `model_params`.
+
+        Returns:
+            The updated model parameters. The learner state updates will be placed in the output
+            collection's 'state_update' section.
+        """
+        raise NotImplementedError(type(self))
+
+    def should_update_with_optimizers(self, model_params: NestedOptParam) -> dict:
+        """Returns whether each parameter should be updated with the optimizers.
+
+        This is used in trainer to skip gradient computation in the backward pass.
+
+        Args:
+            model_params: A nested dict.
+
+        Returns:
+            A nested dict with the same structure as `model_params` with boolean leaf values.
+        """
+        raise NotImplementedError(type(self))
+
+
+class Learner(BaseLearner):
     """The learner module."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(BaseLearner.Config):
         """Configures Learner."""
 
         optimizer: Required[InstantiableConfig] = REQUIRED  # The optimizer config.
@@ -101,7 +139,7 @@ class Learner(Module):
 
         # Set ema.decay to enable Polyak averaging of model params.
         #
-        # The averages will be stored in LearnerState.ema and will have the same structure as
+        # The averages will be stored in self.state["ema"] and will have the same structure as
         # model_params.
         #
         # See optimizers.param_ema for more details.
@@ -118,14 +156,17 @@ class Learner(Module):
             raise ValueError(
                 f"optimizer must be a PartitionedGradientTransformation: {cfg.optimizer}"
             )
-        self.ema: PartitionedGradientTransformation = cfg.ema.instantiate()
+        if cfg.ema.decay is not None:
+            self.ema: PartitionedGradientTransformation = cfg.ema.instantiate()
 
-    def create_state_partition_specs(self, model_param_specs: NestedParameterSpec) -> LearnerState:
+    def create_state_partition_specs(
+        self, model_param_specs: NestedParameterSpec
+    ) -> NestedPartitionSpec:
         optimizer_model_param_specs = self._get_optimizer_model_params(model_param_specs)
-        return LearnerState(
-            optimizer=self.optimizer.partition(optimizer_model_param_specs),
-            ema=self.ema.partition(model_param_specs),
-        )
+        partition_state = dict(optimizer=self.optimizer.partition(optimizer_model_param_specs))
+        if self.config.ema.decay is not None:
+            partition_state["ema"] = self.ema.partition(model_param_specs)
+        return partition_state
 
     def _get_optimizer_model_params(self, model_params: NestedOptParam):
         should_update_params = self.should_update_with_optimizers(model_params)
@@ -135,13 +176,15 @@ class Learner(Module):
             model_params,
         )
 
-    def init(self, model_params: NestedOptParam) -> LearnerState:
+    def init(self, model_params: NestedOptParam) -> NestedTensor:
         update_types = self._update_types(model_params)
         register_per_param_settings(update_types, description="learner_update_type")
-        return LearnerState(
+        state = dict(
             optimizer=self.optimizer.init(self._get_optimizer_model_params(model_params)),
-            ema=self.ema.init(model_params),
         )
+        if self.config.ema.decay is not None:
+            state["ema"] = self.ema.init(model_params)
+        return state
 
     def _update_types(self, tree: dict) -> dict:
         cfg = self.config
@@ -186,7 +229,7 @@ class Learner(Module):
         optimizer_model_params = self._get_optimizer_model_params(model_params)
         optimizer_parameter_updates, optimizer_state = self.optimizer.update(
             gradients,
-            state=self.state.optimizer,
+            state=self.state["optimizer"],
             params=optimizer_model_params,
         )
         self.add_state_update("optimizer", optimizer_state)
@@ -228,16 +271,17 @@ class Learner(Module):
             state_updates,
         )
         _apply_updates(updated_model_params, filtered_state_updates)
-        _, ema_state = self.ema.update(
-            updates={},
-            state=self.state.ema,
-            params=jax.tree_util.tree_map(
-                lambda opt_param, value: dataclasses.replace(opt_param, value=value),
-                model_params,
-                updated_model_params,
-            ),
-        )
-        self.add_state_update("ema", ema_state)
+        if cfg.ema.decay is not None:
+            _, ema_state = self.ema.update(
+                updates={},
+                state=self.state["ema"],
+                params=jax.tree_util.tree_map(
+                    lambda opt_param, value: dataclasses.replace(opt_param, value=value),
+                    model_params,
+                    updated_model_params,
+                ),
+            )
+            self.add_state_update("ema", ema_state)
         return updated_model_params
 
 

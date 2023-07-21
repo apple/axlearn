@@ -20,7 +20,7 @@ from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import Checkpointer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.evaler import SpmdEvaler
-from axlearn.common.learner import Learner, LearnerState, NestedOptParam
+from axlearn.common.learner import Learner, NestedOptParam
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.optimizer_base import OptParam
@@ -57,7 +57,7 @@ def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
 class _TrainerState(NamedTuple):
     prng_key: Union[jax.random.KeyArray, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
-    learner: Union[LearnerState, NestedPartitionSpec]
+    learner: Union[NestedTensor, NestedPartitionSpec]
 
 
 # pylint: disable-next=too-many-instance-attributes
@@ -229,9 +229,9 @@ class SpmdTrainer(Module):
 
     def model_params_for_eval(self):
         state = self.trainer_state
-        if state.learner.ema:
+        if state.learner["ema"]:
             logging.log_first_n(logging.INFO, "Using model parameter EMA for eval", 10)
-            return state.learner.ema.ema
+            return state.learner["ema"].ema
         return state.model
 
     def _step_log(self, msg, *args, **kwargs):
@@ -728,7 +728,7 @@ class SpmdTrainer(Module):
         updated_state = _TrainerState(
             prng_key=new_prng_key,
             model=updated_model_params,
-            learner=LearnerState(**learner_output_collection.state_updates),
+            learner=learner_output_collection.state_updates,
         )
         # TODO(ruoming): only retrieve summaries when necessary.
         summaries = dict(
