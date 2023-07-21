@@ -373,6 +373,7 @@ class TensorStoreStateStorageBuilder(Builder):
     class Config(Builder.Config):
         dir: Required[str] = REQUIRED
         validation: CheckpointValidationType = CheckpointValidationType.EXACT
+        concurrent_gb: int = 32
 
     @classmethod
     def spec_to_config(cls, spec: str) -> Config:
@@ -398,6 +399,7 @@ class TensorStoreStateStorageBuilder(Builder):
             state=state.trainer_state,
             ckpt_dir=cfg.dir,
             validation=cfg.validation,
+            concurrent_gb=cfg.concurrent_gb,
         )
         built_keys = state.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
         return Builder.State(step=step, trainer_state=restored_state, built_keys=built_keys)
