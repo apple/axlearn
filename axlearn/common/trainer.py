@@ -229,7 +229,7 @@ class SpmdTrainer(Module):
 
     def model_params_for_eval(self):
         state = self.trainer_state
-        if state.learner["ema"]:
+        if self.config.learner.ema.decay is not None:
             logging.log_first_n(logging.INFO, "Using model parameter EMA for eval", 10)
             return state.learner["ema"].ema
         return state.model
