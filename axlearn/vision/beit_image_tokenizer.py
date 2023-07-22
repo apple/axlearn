@@ -104,7 +104,7 @@ class BEiTImageTokenizerMapping(BaseLayer):
 
     Backbone output (model_dim) -> Linear1 (model_dim) -> tanh -> Linear2 (dim=32)
 
-    Ref: https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_vqkd.py#L87-L91
+    https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_vqkd.py#L87-L91
     """
 
     @config_class
@@ -114,7 +114,7 @@ class BEiTImageTokenizerMapping(BaseLayer):
         # The input_dim for BEiT-3 is ViT model_dim.
         input_dim: Required[int] = REQUIRED
         # The output_dim for BEiT-3 is 32.
-        # Ref: https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_vqkd.py#L34
+        # https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_vqkd.py#L34
         output_dim: Required[int] = REQUIRED
         linear1: Linear.Config = Linear.default_config()
         linear2: Linear.Config = Linear.default_config()
@@ -148,7 +148,7 @@ class BEiTImageTokenizerMapping(BaseLayer):
 class BEiTImageVQKD(BaseLayer):
     """Image encoder for BEiTImageTokenizer.
 
-    Ref: https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_vqkd.py#L87-L91
+    https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_vqkd.py#L87-L91
     """
 
     @config_class
