@@ -86,7 +86,7 @@ def _convert_translation_to_transform(translations: tf.Tensor) -> tf.Tensor:
 
     Returns:
         A transformation matrix of shape (num_images, 8) to be used by
-        https://github.com/keras-team/keras/blob/v2.9.0/keras/layers/preprocessing/image_preprocessing.py#L898-L985
+        https://github.com/keras-team/keras/blob/07e13740fd181fc3ddec7d9a594d8a08666645f6/keras/layers/preprocessing/image_preprocessing.py#L898-L985
 
     Raises:
         TypeError: If
@@ -129,7 +129,7 @@ def _convert_angles_to_transform(
 
     Returns:
         A transformation matrix of shape (num_images, 8) to be used by
-        https://github.com/keras-team/keras/blob/v2.9.0/keras/layers/preprocessing/image_preprocessing.py#L898-L985
+        https://github.com/keras-team/keras/blob/07e13740fd181fc3ddec7d9a594d8a08666645f6/keras/layers/preprocessing/image_preprocessing.py#L898-L985
 
     Raises:
         TypeError: If `angles` is not rank 0 or 1.
@@ -798,7 +798,7 @@ class MixupAndCutmix:
     - Cutmix: https://arxiv.org/abs/1905.04899
 
     Code reference:
-    https://github.com/tensorflow/models/blob/master/official/vision/ops/augment.py#L2240-L2401
+    https://github.com/tensorflow/models/blob/983109490fcdd06bcea7d4c60f6a8a4b943aceda/official/vision/ops/augment.py#L2240-L2401
     https://github.com/rwightman/pytorch-image-models
     """
 

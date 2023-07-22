@@ -88,10 +88,9 @@ t5x = [
 # This defines the import name. https://flit.pypa.io/en/stable/pyproject_toml.html#module-section
 name = "axlearn"
 
-# TODO(markblee): Enable once CLI is migrated.
-# [project.scripts]
+[project.scripts]
 # Entrypoint for CLI.
-# axlearn = "axlearn.cli:main"
+axlearn = "axlearn.cli:main"
 
 [tool.pylint.basic]
 # A comma-separated list of package or module names from where C extensions may
