@@ -32,7 +32,6 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
-from axlearn.common.learner import LearnerState
 from axlearn.common.module import Module
 from axlearn.common.optimizer_base import OptStateSpec
 from axlearn.common.optimizers import ParamEmaState
@@ -459,23 +458,18 @@ class BertSequenceClassificationHeadConverter(BaseConverterFromPretrainedModel):
 
     def source_to_target(self, source: Builder.State, aux: Any) -> Builder.State:
         """Produces state compatible with the new classification head."""
-        restored_state = jax.tree_util.tree_map(
+        restored_model = jax.tree_util.tree_map(
             lambda s, t: self._swap_heads(s, t) if self._is_bert_lm_head(s) else s,
-            source.trainer_state,
-            aux.trainer_state,
-            is_leaf=self._is_leaf,
+            source.trainer_state.model,
+            aux.trainer_state.model,
         )
+        restored_state = source.trainer_state._replace(model=restored_model)
         # Reset old optimizer state following fairseq, e.g:
         # https://github.com/facebookresearch/fairseq/blob/acd9a53607d1e5c64604e88fc9601d0ee56fd6f1/examples/roberta/config/finetuning/cola.yaml#L21
         # https://github.com/facebookresearch/fairseq/blob/10b797a44f1d724465cd66ce1bb92d6b8fa052eb/fairseq/trainer.py#L587
         restored_state = restored_state._replace(learner=aux.trainer_state.learner)
         built_keys = source.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
         return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
-
-    def _is_leaf(self, state) -> bool:
-        # We do not recurse into the learner state, since the arity of the optimizer tuple
-        # could be different. We will replace the learner state with aux learner state anyways.
-        return self._is_bert_lm_head(state) or isinstance(state, LearnerState)
 
     # pylint: disable-next=no-self-use
     def _is_bert_lm_head(self, state: Dict[str, Any]) -> bool:
@@ -784,7 +778,7 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
         # Prune model and reset learner and prng_key.
         pruned_trainer_state = source.trainer_state._replace(
             model=pruned_model,
-            learner=LearnerState(optimizer={}, ema={}),
+            learner={},
             prng_key={},
         )
         logging.info(
@@ -949,8 +943,8 @@ class EmaParamsConverter(Converter):
             ema=clone_tree(target.trainer_state.model),
         )
         source_trainer_state = target.trainer_state._replace(
-            # Empty optimizer.
-            learner=LearnerState(optimizer=optax.EmptyState(), ema=ema_state),
+            # Only keep ema state.
+            learner=dict(ema=ema_state),
             # Empty model.
             model={},
         )
@@ -966,19 +960,17 @@ class EmaParamsConverter(Converter):
         """Copies the source ema weight into target model and ema if target has a non-empty ema."""
         # Load model weight from learner ema.
         restored_state = aux.trainer_state._replace(
-            model=source.trainer_state.learner.ema.ema,
+            model=source.trainer_state.learner["ema"].ema,
             prng_key=source.trainer_state.prng_key,
         )
         if (
             aux.trainer_state.learner is not None
-            and aux.trainer_state.learner.ema.ema is not optax.EmptyState()
+            and aux.trainer_state.learner["ema"].ema is not optax.EmptyState()
         ):
             # Load ema weight to target ema.
-            restored_ema = restored_state.learner.ema._replace(
-                ema=source.trainer_state.learner.ema.ema,
+            restored_state.learner["ema"] = restored_state.learner["ema"]._replace(
+                ema=source.trainer_state.learner["ema"].ema,
             )
-            restored_learner = restored_state.learner._replace(ema=restored_ema)
-            restored_state = restored_state._replace(learner=restored_learner)
 
         built_keys = aux.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
         return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
@@ -996,10 +988,9 @@ class PruneEmaStateBuilder(Builder):
 
     def __call__(self, state: Builder.State) -> Builder.State:
         # Remove learner ema state.
+        del state.trainer_state.learner["ema"]
         prune_state = state.trainer_state._replace(
-            learner=LearnerState(
-                optimizer=state.trainer_state.learner.optimizer, ema=optax.EmptyState()
-            ),
+            learner=state.trainer_state.learner,
         )
         built_keys = state.built_keys.union(set(key for key, _ in flatten_items(prune_state)))
         return Builder.State(

@@ -411,7 +411,7 @@ class TrainerTest(test_utils.TestCase):
         if ema_decay is None:
             self.assertIs(trainer.model_params_for_eval(), trainer.trainer_state.model)
         else:
-            self.assertIs(trainer.model_params_for_eval(), trainer.trainer_state.learner.ema.ema)
+            self.assertIs(trainer.model_params_for_eval(), trainer.trainer_state.learner["ema"].ema)
         # Check we did the compute in step_dtype.
         self.assertEqual(output_a["loss"].dtype, step_dtype or cfg.model.dtype)
         # Check that we also did the eval step in step_dtype.

@@ -10,7 +10,7 @@ from jax import numpy as jnp
 from axlearn.common import schedule
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import config_for_function
-from axlearn.common.learner import Learner, LearnerState, UpdateType, should_update_with_optimizers
+from axlearn.common.learner import Learner, UpdateType, should_update_with_optimizers
 from axlearn.common.module import functional as F
 from axlearn.common.optimizer_base import OptParam, OptStateSpec
 from axlearn.common.optimizers import (
@@ -61,42 +61,37 @@ class LearnerTest(TestCase):
                 factorization=None,
             ),
         )
-        if ema_decay is None:
-            expected_ema_state_spec = optax.EmptyState()
-        else:
-            expected_ema_state_spec = ParamEmaState(
+        expected_state_spec = dict(
+            optimizer=(
+                # clip_by_global_norm.
+                optax.EmptyState(),
+                # sgd.
+                (
+                    optax.TraceState(
+                        trace=dict(
+                            v=OptStateSpec(
+                                dtype=jnp.float32, shape=(4,), mesh_axes=PartitionSpec("model")
+                            ),
+                            c=OptStateSpec(dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()),
+                        ),
+                    ),
+                    AddDecayedWeightsState(count=None),
+                    optax.ScaleByScheduleState(
+                        count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec())
+                    ),
+                ),
+            ),
+        )
+        if ema_decay:
+            expected_state_spec["ema"] = ParamEmaState(
                 count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
                 ema=dict(
                     v=OptStateSpec(dtype=jnp.float32, shape=(4,), mesh_axes=PartitionSpec("model")),
                     c=OptStateSpec(dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()),
                 ),
             )
-
-        self.assertSequenceEqual(
-            LearnerState(
-                optimizer=(
-                    # clip_by_global_norm.
-                    optax.EmptyState(),
-                    # sgd.
-                    (
-                        optax.TraceState(
-                            trace=dict(
-                                v=OptStateSpec(
-                                    dtype=jnp.float32, shape=(4,), mesh_axes=PartitionSpec("model")
-                                ),
-                                c=OptStateSpec(
-                                    dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()
-                                ),
-                            ),
-                        ),
-                        AddDecayedWeightsState(count=None),
-                        optax.ScaleByScheduleState(
-                            count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec())
-                        ),
-                    ),
-                ),
-                ema=expected_ema_state_spec,
-            ),
+        self.assertEqual(
+            expected_state_spec,
             learner.create_state_partition_specs(param_specs),
         )
 
@@ -152,27 +147,25 @@ class LearnerTest(TestCase):
             summaries,
         )
         state_updates = output_collection.state_updates
-        if ema_decay is None:
-            expected_ema_updates = optax.EmptyState()
-        else:
-            expected_ema_updates = ParamEmaState(
+        expected_state_update = {
+            "optimizer": (
+                # clip_by_global_norm.
+                optax.EmptyState(),
+                # sgd.
+                (
+                    optax.TraceState(trace=grads),
+                    optax.EmptyState(),
+                    optax.ScaleByScheduleState(count=jnp.ones([], dtype=jnp.int32)),
+                ),
+            ),
+        }
+        if ema_decay:
+            expected_state_update["ema"] = ParamEmaState(
                 count=1,
                 ema=jax.tree_util.tree_map(lambda v: v * (1 - ema_decay), updated_params),
             )
         self.assertNestedAllClose(
-            {
-                "optimizer": (
-                    # clip_by_global_norm.
-                    optax.EmptyState(),
-                    # sgd.
-                    (
-                        optax.TraceState(trace=grads),
-                        optax.EmptyState(),
-                        optax.ScaleByScheduleState(count=jnp.ones([], dtype=jnp.int32)),
-                    ),
-                ),
-                "ema": expected_ema_updates,
-            },
+            expected_state_update,
             state_updates,
         )
 
@@ -236,8 +229,8 @@ class LearnerTest(TestCase):
                 )
             else:
                 sgd_trace[k] = None
-        self.assertSequenceEqual(
-            LearnerState(
+        self.assertEqual(
+            dict(
                 optimizer=(
                     # clip_by_global_norm.
                     optax.EmptyState(),
@@ -250,7 +243,6 @@ class LearnerTest(TestCase):
                         ),
                     ),
                 ),
-                ema=optax.EmptyState(),
             ),
             learner.create_state_partition_specs(param_specs),
         )
@@ -335,7 +327,6 @@ class LearnerTest(TestCase):
                         optax.ScaleByScheduleState(count=jnp.ones([], dtype=jnp.int32)),
                     ),
                 ),
-                "ema": optax.EmptyState(),
             },
             state_updates,
         )
