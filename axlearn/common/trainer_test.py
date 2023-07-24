@@ -721,6 +721,51 @@ class TrainerTest(test_utils.TestCase):
             # `save_input_iterator` for models without breaking backwards compatibility.
             self.assertEqual(6, trainer2.restore_checkpoint())
 
+    def test_composite_learner(self):
+        """Tests composite learner with two sub learners for weight/bias respectively."""
+        cfg = SpmdTrainer.default_config().set(name="test_trainer")
+        cfg.mesh_axis_names = ("data", "model")
+        cfg.mesh_shape = (1, 1)
+        cfg.dir = tempfile.mkdtemp()
+        cfg.model = DummyModel.default_config().set(dtype=jnp.float32)
+        cfg.input = DummyInput.default_config()
+        opt1_cfg = config_for_function(optimizers.sgd_optimizer).set(
+            learning_rate=0.1,
+            decouple_weight_decay=True,
+            momentum=0.9,
+            weight_decay=0,
+        )
+        opt2_cfg = config_for_function(optimizers.adamw_optimizer).set(
+            learning_rate=1.0, b1=0.9, b2=0.95, eps=1e-6
+        )
+        learner_rules = [(".*weight.*", "weight"), (".*bias.*", "bias")]
+
+        cfg.learner = learner.CompositeLearner.default_config().set(
+            rules=learner_rules,
+            learners={
+                "weight": learner.Learner.default_config().set(optimizer=opt1_cfg),
+                "bias": learner.Learner.default_config().set(optimizer=opt2_cfg),
+            },
+        )
+        evaler_cfg = SpmdEvaler.default_config().set(
+            input=DummyInput.default_config().set(total_num_batches=2),
+        )
+        evaler_cfg.summary_writer.vlog = 5
+        cfg.evalers = dict(eval_dummy=evaler_cfg)
+        cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(n=5)
+        cfg.summary_writer.vlog = 5
+        cfg.max_step = 12
+        trainer: SpmdTrainer = cfg.instantiate(parent=None)
+        with trainer.mesh():
+            trainer.init(prng_key=jax.random.PRNGKey(123))
+            init_params = trainer.trainer_state.model
+            trainer.run(prng_key=jax.random.PRNGKey(123))
+            updated_params = trainer.trainer_state.model
+            for (path, init_p), (_, updated_p) in zip(
+                flatten_items(init_params), flatten_items(updated_params)
+            ):
+                self.assertGreater(np.max(np.abs(updated_p - init_p)), 1e-3, msg=path)
+
 
 if __name__ == "__main__":
     absltest.main()
