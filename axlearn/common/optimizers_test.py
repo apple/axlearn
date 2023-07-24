@@ -14,11 +14,10 @@ from jax import numpy as jnp
 
 from axlearn.common import schedule
 from axlearn.common.base_layer import FactorizationSpec, NestedParameterSpec, ParameterSpec
-from axlearn.common.config import config_for_function, maybe_instantiate
+from axlearn.common.config import config_for_function
 from axlearn.common.optimizer_base import OptParam, OptStateSpec, PartitionedGradientTransformation
 from axlearn.common.optimizers import (
     ParamEmaState,
-    SubOptimizerRule,
     adafactor_optimizer,
     adam_optimizer,
     adamw_optimizer,
@@ -26,7 +25,6 @@ from axlearn.common.optimizers import (
     chain,
     clip_by_block_rms,
     clip_by_global_norm,
-    composite,
     copy_partition,
     ema,
     l2_regularizer,
@@ -947,140 +945,6 @@ class OptimizerTest(TestCase):
                     jax.tree_util.tree_map(lambda p: p.value, params),
                     new_state.ema,
                 )
-
-    def test_composite(self):
-        encoder_lr = 0.1
-        opt1_cfg = config_for_function(sgd_optimizer).set(
-            learning_rate=encoder_lr, decouple_weight_decay=True, weight_decay=1.0
-        )
-        opt2_cfg = adam_optimizer(
-            learning_rate=0.0, b1=0.9, b2=0.99, eps=1e-5, l2_regularizer_weight=1.0
-        )
-        optimizer_rules = [
-            SubOptimizerRule(param_regex="encoder.*", optimizer=opt1_cfg),
-            SubOptimizerRule(param_regex="decoder.*", optimizer=opt2_cfg),
-        ]
-        optimizer = composite(optimizer_rules=optimizer_rules)
-        opt1 = maybe_instantiate(opt1_cfg)
-        opt2 = maybe_instantiate(opt2_cfg)
-        param_specs = dict(
-            encoder=dict(
-                weight=ParameterSpec(
-                    dtype=jnp.float32,
-                    shape=[3, 4],
-                    factorization=FactorizationSpec(axes=("row", "col")),
-                    mesh_axes=PartitionSpec("data", "model"),
-                ),
-                bias=ParameterSpec(
-                    dtype=jnp.float32,
-                    shape=[4],
-                    factorization=None,
-                    mesh_axes=PartitionSpec("model"),
-                ),
-            ),
-            decoder=dict(
-                head=ParameterSpec(
-                    dtype=jnp.float32,
-                    shape=[2, 3],
-                    factorization=FactorizationSpec(axes=("row", "col")),
-                    mesh_axes=PartitionSpec("model", None),
-                ),
-                scalar=ParameterSpec(
-                    dtype=jnp.float32,
-                    shape=[],
-                    factorization=None,
-                    mesh_axes=PartitionSpec(),
-                ),
-            ),
-        )
-        opt_specs = optimizer.partition(param_specs)
-
-        # Check the composite partition spec.
-        opt1_specs = opt1.partition(param_specs)
-        opt2_specs = opt2.partition(param_specs)
-
-        def _check_mask_state(spec):
-            self.assertEqual(optax.MaskedNode, spec)
-
-        # sgd states.
-        # pytype: disable=attribute-error
-        self.assertEqual(
-            opt1_specs[0].trace["encoder"],
-            opt_specs.inner_states["encoder.*"].inner_state[0].trace["encoder"],
-        )
-        jax.tree_util.tree_map(
-            _check_mask_state, opt_specs.inner_states["encoder.*"].inner_state[0].trace["decoder"]
-        )
-        self.assertSequenceEqual(
-            opt1_specs[1:], opt_specs.inner_states["encoder.*"].inner_state[1:]
-        )
-
-        # adam states.
-        self.assertEqual(
-            opt2_specs[1].mu["decoder"],
-            opt_specs.inner_states["decoder.*"].inner_state[1].mu["decoder"],
-        )
-        jax.tree_util.tree_map(
-            _check_mask_state, opt_specs.inner_states["decoder.*"].inner_state[1].mu["encoder"]
-        )
-        self.assertEqual(
-            opt2_specs[1].nu["decoder"],
-            opt_specs.inner_states["decoder.*"].inner_state[1].nu["decoder"],
-        )
-        jax.tree_util.tree_map(
-            _check_mask_state, opt_specs.inner_states["decoder.*"].inner_state[1].nu["encoder"]
-        )
-        self.assertEqual(
-            opt2_specs[1].count, opt_specs.inner_states["decoder.*"].inner_state[1].count
-        )
-        self.assertEqual(opt2_specs[0], opt_specs.inner_states["decoder.*"].inner_state[0])
-        self.assertEqual(opt2_specs[-1], opt_specs.inner_states["decoder.*"].inner_state[-1])
-        # pytype: enable=attribute-error
-
-        params = jax.tree_util.tree_map(
-            lambda spec: OptParam(
-                value=jnp.ones(spec.shape, dtype=spec.dtype),
-                factorization_spec=spec.factorization,
-                weight_decay_scale=1,
-            ),
-            param_specs,
-        )
-        states = optimizer.init(params)
-        grads = jax.tree_map(jnp.ones_like, opt_param_values(params))
-        updates, _ = optimizer.update(grads, state=states, params=params)
-
-        self.assertNestedAllClose(
-            updates["decoder"],
-            jax.tree_util.tree_map(lambda p: jnp.zeros(p.shape), params["decoder"]),
-        )
-        self.assertNestedAllClose(
-            updates["encoder"],
-            # gradient and weight decay.
-            jax.tree_util.tree_map(
-                lambda p: -jnp.ones(p.shape) * encoder_lr * 2, params["encoder"]
-            ),
-        )
-        updated_value = optax.apply_updates(opt_param_values(params), updates)
-        self.assertNestedAllClose(
-            updated_value["decoder"],
-            jax.tree_util.tree_map(lambda p: jnp.ones(p.shape), params["decoder"]),
-        )
-        self.assertNestedAllClose(
-            updated_value["encoder"],
-            jax.tree_util.tree_map(
-                lambda p: jnp.ones(p.shape) * (1 - encoder_lr * 2), params["encoder"]
-            ),
-        )
-
-        def _check_spec(spec: OptStateSpec, state: Tensor):
-            self.assertEqual(spec.dtype, state.dtype)
-            self.assertSequenceEqual(spec.shape, state.shape)
-            self.assertIsInstance(state, Tensor)
-            if spec.mesh_axes is None:
-                return
-            self.assertEqual(len(spec.mesh_axes), state.ndim)
-
-        jax.tree_util.tree_map(_check_spec, opt_specs, states)
 
 
 if __name__ == "__main__":

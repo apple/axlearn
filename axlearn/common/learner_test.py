@@ -1,6 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests learner."""
+import re
+
 import jax.nn
 import numpy as np
 import optax
@@ -8,21 +10,27 @@ from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
 from axlearn.common import schedule
-from axlearn.common.base_layer import ParameterSpec
+from axlearn.common.base_layer import FactorizationSpec, ParameterSpec
 from axlearn.common.config import config_for_function
-from axlearn.common.learner import Learner, LearnerState, UpdateType, should_update_with_optimizers
+from axlearn.common.learner import (
+    CompositeLearner,
+    Learner,
+    UpdateType,
+    should_update_with_optimizers,
+)
 from axlearn.common.module import functional as F
 from axlearn.common.optimizer_base import OptParam, OptStateSpec
 from axlearn.common.optimizers import (
     AddDecayedWeightsState,
     ParamEmaState,
     adafactor_optimizer,
+    adam_optimizer,
     chain,
     clip_by_global_norm,
     sgd_optimizer,
 )
 from axlearn.common.test_utils import TestCase
-from axlearn.common.utils import PartitionSpec, VDict, match_regex_rules
+from axlearn.common.utils import PartitionSpec, VDict, flatten_items, match_regex_rules, tree_paths
 
 
 class LearnerTest(TestCase):
@@ -61,42 +69,37 @@ class LearnerTest(TestCase):
                 factorization=None,
             ),
         )
-        if ema_decay is None:
-            expected_ema_state_spec = optax.EmptyState()
-        else:
-            expected_ema_state_spec = ParamEmaState(
+        expected_state_spec = dict(
+            optimizer=(
+                # clip_by_global_norm.
+                optax.EmptyState(),
+                # sgd.
+                (
+                    optax.TraceState(
+                        trace=dict(
+                            v=OptStateSpec(
+                                dtype=jnp.float32, shape=(4,), mesh_axes=PartitionSpec("model")
+                            ),
+                            c=OptStateSpec(dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()),
+                        ),
+                    ),
+                    AddDecayedWeightsState(count=None),
+                    optax.ScaleByScheduleState(
+                        count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec())
+                    ),
+                ),
+            ),
+        )
+        if ema_decay:
+            expected_state_spec["ema"] = ParamEmaState(
                 count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
                 ema=dict(
                     v=OptStateSpec(dtype=jnp.float32, shape=(4,), mesh_axes=PartitionSpec("model")),
                     c=OptStateSpec(dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()),
                 ),
             )
-
-        self.assertSequenceEqual(
-            LearnerState(
-                optimizer=(
-                    # clip_by_global_norm.
-                    optax.EmptyState(),
-                    # sgd.
-                    (
-                        optax.TraceState(
-                            trace=dict(
-                                v=OptStateSpec(
-                                    dtype=jnp.float32, shape=(4,), mesh_axes=PartitionSpec("model")
-                                ),
-                                c=OptStateSpec(
-                                    dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()
-                                ),
-                            ),
-                        ),
-                        AddDecayedWeightsState(count=None),
-                        optax.ScaleByScheduleState(
-                            count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec())
-                        ),
-                    ),
-                ),
-                ema=expected_ema_state_spec,
-            ),
+        self.assertEqual(
+            expected_state_spec,
             learner.create_state_partition_specs(param_specs),
         )
 
@@ -152,27 +155,25 @@ class LearnerTest(TestCase):
             summaries,
         )
         state_updates = output_collection.state_updates
-        if ema_decay is None:
-            expected_ema_updates = optax.EmptyState()
-        else:
-            expected_ema_updates = ParamEmaState(
+        expected_state_update = {
+            "optimizer": (
+                # clip_by_global_norm.
+                optax.EmptyState(),
+                # sgd.
+                (
+                    optax.TraceState(trace=grads),
+                    optax.EmptyState(),
+                    optax.ScaleByScheduleState(count=jnp.ones([], dtype=jnp.int32)),
+                ),
+            ),
+        }
+        if ema_decay:
+            expected_state_update["ema"] = ParamEmaState(
                 count=1,
                 ema=jax.tree_util.tree_map(lambda v: v * (1 - ema_decay), updated_params),
             )
         self.assertNestedAllClose(
-            {
-                "optimizer": (
-                    # clip_by_global_norm.
-                    optax.EmptyState(),
-                    # sgd.
-                    (
-                        optax.TraceState(trace=grads),
-                        optax.EmptyState(),
-                        optax.ScaleByScheduleState(count=jnp.ones([], dtype=jnp.int32)),
-                    ),
-                ),
-                "ema": expected_ema_updates,
-            },
+            expected_state_update,
             state_updates,
         )
 
@@ -236,8 +237,8 @@ class LearnerTest(TestCase):
                 )
             else:
                 sgd_trace[k] = None
-        self.assertSequenceEqual(
-            LearnerState(
+        self.assertEqual(
+            dict(
                 optimizer=(
                     # clip_by_global_norm.
                     optax.EmptyState(),
@@ -250,7 +251,6 @@ class LearnerTest(TestCase):
                         ),
                     ),
                 ),
-                ema=optax.EmptyState(),
             ),
             learner.create_state_partition_specs(param_specs),
         )
@@ -335,7 +335,6 @@ class LearnerTest(TestCase):
                         optax.ScaleByScheduleState(count=jnp.ones([], dtype=jnp.int32)),
                     ),
                 ),
-                "ema": optax.EmptyState(),
             },
             state_updates,
         )
@@ -483,6 +482,371 @@ class LearnerTest(TestCase):
             },
             output_collection.summaries,
         )
+
+
+class CompositeLearnerTest(TestCase):
+    @parameterized.parameters(None, 0.9)
+    # pylint: disable-next=too-many-statements
+    def test_learner(self, ema_decay):
+        """Sets up two sub learners for encoder/decoder respectively."""
+        encoder_lr = 0.1
+        opt1_cfg = config_for_function(sgd_optimizer).set(
+            learning_rate=encoder_lr, decouple_weight_decay=True, weight_decay=1.0
+        )
+        opt2_cfg = config_for_function(adam_optimizer).set(
+            learning_rate=0.0, b1=0.9, b2=0.99, eps=1e-5, l2_regularizer_weight=1.0
+        )
+        learner_rules = [(".*encoder.*", "encoder"), (".*decoder.*", "decoder")]
+
+        cfg = CompositeLearner.default_config().set(
+            name="test",
+            rules=learner_rules,
+            learners={
+                "encoder": Learner.default_config().set(
+                    optimizer=opt1_cfg, enable_per_variable_summaries=True
+                ),
+                "decoder": Learner.default_config().set(
+                    optimizer=opt2_cfg, enable_per_variable_summaries=False
+                ),
+            },
+        )
+        cfg.ema.decay = ema_decay
+        learner: CompositeLearner = cfg.instantiate(parent=None)
+
+        param_specs = dict(
+            encoder=dict(
+                weight=ParameterSpec(
+                    dtype=jnp.float32,
+                    shape=[3, 4],
+                    factorization=FactorizationSpec(axes=("row", "col")),
+                    mesh_axes=PartitionSpec("data", "model"),
+                ),
+                bias=ParameterSpec(
+                    dtype=jnp.float32,
+                    shape=[4],
+                    factorization=None,
+                    mesh_axes=PartitionSpec("model"),
+                ),
+                mean=ParameterSpec(
+                    dtype=jnp.float32,
+                    shape=[2],
+                    factorization=None,
+                    mesh_axes=PartitionSpec("model"),
+                ),
+            ),
+            decoder=dict(
+                head=ParameterSpec(
+                    dtype=jnp.float32,
+                    shape=[2, 3],
+                    factorization=FactorizationSpec(axes=("row", "col")),
+                    mesh_axes=PartitionSpec("model", None),
+                ),
+                scalar=ParameterSpec(
+                    dtype=jnp.float32,
+                    shape=[],
+                    factorization=None,
+                    mesh_axes=PartitionSpec(),
+                ),
+            ),
+        )
+
+        # Test partition.
+        partition_state = learner.create_state_partition_specs(param_specs)
+
+        # Expected specs from sub optimizer.
+        opt1_specs = opt1_cfg.instantiate().partition(param_specs)
+        opt2_specs = opt2_cfg.instantiate().partition(param_specs)
+
+        def _check_mask_state(spec):
+            self.assertEqual(optax.MaskedNode, spec)
+
+        expected_keys = {"encoder", "decoder"}
+        if ema_decay is not None:
+            expected_keys.add("ema")
+        self.assertEqual(set(partition_state.keys()), expected_keys)
+        # sgd states.
+        # pytype: disable=attribute-error
+        self.assertEqual(
+            opt1_specs[0].trace["encoder"],
+            partition_state["encoder"]["optimizer"][0].trace["encoder"],
+        )
+        jax.tree_util.tree_map(
+            _check_mask_state, partition_state["encoder"]["optimizer"][0].trace["decoder"]
+        )
+        self.assertSequenceEqual(opt1_specs[1:], partition_state["encoder"]["optimizer"][1:])
+        # adam states.
+        self.assertEqual(
+            opt2_specs[1].mu["decoder"],
+            partition_state["decoder"]["optimizer"][1].mu["decoder"],
+        )
+        jax.tree_util.tree_map(
+            _check_mask_state, partition_state["decoder"]["optimizer"][1].mu["encoder"]
+        )
+        self.assertEqual(
+            opt2_specs[1].nu["decoder"],
+            partition_state["decoder"]["optimizer"][1].nu["decoder"],
+        )
+        jax.tree_util.tree_map(
+            _check_mask_state, partition_state["decoder"]["optimizer"][1].nu["encoder"]
+        )
+        self.assertEqual(opt2_specs[1].count, partition_state["decoder"]["optimizer"][1].count)
+        # optax.EmptyState().
+        self.assertEqual(opt2_specs[0], partition_state["decoder"]["optimizer"][0])
+        self.assertEqual(opt2_specs[-1], partition_state["decoder"]["optimizer"][-1])
+        if ema_decay is not None:
+            expected_ema_state_spec = ParamEmaState(
+                count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+                ema=dict(
+                    encoder=dict(
+                        weight=OptStateSpec(
+                            dtype=jnp.float32,
+                            shape=[3, 4],
+                            mesh_axes=PartitionSpec("data", "model"),
+                        ),
+                        bias=OptStateSpec(
+                            dtype=jnp.float32,
+                            shape=[4],
+                            mesh_axes=PartitionSpec("model"),
+                        ),
+                        mean=OptStateSpec(
+                            dtype=jnp.float32,
+                            shape=[2],
+                            mesh_axes=PartitionSpec("model"),
+                        ),
+                    ),
+                    decoder=dict(
+                        head=OptStateSpec(
+                            dtype=jnp.float32,
+                            shape=[2, 3],
+                            mesh_axes=PartitionSpec("model", None),
+                        ),
+                        scalar=OptStateSpec(
+                            dtype=jnp.float32,
+                            shape=[],
+                            mesh_axes=PartitionSpec(),
+                        ),
+                    ),
+                ),
+            )
+            self.assertSequenceEqual(partition_state["ema"], expected_ema_state_spec)
+
+        # Test update.
+        params = jax.tree_util.tree_map(
+            lambda spec: OptParam(
+                value=5.1 * jnp.ones(spec.shape, dtype=spec.dtype),
+                factorization_spec=spec.factorization,
+                weight_decay_scale=1,
+            ),
+            param_specs,
+        )
+        state = learner.init(model_params=params)
+        self.assertEqual(set(state.keys()), expected_keys)
+        grads = jax.tree_map(lambda p: jnp.ones_like(p.value), params)
+        updated_params, output_collection = F(
+            learner,
+            method="update",
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(
+                gradients=grads,
+                model_params=params,
+                state_updates=dict(
+                    encoder=dict(mean=jnp.array([1.0, 2.0])),
+                    decoder=dict(scalar=params["decoder"]["scalar"].value + 2.7),
+                ),
+            ),
+        )
+        # Expected updates from sub learner.
+        encoder_learner_cfg = Learner.default_config().set(
+            name="encoder_learner", optimizer=opt1_cfg, enable_per_variable_summaries=True
+        )
+        encoder_learner_cfg.ema.decay = ema_decay
+        encoder_learner = encoder_learner_cfg.instantiate(parent=None)
+        updated_encoder, encoder_collection = F(
+            encoder_learner,
+            method="update",
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=encoder_learner.init(model_params=params),
+            inputs=dict(
+                gradients=grads,
+                model_params=params,
+                state_updates=dict(
+                    encoder=dict(mean=jnp.array([1.0, 2.0])),
+                ),
+            ),
+        )
+        decoder_learner_cfg = Learner.default_config().set(
+            name="decoder_learner", optimizer=opt2_cfg, enable_per_variable_summaries=False
+        )
+        decoder_learner_cfg.ema.decay = ema_decay
+        decoder_learner = decoder_learner_cfg.instantiate(parent=None)
+        updated_decoder, decoder_collection = F(
+            decoder_learner,
+            method="update",
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=decoder_learner.init(model_params=params),
+            inputs=dict(
+                gradients=grads,
+                model_params=params,
+                state_updates=dict(decoder=dict(scalar=params["decoder"]["scalar"].value + 2.7)),
+            ),
+        )
+        # Test updated params match with sub learners.
+        self.assertNestedAllClose(updated_params["decoder"], updated_decoder["decoder"])
+        self.assertNestedAllClose(updated_params["encoder"], updated_encoder["encoder"])
+        # Test state updates match with sub learners.
+        expected_encoder_updates = jax.tree_util.tree_map(
+            # Mask decoder states.
+            lambda v, path: optax.MaskedNode() if re.fullmatch(".*decoder.*|.*ema.*", path) else v,
+            encoder_collection.state_updates,
+            tree_paths(encoder_collection.state_updates),
+        )
+
+        expected_decoder_updates = jax.tree_util.tree_map(
+            # Mask encoder states.
+            lambda v, path: optax.MaskedNode() if re.fullmatch(".*encoder.*|.*ema.*", path) else v,
+            decoder_collection.state_updates,
+            tree_paths(decoder_collection.state_updates),
+        )
+        expected_state_updates = {
+            "encoder": expected_encoder_updates,
+            "decoder": expected_decoder_updates,
+        }
+        if ema_decay is not None:
+            expected_ema = ParamEmaState(
+                count=encoder_collection.state_updates["ema"].count,
+                ema=dict(
+                    encoder=encoder_collection.state_updates["ema"].ema["encoder"],
+                    decoder=decoder_collection.state_updates["ema"].ema["decoder"],
+                ),
+            )
+            expected_state_updates["ema"] = expected_ema
+
+        self.assertNestedAllClose(
+            expected_state_updates,
+            output_collection.state_updates,
+        )
+        # Test state_updates match with init state tree structure.
+        self.assertEqual(
+            set(key for key, _ in flatten_items(output_collection.state_updates)),
+            set(key for key, _ in flatten_items(state)),
+        )
+        # Test summary.
+        expected_summaries = dict(
+            encoder={k: v for k, v in encoder_collection.summaries.items() if "decoder" not in k},
+            decoder={
+                k: v
+                for k, v in decoder_collection.summaries.items()
+                if ("encoder" not in k or "decoder" not in k)  # No per variable summaries.
+            },
+        )
+        self.assertNestedAllClose(
+            expected_summaries,
+            output_collection.summaries,
+        )
+
+    def test_learner_config(self):
+        opt1_cfg = config_for_function(sgd_optimizer).set(
+            learning_rate=0.1, decouple_weight_decay=True, weight_decay=1.0
+        )
+        opt2_cfg = config_for_function(adam_optimizer).set(
+            learning_rate=0.0, b1=0.9, b2=0.99, eps=1e-5, l2_regularizer_weight=1.0
+        )
+        learner_rules = [(".*encoder.*", "encoder"), (".*decoder.*", "decoder")]
+
+        cfg = CompositeLearner.default_config().set(
+            name="test",
+            rules=learner_rules,
+            learners={
+                "encoder": Learner.default_config().set(
+                    optimizer=opt1_cfg, enable_per_variable_summaries=True
+                ),
+            },
+        )
+        with self.assertRaisesRegex(ValueError, ".* is not found in the known learners"):
+            # decoder rule does not point to any existing learner.
+            cfg.instantiate(parent=None)
+
+        cfg = CompositeLearner.default_config().set(
+            name="test",
+            rules=[(".*encoder.*", "encoder")],
+            learners={
+                "encoder": Learner.default_config().set(
+                    optimizer=opt1_cfg, enable_per_variable_summaries=True
+                ),
+                "ema": Learner.default_config().set(
+                    optimizer=opt1_cfg, enable_per_variable_summaries=True
+                ),
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "Sublearner name cannot be ema"):
+            # sublearner name cannot be ema.
+            cfg.instantiate(parent=None)
+
+        cfg = CompositeLearner.default_config().set(
+            name="test",
+            rules=learner_rules,
+            learners={
+                "encoder": Learner.default_config().set(
+                    optimizer=opt1_cfg, enable_per_variable_summaries=True
+                ),
+                "decoder": Learner.default_config().set(
+                    optimizer=opt2_cfg, enable_per_variable_summaries=False
+                ),
+            },
+        )
+        learner: CompositeLearner = cfg.instantiate(parent=None)
+
+        param_specs = dict(
+            encoder=dict(
+                weight=ParameterSpec(
+                    dtype=jnp.float32,
+                    shape=[3, 4],
+                    factorization=FactorizationSpec(axes=("row", "col")),
+                    mesh_axes=PartitionSpec("data", "model"),
+                ),
+            ),
+            head=ParameterSpec(
+                dtype=jnp.float32,
+                shape=[2, 3],
+                factorization=FactorizationSpec(axes=("row", "col")),
+                mesh_axes=PartitionSpec("model", None),
+            ),
+        )
+        params = jax.tree_util.tree_map(
+            lambda spec: OptParam(
+                value=jnp.ones(spec.shape, dtype=spec.dtype),
+                factorization_spec=spec.factorization,
+                weight_decay_scale=1,
+            ),
+            param_specs,
+        )
+        with self.assertRaisesRegex(
+            ValueError, "Composite learner rules do not update all model params"
+        ):
+            # `head` is not covered by any rules.
+            learner.init(model_params=params)
+
+    def test_sublearner_ema(self):
+        opt1_cfg = config_for_function(sgd_optimizer).set(
+            learning_rate=0.1, decouple_weight_decay=True, weight_decay=1.0
+        )
+        learner_cfg = Learner.default_config().set(optimizer=opt1_cfg)
+        learner_cfg.ema.decay = 0.9
+        learner_rules = [(".*encoder.*", "encoder")]
+        cfg = CompositeLearner.default_config().set(
+            name="test",
+            rules=learner_rules,
+            learners={
+                "encoder": learner_cfg,
+            },
+        )
+        with self.assertRaises(ValueError):
+            # Sublearner ema is not None.
+            cfg.instantiate(parent=None)
 
 
 if __name__ == "__main__":
