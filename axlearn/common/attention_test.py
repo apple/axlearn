@@ -1799,8 +1799,6 @@ class StackedTransformerTest(TestCase):
         batch_size, src_len, tgt_len = 10, 4, 6
         num_dec_layers, model_dim, num_heads = 3, 16, 4
 
-        model_dim = 16
-        num_heads = 4
         if isinstance(transformer_type, type):
             cfg = transformer_type.default_config().set(
                 name="test",

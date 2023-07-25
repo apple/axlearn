@@ -77,28 +77,6 @@ class FakeLmInput(FakeTextInput):
         )
 
 
-class FakeRlInput(FakeTextInput):
-    """Returns fake observations for RL training."""
-
-    def __next__(self):
-        cfg = self.config
-        self._num_batches += 1
-        if cfg.total_num_batches is not None and self._num_batches > cfg.total_num_batches:
-            raise StopIteration()
-        self._prng_key, observations_key = jax.random.split(self._prng_key, 2)
-        if cfg.global_batch_size <= 0 or cfg.global_batch_size % jax.process_count() != 0:
-            raise ValueError(
-                f"Global batch size ({cfg.global_batch_size}) "
-                f"must be positive and divisible by process count ({jax.process_count()})"
-            )
-        batch_size = cfg.global_batch_size // jax.process_count()
-        observations = jax.random.uniform(
-            observations_key,
-            shape=[batch_size, cfg.source_length],
-        )
-        return as_tensor(dict(observations=observations))
-
-
 class FakeSeq2SeqInput(FakeTextInput):
     """Produces fake sequence-to-sequence inputs."""
 
@@ -270,8 +248,10 @@ def fake_source(
 def fake_text_source(
     *,
     text_field_name: str = "text",
+    repeat: int = 1,
     is_training: bool,
     shuffle_buffer_size: Optional[int] = None,
+    batch_size: int = 2,
 ) -> BuildDatasetFn:
     return fake_source(
         is_training=is_training,
@@ -279,9 +259,10 @@ def fake_text_source(
             {
                 text_field_name: ("train" if is_training else "eval") + f" text {ix}",
             }
-            for ix in range(2 * 2 if is_training else 2)
+            for ix in range(2 * batch_size if is_training else batch_size)
         ],
         shuffle_buffer_size=shuffle_buffer_size,
+        repeat=repeat,
     )
 
 
