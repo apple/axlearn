@@ -349,6 +349,7 @@ class TensorStoreStateStorage(StateStorage):
         concurrent_gb: int = 32,
     ) -> NestedTensor:
         spec = self._get_spec(step, state, ckpt_dir)
+        logging.info("Restoring checkpoint from directory %s", ckpt_dir)
         with tf.io.gfile.GFile(os.path.join(ckpt_dir, "index"), "r") as f:
             restored_index_entries = json.loads(f.read())
         check_state_structure(
