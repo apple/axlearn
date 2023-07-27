@@ -638,14 +638,14 @@ class SpmdTrainer(Module):
         self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
 
         # Aggregate summaries across evalers.
-        evaler_summaries = self._run_eval()
+        evaler_summaries = self._run_eval(train_summaries=outputs["summaries"])
 
         # Checkpointer policy will decide if we should save.
         self.save_checkpoint(evaler_summaries=evaler_summaries)
 
         return {"loss": outputs["loss"], "aux": outputs["aux"]}
 
-    def _run_eval(self) -> Dict[str, Any]:
+    def _run_eval(self, *, train_summaries: Optional[NestedTensor] = None) -> Dict[str, Any]:
         """Runs evaluations and returns the corresponding summaries."""
         evaler_summaries = {}
         # Note: we will use the same eval key as the training keys of the future step,
@@ -656,6 +656,7 @@ class SpmdTrainer(Module):
                 self.step,
                 prng_key=prng_key,
                 model_params=self.model_params_for_eval(),
+                train_summaries=train_summaries,
             )
             evaler_summaries[evaler_name] = summaries
         return evaler_summaries

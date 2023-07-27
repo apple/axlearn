@@ -25,7 +25,7 @@ from tensorflow.python.summary.summary_iterator import (  # pylint: disable=no-n
 from axlearn.common import param_init, test_utils
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
-from axlearn.common.config import config_class, config_for_class
+from axlearn.common.config import config_class, config_for_class, config_for_function
 from axlearn.common.evaler import (
     CompositeMetricCalculator,
     GlobalMetricCalculator,
@@ -182,9 +182,7 @@ class DummyMetricCalculator(ModelSummaryAccumulator):
         return model_outputs, model_output_collection
 
 
-class EvaluatorTest(TestCase):
-    # A similar test exists for trainer.
-    # pylint: disable=duplicate-code
+class EvalerTest(TestCase):
     @parameterized.parameters(
         ("cpu", (1, 1), None),
         ("cpu", (1, 1), jnp.bfloat16),
@@ -192,7 +190,6 @@ class EvaluatorTest(TestCase):
         ("tpu", (8, 1), jnp.bfloat16),
         ("tpu", (2, 4), jnp.float32),
     )
-    # pylint: enable=duplicate-code
     def test_spmd_evaler(self, platform, mesh_shape, step_dtype):
         if not test_utils.is_supported_platform(platform):
             return
@@ -407,6 +404,68 @@ class EvaluatorTest(TestCase):
                                 self.assertIsInstance(record["logits"], list)
                                 num_output_records += 1
                         self.assertEqual(process_batch_size * num_batches, num_output_records)
+
+    def test_eval_policy(self):
+        # For simplicity, test on single host.
+        if not test_utils.is_supported_platform("cpu"):
+            return
+
+        # Only eval if a metric exceeds a threshold.
+        def metric_threshold_policy(*, metric: str, threshold: int):
+            def fn(*, step, train_summaries) -> bool:
+                del step
+                return train_summaries.get(metric, 0) > threshold
+
+            return fn
+
+        model_cfg = DummyModel.default_config()
+        model = model_cfg.instantiate(parent=None)
+        model_state = model.initialize_parameters_recursively(jax.random.PRNGKey(0))
+        mesh = mesh_utils.create_device_mesh((1, 1))
+
+        with jax.sharding.Mesh(mesh, ("data", "model")), tempfile.TemporaryDirectory() as temp_dir:
+            num_batches = 3
+            evaler = (
+                SpmdEvaler.default_config()
+                .set(
+                    name="spmd_evaler",
+                    input=DummyInput.default_config().set(
+                        total_num_batches=num_batches, batch_size=1
+                    ),
+                    summary_writer=SummaryWriter.default_config().set(dir=temp_dir),
+                    eval_policy=config_for_function(metric_threshold_policy).set(
+                        metric="test", threshold=1
+                    ),
+                )
+                .instantiate(
+                    parent=None,
+                    model=model,
+                    model_param_partition_specs=None,
+                )
+            )
+            keys = jax.random.split(jax.random.PRNGKey(123), num=4)
+            # When we have no train summaries, or when the target metric is below threshold, eval
+            # should be skipped.
+            for i, train_summaries in enumerate([None, {"test": 0.5}, {"test": 1}]):
+                _, summaries, _ = evaler.eval_step(
+                    i + 1,
+                    prng_key=keys[i],
+                    model_params=model_state,
+                    train_summaries=train_summaries,
+                )
+                self.assertIsNone(summaries)
+
+            # When metric is above threshold, eval should run.
+            _, summaries, _ = evaler.eval_step(
+                2, prng_key=keys[2], model_params=model_state, train_summaries={"test": 1.1}
+            )
+            self.assertIsNotNone(summaries)
+
+            # If metric dips below threshold again, eval should not run.
+            _, summaries, _ = evaler.eval_step(
+                3, prng_key=keys[3], model_params=model_state, train_summaries={"test": 0.9}
+            )
+            self.assertIsNone(summaries)
 
 
 class ModelSummaryAccumulatorTest(absltest.TestCase):
