@@ -29,6 +29,8 @@ from axlearn.common.utils import NestedTensor, Tensor
 EOS_ID = 1
 NEG_INF = decoding.NEG_INF
 tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
+_SENTENCEPIECE_DIR = os.path.join(tokenizers_dir, "sentencepiece")
+_T5_VOCAB_FILE = os.path.join(_SENTENCEPIECE_DIR, "t5-base.spm")
 
 
 class DecodeTest(parameterized.TestCase):
@@ -1289,15 +1291,14 @@ class DecodeTest(parameterized.TestCase):
         ),
         # pylint: enable=line-too-long
     )
-    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_T5_VOCAB_FILE), reason="Missing testdata.")
     def test_sample_decode_with_complex_stopping_condition(
         self,
         fake_decodes: Sequence[Sequence[str]],
         prompts: Sequence[Sequence[str]],
         expected: Sequence[Sequence[str]],
     ):
-        sentence_piece_vocab_file = os.path.join(tokenizers_dir, "sentencepiece/t5-base")
-        vocab = seqio.SentencePieceVocabulary(sentence_piece_vocab_file)
+        vocab = seqio.SentencePieceVocabulary(_T5_VOCAB_FILE)
         batch_size = len(fake_decodes)
         num_decodes = len(fake_decodes[0])
 

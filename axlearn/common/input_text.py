@@ -152,6 +152,9 @@ def add_token_type_ids(
 
     This processor is usually used after `tokenize`.
     The last dimension should contain the input IDs.
+    Note sequences should either be 1D `tf.Tensor`s or `tf.RaggedTensor`s containing the input IDs
+    for single examples, or 2D `tf.Tensor`s or `tf.RaggedTensor`s containing the input IDs for
+    multiple examples, where the first dim is the batch dimension and second dim is the input IDs.
 
     Assume final concatenated sequences always start and end with BOS/EOS, and sub-sequences
     are separated by a single separator token.
@@ -165,7 +168,7 @@ def add_token_type_ids(
 
     Args:
         input_key: Field name(s) of one or multiple tokenized sequences to be added
-            token type IDs, where each field is a tf.RaggedTensor.
+            token type IDs.
         output_key: Name of the field that contains token type IDs to be outputted.
 
     Returns:
@@ -174,22 +177,33 @@ def add_token_type_ids(
     if isinstance(input_key, str):
         input_key = [input_key]
 
-    def example_fn(example: Dict[str, Union[tf.Tensor, tf.RaggedTensor]]) -> Dict[str, tf.Tensor]:
+    def example_fn(
+        example: Dict[str, Union[tf.Tensor, tf.RaggedTensor]]
+    ) -> Dict[str, Union[tf.Tensor, tf.RaggedTensor]]:
         token_type_ids = []
         for i, key in enumerate(input_key):
             t = example[key]
-            if isinstance(t, tf.RaggedTensor):
-                shape = t.bounding_shape()
-            else:
-                shape = tf.shape(t)
-            seq_len = shape[-1]
+            # In either branch, the total number of tokens with token type ID i is
+            #   int(i == 0) + seq_len + 1.
             # For i == 0, the first +1 is to account for the BOS token, the last +1 is to account
             # for SEP if there are multiple sequences or EOS if there is only one sequence.
             # For 1 <= i < len(input_key) - 1, the +1 is to account for the SEP token.
             # For i == len(input_key) - 1, the +1 is to account for the EOS token.
-            # pylint: disable-next=no-value-for-parameter,unexpected-keyword-arg
-            shape_out = tf.concat([shape[:-1], [int(i == 0) + seq_len + 1]], axis=-1)
-            token_type_ids.append(tf.fill(shape_out, i))
+            if isinstance(t, tf.RaggedTensor):
+                # seq_len is a 1D tensor indicating the length of each sequence.
+                seq_len = t.row_lengths()
+                shape_out = int(i == 0) + seq_len + 1
+                total_num_elements = tf.math.reduce_sum(shape_out)
+                out = tf.RaggedTensor.from_row_lengths(tf.fill((total_num_elements,), i), shape_out)
+            else:
+                shape = tf.shape(t)
+                # seq_len is a scalar indicating the length of each sequence.
+                seq_len = shape[-1]
+                # pylint: disable-next=no-value-for-parameter,unexpected-keyword-arg
+                shape_out = tf.concat([shape[:-1], [int(i == 0) + seq_len + 1]], axis=-1)
+                out = tf.fill(shape_out, i)
+            token_type_ids.append(out)
+
         # pylint: disable-next=no-value-for-parameter,unexpected-keyword-arg
         example[output_key] = tf.concat(token_type_ids, axis=-1)
         return example
