@@ -108,9 +108,9 @@ class InferencePipeline(Module):
         )
         self._add_child("summary_writer", cfg.summary_writer)
 
-    def run(self):
+    def run(self, **kwargs):
         cfg = self.config
-        method_runner = self.runner.create_method_runner(method=cfg.model_method)
+        method_runner = self.runner.create_method_runner(method=cfg.model_method, **kwargs)
 
         batch_index = 0
         for input_batch in self.input.dataset():
