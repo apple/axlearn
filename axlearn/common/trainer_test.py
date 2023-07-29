@@ -22,6 +22,7 @@ from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import Checkpointer, CheckpointPolicy, every_n_steps_policy
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 from axlearn.common.evaler import SpmdEvaler
+from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
@@ -695,11 +696,11 @@ class TrainerTest(test_utils.TestCase):
             evalers=dict(
                 eval_every_2=SpmdEvaler.default_config().set(
                     input=DummyInput.default_config().set(total_num_batches=1),
-                    run_every_n_steps=2,
+                    eval_policy=config_for_function(eval_every_n_steps_policy).set(n=2),
                 ),
                 eval_every_3=SpmdEvaler.default_config().set(
                     input=DummyInput.default_config().set(total_num_batches=2),
-                    run_every_n_steps=3,
+                    eval_policy=config_for_function(eval_every_n_steps_policy).set(n=3),
                 ),
             ),
             save_input_iterator=save_input_iterator,
