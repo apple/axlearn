@@ -30,6 +30,7 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
+from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import Learner
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.module import functional as F
@@ -235,7 +236,8 @@ class TrainerConfigTestCase(TestCase):
             cfg.mesh_shape = cfg.mesh_shape or (len(jax.devices()), 1)
             cfg.max_step = 3
             for evaler_cfg in cfg.evalers.values():
-                evaler_cfg.run_every_n_steps = 2
+                if getattr(evaler_cfg.eval_policy, "fn", None) is eval_every_n_steps_policy:
+                    evaler_cfg.eval_policy.n = 2
                 evaler_cfg.vlog = max(evaler_cfg.vlog, 3)
             if getattr(cfg.checkpointer.save_policy, "fn", None) is every_n_steps_policy:
                 cfg.checkpointer.save_policy.n = 2
