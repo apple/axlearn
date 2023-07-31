@@ -11,7 +11,6 @@ from axlearn.common.module import functional as F
 from axlearn.common.vision_transformer import build_vit_model_config
 from axlearn.vision.input_detection import DetectionInput, fake_detection_dataset
 from axlearn.vision.rcnn import FasterRCNN
-from axlearn.vision.resnet import ResNet
 
 REF_BACKBONE_PARAMS = 23561152
 REF_FPN_PARAMS = 3873792
@@ -111,8 +110,6 @@ class FasterRCNNTest(parameterized.TestCase):
                 image_size=(image_size, image_size),
                 patch_size=(8, 8),
             )
-        else:
-            cfg.backbone = ResNet.resnet18_config()
         cfg.fpn.set(hidden_dim=256, min_level=min_level, max_level=max_level)
         model: FasterRCNN = cfg.instantiate(parent=None)
         state = model.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
