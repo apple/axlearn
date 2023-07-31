@@ -948,7 +948,7 @@ def named_model_configs(
     model_name: ModelNames,
     variant: str,
     *,
-    efficientnet_version: Optional[str] = None,
+    efficientnet_version: Optional[str] = "V1",
     extra_settings: Optional[Dict[str, Any]] = None,
 ) -> InstantiableConfig:
     if model_name == ModelNames.EFFICIENTNET:
