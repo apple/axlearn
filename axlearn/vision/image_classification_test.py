@@ -7,6 +7,7 @@ from typing import Callable
 
 import jax.random
 import numpy as np
+import pytest
 import timm
 import torch
 from absl import logging
@@ -120,6 +121,7 @@ class ClassificationModelTest(parameterized.TestCase):
 
         return cfg, ref
 
+    # TODO(edaxberger): Re-enable test after fixing failing tests due to limited CI resources.
     @parameterized.product(
         model_arch=(
             (ModelNames.MOBILENETV3, "small-minimal-100", None),
@@ -152,6 +154,7 @@ class ClassificationModelTest(parameterized.TestCase):
         ),
         is_training=(False, True),
     )
+    @pytest.mark.high_cpu
     def test_mobilenets(self, model_arch, is_training):
         cfg, torch_model = self._get_mobilenet_cfg_model(*model_arch)
         params_from_model = partial(MobileNetsParamConverter.params_from_model, cfg=cfg)
