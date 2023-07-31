@@ -16,6 +16,7 @@ from axlearn.common.config import config_for_function
 from axlearn.common.module import functional as F
 from axlearn.common.vision_transformer import build_vit_model_config
 from axlearn.vision.input_detection import DetectionInput, fake_detection_dataset
+from axlearn.vision.resnet import ResNet
 from axlearn.vision.retinanet import (
     RetinaNetHead,
     RetinaNetMetric,
@@ -87,8 +88,8 @@ class RetinaNetHeadTest(parameterized.TestCase):
 
 
 # Reference numbers from: https://github.com/tensorflow/models/tree/master/official/vision.
-REF_BACKBONE_PARAMS = 23561152
-REF_FPN_PARAMS = 3873792
+REF_BACKBONE_PARAMS = 11186112
+REF_FPN_PARAMS = 3185664
 REF_HEAD_PARAMS = 6732375
 
 
@@ -138,6 +139,7 @@ class RetinaNetModelTest(parameterized.TestCase):
         # Set head conv bias to True only to match the TF implementation.
         # Will verify if adding bias is necessary since batch norm layers are appended.
         cfg.head.conv.bias = True
+        cfg.backbone = ResNet.resnet18_config()
 
         model: RetinaNetModel = cfg.instantiate(parent=None)
         state = model.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
@@ -190,6 +192,8 @@ class RetinaNetModelTest(parameterized.TestCase):
                 image_size=(image_size, image_size),
                 patch_size=(8, 8),
             )
+        else:
+            cfg.backbone = ResNet.resnet18_config()
         model: RetinaNetModel = cfg.instantiate(parent=None)
         state = model.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
         F(
