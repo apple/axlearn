@@ -549,7 +549,7 @@ def softmax_with_biases(
     """
     logits = apply_attention_logit_biases(logits, attention_logit_biases)
     logits_dtype = logits.dtype
-    if logits_dtype == torch.float16:
+    if logits_dtype in (torch.float16, torch.bfloat16):
         # Avoid computing softmax in 16-bit floats.
         logits = logits.to(torch.float32)
     probs = torch.softmax(logits, axis=-1)
