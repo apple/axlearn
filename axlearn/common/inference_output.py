@@ -80,7 +80,7 @@ def _json_feature(
         return value.decode("utf-8")
 
     if value.dtype == object:
-        value = value.astype(dtype=str)
+        value = np.char.decode(value.astype(np.bytes_), "utf-8")
 
     return value.tolist()
 
