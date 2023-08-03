@@ -1,11 +1,12 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests common utils."""
-# pylint: disable=no-self-use
 import sys
 from collections import OrderedDict
-from typing import Any, Iterable, NamedTuple, Optional
+from typing import Any, Iterable, NamedTuple, Optional, Type
 
+# pylint: disable=no-self-use
+import chex
 import jax
 import jaxlib
 import numpy as np
@@ -76,6 +77,47 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(
             Combo(head="head", tail=Combo(head="tail/head", tail="tail/tail")),
             tree_paths(Combo(head=1, tail=Combo(head=2, tail=3))),
+        )
+
+        @chex.dataclass
+        class DataclassCombo:
+            scalar: int
+            dataclass_combo: Any
+            none: Type[None]
+            nested_tensor: NestedTensor
+
+        # Dataclass.
+        self.assertEqual(
+            DataclassCombo(
+                scalar="scalar",
+                dataclass_combo=DataclassCombo(
+                    scalar="dataclass_combo/scalar",
+                    dataclass_combo=Combo(
+                        head="dataclass_combo/dataclass_combo/head",
+                        tail="dataclass_combo/dataclass_combo/tail",
+                    ),
+                    none=None,
+                    nested_tensor={},
+                ),
+                none=None,
+                nested_tensor={
+                    "a": ["nested_tensor/a/0", "nested_tensor/a/1"],
+                    "c": None,
+                },
+            ),
+            tree_paths(
+                DataclassCombo(
+                    scalar=1,
+                    dataclass_combo=DataclassCombo(
+                        scalar="hello",
+                        dataclass_combo=Combo(head="head", tail="tail"),
+                        none=None,
+                        nested_tensor={},
+                    ),
+                    none=None,
+                    nested_tensor={"a": [1, 2], "c": None},
+                )
+            ),
         )
 
         # None is preserved, similar to an empty list.
