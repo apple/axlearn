@@ -4,7 +4,19 @@
 import os.path
 import time
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import jax
 from absl import logging
@@ -13,7 +25,13 @@ from jax.experimental.pjit import pjit
 
 from axlearn.common import summary_writer, utils
 from axlearn.common.base_model import BaseModel
-from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.config import (
+    REQUIRED,
+    InstantiableConfig,
+    Required,
+    config_class,
+    config_for_function,
+)
 from axlearn.common.inference_output import BaseOutputWriter
 from axlearn.common.metrics import MetricAccumulator, WeightedScalar
 from axlearn.common.module import Module, OutputCollection
@@ -414,6 +432,39 @@ class CompositeMetricCalculator(BaseMetricCalculator):
         return composite_summaries
 
 
+class EvalPolicy(Protocol):
+    """Decides whether evaler should run eval at the given step."""
+
+    def __call__(self, *, step: int, train_summaries: Dict[str, Any]) -> bool:
+        """Implements the policy.
+
+        Args:
+            step: Current step.
+            train_summaries: A collection of summaries from the most recent train step. Can be an
+                empty dict, e.g. if no summaries exist.
+
+        Returns:
+            True iff we should eval at the current step.
+        """
+        raise NotImplementedError(type(self))
+
+
+def every_n_steps_policy(n: int = 1, *, min_step: int = 1) -> EvalPolicy:
+    """Evals every n steps, but not before `min_step`."""
+
+    def fn(*, step: int, train_summaries: Dict[str, Any]) -> bool:
+        del train_summaries
+        if step < min_step:
+            logging.info(
+                "Skipping eval, as step (%s) < min_step (%s).",
+                step,
+                min_step,
+            )
+        return step >= min_step and step % n == 0
+
+    return fn
+
+
 class SpmdEvaler(Module):
     """An evaler implementation that supports partitioning of computation and data with GSPMD."""
 
@@ -425,10 +476,8 @@ class SpmdEvaler(Module):
         input: Required[InstantiableConfig] = REQUIRED
         # A summary writer to log tagged summary values.
         summary_writer: InstantiableConfig = summary_writer.SummaryWriter.default_config()
-        # Run this evaler every N training steps.
-        run_every_n_steps: int = 1
-        # Do no run eval before the given step.
-        min_step: int = 1
+        # Run this evaler according to this policy.
+        eval_policy: InstantiableConfig = config_for_function(every_n_steps_policy)
         # Which evaluation iters to trace with the profiler each time the evaler is run.
         # Each trace will cover one full evaluation batch.
         # Traces will run for at most 3 unique steps.
@@ -470,6 +519,7 @@ class SpmdEvaler(Module):
             self._add_child("output_writer", cfg.output_writer)
 
         self._trace_steps = set()
+        self._eval_policy: EvalPolicy = cfg.eval_policy.instantiate()
 
     def eval_step(
         self,
@@ -478,6 +528,7 @@ class SpmdEvaler(Module):
         prng_key: jax.random.KeyArray,
         model_params: NestedTensor,
         return_aux: bool = False,
+        train_summaries: Optional[NestedTensor] = None,
     ) -> Tuple[jax.random.KeyArray, Optional[Dict[str, Any]], Optional[List[NestedTensor]]]:
         """Runs eval for the given step.
 
@@ -486,6 +537,8 @@ class SpmdEvaler(Module):
             prng_key: PRNG key.
             model_params: Model parameters.
             return_aux: Boolean to determine whether outputs are returned.
+            train_summaries: Summaries from the most recent training step. Can be used in the
+                `evaler_policy`.
 
         Returns:
             A tuple (prng_key, summaries, outputs), where
@@ -498,15 +551,7 @@ class SpmdEvaler(Module):
         """
         cfg = self.config
 
-        if step % cfg.run_every_n_steps != 0:
-            return prng_key, None, None
-
-        if step < cfg.min_step:
-            logging.info(
-                "Skipping eval, as step (%s) < cfg.min_step (%s).",
-                step,
-                cfg.min_step,
-            )
+        if not self._eval_policy(step=step, train_summaries=(train_summaries or {})):
             return prng_key, None, None
 
         self.vlog(
