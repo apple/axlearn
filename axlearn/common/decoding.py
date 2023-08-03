@@ -754,7 +754,7 @@ def _decode_init(
 
     return DecodingState(
         # Subtract the dummy BOS token. For example, in the no-prefill case, we should start at 0.
-        cur_index=(inputs != pad_id).sum(axis=-1) - 1,
+        cur_index=(inputs != pad_id).sum(axis=-1),
         token_scores=init_scores,
         sequences=sequences,
         stop_decoding=jnp.zeros((batch_size, num_decodes), bool),
