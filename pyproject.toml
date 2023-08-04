@@ -15,7 +15,7 @@ dependencies = [
     "attrs>=21.3.0",
     "absl-py",
     "chex>=0.1.6",
-    "flax>=0.6.5",  # only for checkpoints, FrozenDict
+    "flax>=0.7.1",  # only for checkpoints
     "importlab==0.7",  # breaks pytype on 0.8
     "jax==0.4.13",
     "jaxlib==0.4.13",
@@ -41,7 +41,7 @@ apple-silicon = [
     "attrs>=21.3.0",
     "absl-py",
     "chex>=0.1.6",
-    "flax>=0.6.5",  # only for checkpoints, FrozenDict
+    "flax>=0.7.1",  # only for checkpoints
     "jax==0.4.13",
     "jaxlib==0.4.13",
     "nltk==3.7",  # for text preprocessing

@@ -144,7 +144,7 @@ def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
         if tree is None:
             # None is considered part of the tree structure, not a tree leaf.
             return tree
-        elif isinstance(tree, (dict, FrozenDict)):
+        elif hasattr(tree, "items"):
             return type(tree)((k, visit(v, _concat(prefix, k))) for k, v in tree.items())
         elif is_named_tuple(tree):
             return type(tree)(**visit(tree._asdict(), prefix))
