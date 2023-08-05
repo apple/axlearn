@@ -2441,6 +2441,8 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
     class Config(BaseStackedTransformerLayer.Config):
         """Configures StackedTransformerLayer."""
 
+        # If `layer` is a Config, it will be stacked cfg.num_layers times. If `layer` is a
+        # sequence of Configs, the sequence length should match cfg.num_layers.
         layer: Union[
             BaseTransformerLayer.Config, Sequence[BaseTransformerLayer.Config]
         ] = TransformerLayer.default_config()
