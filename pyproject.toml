@@ -15,7 +15,7 @@ dependencies = [
     "attrs>=21.3.0",
     "absl-py",
     "chex>=0.1.6",
-    "flax>=0.6.5",  # only for checkpoints, FrozenDict
+    "flax>=0.7.1",  # only for checkpoints
     "importlab==0.7",  # breaks pytype on 0.8
     "jax==0.4.13",
     "jaxlib==0.4.13",
@@ -41,7 +41,7 @@ apple-silicon = [
     "attrs>=21.3.0",
     "absl-py",
     "chex>=0.1.6",
-    "flax>=0.6.5",  # only for checkpoints, FrozenDict
+    "flax>=0.7.1",  # only for checkpoints
     "jax==0.4.13",
     "jaxlib==0.4.13",
     "nltk==3.7",  # for text preprocessing
@@ -82,6 +82,16 @@ dev = [
 t5x = [
     "t5==0.9.4",
     "t5x@git+https://github.com/google-research/t5x.git@caa500771af314e3cb877b5c158c1db4ae0427c2"
+]
+# Jax-triton. Can only be installed on a GPU machine.
+jax_triton = [
+    "cmake",
+    # Compatible with jax 0.4.13.
+    "jax-triton@git+https://github.com/jax-ml/jax-triton.git@c3721db034b4311e0a8799d6a28ce8aea7be1da1",
+    "jaxlib==0.4.13+cuda12.cudnn89",
+    "nvidia-cudnn-cu12==8.9.2.26",
+    # To avoid conflicting with jax.
+    "tensorflow-cpu==2.8.0",
 ]
 
 [tool.flit.module]

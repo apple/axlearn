@@ -570,9 +570,6 @@ class FlaxPretrainedBuilder(Builder):
         return Builder.StateType.TENSORS
 
     def __call__(self, state: Builder.State) -> Builder.State:
-        # pylint: disable-next=import-outside-toplevel
-        from flax.core.frozen_dict import FrozenDict, unfreeze
-
         cfg = self.config
         source_params = cfg.flax_state_supplier_config.instantiate()
 
@@ -588,9 +585,6 @@ class FlaxPretrainedBuilder(Builder):
                 parent_state = parent_state[scope]
             target_flax_state = parent_state[cfg.target_scope[-1]]["params"]
 
-        if isinstance(target_flax_state, FrozenDict):
-            target_flax_state = unfreeze(target_flax_state)
-
         restored_target_state = traverse_and_set_target_state_parameters(
             target_state=target_flax_state,
             target_scope=[],
@@ -605,10 +599,10 @@ class FlaxPretrainedBuilder(Builder):
 
         if len(cfg.target_scope) == 0:
             new_trainer_state = state.trainer_state._replace(
-                model=FrozenDict({"params": restored_target_state})
+                model={"params": restored_target_state}
             )
         else:
-            parent_state[cfg.target_scope[-1]] = FrozenDict({"params": restored_target_state})
+            parent_state[cfg.target_scope[-1]] = {"params": restored_target_state}
             new_trainer_state = state.trainer_state
 
         built_keys = state.built_keys.union(set(key for key, _ in flatten_items(new_trainer_state)))

@@ -190,6 +190,7 @@ class InferenceTest(test_utils.TestCase):
         (tf.constant([1]), [1]),
         (jnp.array(1), 1),
         (jnp.array([1, 2, 3]), [1, 2, 3]),
+        (tf.constant(["豆豆"]), ["豆豆"]),
     )
     def test_jsonl_feature(
         self,

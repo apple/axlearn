@@ -42,8 +42,11 @@ FROM base as ci
 
 RUN pip install .[dev]
 COPY . .
+
+# Defaults to an empty string, i.e. run pytest against all files.
+ARG PYTEST_FILES=''
 # `exit 1` fails the build.
-RUN ./run_tests.sh
+RUN ./run_tests.sh "${PYTEST_FILES}"
 
 ################################################################################
 # Final target spec.                                                           #
