@@ -269,7 +269,7 @@ class T5EncoderTest(TestCase):
 
 
 class T5EncoderDecoderModelTest(TestCase):
-    @parameterized.parameters(["t5-v1-1", "t5-v1"])
+    @parameterized.parameters(["t5-v1-1", "t5-v1", "t5-ul2"])
     def test_against_t5_encoder_decoder_model(self, arch):
         vocab_size = 128
         model_dim = 12
@@ -298,6 +298,10 @@ class T5EncoderDecoderModelTest(TestCase):
         elif arch == "t5-v1-1":
             d_ff = model_dim * 8 // 3
             feed_forward_proj = "gated-gelu"
+        elif arch == "t5-ul2":
+            d_ff = model_dim * 8 // 3
+            # Ref: https://huggingface.co/google/ul2/blob/main/config.json#L13.
+            feed_forward_proj = "gated-silu"
         else:
             raise ValueError(f"unsupported t5 arch {arch}")
         t5_config = hf_t5.T5Config(
