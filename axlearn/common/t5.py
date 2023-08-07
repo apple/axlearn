@@ -218,6 +218,13 @@ def t5_transformer_stack_config(
             # Reference: https://github.com/google-research/t5x/tree/main/t5x/examples/t5/t5_1_0
             hidden_dim=scaled_hidden_dim(4),
         )
+    elif arch == "t5-ul2":
+        cfg.layer.feed_forward.set(
+            # Ref: https://huggingface.co/google/ul2/blob/main/config.json#L13.
+            activation=("nn.silu", "linear"),
+            # Same as t5-v1-1 hidden_dim.
+            hidden_dim=scaled_hidden_dim(8.0 / 3),
+        )
     else:
         raise ValueError(f"Unsupported arch {arch}.")
     # Note that not all T5 architectures follow the `scaled_hidden_dim` rule, e.g. T5 1.1 "xl" uses
