@@ -11,7 +11,7 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import MultiheadAttention
 from axlearn.common.base_layer import BaseLayer
-from axlearn.common.config import ConfigBase
+from axlearn.common.config import ConfigBase, config_class
 from axlearn.common.flash_attention.attention import mha
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor
@@ -40,7 +40,13 @@ class FlashAttention(MultiheadAttention):
     * Supports a subset of config fields and outputs.
     """
 
-    def __init__(self, cfg: MultiheadAttention.Config, *, parent: Module):
+    @config_class
+    class Config(MultiheadAttention.Config):
+        # If True, applies additional optimizations in the FlashAttention kernels.
+        # Causal attention can still be used when False, by passing logit biases.
+        causal: bool = False
+
+    def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         _check_bias_recursively(cfg)  # Bias not supported.
@@ -51,8 +57,8 @@ class FlashAttention(MultiheadAttention):
             raise NotImplementedError("cfg.dropout.rate is not supported.")
 
     @classmethod
-    def default_config(cls) -> MultiheadAttention.Config:
-        cfg: MultiheadAttention.Config = super().default_config()
+    def default_config(cls) -> Config:
+        cfg: FlashAttention.Config = super().default_config()
         cfg.dropout.rate = None
         cfg.per_dim_scale = None
         cfg.atten_logit_cap = None
@@ -66,6 +72,8 @@ class FlashAttention(MultiheadAttention):
         v_proj: Tensor,
         attention_logit_biases: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
+        cfg = self.config
+
         if attention_logit_biases is not None:
             if attention_logit_biases.ndim != 4:
                 raise ValueError(
@@ -77,7 +85,7 @@ class FlashAttention(MultiheadAttention):
         @jax.jit
         def jit_mha(query, key, value, bias):
             return mha(
-                query, key, value, bias=bias, causal=False, softmax_scale=self._scale_query(1)
+                query, key, value, bias=bias, causal=cfg.causal, softmax_scale=self._scale_query(1)
             )
 
         mesh = thread_resources.env.physical_mesh

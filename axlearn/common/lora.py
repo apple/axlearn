@@ -58,8 +58,7 @@ class _BaseLoraAdapter(BaseLayer):
         # It is required that rank > 0.
         rank: Required[int] = REQUIRED
 
-        # Value alpha/rank is used to scale the output of LoRA Adapter. When alpha is zero,
-        # the scaling is set to 1 (i.e., no output scaling).
+        # Value alpha/rank is used to scale the output of LoRA Adapter.
         alpha: Required[float] = REQUIRED
 
         # Drop out input for LoRA layer. This dropout rate can be set differently from
@@ -80,7 +79,7 @@ class _BaseLoraAdapter(BaseLayer):
     @property
     def scaling(self):
         cfg = self.config
-        if cfg.rank > 0 and cfg.alpha != 0:
+        if cfg.rank > 0:
             return cfg.alpha / cfg.rank
         else:
             return 1

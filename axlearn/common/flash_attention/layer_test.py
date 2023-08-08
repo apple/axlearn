@@ -22,7 +22,11 @@ except ModuleNotFoundError as e:
         allow_module_level=True,
     )
 
-from axlearn.common.attention import NEG_INF, MultiheadAttention
+from axlearn.common.attention import (
+    MultiheadAttention,
+    apply_attention_logit_biases,
+    make_causal_mask,
+)
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
 from axlearn.common.layers import set_bias_recursively
@@ -47,13 +51,10 @@ def _fake_inputs(*, batch: int, num_heads: int, seq_len: int, hidden_dim: int):
         [batch, seq_len, hidden_dim],
         dtype=jnp.bfloat16,
     )
-    bias = (
-        jnp.array(
-            jax.random.randint(
-                jax.random.PRNGKey(3), [batch, num_heads, seq_len, seq_len], minval=0, maxval=2
-            )
-        )
-        * NEG_INF
+    bias = jax.random.normal(
+        jax.random.PRNGKey(3),
+        [batch, num_heads, seq_len, seq_len],
+        dtype=jnp.bfloat16,
     )
     return dict(query=query, key=key, value=value, attention_logit_biases=bias)
 
@@ -61,12 +62,15 @@ def _fake_inputs(*, batch: int, num_heads: int, seq_len: int, hidden_dim: int):
 class TestFlashAttention(TestCase):
     """Tests FlashAttention layer."""
 
-    @parameterized.parameters(
-        dict(batch=2, seq_len=384, num_heads=4, per_head_dim=32, mesh=(1, 1)),
-        dict(batch=2, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(1, 1)),
-        dict(batch=8, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(8, 1)),
+    @parameterized.product(
+        [
+            dict(batch=2, seq_len=384, num_heads=4, per_head_dim=32, mesh=(1, 1)),
+            dict(batch=2, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(1, 1)),
+            dict(batch=8, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(8, 1)),
+        ],
+        causal=[False, True],
     )
-    def test_forward(self, batch, seq_len, num_heads, per_head_dim, mesh):
+    def test_forward(self, batch, seq_len, num_heads, per_head_dim, mesh, causal):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
@@ -81,6 +85,7 @@ class TestFlashAttention(TestCase):
             )
             ref_cfg = MultiheadAttention.default_config().set(**kwargs)
             test_cfg = FlashAttention.default_config().set(**kwargs)
+            test_cfg.set(causal=causal)
             set_bias_recursively(ref_cfg, False)
             set_bias_recursively(test_cfg, False)
 
@@ -95,12 +100,18 @@ class TestFlashAttention(TestCase):
                 seq_len=seq_len,
                 hidden_dim=hidden_dim,
             )
+            ref_inputs = inputs
+            if causal:
+                # Apply causal mask to ref_inputs.
+                ref_inputs["attention_logit_biases"] = apply_attention_logit_biases(
+                    inputs["attention_logit_biases"], make_causal_mask(seq_len)
+                )
 
             ref_out, _ = F(
                 ref_layer,
                 prng_key=jax.random.PRNGKey(5),
                 state=params,
-                inputs=inputs,
+                inputs=ref_inputs,
                 is_training=True,
             )
             test_out, _ = F(
@@ -113,12 +124,15 @@ class TestFlashAttention(TestCase):
             # TODO(markblee): Test probs.
             self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
 
-    @parameterized.parameters(
-        dict(batch=2, seq_len=384, num_heads=4, per_head_dim=32, mesh=(1, 1)),
-        dict(batch=2, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(1, 1)),
-        dict(batch=8, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(8, 1)),
+    @parameterized.product(
+        [
+            dict(batch=2, seq_len=384, num_heads=4, per_head_dim=32, mesh=(1, 1)),
+            dict(batch=2, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(1, 1)),
+            dict(batch=8, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(8, 1)),
+        ],
+        causal=[False, True],
     )
-    def test_backward(self, batch, seq_len, num_heads, per_head_dim, mesh):
+    def test_backward(self, batch, seq_len, num_heads, per_head_dim, mesh, causal):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
@@ -160,7 +174,7 @@ class TestFlashAttention(TestCase):
                 layer=MultiheadAttention.default_config().set(**kwargs),
             )
             test_cfg = DummyModel.default_config().set(
-                layer=FlashAttention.default_config().set(**kwargs),
+                layer=FlashAttention.default_config().set(**kwargs).set(causal=causal),
             )
             set_bias_recursively(ref_cfg, False)
             set_bias_recursively(test_cfg, False)
@@ -175,6 +189,12 @@ class TestFlashAttention(TestCase):
                 seq_len=seq_len,
                 hidden_dim=hidden_dim,
             )
+            ref_inputs = inputs
+            if causal:
+                # Apply causal mask to ref_inputs.
+                ref_inputs["attention_logit_biases"] = apply_attention_logit_biases(
+                    inputs["attention_logit_biases"], make_causal_mask(seq_len)
+                )
 
             def loss(params, inputs, layer):
                 loss, _ = F(
@@ -186,7 +206,7 @@ class TestFlashAttention(TestCase):
                 )
                 return loss
 
-            ref_value, ref_grads = jax.value_and_grad(loss)(params, inputs, ref_layer)
+            ref_value, ref_grads = jax.value_and_grad(loss)(params, ref_inputs, ref_layer)
             test_value, test_grads = jax.value_and_grad(loss)(params, inputs, test_layer)
 
             self.assertNestedAllClose(ref_value, test_value, atol=1e-5)
