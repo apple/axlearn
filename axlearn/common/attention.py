@@ -2437,18 +2437,35 @@ class BaseStackedTransformerLayer(BaseTransformerLayer):
 class StackedTransformerLayer(BaseStackedTransformerLayer):
     """A simple implementation of BaseStackedTransformerLayer."""
 
-    Config = BaseStackedTransformerLayer.Config
+    @config_class
+    class Config(BaseStackedTransformerLayer.Config):
+        """Configures StackedTransformerLayer."""
+
+        # If `layer` is a Config, it will be stacked cfg.num_layers times. If `layer` is a
+        # sequence of Configs, the sequence length should match cfg.num_layers.
+        layer: Union[
+            BaseTransformerLayer.Config, Sequence[BaseTransformerLayer.Config]
+        ] = TransformerLayer.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        if cfg.layer.input_dim is not REQUIRED:
-            raise ValueError(
-                f"Do not set Config.layer.input_dim. Set Config.input_dim instead: {cfg.layer}"
-            )
+        if isinstance(cfg.layer, Sequence):
+            layer_cfgs = cfg.layer
+            if len(layer_cfgs) != cfg.num_layers:
+                raise ValueError(
+                    f"Number of layer configs ({len(layer_cfgs)}) must match "
+                    f"cfg.num_layers ({cfg.num_layers})."
+                )
+        else:
+            layer_cfgs = [cfg.layer] * cfg.num_layers
         self._layers = []
-        for i in range(cfg.num_layers):
-            layer_cfg = cfg.layer.set(input_dim=cfg.input_dim)
+        for i, layer_cfg in enumerate(layer_cfgs):
+            if layer_cfg.input_dim is not REQUIRED:
+                raise ValueError(
+                    f"Do not set Config.layer.input_dim. Set Config.input_dim instead: {layer_cfg}"
+                )
+            layer_cfg = layer_cfg.clone(input_dim=cfg.input_dim)
             if cfg.peak_stochastic_depth_rate:
                 layer_rate = get_stochastic_depth_linear_rate(
                     cfg.peak_stochastic_depth_rate,

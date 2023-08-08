@@ -2301,6 +2301,50 @@ class StackedTransformerTest(TestCase):
             with self.assertRaises(ValueError):
                 cfg.instantiate(parent=None)
 
+    @parameterized.product(is_training=(True, False))
+    def test_stacked_transformer_with_seq_layer_cfgs(self, is_training):
+        batch_size = 2
+        seq_len = 16
+        input_dim = 4
+        hidden_dim = 16
+        num_layers = 4
+        num_heads = 4
+
+        # Create a StackedTransformerLayer by specifying a sequence of layer configs.
+        cfg = StackedTransformerLayer.default_config().set(name="test")
+        cfg.input_dim = input_dim
+        cfg.num_layers = num_layers
+        transformer_cfg = TransformerLayer.default_config()
+        transformer_cfg.self_attention.attention.num_heads = num_heads
+        transformer_cfg.feed_forward.hidden_dim = hidden_dim
+        cfg.layer = (transformer_cfg,) * num_layers
+        layer: StackedTransformerLayer = cfg.instantiate(parent=None)
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim))
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        outputs, _ = F(
+            layer,
+            is_training=is_training,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(data=inputs),
+        )
+        # Create a ref StackedTransformerLayer with repeating the default layer cfg.
+        ref_cfg = StackedTransformerLayer.default_config().set(name="test")
+        ref_cfg.input_dim = input_dim
+        ref_cfg.num_layers = num_layers
+        ref_cfg.layer.self_attention.attention.num_heads = num_heads
+        ref_cfg.layer.feed_forward.hidden_dim = hidden_dim
+        ref_layer: StackedTransformerLayer = ref_cfg.instantiate(parent=None)
+        ref_outputs, _ = F(
+            ref_layer,
+            is_training=is_training,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(data=inputs),
+        )
+        assert_allclose(outputs.data, ref_outputs.data)
+        assert_allclose(outputs.self_attention_probs, ref_outputs.self_attention_probs)
+
 
 class ConfigHelperTest(TestCase):
     """Tests config utils."""

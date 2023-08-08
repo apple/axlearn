@@ -6,14 +6,32 @@ executors:
 jobs:
   build-and-test-job:
     executor: build-and-test-executor
+    parallelism: 5
     resource_class: large
     steps:
       - checkout
       - setup_remote_docker:
           docker_layer_caching: true
       - run:
-          command: docker build -t axlearn --target=ci .
           no_output_timeout: 1h
+          command: |
+            circleci tests glob "axlearn/**/*_test.py" > pytest_files.txt
+
+            # TODO(ya5ut,markblee): assess --split-by=timing
+            cat pytest_files.txt | circleci tests split --split-by=name > pytest_files_split.txt
+
+            set -o xtrace
+
+            ls -la
+            cat -n pytest_files.txt       | tail -n 5
+            cat -n pytest_files_split.txt | tail -n 5
+
+            # Docker's build arg will ignore strings after a newline.
+            SPLIT_TESTFILES_ONELINE=$(cat pytest_files_split.txt | tr '\n' ' ')
+
+            # Use single quotes to treat the whitespace-delimited file paths as a single string.
+            docker build --build-arg="PYTEST_FILES='${SPLIT_TESTFILES_ONELINE}'" -t mydockertarget --target=ci .
+
 workflows:
   build-and-test-workflow:
     jobs:
