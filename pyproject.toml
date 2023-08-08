@@ -78,6 +78,16 @@ dev = [
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
 ]
+# Requirements for GCP job management.
+gcp = [
+    "cloud-tpu-client",
+    "crcmod",
+    "google-api-python-client==1.8.0",
+    "google-auth==1.35.0",
+    "google-cloud-storage==2.2.1",
+    "google-cloud-core==1.7.3",
+    "toml",  # for config management
+]
 # Note: Currently tested on x86.
 t5x = [
     "t5==0.9.4",

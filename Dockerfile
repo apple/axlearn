@@ -40,7 +40,7 @@ RUN pip install --upgrade pip
 # Leverage multi-stage build for unit tests.
 FROM base as ci
 
-RUN pip install .[dev]
+RUN pip install .[dev,gcp]
 COPY . .
 
 # Defaults to an empty string, i.e. run pytest against all files.
