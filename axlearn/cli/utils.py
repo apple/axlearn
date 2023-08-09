@@ -3,6 +3,7 @@
 """Helper utilities."""
 
 import functools
+import os
 import re
 import shlex
 import signal
@@ -49,6 +50,12 @@ def absl_main(args: argparse_flags.argparse.Namespace, **kwargs) -> int:
 
     returncode = 0
     try:
+        # In some cases, e.g. invoking a MODULE type command, argv[0] can potentially change. In
+        # these cases, we make it available via env variable.
+        env = kwargs.get("env", os.environ.copy())
+        env["AXLEARN_CLI_NAME"] = args.argv[0]
+        kwargs["env"] = env
+
         # Invoke a module.
         if args.command_type == CommandType.MODULE:
             proc = subprocess_run(
