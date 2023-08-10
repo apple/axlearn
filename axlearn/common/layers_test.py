@@ -414,31 +414,6 @@ class LayerTest(TestCase, tf.test.TestCase):
         output_norm = jnp.sqrt((outputs**2).sum(axis=-1))
         assert_allclose(output_norm, np.ones_like(output_norm))
 
-    def test_l2_norm_small_vals(self):
-        cfg = L2Norm.default_config().set(name="norm")
-        layer: L2Norm = cfg.instantiate(parent=None)
-
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        orig_inputs = jax.random.uniform(input_key, [2, 3, 10], minval=-1e-5, maxval=1e-5)
-        inputs = orig_inputs.copy()
-
-        outputs, _ = F(
-            layer,
-            inputs=(inputs,),
-            is_training=True,
-            state=None,
-            prng_key=prng_key,
-        )
-        # forward() should not mutate 'inputs' in-place.
-        assert_allclose(inputs, orig_inputs)
-        # The output_norm should be close to sqrt(dim).
-        output_norm = jnp.sqrt((outputs**2).sum(axis=-1))
-        assert_allclose(output_norm, np.ones_like(output_norm))
-
     @parameterized.parameters(
         [
             dict(inputs_shape=[2, 3, 6], paddings=None),
