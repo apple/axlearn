@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Normalization utils."""
-import jax.numpy as jnp
+import jax
 
 from axlearn.common.utils import Tensor
 
@@ -17,5 +17,5 @@ def l2_normalize(x: Tensor, eps: float = 1e-8, axis: int = -1) -> Tensor:
     Returns:
         A Tensor with the same shape as x.
     """
-    l2_norm = jnp.linalg.norm(x, ord=2, axis=axis, keepdims=True)
-    return jnp.divide(x, jnp.maximum(l2_norm, eps))
+    sum2 = (x * x).sum(axis=axis, keepdims=True)
+    return x * jax.lax.rsqrt(sum2 + eps)
