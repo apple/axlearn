@@ -460,7 +460,8 @@ def every_n_steps_policy(n: int = 1, *, min_step: int = 1) -> EvalPolicy:
                 step,
                 min_step,
             )
-        return step >= min_step and step % n == 0
+        #return step >= min_step and step % n == 0
+        return step % n == 0
 
     return fn
 
