@@ -278,6 +278,38 @@ class OptimizerTest(TestCase):
             )
         )
 
+    @parameterized.product(
+        mu_dtype=(None, jnp.bfloat16, jnp.float32), params_dtype=(jnp.bfloat16, jnp.float32)
+    )
+    def test_lion_optimizer_dtype(self, mu_dtype, params_dtype):
+        """Tests that dtypes are consistent between init, update and partition."""
+
+        # Construct params.
+        params = OptParam(
+            value=jnp.array(0, dtype=params_dtype),
+            factorization_spec=None,
+            weight_decay_scale=None,
+        )
+        param_specs = ParameterSpec(shape=params.shape, dtype=params.dtype)
+        grads = jnp.array(0, dtype=params_dtype)
+
+        # Construct states.
+        base = lion_optimizer(learning_rate=1.0, b1=0.9, b2=0.99, mu_dtype=mu_dtype)
+        init_state = base.init(params)
+        partition_state = base.partition(param_specs)
+        _, update_state = base.update(grads, init_state, params)
+
+        logging.info("init_state=%s", init_state)
+        logging.info("partition_state=%s", partition_state)
+        logging.info("update_state=%s", update_state)
+
+        def _check_dtypes(x, y, z):
+            self.assertTrue(
+                getattr(x, "dtype", None) == getattr(y, "dtype", None) == getattr(z, "dtype", None)
+            )
+
+        jax.tree_util.tree_map(_check_dtypes, init_state, partition_state, update_state)
+
     def _test_optimizer(self, optimizer):
         params = OptParam(
             value=jnp.asarray([0, 1, 2, -3], dtype=jnp.float32),
