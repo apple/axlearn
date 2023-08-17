@@ -1076,48 +1076,49 @@ def scale_by_lion(
     b1: float = 0.9,
     b2: float = 0.99,
     mu_dtype: Optional[Any] = None,
-) -> optax.GradientTransformation:
+) -> PartitionedGradientTransformation:
     """Rescale updates according to the Lion algorithm.
 
     Args:
-      b1: rate for combining moment and the current grad.
-      b2: decay rate for the exponentially weighted average of grads.
-      mu_dtype: optional `dtype` to be used for the first order accumulator; if
-        `None` then the `dtype is inferred from `params` and `updates`.
+        b1: Rate for combining moment and the current grad.
+        b2: Decay rate for the exponentially weighted average of grads.
+        mu_dtype: Optional `dtype` to be used for the first order accumulator; if
+            `None` then the `dtype is inferred from `params` and `updates`.
 
     Returns:
-      A `GradientTransformation` object.
+        A `GradientTransformation` object.
     """
 
     def init_fn(params):
-        mu = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, dtype=mu_dtype), params)  # moment
+        mu = jax.tree_util.tree_map(
+            lambda t: jnp.zeros_like(t, dtype=mu_dtype or t.dtype), params
+        )  # moment
         return ScaleByLionState(count=jnp.zeros([], jnp.int32), mu=mu)
 
     def update_fn(updates, state, params=None):
         del params
         mu = optax.update_moment(updates, state.mu, b2, 1)
-        mu = jax.tree_map(lambda x: x.astype(mu_dtype), mu)
+        if mu_dtype is not None:
+            mu = jax.tree_map(lambda x: x.astype(mu_dtype), mu)
         count_inc = optax.safe_int32_increment(state.count)
         updates = jax.tree_util.tree_map(
             lambda g, m: jnp.sign((1.0 - b1) * g + b1 * m), updates, state.mu
         )
         return updates, ScaleByLionState(count=count_inc, mu=mu)
 
-    return optax.GradientTransformation(init_fn, update_fn)
-
-
-def lion_partition(base: optax.GradientTransformation) -> PartitionedGradientTransformation:
-    state: ScaleByLionState = base.init({})
-
     def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
+        mu_specs = param_specs
+        if mu_dtype is not None:
+            mu_specs = jax.tree_util.tree_map(
+                lambda param_spec: dataclasses.replace(param_spec, dtype=mu_dtype),
+                mu_specs,
+            )
         return ScaleByLionState(
-            count=OptStateSpec(
-                dtype=state.count.dtype, shape=state.count.shape, mesh_axes=PartitionSpec()
-            ),
-            mu=copy_partition(param_specs),
+            count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+            mu=copy_partition(mu_specs),
         )
 
-    return with_partition_fn(base, partition_fn)
+    return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
 def lion_optimizer(
@@ -1135,25 +1136,25 @@ def lion_optimizer(
     Adapted from https://github.com/google/automl/blob/master/lion/lion_optax.py
 
     Args:
-        learning_rate: the learning rate schedule.
-        b1: the exponential decay rate for the 1st moment estimates.
-        b2: the exponential decay rate for the 2nd moment estimates.
-        weight_decay: optional rate at which to decay weights.
-        weight_decay_per_param_scale: a Callable that returns a tree with same structure
+        learning_rate: The learning rate schedule.
+        b1: The exponential decay rate for the 1st moment estimates.
+        b2: The exponential decay rate for the 2nd moment estimates.
+        weight_decay: Optional rate at which to decay weights.
+        weight_decay_per_param_scale: A Callable that returns a tree with same structure
             as the params PyTree, where each leaf is a float representing the per-param decay scale.
             The scale will be applied on top of the global decay rate:
             effective_decay_rate = global_decay_rate * per_param_scale.
             If None, all leaves will have a scale of 1.
-        mu_dtype: optional `dtype` to be used for the first order accumulator;
+        mu_dtype: Optional `dtype` to be used for the first order accumulator;
             if `None` then the dtype is inferred from params and updates.
-        multiply_by_parameter_scale: if `True`, then scale learning_rate by
+        multiply_by_parameter_scale: If `True`, then scale learning_rate by
             parameter RMS. if `False`, provided learning_rate is absolute step size.
             Usually this should be left as False.
 
     Returns:
         A PartitionedGradientTransformation representing an Lion optimizer with parameter scalin.
     """
-    tx = [lion_partition(scale_by_lion(b1=b1, b2=b2, mu_dtype=mu_dtype))]
+    tx = [scale_by_lion(b1=b1, b2=b2, mu_dtype=mu_dtype)]
     if multiply_by_parameter_scale:
         tx.append(scale_by_param_block_rms())
     tx.extend(
