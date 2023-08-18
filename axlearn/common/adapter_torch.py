@@ -1387,7 +1387,7 @@ class ALiBiAttentionLogitBiasLayer(CausalAttentionLogitBiasLayer):
         )
         # Causal mask.
         return apply_attention_logit_biases(
-            alibi_mask, super().forward(segment_ids=segment_ids, positions=positions)
+            super().forward(segment_ids=segment_ids, positions=positions), alibi_mask
         )
 
 
