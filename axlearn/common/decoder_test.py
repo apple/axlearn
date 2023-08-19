@@ -155,7 +155,6 @@ class TestDecoder(TestCase):
         ],
         custom_attention_mask_cfg=[None, ALiBiAttentionLogitBiasLayer.default_config()],
         prefill_states=[True, False],
-        prefix_zero=[True, False],
     )
     def test_extend_step(
         self,
@@ -163,7 +162,6 @@ class TestDecoder(TestCase):
         stack_cfg: InstantiableConfig,
         custom_attention_mask_cfg: Optional[InstantiableConfig],
         prefill_states: bool,
-        prefix_zero: bool,
     ):
         batch_size, src_len, tgt_len, vocab_size = 2, 11, 6, 24
         num_layers, num_heads = 2, 4
@@ -196,17 +194,37 @@ class TestDecoder(TestCase):
         layer = cfg.set(name="test_extend_step").instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
-        # We ignore padding ids (0) for now to simplify the mask generation process.
-        if prefix_zero:
-            prefix = jnp.zeros([batch_size, 1], dtype=jnp.int32)
-        else:
-            prefix = jax.random.randint(
-                jax.random.PRNGKey(123), [batch_size, 1], minval=1, maxval=vocab_size - 1
+        # When prefilling, prefix can contain padding and eos.
+        if prefill_states:
+            input_ids = jax.random.randint(
+                jax.random.PRNGKey(124),
+                shape=[batch_size, tgt_len],
+                minval=0,
+                maxval=2,
             )
-        input_ids = jax.random.randint(
-            jax.random.PRNGKey(123), [batch_size, tgt_len - 1], minval=1, maxval=vocab_size - 1
-        )
-        input_ids = jnp.hstack([prefix, input_ids])
+            # Prefix lengths.
+            time_step = jnp.arange(batch_size)
+            prefix_mask = jnp.arange(tgt_len) < time_step[:, None]
+            # Explicitly fill positions >= prefix_length with pad_token_id.
+            # Note that each batch example may have a different prefix length.
+            # [batch_size, tgt_len].
+            input_ids = input_ids * prefix_mask + cfg.pad_token_id * (1 - prefix_mask)
+            # Set last token to a non-pad token, to fix the prefix length.
+            oh_indices = jax.nn.one_hot(time_step, tgt_len, dtype=input_ids.dtype)
+            input_ids = input_ids * (1 - oh_indices) + (cfg.pad_token_id + 1) * oh_indices
+        else:
+            # TODO(markblee): Remove this branch once beam search decode supports prefilling.
+            time_step = jnp.zeros(batch_size, dtype=jnp.int32)
+            input_ids = jnp.full([batch_size, tgt_len - 1], cfg.pad_token_id)
+            input_ids = jnp.concatenate(
+                [
+                    input_ids,
+                    jax.random.randint(
+                        jax.random.PRNGKey(123), [batch_size, 1], minval=0, maxval=vocab_size - 1
+                    ),
+                ],
+                axis=-1,
+            )
 
         cross_attention_data = None
         cross_attention_logit_biases = None
@@ -237,7 +255,6 @@ class TestDecoder(TestCase):
         )
 
         if prefill_states:
-            time_step = jnp.arange(batch_size)
             (initial_state, initial_outputs), _ = functional(
                 layer,
                 inputs=dict(
@@ -253,12 +270,9 @@ class TestDecoder(TestCase):
             )
             # Zero-out outputs starting from initial time_step, and test that we can recover the
             # full outputs by calling extend_step starting from time_step.
-            # [batch, tgt_len].
-            time_step_mask = jnp.arange(tgt_len) < time_step[:, None]
             # [batch, tgt_len, num_classes].
-            logits = initial_outputs["logits"] * time_step_mask[:, :, None]
+            logits = initial_outputs["logits"] * prefix_mask[:, :, None]
         else:
-            time_step = jnp.zeros(batch_size, dtype=jnp.int32)
             initial_state = layer.init_states(batch_size=batch_size, max_sequence_length=tgt_len)
             logits = jnp.zeros(shape=[batch_size, tgt_len, vocab_size])
 
@@ -309,7 +323,7 @@ class TestDecoder(TestCase):
         cross_attention_mode=["none", "full", "broadcast"],
         num_decodes=[5],
         # Each is of shape [batch], representing per-example prefix lengths.
-        prefix_length=[jnp.array([1, 1]), jnp.array([1, 3])],
+        prefix_length=[jnp.array([1, 1]), jnp.array([1, 3, 6])],
         method=["sample_decode", "beam_search_decode"],
         pad_token_id=[0, -1],
     )
@@ -325,7 +339,7 @@ class TestDecoder(TestCase):
     ):
         """Test beam search and sample decoding from a randomly initialized decoder."""
         with jax.checking_leaks():
-            batch_size, src_len, tgt_len, vocab_size = 2, 11, 6, 24
+            batch_size, src_len, tgt_len, vocab_size = prefix_length.shape[0], 11, 10, 6
             bos_id = eos_id = 1
             num_layers, num_heads = 3, 4
             hidden_dim, src_dim = 12, 10
@@ -386,11 +400,12 @@ class TestDecoder(TestCase):
                 jax.random.PRNGKey(0)
             )
 
-            # Do not include EOS id in the prefix.
             prefix = jax.random.randint(
                 jax.random.PRNGKey(124),
                 shape=[batch_size, tgt_len],
-                minval=2,
+                # Prefix can consist of any tokens, including pad and eos.
+                # TODO(markblee): Remove "else" once beam search decode supports prefilling.
+                minval=0 if method == "sample_decode" else 2,
                 maxval=vocab_size,
             )
             # Explicitly fill positions >= prefix_length with pad_token_id.
@@ -398,8 +413,9 @@ class TestDecoder(TestCase):
             # [batch_size, tgt_len].
             prefix_mask = jnp.arange(tgt_len) < prefix_length[:, None]
             prefix = prefix * prefix_mask + pad_token_id * (1 - prefix_mask)
-            # Set 0th position to BOS.
-            prefix = prefix.at[:, 0].set(bos_id)
+            # Set last token to a non-pad token, to fix the prefix length.
+            oh_indices = jax.nn.one_hot(prefix_length - 1, tgt_len, dtype=prefix.dtype)
+            prefix = prefix * (1 - oh_indices) + bos_id * oh_indices
 
             inputs = dict(
                 prefix=prefix,

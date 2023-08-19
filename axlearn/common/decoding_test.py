@@ -1128,7 +1128,9 @@ class DecodeTest(parameterized.TestCase):
             [1, num_decodes, 1],
         )
         prompt_mask = (jnp.arange(decode_length) < prompt_length)[:, None, :]
-        # Ensure pad_id and eos_id are not already in ref_tokens.
+        # Ensure pad_id and eos_id are not already in prompt_tokens.
+        # This is mainly because when decoding from scratch, padding is used to infer whether we're
+        # out of prompt, whereas in the prefill case we treat intermediate padding as within prompt.
         self.assertFalse(jnp.any(prompt_tokens == pad_id))
         self.assertFalse(jnp.any(prompt_tokens == eos_id))
 
