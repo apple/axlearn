@@ -284,10 +284,10 @@ class DecodingMixin(Module):
             prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
         )
         init_states, init_outputs = self.prefill_states(
-            # Compute initial time step based on prefix lengths. The prefix for each example in the
-            # batch should begin with a dummy prompt token (e.g. [BOS]). A pad token represents the
-            # end of the prefix and must be followed only by zero or more pad tokens.
-            time_step=(prefix != cfg.pad_token_id).sum(axis=-1) - 1,
+            # Compute initial time step based on prefix. We infer these from the last non-pad token
+            # in the prefix (i.e., the prefix itself can have pad tokens). If the prefix consists of
+            # all pad tokens, we start at index 0.
+            time_step=((prefix != cfg.pad_token_id) * jnp.arange(prefix.shape[1])).max(axis=-1),
             input_ids=input_ids,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
