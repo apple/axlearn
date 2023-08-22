@@ -31,6 +31,7 @@ dependencies = [
     "tensorflow-io-gcs-filesystem[tensorflow]; platform_machine == 'x86_64'",
     "tensorflow_text==2.8.2",  # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.21",  # used for supporting GDA checkpoints
+    "toml",  # for config management
     "typing-extensions>=4.2.0",  # needed for typing.Protocol
     "seqio@git+https://github.com/google/seqio.git@8efd5dc016bb626509bdf656e2bbcdfa8a7cf2d8",  # used for inputs
 ]
@@ -80,13 +81,17 @@ dev = [
 ]
 # Requirements for GCP job management.
 gcp = [
-    "cloud-tpu-client",
-    "crcmod",
+    "cloud-tpu-client",  # for creating and managing TPUs.
+    "crcmod",  # for file uploads.
     "google-api-python-client==1.8.0",
     "google-auth==1.35.0",
     "google-cloud-storage==2.2.1",
     "google-cloud-core==1.7.3",
-    "toml",  # for config management
+]
+# For TPU training.
+# Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
+tpu = [
+    "jax[tpu]==0.4.13",
 ]
 # Note: Currently tested on x86.
 t5x = [
@@ -102,6 +107,15 @@ jax_triton = [
     "nvidia-cudnn-cu12==8.9.2.26",
     # To avoid conflicting with jax.
     "tensorflow-cpu==2.8.0",
+]
+# Vertex AI tensorboard.
+vertexai_tensorboard = [
+    # Required to fix a `distro-info` bug we run into when using `tb_gcp_tensorboard` from
+    # `google_cloud_aiplatform[tensorboard]`. See:
+    # [1] https://bugs.launchpad.net/ubuntu/+source/distro-info/+bug/1991606
+    # [2] https://github.com/pypa/setuptools/issues/3772
+    "setuptools==65.7.0",
+    "google-cloud-aiplatform[tensorboard]",
 ]
 
 [tool.flit.module]

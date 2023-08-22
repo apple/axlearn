@@ -123,7 +123,6 @@ class TestUtils(parameterized.TestCase):
                 "--root_default=some_value",
             ],
         )
-        # Note: subprocess.run needs an actual fd, so StringIO won't work here.
         returncode, stdout, _ = _run(args)
         self.assertEqual(returncode, 0)
         self.assertEqual(stdout, "required: test1, optional: test2, root_default: some_value")
