@@ -42,19 +42,7 @@ import inspect
 import re
 import threading
 from dataclasses import dataclass
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    NamedTuple,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-    TypeVar,
-    Union,
-)
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
 
 import jax
 import numpy as np
@@ -426,12 +414,6 @@ class Module(Configurable):
             # Bind method_fn to self and override self.<method>.
             method_fn = partial_with_fn_metadata(method_fn, self)
             setattr(self, method_name, method_fn)
-
-    @property
-    def _auto_child_context_method_names(self) -> Set[str]:
-        return {
-            method for method in dir(self) if inspect.isfunction(getattr(type(self), method, None))
-        }
 
     def _methods_to_wrap_for_auto_child_context(self) -> Dict[str, Callable]:
         def _should_wrap_method(method: str) -> bool:
