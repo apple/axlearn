@@ -423,7 +423,7 @@ class Decoder(DecodingMixin, BaseLayer):
         pad_token_id: int = 0  # Int ID of the inputs to be masked for self-attention.
         eos_token_id: int = 1  # Int ID of the end of sequence token id.
         # Specifies how to partition the output logits of shape [batch, max_seq_len, vocab_size].
-        logits_partition_spec: Tuple[Union[Optional[str], Tuple[Optional[str]]]] = (
+        logits_partition_spec: Tuple[Union[Optional[str], Tuple[Optional[str]]], ...] = (
             "data",
             None,
             "model",
