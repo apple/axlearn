@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Sequence
 
 from absl import logging
-from oauth2client.client import GoogleCredentials
+from google.auth.credentials import Credentials
 
 from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.types import ResourceMap
@@ -70,7 +70,7 @@ class TPUCleaner(Cleaner):
         return already_terminated
 
     # pylint: disable-next=no-self-use
-    def _delete_batch(self, tpu_names: Sequence[str], *, credentials: GoogleCredentials):
+    def _delete_batch(self, tpu_names: Sequence[str], *, credentials: Credentials):
         """Deletes the TPU jobs with the given names.
 
         We handle deletes in a separate method for easier testing.
@@ -83,7 +83,7 @@ class TPUCleaner(Cleaner):
         still present and retry the delete if necessary.
         """
 
-        def _delete_tpu_async(tpu_name: str, *, credentials: GoogleCredentials):
+        def _delete_tpu_async(tpu_name: str, *, credentials: Credentials):
             try:
                 logging.info("Attempting to delete %s", tpu_name)
                 delete_tpu(tpu_name, credentials=credentials, wait=False)

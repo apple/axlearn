@@ -13,9 +13,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import cloud_tpu_client
 from absl import logging
+from google.auth.credentials import Credentials
 from googleapiclient import discovery, errors
 from googleapiclient.http import HttpRequest
-from oauth2client.client import GoogleCredentials
 
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import format_table
@@ -46,7 +46,7 @@ def create_tpu(
     name: str,
     *,
     tpu_type: str,
-    credentials: GoogleCredentials,
+    credentials: Credentials,
     bundler_type: str,
     num_slices: int = 1,
     metadata: Optional[Dict[str, str]] = None,
@@ -117,7 +117,7 @@ def _create_legacy_tpu(
     name: str,
     *,
     tpu_type: str,
-    credentials: GoogleCredentials,
+    credentials: Credentials,
     bundler_type: str,
     metadata: Optional[Dict[str, str]] = None,
 ):
@@ -206,7 +206,7 @@ def _create_legacy_tpu(
                 raise TPUCreationError("Failed to create TPU-VM") from e
 
 
-def delete_tpu(name: str, *, credentials: GoogleCredentials, wait: bool = True):
+def delete_tpu(name: str, *, credentials: Credentials, wait: bool = True):
     """Delete TPU.
 
     Args:
@@ -223,7 +223,7 @@ def delete_tpu(name: str, *, credentials: GoogleCredentials, wait: bool = True):
     _delete_legacy_tpu(name, credentials=credentials, wait=wait)
 
 
-def _delete_legacy_tpu(name: str, *, credentials: GoogleCredentials, wait: bool = True):
+def _delete_legacy_tpu(name: str, *, credentials: Credentials, wait: bool = True):
     """Delete TPU (using legacy quota).
 
     See `delete_tpu` docstring for details.
@@ -248,7 +248,7 @@ def _delete_legacy_tpu(name: str, *, credentials: GoogleCredentials, wait: bool 
         time.sleep(10)
 
 
-def list_tpu(credentials: GoogleCredentials) -> List[str]:
+def list_tpu(credentials: Credentials) -> List[str]:
     """List running TPUs.
 
     Args:
@@ -261,7 +261,7 @@ def list_tpu(credentials: GoogleCredentials) -> List[str]:
     return [el.name for el in info]
 
 
-def _delete_multislice_tpu(name: str, *, credentials: GoogleCredentials, wait: bool = True):
+def _delete_multislice_tpu(name: str, *, credentials: Credentials, wait: bool = True):
     """Delete multislice TPU.
 
     See `delete_tpu` docstring for details.
@@ -309,7 +309,7 @@ def _create_multislice_tpu(
     name: str,
     *,
     tpu_type: str,
-    credentials: GoogleCredentials,
+    credentials: Credentials,
     bundler_type: str,
     num_slices: int = 1,
     metadata: Optional[Dict[str, str]] = None,
@@ -406,7 +406,7 @@ class TpuInfo:
     metadata: Dict[str, Any]
 
 
-def list_tpu_info(credentials: GoogleCredentials) -> List[TpuInfo]:
+def list_tpu_info(credentials: Credentials) -> List[TpuInfo]:
     """Collect info for running TPUs.
 
     Args:
@@ -439,7 +439,7 @@ class QueuedResourceInfo(TpuInfo):
     reserved: bool
 
 
-def list_queued_resource_info(credentials: GoogleCredentials) -> List[QueuedResourceInfo]:
+def list_queued_resource_info(credentials: Credentials) -> List[QueuedResourceInfo]:
     """Collect info for live queued resources.
 
     Args:
@@ -468,7 +468,7 @@ def list_queued_resource_info(credentials: GoogleCredentials) -> List[QueuedReso
     return info
 
 
-def _qrm_resource(credentials: GoogleCredentials) -> discovery.Resource:
+def _qrm_resource(credentials: Credentials) -> discovery.Resource:
     """Build gcloud TPU v2alpha1 QueuedResource API resource.
 
     Args:
@@ -486,7 +486,7 @@ def _qrm_resource(credentials: GoogleCredentials) -> discovery.Resource:
     return resource
 
 
-def _tpu_resource(credentials: GoogleCredentials) -> discovery.Resource:
+def _tpu_resource(credentials: Credentials) -> discovery.Resource:
     """Build gcloud TPU v2alpha1 API resource.
 
     Args:
