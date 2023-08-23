@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
 from absl import logging
+from google.auth.credentials import Credentials
 from googleapiclient import discovery, errors
-from oauth2client.client import GoogleCredentials
 
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import format_table
@@ -36,7 +36,7 @@ def create_vm(
     *,
     vm_type: str,
     disk_size: int,
-    credentials: GoogleCredentials,
+    credentials: Credentials,
     bundler_type: str,
     metadata: Optional[Dict[str, str]] = None,
 ):
@@ -113,7 +113,7 @@ def create_vm(
                 time.sleep(10)
 
 
-def delete_vm(name: str, *, credentials: GoogleCredentials):
+def delete_vm(name: str, *, credentials: Credentials):
     """Delete VM.
 
     Args:
@@ -163,7 +163,7 @@ class VmInfo:
     metadata: Dict[str, Any]
 
 
-def list_vm_info(credentials: GoogleCredentials) -> List[VmInfo]:
+def list_vm_info(credentials: Credentials) -> List[VmInfo]:
     """List running VMs for the given project and zone.
 
     Args:
@@ -189,7 +189,7 @@ def list_vm_info(credentials: GoogleCredentials) -> List[VmInfo]:
     return results
 
 
-def _compute_resource(credentials: GoogleCredentials) -> discovery.Resource:
+def _compute_resource(credentials: Credentials) -> discovery.Resource:
     """Build gcloud compute v1 API resource.
 
     Args:
@@ -325,7 +325,7 @@ def _get_vm_node(name: str, resource: discovery.Resource) -> Optional[Dict[str, 
     return None if not nodes else nodes.pop()
 
 
-def list_disk_images(creds: GoogleCredentials) -> List[str]:
+def list_disk_images(creds: Credentials) -> List[str]:
     """Lists available disk images in the configured `image_project`.
 
     Args:
