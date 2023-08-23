@@ -2,7 +2,7 @@
 
 """Decoder layers."""
 import contextlib
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import jax
 from jax import numpy as jnp
@@ -422,6 +422,12 @@ class Decoder(DecodingMixin, BaseLayer):
         lm_head: Optional[InstantiableConfig] = None
         pad_token_id: int = 0  # Int ID of the inputs to be masked for self-attention.
         eos_token_id: int = 1  # Int ID of the end of sequence token id.
+        # Specifies how to partition the output logits of shape [batch, max_seq_len, vocab_size].
+        logits_partition_spec: Tuple[Union[Optional[str], Tuple[Optional[str]]], ...] = (
+            "data",
+            None,
+            "model",
+        )
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -489,7 +495,7 @@ class Decoder(DecodingMixin, BaseLayer):
             # Reuse the token embedding.
             with child_context("emb_attend", module=self.emb):
                 logits = self.emb.attend(x)
-        logits = with_sharding_constraint(logits, PartitionSpec("data", None, "model"))
+        logits = with_sharding_constraint(logits, PartitionSpec(*self.config.logits_partition_spec))
         # TODO(markblee): Rename to just "transformer". "transformer_state" is a bit redundant.
         return dict(transformer_state=transformer_state), dict(logits=logits, hidden_states=x)
 
