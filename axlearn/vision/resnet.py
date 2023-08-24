@@ -538,7 +538,7 @@ class ResNet(BaseLayer):
 
         # The ResNet block layers.
         self._endpoints_dims = {}
-        use_bottleneck = cfg.stage.block.cls == Bottleneck
+        use_bottleneck = cfg.stage.block.klass == Bottleneck
         for stage_i, num_blocks in enumerate(cfg.num_blocks_per_stage):
             if use_bottleneck:
                 output_dim = hidden_dim * 4 if stage_i == 0 else hidden_dim * 2

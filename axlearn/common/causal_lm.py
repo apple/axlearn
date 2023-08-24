@@ -339,7 +339,7 @@ def gpt_decoder_config(
     """
     stack_cfg = stack_cfg.clone()
 
-    assert stack_cfg.cls in [
+    assert stack_cfg.klass in [
         StackedTransformerLayer,
         RepeatedTransformerLayer,
         PipelinedTransformerLayer,

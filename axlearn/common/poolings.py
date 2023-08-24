@@ -69,8 +69,10 @@ class AttentionPooling(BasePoolingLayer):
     @classmethod
     def default_config(cls) -> Config:
         cfg: AttentionPooling.Config = super().default_config()
-        cfg.cross_attention.attention.num_heads = 1  # pylint: disable=no-member
-        cfg.feed_forward.hidden_dim = scaled_hidden_dim(scale=4)  # pylint: disable=no-member
+        # pylint: disable=no-member  # pytype: disable=attribute-error
+        cfg.cross_attention.attention.num_heads = 1
+        cfg.feed_forward.hidden_dim = scaled_hidden_dim(scale=4)
+        # pylint: enable=no-member  # pytype: enable=attribute-error
         return cfg
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
