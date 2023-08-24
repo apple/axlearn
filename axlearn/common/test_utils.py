@@ -360,12 +360,16 @@ class DummyDecodingModel(BaseModel):
 
         # Initializes the cache for the beam search.
         init_cache = {}
-        init_cache["cur_step"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
+        cur_step = jnp.zeros((batch_size, 1), dtype=jnp.int32)
         inputs = jnp.zeros_like(predicted_sequences)
         if "prefix" in input_batch:
             inputs = inputs.at[:, : input_batch["prefix"].shape[1]].set(input_batch["prefix"])
+            cur_step = decoding.infer_initial_time_step(inputs, pad_id=0)
+
+        init_cache["cur_step"] = cur_step
         return decoding.beam_search_decode(
             inputs=inputs,
+            time_step=cur_step,
             cache=init_cache,
             tokens_to_scores=self._token_to_scores(predicted_sequences, num_decodes),
             eos_id=cfg.eos_id,
@@ -389,13 +393,14 @@ class DummyDecodingModel(BaseModel):
         predicted_sequences = input_batch["predicted"]
         batch_size = predicted_sequences.shape[0]
 
-        # Initializes the cache for the beam search.
+        # Initializes the cache for sample decoding.
         init_cache = {}
         init_cache["cur_step"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
         inputs = jnp.zeros_like(predicted_sequences)
         inputs = inputs.at[:, 0].set(cfg.eos_id)
         return decoding.sample_decode(
             inputs=inputs,
+            time_step=init_cache["cur_step"],
             cache=init_cache,
             tokens_to_scores=self._token_to_scores(
                 predicted_sequences,
