@@ -14,15 +14,12 @@ from transformers import GPT2Config, GPT2LMHeadModel
 
 from axlearn.common import encoder_decoder, utils
 from axlearn.common.attention import StackedTransformerLayer, TransformerAttentionLayer
-from axlearn.common.bert import (
-    bert_embedding_config,
-    bert_transformer_config,
-    set_layer_norm_eps_recursively,
-)
+from axlearn.common.bert import bert_embedding_config, bert_transformer_config
 from axlearn.common.bert_test import bert_encoder_config_from_hf
 from axlearn.common.causal_lm import gpt_decoder_config
 from axlearn.common.decoder import Decoder, LmHead
 from axlearn.common.encoder import Encoder
+from axlearn.common.layers import set_layer_norm_eps_recursively
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor, parameters_from_t5x_encoder_decoder
 from axlearn.common.t5 import t5_encoder_decoder_config
