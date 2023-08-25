@@ -30,6 +30,7 @@ from axlearn.common.decoding import (
     StopDecodingCondition,
     StopOnSubsequence,
     beam_search_decode,
+    infer_initial_time_step,
     sample_decode,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
@@ -121,6 +122,7 @@ class DecodingMixin(Module):
         pad_token_id: Required[int] = REQUIRED
         eos_token_id: Required[int] = REQUIRED
 
+    # TODO(markblee): Remove this in favor of prefill_states.
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
         """Initializes cache for autoregressive cached decoding.
 
@@ -200,7 +202,7 @@ class DecodingMixin(Module):
         num_decodes: int,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-        brevity_penalty: Optional[Callable[[jnp.array, Tensor], jnp.array]] = None,
+        brevity_penalty: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
     ) -> BeamSearchOutputs:
         """Perform beam search decoding.
 
@@ -213,8 +215,7 @@ class DecodingMixin(Module):
             cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
             cross_attention_logit_biases: A Tensor of shape [batch_size, target_len, source_len].
                 A -inf represents a disconnected position pair.
-            brevity_penalty: Brevity penalty function to add length normalization
-                in the beam search.
+            brevity_penalty: Brevity penalty function for length normalization during beam search.
 
         Returns:
             The beam search outputs.
@@ -229,13 +230,20 @@ class DecodingMixin(Module):
             cross_attention_logit_biases=cross_attention_logit_biases,
             logits_modifier=None,
         )
+        input_ids = self._pad(
+            prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
+        )
+        time_step = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id)
+        init_states, _ = self.prefill_states(
+            time_step=time_step,
+            input_ids=input_ids,
+            cross_attention_data=cross_attention_data,
+            cross_attention_logit_biases=cross_attention_logit_biases,
+        )
         return beam_search_decode(
-            inputs=self._pad(
-                prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
-            ),
-            cache=self.init_states(
-                batch_size=prefix.shape[0], max_sequence_length=max_sequence_length
-            ),
+            inputs=input_ids,
+            time_step=time_step,
+            cache=init_states,
             tokens_to_scores=tokens_to_scores_fn,
             eos_id=cfg.eos_token_id,
             num_decodes=num_decodes,
@@ -283,11 +291,9 @@ class DecodingMixin(Module):
         input_ids = self._pad(
             prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
         )
+        time_step = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id)
         init_states, init_outputs = self.prefill_states(
-            # Compute initial time step based on prefix. We infer these from the last non-pad token
-            # in the prefix (i.e., the prefix itself can have pad tokens). If the prefix consists of
-            # all pad tokens, we start at index 0.
-            time_step=((prefix != cfg.pad_token_id) * jnp.arange(prefix.shape[1])).max(axis=-1),
+            time_step=time_step,
             input_ids=input_ids,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
@@ -300,6 +306,7 @@ class DecodingMixin(Module):
         )
         return sample_decode(
             inputs=input_ids,
+            time_step=time_step,
             cache=init_states,
             tokens_to_scores=tokens_to_scores_fn,
             stop_decoding_condition=(
