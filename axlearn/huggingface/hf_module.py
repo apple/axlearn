@@ -11,7 +11,6 @@ import jax.numpy as jnp
 import jax.random
 import tensorflow as tf
 from absl import logging
-from flax.core.frozen_dict import freeze, unfreeze
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_flax_utils import FlaxPreTrainedModel
 
@@ -179,7 +178,7 @@ class HfModuleWrapper(BaseModel, ABC):
             hf_model = cfg.hf_model_type.from_pretrained(
                 local_pretrained_model_path, from_pt=cfg.from_pt
             )
-            hf_module_params = unfreeze(params[HF_MODULE_KEY])
+            hf_module_params = params[HF_MODULE_KEY]
             hf_module_params["params"] = {
                 key: (
                     value
@@ -188,7 +187,7 @@ class HfModuleWrapper(BaseModel, ABC):
                 )
                 for key, value in hf_model.params.items()
             }
-            params[HF_MODULE_KEY] = freeze(hf_module_params)
+            params[HF_MODULE_KEY] = hf_module_params
         return params
 
     def _dummy_input_kwargs(self) -> Dict[str, Optional[Tensor]]:  # pylint: disable=no-self-use
