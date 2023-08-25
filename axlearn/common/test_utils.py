@@ -19,20 +19,13 @@ from absl import logging
 from absl.testing import parameterized
 from jax import numpy as jnp
 
-from axlearn.common import decoding, optimizers, schedule, utils_spmd
+from axlearn.common import optimizers, schedule, utils_spmd
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import every_n_steps_policy
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_function,
-)
+from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import Learner
-from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.module import functional as F
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import opt_param_values
@@ -285,133 +278,6 @@ class DummyForwardModel(BaseModel):
 
     def predict(self, input_batch: NestedTensor) -> NestedTensor:
         return self.forward(input_batch)[1]
-
-
-# forward() is not implemented.
-# pylint: disable-next=abstract-method
-class DummyDecodingModel(BaseModel):
-    """A dummy model whose `beam_search_decode` and `sample_decode` returns ids from
-    input_batch["predicted"]."""
-
-    @config_class
-    class Config(BaseModel.Config):
-        vocab_size: Required[int] = REQUIRED
-        # bos_id: Required[int] = REQUIRED
-        eos_id: Required[int] = REQUIRED
-
-    def _token_to_scores(
-        self,
-        predicted_sequences: Tensor,
-        num_decodes: int,
-        logits_modifier: Optional[LogitsToLogitsFn] = None,
-    ):
-        cfg = self.config
-
-        print(f"predicted_sequences={predicted_sequences}")
-        batch_size = predicted_sequences.shape[0]
-        vocab_size = cfg.vocab_size
-
-        # This fn aims to duplicate the input sequences.
-        def tokens_to_scores(
-            token_indices: Tensor, state_cache: NestedTensor  # pylint: disable=unused-argument
-        ) -> Tuple[Tensor, NestedTensor]:
-            cur_step = state_cache["cur_step"]
-            # Gets the golden token for the next time step.
-            # [batch_size, num_decodes]
-            # Adds EOS after predicted_sequences.shape[1] (all tokens would be equally likely).
-            cur_golden_token = jnp.take_along_axis(
-                predicted_sequences,
-                jnp.reshape(cur_step[:, 0] + 1, (batch_size, num_decodes)),
-                axis=1,
-            )
-            print(f"cur_golden_token={cur_golden_token}, vocab_size={vocab_size}")
-            # Convert tokens to the logits by the one hot operation.
-            # The golden token's logit will be 1000 and others' are zeros.
-            # [batch_size * num_decodes, vocab_size]
-            logits_for_tokens = jnp.reshape(
-                jax.nn.one_hot(cur_golden_token, vocab_size, axis=-1) * 1000,
-                (batch_size * num_decodes, vocab_size),
-            )
-            log_probs_for_tokens = jax.nn.log_softmax(logits_for_tokens)
-            # Update state in the cache.
-            new_cache = state_cache.copy()
-            new_cache["cur_step"] = cur_step + 1
-            # Apply logits_modifier.
-            if logits_modifier is not None:
-                log_probs_for_tokens = logits_modifier(log_probs_for_tokens)
-            return log_probs_for_tokens, new_cache
-
-        return tokens_to_scores
-
-    def beam_search_decode(
-        self,
-        input_batch: NestedTensor,
-        *,
-        num_decodes: int = 1,
-        max_len: int = 114,
-    ) -> decoding.BeamSearchOutputs:
-        cfg = self.config
-
-        if "beam_search_outputs" in input_batch:
-            return input_batch["beam_search_outputs"]
-
-        predicted_sequences = input_batch["predicted"]
-        batch_size = predicted_sequences.shape[0]
-
-        # Initializes the cache for the beam search.
-        init_cache = {}
-        cur_step = jnp.zeros((batch_size, 1), dtype=jnp.int32)
-        inputs = jnp.zeros_like(predicted_sequences)
-        if "prefix" in input_batch:
-            inputs = inputs.at[:, : input_batch["prefix"].shape[1]].set(input_batch["prefix"])
-            cur_step = decoding.infer_initial_time_step(inputs, pad_id=0)
-
-        init_cache["cur_step"] = cur_step
-        return decoding.beam_search_decode(
-            inputs=inputs,
-            time_step=cur_step,
-            cache=init_cache,
-            tokens_to_scores=self._token_to_scores(predicted_sequences, num_decodes),
-            eos_id=cfg.eos_id,
-            num_decodes=num_decodes,
-            max_decode_len=max(max_len, predicted_sequences.shape[-1]),
-        )
-
-    def sample_decode(
-        self,
-        input_batch: NestedTensor,
-        *,
-        num_decodes: int,
-        max_len: int,
-        logits_modifier: LogitsToLogitsFn,
-    ) -> decoding.SampleOutputs:
-        cfg = self.config
-
-        if "sample_outputs" in input_batch:
-            return input_batch["sample_outputs"]
-
-        predicted_sequences = input_batch["predicted"]
-        batch_size = predicted_sequences.shape[0]
-
-        # Initializes the cache for sample decoding.
-        init_cache = {}
-        init_cache["cur_step"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
-        inputs = jnp.zeros_like(predicted_sequences)
-        inputs = inputs.at[:, 0].set(cfg.eos_id)
-        return decoding.sample_decode(
-            inputs=inputs,
-            time_step=init_cache["cur_step"],
-            cache=init_cache,
-            tokens_to_scores=self._token_to_scores(
-                predicted_sequences,
-                num_decodes,
-                logits_modifier=logits_modifier,
-            ),
-            stop_decoding_condition=decoding.StopOnSubsequence([[cfg.eos_id]]),
-            num_decodes=num_decodes,
-            max_decode_len=max(max_len, predicted_sequences.shape[-1]),
-            prng_key=jax.random.PRNGKey(123),
-        )
 
 
 class TestWithTemporaryCWD(TestCase):
