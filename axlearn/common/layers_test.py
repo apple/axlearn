@@ -61,6 +61,7 @@ from axlearn.common.layers import (
     get_stochastic_depth_linear_rate,
     set_bias_recursively,
     set_dropout_rate_recursively,
+    set_layer_norm_eps_recursively,
     set_norm_recursively,
 )
 from axlearn.common.module import Module, Tensor, child_context
@@ -2019,6 +2020,14 @@ class SetConfigTest(TestCase):
         self.assertEqual(0.1, cfg.transformer.layer.self_attention.dropout.rate)
         self.assertEqual(0.1, cfg.transformer.layer.feed_forward.dropout.rate)
         self.assertEqual(0.1, cfg.output_dropout.rate)
+
+    def test_set_layer_norm_eps_recursively(self):
+        cfg = Decoder.default_config()
+        self.assertEqual(1e-8, cfg.transformer.layer.self_attention.norm.eps)
+        self.assertEqual(1e-8, cfg.transformer.layer.feed_forward.norm.eps)
+        set_layer_norm_eps_recursively(cfg, 1e-5)
+        self.assertEqual(1e-5, cfg.transformer.layer.self_attention.norm.eps)
+        self.assertEqual(1e-5, cfg.transformer.layer.feed_forward.norm.eps)
 
 
 if __name__ == "__main__":
