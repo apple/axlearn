@@ -70,7 +70,7 @@ class GCSTarBundler(BaseTarBundler):
     TYPE = "gcs"
 
     @classmethod
-    def default_config(cls: BaseTarBundler.Config) -> BaseTarBundler.Config:
+    def default_config(cls):
         cfg = super().default_config()
         # Read from settings by default, if available.
         if ttl_bucket := gcp_settings("ttl_bucket", required=False):
@@ -98,7 +98,7 @@ class ArtifactRegistryBundler(DockerBundler):
     TYPE = "artifactregistry"
 
     @classmethod
-    def default_config(cls: DockerBundler.Config) -> DockerBundler.Config:
+    def default_config(cls):
         cfg = super().default_config()
         cfg.repo = gcp_settings("docker_repo", required=False)
         cfg.dockerfile = gcp_settings("default_dockerfile", required=False)
@@ -120,7 +120,7 @@ class CloudBuildBundler(BaseDockerBundler):
     TYPE = "cloudbuild"
 
     @classmethod
-    def default_config(cls: BaseDockerBundler.Config) -> BaseDockerBundler.Config:
+    def default_config(cls):
         cfg = super().default_config()
         cfg.repo = gcp_settings("docker_repo", required=False)
         cfg.dockerfile = gcp_settings("default_dockerfile", required=False)

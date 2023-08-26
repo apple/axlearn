@@ -79,7 +79,7 @@ class ConfigTest(absltest.TestCase):
         self.assertEmpty(cfg.items())
         self.assertNotIn("num_layers", cfg)
         self.assertEqual(
-            "<class 'axlearn.common.config.config_class("
+            "<class 'axlearn.common.config_test.config_class("
             f"{ConfigTest.__module__}.ConfigTest.test_definition.<locals>.EmptyConfig"
             ")'>",
             str(type(cfg)),
@@ -226,7 +226,7 @@ class ConfigTest(absltest.TestCase):
     def test_value_types(self):
         @config_class
         class TestConfig(ConfigBase):
-            sub: Optional[List] = None
+            sub: Optional[Any] = None
 
         cfg = TestConfig()
         # Config field values can be a list.
@@ -393,8 +393,8 @@ class ConfigTest(absltest.TestCase):
             f"config_for_class({Layer.__module__}.{Layer.__qualname__})", type(cfg).__name__
         )
         self.assertIsInstance(cfg, config.InstantiableConfig)
-        self.assertContainsSubset({"cls", "in_features", "out_features", "bias"}, cfg.keys())
-        self.assertEqual(cfg.cls, Layer)
+        self.assertContainsSubset({"klass", "in_features", "out_features", "bias"}, cfg.keys())
+        self.assertEqual(cfg.klass, Layer)
         self.assertIsInstance(cfg.in_features, config.RequiredFieldValue)
         self.assertIsInstance(cfg.out_features, config.RequiredFieldValue)
         self.assertTrue(
@@ -475,8 +475,8 @@ class ConfigTest(absltest.TestCase):
             foo: str = "hello world"
             bar: List[str] = ["a", "b", "c"]
             my_config: TestConfigA = TestConfigA()  # pytype: disable=invalid-annotation
-            config_dict: Dict[str, InstantiableConfig] = {"config_b": TestConfigB()}
-            config_list: List[InstantiableConfig] = [TestConfigB(), TestConfigB().set(count=1)]
+            config_dict: Dict[str, ConfigBase] = {"config_b": TestConfigB()}
+            config_list: List[ConfigBase] = [TestConfigB(), TestConfigB().set(count=1)]
             config_type: type = ConfigTest
             config_func: Callable = config.similar_names
 

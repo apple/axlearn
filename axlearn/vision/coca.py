@@ -384,10 +384,10 @@ def set_coca_vision_encoder_config(
     image_encoder_cfg.caption_pooler = caption_pooler_config.set(
         num_outputs=caption_pooler_num_outputs
     )
-    if caption_pooler_config.cls == AttentionPooling:
+    if caption_pooler_config.klass == AttentionPooling:
         image_encoder_cfg.caption_pooler.cross_attention.attention.num_heads = num_heads
     image_encoder_cfg.contrastive_pooler = contrastive_pooler_config.set(num_outputs=1)
-    if contrastive_pooler_config.cls == AttentionPooling:
+    if contrastive_pooler_config.klass == AttentionPooling:
         image_encoder_cfg.contrastive_pooler.cross_attention.attention.num_heads = num_heads
     image_encoder_cfg.pooler_mode = pooler_mode
     # Set up the Transformer.

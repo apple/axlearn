@@ -32,6 +32,7 @@ from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 from axlearn.common import attention, utils
 from axlearn.common.attention import (
     NEG_INF,
+    BaseStackedTransformerLayer,
     BottleNeckAdapterTransformerLayer,
     FusedQKVLinear,
     LearnedPositionalEmbedding,
@@ -60,7 +61,7 @@ from axlearn.common.attention import (
     xl_attention_logits,
 )
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec, RematSpec
-from axlearn.common.config import InstantiableConfig, config_class
+from axlearn.common.config import config_class
 from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
@@ -1751,7 +1752,7 @@ class TestStackModel(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
-        stack: InstantiableConfig = None  # The transformer stack.
+        stack: Optional[BaseStackedTransformerLayer.Config] = None  # The transformer stack.
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -2115,7 +2116,7 @@ class StackedTransformerTest(TestCase):
                     dtype=dtype,
                     remat_spec=remat_spec,
                 )
-                cls = cfg.stack.cls
+                cls = cfg.stack.klass
                 if cls == PipelinedTransformerLayer:
                     cfg.stack.num_microbatches = batch_size // 2
                     cfg.stack.num_stages = num_layers // 2
@@ -2219,18 +2220,18 @@ class StackedTransformerTest(TestCase):
 
                 if cls == PipelinedTransformerLayer:
                     for x in (layer_params, grads, summaries, updates):
-                        if cfg.stack.stage.cls == StackedTransformerLayer:
+                        if cfg.stack.stage.klass == StackedTransformerLayer:
                             # First stack within each stage.
                             x["stack"]["pipeline"]["layer"] = recursive_stack(
                                 x["stack"]["pipeline"]["layer"], axis=1
                             )
                             logging.info("x=%s", shapes(x))
-                        elif cfg.stack.stage.cls == RepeatedTransformerLayer:
+                        elif cfg.stack.stage.klass == RepeatedTransformerLayer:
                             x["stack"]["pipeline"]["layer"] = x["stack"]["pipeline"]["layer"][
                                 "repeat"
                             ]
                         else:
-                            raise NotImplementedError(cfg.stack.stage.cls)
+                            raise NotImplementedError(cfg.stack.stage.klass)
 
                         # Then reshape across stages.
                         x["stack"] = jax.tree_util.tree_map(

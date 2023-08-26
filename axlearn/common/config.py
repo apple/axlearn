@@ -67,7 +67,19 @@ import inspect
 import re
 import types
 from collections import defaultdict
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 # attr provides similar features as Python dataclass. Unlike
 # dataclass, however, it provides a richer set of features to regulate
@@ -85,12 +97,12 @@ def is_named_tuple(x: Any):
     """Returns whether an object is an instance of a collections.namedtuple.
 
     Examples::
-      is_named_tuple((42, 'hi')) ==> False
-      Foo = collections.namedtuple('Foo', ['a', 'b'])
-      is_named_tuple(Foo(a=42, b='hi')) ==> True
+        is_named_tuple((42, 'hi')) ==> False
+        Foo = collections.namedtuple('Foo', ['a', 'b'])
+        is_named_tuple(Foo(a=42, b='hi')) ==> True
 
     Args:
-      x: The object to check.
+        x: The object to check.
     """
     return isinstance(x, tuple) and hasattr(x, "_fields") and hasattr(x, "_asdict")
 
@@ -106,7 +118,7 @@ def is_attrs(x: Any):
         is_attrs(Foo(a=42, b='hi')) ==> True
 
     Args:
-      x: The object to check.
+        x: The object to check.
     """
     return hasattr(x, "__attrs_attrs__")
 
@@ -125,13 +137,13 @@ def similar_names(name: str, candidates: Iterable[str]) -> List[str]:
         return float(matches) / max(trials, 1)
 
     # Compute overlaps for each candidate.
-    candidates = [(overlaps(name, key), key) for key in candidates]
+    pairs = [(overlaps(name, key), key) for key in candidates]
     # Filter out candidates below 0.5 overlap threshold.
-    candidates = [pair for pair in candidates if pair[0] > 0.5]
+    pairs = [pair for pair in pairs if pair[0] > 0.5]
     # Sort by highest overlap, breaking ties alphabetically.
-    candidates.sort(key=lambda pair: (-pair[0], pair[1]))
+    pairs.sort(key=lambda pair: (-pair[0], pair[1]))
     # Return just the keys.
-    return [key for _, key in candidates]
+    return [key for _, key in pairs]
 
 
 T = TypeVar("T")
@@ -146,7 +158,7 @@ class RequiredFieldValue:
 
 
 REQUIRED = RequiredFieldValue()
-Required = Union[T, RequiredFieldValue]
+Required = Union[T, RequiredFieldValue, Any]
 
 
 class MissingConfigClassDecoratorError(TypeError):
@@ -236,13 +248,13 @@ def _validate_and_transform_field(instance, attribute, value):
     validate_config_field_name(attribute.name)
     validate_config_field_value(value)
 
-    # Exempt cls and fn from copying. Some packages, such as wrapt, decorate via an object proxy
-    # which is not copyable. Since cls is known to be a class, and fn is known to be a function, and
-    # since these attributes are generally not mutable, we skip the copy step. Other attributes
+    # Exempt klass and fn from copying. Some packages, such as wrapt, decorate via an object proxy
+    # which is not copyable. Since klass is known to be a class, and fn is known to be a function,
+    # and since these attributes are generally not mutable, we skip the copy step. Other attributes
     # which are also proxies are expected to define __deepcopy__, since it's not immediately obvious
     # how to detect that an object is in fact a proxy in the general case.
     if (isinstance(instance, FunctionConfigBase) and attribute.name == "fn") or (
-        isinstance(instance, ClassConfigBase) and attribute.name == "cls"
+        isinstance(instance, ClassConfigBase) and attribute.name == "klass"
     ):
         return value
 
@@ -261,7 +273,20 @@ def _validate_and_transform_field(instance, attribute, value):
 class ConfigBase:
     """The base class of config classes."""
 
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.__attrs_init__(*args, **kwargs)
+
+        attr_cls = type(self)
+        for k in dir(attr_cls):
+            if (
+                not k.startswith("__")
+                and k not in dir(InstantiableConfig)
+                and k not in attr.fields_dict(attr_cls)
+            ):
+                raise NonConfigFieldError(f"Non-config attribute is not supported: {attr_cls}.{k}")
+
+    def __attrs_init__(self):
         raise MissingConfigClassDecoratorError(f"{type(self)} was not decorated with @config_class")
 
     def __attrs_post_init__(self):
@@ -282,12 +307,12 @@ class ConfigBase:
         """Returns (key, value) pairs sorted by keys."""
         return [(key, getattr(self, key)) for key in self.keys()]
 
-    def set(self, **kwargs) -> "ConfigBase":
+    def set(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
         return self
 
-    def clone(self, **kwargs) -> "ConfigBase":
+    def clone(self, **kwargs):
         """Returns a clone of the original config with the optional keyword overrides.
 
         Unlike, :meth:`self.set`, this function does not modify the config in-place.
@@ -423,65 +448,56 @@ class ConfigBase:
 
 
 def _config_class_kwargs():
-    return dict(kw_only=True, slots=True, on_setattr=_validate_and_transform_field)
+    return dict(init=False, kw_only=True, slots=True, on_setattr=_validate_and_transform_field)
 
 
-def _wrap_config_attr_cls(attr_cls, *, name: Optional[str] = None):
-    """Wraps `attr_cls` to override `__{init,setattr,getattr}__`."""
-    assert issubclass(attr_cls, ConfigBase)
+def _wrap_config_attr_cls(attr_cls: Type, *, name: Optional[str] = None):
+    """Wraps `attr_cls` to override `__{setattr,getattr}__`."""
+    # pylint: disable=protected-access
 
-    # pylint: disable=too-many-instance-attributes
-    class ConfigClassWrapper(attr_cls):
-        """A wrapper classs around the given `attr_cls`."""
+    orig_setattr = attr_cls.__setattr__
 
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
-            for k in dir(attr_cls):
-                if (
-                    not k.startswith("__")
-                    and k not in dir(InstantiableConfig)
-                    and k not in attr.fields_dict(attr_cls)
-                ):
-                    raise NonConfigFieldError(
-                        f"Non-config attribute is not supported: {attr_cls}.{k}"
-                    )
+    def wrapped_setattr(self, key: str, value):
+        if key.startswith("__"):
+            self.__dict__[key] = value
+        else:
+            if key not in attr.fields_dict(attr_cls):
+                raise UnknownFieldError(self._key_error_string(key))
+            orig_setattr(self, key, value)
 
-        def __setattr__(self, key, value):
-            if key.startswith("__"):
-                self.__dict__[key] = value
-            else:
-                if key not in attr.fields_dict(attr_cls):
-                    raise UnknownFieldError(self._key_error_string(key))
-                super().__setattr__(key, value)
+    def wrapped_getattr(self, key: str) -> Any:
+        if key.startswith("__"):
+            try:
+                return self.__dict__[key]
+            except KeyError as e:
+                raise AttributeError(key) from e
+        else:
+            try:
+                return attr.asdict(self, recurse=False)[key]
+            except KeyError as e:
+                raise AttributeError(self._key_error_string(key)) from e
 
-        def __getattr__(self, key: str) -> Any:
-            if key.startswith("__"):
-                try:
-                    return self.__dict__[key]
-                except KeyError as e:
-                    raise AttributeError(key) from e
-            else:
-                try:
-                    return attr.asdict(self, recurse=False)[key]
-                except KeyError as e:
-                    raise AttributeError(self._key_error_string(key)) from e
-
-    # pylint: enable=too-many-instance-attributes
+    # Wrapping `attr_cls` with a class makes it tricky when working with generics. Instead, we
+    # patch `__setattr__` and `__getattr__` directly.
+    # TODO(markblee): See if there's a more clever way to use attrs to do this.
+    attr_cls.__setattr__ = wrapped_setattr
+    attr_cls.__getattr__ = wrapped_getattr
 
     name = name or f"config_class({attr_cls.__module__}.{attr_cls.__qualname__})"
-    # Instead of returning `ConfigClassWrapper` directly, define a dynamic subclass of it so that
-    # the name reflects attr_cls's original name.
-    #
-    # Note that setting ConfigClassWrapper.__name__ does not affect `str(type(cfg))`.
-    return type(name, (ConfigClassWrapper,), {})
+    attr_cls.__name__ = name
+    attr_cls.__qualname__ = name
+
+    # pylint: enable=protected-access
+    return attr_cls
 
 
-def config_class(cls, **kwargs):
+def config_class(cls: Type[T], **kwargs) -> Type[T]:
     if not issubclass(cls, ConfigBase):
         raise InvalidConfigClassError(f"A config class must be a subclass of ConfigBase: {cls}")
 
-    attr_cls = attr.define(**_config_class_kwargs(), **kwargs)(cls)
-    return _wrap_config_attr_cls(attr_cls)
+    attr_cls = attr.define(maybe_cls=cls, **_config_class_kwargs(), **kwargs)
+    # Pytype seems to infer attr_cls as a callable.
+    return _wrap_config_attr_cls(attr_cls)  # pytype: disable=wrong-arg-types
 
 
 def _validate_required_fields(cfg: ConfigBase):
@@ -492,8 +508,8 @@ def _validate_required_fields(cfg: ConfigBase):
             )
 
 
-class InstantiableConfig(ConfigBase):
-    def instantiate(self, **kwargs) -> Any:
+class InstantiableConfig(Generic[T], ConfigBase):
+    def instantiate(self, **kwargs) -> T:
         raise NotImplementedError(type(self))
 
 
@@ -504,6 +520,9 @@ def maybe_instantiate(x: ConfigOr[T]) -> T:
     if isinstance(x, InstantiableConfig):
         return x.instantiate()
     return x
+
+
+C = TypeVar("C", bound="Configurable")
 
 
 class Configurable:
@@ -529,32 +548,18 @@ class Configurable:
         config = MyObject.default_config()
         obj_a = config.instantiate(lock=lock)
         obj_b = config.instantiate(lock=lock)
-
-    TODO(rpang): support generic type annotations, so that we can have:
-
-    # C can represent any subclass of Configurable.
-    C = TypeVar("C", bound="Configurable")
-
-    @config_class
-    class Config(ConfigBase):
-        def instantiate(self: InstantiableConfig[C], **kwargs) -> C:
-            ...
-
-    @classmethod
-    def default_config(cls: Type[C]) -> InstantiableConfig[C]:
-        ...
     """
 
-    # pylint: disable=too-many-instance-attributes
     @config_class
-    class Config(InstantiableConfig):
+    class Config(InstantiableConfig[C]):
         """The base config class for a Configurable object."""
 
-        # Subclasses/users should not set `cls` explicitly.
+        # Subclasses/users should not set `klass` explicitly.
         # It will be set by Configurable.default_config().
-        cls: Type
+        # See ClassConfigBase for notes on why we name this `klass` rather than `cls`.
+        klass: Type[C]
 
-        def instantiate(self, **kwargs) -> "Configurable":
+        def instantiate(self, **kwargs) -> C:
             """Instantiates a Configurable object.
 
             Args:
@@ -562,7 +567,7 @@ class Configurable:
                     addition to this Config object.
 
             Returns:
-                A constructed object where type(object) == cls.
+                A constructed object where `type(object) == self.klass`.
 
             Raises:
                 RequiredFieldMissingError: If a required field is missing.
@@ -570,19 +575,21 @@ class Configurable:
             try:
                 _validate_required_fields(self)
             except RequiredFieldMissingError as e:
-                raise RequiredFieldMissingError(f"Failed to instantiate {self.cls}:\n\t{e}") from e
-            return self.cls(self, **kwargs)
+                raise RequiredFieldMissingError(
+                    f"Failed to instantiate {self.klass}:\n\t{e}"
+                ) from e
+            return self.klass(self, **kwargs)
 
     @classmethod
-    def default_config(cls: "Type[Configurable]") -> Config:
-        return cls.Config(cls=cls)  # pylint: disable=unexpected-keyword-arg
+    def default_config(cls: Type[C]) -> Config[C]:
+        return cls.Config(klass=cls)
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg):
         # Make a copy of `cfg` so that subsequent mutations to `cfg` won't affect self._config.
         self._config = copy.deepcopy(cfg)
 
     @property
-    def config(self):
+    def config(self: C) -> Config[C]:
         return copy.deepcopy(self._config)
 
     def __repr__(self):
@@ -628,16 +635,23 @@ def _prepare_args_and_kwargs(
 
 
 @config_class
-class FunctionConfigBase(InstantiableConfig):
-    fn: Callable
+class FunctionConfigBase(InstantiableConfig[T]):
+    """The base class of configs constructed by `config_for_function`, which invokes `self.fn` upon
+    instantiation.
+    """
 
-    def instantiate(self, **kwargs) -> Any:
+    fn: Callable[..., T]
+
+    def instantiate(self, **kwargs) -> T:
         _validate_required_fields(self)
         args = _prepare_args_and_kwargs(kwargs, sig=inspect.signature(self.fn), cfg=self)
         return self.fn(*args, **kwargs)
 
 
-def config_class_for_function(fn) -> Type[FunctionConfigBase]:
+F = TypeVar("F", bound=Callable)
+
+
+def _config_class_for_function(fn: F) -> Type[FunctionConfigBase]:
     """Returns a config class."""
     init_sig = inspect.signature(fn)
     config_attrs = {
@@ -646,7 +660,7 @@ def config_class_for_function(fn) -> Type[FunctionConfigBase]:
     return _wrap_config_attr_cls(
         attr.make_class(
             "FunctionConfig",
-            bases=(FunctionConfigBase,),
+            bases=(FunctionConfigBase[F],),
             attrs=config_attrs,
             **_config_class_kwargs(),
         ),
@@ -654,22 +668,31 @@ def config_class_for_function(fn) -> Type[FunctionConfigBase]:
     )
 
 
-def config_for_function(fn) -> FunctionConfigBase:
-    config_cls = config_class_for_function(fn)
-    return config_cls(fn=fn)  # pytype: disable=wrong-keyword-args
+def config_for_function(fn: Callable[..., T]) -> Union[Any, FunctionConfigBase[T]]:
+    config_cls = _config_class_for_function(fn)
+    return config_cls(fn=fn)
 
 
 @config_class
-class ClassConfigBase(InstantiableConfig):
-    cls: Type
+class ClassConfigBase(InstantiableConfig[T]):
+    """The base class of configs constructed by `config_for_class`, which constructs instances of
+    `self.klass` upon instantiation.
+    """
 
-    def instantiate(self, **kwargs) -> Any:
+    # Note: Generic classes come with a __new__(cls, *args, **kwds) method by default. Naming this
+    # field `cls` (or even `_cls`, since `attr.make_class` strips leading underscores when
+    # generating `__init__`) can cause conflicts.
+    klass: Type[T]
+
+    def instantiate(self, **kwargs) -> T:
         _validate_required_fields(self)
-        args = _prepare_args_and_kwargs(kwargs, sig=inspect.signature(self.cls.__init__), cfg=self)
-        return self.cls(*args, **kwargs)
+        args = _prepare_args_and_kwargs(
+            kwargs, sig=inspect.signature(self.klass.__init__), cfg=self
+        )
+        return self.klass(*args, **kwargs)
 
 
-def config_class_for_class(cls) -> Type[ClassConfigBase]:
+def _config_class_for_class(cls: Type[T]) -> Type[ClassConfigBase[T]]:
     """Returns a config class."""
     init_sig = inspect.signature(cls.__init__)
     config_attrs = {
@@ -679,15 +702,15 @@ def config_class_for_class(cls) -> Type[ClassConfigBase]:
     }
     return _wrap_config_attr_cls(
         attr.make_class(
-            "ClassConfig", bases=(ClassConfigBase,), attrs=config_attrs, **_config_class_kwargs()
+            "ClassConfig", bases=(ClassConfigBase[T],), attrs=config_attrs, **_config_class_kwargs()
         ),
         name=f"config_for_class({cls.__module__}.{cls.__qualname__})",
     )
 
 
-def config_for_class(cls) -> ClassConfigBase:
-    config_cls = config_class_for_class(cls)
-    return config_cls(cls=cls)  # pytype: disable=wrong-keyword-args
+def config_for_class(cls: Type[T]) -> Union[Any, ClassConfigBase[T]]:
+    config_cls = _config_class_for_class(cls)
+    return config_cls(klass=cls)
 
 
 def maybe_set_config(cfg: Configurable.Config, key: str, value: Any):
