@@ -228,7 +228,7 @@ class InferenceRunner(Module):
             self._inference_runner_state_partition_specs = jax.tree_util.tree_map(
                 lambda spec: spec.mesh_axes, self._inference_runner_state_specs
             )
-            logging.info("Building ckpt state from %s", cfg.init_state_builder.cls.__name__)
+            logging.info("Building ckpt state from %s", cfg.init_state_builder.klass.__name__)
             builder = cfg.init_state_builder.set(
                 name="init_state_builder",
             ).instantiate(parent=None)
@@ -238,7 +238,7 @@ class InferenceRunner(Module):
                 logging.warning(
                     "init_state_builder %s expects input_state_type StateType.TENSOR "
                     "but inference runner gives StateType.TENSOR_SPECS.",
-                    cfg.init_state_builder.cls.__name__,
+                    cfg.init_state_builder.klass.__name__,
                 )
 
             # See "On compatible trainer checkpoints for `InferenceRunner`" in the file docstring.
