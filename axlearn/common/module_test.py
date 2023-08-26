@@ -190,11 +190,13 @@ class NestedModule(Module):
         cfg = self.config
         # It is ok to call another method of 'self' directly, if it is invoked only once in the
         # current context.
+        self.vprint(1, "input={x} cfg.child=\n{child}", x=x, child=str(self.config.child))
         x = self.inc(x)
         if cfg.child is not None:
             # Can also call children directly, if each child is invoked only once.
             x = self.child1(x)
             x = self.child2(x)
+        self.vprint(1, "output={x}", x=x)
         return x
 
     def invoke_grandchildren(self, x):
@@ -289,7 +291,9 @@ class ModuleProvidingSharedChild(Module):
 
 class ModuleTest(absltest.TestCase):
     def test_parent_children(self):
-        cfg = NestedModule.default_config().set(name="root", child=NestedModule.default_config())
+        cfg = NestedModule.default_config().set(
+            name="root", child=NestedModule.default_config(), vlog=2
+        )
         root: NestedModule = cfg.instantiate(parent=None)
         self.assertIsInstance(root, NestedModule)
         self.assertEqual(root.path(), "root")

@@ -39,8 +39,10 @@ import copy
 import dataclasses
 import hashlib
 import inspect
+import os.path
 import re
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
 
@@ -476,6 +478,15 @@ class Module(Configurable):
     def vlog(self, level, msg, *args, **kwargs):
         if level <= self._vlog_level:
             logging.info(f"@{self.path()} {msg}", *args, **kwargs)
+
+    def vprint(self, level, msg, *args, **kwargs):
+        if level <= self._vlog_level:
+            ts = time.strftime("%m%d %T", time.gmtime(time.time()))
+            caller_frame = inspect.stack()[1]  # Get the frame of the caller (index 1)
+            filename = caller_frame.filename
+            line_number = caller_frame.lineno
+            fmt = f"{ts} {os.path.basename(filename)}:{line_number}] @{self.path()} " + msg
+            jax.debug.print(fmt, *args, **kwargs)
 
     def _add_child(
         self,
