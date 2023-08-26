@@ -6,13 +6,10 @@ import re
 import subprocess
 import sys
 
+import google.auth
 from absl import flags, logging
 from google.auth import exceptions as gauthexceptions
-from oauth2client.client import (
-    ApplicationDefaultCredentialsError,
-    GoogleCredentials,
-    HttpAccessTokenRefreshError,
-)
+from google.auth.credentials import Credentials
 
 from axlearn.cloud.common.utils import infer_cli_name
 
@@ -23,21 +20,19 @@ def common_flags():
     flags.DEFINE_string("zone", None, "The GCP zone name.")
 
 
-def get_credentials() -> GoogleCredentials:
+def get_credentials() -> Credentials:
     """Get gcloud credentials, or exits if unauthenticated.
 
     Returns:
         An authorized set of credentials.
     """
+
     try:
-        credentials = GoogleCredentials.get_application_default()
-        credentials.get_access_token()
-    except (
-        ApplicationDefaultCredentialsError,
-        gauthexceptions.RefreshError,
-        HttpAccessTokenRefreshError,
-    ):
+        credentials, project_id = google.auth.default()
+        logging.info("Using credential for project id = %s", project_id)
+    except (gauthexceptions.RefreshError, gauthexceptions.DefaultCredentialsError):
         logging.error("Please run '%s gcp auth' before this script.", infer_cli_name())
+        logging.error("Please also verify if default project id is correct.")
         sys.exit(1)
     return credentials
 

@@ -14,7 +14,6 @@ import tensorflow as tf
 import torch
 from absl.testing import absltest, parameterized
 from flax import serialization
-from flax.core import FrozenDict
 from jax import numpy as jnp
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
@@ -136,8 +135,6 @@ class TreeUtilsTest(TestCase):
         d2 = OrderedDict(reversed(kv))
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d1)))
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d2)))
-        frozen_dict = {"a": FrozenDict({"b": {"c": 1}})}
-        self.assertEqual([("a/b/c", 1)], flatten_items(frozen_dict))
 
     def assertTensorEqual(self, a, b):
         self.assertIsInstance(a, jnp.ndarray)

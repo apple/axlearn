@@ -2397,6 +2397,7 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
 
 def set_double_shard_weights_config(cfg: TransformerLayer.Config):
     """Sets `cfg` to shard FFN and attention weights over both data and model axes."""
+    # pytype: disable=attribute-error
     ff_layer = cfg.feed_forward
     # Shard weights.
     ff_layer.linear1.param_partition_spec = ("data", "model")
@@ -2413,6 +2414,7 @@ def set_double_shard_weights_config(cfg: TransformerLayer.Config):
     set_attn_partition_specs(cfg.self_attention.attention)
     if cfg.cross_attention is not None:
         set_attn_partition_specs(cfg.cross_attention.attention)
+    # pytype: enable=attribute-error
 
 
 class BaseStackedTransformerLayer(BaseTransformerLayer):
@@ -2981,11 +2983,12 @@ def build_remat_spec(
     Returns:
         None (if no rematerialization is needed) or a RematSpec.
     """
-    if stack_cfg.cls is PipelinedTransformerLayer:
+    # TODO(markblee): Switch to using isinstance everywhere.
+    if stack_cfg.klass is PipelinedTransformerLayer:
         return None
-    attention_name = stack_cfg.layer.self_attention.attention.cls.__name__
+    attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
     return RematSpec(
-        prevent_cse=stack_cfg.cls is StackedTransformerLayer,
+        prevent_cse=stack_cfg.klass is StackedTransformerLayer,
         # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
         # or Repeated Conformers) we can enable common subexpression elimination optimizations.
         policy=config_for_function(jax_remat_policies.save_only_these_names).set(

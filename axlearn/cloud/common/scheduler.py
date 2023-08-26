@@ -234,6 +234,7 @@ class JobVerdict:
 class Scheduler(Configurable):
     """A job scheduler."""
 
+    @config_class
     class Config(Configurable.Config):
         """Configures Scheduler."""
 
