@@ -311,7 +311,7 @@ class RestoreAndConvertBuilder(Builder):
     @classmethod
     def spec_to_config(cls, spec: str) -> Config:
         cfg = cls.default_config()
-        cfg.builder = cfg.builder.cls.spec_to_config(spec)
+        cfg.builder = cfg.builder.klass.spec_to_config(spec)
         return cfg
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):

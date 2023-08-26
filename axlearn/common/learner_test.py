@@ -747,6 +747,7 @@ class CompositeLearnerTest(TestCase):
             expected_summaries,
             output_collection.summaries,
         )
+        # pytype: enable=attribute-error
 
     def test_learner_config(self):
         opt1_cfg = config_for_function(sgd_optimizer).set(

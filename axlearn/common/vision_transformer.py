@@ -27,6 +27,7 @@ from jax import numpy as jnp
 
 from axlearn.common import param_init
 from axlearn.common.attention import (
+    BaseStackedTransformerLayer,
     LearnedPositionalEmbedding,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
@@ -170,7 +171,7 @@ class Encoder1D(BaseLayer):
         # Positional embedding config.
         pos_emb: InstantiableConfig = LearnedPositionalEmbedding.default_config()
         # The transformer layer stack config.
-        transformer: InstantiableConfig = StackedTransformerLayer.default_config()
+        transformer: BaseStackedTransformerLayer.Config = StackedTransformerLayer.default_config()
         # The normalization layer config for encoder output.
         output_norm: InstantiableConfig = layer_norm_config()
         # The DropToken layer proposed in the FLIP paper.
@@ -476,7 +477,7 @@ _NAMED_VIT_MODELS = {
 
 
 def _set_model_config(
-    cfg,
+    cfg: VisionTransformer.Config,
     *,
     num_layers: int,
     model_dim: int,
@@ -533,12 +534,15 @@ def _set_model_config(
     encoder_cfg.use_pos_emb = use_pos_emb
     if use_pos_emb:
         encoder_cfg.pos_emb.shape = (seq_len,)
+
+    # pylint: disable=attribute-error
     if feed_forward_dim is not None:
         encoder_cfg.transformer.layer.feed_forward.hidden_dim = feed_forward_dim
     encoder_cfg.transformer.layer.self_attention.attention.num_heads = num_heads
 
     if atten_logit_cap is not None:
         encoder_cfg.transformer.layer.self_attention.attention.atten_logit_cap = atten_logit_cap
+    # pylint: enable=attribute-error
 
     set_dropout_rate_recursively(cfg, dropout_rate)
     if peak_stochastic_depth_rate is not None:
