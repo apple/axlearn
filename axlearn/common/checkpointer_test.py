@@ -30,12 +30,11 @@ from axlearn.common.checkpointer import (
     check_state_structure,
     every_n_steps_policy,
     latest_checkpoint_path,
+    read_state_spec,
     restore_tf_savables,
     save_tf_savables,
-    read_state_spec,
 )
 from axlearn.common.metrics import WeightedScalar
-
 
 jax.config.update("jax_enable_x64", True)
 
