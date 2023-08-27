@@ -20,7 +20,6 @@ from concurrent import futures
 from types import TracebackType
 from typing import Any, Dict, List, NamedTuple, Optional, Protocol, Tuple, Type, Union
 
-import chex
 import jax
 import jax.numpy as jnp
 import tensorflow as tf
@@ -44,7 +43,7 @@ from axlearn.common.module import (
     clone_context_stack,
     install_context_stack,
 )
-from axlearn.common.utils import NestedTensor, NestedTensorSpec, Tensor, TensorSpec
+from axlearn.common.utils import NestedTensor, NestedTensorSpec, Tensor, TensorSpec, set_recursively
 
 
 class CheckpointValidationType(str, enum.Enum):
@@ -234,25 +233,55 @@ def write_index_file(*, ckpt_dir: str, index: Any):
         f.write(json.dumps(index))
 
 
-@chex.dataclass
-class Index:
-    step: int
-    state: NestedTensorSpec
+def _parse_tensor_spec(spec_dict: Dict[str, str]) -> TensorSpec:
+    shape = [int(x) for x in spec_dict["shape"][1:-1].split(",") if x]
+    dtype_str = spec_dict["dtype"]
+    dtype_dict = {
+        str(dtype.dtype): dtype
+        for dtype in (
+            jnp.bool_,
+            jnp.bfloat16,
+            jnp.float16,
+            jnp.float32,
+            jnp.float64,
+            jnp.int8,
+            jnp.int16,
+            jnp.int32,
+            jnp.int64,
+        )
+    }
+    if dtype_str not in dtype_dict:
+        raise NotImplementedError(
+            f"Cannot convert {dtype_str} to jnp.dtype. Possible values are {dtype_dict.keys()}"
+        )
+    return TensorSpec(shape=tuple(shape), dtype=dtype_dict[dtype_str])
 
 
-def read_index_file(ckpt_dir: str) -> Index:
+def read_state_spec(ckpt_dir: str) -> NestedTensorSpec:
+    """Reads TensorSpecs from the given checkpoint dir.
+
+    Args:
+        ckpt_dir: The checkpoint directory corresponding to a specific step, e.g., the directory
+            returned by latest_checkpoint_path(checkpointer.config.dir).
+
+    Returns:
+        A NestedTensorSpec representing the tensors stored under `ckpt_dir`. Each TensorSpec
+        should have `shape` and `dtype` filled in, but will not contain `mesh_axes`. The returned
+        NestedTensorSpec can be passed as `state` to Checkpointer.restore().
+
+        If a checkpoint is too large to load onto a single host, the caller can further specify
+        `mesh_axes` of the TensorSpecs to load the checkpoint across multiple processes.
+    """
     with tf.io.gfile.GFile(os.path.join(ckpt_dir, "index"), "r") as f:
         restored_index_entries = json.loads(f.read())
-        index = Index(step=None, state={})
+        state = {}
         for path, value in restored_index_entries:
-            if path == "step":
-                index.step = value
-            elif isinstance(value, dict):
-                set_recursively(index.state, path=path, value=_parse_tensor_spec(value))
+            if isinstance(value, dict):
+                set_recursively(state, value=_parse_tensor_spec(value), path=path, separator="/")
             else:
-                # Possibly tf.data.Iterator.
+                # Ignore step or tf.data.Iterator.
                 logging.vlog(1, "read_index_file ignores %s", path)
-        return index
+        return state
 
 
 class TensorStoreStateStorage(StateStorage):

@@ -599,7 +599,7 @@ def get_recursively(
         x: The tensor to index.
         path: The sequence of keys used to recursively
             index the nested tensor. If `isinstance(path, str)`, it will be split
-            into sequence of strings based on the `delimiter`
+            into sequence of strings based on the `separator`
         separator: The delimiter to split ``path`` by if `isinstance(path, str)`.
 
     Returns:
@@ -621,6 +621,37 @@ def get_recursively(
         x = x[key]
 
     return x
+
+
+def set_recursively(
+    x: NestedTensor, *, value: Tensor, path: Union[str, Sequence[str]], separator: str = "/"
+):
+    """Sets x[path...] = value, where path can be a multi-part index.
+
+    Args:
+        x: The tensor to index.
+        value: The value to set at x[path].
+        path: The sequence of keys used to recursively
+            index the nested tensor. If `isinstance(path, str)`, it will be split
+            into sequence of strings based on the `separator`
+        separator: The delimiter to split ``path`` by if `isinstance(path, str)`.
+
+    Returns:
+        NestedTensor
+
+    Raises:
+        KeyError: If the input path is invalid.
+    """
+    if not path:
+        raise ValueError("path must not be empty")
+    if isinstance(path, str):
+        path = path.split(separator)
+
+    for key in path[:-1]:
+        if key not in x:
+            x[key] = {}
+        x = x[key]
+    x[path[-1]] = value
 
 
 def copy_recursively(

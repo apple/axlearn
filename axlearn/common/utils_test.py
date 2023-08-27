@@ -49,6 +49,7 @@ from axlearn.common.utils import (
     flatten_items,
     get_data_dir,
     get_recursively,
+    set_recursively,
     input_partition_spec,
     match_regex_rules,
     runtime_checks,
@@ -302,7 +303,7 @@ class TreeUtilsTest(TestCase):
         self.assertSequenceEqual(["x"], keys)
         self.assertLen(values, 1)
 
-    def test_get_recursively(self):
+    def test_get_and_set_recursively(self):
         tree = {"a": {"b": 2, "c": {"d": 3, "e": 4}}}
         self.assertEqual({"a": {"b": 2, "c": {"d": 3, "e": 4}}}, get_recursively(tree, ""))
         self.assertEqual({"a": {"b": 2, "c": {"d": 3, "e": 4}}}, get_recursively(tree, []))
@@ -313,9 +314,18 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(3, get_recursively(tree, "a.c.d", separator="."))
 
         with self.assertRaises(KeyError):
-            get_recursively(tree, "a.foo")
+            get_recursively(tree, "a/foo")
         with self.assertRaises(KeyError):
             get_recursively(tree, ["a", "foo"])
+
+        set_recursively(tree, value="bar", path="a/foo")
+        self.assertEqual("bar", get_recursively(tree, "a/foo"))
+        set_recursively(tree, value="boo", path="a.foo", separator=".")
+        self.assertEqual("boo", get_recursively(tree, "a/foo"))
+        set_recursively(tree, value="bar", path=["a", "foo"])
+        self.assertEqual("bar", get_recursively(tree, "a/foo"))
+        with self.assertRaises(ValueError):
+            set_recursively(tree, value="bar", path="")
 
     def test_copy_recursively(self):
         source = {"a": {"b": 2, "c": {"d": 3, "e": 4}}}
