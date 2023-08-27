@@ -36,8 +36,6 @@ from axlearn.common.checkpointer import (
 )
 from axlearn.common.metrics import WeightedScalar
 
-jax.config.update("jax_enable_x64", True)
-
 
 def _mesh(mesh_shape: Sequence[int]):
     devices = mesh_utils.create_device_mesh(mesh_shape)
