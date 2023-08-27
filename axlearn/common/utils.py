@@ -34,7 +34,6 @@ import jax
 import numpy as np
 from absl import logging
 from flax import serialization
-from flax.core import FrozenDict
 from jax import numpy as jnp
 from jax.experimental import maps, multihost_utils, pjit
 from jax.sharding import PartitionSpec
@@ -46,7 +45,7 @@ Tensor = jax.Array
 # Recursive type annotations not supported by pytype yet.
 NestedTree = Union[Any, Dict[str, Any]]  # Union[Any, Dict[str, "NestedTree"]]
 # Union[..., Dict[str, "NestedTensor"]]
-NestedTensor = Union[Tensor, Dict[str, Any], FrozenDict[str, Any]]
+NestedTensor = Union[Tensor, Dict[str, Any]]
 # NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, "NestedPartitionSpec"]]]
 NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, Any]]]
 
@@ -374,7 +373,7 @@ def complete_partition_spec_tree(
             return type(tree)(*[replace_none_with_proxy(x) for x in tree])
         if isinstance(tree, (tuple, list)):
             return type(tree)([replace_none_with_proxy(x) for x in tree])
-        if isinstance(tree, (dict, FrozenDict)):
+        if isinstance(tree, dict):
             return type(tree)([(k, replace_none_with_proxy(v)) for k, v in tree.items()])
         raise ValueError(f"{type(tree)}: {tree}")
 

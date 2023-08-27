@@ -518,7 +518,7 @@ class FusedQKVLinear(_QKVLinearBase):
 
 
 def apply_attention_logit_biases(
-    logits: torch.Tensor, attention_logit_biases: Optional[torch.Tensor] = None
+    logits: torch.Tensor, *, attention_logit_biases: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     """Applies `attention_logit_biases` on `logits`.
 
@@ -547,7 +547,7 @@ def softmax_with_biases(
     Returns:
         A torch.Tensor of same shape and dtype as logits.
     """
-    logits = apply_attention_logit_biases(logits, attention_logit_biases)
+    logits = apply_attention_logit_biases(logits, attention_logit_biases=attention_logit_biases)
     logits_dtype = logits.dtype
     if logits_dtype in (torch.float16, torch.bfloat16):
         # Avoid computing softmax in 16-bit floats.
@@ -1387,7 +1387,8 @@ class ALiBiAttentionLogitBiasLayer(CausalAttentionLogitBiasLayer):
         )
         # Causal mask.
         return apply_attention_logit_biases(
-            alibi_mask, super().forward(segment_ids=segment_ids, positions=positions)
+            super().forward(segment_ids=segment_ids, positions=positions),
+            attention_logit_biases=alibi_mask,
         )
 
 
