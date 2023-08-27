@@ -23,6 +23,7 @@ from axlearn.common.module import (
 )
 from axlearn.common.module import functional as F
 from axlearn.common.module import install_context_stack, new_output_collection, set_current_context
+from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
 class OutputCollectionTest(absltest.TestCase):
@@ -289,7 +290,7 @@ class ModuleProvidingSharedChild(Module):
             )
 
 
-class ModuleTest(absltest.TestCase):
+class ModuleTest(TestWithTemporaryCWD):
     def test_parent_children(self):
         cfg = NestedModule.default_config().set(
             name="root", child=NestedModule.default_config(), vlog=2
