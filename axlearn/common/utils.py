@@ -599,7 +599,7 @@ def get_recursively(
         x: The tensor to index.
         path: The sequence of keys used to recursively
             index the nested tensor. If `isinstance(path, str)`, it will be split
-            into sequence of strings based on the `separator`
+            into sequence of strings based on the `separator`.
         separator: The delimiter to split ``path`` by if `isinstance(path, str)`.
 
     Returns:
@@ -628,19 +628,22 @@ def set_recursively(
 ):
     """Sets x[path...] = value, where path can be a multi-part index.
 
+    If any part of the path does not exist in `x`, new sub dicts will be created, e.g.,
+
+    x = {}
+    set_recursive(x, value=1, path="a/b/c")
+    # x = {"a": {"b": {"c": 1}}}
+
     Args:
         x: The tensor to index.
         value: The value to set at x[path].
         path: The sequence of keys used to recursively
             index the nested tensor. If `isinstance(path, str)`, it will be split
-            into sequence of strings based on the `separator`
+            into sequence of strings based on the `separator`.
         separator: The delimiter to split ``path`` by if `isinstance(path, str)`.
 
-    Returns:
-        NestedTensor
-
     Raises:
-        KeyError: If the input path is invalid.
+        ValueError: If the input path is empty.
     """
     if not path:
         raise ValueError("path must not be empty")

@@ -318,12 +318,12 @@ class TreeUtilsTest(TestCase):
         with self.assertRaises(KeyError):
             get_recursively(tree, ["a", "foo"])
 
-        set_recursively(tree, value="bar", path="a/foo")
-        self.assertEqual("bar", get_recursively(tree, "a/foo"))
-        set_recursively(tree, value="boo", path="a.foo", separator=".")
-        self.assertEqual("boo", get_recursively(tree, "a/foo"))
-        set_recursively(tree, value="bar", path=["a", "foo"])
-        self.assertEqual("bar", get_recursively(tree, "a/foo"))
+        set_recursively(tree, value="bar", path="a/foo/b")
+        self.assertEqual("bar", get_recursively(tree, "a/foo/b"))
+        set_recursively(tree, value="boo", path="a.foo.b", separator=".")
+        self.assertEqual("boo", get_recursively(tree, "a/foo/b"))
+        set_recursively(tree, value="bar", path=["a", "foo", "b"])
+        self.assertEqual("bar", get_recursively(tree, "a/foo/b"))
         with self.assertRaises(ValueError):
             set_recursively(tree, value="bar", path="")
 
