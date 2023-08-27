@@ -479,7 +479,7 @@ class Module(Configurable):
         if level <= self._vlog_level:
             logging.info(f"@{self.path()} {msg}", *args, **kwargs)
 
-    def vprint(self, level, msg, *args, **kwargs):
+    def vprint(self, level: int, msg: str, *args, **kwargs):
         """Prints debug info with if level <= config.vlog.
 
         Prints with jax.debug.print(prefix + msg, *args, **kwargs) so that it can handle tensors in
@@ -493,10 +493,10 @@ class Module(Configurable):
         """
         if level <= self._vlog_level:
             ts = time.strftime("%m%d %T", time.gmtime(time.time()))
-            caller_frame = inspect.stack()[1]  # Get the frame of the caller (index 1)
-            filename = caller_frame.filename
+            caller_frame = inspect.stack()[1]  # Get the frame of the caller (index 1).
+            filename = os.path.basename(caller_frame.filename)
             line_number = caller_frame.lineno
-            prefix = f"{ts} {os.path.basename(filename)}:{line_number}] @{self.path()} "
+            prefix = f"{ts} {filename}:{line_number}] @{self.path()} "
             jax.debug.print(prefix + msg, *args, **kwargs)
 
     def _add_child(

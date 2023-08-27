@@ -190,7 +190,7 @@ class NestedModule(Module):
         cfg = self.config
         # It is ok to call another method of 'self' directly, if it is invoked only once in the
         # current context.
-        self.vprint(1, "input={x} cfg.child=\n{child}", x=x, child=str(self.config.child))
+        self.vprint(1, "input={x} cfg.child=\n{child}", x=x, child=str(cfg.child))
         x = self.inc(x)
         if cfg.child is not None:
             # Can also call children directly, if each child is invoked only once.
