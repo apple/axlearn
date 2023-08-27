@@ -20,6 +20,7 @@ from concurrent import futures
 from types import TracebackType
 from typing import Any, Dict, List, NamedTuple, Optional, Protocol, Tuple, Type, Union
 
+import chex
 import jax
 import jax.numpy as jnp
 import tensorflow as tf
@@ -218,7 +219,7 @@ class StateStorage(Configurable):
     def restore_from_dir(
         self,
         step: int,
-        state: NestedTensor,
+        state: Union[NestedTensor, NestedTensorSpec],
         *,
         ckpt_dir: str,
     ) -> NestedTensor:
@@ -231,6 +232,27 @@ def write_index_file(*, ckpt_dir: str, index: Any):
     logging.info("Writing index file to %s", index_path)
     with tf.io.gfile.GFile(index_path, "w") as f:
         f.write(json.dumps(index))
+
+
+@chex.dataclass
+class Index:
+    step: int
+    state: NestedTensorSpec
+
+
+def read_index_file(ckpt_dir: str) -> Index:
+    with tf.io.gfile.GFile(os.path.join(ckpt_dir, "index"), "r") as f:
+        restored_index_entries = json.loads(f.read())
+        index = Index(step=None, state={})
+        for path, value in restored_index_entries:
+            if path == "step":
+                index.step = value
+            elif isinstance(value, dict):
+                set_recursively(index.state, path=path, value=_parse_tensor_spec(value))
+            else:
+                # Possibly tf.data.Iterator.
+                logging.vlog(1, "read_index_file ignores %s", path)
+        return index
 
 
 class TensorStoreStateStorage(StateStorage):
