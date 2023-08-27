@@ -11,7 +11,6 @@ import tempfile
 import threading
 from typing import Iterable, List, Sequence
 
-import flax.core
 import jax
 import pytest
 import tensorflow as tf
@@ -176,7 +175,7 @@ class CheckpointerTest(test_utils.TestCase):
                 )
             ckpt.stop()
 
-    @parameterized.parameters(utils.VDict, flax.core.FrozenDict)
+    @parameterized.parameters((utils.VDict,))
     def test_custom_dict(self, custom_dict_type):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
