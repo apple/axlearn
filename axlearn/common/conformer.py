@@ -237,10 +237,10 @@ class ConformerLayer(BaseLayer):
         self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
 
         if cfg.rel_pos_emb:
-            if not cfg.self_attention.attention.cls == MultiheadAttention:
+            if not cfg.self_attention.attention.klass == MultiheadAttention:
                 raise ValueError(
                     "rel_pos_emb should only be set in MultiheadAttention, "
-                    f"but got {cfg.self_attention.attention.cls}."
+                    f"but got {cfg.self_attention.attention.klass}."
                 )
             pos_emb_dim = cfg.self_attention.attention.num_heads
             self._add_child("rel_pos_emb", cfg.rel_pos_emb.set(dim=pos_emb_dim))
