@@ -45,7 +45,7 @@ def _checkpointer_config():
     return Checkpointer.default_config().set(name="test", dir=tempfile.mkdtemp())
 
 
-class CheckpointerTest(test_utils.TestCase):
+class CheckpointerTest(test_utils.TestWithTemporaryCWD):
     def test_save_and_restore(self):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
