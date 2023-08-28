@@ -29,6 +29,7 @@ from axlearn.common.checkpointer import (
     check_state_structure,
     every_n_steps_policy,
     latest_checkpoint_path,
+    read_state_spec,
     restore_tf_savables,
     save_tf_savables,
 )
@@ -509,6 +510,42 @@ class CheckpointerTest(test_utils.TestCase):
             final_ckpt_path = ckpt_paths[10]
             # Note: step 11 is not complete, so the latest path returns step 10.
             self.assertEqual(latest_checkpoint_path(td), final_ckpt_path)
+
+    def test_read_state_spec(self):
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+        with _mesh(mesh_shape):
+            cfg = _checkpointer_config()
+            cfg.save_policy.min_step = 0
+            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            state0 = dict(
+                **{
+                    f"v_{str(dtype.dtype)}": jnp.zeros([], dtype=dtype)
+                    for dtype in (jnp.int32, jnp.int64)
+                },
+                **{
+                    f"v_{str(dtype.dtype)}": jnp.zeros([4], dtype=dtype)
+                    for dtype in (jnp.float16, jnp.float32, jnp.float64)
+                },
+                **{
+                    f"v_{str(dtype.dtype)}": jnp.zeros([4, 2], dtype=dtype)
+                    for dtype in (jnp.bfloat16, jnp.bool_)
+                },
+            )
+            ckpt.save(step=0, state=state0)
+            ckpt.wait_until_finished()
+            # Tests `read_state_spec`.
+            state_spec = read_state_spec(latest_checkpoint_path(cfg.dir))
+            self.assertNestedEqual(
+                state_spec,
+                jax.tree_util.tree_map(
+                    lambda t: utils.TensorSpec(shape=t.shape, dtype=t.dtype), state0
+                ),
+            )
+            step, state1 = ckpt.restore(state=state_spec)
+            self.assertNestedEqual(0, step)
+            self.assertNestedEqual(state0, state1)
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
