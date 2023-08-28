@@ -492,7 +492,10 @@ def get_bundler_config(*, bundler_type: str, spec: List[str]) -> Bundler.Config:
     """
     if bundler_class := _bundlers.get(bundler_type, None):
         return bundler_class.from_spec(spec)
-    raise NotImplementedError(f"Unknown bundler type: {bundler_type}")
+    raise NotImplementedError(
+        f"Unknown bundler type: {bundler_type}. "
+        f"Supported types are {sorted(list(_bundlers.keys()))}"
+    )
 
 
 def bundler_flags():
