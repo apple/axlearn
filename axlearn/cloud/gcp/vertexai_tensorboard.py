@@ -28,9 +28,9 @@ def _vertexai_experiment_name_from_output_dir(output_dir: str) -> str:
 def is_vertexai_tensorboard_configured() -> bool:
     """Checks the config to see whether VertexAI Tensorboard should be enabled."""
     return bool(
-        gcp_config.gcp_settings("vertexai_tensorboard")
-        and gcp_config.gcp_settings("vertexai_region")
-        and gcp_config.gcp_settings("project")
+        gcp_config.gcp_settings("vertexai_tensorboard", required=False)
+        and gcp_config.gcp_settings("vertexai_region", required=False)
+        and gcp_config.gcp_settings("project", required=False)
     )
 
 
