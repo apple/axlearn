@@ -234,6 +234,7 @@ def write_index_file(*, ckpt_dir: str, index: Any):
 
 
 def _parse_tensor_spec(spec_dict: Dict[str, str]) -> TensorSpec:
+    # The shape string is of format `(dim...)`. [1:-1] removes the parentheses.
     shape = [int(x) for x in spec_dict["shape"][1:-1].split(",") if x]
     dtype_str = spec_dict["dtype"]
     dtype_dict = {
@@ -262,7 +263,7 @@ def read_state_spec(ckpt_dir: str) -> NestedTensorSpec:
 
     Args:
         ckpt_dir: The checkpoint directory corresponding to a specific step, e.g., the directory
-            returned by latest_checkpoint_path(checkpointer.config.dir).
+            returned by `latest_checkpoint_path(checkpointer.config.dir)`.
 
     Returns:
         A NestedTensorSpec representing the tensors stored under `ckpt_dir`. Each TensorSpec
