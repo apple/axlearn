@@ -42,7 +42,6 @@ import inspect
 import os.path
 import re
 import threading
-import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
 
