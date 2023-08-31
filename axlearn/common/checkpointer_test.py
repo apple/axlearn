@@ -27,6 +27,7 @@ from axlearn.common.checkpointer import (
     EvalMetric,
     TensorStoreStateStorage,
     check_state_structure,
+    every_n_steps_and_last_policy,
     every_n_steps_policy,
     latest_checkpoint_path,
     read_state_spec,
@@ -496,6 +497,15 @@ class CheckpointerTest(test_utils.TestCase):
         self.assertFalse(policy(step=2, evaler_summaries={}))
         self.assertTrue(policy(step=3, evaler_summaries={}))
         self.assertFalse(policy(step=4, evaler_summaries={}))
+
+    def test_every_n_steps_and_last_policy(self):
+        policy = every_n_steps_and_last_policy(n=5, max_step=13)
+        self.assertTrue(policy(step=5, evaler_summaries={}))
+        self.assertFalse(policy(step=9, evaler_summaries={}))
+        self.assertTrue(policy(step=10, evaler_summaries={}))
+        self.assertFalse(policy(step=11, evaler_summaries={}))
+        self.assertFalse(policy(step=12, evaler_summaries={}))
+        self.assertTrue(policy(step=13, evaler_summaries={}))
 
     def test_latest_checkpoint_path(self):
         with tempfile.TemporaryDirectory() as td:
