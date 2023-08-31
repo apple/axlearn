@@ -24,15 +24,16 @@ def common_flags():
 
 
 def get_credentials(
+    *,
     impersonate_account: Optional[str] = None,
     impersonate_scopes: Optional[Sequence[str]] = None,
 ) -> Credentials:
     """Get gcloud credentials, or exits if unauthenticated.
 
     Args:
-        impersonate_account: service account to impersonate, if not None.
-        impersonate_scopes: scopes of the impersonation token,
-            following https://developers.google.com/identity/protocols/oauth2/scopes
+        impersonate_account: Service account to impersonate, if not None.
+        impersonate_scopes: Scopes of the impersonation token,
+            following https://developers.google.com/identity/protocols/oauth2/scopes.
 
     Returns:
         An authorized set of credentials.
@@ -47,14 +48,12 @@ def get_credentials(
         sys.exit(1)
 
     if impersonate_account:
-        if not impersonate_scopes:
-            # If no scope provided, use the same scopes provided by
-            #   `gcloud auth application-default login`
-            impersonate_scopes = DEFAULT_APPLICATION
         credentials = impersonated_credentials.Credentials(
             source_credentials=credentials,
             target_principal=impersonate_account,
-            target_scopes=impersonate_scopes,
+            # If no scope provided, use the same scopes provided by
+            # `gcloud auth application-default login`.
+            target_scopes=impersonate_scopes or DEFAULT_APPLICATION,
         )
 
     return credentials
