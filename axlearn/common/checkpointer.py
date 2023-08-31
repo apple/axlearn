@@ -544,6 +544,26 @@ def every_n_steps_policy(n: int = 1, *, min_step: int = 1) -> CheckpointPolicy:
     return fn
 
 
+def every_n_steps_and_last_policy(
+    n: int = 1, *, min_step: int = 1, max_step: int
+) -> CheckpointPolicy:
+    """Checkpoints every n steps, but not before `min_step`,
+    and at the last training iteration `max_step`.
+
+    Args:
+        n: The checkpointing frequency. Checkpointing will be triggered every `n` steps
+        min_step: The minimum step to start checkpointing.
+        max_step: The maximum number of training steps.
+            Checkpointing will be triggered at step `max_step`.
+    """
+    every_n_steps_fn = every_n_steps_policy(n=n, min_step=min_step)
+
+    def fn(*, step: int, evaler_summaries: Dict[str, Any]) -> bool:
+        return every_n_steps_fn(step=step, evaler_summaries=evaler_summaries) or step == max_step
+
+    return fn
+
+
 class Checkpointer(Module):
     """A checkpointer that supports various StateStorage implementations."""
 
