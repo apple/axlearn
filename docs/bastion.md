@@ -8,10 +8,8 @@
 
 flowchart TB
 
-    subgraph UserMachine ["User's dev machine (e.g. MacBook Pro)"]
-        subgraph AXLearnGithubRepository["AXLearn Github Repository"]
-            localAXLearnPackage(["axlearn package \n (built by a user, e.g. Alice)"]):::fileCSS
-        end
+    subgraph UserMachine ["User's dev machine \n (e.g. MacBook Pro)"]
+        localAXLearnPackage(["axlearn package"]):::fileCSS
     end
 
     localAXLearnPackage --"
@@ -37,9 +35,10 @@ flowchart TB
         bastionPrimaryStore[("Data Store \n (e.g. Google Storage)")]:::storeCSS
         bastionPrimaryStore =="Download \n Bastion job specs"==>  bastionScheduler_1
 
-        bastionPrimaryStore --"Download the user's \n axlearn bundle"--> bastionJob_1
-        bastionJob_1 --"Dockerfile \n (using Alice's bundle)"--> WorkerVM_1
-        bastionJob_2 --"Tarball \n (using Bob's bundle)"--> WorkerVM_2
+        bastionPrimaryStore --"Download Alice's \n axlearn bundle"--> WorkerVM_1
+        bastionPrimaryStore --"Download Bob's \n axlearn bundle"--> WorkerVM_2
+        bastionJob_1 --"Provisions/Monitors \n (using Alice's bundle)"--> WorkerVM_1
+        bastionJob_2 --"Provisions/Monitors \n (using Bob's bundle)"--> WorkerVM_2
 
         subgraph WorkerVM_1 ["Worker VM 1 (name: notebook-tpu-alice-a59ce1)"]
             workerProcess_1["User-specified process \n e.g. `jupyter lab --port=12345`"]
