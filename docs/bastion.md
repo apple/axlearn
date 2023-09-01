@@ -8,7 +8,7 @@
 
 flowchart TB
 
-    subgraph UserMachine ["User's dev machine \n (e.g. MacBook Pro)"]
+    subgraph UserMachine ["User's dev machine (e.g. MacBook Pro)"]
         localAXLearnPackage(["axlearn package"]):::fileCSS
     end
 
