@@ -27,11 +27,11 @@ flowchart TB
 
         subgraph BastionVM_shared ["Bastion VM (e.g. 'shared-bastion')"]
             bastionScheduler_1["Bastion \n Scheduler"]
-            bastionVmAXLearnPackage(["axlearn package \n (running shared docker image)"]):::fileCSS
+            bastionVmAXLearnPackage(["axlearn package \n (running on shared docker image)"]):::fileCSS
             bastionJob_1["Bastion job 1 \n name: notebook-tpu-alice-a59ce1"]
             bastionJob_2["Bastion job 2 \n name: notebook-tpu-bob-b3b5f1"]
 
-            bastionScheduler_1 --"spawn/kill"--> bastionJob_1 & bastionJob_2
+            bastionScheduler_1 --"Spawn/kill"--> bastionJob_1 & bastionJob_2
         end
 
         bastionPrimaryStore[("Data Store \n (e.g. Google Storage)")]:::storeCSS
@@ -58,11 +58,11 @@ flowchart TB
         end
 
         bastionLogStore[("Log Store \n (e.g. Google Storage)")]:::storeCSS
-        WorkerVM_2 --"sync logs"--> bastionLogStore
+        WorkerVM_1 & WorkerVM_2 --"Sync logs"--> bastionLogStore
 
     end
 
-    bastionLogStore--"download logs for debug"-->UserMachine
+    bastionLogStore--"Download logs for debug"-->UserMachine
 
     %% Public Github doesn't apply CSS, but keeping these enables other environments
     %% (e.g. editor previews such as in VS Code) to use more colors
