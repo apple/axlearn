@@ -20,7 +20,6 @@ from axlearn.cloud.common.config import (
     _get_or_prompt_project,
     _get_projects,
     _locate_user_config_file,
-    _parse_action,
     _prompt,
     _prompt_choice,
     _prompt_project,
@@ -220,6 +219,22 @@ class ConfigTest(TestWithTemporaryCWD):
         self.assertNotEqual(config_file, str(default_config))
         self.assertEqual(configs, {"test": 123})
 
+    def test_update_configs_merge(self):
+        temp_root = os.path.realpath(self._temp_root.name)
+        _setup_fake_repo(temp_root)
+        namespace = "test"
+
+        # Create a user config.
+        path = pathlib.Path(_config_search_paths()[0])
+        path.parent.mkdir(exist_ok=True, parents=True)
+        write_configs_with_header(str(path), {namespace: {"b": 3}})
+
+        # Update and check that configs are merged, not replaced.
+        update_configs(namespace, {"a": 1})
+        config_file, configs = load_configs(namespace)
+        self.assertEqual(config_file, str(path))
+        self.assertEqual(configs, {"a": 1, "b": 3})
+
 
 class CLITest(TestWithTemporaryCWD):
     """Tests CLI utils."""
@@ -345,21 +360,6 @@ class CLITest(TestWithTemporaryCWD):
                     _get_or_prompt_project(project_configs, labels=labels)
             else:
                 self.assertEqual(expected, _get_or_prompt_project(project_configs, labels=labels))
-
-    @parameterized.parameters(
-        dict(argv=["cli", "activate"], expected="activate"),
-        dict(argv=["cli", "cleanup"], expected="cleanup"),
-        dict(argv=["cli", "list", "something"], expected="list"),
-        # Test failure case.
-        dict(argv=[], expected=SystemExit()),
-        dict(argv=["cli", "invalid"], expected=SystemExit()),
-    )
-    def test_parse_action(self, argv, expected):
-        if isinstance(expected, BaseException):
-            with self.assertRaises(type(expected)):
-                _parse_action(argv)
-        else:
-            self.assertEqual(expected, _parse_action(argv))
 
     def test_main(self):
         temp_root = os.path.realpath(self._temp_root.name)

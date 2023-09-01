@@ -6,8 +6,9 @@ import logging as pylogging
 import os
 import shlex
 import subprocess
+import sys
 import uuid
-from typing import Dict, List, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 import pkg_resources
 from absl import logging
@@ -223,3 +224,32 @@ def canonicalize_to_list(v: Union[str, Sequence[str]], *, delimiter: str = ",") 
     if isinstance(v, str):
         v = [elem.strip() for elem in v.split(delimiter)]
     return list(v)
+
+
+def parse_action(
+    argv: Sequence[str], *, options: Sequence[str], default: Optional[str] = None
+) -> str:
+    """Parses action from argv, or exits with usage info.
+
+    The action is always expected to be in argv[1].
+
+    Args:
+        argv: Positional CLI arguments. Does not include --flags.
+        options: Possible actions.
+        default: Optional default action if none specified.
+
+    Returns:
+        The chosen action.
+
+    Raises:
+        SystemExit: if an invalid action (or no action and default is None) is provided.
+    """
+    assert default is None or default in options
+    action = argv[1] if len(argv) >= 2 else default
+    if action is None or action not in options:
+        print(
+            f"Invalid action: {action}. Expected one of [{','.join(options)}]. "
+            "Please rerun with --help."
+        )
+        sys.exit(1)
+    return action

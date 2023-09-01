@@ -1,6 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
-"""Tests TPU trainer job."""
+"""Tests TPU runner job."""
 import contextlib
 import tempfile
 from typing import Dict
@@ -10,7 +10,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp.job import GCPJob
-from axlearn.cloud.gcp.jobs import tpu_trainer
+from axlearn.cloud.gcp.jobs import tpu_runner
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 
 
@@ -78,12 +78,12 @@ def mock_tpu_statuses(job: GCPJob, *, statuses: Dict[str, str], returncodes: Dic
         yield
 
 
-class TPUTrainerJobTest(parameterized.TestCase):
-    """Tests TPUTrainerJob."""
+class TPURunnerJobTest(parameterized.TestCase):
+    """Tests TPURunnerJob."""
 
     def test_get_status(self):
         mocks = [
-            mock_tpu(tpu_trainer.__name__),
+            mock_tpu(tpu_runner.__name__),
             mock_gcp_settings(bundler.__name__, settings={"ttl_bucket": "ttl_bucket"}),
         ]
 
@@ -92,7 +92,7 @@ class TPUTrainerJobTest(parameterized.TestCase):
             for m in mocks:
                 stack.enter_context(m)
 
-            cfg = tpu_trainer.TPUTrainerJob.default_config().set(
+            cfg = tpu_runner.TPURunnerJob.default_config().set(
                 name="test",
                 tpu_type="v4-16",  # 2 workers.
                 command="",
@@ -106,28 +106,28 @@ class TPUTrainerJobTest(parameterized.TestCase):
 
             # pylint: disable=protected-access
             with mock_tpu_statuses(job, statuses={"0": "", "1": ""}, returncodes={"0": 0, "1": 0}):
-                self.assertEqual(tpu_trainer.TPUTrainerJob.Status.NOT_STARTED, job._get_status())
+                self.assertEqual(tpu_runner.TPURunnerJob.Status.NOT_STARTED, job._get_status())
 
             job._start()
 
             # Invalid status value.
             with mock_tpu_statuses(job, statuses={"0": "", "1": ""}, returncodes={"0": 0, "1": 0}):
-                self.assertEqual(tpu_trainer.TPUTrainerJob.Status.UNKNOWN, job._get_status())
+                self.assertEqual(tpu_runner.TPURunnerJob.Status.UNKNOWN, job._get_status())
 
             # Non-zero exit code.
             with mock_tpu_statuses(
                 job, statuses={"0": "RUNNING", "1": "RUNNING"}, returncodes={"0": 0, "1": 1}
             ):
-                self.assertEqual(tpu_trainer.TPUTrainerJob.Status.UNKNOWN, job._get_status())
+                self.assertEqual(tpu_runner.TPURunnerJob.Status.UNKNOWN, job._get_status())
 
             # All statuses agree.
             with mock_tpu_statuses(
                 job, statuses={"0": "RUNNING", "1": "RUNNING"}, returncodes={"0": 0, "1": 0}
             ):
-                self.assertEqual(tpu_trainer.TPUTrainerJob.Status.RUNNING, job._get_status())
+                self.assertEqual(tpu_runner.TPURunnerJob.Status.RUNNING, job._get_status())
 
             # Not all statuses agree.
             with mock_tpu_statuses(
                 job, statuses={"0": "RUNNING", "1": "NOT_RUNNING"}, returncodes={"0": 0, "1": 0}
             ):
-                self.assertEqual(tpu_trainer.TPUTrainerJob.Status.UNKNOWN, job._get_status())
+                self.assertEqual(tpu_runner.TPURunnerJob.Status.UNKNOWN, job._get_status())
