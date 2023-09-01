@@ -42,7 +42,6 @@ import inspect
 import os.path
 import re
 import threading
-import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
 
@@ -492,11 +491,10 @@ class Module(Configurable):
             **kwargs: The kwargs for jax.debug.print, may contain Tensors.
         """
         if level <= self._vlog_level:
-            ts = time.strftime("%m%d %T", time.gmtime(time.time()))
             caller_frame = inspect.stack()[1]  # Get the frame of the caller (index 1).
             filename = os.path.basename(caller_frame.filename)
             line_number = caller_frame.lineno
-            prefix = f"{ts} {filename}:{line_number}] @{self.path()} "
+            prefix = f"{filename}:{line_number}] @{self.path()} "
             jax.debug.print(prefix + msg, *args, **kwargs)
 
     def _add_child(
