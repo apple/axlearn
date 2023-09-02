@@ -49,7 +49,7 @@ In pseudo code:
       return carry, ys
 """
 import dataclasses
-from typing import NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional, Sequence
 
 import jax
 
@@ -59,15 +59,20 @@ from axlearn.common.base_layer import (
     NestedParameterSpec,
     PartitionSpec,
 )
-from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
-from axlearn.common.module import (
-    Module,
-    NestedTensor,
-    child_context,
-    current_context,
-    new_output_collection,
+from axlearn.common.config import (
+    REQUIRED,
+    InstantiableConfig,
+    Required,
+    config_class,
+    config_for_function,
 )
-from axlearn.common.utils import VDict, get_or_none, split_prng_key
+from axlearn.common.module import Module, NestedTensor, child_context, scan_in_context
+from axlearn.common.utils import VDict, get_or_none, match_regex_rules, split_prng_key
+
+
+def _drop_by_regex(rules: Sequence[str]) -> Callable[[str], bool]:
+    """Returns a drop that regex-matches inputs against `rules`."""
+    return lambda x: match_regex_rules(x, rules=[(rule, True) for rule in rules])
 
 
 class Repeat(BaseLayer):
@@ -75,12 +80,25 @@ class Repeat(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
-        layer: Required[InstantiableConfig] = REQUIRED  # The config for the sub layer.
-        num_layers: Required[int] = REQUIRED  # Repeat layers specified in `layer` this many times.
+        # The config for the sub layer.
+        layer: Required[InstantiableConfig] = REQUIRED
+        # Repeat layers specified in `layer` this many times.
+        num_layers: Required[int] = REQUIRED
+        # A callable that drops outputs from the layer's output_collection based on path. By
+        # default, we drop all module outputs. See `scan_in_context` for details.
+        # TODO(markblee): Converge on dropping no outputs by default.
+        drop_output: InstantiableConfig[Callable[[str], bool]] = config_for_function(
+            _drop_by_regex
+        ).set(rules=["module_outputs.*"])
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
+        cfg = self.config
         self._add_child("layer", self._layer_config())
+
+        self._drop_output = None
+        if cfg.drop_output is not None:
+            self._drop_output = cfg.drop_output.instantiate()
 
     def _layer_config(self):
         return self.config.layer
@@ -144,39 +162,23 @@ class Repeat(BaseLayer):
                 and T[i, ...] represents layer-wise output from the i'th sub-layer.
         """
         cfg = self.config
+        prng_key = self.prng_key
 
-        if xs is None:
-            xs = {}
         if carry is None:
             carry = {}
+        if xs is None:
+            xs = {}
 
-        context = current_context()
-        assert context is not None
-        prng_key = context.prng_key
         with child_context("layer") as layer_context:
-
-            def scan_fn(carry_i, scan_i):
-                prng_key_i, layer_state_i, x_i = scan_i
-                output_collection_i = new_output_collection()
-                with child_context(
-                    "iter",
-                    module=layer_context.module,
-                    state=layer_state_i,
-                    prng_key=prng_key_i,
-                    output_collection=output_collection_i,
-                ):
-                    carry_i, y_i = fn(carry_i, x_i)
-                # TODO(adesai22): Find way to avoid clearing intermediate outputs.
-                output_collection_i.module_outputs.clear()
-                return carry_i, dict(y_i=y_i, output_collection=output_collection_i)
-
-            carry, scan_ys = jax.lax.scan(
-                scan_fn,
-                init=carry,
-                xs=(split_prng_key(prng_key, cfg.num_layers).keys, layer_context.state, xs),
+            carry, ys = scan_in_context(
+                fn,
+                carry=carry,
+                xs=dict(
+                    xs=xs,
+                    prng_key=split_prng_key(prng_key, cfg.num_layers).keys,
+                    state=layer_context.state,
+                ),
+                drop_output=self._drop_output,
             )
 
-            output_collection = layer_context.output_collection
-            output_collection.update(scan_ys["output_collection"])
-
-        return self.Output(carry=carry, ys=scan_ys["y_i"])
+        return self.Output(carry=carry, ys=ys)

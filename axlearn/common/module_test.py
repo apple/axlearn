@@ -2,6 +2,7 @@
 
 """Tests for module.py."""
 # pylint: disable=protected-access
+import contextlib
 import threading
 from typing import List, Optional
 
@@ -22,8 +23,14 @@ from axlearn.common.module import (
     current_context,
 )
 from axlearn.common.module import functional as F
-from axlearn.common.module import install_context_stack, new_output_collection, set_current_context
+from axlearn.common.module import (
+    install_context_stack,
+    new_output_collection,
+    scan_in_context,
+    set_current_context,
+)
 from axlearn.common.test_utils import TestWithTemporaryCWD
+from axlearn.common.utils import match_regex_rules
 
 
 class OutputCollectionTest(absltest.TestCase):
@@ -581,6 +588,132 @@ class ModuleTest(TestWithTemporaryCWD):
                 is_training=True,
                 method="get_shared_module",
                 inputs=dict(shared_module_name="outer_shared"),
+            )
+
+
+class ScanInContextTest(TestWithTemporaryCWD):
+    """Tests scan_in_context."""
+
+    def _invoke(self, *, num_iters, xs, **kwargs):
+        batch_size = 2
+
+        def fn(carry_i, x_i):
+            ctx = current_context()
+            assert ctx is not None
+            state_i = ctx.state
+            # Add a nested output for testing filtering.
+            ctx.add_module_output(
+                "nested",
+                dict(
+                    with_carry=dict(
+                        output=x_i + carry_i,
+                        with_state=dict(output=x_i + carry_i + state_i),
+                    ),
+                    output=x_i,
+                ),
+            )
+            return carry_i + 1, x_i + carry_i + state_i
+
+        xs["xs"] = jnp.arange(num_iters, dtype=jnp.int32)[:, None] * jnp.ones(
+            batch_size, dtype=jnp.int32
+        )
+        return scan_in_context(fn, carry=jnp.zeros(1, dtype=jnp.int32), xs=xs, **kwargs)
+
+    @contextlib.contextmanager
+    def _dummy_context(self):
+        # Yields a dummy context.
+        context = InvocationContext(
+            name="root",
+            parent=None,
+            module=new_test_module("test"),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=jnp.arange(2, dtype=jnp.int32) * 10,
+            output_collection=new_output_collection(),
+        )
+        with set_current_context(context):
+            yield context
+
+    def test_context(self):
+        # Running outside of context should error.
+        with self.assertRaisesRegex(ValueError, "Expected current_context()"):
+            self._invoke(num_iters=3, xs={})
+
+    def test_basic(self):
+        num_iters = 3
+
+        # Invoke with inherited state. In this case, the same state is used each iter.
+        with self._dummy_context():
+            carry, ys = self._invoke(num_iters=num_iters, xs={})
+            self.assertNestedEqual(jnp.array([num_iters], dtype=carry.dtype), carry)
+            self.assertNestedEqual(
+                jnp.array([[0, 10], [2, 12], [4, 14]], dtype=carry.dtype),
+                ys,
+            )
+
+        # Invoke with explicit state. In this case, the state is unrolled.
+        with self._dummy_context():
+            carry, ys = self._invoke(
+                num_iters=num_iters,
+                xs={"state": jnp.ones([num_iters, 1], dtype=jnp.int32) * 10},
+            )
+            self.assertNestedEqual(jnp.array([num_iters], dtype=carry.dtype), carry)
+            self.assertNestedEqual(
+                jnp.array([[10, 10], [12, 12], [14, 14]], dtype=carry.dtype),
+                ys,
+            )
+
+    def test_drop_output(self):
+        num_iters = 3
+
+        # By default, nothing is dropped.
+        with self._dummy_context() as ctx:
+            self._invoke(num_iters=num_iters, xs={})
+            self.assertNestedEqual(
+                {
+                    "output": jnp.array([[0, 0], [1, 1], [2, 2]]),
+                    "with_carry": {
+                        "output": jnp.array([[0, 0], [2, 2], [4, 4]]),
+                        "with_state": {"output": jnp.array([[0, 10], [2, 12], [4, 14]])},
+                    },
+                },
+                ctx.output_collection.module_outputs["nested"],
+            )
+
+        # Invoke with an output dropper that drops everything.
+        with self._dummy_context() as ctx:
+            self._invoke(num_iters=num_iters, xs={}, drop_output=lambda _: True)
+            self.assertNestedEqual({}, ctx.output_collection.module_outputs)
+
+        # Invoke with an output dropper that matches specific paths.
+        with self._dummy_context() as ctx:
+            self._invoke(
+                num_iters=num_iters,
+                xs={},
+                drop_output=lambda path: match_regex_rules(path, rules=[(".*/with_carry.*", True)]),
+            )
+            self.assertNestedEqual(
+                {
+                    "output": jnp.array([[0, 0], [1, 1], [2, 2]]),
+                },
+                ctx.output_collection.module_outputs["nested"],
+            )
+
+        # Invoke with an output dropper that matches specific paths.
+        with self._dummy_context() as ctx:
+            self._invoke(
+                num_iters=num_iters,
+                xs={},
+                drop_output=lambda path: match_regex_rules(path, rules=[(".*/with_state.*", True)]),
+            )
+            self.assertNestedEqual(
+                {
+                    "output": jnp.array([[0, 0], [1, 1], [2, 2]]),
+                    "with_carry": {
+                        "output": jnp.array([[0, 0], [2, 2], [4, 4]]),
+                    },
+                },
+                ctx.output_collection.module_outputs["nested"],
             )
 
 
