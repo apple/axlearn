@@ -11,12 +11,12 @@ from jax import numpy as jnp
 
 from axlearn.common import param_init
 from axlearn.common.base_layer import BaseLayer, ParameterSpec, RematSpec
-from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 from axlearn.common.layers import RedirectToSharedModule
 from axlearn.common.layers_test import ParentLayer
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
-from axlearn.common.repeat import Repeat
+from axlearn.common.repeat import Repeat, _drop_by_regex
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import PartitionSpec, VDict, get_recursively, shapes
 
@@ -34,8 +34,10 @@ class TestLayer(BaseLayer):
 
     def forward(self, *, carry, forward_state):
         logging.info("TestLayer: carry=%s forward_state=%s", shapes(carry), shapes(forward_state))
+        forward_state = forward_state + carry
         self.add_summary("carry_mean", jnp.mean(carry))
-        return carry + self.parameters["inc"], forward_state + carry
+        self.add_module_output("state", forward_state)
+        return carry + self.parameters["inc"], forward_state
 
 
 class TestComplicatedLayer(BaseLayer):
@@ -121,13 +123,15 @@ class TestEnsemble(BaseLayer):
 class RepeatTest(TestCase):
     """Tests repeat layer."""
 
-    @parameterized.parameters(
-        itertools.product((jnp.float32, jnp.bfloat16), (None, RematSpec(prevent_cse=False)))
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.bfloat16),
+        remat_spec=(None, RematSpec(prevent_cse=False)),
+        drop_output=(None, config_for_function(_drop_by_regex).set(rules=["module_outputs.*"])),
     )
-    def test_repeat(self, dtype, remat_spec):
+    def test_repeat(self, dtype, remat_spec, drop_output):
         batch_size, num_layers = 14, 4
         cfg = TestEnsemble.default_config().set(name="test", num_layers=num_layers, dtype=dtype)
-        cfg.repeat_layer.remat_spec = remat_spec
+        cfg.repeat_layer.set(remat_spec=remat_spec, drop_output=drop_output)
         layer: TestEnsemble = cfg.instantiate(parent=None)
         self.assertEqual(
             PartitionSpec(None),
@@ -146,6 +150,7 @@ class RepeatTest(TestCase):
                 forward_state=input_forward_state,
             ),
             is_training=True,
+            drop_output_collections=(),
         )
         logging.info("forward_state=%s", output_forward_state)
         logging.info("output_collection=%s", output_collection)
@@ -158,6 +163,18 @@ class RepeatTest(TestCase):
                 (num_layers, batch_size),
             ),
         )
+        # Check output collection.
+        if drop_output is not None:
+            self.assertEqual(
+                get_recursively(output_collection.module_outputs, "repeat_layer/layer"),
+                {},
+            )
+        else:
+            assert_allclose(
+                get_recursively(output_forward_state, "repeat_layer/layer"),
+                get_recursively(output_collection.module_outputs, "repeat_layer/layer/state"),
+            )
+        # Check summaries.
         self.assertEqual(
             {"repeat_layer": {"layer": {"carry_mean": (num_layers,)}}},
             shapes(output_collection.summaries),

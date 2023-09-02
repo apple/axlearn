@@ -50,6 +50,7 @@ from axlearn.common.utils import (
     get_recursively,
     input_partition_spec,
     match_regex_rules,
+    prune_tree,
     runtime_checks,
     set_data_dir,
     set_recursively,
@@ -913,6 +914,36 @@ class MatchRegexRulesTest(TestCase):
         self.assertEqual("w", match_regex_rules("not_special/weight", rules=rules))
         # Custom default value.
         self.assertEqual("d", match_regex_rules("layer/scale", rules=rules, default_value="d"))
+
+
+class PruneTreeTest(TestCase):
+    """Tests prune_tree."""
+
+    def test(self):
+        in_tree = {
+            "a": {
+                "b": {"d": "test"},
+                "c": {
+                    "b": None,
+                    "e": 123,
+                },
+            },
+            "f": 345,
+        }
+        # Prune by path.
+        self.assertEqual(
+            {"a": {"c": {"e": 123}}, "f": 345}, prune_tree(in_tree, lambda k, _: "b" in k)
+        )
+        # Prune by path with prefix/separator.
+        self.assertEqual(
+            {"a": {"c": {"b": None, "e": 123}}, "f": 345},
+            prune_tree(in_tree, lambda k, _: k == "prefix:a:b", prefix="prefix", separator=":"),
+        )
+        # Prune by value.
+        self.assertEqual(
+            {"a": {"b": {"d": "test"}, "c": {"b": None}}},
+            prune_tree(in_tree, lambda _, v: isinstance(v, int)),
+        )
 
 
 if __name__ == "__main__":
