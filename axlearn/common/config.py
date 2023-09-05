@@ -329,7 +329,23 @@ class ConfigBase:
                 val = f"{val.__module__}.{val.__name__}"
             return repr(val)
 
-        self.visit(lambda key, val: lines.append(f"{key}{kv_separator}{fmt(val)}"))
+        def enter(key: str, val: Any, default_result: Optional[List]) -> Optional[List]:
+            if key and isinstance(val, ConfigBase):
+                # Call `debug_string` on any sub config. This allows a sub config to override
+                # the behavior of `debug_string`.
+                debug_str = val.debug_string(
+                    kv_separator=kv_separator, field_separator=field_separator
+                )
+                # For each line from `debug_str`, prepend `<key>.` and add to `lines`.
+                lines.extend([f"{key}.{line}" for line in debug_str.split(field_separator)])
+                return []   # Nothing to traverse.
+            # Otherwise adopt the default behavior.
+            return default_result
+
+        self.visit(
+            lambda key, val: lines.append(f"{key}{kv_separator}{fmt(val)}"),
+            enter_fn=enter,
+        )
         return field_separator.join(lines)
 
     def to_dict(self) -> Dict[str, Any]:
