@@ -10,9 +10,11 @@
 
 """
 import atexit
+import contextlib
 import os
 import subprocess
 from typing import Union
+from unittest import mock
 
 import pytest
 from absl import flags, logging
@@ -27,6 +29,12 @@ from axlearn.cloud.gcp.utils import common_flags, get_credentials
 from axlearn.cloud.gcp.vm import create_vm, delete_vm
 from axlearn.common.config import config_class
 from axlearn.common.test_utils import TestCase
+
+
+@contextlib.contextmanager
+def mock_job(module_name: str):
+    with mock.patch(f"{module_name}.get_credentials", return_value=None):
+        yield
 
 
 def _private_flags():

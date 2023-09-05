@@ -20,6 +20,7 @@ _STORAGE_RW = "https://www.googleapis.com/auth/devstorage.read_write"  # GCS Rea
 
 # For typical TPU node and queued resource operations, including list, create, delete etc.
 # See: https://cloud.google.com/tpu/docs/reference/rest
+# TODO(Zhaoyi): create more granular scopes for TPU operations.
 DEFAULT_TPU_SCOPES = [_CLOUD_TPU, _CLOUD_PLATFORM]
 
 # Same scopes used by gcloud auth application-default login.

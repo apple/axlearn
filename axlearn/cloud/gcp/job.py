@@ -13,8 +13,11 @@ import shlex
 import subprocess
 from typing import Any, Dict, Optional, Sequence, Union
 
+from google.auth.credentials import Credentials
+
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import subprocess_run
+from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.tpu import _qrm_resource, _tpu_resource, get_queued_tpu_node, get_tpu_node
 from axlearn.cloud.gcp.utils import get_credentials, running_from_vm
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -31,6 +34,27 @@ class GCPJob(Job):
         project: Required[str] = REQUIRED
         # GCP zone.
         zone: Required[str] = REQUIRED
+        # If not none, the current job will be executed as the service account.
+        service_account: Optional[str] = None
+
+    def _get_job_credentials(
+        self,
+        impersonate_scopes: Optional[Sequence[str]] = None,
+    ) -> Credentials:
+        """Returns the credentials the job runs as.
+
+        Note that credentials are temporary and should be created on demand.
+
+        Args:
+            impersonate_scopes: Scopes of the impersonation token,
+                following https://developers.google.com/identity/protocols/oauth2/scopes
+
+        Returns:
+            The temporary credentials, possibly impersonating `cfg.service_account`.
+        """
+        return get_credentials(
+            impersonate_account=self.config.service_account, impersonate_scopes=impersonate_scopes
+        )
 
 
 class TPUJob(GCPJob):
@@ -66,9 +90,15 @@ class TPUJob(GCPJob):
         if self._use_iap is None:
             cfg = self.config
             if cfg.num_slices > 1:
-                node = get_queued_tpu_node(cfg.name, _qrm_resource(get_credentials()))
+                node = get_queued_tpu_node(
+                    cfg.name,
+                    _qrm_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
+                )
             else:
-                node = get_tpu_node(cfg.name, _tpu_resource(get_credentials()))
+                node = get_tpu_node(
+                    cfg.name,
+                    _tpu_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
+                )
             if node is None:
                 raise ValueError(f"Expected TPU {cfg.name} to exist")
             for endpoint in node.get("networkEndpoints", []):
