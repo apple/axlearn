@@ -1,10 +1,13 @@
 # Copyright © 2023 Apple Inc.
 
 """An inference pipeline consists of an input, a runner, and an output writer."""
+import time
 from typing import Optional, Tuple
 
+import jax
 import numpy as np
 import tensorflow as tf
+from absl import logging
 from jax.experimental import multihost_utils
 
 from axlearn.common import utils
@@ -113,6 +116,9 @@ class InferencePipeline(Module):
         method_runner = self.runner.create_method_runner(method=cfg.model_method, **kwargs)
 
         batch_index = 0
+        perf_counter_num_batches = 0
+        start_time = time.perf_counter()
+
         for input_batch in self.input.dataset():
             input_batch, input_batch_str_tensors = pop_string_tensors(input_batch)
             # pylint: disable-next=protected-access
@@ -131,6 +137,22 @@ class InferencePipeline(Module):
                 output_batch=output_batch,
             )
             self.summary_writer(step=batch_index, values=output.summaries)
+            batch_index += 1
+            perf_counter_num_batches += 1
+
+            if batch_index % 10 == 0:
+                global_batch_size = len(jax.tree_util.tree_leaves(global_input_batch)[0])
+                logging.info(
+                    "Processed %d batches and %d examples",
+                    batch_index,
+                    batch_index * global_batch_size,
+                )
+                now = time.perf_counter()
+                average_batch_time = (now - start_time) / perf_counter_num_batches
+                logging.info("Average time per batch: %.2f seconds", average_batch_time)
+                perf_counter_num_batches = 0
+                start_time = now
+
         self.output_writer.flush()
         # Synchronize flush across hosts.
         multihost_utils.sync_global_devices(self.path())
