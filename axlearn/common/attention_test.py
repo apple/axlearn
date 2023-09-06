@@ -1795,30 +1795,38 @@ class StackedTransformerTest(TestCase):
         layer_cfg.vlog = 5
         return cfg
 
-    @parameterized.parameters(StackedTransformerLayer, RepeatedTransformerLayer)
-    def test_transformer_extend_step(self, transformer_type):
+    @parameterized.product(
+        transformer_type=[StackedTransformerLayer, RepeatedTransformerLayer],
+        # Also tests stack-of-stacks and repeat-of-stacks.
+        layer_type=[TransformerLayer, StackedTransformerLayer],
+    )
+    def test_transformer_extend_step(self, transformer_type, layer_type):
         batch_size, src_len, tgt_len = 10, 4, 6
         num_dec_layers, model_dim, num_heads = 3, 16, 4
 
-        if isinstance(transformer_type, type):
-            cfg = transformer_type.default_config().set(
-                name="test",
-                input_dim=model_dim,
-                num_layers=num_dec_layers,
-            )
-        # TODO(sneha): add a test that compares hf_T5 vs ours like hf_roberta above?
+        cfg = transformer_type.default_config().set(
+            name="test",
+            input_dim=model_dim,
+            num_layers=num_dec_layers,
+        )
         cross_atten_cfg = TransformerAttentionLayer.default_config().set(
             source_dim=model_dim * 2,
             structure="postnorm",
         )
         cross_atten_cfg.attention.set(num_heads=num_heads)
-        layer_cfg = cfg.layer
+
+        # Prepare layer config.
+        if layer_type == StackedTransformerLayer:
+            cfg.layer = layer_type.default_config().set(num_layers=2)
+            layer_cfg = cfg.layer.layer
+        else:
+            layer_cfg = cfg.layer
         layer_cfg.self_attention.attention.set(num_heads=num_heads)
         layer_cfg.cross_attention = cross_atten_cfg
         layer_cfg.feed_forward.hidden_dim = model_dim * 4
 
+        # Instantiate transformer stack.
         layer = cfg.instantiate(parent=None)
-
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
@@ -1844,11 +1852,20 @@ class StackedTransformerTest(TestCase):
         initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
         inputs = dict(cached_states=initial_state, cross_attention_data=source)
         decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
-        decoder_self_attention_probs = jnp.zeros(
-            shape=[tgt_len, num_dec_layers, batch_size, num_heads, tgt_len]
+
+        # [num_dec_layers, [num_stacked_layers,] batch_size, num_heads, tgt_len, tgt_len] -->
+        # [tgt_len, num_dec_layers, [num_stacked_layers,] batch_size, num_heads, tgt_len].
+        # The layer being stacked can itself be a stack, in which case we have an extra dim.
+        decoder_self_attention_probs = jnp.moveaxis(
+            jnp.zeros_like(forward_outputs.self_attention_probs),
+            -2,
+            0,
         )
-        decoder_cross_attention_probs = jnp.zeros(
-            shape=[tgt_len, num_dec_layers, batch_size, num_heads, src_len]
+        # [tgt_len, num_dec_layers, [num_stacked_layers,] batch_size, num_heads, src_len].
+        decoder_cross_attention_probs = jnp.moveaxis(
+            jnp.zeros_like(forward_outputs.cross_attention_probs),
+            -2,
+            0,
         )
         for t in range(tgt_len):
             inputs["data"] = jnp.expand_dims(target[:, t, :], axis=1)
@@ -1868,21 +1885,23 @@ class StackedTransformerTest(TestCase):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                self.assertIsInstance(updated_states, utils.VDict)
+                jax.tree_map(
+                    lambda v: self.assertIsInstance(v, utils.VDict),
+                    updated_states,
+                    is_leaf=lambda v: isinstance(v, dict),
+                )
             inputs["cached_states"] = updated_states
             decoder_output = decoder_output.at[t].set(jnp.squeeze(layer_outputs.data, axis=1))
             decoder_self_attention_probs = decoder_self_attention_probs.at[t].set(
-                jnp.squeeze(layer_outputs.self_attention_probs, axis=3)
+                jnp.squeeze(layer_outputs.self_attention_probs, axis=-2)
             )
             decoder_cross_attention_probs = decoder_cross_attention_probs.at[t].set(
-                jnp.squeeze(layer_outputs.cross_attention_probs, axis=3)
+                jnp.squeeze(layer_outputs.cross_attention_probs, axis=-2)
             )
         decoder_out_transposed = jnp.transpose(decoder_output, [1, 0, 2])
-        decoder_self_attention_probs_transposed = jnp.transpose(
-            decoder_self_attention_probs, [1, 2, 3, 0, 4]
-        )
-        decoder_cross_attention_probs_transposed = jnp.transpose(
-            decoder_cross_attention_probs, [1, 2, 3, 0, 4]
+        decoder_self_attention_probs_transposed = jnp.moveaxis(decoder_self_attention_probs, 0, -2)
+        decoder_cross_attention_probs_transposed = jnp.moveaxis(
+            decoder_cross_attention_probs, 0, -2
         )
 
         assert_allclose(decoder_out_transposed, forward_outputs.data, atol=1e-6)
@@ -1895,14 +1914,16 @@ class StackedTransformerTest(TestCase):
             atol=1e-6,
         )
 
-    @parameterized.parameters(StackedTransformerLayer, RepeatedTransformerLayer)
+    @parameterized.product(
+        transformer_type=[StackedTransformerLayer, RepeatedTransformerLayer],
+        # Also tests stack-of-stacks and repeat-of-stacks.
+        layer_type=[TransformerLayer, StackedTransformerLayer],
+    )
     # pylint: disable-next=too-many-statements
-    def test_transformer_prefill_states(self, transformer_type):
+    def test_transformer_prefill_states(self, transformer_type, layer_type):
         batch_size, src_len, tgt_len = 10, 4, 6
         num_dec_layers, model_dim, num_heads = 3, 16, 4
 
-        model_dim = 16
-        num_heads = 4
         cfg = transformer_type.default_config().set(
             name="test",
             input_dim=model_dim,
@@ -1913,11 +1934,18 @@ class StackedTransformerTest(TestCase):
             structure="postnorm",
         )
         cross_atten_cfg.attention.set(num_heads=num_heads)
-        layer_cfg = cfg.layer
+
+        # Prepare layer config.
+        if layer_type == StackedTransformerLayer:
+            cfg.layer = layer_type.default_config().set(num_layers=2)
+            layer_cfg = cfg.layer.layer
+        else:
+            layer_cfg = cfg.layer
         layer_cfg.self_attention.attention.set(num_heads=num_heads)
         layer_cfg.cross_attention = cross_atten_cfg
         layer_cfg.feed_forward.hidden_dim = model_dim * 4
 
+        # Instantiate transformer stack.
         layer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
@@ -2010,7 +2038,11 @@ class StackedTransformerTest(TestCase):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                self.assertIsInstance(updated_states, utils.VDict)
+                jax.tree_map(
+                    lambda v: self.assertIsInstance(v, utils.VDict),
+                    updated_states,
+                    is_leaf=lambda v: isinstance(v, dict),
+                )
             inputs["cached_states"] = updated_states
 
             # [batch, model_dim, tgt_len=1]
