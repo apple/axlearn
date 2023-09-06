@@ -156,6 +156,9 @@ class RequiredFieldValue:
     def __bool__(self):
         return False
 
+    def __repr__(self):
+        return "REQUIRED"
+
 
 REQUIRED = RequiredFieldValue()
 Required = Union[T, RequiredFieldValue, Any]
@@ -319,34 +322,48 @@ class ConfigBase:
         """
         return attr.evolve(self, **kwargs)
 
-    def debug_string(self, *, kv_separator=": ", field_separator="\n"):
-        lines = []
+    def debug_string(self, *, kv_separator: str = ": ", field_separator: str = "\n") -> str:
+        """Returns a debug string for the config.
 
-        def fmt(val):
-            if isinstance(val, RequiredFieldValue):
-                return "REQUIRED"
+        Args:
+            kv_separator: The key-value separator.
+            field_separator: The field separator.
+
+        Returns:
+            A str separated by `field_separator` where each entry is of form
+            f"{path}{kv_separator}{val}", representing path and value of a leaf config field.
+        """
+        flat_dict = self.to_flat_dict()
+
+        def fmt(key: str, val: Any) -> Union[str, Tuple[str, str]]:
             if isinstance(val, (type, types.FunctionType)):
                 val = f"{val.__module__}.{val.__name__}"
-            return repr(val)
+            return f"{key}{kv_separator}{repr(val)}"
+
+        return field_separator.join([fmt(k, v) for k, v in flat_dict.items()])
+
+    def to_flat_dict(self) -> Dict[str, Any]:
+        """Returns a flattened dict with path -> value mappings.
+
+        Returns:
+            A dict where each key is a `.`-separated str of path and each value represents a
+            leaf config field value.
+        """
+        result = {}
 
         def enter(key: str, val: Any, default_result: Optional[List]) -> Optional[List]:
             if key and isinstance(val, ConfigBase):
-                # Call `debug_string` on any sub config. This allows a sub config to override
-                # the behavior of `debug_string`.
-                debug_str = val.debug_string(
-                    kv_separator=kv_separator, field_separator=field_separator
-                )
-                # For each line from `debug_str`, prepend `<key>.` and add to `lines`.
-                lines.extend([f"{key}.{line}" for line in debug_str.split(field_separator)])
-                return []   # Nothing to traverse.
+                # Call `to_flat_dict` on any sub config. This allows a sub config to override
+                # the behavior of `to_flat_dict`.
+                val_entries = val.to_flat_dict()
+                # For each entry from `debug_string`, prepend `<key>.` to each key.
+                result.update({f"{key}.{k}": v for k, v in val_entries.items()})
+                return []  # Nothing to traverse.
             # Otherwise adopt the default behavior.
             return default_result
 
-        self.visit(
-            lambda key, val: lines.append(f"{key}{kv_separator}{fmt(val)}"),
-            enter_fn=enter,
-        )
-        return field_separator.join(lines)
+        self.visit(lambda key, val: result.update({key: val}), enter_fn=enter)
+        return result
 
     def to_dict(self) -> Dict[str, Any]:
         """Returns a nested dictionary of config fields."""
