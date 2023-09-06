@@ -139,6 +139,7 @@ def _create_legacy_tpu(
     boot_timeout = (
         3600  # If we haven't booted after TPU READY + this many seconds, raise exception.
     )
+    reserved_tpu = gcp_settings("reserved_tpu", default=False)
     while True:
         node = get_tpu_node(name, resource)
         if node is not None:  # TPU exists.
@@ -198,16 +199,23 @@ def _create_legacy_tpu(
                 time.sleep(backoff_for)
             try:
                 attempt += 1
+                request_body = _tpu_body(
+                    name,
+                    tpu_type=tpu_type,
+                    bundler_type=bundler_type,
+                    metadata=metadata,
+                    service_account=service_account,
+                )
+                # Specify schedulingConfig only for non-QRM requests, as it will break QRM.
+                # For QRM, we specify a different field to use reserved quota -- see `_qrm_body`.
+                request_body["schedulingConfig"] = {
+                    "preemptible": not reserved_tpu,
+                    "reserved": reserved_tpu,
+                }
                 request = resource.create(
                     parent=tpu_path_prefix,
                     nodeId=name,
-                    body=_tpu_body(
-                        name,
-                        tpu_type=tpu_type,
-                        bundler_type=bundler_type,
-                        metadata=metadata,
-                        service_account=service_account,
-                    ),
+                    body=request_body,
                 )
                 _execute_create_tpu_request(request)
             except TPUQuotaLimitError:
