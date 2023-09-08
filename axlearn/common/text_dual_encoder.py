@@ -217,6 +217,71 @@ def flatten_and_concat_embeddings(
     }
 
 
+def flatten_and_concat_embeddings_from_input_batch(
+    *,
+    input_batch: NestedTensor,
+    left_encoder_name: str,
+    right_encoder_name: str,
+    left_encoder_emb_field_name: Optional[str] = None,
+    right_encoder_emb_field_name: Optional[str] = None,
+    assert_one_positive_from_right_encoder: bool = True,
+) -> NestedTensor:
+    """Obtains embeddings from specified embedding fields, flattening and concatenating them.
+
+    Args:
+        input_batch: A Nested Tensor having left and right encoder name as first level of keys.
+            Each input_batch[encoder_name](when emd_field_name is None) or
+            input_batch[encoder_name][emb_field_name] should contain all embeddings and paddings
+            for the encoder.
+        left_encoder_name: Left encoder name.
+        right_encoder_name: Right encoder name.
+        left_encoder_emb_field_name: Nested field name in input_batch to get embeddings from left
+            encoder. If None, fetch embeddings and paddings directly from left encoder input.
+        right_encoder_emb_field_name: Nested field name in input_batch to get embeddings from right
+            encoder. If None, fetch embeddings and paddings directly from right encoder input.
+        assert_one_positive_from_right_encoder: If True, assert whether there is only one positive
+            embedding from right encoder.
+
+    Returns:
+        A dict of Tensor:
+            FLATTENED_LEFT_EMBEDDINGS: A Tensor with shape [num_left_inputs, dim].
+            FLATTENED_RIGHT_EMBEDDINGS: A Tensor with shape
+                [num_left_inputs * (max_right_positive_inputs + max_right_negative_inputs), dim].
+                max_right_negative_inputs = 0 when there is no right_negative_embeddings.
+            RIGHT_PADDINGS: A Tensor with shape
+                [num_left_inputs * (max_right_positive_inputs + max_right_negative_inputs)].
+                max_right_negative_inputs = 0 when there is no right_negative_embeddings.
+    """
+    left_encoder_emb = (
+        input_batch[left_encoder_name]
+        if left_encoder_emb_field_name is None
+        else input_batch[left_encoder_name][left_encoder_emb_field_name]
+    )
+    right_encoder_emb = (
+        input_batch[right_encoder_name]
+        if right_encoder_emb_field_name is None
+        else input_batch[right_encoder_name][right_encoder_emb_field_name]
+    )
+
+    right_positive_embeddings = right_encoder_emb[POSITIVE_EMBEDDINGS]
+    right_positive_paddings = right_encoder_emb[POSITIVE_PADDINGS]
+    if assert_one_positive_from_right_encoder:
+        assert (
+            right_positive_embeddings.shape[1] == 1
+        ), "Expecting one positive embedding per example from right encoder."
+        assert (
+            right_positive_paddings.shape[1] == 1
+        ), "Expecting one positive embedding per example from right encoder."
+
+    return flatten_and_concat_embeddings(
+        left_positive_embeddings=left_encoder_emb[POSITIVE_EMBEDDINGS],
+        right_positive_embeddings=right_positive_embeddings,
+        right_positive_paddings=right_positive_paddings,
+        right_negative_embeddings=right_encoder_emb.get(NEGATIVE_EMBEDDINGS, None),
+        right_negative_paddings=right_encoder_emb.get(NEGATIVE_PADDINGS, None),
+    )
+
+
 class TextEmbeddingAsymmetricContrastiveLossLayer(FusionNetwork):
     """A FusionNetwork that computes asymmetric contrastive loss using text embeddings from
     left and right encoders.
@@ -231,42 +296,20 @@ class TextEmbeddingAsymmetricContrastiveLossLayer(FusionNetwork):
 
     @config_class
     class Config(BaseLayer.Config):
+        """Configures TextEmbeddingAsymmetricContrastiveLossLayer."""
+
         # Name of left encoder that gives embeddings as queries when computing asymmetric
         # contrastive loss.
         left_encoder_name: Required[str] = REQUIRED
+        # Nested field name in input_batch to get embeddings from left encoder.
+        left_encoder_emb_field_name: Optional[str] = None
         # Name of right encoder that gives embeddings as keys when computing asymmetric
         # contrastive loss.
         right_encoder_name: Required[str] = REQUIRED
+        # Nested field name in input_batch to get embeddings from right encoder.
+        right_encoder_emb_field_name: Optional[str] = None
         # A positive scalar float to be multiplied with logits. Default is 1.0.
         contrastive_loss_scale_factor: float = 1.0
-
-    def _flatten_and_concat_embeddings(self, input_batch: NestedTensor) -> Dict[str, Tensor]:
-        """Flattens left and right embeddings and concatenates right encoder positive and negative
-        embeddings.
-        """
-        cfg = self.config
-        left_encoder_name = cfg.left_encoder_name
-        right_encoder_name = cfg.right_encoder_name
-
-        right_positive_embeddings = input_batch[right_encoder_name][POSITIVE_EMBEDDINGS]
-        assert (
-            right_positive_embeddings.shape[1] == 1
-        ), "Expecting one positive embedding per example from right encoder."
-
-        right_positive_paddings = input_batch[right_encoder_name][POSITIVE_PADDINGS]
-        assert (
-            right_positive_paddings.shape[1] == 1
-        ), "Expecting one positive embedding per example from right encoder."
-
-        return flatten_and_concat_embeddings(
-            left_positive_embeddings=input_batch[left_encoder_name][POSITIVE_EMBEDDINGS],
-            right_positive_embeddings=right_positive_embeddings,
-            right_positive_paddings=right_positive_paddings,
-            right_negative_embeddings=input_batch[right_encoder_name].get(
-                NEGATIVE_EMBEDDINGS, None
-            ),
-            right_negative_paddings=input_batch[right_encoder_name].get(NEGATIVE_PADDINGS, None),
-        )
 
     def forward(self, input_batch: NestedTensor) -> NestedTensor:
         """Forward function.
@@ -274,16 +317,18 @@ class TextEmbeddingAsymmetricContrastiveLossLayer(FusionNetwork):
         Args:
             input_batch: A dictionary containing:
                 cfg.left_encoder_name:
-                    POSITIVE_EMBEDDINGS: A Tensor with shape [batch_size, 1, dim].
+                    cfg.left_encoder_emb_field_name(omitted if None):
+                        POSITIVE_EMBEDDINGS: A Tensor with shape [batch_size, 1, dim].
                 cfg.right_encoder_name:
-                    POSITIVE_EMBEDDINGS: A Tensor with shape [batch_size, 1, dim].
-                    POSITIVE_PADDINGS: A 0/1 Tensor with shape [batch_size, 1] where 1 means padded
-                        docs and 0 means effective docs.
-                    NEGATIVE_EMBEDDINGS: A Tensor with shape
-                        [batch_size, num_negative_inputs_per_example, dim].
-                    NEGATIVE_PADDINGS: A 0/1 Tensor with shape
-                        [batch_size, num_negative_inputs_per_example] where 1 means padded docs and
-                        0 means effective docs.
+                    cfg.right_encoder_emb_field_name(omitted if None):
+                        POSITIVE_EMBEDDINGS: A Tensor with shape [batch_size, 1, dim].
+                        POSITIVE_PADDINGS: A 0/1 Tensor with shape [batch_size, 1] where 1 means
+                            padded docs and 0 means effective docs.
+                        NEGATIVE_EMBEDDINGS: A Tensor with shape
+                            [batch_size, num_negative_inputs_per_example, dim].
+                        NEGATIVE_PADDINGS: A 0/1 Tensor with shape
+                            [batch_size, num_negative_inputs_per_example] where 1 means padded docs
+                            and 0 means effective docs.
 
         Returns:
             loss: A Tensor representing the loss.
@@ -292,7 +337,14 @@ class TextEmbeddingAsymmetricContrastiveLossLayer(FusionNetwork):
                     embeddings and right encoder embeddings.
         """
         cfg = self.config
-        inputs = self._flatten_and_concat_embeddings(input_batch)
+
+        inputs = flatten_and_concat_embeddings_from_input_batch(
+            input_batch=input_batch,
+            left_encoder_name=cfg.left_encoder_name,
+            right_encoder_name=cfg.right_encoder_name,
+            left_encoder_emb_field_name=cfg.left_encoder_emb_field_name,
+            right_encoder_emb_field_name=cfg.right_encoder_emb_field_name,
+        )
 
         similarity = contrastive_logits(
             inputs[FLATTENED_LEFT_EMBEDDINGS], inputs[FLATTENED_RIGHT_EMBEDDINGS]

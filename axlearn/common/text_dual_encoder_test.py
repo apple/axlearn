@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 import jax
 import jax.numpy as jnp
 import pytest
+from absl.testing import parameterized
 
 from axlearn.common.bert import bert_embedding_config, bert_model_config, bert_transformer_config
 from axlearn.common.layers import Linear, RedirectToSharedModule
@@ -68,10 +69,14 @@ def sample_text_embedding_stream_encoder_config(
     )
 
 
-def sample_contrastive_loss_layer_config() -> TextEmbeddingAsymmetricContrastiveLossLayer.Config:
+def sample_contrastive_loss_layer_config(
+    *, left_encoder_emb_field_name=None, right_encoder_emb_field_name=None
+) -> TextEmbeddingAsymmetricContrastiveLossLayer.Config:
     return TextEmbeddingAsymmetricContrastiveLossLayer.default_config().set(
         left_encoder_name=LEFT_ENCODER_NAME,
         right_encoder_name=RIGHT_ENCODER_NAME,
+        left_encoder_emb_field_name=left_encoder_emb_field_name,
+        right_encoder_emb_field_name=right_encoder_emb_field_name,
     )
 
 
@@ -328,6 +333,68 @@ class TestTextEmbeddingAsymmetricContrastiveLossLayer(TestCase):
                 is_training=True,
                 prng_key=jax.random.PRNGKey(0),
             )
+
+    @parameterized.parameters(("emb_1", "emb_2"), ("emb_1", None), (None, "emb_2"), (None, None))
+    def test_encoder_emb_field_name(self, left_emb_field, right_emb_field):
+        # pytype: disable=attribute-error
+        model_cfg = sample_contrastive_loss_layer_config(
+            left_encoder_emb_field_name=left_emb_field,
+            right_encoder_emb_field_name=right_emb_field,
+        )
+        model_cfg.set(name="test_encoder_emb_field_name")
+        model = model_cfg.instantiate(parent=None)
+        model_params = model.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        input_batch = {
+            LEFT_ENCODER_NAME: {
+                "emb_1": {POSITIVE_EMBEDDINGS: random_int_array(shape=(2, 1, HIDDEN_DIM))},
+                POSITIVE_EMBEDDINGS: random_int_array(shape=(4, 1, HIDDEN_DIM)),
+            },
+            RIGHT_ENCODER_NAME: {
+                "emb_2": {
+                    POSITIVE_EMBEDDINGS: random_int_array(shape=(2, 1, HIDDEN_DIM)),
+                    POSITIVE_PADDINGS: jnp.zeros((2, 1)),
+                    NEGATIVE_EMBEDDINGS: random_int_array(shape=(4, 2, HIDDEN_DIM)),
+                    NEGATIVE_PADDINGS: jnp.asarray([[0, 0], [0, 1], [1, 1], [0, 1]]),
+                },
+                POSITIVE_EMBEDDINGS: random_int_array(shape=(3, 1, HIDDEN_DIM)),
+                POSITIVE_PADDINGS: jnp.zeros((3, 1)),
+                NEGATIVE_EMBEDDINGS: random_int_array(shape=(2, 2, HIDDEN_DIM)),
+                NEGATIVE_PADDINGS: jnp.asarray([[0, 0], [0, 1]]),
+            },
+        }
+
+        outputs, _ = F(
+            model,
+            inputs=dict(input_batch=input_batch),
+            state=model_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        if left_emb_field is None:
+            left_emb_shape = input_batch[LEFT_ENCODER_NAME][POSITIVE_EMBEDDINGS].shape[0]
+        else:
+            left_emb_shape = input_batch[LEFT_ENCODER_NAME][left_emb_field][
+                POSITIVE_EMBEDDINGS
+            ].shape[0]
+
+        if right_emb_field is None:
+            negative_emb_shape = input_batch[RIGHT_ENCODER_NAME][NEGATIVE_EMBEDDINGS].shape
+            right_emb_shape = (
+                input_batch[RIGHT_ENCODER_NAME][POSITIVE_EMBEDDINGS].shape[0]
+                + negative_emb_shape[0] * negative_emb_shape[1]
+            )
+        else:
+            negative_emb_shape = input_batch[RIGHT_ENCODER_NAME][right_emb_field][
+                NEGATIVE_EMBEDDINGS
+            ].shape
+            right_emb_shape = (
+                input_batch[RIGHT_ENCODER_NAME][NEGATIVE_EMBEDDINGS].shape[0]
+                + negative_emb_shape[0] * negative_emb_shape[1]
+            )
+
+            assert outputs[1][SIMILARITY_MATRIX].shape == (left_emb_shape, right_emb_shape)
+        # pytype: enable=attribute-error
 
 
 class TestRankingPairwiseLossLayer(TestCase):
