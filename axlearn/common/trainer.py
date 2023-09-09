@@ -189,7 +189,7 @@ class SpmdTrainer(Module):
                 self._model_param_specs
             )
             for name, spec in utils.flatten_items(self._learner_state_partition_specs):
-                self._step_log("Learner state mesh_axes: %s=%s", name, spec)
+                self._step_log("Learner state spec: %s=%s", name, spec)
             self._trainer_state_specs = _TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=self._model_param_specs,
@@ -530,7 +530,9 @@ class SpmdTrainer(Module):
             for path, spec in utils.flatten_items(self._trainer_state_specs):
                 self.vlog(1, "restore spec: %s=%s", path, spec)
             ckpt_state_spec = self._trainer_state_specs._asdict()
-            ckpt_state_spec_with_input_iter = dict(**ckpt_state_spec, input_iter=iter(self.input))
+            ckpt_state_spec_with_input_iter = dict(
+                **ckpt_state_spec, input_iter=iter(self.input.dataset())
+            )
             restore_input_iter = cfg.save_input_iterator
             try:
                 # Try to restore with `input_iter`.

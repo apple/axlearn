@@ -376,7 +376,8 @@ class TensorStoreStateStorage(StateStorage):
                 logging.info("All directories created")
         # Wait for directory and index creation.
         multihost_utils.sync_global_devices(ckpt_dir)
-        save_tf_savables(spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, "tf"))
+        # Each worker writes its tf checkpoints under a different path.
+        save_tf_savables(spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"))
         # Run serialization of GDA values in parallel.
         logging.info(
             "array_values=%s tensorstore=%s", utils.shapes(spec.gda_values), spec.tensorstore_specs
@@ -407,7 +408,9 @@ class TensorStoreStateStorage(StateStorage):
         check_state_structure(
             restored_index_entries, target_structure=spec.index, validation=validation
         )
-        restore_tf_savables(spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, "tf"))
+        restore_tf_savables(
+            spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}")
+        )
 
         restored_gda_values = array_serialization.run_deserialization(
             shardings=spec.shardings,
