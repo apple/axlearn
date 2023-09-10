@@ -647,7 +647,7 @@ class ConfigTest(parameterized.TestCase):
         cfg = BaseLayer.default_config()
 
         # Set the value if the key exists.
-        self.assertEqual(cfg.vlog, 0)
+        self.assertIsNone(cfg.vlog)
         maybe_set_config(cfg, "vlog", 1)
         self.assertEqual(cfg.vlog, 1)
 
