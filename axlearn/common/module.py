@@ -389,11 +389,11 @@ class Module(Configurable):
         """Module config.
 
         name: name of this module.
-        vlog: the maximum vlog level.
+        vlog: the maximum vlog level. If None, vlog is disabled.
         """
 
         name: Required[str] = REQUIRED
-        vlog: int = 0
+        vlog: Optional[int] = None
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg)
@@ -403,7 +403,7 @@ class Module(Configurable):
         self._children: Dict[str, "Module"] = {}
         # Mapping from descendant module name to relative path from current module.
         self._paths_to_shared_modules: Dict[str, List[str]] = {}
-        self._vlog_level = cfg.vlog
+        self._vlog_level = 0 if cfg.vlog is None else cfg.vlog
         # TODO(markblee): Consider using a metaclass.
         for method_name, method_fn in self._methods_to_wrap_for_auto_child_context().items():
             # method_fn is not bound to any instance.
