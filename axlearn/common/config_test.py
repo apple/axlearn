@@ -457,7 +457,7 @@ class ConfigTest(parameterized.TestCase):
         with self.assertRaisesRegex(ValueError, "already specified"):
             self.assertEqual(cfg.var_kwargs, cfg.instantiate(a=3))
 
-    def test_to_dict(self):
+    def test_to_dict_and_debug_string(self):
         def fn_with_args(*args):
             return list(args)
 
@@ -567,6 +567,30 @@ class ConfigTest(parameterized.TestCase):
                 # "my_config.notes": None,
             },
         )
+        self.assertEqual(
+            (
+                "bar[0]: 'a'\n"
+                "bar[1]: 'b'\n"
+                "bar[2]: 'c'\n"
+                "config_dict['config_b'].count: 5\n"
+                "config_func: 'axlearn.common.config.similar_names'\n"
+                "config_list[0].count: 5\n"
+                "config_list[1].count: 1\n"
+                "config_type: 'axlearn.common.config_test.ConfigTest'\n"
+                "foo: 'hello world'\n"
+                "my_config.extra['alpha']: 1\n"
+                "my_config.extra['beta']: 2\n"
+                "my_config.fn.args[0]: 1\n"
+                "my_config.fn.args[1]: 2\n"
+                "my_config.fn.args[2]: 3\n"
+                "my_config.fn.fn: 'axlearn.common.config_test.fn_with_args'\n"
+                "my_config.num_layers: 10\n"
+                "my_config.person['name']: 'Johnny Appleseed'\n"
+                "my_config.person['age']: 30\n"
+                "my_config.person_cls: 'axlearn.common.config_test.Person'"
+            ),
+            cfg.debug_string(),
+        )
 
     @parameterized.product(
         default_value=(REQUIRED, None, False, 0, 0.0, ""),
@@ -581,9 +605,16 @@ class ConfigTest(parameterized.TestCase):
 
         cfg = TestConfig()
         self.assertCountEqual(cfg.to_flat_dict(omit_trivial_default_values=True), {})
+        cfg.set(value=set_value)
         self.assertCountEqual(
-            cfg.clone(value=set_value).to_flat_dict(omit_trivial_default_values=True),
+            cfg.to_flat_dict(omit_trivial_default_values=True),
             {} if default_value is set_value else {"value": set_value},
+            msg=f"{default_value} vs. {set_value}",
+        )
+        # debug_string() omits trivial default values.
+        self.assertEqual(
+            cfg.debug_string(),
+            "" if default_value is set_value else f"value: {repr(set_value)}",
             msg=f"{default_value} vs. {set_value}",
         )
 
