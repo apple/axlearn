@@ -474,7 +474,6 @@ class ConfigTest(parameterized.TestCase):
             fn: InstantiableConfig = config.config_for_function(fn_with_args).set(args=[1, 2, 3])
             person: Person = Person("Johnny Appleseed", 30)  # pytype: disable=invalid-annotation
             person_cls: type = Person
-            enable_x: bool = False
             notes: Optional[str] = None
 
         @config_class
@@ -535,7 +534,6 @@ class ConfigTest(parameterized.TestCase):
                 "my_config.person['age']": 30,
                 "my_config.person_cls": Person,
                 "my_config.required_int": REQUIRED,
-                "my_config.enable_x": False,
                 "my_config.notes": None,
             },
         )
@@ -561,9 +559,8 @@ class ConfigTest(parameterized.TestCase):
                 "my_config.person['name']": "Johnny Appleseed",
                 "my_config.person['age']": 30,
                 "my_config.person_cls": Person,
-                # REQUIRED/False/None are trivial default values and so are omitted.
+                # REQUIRED/None are trivial default values and so are omitted.
                 # "my_config.required_int": REQUIRED,
-                # "my_config.enable_x": False,
                 # "my_config.notes": None,
             },
         )
@@ -603,18 +600,17 @@ class ConfigTest(parameterized.TestCase):
         class TestConfig(ConfigBase):
             value: Any = default_value
 
-        cfg = TestConfig()
-        self.assertCountEqual(cfg.to_flat_dict(omit_trivial_default_values=True), {})
-        cfg.set(value=set_value)
+        cfg = TestConfig().set(value=set_value)
+        omit = default_value is set_value and default_value in (REQUIRED, None)
         self.assertCountEqual(
             cfg.to_flat_dict(omit_trivial_default_values=True),
-            {} if default_value is set_value else {"value": set_value},
+            {} if omit else {"value": set_value},
             msg=f"{default_value} vs. {set_value}",
         )
         # debug_string() omits trivial default values.
         self.assertEqual(
             cfg.debug_string(),
-            "" if default_value is set_value else f"value: {repr(set_value)}",
+            "" if omit else f"value: {repr(set_value)}",
             msg=f"{default_value} vs. {set_value}",
         )
 

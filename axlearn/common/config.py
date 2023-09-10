@@ -373,10 +373,12 @@ class ConfigBase:
             field = attr.fields_dict(type(self)).get(key)
             if isinstance(field, attr.Attribute):
                 default_val = field.default
-                if omit_trivial_default_values and not default_val and default_val is val:
+                if omit_trivial_default_values and default_val is val and val in (REQUIRED, None):
                     return
             result[key] = val
 
+        # Note that we cannot use `utils.flatten_items` to handle this because the treatment of
+        # lists is different.
         self.visit(visit_fn=process_kv, enter_fn=enter)
         return result
 
