@@ -95,6 +95,9 @@ class ConfigTest(absltest.TestCase):
         self.assertEqual([("num_layers", 10)], cfg.items())
         self.assertIn("num_layers", cfg)
         self.assertEqual(10, cfg.num_layers)
+        cfg.num_layers = 12
+        self.assertEqual(12, cfg.num_layers)
+        self.assertEqual(10, attr.fields(type(cfg)).num_layers.default)
 
     def test_mutable_values(self):
         @config_class
@@ -350,6 +353,12 @@ class ConfigTest(absltest.TestCase):
         self.assertEqual(8, model_cfg.decoder.num_layers)
 
     def test_required_values(self):
+        self.assertEqual("REQUIRED", str(REQUIRED))
+        self.assertEqual("REQUIRED", repr(REQUIRED))
+        self.assertFalse(REQUIRED)
+        self.assertIs(REQUIRED, REQUIRED)
+        self.assertEqual(REQUIRED, REQUIRED)
+
         class Layer(Configurable):
             @config_class
             class Config(Configurable.Config):
@@ -465,6 +474,8 @@ class ConfigTest(absltest.TestCase):
             fn: InstantiableConfig = config.config_for_function(fn_with_args).set(args=[1, 2, 3])
             person: Person = Person("Johnny Appleseed", 30)  # pytype: disable=invalid-annotation
             person_cls: type = Person
+            enable_x: bool = False
+            notes: Optional[str] = None
 
         @config_class
         class TestConfigB(ConfigBase):
@@ -499,6 +510,61 @@ class ConfigTest(absltest.TestCase):
                 "config_list": [{"count": 5}, {"count": 1}],
                 "config_type": "axlearn.common.config_test.ConfigTest",
                 "config_func": "axlearn.common.utils.similar_names",
+            },
+        )
+        self.assertCountEqual(
+            cfg.to_flat_dict(omit_trivial_default_values=False),
+            {
+                "bar[0]": "a",
+                "bar[1]": "b",
+                "bar[2]": "c",
+                "config_dict['config_b'].count": 5,
+                "config_func": config.similar_names,
+                "config_list[0].count": 5,
+                "config_list[1].count": 1,
+                "config_type": ConfigTest,
+                "foo": "hello world",
+                "my_config.extra['alpha']": 1,
+                "my_config.extra['beta']": 2,
+                "my_config.fn.args[0]": 1,
+                "my_config.fn.args[1]": 2,
+                "my_config.fn.args[2]": 3,
+                "my_config.fn.fn": fn_with_args,
+                "my_config.num_layers": 10,
+                "my_config.person['name']": "Johnny Appleseed",
+                "my_config.person['age']": 30,
+                "my_config.person_cls": Person,
+                "my_config.required_int": REQUIRED,
+                "my_config.enable_x": False,
+                "my_config.notes": None,
+            },
+        )
+        self.assertCountEqual(
+            cfg.to_flat_dict(omit_trivial_default_values=True),
+            {
+                "bar[0]": "a",
+                "bar[1]": "b",
+                "bar[2]": "c",
+                "config_dict['config_b'].count": 5,
+                "config_func": config.similar_names,
+                "config_list[0].count": 5,
+                "config_list[1].count": 1,
+                "config_type": ConfigTest,
+                "foo": "hello world",
+                "my_config.extra['alpha']": 1,
+                "my_config.extra['beta']": 2,
+                "my_config.fn.args[0]": 1,
+                "my_config.fn.args[1]": 2,
+                "my_config.fn.args[2]": 3,
+                "my_config.fn.fn": fn_with_args,
+                "my_config.num_layers": 10,
+                "my_config.person['name']": "Johnny Appleseed",
+                "my_config.person['age']": 30,
+                "my_config.person_cls": Person,
+                # REQUIRED/False/None are trivial default values and so are omitted.
+                # "my_config.required_int": REQUIRED,
+                # "my_config.enable_x": False,
+                # "my_config.notes": None,
             },
         )
 

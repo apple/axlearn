@@ -333,7 +333,7 @@ class ConfigBase:
             A str separated by `field_separator` where each entry is of form
             f"{path}{kv_separator}{val}", representing path and value of a leaf config field.
         """
-        flat_dict = self.to_flat_dict()
+        flat_dict = self.to_flat_dict(omit_trivial_default_values=True)
 
         def fmt(key: str, val: Any) -> Union[str, Tuple[str, str]]:
             if isinstance(val, (type, types.FunctionType)):
@@ -342,8 +342,13 @@ class ConfigBase:
 
         return field_separator.join([fmt(k, v) for k, v in flat_dict.items()])
 
-    def to_flat_dict(self) -> Dict[str, Any]:
+    def to_flat_dict(self, *, omit_trivial_default_values: bool) -> Dict[str, Any]:
         """Returns a flattened dict with path -> value mappings.
+
+        Args:
+            omit_trivial_default_values: If True, values are equal to the trivial default values
+                of the field. A default value is considered "trivial" if it is negative, e.g.,
+                None, False, 0, REQUIRED.
 
         Returns:
             A dict where each key is a `.`-separated str of path and each value represents a
@@ -355,14 +360,24 @@ class ConfigBase:
             if key and isinstance(val, ConfigBase):
                 # Call `to_flat_dict` on any sub config. This allows a sub config to override
                 # the behavior of `to_flat_dict`.
-                val_entries = val.to_flat_dict()
+                val_entries = val.to_flat_dict(
+                    omit_trivial_default_values=omit_trivial_default_values
+                )
                 # For each entry from `debug_string`, prepend `<key>.` to each key.
                 result.update({f"{key}.{k}": v for k, v in val_entries.items()})
                 return []  # Nothing to traverse.
             # Otherwise adopt the default behavior.
             return default_result
 
-        self.visit(lambda key, val: result.update({key: val}), enter_fn=enter)
+        def process_kv(key: str, val: Any):
+            field = attr.fields_dict(type(self)).get(key)
+            if isinstance(field, attr.Attribute):
+                default_val = field.default
+                if omit_trivial_default_values and not default_val and default_val == val:
+                    return
+            result[key] = val
+
+        self.visit(visit_fn=process_kv, enter_fn=enter)
         return result
 
     def to_dict(self) -> Dict[str, Any]:
