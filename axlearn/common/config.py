@@ -373,7 +373,7 @@ class ConfigBase:
             field = attr.fields_dict(type(self)).get(key)
             if isinstance(field, attr.Attribute):
                 default_val = field.default
-                if omit_trivial_default_values and not default_val and default_val == val:
+                if omit_trivial_default_values and not default_val and default_val is val:
                     return
             result[key] = val
 

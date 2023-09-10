@@ -12,7 +12,7 @@ import attr
 import numpy as np
 import tensorflow_datasets as tfds
 import wrapt
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
 from axlearn.common import config
@@ -28,7 +28,7 @@ from axlearn.common.config import (
 )
 
 
-class ConfigTest(absltest.TestCase):
+class ConfigTest(parameterized.TestCase):
     def test_missing_decorator(self):
         """Tests config class without the @config_class decorator."""
         with self.assertRaisesRegex(config.MissingConfigClassDecoratorError, "@config_class"):
@@ -566,6 +566,25 @@ class ConfigTest(absltest.TestCase):
                 # "my_config.enable_x": False,
                 # "my_config.notes": None,
             },
+        )
+
+    @parameterized.product(
+        default_value=(REQUIRED, None, False, 0, 0.0, ""),
+        set_value=(REQUIRED, None, False, 0, 0.0, ""),
+    )
+    def test_to_flat_dict_omit_trivial_default_values(self, *, default_value, set_value):
+        """Tests ConfigBase.to_flat_dict with omit_trivial_default_values=True."""
+
+        @config_class
+        class TestConfig(ConfigBase):
+            value: Any = default_value
+
+        cfg = TestConfig()
+        self.assertCountEqual(cfg.to_flat_dict(omit_trivial_default_values=True), {})
+        self.assertCountEqual(
+            cfg.clone(value=set_value).to_flat_dict(omit_trivial_default_values=True),
+            {} if default_value is set_value else {"value": set_value},
+            msg=f"{default_value} vs. {set_value}",
         )
 
     def test_to_dict_with_defaultdict(self):
