@@ -34,7 +34,6 @@ import jax
 import numpy as np
 from absl import logging
 from flax import serialization
-from flax.core import FrozenDict
 from jax import numpy as jnp
 from jax.experimental import maps, multihost_utils, pjit
 from jax.sharding import PartitionSpec
@@ -46,7 +45,7 @@ Tensor = jax.Array
 # Recursive type annotations not supported by pytype yet.
 NestedTree = Union[Any, Dict[str, Any]]  # Union[Any, Dict[str, "NestedTree"]]
 # Union[..., Dict[str, "NestedTensor"]]
-NestedTensor = Union[Tensor, Dict[str, Any], FrozenDict[str, Any]]
+NestedTensor = Union[Tensor, Dict[str, Any]]
 # NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, "NestedPartitionSpec"]]]
 NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, Any]]]
 
@@ -120,6 +119,10 @@ def shapes(nested_tensor: NestedTensor) -> NestedTree:
     return jax.tree_util.tree_map(lambda x: getattr(x, "shape", x), nested_tensor)
 
 
+def _concat(*, prefix: str, suffix: str, separator: str):
+    return f"{prefix}{separator}{suffix}" if prefix else f"{suffix}"
+
+
 def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
     """Returns a tree of the same structure as `nested_tensor` but with corresponding paths instead
     of values.
@@ -137,19 +140,24 @@ def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
         tree_paths.
     """
 
-    def _concat(prefix, suffix):
-        return f"{prefix}{separator}{suffix}" if prefix else f"{suffix}"
-
     def visit(tree, prefix):
         if tree is None:
             # None is considered part of the tree structure, not a tree leaf.
             return tree
         elif hasattr(tree, "items"):
-            return type(tree)((k, visit(v, _concat(prefix, k))) for k, v in tree.items())
+            return type(tree)(
+                (k, visit(v, _concat(prefix=prefix, suffix=k, separator=separator)))
+                for k, v in tree.items()
+            )
         elif is_named_tuple(tree):
             return type(tree)(**visit(tree._asdict(), prefix))
         elif isinstance(tree, (list, tuple)):
-            return type(tree)([visit(v, _concat(prefix, k)) for k, v in enumerate(tree)])
+            return type(tree)(
+                [
+                    visit(v, _concat(prefix=prefix, suffix=k, separator=separator))
+                    for k, v in enumerate(tree)
+                ]
+            )
         else:
             return prefix
 
@@ -374,7 +382,7 @@ def complete_partition_spec_tree(
             return type(tree)(*[replace_none_with_proxy(x) for x in tree])
         if isinstance(tree, (tuple, list)):
             return type(tree)([replace_none_with_proxy(x) for x in tree])
-        if isinstance(tree, (dict, FrozenDict)):
+        if isinstance(tree, dict):
             return type(tree)([(k, replace_none_with_proxy(v)) for k, v in tree.items()])
         raise ValueError(f"{type(tree)}: {tree}")
 
@@ -599,7 +607,7 @@ def get_recursively(
         x: The tensor to index.
         path: The sequence of keys used to recursively
             index the nested tensor. If `isinstance(path, str)`, it will be split
-            into sequence of strings based on the `delimiter`
+            into sequence of strings based on the `separator`.
         separator: The delimiter to split ``path`` by if `isinstance(path, str)`.
 
     Returns:
@@ -621,6 +629,40 @@ def get_recursively(
         x = x[key]
 
     return x
+
+
+def set_recursively(
+    x: NestedTensor, *, value: Tensor, path: Union[str, Sequence[str]], separator: str = "/"
+):
+    """Sets x[path...] = value, where path can be a multi-part index.
+
+    If any part of the path does not exist in `x`, new sub dicts will be created, e.g.,
+
+    x = {}
+    set_recursive(x, value=1, path="a/b/c")
+    # x = {"a": {"b": {"c": 1}}}
+
+    Args:
+        x: The tensor to index.
+        value: The value to set at x[path].
+        path: The sequence of keys used to recursively
+            index the nested tensor. If `isinstance(path, str)`, it will be split
+            into sequence of strings based on the `separator`.
+        separator: The delimiter to split ``path`` by if `isinstance(path, str)`.
+
+    Raises:
+        ValueError: If the input path is empty.
+    """
+    if not path:
+        raise ValueError("path must not be empty")
+    if isinstance(path, str):
+        path = path.split(separator)
+
+    for key in path[:-1]:
+        if key not in x:
+            x[key] = {}
+        x = x[key]
+    x[path[-1]] = value
 
 
 def copy_recursively(
@@ -752,15 +794,24 @@ def partial_with_fn_metadata(fn, *args, **kwargs):
     return functools.update_wrapper(partial_fn, fn)
 
 
-def prune_tree(in_tree: NestedTensor, should_prune: Callable[[str, NestedTensor], bool]):
+def prune_tree(
+    in_tree: NestedTensor,
+    should_prune: Callable[[str, NestedTensor], bool],
+    *,
+    prefix: str = "",
+    separator: str = "/",
+):
     """Returns a shallow copy of the input tree with subtrees pruned based on `should_prune`.
 
     This is a shallow copy because leaf nodes (non-dict values) are not deep-copied.
 
     Args:
         in_tree: The input tree to be pruned.
-        should_prune: A callable which takes (key, subtree) as input and returns a boolean. If the
-            callable returns True, the subtree itself will be pruned.
+        should_prune: A callable which takes (path, subtree) as input and returns a boolean. The
+            subtree provided will have already been pruned. If the callable returns True, the
+            subtree itself will be dropped.
+        prefix: Path prefix.
+        separator: Separator used to join path parts.
 
     Returns:
         The pruned copy of the input tree.
@@ -768,8 +819,9 @@ def prune_tree(in_tree: NestedTensor, should_prune: Callable[[str, NestedTensor]
     if isinstance(in_tree, dict):
         out_tree = {}
         for k, v in in_tree.items():
-            v = prune_tree(v, should_prune)
-            if not should_prune(k, v):
+            path = _concat(prefix=prefix, suffix=k, separator=separator)
+            v = prune_tree(v, should_prune, prefix=path, separator=separator)
+            if not should_prune(path, v):
                 out_tree[k] = v
         in_tree = out_tree
     return in_tree

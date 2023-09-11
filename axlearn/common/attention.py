@@ -2702,7 +2702,10 @@ class _TransformerRepeat(Repeat):
 
             ys = {k: v for k, v in layer_outputs._asdict().items() if k != "data"}
             if layer_states is not None:
-                ys["cached_states"] = VDict(layer_states)  # Vectorize over scan axis.
+                # Vectorize over scan axis.
+                ys["cached_states"] = jax.tree_map(
+                    VDict, layer_states, is_leaf=lambda v: isinstance(v, dict)
+                )
             return layer_outputs.data, ys
 
         repeat_outputs: Repeat.Output = self._run(layer_fn, carry=data, xs=cached_states)
@@ -2730,7 +2733,11 @@ class _TransformerRepeat(Repeat):
 
     def init_states(self, *args: Any, **kwargs: Any) -> NestedTensor:
         def layer_fn(_):
-            return VDict(self.layer.init_states(*args, **kwargs))
+            return jax.tree_map(
+                VDict,
+                self.layer.init_states(*args, **kwargs),
+                is_leaf=lambda v: isinstance(v, dict),
+            )
 
         cfg = self.config
         return jax.vmap(layer_fn)(jnp.empty(cfg.num_layers))

@@ -73,3 +73,19 @@ class UtilsTest(parameterized.TestCase):
             "\n"
         )
         self.assertEqual(expected, utils.format_table(headings=headings, rows=rows))
+
+    @parameterized.parameters(
+        dict(argv=["cli", "activate"], expected="activate"),
+        dict(argv=["cli", "cleanup"], expected="cleanup"),
+        dict(argv=["cli", "list", "something"], expected="list"),
+        # Test failure case.
+        dict(argv=[], expected=SystemExit()),
+        dict(argv=["cli", "invalid"], expected=SystemExit()),
+    )
+    def test_parse_action(self, argv, expected):
+        options = ["activate", "list", "cleanup"]
+        if isinstance(expected, BaseException):
+            with self.assertRaises(type(expected)):
+                utils.parse_action(argv, options=options)
+        else:
+            self.assertEqual(expected, utils.parse_action(argv, options=options))

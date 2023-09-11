@@ -7,55 +7,67 @@ bastion is pre-empted, it can restart and resume monitoring the same jobs. We as
 generally resumable via invoking the same command.
 
 More concretely, the submit flow works as follows:
-1. The bastion is started by using `axlearn gcp launch bastion_vm --action=create --name=...`.
-    This provisions (creates) and starts the bastion on a remote VM.
-2. User submits a job using `axlearn gcp launch bastion_vm --action=submit --spec=...`.
+1. The bastion is started by using `axlearn gcp bastion create --name=...`.
+    This provisions (creates) and starts the bastion on a remote VM, with the given name.
+2. User submits a job using `axlearn gcp bastion submit --spec=...`.
     This simply uploads a job spec to a GCS bucket (serialized via `BastionJobSpec`).
 3. Bastion pulls latest docker image (if just started), and polls the bucket in GCS. Each update, it
     syncs all new jobspecs from GCS and runs them asynchronously inside the docker container. Log
     outputs are emitted to GCS.
 4. Once a job is completed, its corresponding jobspec is removed from the GCS job registry. Log
     outputs are also synced to GCS.
-5. To stop a job, run `axlearn gcp launch bastion_vm --action=cancel --taskname=...`, which
-    simply writes a "cancelling" statefile (serialized via `JobState`) to GCS. The job will be
-    terminated, and any configured "cleanup command" will be run (e.g. to cleanup external
-    resources). Writing a "cancelling" statefile is necessary to ensure that cleanup commands can be
-    re-run if the bastion is pre-empted midway.
+5. To stop a job, run `axlearn gcp bastion cancel --taskname=...`, which simply writes a
+    "cancelling" statefile (serialized via `JobState`) to GCS. The job will be terminated, and any
+    configured "cleanup command" will be run (e.g. to cleanup external resources). Writing a
+    "cancelling" statefile is necessary to ensure that cleanup commands can be re-run if the bastion
+    is pre-empted midway.
 
 Note that emitted logs are "client-side" logs, i.e., logs visible from the bastion. Jobs that use
 remote compute like TPUs are expected to sync their own artifacts/logs to a user-accessible location
-(see tpu_trainer for an example). Jobs are also expected to handle retries on their own.
+(see tpu_runner for an example). Jobs are also expected to handle retries on their own.
 
 The bastion itself is pre-emptible; on restart, it will sync in-flight jobs from GCS and run them.
 
-To create and start a bastion:
-    Notes:
-    - Only docker bundler_type is supported.
-    - We assume the image is tagged with the same name as the bastion.
-    - Unless configured in the settings, the default bastion name is <region>-shared-bastion.
+Possible actions: [create|delete|start|stop|submit|cancel]
 
-    axlearn gcp launch bastion_vm --action=create [--name=...]
+    Create: creates the bastion VM, and runs "start" on it.
+    Delete: deletes the bastion VM.
+    Start: starts the bastion script locally. Typically not intended to be used directly.
+    Stop: soft-stops the bastion VM, without deleting it.
+    Submit: submits a job spec to the bastion VM for scheduling and execution.
+    Cancel: cancels a running job managed by the bastion VM.
 
-To launch a command:
+Examples:
 
-    serialize_jobspec(BastionJobSpec(...), "/path/to/spec")
+    # Create and start a bastion.
+    #
+    # Notes:
+    #  - Only docker bundler_type is supported.
+    #  - We assume the image is tagged with the same name as the bastion.
+    #  - Unless configured in the settings, the default bastion name is <zone>-shared-bastion.
+    #
+    axlearn gcp bastion create --name=shared-bastion
 
-    axlearn gcp launch bastion_vm --spec=/path/to/spec [--name=...]
+    # Submit a command to be run by bastion.
+    # Use `serialize_jobspec` to write a jobspec.
+    axlearn gcp bastion submit --spec=/path/to/spec --name=shared-bastion
 
-To cancel a running job:
+    # Cancel a running job.
+    axlearn gcp bastion cancel --taskname=my-task --name=shared-bastion
 
-    axlearn gcp launch bastion_vm --action=cancel --taskname=my-task [--name=...]
+    # Soft-stop the bastion.
+    #
+    # Notes:
+    # - The command will wait until bastion is stopped.
+    # - On next create, bastion will pull the latest image and resume.
+    #
+    axlearn gcp bastion stop --name=shared-bastion
 
-To soft-stop the bastion itself:
-    Notes:
-    - The command will wait until bastion is stopped.
-    - On next create, bastion will pull the latest image and resume.
+    # Delete the bastion.
+    axlearn gcp bastion delete --name=shared-bastion
 
-    axlearn gcp launch bastion_vm --action=stop [--name=...]
-
-To build and push a bastion image:
-
-    axlearn gcp bundle --bundler_type=docker \
+    # Build and push a bastion image.
+    axlearn gcp bundle --bundler_type=artifactregistry \
         --name=shared-bastion \
         --bundler_spec=image=base \
         --bundler_spec=dockerfile=Dockerfile \
@@ -63,18 +75,20 @@ To build and push a bastion image:
 
 The following paths may provide useful debugging information:
 
-    BUCKET=...
-    BASTION=...
+    BUCKET=gs://my-bucket/my-bastion-name
 
-    Active jobspecs: gs://$BUCKET/$BASTION/jobs/active/
-    Complete jobspecs: gs://$BUCKET/$BASTION/jobs/complete/
+    Active jobspecs: $BUCKET/jobs/active/
+    Complete jobspecs: $BUCKET/jobs/complete/
 
-    Active job states: gs://$BUCKET/$BASTION/jobs/states/
-    User written job states: gs://$BUCKET/$BASTION/jobs/user_states/
+    Active job states: $BUCKET/jobs/states/
+    User written job states: $BUCKET/jobs/user_states/
 
-    Bastion logs: gs://$BUCKET/$BASTION/logs/$BASTION
-    Job logs: gs://$BUCKET/$BASTION/logs/<taskname>
-    Cleanup command logs: gs://$BUCKET/$BASTION/logs/<taskname>.cleanup
+    Bastion logs: $BUCKET/logs/$BASTION
+    Job logs: $BUCKET/logs/<taskname>
+    Cleanup command logs: $BUCKET/logs/<taskname>.cleanup
+
+    Job scheduling history: $BUCKET/history/jobs/<taskname>
+    Project scheduling history: $BUCKET/history/projects/
 
 To test changes to bastion:
 
@@ -86,13 +100,13 @@ To test changes to bastion:
         --bundler_spec=target=bastion
 
     # 2. Create the bastion VM, if haven't already.
-    axlearn gcp launch bastion_vm --action=create --name=$USER-bastion
+    axlearn gcp bastion create --name=$USER-bastion
 
     # 3. Submit a test job to $USER-bastion.
-    axlearn gcp launch bastion_vm --action=submit --spec=... --name=$USER-bastion
+    axlearn gcp bastion submit --spec=... --name=$USER-bastion
 
     # 4. To iterate on changes, soft-stop the bastion and rerun steps 1 and 2.
-    axlearn gcp launch bastion_vm --name=$USER-bastion --action=stop
+    axlearn gcp bastion --name=$USER-bastion stop
 
     # Note: you may find debugging easier by SSHing into the bastion.
     axlearn gcp sshvm $USER-bastion
@@ -100,16 +114,16 @@ To test changes to bastion:
     docker stop $USER-bastion  # Soft-stop the bastion. Rerun step 2 to start.
 
     # 5. Once done testing, teardown the bastion.
-    axlearn gcp vm --action=delete --name=$USER-bastion
+    axlearn gcp bastion delete --name=$USER-bastion
 
-On start vs create:
+On "start" vs "create":
 
-    In order to run the bastion on remote compute, --action=create does two things:
+    In order to run the bastion on remote compute, "create" does two things:
     1. Creates a remote VM.
-    2. Runs --action=start on the remote VM.
+    2. Runs "start" on the remote VM.
 
-    In other words, --action=start only runs the bastion "locally". This allows us to write the
-    start logic in pure Python code (as opposed to remote SSH commands).
+    In other words, "start" only runs the bastion "locally". This allows us to write the start logic
+    in pure Python code (as opposed to remote SSH commands).
 
 """
 # pylint: disable=consider-using-with,too-many-branches,too-many-instance-attributes,too-many-lines
@@ -123,6 +137,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -137,7 +152,7 @@ from absl import app, flags, logging
 from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH
 from axlearn.cloud.common.scheduler import JobMetadata, JobScheduler, ResourceMap, Scheduler
-from axlearn.cloud.common.utils import configure_logging
+from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, GCPJob, docker_command
 
@@ -152,7 +167,7 @@ from axlearn.cloud.gcp.storage import (
 )
 from axlearn.cloud.gcp.tpu_cleaner import Cleaner, TPUCleaner
 from axlearn.cloud.gcp.utils import common_flags, get_credentials
-from axlearn.cloud.gcp.vm import create_vm
+from axlearn.cloud.gcp.vm import create_vm, delete_vm
 from axlearn.common.config import REQUIRED, Required, config_class
 
 _SHARED_BASTION_SUFFIX = "shared-bastion"
@@ -172,16 +187,6 @@ def _private_flags():
     flags.DEFINE_integer("disk_size", 256, "VM disk size in GB.")
     flags.DEFINE_integer("max_tries", 1, "Max attempts to run the command.")
     flags.DEFINE_integer("retry_interval", 60, "Interval in seconds between tries.")
-    flags.DEFINE_enum(
-        "action",
-        "submit",
-        ["create", "start", "stop", "submit", "cancel"],
-        "Create: creates+starts the bastion VM. See 'On start vs create' in docstring.\n"
-        "Start: starts the bastion VM. See 'On start vs create' in docstring.\n"
-        "Stop: stops the bastion VM.\n"
-        "Submit: submit a jobspec to the bastion VM.\n"
-        "Cancel: cancel a running jobspec.\n",
-    )
     flags.DEFINE_string("spec", None, "Path to a job spec.")
     flags.DEFINE_bool("dry_run", False, "Whether to run with dry-run scheduling.")
     flags.DEFINE_multi_string(
@@ -189,15 +194,6 @@ def _private_flags():
         [],
         "Bundler spec provided as key=value. "
         "Refer to each bundler's `from_spec` method docstring for details.",
-    )
-
-    def _validate_action(flags_dict):
-        return flags_dict["action"] != "cancel" or flags_dict["taskname"] is not None
-
-    flags.register_multi_flags_validator(
-        ["action", "taskname"],
-        _validate_action,
-        message="--taskname should be provided if --action=cancel.",
     )
 
     def _validate_name(name: str):
@@ -214,7 +210,7 @@ def _private_flags():
 
 
 def shared_bastion_name() -> str:
-    # The region-namespacing is necessary because of quirks with compute API. Specifically, even if
+    # The zone-namespacing is necessary because of quirks with compute API. Specifically, even if
     # creating VMs within a specific zone, names are global. On the other hand, the list API only
     # returns VMs within a zone, so there's no easy way to check if a shared bastion already exists
     # in another zone.
@@ -1010,6 +1006,10 @@ class CreateBastionJob(CPUJob):
         cfg.command = ""
         return cfg
 
+    def _delete(self):
+        cfg = self.config
+        delete_vm(cfg.name, credentials=get_credentials())
+
     def _execute(self):
         cfg: CreateBastionJob.Config = self.config
         # Create the bastion if it doesn't exist.
@@ -1031,7 +1031,7 @@ class CreateBastionJob(CPUJob):
             f"set -o pipefail; mkdir -p {_LOG_DIR}; "
             f"python3 -m axlearn.cloud.gcp.jobs.bastion_vm --name={cfg.name} "
             f"--project={cfg.project} --zone={cfg.zone} "
-            f"--action=start --dry_run={cfg.dry_run} 2>&1 | tee -a {run_log}",
+            f"--dry_run={cfg.dry_run} start 2>&1 | tee -a {run_log}",
             image=image,
             volumes={"/var/tmp": "/var/tmp"},
             detached_session=cfg.name,
@@ -1117,8 +1117,10 @@ class SubmitBastionJob(CPUJob):
         )
 
 
-def main(_):
-    if FLAGS.action == "create":
+def main(argv):
+    action = parse_action(argv, options=["create", "delete", "start", "stop", "submit", "cancel"])
+
+    if action == "create":
         # Creates and starts the bastion on a remote VM.
         # Since users share the same bastion, we use docker instead of tar'ing the local dir.
         #
@@ -1138,7 +1140,11 @@ def main(_):
         )
         job = cfg.instantiate()
         job.execute()
-    elif FLAGS.action == "start":
+    elif action == "delete":
+        cfg = CreateBastionJob.from_flags(FLAGS)
+        job = cfg.instantiate()
+        job._delete()  # pylint: disable=protected-access
+    elif action == "start":
         # Start the bastion. This should run on the bastion itself.
         quota_file = f"gs://{gcp_settings('private_bucket')}/{FLAGS.name}/{QUOTA_CONFIG_PATH}"
         cfg = BastionJob.from_flags(FLAGS).set(
@@ -1151,7 +1157,7 @@ def main(_):
         )
         job = cfg.instantiate()
         job.execute()
-    elif FLAGS.action == "stop":
+    elif action == "stop":
         # Stop the bastion. This typically runs locally.
         cfg = CPUJob.from_flags(FLAGS).set(
             command=f"docker stop {FLAGS.name}; rm -r {_JOB_DIR}",
@@ -1159,7 +1165,7 @@ def main(_):
         )
         job = cfg.instantiate()
         job.execute()
-    elif FLAGS.action == "submit":
+    elif action == "submit":
         spec = deserialize_jobspec(FLAGS.spec)
         # Construct a job for bastion to execute. This typically runs locally.
         # The spec file provided from the flags will be used and submitted to bastion vm.
@@ -1167,7 +1173,10 @@ def main(_):
         # Execute the task.
         job = cfg.instantiate()
         job.execute()
-    elif FLAGS.action == "cancel":
+    elif action == "cancel":
+        if not FLAGS.taskname:
+            print("--taskname must be provided if running 'cancel'.")
+            sys.exit(1)
         # Cancel a job that bastion is running (or planning to run).
         cfg = SubmitBastionJob.from_flags(FLAGS).set(job_name=FLAGS.taskname, job_spec_file="")
         job = cfg.instantiate()
@@ -1185,7 +1194,7 @@ def main(_):
         except KeyboardInterrupt:
             logging.info("Job is stopping in the background.")
     else:
-        raise ValueError(f"Unknown action {FLAGS.action}")
+        raise ValueError(f"Unknown action {action}")
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ import copy
 import dataclasses
 import hashlib
 import inspect
+import os.path
 import re
 import threading
 from dataclasses import dataclass
@@ -50,7 +51,7 @@ from absl import logging
 from typing_extensions import Protocol
 
 from axlearn.common.config import REQUIRED, Configurable, Required, RequiredFieldValue, config_class
-from axlearn.common.utils import NestedTensor, Tensor, partial_with_fn_metadata
+from axlearn.common.utils import NestedTensor, Tensor, partial_with_fn_metadata, prune_tree
 
 
 def _generate_seed_from_name(name: str) -> np.int64:
@@ -477,6 +478,25 @@ class Module(Configurable):
         if level <= self._vlog_level:
             logging.info(f"@{self.path()} {msg}", *args, **kwargs)
 
+    def vprint(self, level: int, msg: str, *args, **kwargs):
+        """Prints debug info with if level <= config.vlog.
+
+        Prints with jax.debug.print(prefix + msg, *args, **kwargs) so that it can handle tensors in
+        args and kwargs, where prefix includes information about the time and caller.
+
+        Args:
+            level: The verbosity level of the print message.
+            msg: The msg for jax.debug.print().
+            *args: The args for jax.debug.print, may contain Tensors.
+            **kwargs: The kwargs for jax.debug.print, may contain Tensors.
+        """
+        if level <= self._vlog_level:
+            caller_frame = inspect.stack()[1]  # Get the frame of the caller (index 1).
+            filename = os.path.basename(caller_frame.filename)
+            line_number = caller_frame.lineno
+            prefix = f"{filename}:{line_number}] @{self.path()} "
+            jax.debug.print(prefix + msg, *args, **kwargs)
+
     def _add_child(
         self,
         name: str,
@@ -733,3 +753,69 @@ def functional(
         getattr(context.output_collection, output_collection_type).clear()
 
     return method_outputs, context.output_collection
+
+
+def scan_in_context(
+    fn,
+    *,
+    carry: NestedTensor,
+    xs: NestedTensor,
+    drop_output: Optional[Callable[[str], bool]] = None,
+) -> Tuple[NestedTensor, NestedTensor]:
+    """A thin wrapper around `jax.lax.scan` which is compatible with `OutputCollection`.
+
+    In particular, summaries and outputs added by `add_summary` and `add_module_output` respectively
+    are accumulated in `current_context().output_collection`, subject to any output filtering.
+
+    Args:
+        fn: A function with args (carry, x) returning a dict(carry=..., y=...).
+        carry: The initial value of the loop carry, to be accumulated across scan.
+        xs: A dict with at least "x" as a key, where each leaf is a tensor of shape
+            [num_scan_iters, ...]. At scan iteration i:
+            - xs["x"][i, ...] represents the inputs to `fn`.
+            - xs[key][i, ...] is provided as a kwarg to the ith invocation context.
+        drop_output: A callable that takes a path and outputs a decision of whether to drop the
+            output at the given path, where True means we drop. By default, the callable is None,
+            meaning nothing is dropped.
+
+    Returns:
+        The scan outputs (carry, ys):
+            - carry: A NestedTensor with the same structure as the input `carry`, representing its
+                value at the final iteration.
+            - ys: A NestedTensor with tensor leaves T of shape [num_scan_iters, ...], with T[i, ...]
+                representing the `fn` outputs and output collection of the ith scan iteration,
+                respesctively.
+    """
+
+    ctx = current_context()
+    if ctx is None:
+        raise ValueError("Expected current_context() to not be None.")
+
+    def scan_fn(carry_i: NestedTensor, scan_i: NestedTensor):
+        output_collection_i = new_output_collection()
+        x_i = scan_i.pop("xs")
+        with child_context(
+            "iter",
+            module=ctx.module,
+            output_collection=output_collection_i,
+            **scan_i,
+        ):
+            carry_i, y_i = fn(carry_i, x_i)
+
+        # Filter output collection.
+        if drop_output is not None:
+            pruned_collection_i = new_output_collection()._asdict()
+            pruned_collection_i.update(
+                prune_tree(
+                    output_collection_i._asdict(),
+                    lambda path, _: drop_output(path),
+                )
+            )
+            output_collection_i = OutputCollection(**pruned_collection_i)
+
+        return carry_i, dict(y_i=y_i, output_collection=output_collection_i)
+
+    carry, scan_ys = jax.lax.scan(scan_fn, init=carry, xs=xs)
+    ctx.output_collection.update(scan_ys.pop("output_collection"))
+
+    return carry, scan_ys["y_i"]

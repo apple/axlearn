@@ -60,6 +60,22 @@ def parameters_to_hf_clip_model(
     )
 
 
+@register_axlearn_to_torch(src=[MultiStreamModel], dst=[hf_clip.CLIPVisionModelWithProjection])
+def parameters_to_hf_clip_vision_model_with_projection(
+    *, src: MultiStreamModel, params: NestedTensor, dst: hf_clip.CLIPVisionModelWithProjection
+):
+    axlearn_to_torch(
+        src.visual_encoder.image_encoder,
+        params["visual_encoder"]["image_encoder"],
+        dst.vision_model,
+    )
+    axlearn_to_torch(
+        src.visual_encoder.output_proj,
+        params["visual_encoder"]["output_proj"],
+        dst.visual_projection,
+    )
+
+
 @register_axlearn_to_torch(
     src=[TextEmbeddingEncoder, CLIPTextStreamEncoder], dst=[hf_clip.CLIPTextTransformer]
 )

@@ -14,7 +14,6 @@ import tensorflow as tf
 import torch
 from absl.testing import absltest, parameterized
 from flax import serialization
-from flax.core import FrozenDict
 from jax import numpy as jnp
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
@@ -51,8 +50,10 @@ from axlearn.common.utils import (
     get_recursively,
     input_partition_spec,
     match_regex_rules,
+    prune_tree,
     runtime_checks,
     set_data_dir,
+    set_recursively,
     split_prng_key,
     tree_paths,
     validate_float_dtype,
@@ -136,8 +137,6 @@ class TreeUtilsTest(TestCase):
         d2 = OrderedDict(reversed(kv))
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d1)))
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d2)))
-        frozen_dict = {"a": FrozenDict({"b": {"c": 1}})}
-        self.assertEqual([("a/b/c", 1)], flatten_items(frozen_dict))
 
     def assertTensorEqual(self, a, b):
         self.assertIsInstance(a, jnp.ndarray)
@@ -302,7 +301,7 @@ class TreeUtilsTest(TestCase):
         self.assertSequenceEqual(["x"], keys)
         self.assertLen(values, 1)
 
-    def test_get_recursively(self):
+    def test_get_and_set_recursively(self):
         tree = {"a": {"b": 2, "c": {"d": 3, "e": 4}}}
         self.assertEqual({"a": {"b": 2, "c": {"d": 3, "e": 4}}}, get_recursively(tree, ""))
         self.assertEqual({"a": {"b": 2, "c": {"d": 3, "e": 4}}}, get_recursively(tree, []))
@@ -313,9 +312,18 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(3, get_recursively(tree, "a.c.d", separator="."))
 
         with self.assertRaises(KeyError):
-            get_recursively(tree, "a.foo")
+            get_recursively(tree, "a/foo")
         with self.assertRaises(KeyError):
             get_recursively(tree, ["a", "foo"])
+
+        set_recursively(tree, value="bar", path="a/foo/b")
+        self.assertEqual("bar", get_recursively(tree, "a/foo/b"))
+        set_recursively(tree, value="boo", path="a.foo.b", separator=".")
+        self.assertEqual("boo", get_recursively(tree, "a/foo/b"))
+        set_recursively(tree, value="bar", path=["a", "foo", "b"])
+        self.assertEqual("bar", get_recursively(tree, "a/foo/b"))
+        with self.assertRaises(ValueError):
+            set_recursively(tree, value="bar", path="")
 
     def test_copy_recursively(self):
         source = {"a": {"b": 2, "c": {"d": 3, "e": 4}}}
@@ -906,6 +914,36 @@ class MatchRegexRulesTest(TestCase):
         self.assertEqual("w", match_regex_rules("not_special/weight", rules=rules))
         # Custom default value.
         self.assertEqual("d", match_regex_rules("layer/scale", rules=rules, default_value="d"))
+
+
+class PruneTreeTest(TestCase):
+    """Tests prune_tree."""
+
+    def test(self):
+        in_tree = {
+            "a": {
+                "b": {"d": "test"},
+                "c": {
+                    "b": None,
+                    "e": 123,
+                },
+            },
+            "f": 345,
+        }
+        # Prune by path.
+        self.assertEqual(
+            {"a": {"c": {"e": 123}}, "f": 345}, prune_tree(in_tree, lambda k, _: "b" in k)
+        )
+        # Prune by path with prefix/separator.
+        self.assertEqual(
+            {"a": {"c": {"b": None, "e": 123}}, "f": 345},
+            prune_tree(in_tree, lambda k, _: k == "prefix:a:b", prefix="prefix", separator=":"),
+        )
+        # Prune by value.
+        self.assertEqual(
+            {"a": {"b": {"d": "test"}, "c": {"b": None}}},
+            prune_tree(in_tree, lambda _, v: isinstance(v, int)),
+        )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 # The AXLearn Library for Deep Learning
 
+**This library is under active development and the API is subject to change.**
+
 AXLearn is a library built on top of [JAX](https://jax.readthedocs.io/) and
 [XLA](https://www.tensorflow.org/xla) to support development of large-scale deep learning models.
 

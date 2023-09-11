@@ -4,19 +4,34 @@
 
 Possible actions: [list|activate|cleanup]
 
-For `list`:
-- Lists all configured projects, as well as their labels.
-- Specify `--label <label>` to filter among projects. Multiple labels can be specified by repeating
-  the flag. The resulting projects will match all labels.
+    List:
+        - Lists all configured projects, as well as their labels.
+        - Specify `--label <label>` to filter among projects. Multiple labels can be specified by
+            repeating the flag. The resulting projects will match all labels.
 
-For `activate`:
-- Sets a project configuration to be "active". This means that all commands invoked from CLI will
-  use the given project, zone, etc. associated with the active config.
-- Specify `--label <label>` to narrow down the list of projects to consider for activation. If
-  there are multiple candidates, starts an interactive prompt for the user to select one.
+    Activate:
+        - Sets a project configuration to be "active". This means that all commands invoked from CLI
+            will use the given project, zone, etc. associated with the active config.
+        - Specify `--label <label>` to narrow down the list of projects to consider for activation.
+            If there are multiple candidates, prompts the user to select one.
 
-For `cleanup`:
-- Removes all configuration files. Will prompt for confirmation.
+    Cleanup:
+        - Removes all configuration files. Will prompt for confirmation.
+
+Examples:
+
+    # List available projects.
+    axlearn gcp config list
+
+    # List available projects by label.
+    axlearn gcp config list --label=my-label
+
+    # Activate a project by prompt.
+    axlearn gcp config activate
+
+    # Activate a project by one or more labels.
+    axlearn gcp config activate --label=my-label --label=my-other-label
+
 """
 
 import sys

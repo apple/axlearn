@@ -49,24 +49,16 @@ def load_configs(
     configs = {}
     config_file = None
 
-    def merge(base, overrides):
-        """Recursively merge overrides into base."""
-        if not isinstance(base, dict):
-            return overrides
-        for k, v in overrides.items():
-            base[k] = merge(base.get(k), v)
-        return base
-
     # If a default config exists, read it.
     default_config_file = _default_config_file()
     if default_config_file is not None:
-        merge(configs, toml.load(default_config_file))
+        _merge(configs, toml.load(default_config_file))
         config_file = default_config_file
 
     # If a user config file exists, use it to override the default.
     user_config_file = _locate_user_config_file()
     if user_config_file:
-        merge(configs, toml.load(user_config_file))
+        _merge(configs, toml.load(user_config_file))
         config_file = user_config_file
 
     if required and config_file is None:
@@ -82,6 +74,15 @@ def load_configs(
     if namespace is not None:
         configs = configs.get(namespace, {})
     return config_file, configs
+
+
+def _merge(base: dict, overrides: dict):
+    """Recursively merge overrides into base."""
+    if not isinstance(base, dict):
+        return overrides
+    for k, v in overrides.items():
+        base[k] = _merge(base.get(k), v)
+    return base
 
 
 def write_configs_with_header(config_file: str, configs: Dict[str, Any]):
@@ -113,7 +114,8 @@ def update_configs(namespace: str, namespace_configs: Dict[str, Any]):
         with open(config_file, mode="a", encoding="utf-8"):  # Touch.
             pass
     configs = toml.load(config_file) or {}
-    configs[namespace] = namespace_configs  # Update namespace configs.
+    # Update namespace configs by merging.
+    configs[namespace] = _merge(configs.get(namespace, {}), namespace_configs)
     write_configs_with_header(config_file, configs)
     print(f"Configs written to {config_file}")
 
@@ -295,16 +297,6 @@ def _get_or_prompt_project(
     return project
 
 
-def _parse_action(argv: Sequence[str]) -> str:
-    """Parses action from argv, or exits with usage info."""
-    actions = ["list", "activate", "cleanup"]
-    action = argv[1] if len(argv) >= 2 else None
-    if action is None or action not in actions:
-        print(f"Usage: {utils.infer_cli_name()} gcp config [{','.join(actions)}]")
-        sys.exit(1)
-    return action
-
-
 def config_flags():
     """Config CLI flags."""
     flags.DEFINE_multi_string("label", None, "Label(s) for filtering list and activate")
@@ -312,7 +304,7 @@ def config_flags():
 
 def main(argv: Sequence[str], *, namespace: str, fv: flags.FlagValues):
     """Entrypoint for interacting with projects in a config namespace."""
-    action = _parse_action(argv)
+    action = utils.parse_action(argv, options=["list", "activate", "cleanup"], default="list")
 
     # Load existing configs, if any.
     _, project_configs = load_configs(namespace)

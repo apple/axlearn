@@ -19,7 +19,12 @@ from jax import numpy as jnp
 from axlearn.common import layers, learner, optimizers, param_init, test_utils, utils
 from axlearn.common.base_layer import NestedParameterSpec
 from axlearn.common.base_model import BaseModel
-from axlearn.common.checkpointer import Checkpointer, CheckpointPolicy, every_n_steps_policy
+from axlearn.common.checkpointer import (
+    Checkpointer,
+    CheckpointPolicy,
+    every_n_steps_and_last_policy,
+    every_n_steps_policy,
+)
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
@@ -118,7 +123,11 @@ class DummyInput(Module):
         return ds
 
     def __iter__(self):
-        return iter(self.dataset())
+        # Use a different __iter__ than iter(self.dataset()), to test that input iter can be
+        # checkpointed properly even with a custom __iter__ (note that a custom __iter__ is not
+        # guaranteed to be savable).
+        for input_batch in self.dataset():
+            yield input_batch
 
 
 class DummyModel(BaseModel):
@@ -721,6 +730,41 @@ class TrainerTest(test_utils.TestCase):
             # `save_input_iterator` != `restore_input_iterator`, # so that users can turn on/off
             # `save_input_iterator` for models without breaking backwards compatibility.
             self.assertEqual(6, trainer2.restore_checkpoint())
+
+    def test_last_step_checkpoint_policy(self):
+        """Test checkpoint policy saving at the last step."""
+        model_cfg = DummyModel.default_config().set(dtype=jnp.float32)
+
+        cfg = SpmdTrainer.default_config().set(
+            name="test_trainer",
+            dir=tempfile.mkdtemp(),
+            mesh_axis_names=("data", "model"),
+            mesh_shape=(1, 1),
+            model=model_cfg,
+            input=DummyInput.default_config(),
+            learner=learner.Learner.default_config().set(
+                optimizer=config_for_function(optimizers.sgd_optimizer).set(
+                    learning_rate=0.1, decouple_weight_decay=True
+                ),
+            ),
+            max_step=8,
+            checkpointer=Checkpointer.default_config().set(
+                save_policy=config_for_function(every_n_steps_and_last_policy).set(
+                    n=3,
+                    max_step=8,
+                ),
+            ),
+        )
+
+        # Run trainer.
+        trainer: SpmdTrainer = cfg.instantiate(parent=None)
+        trainer.run(prng_key=jax.random.PRNGKey(123))
+
+        assert os.path.exists(os.path.join(cfg.dir, "trainer_state_tree.txt"))
+        trainer2: SpmdTrainer = cfg.instantiate(parent=None)
+        with trainer2.mesh():
+            # We should have checkpointed at the last step.
+            self.assertEqual(8, trainer2.restore_checkpoint())
 
     def test_composite_learner(self):
         """Tests composite learner with two sub learners for weight/bias respectively."""

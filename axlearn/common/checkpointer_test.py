@@ -11,7 +11,6 @@ import tempfile
 import threading
 from typing import Iterable, List, Sequence
 
-import flax.core
 import jax
 import pytest
 import tensorflow as tf
@@ -28,8 +27,10 @@ from axlearn.common.checkpointer import (
     EvalMetric,
     TensorStoreStateStorage,
     check_state_structure,
+    every_n_steps_and_last_policy,
     every_n_steps_policy,
     latest_checkpoint_path,
+    read_state_spec,
     restore_tf_savables,
     save_tf_savables,
 )
@@ -176,7 +177,7 @@ class CheckpointerTest(test_utils.TestCase):
                 )
             ckpt.stop()
 
-    @parameterized.parameters(utils.VDict, flax.core.FrozenDict)
+    @parameterized.parameters((utils.VDict,))
     def test_custom_dict(self, custom_dict_type):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
@@ -497,6 +498,15 @@ class CheckpointerTest(test_utils.TestCase):
         self.assertTrue(policy(step=3, evaler_summaries={}))
         self.assertFalse(policy(step=4, evaler_summaries={}))
 
+    def test_every_n_steps_and_last_policy(self):
+        policy = every_n_steps_and_last_policy(n=5, max_step=13)
+        self.assertTrue(policy(step=5, evaler_summaries={}))
+        self.assertFalse(policy(step=9, evaler_summaries={}))
+        self.assertTrue(policy(step=10, evaler_summaries={}))
+        self.assertFalse(policy(step=11, evaler_summaries={}))
+        self.assertFalse(policy(step=12, evaler_summaries={}))
+        self.assertTrue(policy(step=13, evaler_summaries={}))
+
     def test_latest_checkpoint_path(self):
         with tempfile.TemporaryDirectory() as td:
             # Test that the most recent checkpoint is returned.
@@ -510,6 +520,42 @@ class CheckpointerTest(test_utils.TestCase):
             final_ckpt_path = ckpt_paths[10]
             # Note: step 11 is not complete, so the latest path returns step 10.
             self.assertEqual(latest_checkpoint_path(td), final_ckpt_path)
+
+    def test_read_state_spec(self):
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+        with _mesh(mesh_shape):
+            cfg = _checkpointer_config()
+            cfg.save_policy.min_step = 0
+            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            state0 = dict(
+                **{
+                    f"v_{str(dtype.dtype)}": jnp.zeros([], dtype=dtype)
+                    for dtype in (jnp.int32, jnp.int64)
+                },
+                **{
+                    f"v_{str(dtype.dtype)}": jnp.zeros([4], dtype=dtype)
+                    for dtype in (jnp.float16, jnp.float32, jnp.float64)
+                },
+                **{
+                    f"v_{str(dtype.dtype)}": jnp.zeros([4, 2], dtype=dtype)
+                    for dtype in (jnp.bfloat16, jnp.bool_)
+                },
+            )
+            ckpt.save(step=0, state=state0)
+            ckpt.wait_until_finished()
+            # Tests `read_state_spec`.
+            state_spec = read_state_spec(latest_checkpoint_path(cfg.dir))
+            self.assertNestedEqual(
+                state_spec,
+                jax.tree_util.tree_map(
+                    lambda t: utils.TensorSpec(shape=t.shape, dtype=t.dtype), state0
+                ),
+            )
+            step, state1 = ckpt.restore(state=state_spec)
+            self.assertNestedEqual(0, step)
+            self.assertNestedEqual(state0, state1)
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):

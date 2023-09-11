@@ -43,7 +43,7 @@ from axlearn.common.module import (
     clone_context_stack,
     install_context_stack,
 )
-from axlearn.common.utils import NestedTensor, NestedTensorSpec, Tensor, TensorSpec
+from axlearn.common.utils import NestedTensor, NestedTensorSpec, Tensor, TensorSpec, set_recursively
 
 
 class CheckpointValidationType(str, enum.Enum):
@@ -218,7 +218,7 @@ class StateStorage(Configurable):
     def restore_from_dir(
         self,
         step: int,
-        state: NestedTensor,
+        state: Union[NestedTensor, NestedTensorSpec],
         *,
         ckpt_dir: str,
     ) -> NestedTensor:
@@ -231,6 +231,58 @@ def write_index_file(*, ckpt_dir: str, index: Any):
     logging.info("Writing index file to %s", index_path)
     with tf.io.gfile.GFile(index_path, "w") as f:
         f.write(json.dumps(index))
+
+
+def _parse_tensor_spec(spec_dict: Dict[str, str]) -> TensorSpec:
+    # The shape string is of format `(dim...)`. [1:-1] removes the parentheses.
+    shape = [int(x) for x in spec_dict["shape"][1:-1].split(",") if x]
+    dtype_str = spec_dict["dtype"]
+    dtype_dict = {
+        str(dtype.dtype): dtype
+        for dtype in (
+            jnp.bool_,
+            jnp.bfloat16,
+            jnp.float16,
+            jnp.float32,
+            jnp.float64,
+            jnp.int8,
+            jnp.int16,
+            jnp.int32,
+            jnp.int64,
+        )
+    }
+    if dtype_str not in dtype_dict:
+        raise NotImplementedError(
+            f"Cannot convert {dtype_str} to jnp.dtype. Possible values are {dtype_dict.keys()}"
+        )
+    return TensorSpec(shape=tuple(shape), dtype=dtype_dict[dtype_str])
+
+
+def read_state_spec(ckpt_dir: str) -> NestedTensorSpec:
+    """Reads TensorSpecs from the given checkpoint dir.
+
+    Args:
+        ckpt_dir: The checkpoint directory corresponding to a specific step, e.g., the directory
+            returned by `latest_checkpoint_path(checkpointer.config.dir)`.
+
+    Returns:
+        A NestedTensorSpec representing the tensors stored under `ckpt_dir`. Each TensorSpec
+        should have `shape` and `dtype` filled in, but will not contain `mesh_axes`. The returned
+        NestedTensorSpec can be passed as `state` to Checkpointer.restore().
+
+        If a checkpoint is too large to load onto a single host, the caller can further specify
+        `mesh_axes` of the TensorSpecs to load the checkpoint across multiple processes.
+    """
+    with tf.io.gfile.GFile(os.path.join(ckpt_dir, "index"), "r") as f:
+        restored_index_entries = json.loads(f.read())
+        state = {}
+        for path, value in restored_index_entries:
+            if isinstance(value, dict):
+                set_recursively(state, value=_parse_tensor_spec(value), path=path, separator="/")
+            else:
+                # Ignore step or tf.data.Iterator.
+                logging.vlog(1, "read_index_file ignores %s", path)
+        return state
 
 
 class TensorStoreStateStorage(StateStorage):
@@ -324,7 +376,8 @@ class TensorStoreStateStorage(StateStorage):
                 logging.info("All directories created")
         # Wait for directory and index creation.
         multihost_utils.sync_global_devices(ckpt_dir)
-        save_tf_savables(spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, "tf"))
+        # Each worker writes its tf checkpoints under a different path.
+        save_tf_savables(spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"))
         # Run serialization of GDA values in parallel.
         logging.info(
             "array_values=%s tensorstore=%s", utils.shapes(spec.gda_values), spec.tensorstore_specs
@@ -355,7 +408,9 @@ class TensorStoreStateStorage(StateStorage):
         check_state_structure(
             restored_index_entries, target_structure=spec.index, validation=validation
         )
-        restore_tf_savables(spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, "tf"))
+        restore_tf_savables(
+            spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}")
+        )
 
         restored_gda_values = array_serialization.run_deserialization(
             shardings=spec.shardings,
@@ -489,6 +544,26 @@ def every_n_steps_policy(n: int = 1, *, min_step: int = 1) -> CheckpointPolicy:
     def fn(*, step: int, evaler_summaries: Dict[str, Any]) -> bool:
         del evaler_summaries
         return step >= min_step and step % n == 0
+
+    return fn
+
+
+def every_n_steps_and_last_policy(
+    n: int = 1, *, min_step: int = 1, max_step: int
+) -> CheckpointPolicy:
+    """Checkpoints every n steps, but not before `min_step`,
+    and at the last training iteration `max_step`.
+
+    Args:
+        n: The checkpointing frequency. Checkpointing will be triggered every `n` steps
+        min_step: The minimum step to start checkpointing.
+        max_step: The maximum number of training steps.
+            Checkpointing will be triggered at step `max_step`.
+    """
+    every_n_steps_fn = every_n_steps_policy(n=n, min_step=min_step)
+
+    def fn(*, step: int, evaler_summaries: Dict[str, Any]) -> bool:
+        return every_n_steps_fn(step=step, evaler_summaries=evaler_summaries) or step == max_step
 
     return fn
 
