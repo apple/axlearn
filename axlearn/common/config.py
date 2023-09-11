@@ -75,6 +75,7 @@ from typing import (
     Iterable,
     List,
     Optional,
+    Set,
     Tuple,
     Type,
     TypeVar,
@@ -322,18 +323,26 @@ class ConfigBase:
         """
         return attr.evolve(self, **kwargs)
 
-    def debug_string(self, *, kv_separator: str = ": ", field_separator: str = "\n") -> str:
+    def debug_string(
+        self,
+        *,
+        kv_separator: str = ": ",
+        field_separator: str = "\n",
+        omit_default_values: Set[Any] = {None, REQUIRED},
+    ) -> str:
         """Returns a debug string for the config.
 
         Args:
             kv_separator: The key-value separator.
             field_separator: The field separator.
+            omit_default_values: A set of default values to omit in debug string.
+                See comments on `to_flat_dict`.
 
         Returns:
             A str separated by `field_separator` where each entry is of form
             f"{path}{kv_separator}{val}", representing path and value of a leaf config field.
         """
-        flat_dict = self.to_flat_dict(omit_trivial_default_values=True)
+        flat_dict = self.to_flat_dict(omit_default_values=omit_default_values)
 
         def fmt(key: str, val: Any) -> Union[str, Tuple[str, str]]:
             if isinstance(val, (type, types.FunctionType)):
@@ -342,13 +351,13 @@ class ConfigBase:
 
         return field_separator.join([fmt(k, v) for k, v in flat_dict.items()])
 
-    def to_flat_dict(self, *, omit_trivial_default_values: bool) -> Dict[str, Any]:
+    def to_flat_dict(self, *, omit_default_values: Set[Any]) -> Dict[str, Any]:
         """Returns a flattened dict with path -> value mappings.
 
         Args:
-            omit_trivial_default_values: If True, values are equal to the trivial default values
-                of the field. A default value is considered "trivial" if it is negative, e.g.,
-                None, False, 0, REQUIRED.
+            omit_default_values: Omit a field from the output dict if its value remains the
+                default value of the field *and* the default value is a member of
+                `omit_default_values`.
 
         Returns:
             A dict where each key is a `.`-separated str of path and each value represents a
@@ -360,9 +369,7 @@ class ConfigBase:
             if key and isinstance(val, ConfigBase):
                 # Call `to_flat_dict` on any sub config. This allows a sub config to override
                 # the behavior of `to_flat_dict`.
-                val_entries = val.to_flat_dict(
-                    omit_trivial_default_values=omit_trivial_default_values
-                )
+                val_entries = val.to_flat_dict(omit_default_values=omit_default_values)
                 # For each entry from `debug_string`, prepend `<key>.` to each key.
                 result.update({f"{key}.{k}": v for k, v in val_entries.items()})
                 return []  # Nothing to traverse.
@@ -373,7 +380,7 @@ class ConfigBase:
             field = attr.fields_dict(type(self)).get(key)
             if isinstance(field, attr.Attribute):
                 default_val = field.default
-                if omit_trivial_default_values and default_val is val and val in (REQUIRED, None):
+                if val is default_val and default_val in omit_default_values:
                     return
             result[key] = val
 

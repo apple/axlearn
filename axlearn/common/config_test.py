@@ -512,7 +512,7 @@ class ConfigTest(parameterized.TestCase):
             },
         )
         self.assertCountEqual(
-            cfg.to_flat_dict(omit_trivial_default_values=False),
+            cfg.to_flat_dict(omit_default_values=set()),
             {
                 "bar[0]": "a",
                 "bar[1]": "b",
@@ -538,7 +538,7 @@ class ConfigTest(parameterized.TestCase):
             },
         )
         self.assertCountEqual(
-            cfg.to_flat_dict(omit_trivial_default_values=True),
+            cfg.to_flat_dict(omit_default_values={None, REQUIRED}),
             {
                 "bar[0]": "a",
                 "bar[1]": "b",
@@ -590,10 +590,13 @@ class ConfigTest(parameterized.TestCase):
         )
 
     @parameterized.product(
+        omit_default_values=({None, REQUIRED}, {}),
         default_value=(REQUIRED, None, False, 0, 0.0, ""),
         set_value=(REQUIRED, None, False, 0, 0.0, ""),
     )
-    def test_to_flat_dict_omit_trivial_default_values(self, *, default_value, set_value):
+    def test_to_flat_dict_omit_default_values(
+        self, *, omit_default_values, default_value, set_value
+    ):
         """Tests ConfigBase.to_flat_dict with omit_trivial_default_values=True."""
 
         @config_class
@@ -601,15 +604,15 @@ class ConfigTest(parameterized.TestCase):
             value: Any = default_value
 
         cfg = TestConfig().set(value=set_value)
-        omit = default_value is set_value and default_value in (REQUIRED, None)
+        omit = default_value is set_value and default_value in omit_default_values
         self.assertCountEqual(
-            cfg.to_flat_dict(omit_trivial_default_values=True),
+            cfg.to_flat_dict(omit_default_values=omit_default_values),
             {} if omit else {"value": set_value},
             msg=f"{default_value} vs. {set_value}",
         )
         # debug_string() omits trivial default values.
         self.assertEqual(
-            cfg.debug_string(),
+            cfg.debug_string(omit_default_values=omit_default_values),
             "" if omit else f"value: {repr(set_value)}",
             msg=f"{default_value} vs. {set_value}",
         )
