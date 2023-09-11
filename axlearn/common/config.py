@@ -67,6 +67,7 @@ import inspect
 import re
 import types
 from collections import defaultdict
+from collections.abc import Container
 from typing import (
     Any,
     Callable,
@@ -75,7 +76,6 @@ from typing import (
     Iterable,
     List,
     Optional,
-    Set,
     Tuple,
     Type,
     TypeVar,
@@ -328,7 +328,7 @@ class ConfigBase:
         *,
         kv_separator: str = ": ",
         field_separator: str = "\n",
-        omit_default_values: Set[Any] = {None, REQUIRED},
+        omit_default_values: Container[Any] = (None, REQUIRED),
     ) -> str:
         """Returns a debug string for the config.
 
@@ -351,7 +351,7 @@ class ConfigBase:
 
         return field_separator.join([fmt(k, v) for k, v in flat_dict.items()])
 
-    def to_flat_dict(self, *, omit_default_values: Set[Any]) -> Dict[str, Any]:
+    def to_flat_dict(self, *, omit_default_values: Container[Any]) -> Dict[str, Any]:
         """Returns a flattened dict with path -> value mappings.
 
         Args:
