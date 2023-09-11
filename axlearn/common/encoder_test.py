@@ -22,11 +22,10 @@ from axlearn.common.bert import (
     BertSequenceClassificationHead,
     bert_embedding_config,
     bert_transformer_config,
-    set_layer_norm_eps_recursively,
 )
 from axlearn.common.bert_test import bert_encoder_config_from_hf
 from axlearn.common.encoder import CausalEncoder, Encoder, EncoderModel
-from axlearn.common.layers import BaseClassificationHead
+from axlearn.common.layers import BaseClassificationHead, set_layer_norm_eps_recursively
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
