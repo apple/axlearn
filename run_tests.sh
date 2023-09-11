@@ -19,7 +19,10 @@ exit_if_error() {
 
 download_assets() {
   mkdir -p axlearn/experiments/testdata/tokenizers/sentencepiece
-  curl https://huggingface.co/t5-base/resolve/main/spiece.model -o axlearn/experiments/testdata/tokenizers/sentencepiece/t5-base.spm
+  mkdir -p axlearn/experiments/testdata/tokenizers/bpe
+  curl https://huggingface.co/t5-base/resolve/main/spiece.model -o axlearn/experiments/testdata/tokenizers/sentencepiece/t5-base
+  curl https://huggingface.co/roberta-base/raw/main/merges.txt -o axlearn/experiments/testdata/tokenizers/bpe/roberta-base-merges.txt
+  curl https://huggingface.co/roberta-base/raw/main/vocab.json -o axlearn/experiments/testdata/tokenizers/bpe/roberta-base-vocab.json
 }
 
 set -o xtrace

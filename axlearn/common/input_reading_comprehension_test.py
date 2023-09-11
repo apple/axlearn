@@ -21,9 +21,8 @@ from axlearn.common.input_reading_comprehension import (
 
 tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
 _BPE_DIR = os.path.join(tokenizers_dir, "bpe")
-_ROBERTA_BASE_VOCAB_DIR = os.path.join(_BPE_DIR, "roberta-base")
-_ROBERTA_BASE_VOCAB_FILE = os.path.join(_ROBERTA_BASE_VOCAB_DIR, "vocab.json")
-_ROBERTA_BASE_MERGES_FILE = os.path.join(_ROBERTA_BASE_VOCAB_DIR, "merges.txt")
+_ROBERTA_BASE_VOCAB_FILE = os.path.join(_BPE_DIR, "roberta-base-vocab.json")
+_ROBERTA_BASE_MERGES_FILE = os.path.join(_BPE_DIR, "roberta-base-merges.txt")
 
 
 def build_hf_roberta_tokenizer() -> RobertaTokenizer:
@@ -467,7 +466,7 @@ class InputReadingComprehensionTest(parameterized.TestCase):
             "doc_stride": 128,
         },
     )
-    @pytest.mark.skipif(not os.path.exists(_ROBERTA_BASE_VOCAB_DIR), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_BPE_DIR), reason="Missing testdata.")
     def test_convert_example_to_features_outputs(
         self,
         dataset_function: Callable,
@@ -537,7 +536,7 @@ class InputReadingComprehensionTest(parameterized.TestCase):
             "doc_stride": 128,
         },
     )
-    @pytest.mark.skipif(not os.path.exists(_ROBERTA_BASE_VOCAB_DIR), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_BPE_DIR), reason="Missing testdata.")
     def test_convert_example_to_features_count(
         self,
         dataset_function: Callable,
@@ -574,7 +573,7 @@ class InputReadingComprehensionTest(parameterized.TestCase):
             "doc_stride": 128,
         },
     )
-    @pytest.mark.skipif(not os.path.exists(_ROBERTA_BASE_VOCAB_DIR), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_BPE_DIR), reason="Missing testdata.")
     def test_convert_example_to_features_doc_stride_overlap(
         self,
         dataset_function: Callable,
@@ -622,7 +621,7 @@ class InputReadingComprehensionTest(parameterized.TestCase):
                     rows[i]["end_positions"] + doc_stride, rows[i + 1]["end_positions"]
                 )
 
-    @pytest.mark.skipif(not os.path.exists(_ROBERTA_BASE_VOCAB_DIR), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_BPE_DIR), reason="Missing testdata.")
     def test_hf_tokenizer_for_rc(self):
         hf_tokenizer = build_hf_roberta_tokenizer()
         wrapper = (
