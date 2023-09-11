@@ -474,10 +474,10 @@ class Module(Configurable):
     def __repr__(self):
         return f"{type(self)}@{self.path()}"
 
-    def vlog_is_on(self, level) -> bool:
+    def vlog_is_on(self, level: int) -> bool:
         return self._vlog_level is not None and level <= self._vlog_level
 
-    def vlog(self, level, msg, *args, **kwargs):
+    def vlog(self, level: int, msg: str, *args, **kwargs):
         if self.vlog_is_on(level):
             logging.info(f"@{self.path()} {msg}", *args, **kwargs)
 
