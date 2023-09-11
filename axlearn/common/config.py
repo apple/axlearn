@@ -70,6 +70,7 @@ from collections import defaultdict
 from typing import (
     Any,
     Callable,
+    Collection,
     Dict,
     Generic,
     Iterable,
@@ -155,6 +156,9 @@ class RequiredFieldValue:
 
     def __bool__(self):
         return False
+
+    def __repr__(self):
+        return "REQUIRED"
 
 
 REQUIRED = RequiredFieldValue()
@@ -319,18 +323,71 @@ class ConfigBase:
         """
         return attr.evolve(self, **kwargs)
 
-    def debug_string(self, *, kv_separator=": ", field_separator="\n"):
-        lines = []
+    def debug_string(
+        self,
+        *,
+        kv_separator: str = ": ",
+        field_separator: str = "\n",
+        omit_default_values: Collection[Any] = (None, REQUIRED),
+    ) -> str:
+        """Returns a debug string for the config.
 
-        def fmt(val):
-            if isinstance(val, RequiredFieldValue):
-                return "REQUIRED"
+        Args:
+            kv_separator: The key-value separator.
+            field_separator: The field separator.
+            omit_default_values: A set of default values to omit in debug string.
+                See comments on `to_flat_dict`.
+
+        Returns:
+            A str separated by `field_separator` where each entry is of form
+            f"{path}{kv_separator}{val}", representing path and value of a leaf config field.
+        """
+        flat_dict = self.to_flat_dict(omit_default_values=omit_default_values)
+
+        def fmt(key: str, val: Any) -> Union[str, Tuple[str, str]]:
             if isinstance(val, (type, types.FunctionType)):
                 val = f"{val.__module__}.{val.__name__}"
-            return repr(val)
+            return f"{key}{kv_separator}{repr(val)}"
 
-        self.visit(lambda key, val: lines.append(f"{key}{kv_separator}{fmt(val)}"))
-        return field_separator.join(lines)
+        return field_separator.join([fmt(k, v) for k, v in flat_dict.items()])
+
+    def to_flat_dict(self, *, omit_default_values: Collection[Any]) -> Dict[str, Any]:
+        """Returns a flattened dict with path -> value mappings.
+
+        Args:
+            omit_default_values: Omit a field from the output dict if its value remains the
+                default value of the field *and* the default value is a member of
+                `omit_default_values`.
+
+        Returns:
+            A dict where each key is a `.`-separated str of path and each value represents a
+            leaf config field value.
+        """
+        result = {}
+
+        def enter(key: str, val: Any, default_result: Optional[List]) -> Optional[List]:
+            if key and isinstance(val, ConfigBase):
+                # Call `to_flat_dict` on any sub config. This allows a sub config to override
+                # the behavior of `to_flat_dict`.
+                val_entries = val.to_flat_dict(omit_default_values=omit_default_values)
+                # For each entry from `debug_string`, prepend `<key>.` to each key.
+                result.update({f"{key}.{k}": v for k, v in val_entries.items()})
+                return []  # Nothing to traverse.
+            # Otherwise adopt the default behavior.
+            return default_result
+
+        def process_kv(key: str, val: Any):
+            field = attr.fields_dict(type(self)).get(key)
+            if isinstance(field, attr.Attribute):
+                default_val = field.default
+                if val is default_val and default_val in omit_default_values:
+                    return
+            result[key] = val
+
+        # Note that we cannot use `utils.flatten_items` to handle this because the treatment of
+        # lists is different.
+        self.visit(visit_fn=process_kv, enter_fn=enter)
+        return result
 
     def to_dict(self) -> Dict[str, Any]:
         """Returns a nested dictionary of config fields."""
