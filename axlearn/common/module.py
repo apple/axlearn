@@ -403,7 +403,7 @@ class Module(Configurable):
         self._children: Dict[str, "Module"] = {}
         # Mapping from descendant module name to relative path from current module.
         self._paths_to_shared_modules: Dict[str, List[str]] = {}
-        self._vlog_level = 0 if cfg.vlog is None else cfg.vlog
+        self._vlog_level = cfg.vlog
         # TODO(markblee): Consider using a metaclass.
         for method_name, method_fn in self._methods_to_wrap_for_auto_child_context().items():
             # method_fn is not bound to any instance.
@@ -474,8 +474,11 @@ class Module(Configurable):
     def __repr__(self):
         return f"{type(self)}@{self.path()}"
 
+    def vlog_is_on(self, level) -> bool:
+        return self._vlog_level is not None and level <= self._vlog_level
+
     def vlog(self, level, msg, *args, **kwargs):
-        if level <= self._vlog_level:
+        if self.vlog_is_on(level):
             logging.info(f"@{self.path()} {msg}", *args, **kwargs)
 
     def vprint(self, level: int, msg: str, *args, **kwargs):
@@ -490,7 +493,7 @@ class Module(Configurable):
             *args: The args for jax.debug.print, may contain Tensors.
             **kwargs: The kwargs for jax.debug.print, may contain Tensors.
         """
-        if level <= self._vlog_level:
+        if self.vlog_is_on(level):
             caller_frame = inspect.stack()[1]  # Get the frame of the caller (index 1).
             filename = os.path.basename(caller_frame.filename)
             line_number = caller_frame.lineno
