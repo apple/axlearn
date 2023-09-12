@@ -136,12 +136,12 @@ class InferencePipeline(Module):
             )
             self.summary_writer(step=batch_index, values=output.summaries)
 
-            if batch_index % 10 == 0:
+            if (batch_index + 1) % 10 == 0:
                 global_batch_size = len(jax.tree_util.tree_leaves(global_input_batch)[0])
                 logging.info(
                     "Processed %d batches and %d examples",
-                    batch_index,
-                    batch_index * global_batch_size,
+                    batch_index + 1,
+                    (batch_index + 1) * global_batch_size,
                 )
                 now = time.perf_counter()
                 average_batch_time = (now - start_time) / 10
