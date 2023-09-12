@@ -115,11 +115,9 @@ class InferencePipeline(Module):
         cfg = self.config
         method_runner = self.runner.create_method_runner(method=cfg.model_method, **kwargs)
 
-        batch_index = 0
-        perf_counter_num_batches = 0
         start_time = time.perf_counter()
 
-        for input_batch in self.input.dataset():
+        for batch_index, input_batch in enumerate(self.input.dataset()):
             input_batch, input_batch_str_tensors = pop_string_tensors(input_batch)
             # pylint: disable-next=protected-access
             with method_runner._mesh:
@@ -137,8 +135,6 @@ class InferencePipeline(Module):
                 output_batch=output_batch,
             )
             self.summary_writer(step=batch_index, values=output.summaries)
-            batch_index += 1
-            perf_counter_num_batches += 1
 
             if batch_index % 10 == 0:
                 global_batch_size = len(jax.tree_util.tree_leaves(global_input_batch)[0])
@@ -148,9 +144,8 @@ class InferencePipeline(Module):
                     batch_index * global_batch_size,
                 )
                 now = time.perf_counter()
-                average_batch_time = (now - start_time) / perf_counter_num_batches
+                average_batch_time = (now - start_time) / 10
                 logging.info("Average time per batch: %.2f seconds", average_batch_time)
-                perf_counter_num_batches = 0
                 start_time = now
 
         self.output_writer.flush()
