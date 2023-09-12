@@ -21,7 +21,7 @@ from axlearn.common.vocabulary_bpe import BPEVocabulary
 tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
 _SENTENCEPIECE_DIR = os.path.join(tokenizers_dir, "sentencepiece")
 _BPE_DIR = os.path.join(tokenizers_dir, "bpe")
-_T5_VOCAB_FILE = os.path.join(_SENTENCEPIECE_DIR, "t5-base.spm")
+_T5_VOCAB_FILE = os.path.join(_SENTENCEPIECE_DIR, "t5-base")
 _OPT_VOCAB_FILE = os.path.join(_BPE_DIR, "opt.model")
 
 

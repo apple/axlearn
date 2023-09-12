@@ -389,11 +389,11 @@ class Module(Configurable):
         """Module config.
 
         name: name of this module.
-        vlog: the maximum vlog level.
+        vlog: the maximum vlog level. If None, vlog is disabled.
         """
 
         name: Required[str] = REQUIRED
-        vlog: int = 0
+        vlog: Optional[int] = None
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg)
@@ -474,8 +474,11 @@ class Module(Configurable):
     def __repr__(self):
         return f"{type(self)}@{self.path()}"
 
-    def vlog(self, level, msg, *args, **kwargs):
-        if level <= self._vlog_level:
+    def vlog_is_on(self, level: int) -> bool:
+        return self._vlog_level is not None and level <= self._vlog_level
+
+    def vlog(self, level: int, msg: str, *args, **kwargs):
+        if self.vlog_is_on(level):
             logging.info(f"@{self.path()} {msg}", *args, **kwargs)
 
     def vprint(self, level: int, msg: str, *args, **kwargs):
@@ -490,7 +493,7 @@ class Module(Configurable):
             *args: The args for jax.debug.print, may contain Tensors.
             **kwargs: The kwargs for jax.debug.print, may contain Tensors.
         """
-        if level <= self._vlog_level:
+        if self.vlog_is_on(level):
             caller_frame = inspect.stack()[1]  # Get the frame of the caller (index 1).
             filename = os.path.basename(caller_frame.filename)
             line_number = caller_frame.lineno

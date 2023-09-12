@@ -10,7 +10,10 @@ from google.cloud.aiplatform.tensorboard import uploader, uploader_utils
 
 from axlearn.cloud.gcp import config as gcp_config
 from axlearn.cloud.gcp import test_utils
-from axlearn.cloud.gcp.vertexai_tensorboard import VertexAITensorboardUploader
+from axlearn.cloud.gcp.vertexai_tensorboard import (
+    VertexAITensorboardUploader,
+    _vertexai_experiment_name_from_output_dir,
+)
 
 
 def fake_process(target, *args, **kwargs):
@@ -60,3 +63,9 @@ class VertexAITensorboardUploaderTest(absltest.TestCase):
         bucket_folder_fn.assert_called_once()
         tb_uploader_class.return_value.create_experiment.assert_called_once()
         tb_uploader_class.return_value.start_uploading.assert_called_once()
+
+
+class ExperimentNameTest(absltest.TestCase):
+    def test_exp_name_len(self):
+        with self.assertRaises(ValueError):
+            _vertexai_experiment_name_from_output_dir("gs://abc/" + "a" * 128)

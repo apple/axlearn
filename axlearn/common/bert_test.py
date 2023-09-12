@@ -19,6 +19,7 @@ from axlearn.common.layers import (
     Embedding,
     LayerNorm,
     set_dropout_rate_recursively,
+    set_layer_norm_eps_recursively,
 )
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
@@ -110,7 +111,7 @@ def bert_encoder_config_from_hf(
         ),
         pad_token_id=0,
     )
-    bert.set_layer_norm_eps_recursively(encoder_cfg, layer_norm_epsilon or hf_cfg.layer_norm_eps)
+    set_layer_norm_eps_recursively(encoder_cfg, layer_norm_epsilon or hf_cfg.layer_norm_eps)
     return encoder_cfg
 
 

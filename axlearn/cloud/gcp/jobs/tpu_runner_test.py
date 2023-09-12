@@ -9,7 +9,8 @@ from unittest import mock
 from absl.testing import parameterized
 
 from axlearn.cloud.gcp import bundler
-from axlearn.cloud.gcp.job import GCPJob
+from axlearn.cloud.gcp import job as gcp_job
+from axlearn.cloud.gcp.job_test import mock_job
 from axlearn.cloud.gcp.jobs import tpu_runner
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 
@@ -37,9 +38,6 @@ def mock_tpu(module_name: str):
     def mock_running_from_vm():
         return True
 
-    def mock_get_credentials():
-        return None
-
     def mock_tpu_resource(*args, **kwargs):
         del args, kwargs
 
@@ -50,7 +48,6 @@ def mock_tpu(module_name: str):
         mock.patch(f"{module_name}._tpu_resource", side_effect=mock_tpu_resource),
         mock.patch(f"{module_name}.delete_tpu", side_effect=mock_delete_tpu),
         mock.patch(f"{module_name}.running_from_vm", side_effect=mock_running_from_vm),
-        mock.patch(f"{module_name}.get_credentials", side_effect=mock_get_credentials),
     ]
 
     with contextlib.ExitStack() as stack:
@@ -61,7 +58,9 @@ def mock_tpu(module_name: str):
 
 
 @contextlib.contextmanager
-def mock_tpu_statuses(job: GCPJob, *, statuses: Dict[str, str], returncodes: Dict[str, int]):
+def mock_tpu_statuses(
+    job: gcp_job.GCPJob, *, statuses: Dict[str, str], returncodes: Dict[str, int]
+):
     assert statuses.keys() == returncodes.keys()
 
     def mock_execute_remote_cmd(*args, **kwargs):
@@ -85,6 +84,7 @@ class TPURunnerJobTest(parameterized.TestCase):
         mocks = [
             mock_tpu(tpu_runner.__name__),
             mock_gcp_settings(bundler.__name__, settings={"ttl_bucket": "ttl_bucket"}),
+            mock_job(gcp_job.__name__),
         ]
 
         with contextlib.ExitStack() as stack, tempfile.TemporaryDirectory() as temp_dir:

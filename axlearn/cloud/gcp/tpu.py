@@ -20,6 +20,7 @@ from googleapiclient.http import HttpRequest
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import format_table
 from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.storage import list_blobs
 from axlearn.cloud.gcp.utils import is_valid_resource_name
 
@@ -50,6 +51,7 @@ def create_tpu(
     bundler_type: str,
     num_slices: int = 1,
     metadata: Optional[Dict[str, str]] = None,
+    service_account: Optional[str] = None,
 ):
     """Create TPU.
 
@@ -60,6 +62,7 @@ def create_tpu(
         bundler_type: Type of bundle intended to be loaded to VM.
         num_slices: The number of slices of type tpu_type to start.
         metadata: Optional metadata for the instance.
+        service_account: Service account to execute the TPU creation.
 
     Raises:
         TPUCreationError: If an exeption is raised on the creation request.
@@ -76,6 +79,7 @@ def create_tpu(
             bundler_type=bundler_type,
             num_slices=num_slices,
             metadata=metadata,
+            service_account=service_account,
         )
     except TPUQuotaLimitError as e:
         if num_slices != 1:
@@ -86,6 +90,7 @@ def create_tpu(
             credentials=credentials,
             bundler_type=bundler_type,
             metadata=metadata,
+            service_account=service_account,
         )
 
 
@@ -120,6 +125,7 @@ def _create_legacy_tpu(
     credentials: Credentials,
     bundler_type: str,
     metadata: Optional[Dict[str, str]] = None,
+    service_account: Optional[str] = None,
 ):
     """Create TPU (using legacy quota).
 
@@ -133,6 +139,7 @@ def _create_legacy_tpu(
     boot_timeout = (
         3600  # If we haven't booted after TPU READY + this many seconds, raise exception.
     )
+    reserved_tpu = gcp_settings("reserved_tpu", default=False)
     while True:
         node = get_tpu_node(name, resource)
         if node is not None:  # TPU exists.
@@ -192,12 +199,23 @@ def _create_legacy_tpu(
                 time.sleep(backoff_for)
             try:
                 attempt += 1
+                request_body = _tpu_body(
+                    name,
+                    tpu_type=tpu_type,
+                    bundler_type=bundler_type,
+                    metadata=metadata,
+                    service_account=service_account,
+                )
+                # Specify schedulingConfig only for non-QRM requests, as it will break QRM.
+                # For QRM, we specify a different field to use reserved quota -- see `_qrm_body`.
+                request_body["schedulingConfig"] = {
+                    "preemptible": not reserved_tpu,
+                    "reserved": reserved_tpu,
+                }
                 request = resource.create(
                     parent=tpu_path_prefix,
                     nodeId=name,
-                    body=_tpu_body(
-                        name, tpu_type=tpu_type, bundler_type=bundler_type, metadata=metadata
-                    ),
+                    body=request_body,
                 )
                 _execute_create_tpu_request(request)
             except TPUQuotaLimitError:
@@ -313,6 +331,7 @@ def _create_multislice_tpu(
     bundler_type: str,
     num_slices: int = 1,
     metadata: Optional[Dict[str, str]] = None,
+    service_account: Optional[str] = None,
 ):
     """Create multislice TPU.
 
@@ -343,7 +362,11 @@ def _create_multislice_tpu(
                         name,
                         num_slices=num_slices,
                         tpu_body=_tpu_body(
-                            name, tpu_type=tpu_type, bundler_type=bundler_type, metadata=metadata
+                            name,
+                            tpu_type=tpu_type,
+                            bundler_type=bundler_type,
+                            metadata=metadata,
+                            service_account=service_account,
                         ),
                     ),
                 )
@@ -505,7 +528,12 @@ def _tpu_resource(credentials: Credentials) -> discovery.Resource:
 
 
 def _tpu_body(
-    name: str, *, tpu_type: str, bundler_type: str, metadata: Optional[Dict[str, str]] = None
+    name: str,
+    *,
+    tpu_type: str,
+    bundler_type: str,
+    metadata: Optional[Dict[str, str]] = None,
+    service_account: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create configuration object for starting a TPU."""
 
@@ -545,8 +573,8 @@ def _tpu_body(
         },
         "runtimeVersion": runtime_version,
         "serviceAccount": {
-            "email": gcp_settings("service_account_email"),
-            "scope": ["https://www.googleapis.com/auth/cloud-platform"],
+            "email": service_account or gcp_settings("service_account_email"),
+            "scope": DEFAULT_TPU_SCOPES,
         },
         "tags": ["allow-internet-egress"],
     }

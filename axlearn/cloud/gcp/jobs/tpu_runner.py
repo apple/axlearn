@@ -74,6 +74,7 @@ from axlearn.cloud.common.utils import (
 from axlearn.cloud.gcp.bundler import GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import TPUJob, docker_command
+from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.tpu import (
     _qrm_resource,
     _tpu_resource,
@@ -111,6 +112,12 @@ def _private_flags():
         "output_dir",
         None,
         "If specified, the directory to store outputs (such as logs).",
+    )
+    flags.DEFINE_string(
+        "service_account",
+        None,
+        "If specified, will run job as the service account. "
+        "Otherwise will fallback to application-default credentials.",
     )
 
 
@@ -200,7 +207,8 @@ class TPURunnerJob(TPUJob):
         if cfg.num_slices > 1:
             logging.info("Preparing environment on VMs for multislice training...")
             master_tpu_node = get_tpu_node(
-                f"{cfg.name}-0", resource=_tpu_resource(get_credentials())
+                f"{cfg.name}-0",
+                resource=_tpu_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
             )
             coordinator_address = f"{master_tpu_node['networkEndpoints'][0]['ipAddress']}:8080"
             self._execute_remote_cmd(
@@ -238,15 +246,16 @@ class TPURunnerJob(TPUJob):
         # TODO(markblee): We can support killing/restarting a command without recreating the TPU,
         # via killing the screen session, e.g. screen -XS <screen> quit, or killing all processes
         # holding the TPU.
-        credentials = get_credentials()
-        create_kwargs = dict(
+        credentials = self._get_job_credentials(DEFAULT_TPU_SCOPES)
+        delete_tpu(cfg.name, credentials=credentials)
+        create_tpu(
             name=cfg.name,
             tpu_type=cfg.tpu_type,
             bundler_type=self._bundler.TYPE,
             credentials=credentials,
+            num_slices=cfg.num_slices,
+            service_account=cfg.service_account,
         )
-        delete_tpu(cfg.name, credentials=credentials)
-        create_tpu(**create_kwargs, num_slices=cfg.num_slices)
 
     class Status(enum.Enum):
         """TPU job status."""
@@ -326,7 +335,7 @@ class TPURunnerJob(TPUJob):
         logging.info("Copying outputs from %s...", self._output_dir)
         self._copy_outputs(src=f"{self._output_dir}/", dst=f"{cfg.output_dir}/output/$HOSTNAME")
         logging.info("Start deleting TPU %s...", cfg.name)
-        delete_tpu(cfg.name, credentials=get_credentials())
+        delete_tpu(cfg.name, credentials=self._get_job_credentials(DEFAULT_TPU_SCOPES))
         logging.info("Finished deleting %s.", cfg.name)
 
     def _num_workers(self) -> int:
@@ -342,7 +351,7 @@ class TPURunnerJob(TPUJob):
         TODO(markblee): If TPU util is low or idle core duration is high, return IDLE.
         """
         cfg = self.config
-        credentials = get_credentials()
+        credentials = self._get_job_credentials(DEFAULT_TPU_SCOPES)
 
         # If no TPU, return NOT_STARTED.
         if cfg.num_slices > 1:

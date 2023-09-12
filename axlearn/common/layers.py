@@ -214,6 +214,28 @@ def set_dropout_rate_recursively(
     cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
 
 
+def set_layer_norm_eps_recursively(cfg: ConfigBase, eps: float, set_only_if_none: bool = False):
+    """Sets LayerNorm.Config.eps recursively.
+
+    Args:
+        cfg: The root config under which to look for LayerNorm.Config.
+        eps: The target value.
+        set_only_if_none: Override LayerNorm.Config.eps to `eps` only if the original is None.
+    """
+
+    def is_layer_norm_config(cfg):
+        return isinstance(cfg, LayerNorm.Config)
+
+    def visit_fn(_, value):
+        if is_layer_norm_config(value) and (not set_only_if_none or value.eps is None):
+            value.eps = eps
+
+    def enter_fn(_, value, default_kv):
+        return None if is_layer_norm_config(value) else default_kv
+
+    cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+
+
 class BaseNormalizationLayer(BaseLayer):
     """The base class for normalization layers."""
 
