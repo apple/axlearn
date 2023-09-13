@@ -826,9 +826,9 @@ def lm_text_preprocessor(
     shuffle_buffer_size: int = 8192,
     max_padding_fraction: float = 1.0,
     window_size: int = 128,
-    is_training: bool = True,
     additional_preprocessors: Optional[Sequence[InstantiableConfig]] = None,
     token_adjuster_cfg: Optional[InstantiableConfig] = None,
+    is_training: Optional[bool] = None,
 ) -> input_tf_data.DatasetToDatasetFn:
     """Produces processors for lm data for LM training."""
 
@@ -856,7 +856,7 @@ def lm_text_preprocessor(
                 window_size=window_size,
                 shuffle_buffer_size=shuffle_buffer_size,
                 token_adjuster_cfg=token_adjuster_cfg,
-                is_training=is_training,
+                is_training=is_training if is_training is not None else True,
             )
         )
         return processors
