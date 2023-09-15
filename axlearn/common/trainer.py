@@ -437,7 +437,7 @@ class SpmdTrainer(Module):
         )
         if prebuilt_state.built_keys == all_trainer_state_keys:
             logging.info(
-                "Prebuilt state has the complete trainer state: %s", prebuilt_state.trainer_state
+                "Prebuilt state has the complete trainer state.",
             )
             for key, value in utils.flatten_items(prebuilt_state.trainer_state):
                 if not isinstance(value, Tensor):
