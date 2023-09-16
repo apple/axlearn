@@ -27,7 +27,8 @@ if num_tpu_slices > 1:
     libtpu_init_args += [
         # For collectives across multiple slices.
         "--xla_tpu_enable_megascale_barrier=true",
-        # Per rwitten@google.com all reduce is put into the following layer across DCN.
+        # Per rwitten@google.com the following two flags allow gradient all-reduce to happen
+        # concurrently with gradient computation for the following layer.
         "--xla_tpu_enable_data_parallel_all_reduce_opt=true",
         "--xla_tpu_data_parallel_opt_different_sized_ops=true",
     ]
