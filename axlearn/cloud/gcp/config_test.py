@@ -31,12 +31,23 @@ class ConfigTest(absltest.TestCase):
             with self.assertRaises(SystemExit):
                 gcp_config.gcp_settings("project")
 
+            # Should not fail if not required.
+            self.assertIsNone(gcp_config.gcp_settings("project", required=False))
+
+            # Should not fail if a default exists.
+            self.assertEqual(
+                "default", gcp_config.gcp_settings("project", required=True, default="default")
+            )
+
             # Create a default config, which should get picked up.
             default_config = create_default_config(temp_dir)
 
             # Should fail because no config for --project and --zone.
             with self.assertRaises(SystemExit):
                 gcp_config.gcp_settings("project")
+
+            # Should not fail if not required.
+            self.assertIsNone(gcp_config.gcp_settings("project", required=False))
 
             # Write some values to the config.
             config.write_configs_with_header(
@@ -47,6 +58,9 @@ class ConfigTest(absltest.TestCase):
             # Should fail because key cannot be found.
             with self.assertRaises(SystemExit):
                 gcp_config.gcp_settings("unknown_key")
+
+            # Should not fail if not required.
+            self.assertIsNone(gcp_config.gcp_settings("unknown_key", required=False))
 
             # Should succeed.
             self.assertEqual(gcp_config.gcp_settings("project"), "test")

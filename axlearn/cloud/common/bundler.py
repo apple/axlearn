@@ -498,24 +498,22 @@ def get_bundler_config(*, bundler_type: str, spec: List[str]) -> Bundler.Config:
     )
 
 
-def bundler_flags():
-    """Common bundler flags."""
-    flags.DEFINE_string(
-        "bundler_type",
-        None,
-        "Bundler type.",
-        required=True,
-    )
+def bundler_flags(**kwargs):
+    """Common bundler flags. Keyword args will be forwarded to flag definitions."""
+
+    flags.DEFINE_string("bundler_type", None, "Bundler type.", required=True, **kwargs)
     flags.DEFINE_multi_string(
         "bundler_spec",
         [],
         "Bundler spec provided as key=value. "
         "Refer to each bundler's `from_spec` method docstring for details.",
+        **kwargs,
     )
     flags.DEFINE_multi_string(
         "bundler_exclude",
         BUNDLE_EXCLUDE,
         "Files/folders in root to exclude from code bundle.",
+        **kwargs,
     )
 
 

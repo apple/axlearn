@@ -16,7 +16,7 @@ More concretely, the submit flow works as follows:
     outputs are emitted to GCS.
 4. Once a job is completed, its corresponding jobspec is removed from the GCS job registry. Log
     outputs are also synced to GCS.
-5. To stop a job, run `axlearn gcp bastion cancel --taskname=...`, which simply writes a
+5. To stop a job, run `axlearn gcp bastion cancel --job_name=...`, which simply writes a
     "cancelling" statefile (serialized via `JobState`) to GCS. The job will be terminated, and any
     configured "cleanup command" will be run (e.g. to cleanup external resources). Writing a
     "cancelling" statefile is necessary to ensure that cleanup commands can be re-run if the bastion
@@ -53,7 +53,7 @@ Examples:
     axlearn gcp bastion submit --spec=/path/to/spec --name=shared-bastion
 
     # Cancel a running job.
-    axlearn gcp bastion cancel --taskname=my-task --name=shared-bastion
+    axlearn gcp bastion cancel --job_name=my-job --name=shared-bastion
 
     # Soft-stop the bastion.
     #
@@ -84,10 +84,10 @@ The following paths may provide useful debugging information:
     User written job states: $BUCKET/jobs/user_states/
 
     Bastion logs: $BUCKET/logs/$BASTION
-    Job logs: $BUCKET/logs/<taskname>
-    Cleanup command logs: $BUCKET/logs/<taskname>.cleanup
+    Job logs: $BUCKET/logs/<job_name>
+    Cleanup command logs: $BUCKET/logs/<job_name>.cleanup
 
-    Job scheduling history: $BUCKET/history/jobs/<taskname>
+    Job scheduling history: $BUCKET/history/jobs/<job_name>
     Project scheduling history: $BUCKET/history/projects/
 
 To test changes to bastion:
@@ -137,7 +137,6 @@ import os
 import re
 import shlex
 import subprocess
-import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -166,8 +165,8 @@ from axlearn.cloud.gcp.storage import (
     upload_blob,
 )
 from axlearn.cloud.gcp.tpu_cleaner import Cleaner, TPUCleaner
-from axlearn.cloud.gcp.utils import common_flags, get_credentials
-from axlearn.cloud.gcp.vm import create_vm, delete_vm
+from axlearn.cloud.gcp.utils import common_flags
+from axlearn.cloud.gcp.vm import _compute_resource, _get_vm_node, create_vm, delete_vm
 from axlearn.common.config import REQUIRED, Required, config_class
 
 _SHARED_BASTION_SUFFIX = "shared-bastion"
@@ -182,7 +181,7 @@ def _private_flags():
     FLAGS.set_default("zone", gcp_settings("zone", required=False))
 
     flags.DEFINE_string("name", None, "Name of bastion.", required=True)
-    flags.DEFINE_string("taskname", None, "Name of task.")
+    flags.DEFINE_string("job_name", None, "Name of job.")
     flags.DEFINE_string("vm_type", "n2-standard-128", "Machine spec to boot for VM.")
     flags.DEFINE_integer("disk_size", 256, "VM disk size in GB.")
     flags.DEFINE_integer("max_tries", 1, "Max attempts to run the command.")
@@ -206,6 +205,9 @@ def _private_flags():
         "name",
         _validate_name,
         message="Must be < 64 chars and match <name>-bastion.",
+    )
+    flags.register_validator(
+        "max_tries", lambda tries: tries > 0, message="Max tries must be positive."
     )
 
 
@@ -245,7 +247,7 @@ class BastionJobSpec:
 
     # Version to handle schema changes.
     version: int
-    # Name of the job (aka taskname).
+    # Name of the job (aka job_name).
     name: str
     # Command to run.
     command: str
@@ -542,10 +544,6 @@ class BastionJob(GCPJob):
     class Config(GCPJob.Config):
         """Configures BastionJob."""
 
-        # Base directory to monitor for jobs.
-        job_dir: Required[str] = REQUIRED
-        # Directory to emit outputs.
-        output_dir: Required[str] = REQUIRED
         # Interval to sync and run jobs.
         update_interval_seconds: float = 30
         # Scheduler to decide whether to start/pre-empt jobs.
@@ -557,11 +555,11 @@ class BastionJob(GCPJob):
         super().__init__(cfg)
         cfg = self.config
         # Remote gs directory to emit logs.
-        self._output_dir = cfg.output_dir
+        self._output_dir = _bastion_dir(cfg.name)
         # Remote log output dir. Ensure trailing slash.
         self._log_dir = os.path.join(self._output_dir, "logs")
         # Note: pathlib doesn't work well with gs:// prefix.
-        self._job_dir = cfg.job_dir
+        self._job_dir = os.path.join(self._output_dir, "jobs")
         # Remote history dir. Ensure trailing slash.
         self._job_history_dir = os.path.join(self._output_dir, "history", "jobs")
         tf.io.gfile.makedirs(self._job_history_dir)
@@ -591,13 +589,6 @@ class BastionJob(GCPJob):
     def default_config(cls) -> Config:
         cfg = super().default_config()
         cfg.command = ""  # Unused.
-        return cfg
-
-    @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
-        cfg = super().from_flags(fv, **kwargs)
-        cfg.output_dir = _bastion_dir(cfg.name)
-        cfg.job_dir = os.path.join(cfg.output_dir, "jobs")
         return cfg
 
     def _append_to_job_history(self, job: Job, msg: str):
@@ -1008,7 +999,7 @@ class CreateBastionJob(CPUJob):
 
     def _delete(self):
         cfg = self.config
-        delete_vm(cfg.name, credentials=get_credentials())
+        delete_vm(cfg.name, credentials=self._get_job_credentials())
 
     def _execute(self):
         cfg: CreateBastionJob.Config = self.config
@@ -1018,7 +1009,7 @@ class CreateBastionJob(CPUJob):
             vm_type=cfg.vm_type,
             disk_size=cfg.disk_size,
             bundler_type=self._bundler.TYPE,
-            credentials=get_credentials(),
+            credentials=self._get_job_credentials(),
         )
 
         # Command to start the bastion inside a docker container.
@@ -1061,59 +1052,64 @@ class SubmitBastionJob(CPUJob):
 
     @config_class
     class Config(CPUJob.Config):
-        """Configures CPUJob."""
+        """Configures SubmitBastionJob."""
 
-        # Directory to emit outputs.
-        output_dir: Required[str] = REQUIRED
-        # Base directory where Bastion is monitoring for jobs.
-        job_dir: Required[str] = REQUIRED
         # Name of the job. Not to be confused with cfg.name, the bastion name.
         job_name: Required[str] = REQUIRED
-        # Optional command to run when job completes.
-        cleanup_command: Optional[str] = None
         # Job spec file local path.
         job_spec_file: Required[str] = REQUIRED
 
     @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
-        cfg = super().from_flags(fv, **kwargs)
+    def default_config(cls):
+        cfg = super().default_config()
         cfg.command = ""
-        cfg.output_dir = _bastion_dir(cfg.name)
-        cfg.job_dir = os.path.join(cfg.output_dir, "jobs")
         return cfg
+
+    def _output_dir(self):
+        return _bastion_dir(self.config.name)
+
+    def _job_dir(self):
+        return os.path.join(self._output_dir(), "jobs")
 
     def _delete(self):
         cfg: SubmitBastionJob.Config = self.config
         try:
-            jobspec = os.path.join(cfg.job_dir, "active", cfg.job_name)
+            jobspec = os.path.join(self._job_dir(), "active", cfg.job_name)
             if not blob_exists(jobspec):
                 raise ValueError(f"Unable to locate jobspec {jobspec}")
             _upload_job_state(
                 cfg.job_name,
                 JobState.CANCELLING,
-                remote_dir=os.path.join(cfg.job_dir, "user_states"),
+                remote_dir=os.path.join(self._job_dir(), "user_states"),
             )
             logging.info(
-                "Task %s is cancelling.\nView bastion outputs with:\ngsutil cat %s",
+                "Job %s is cancelling.\nView bastion outputs with:\ngsutil cat %s",
                 cfg.job_name,
-                os.path.join(cfg.output_dir, "logs", f"{cfg.job_name}.cleanup"),
+                os.path.join(self._output_dir(), "logs", f"{cfg.job_name}.cleanup"),
             )
         except ValueError as e:
             logging.info("Failed with error: %s -- Has the job been cancelled already?", e)
 
     def _execute(self):
         cfg: SubmitBastionJob.Config = self.config
+        node = _get_vm_node(cfg.name, _compute_resource(self._get_job_credentials()))
+        if node is None or node.get("status", None) != "RUNNING":
+            logging.warning(
+                "Bastion %s does not appear to be running yet. "
+                "It will need to be running before jobs will execute.",
+                cfg.name,
+            )
         logging.info("Submitting command to bastion: %s", cfg.command)
-        dst = os.path.join(cfg.job_dir, "active", cfg.job_name)
+        dst = os.path.join(self._job_dir(), "active", cfg.job_name)
         if blob_exists(dst):
             logging.info("\n\nNote: Job is already running. To restart it, cancel the job first.\n")
         else:
             # Upload the job for bastion to pickup.
             upload_blob(cfg.job_spec_file, url=dst)
 
-        logging.info(
-            "View bastion outputs with:\ngsutil cat %s",
-            os.path.join(cfg.output_dir, "logs", cfg.job_name),
+        print(
+            "\nView bastion outputs with:\n"
+            f"gsutil cat {os.path.join(self._output_dir(), 'logs', cfg.job_name)}",
         )
 
 
@@ -1170,21 +1166,21 @@ def main(argv):
         # Construct a job for bastion to execute. This typically runs locally.
         # The spec file provided from the flags will be used and submitted to bastion vm.
         cfg = SubmitBastionJob.from_flags(FLAGS).set(job_name=spec.name, job_spec_file=FLAGS.spec)
-        # Execute the task.
+        # Execute the job.
         job = cfg.instantiate()
         job.execute()
     elif action == "cancel":
-        if not FLAGS.taskname:
-            print("--taskname must be provided if running 'cancel'.")
-            sys.exit(1)
+        if not FLAGS.job_name:
+            raise app.UsageError("--job_name must be provided if running 'cancel'.")
         # Cancel a job that bastion is running (or planning to run).
-        cfg = SubmitBastionJob.from_flags(FLAGS).set(job_name=FLAGS.taskname, job_spec_file="")
+        cfg = SubmitBastionJob.from_flags(FLAGS).set(job_spec_file="")
         job = cfg.instantiate()
         job._delete()  # pylint: disable=protected-access
         # Poll for jobspec to be removed.
         try:
             while True:
-                dst = os.path.join(cfg.job_dir, "active", cfg.job_name)
+                # pylint: disable-next=protected-access
+                dst = os.path.join(job._job_dir(), "active", cfg.job_name)
                 if blob_exists(dst):
                     logging.info("Waiting for job to stop (use ctrl+c to stop waiting)...")
                     time.sleep(10)

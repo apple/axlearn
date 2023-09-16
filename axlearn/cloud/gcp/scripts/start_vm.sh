@@ -14,7 +14,7 @@ get_metadata() {
 }
 
 BUCKET=$(get_metadata bundle_bucket)
-TASKNAME=$(get_metadata taskname)
+JOB_NAME=$(get_metadata job_name)
 ZONE=$(get_metadata zone)
 DOCKER_REGISTRY=$(get_metadata docker_registry)
 BUNDLER_TYPE=$(get_metadata bundler_type)
@@ -49,8 +49,8 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
   yes | apt-get install screen htop tmux >> ${SETUP_LOG_PATH} 2>&1
 
   # Unpack bundle.
-  GS_TASK_PATH="gs://${BUCKET}/axlearn/tasks/${TASKNAME}"
-  GS_BUNDLE_PATH="${GS_TASK_PATH}/axlearn.tar.gz"
+  GS_JOB_PATH="gs://${BUCKET}/axlearn/jobs/${JOB_NAME}"
+  GS_BUNDLE_PATH="${GS_JOB_PATH}/axlearn.tar.gz"
   LOCAL_BUNDLE_PATH="/root"
   mkdir -p ${LOCAL_BUNDLE_PATH}
   pushd ${LOCAL_BUNDLE_PATH}
@@ -97,9 +97,9 @@ if [[ " ${docker_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
 fi
 
 # Set label if possible (not possible on TPU-VM).
-gcloud compute instances add-labels "${TASKNAME}" \
+gcloud compute instances add-labels "${JOB_NAME}" \
   --labels=boot_status=done \
   --zone ${ZONE} >> ${SETUP_LOG_PATH} 2>&1
 
 # Copy logs.
-gsutil cp ${SETUP_LOG_PATH} "${GS_TASK_PATH}/logs/setup_log-$(hostname)"
+gsutil cp ${SETUP_LOG_PATH} "${GS_JOB_PATH}/logs/setup_log-$(hostname)"

@@ -20,6 +20,7 @@ Notes:
     circumstances this shouldn't happen.
 - In most cases you may want to launch the TPU job via bastion (see bastion_vm), which comes with
     queueing and scheduling. However, running this script directly can be useful for debugging.
+    To launch via bastion, please refer to the `gcp launch` command.
 
 Possible actions: [start|stop|list]
 
@@ -47,7 +48,7 @@ Examples:
     axlearn gcp tpu list
 
     # Stop and teardown the job.
-    axlearn gcp tpu stop --taskname=my-task
+    axlearn gcp tpu stop --name=my-job
 
 """
 # TODO(markblee):
@@ -58,7 +59,6 @@ Examples:
 import enum
 import pathlib
 import subprocess
-import sys
 import time
 from typing import Dict, Optional
 
@@ -67,7 +67,7 @@ from absl import app, flags, logging
 from axlearn.cloud.common.bundler import DockerBundler, bundler_flags, get_bundler_config
 from axlearn.cloud.common.utils import (
     configure_logging,
-    generate_taskname,
+    generate_job_name,
     parse_action,
     parse_kv_flags,
 )
@@ -86,7 +86,12 @@ from axlearn.cloud.gcp.tpu import (
     infer_tpu_workers,
     list_tpu_info,
 )
-from axlearn.cloud.gcp.utils import common_flags, get_credentials, running_from_vm
+from axlearn.cloud.gcp.utils import (
+    common_flags,
+    get_credentials,
+    is_valid_resource_name,
+    running_from_vm,
+)
 from axlearn.cloud.gcp.vertexai_tensorboard import (
     VertexAITensorboardUploader,
     is_vertexai_tensorboard_configured,
@@ -98,26 +103,42 @@ FLAGS = flags.FLAGS
 _COMMAND_SESSION_NAME = "command"
 
 
-def _private_flags():
-    common_flags()
-    bundler_flags()
-    flags.FLAGS.set_default("bundler_type", GCSTarBundler.TYPE)
-    flags.DEFINE_string("taskname", None, "Task name.")
-    flags.DEFINE_string("tpu_type", None, "Type of TPU to start.")
-    flags.DEFINE_integer("num_slices", 1, "The number of slices of specified TPU type to start.")
-    flags.DEFINE_integer("max_tries", 10, "Max attempts to launch the job.")
-    flags.DEFINE_integer("retry_interval", 60, "Interval in seconds between tries.")
-    flags.DEFINE_multi_string("env", [], "Env var in the format key:value.")
+def launch_flags(flag_values: flags.FlagValues = FLAGS):
+    common_flags(flag_values=flag_values)
+    bundler_flags(flag_values=flag_values)
+    flag_values.set_default("project", gcp_settings("project", required=False))
+    flag_values.set_default("zone", gcp_settings("zone", required=False))
+    flag_values.set_default("bundler_type", GCSTarBundler.TYPE)
+    # Note: don't use generate_job_name() here, as the VM may not have $USER.
+    flags.DEFINE_string("name", None, "Job name.", flag_values=flag_values)
+    flags.DEFINE_string("tpu_type", None, "Type of TPU to start.", flag_values=flag_values)
+    flags.DEFINE_integer(
+        "num_slices",
+        1,
+        "The number of slices of specified TPU type to start.",
+        flag_values=flag_values,
+    )
+    flags.DEFINE_integer(
+        "max_tries", 10, "Max attempts to launch the job.", flag_values=flag_values
+    )
+    flags.DEFINE_integer(
+        "retry_interval", 60, "Interval in seconds between tries.", flag_values=flag_values
+    )
+    flags.DEFINE_multi_string(
+        "env", [], "Env var in the format key:value.", flag_values=flag_values
+    )
     flags.DEFINE_string(
         "output_dir",
         None,
         "If specified, the directory to store outputs (such as logs).",
+        flag_values=flag_values,
     )
     flags.DEFINE_string(
         "service_account",
         None,
         "If specified, will run job as the service account. "
         "Otherwise will fallback to application-default credentials.",
+        flag_values=flag_values,
     )
 
 
@@ -144,6 +165,15 @@ class TPURunnerJob(TPUJob):
     def default_config(cls) -> Config:
         cfg = super().default_config()
         cfg.bundler = GCSTarBundler.default_config().set(extras="gcp")
+        return cfg
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs):
+        cfg = super().from_flags(fv, **kwargs)
+        cfg.name = cfg.name or generate_job_name()
+        cfg.output_dir = (
+            cfg.output_dir or f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{cfg.name}"
+        )
         return cfg
 
     def __init__(self, cfg: Config) -> None:
@@ -461,24 +491,25 @@ def main(argv):
         print(format_tpu_info(list_tpu_info(get_credentials())))
         return
 
+    if not is_valid_resource_name(FLAGS.name):
+        raise app.UsageError(
+            "Job name is invalid. Please see "
+            "https://cloud.google.com/compute/docs/naming-resources#resource-name-format."
+        )
+
     if not FLAGS.tpu_type:
-        print("--tpu_type is required. Please rerun with --help.")
-        sys.exit(1)
+        raise app.UsageError("--tpu_type is required.")
 
     command = " ".join(argv[2:])
     if not command:
-        print("Command is required. Please rerun with --help.")
-        sys.exit(1)
-
-    taskname = FLAGS.taskname or generate_taskname()
-    output_dir = FLAGS.output_dir or f"gs://{gcp_settings('ttl_bucket')}/axlearn/tasks/{taskname}"
+        raise app.UsageError("Command is required.")
 
     default_env = dict(
         # Use a large refresh to mitigate DNS timeout issues until tf>2.12 upgrade.
         GCS_RESOLVE_REFRESH_SECS=600,
         TPU_TYPE=FLAGS.tpu_type,
         NUM_TPU_SLICES=FLAGS.num_slices,
-        XLA_FLAGS=f"--xla_dump_to=/output/{taskname}/xla",
+        XLA_FLAGS=f"--xla_dump_to=/output/{FLAGS.name}/xla",
         TF_CPP_MIN_LOG_LEVEL=0,
     )
 
@@ -487,10 +518,8 @@ def main(argv):
         vertexai_tb_uploader = VertexAITensorboardUploader.default_config()
 
     cfg = TPURunnerJob.from_flags(FLAGS).set(
-        name=taskname,
         env_vars={**default_env, **parse_kv_flags(FLAGS.env)},
         command=command,
-        output_dir=output_dir,
         vertexai_tb_uploader=vertexai_tb_uploader,
         bundler=get_bundler_config(bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec),
     )
@@ -505,6 +534,6 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    _private_flags()
+    launch_flags()
     configure_logging(logging.INFO)
     app.run(main)

@@ -74,7 +74,7 @@ class GCSTarBundler(BaseTarBundler):
         cfg = super().default_config()
         # Read from settings by default, if available.
         if ttl_bucket := gcp_settings("ttl_bucket", required=False):
-            cfg.set(remote_dir=f"gs://{ttl_bucket}/axlearn/tasks")
+            cfg.set(remote_dir=f"gs://{ttl_bucket}/axlearn/jobs")
         return cfg
 
     @classmethod

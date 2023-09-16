@@ -43,8 +43,8 @@ def load_configs(
             file is found.
 
     Returns:
-        A tuple of (config_file, namespace_configs), where config_file can be None if no config file
-        could be found and required is False.
+        A tuple of (config_file, namespace_configs). If no config file could be found and required
+        is False, config_file will be None and namespace_configs will be an empty dict.
     """
     configs = {}
     config_file = None
@@ -259,7 +259,7 @@ def _prompt_project(project_configs: Dict[str, Any]) -> Optional[str]:
     """Prompts the user to select a project among the existing projects.
 
     Args:
-        projects: Mapping from `_project_config_key(project, zone)` to project-specific configs.
+        projects: Mapping from project key to project-specific configs.
 
     Returns:
         The selected key, or None if no project_configs or the user made an invalid choice.
