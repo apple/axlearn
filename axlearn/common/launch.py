@@ -27,8 +27,9 @@ if num_tpu_slices > 1:
     libtpu_init_args += [
         # For collectives across multiple slices.
         "--xla_tpu_enable_megascale_barrier=true",
-        # Prefer async all-gather to all-reduce implementations where async-all-gather is possible.
-        "--xla_tpu_prefer_async_allgather_to_allreduce=true",
+        # Per rwitten@google.com all reduce is put into the following layer across DCN.
+        "--xla_tpu_enable_data_parallel_all_reduce_opt=true",
+        "--xla_tpu_data_parallel_opt_different_sized_ops=true",
     ]
 
 os.environ["LIBTPU_INIT_ARGS"] = " ".join(libtpu_init_args)

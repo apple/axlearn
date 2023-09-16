@@ -2388,29 +2388,51 @@ class ConfigHelperTest(TestCase):
             FusedQKVLinear.default_config(),
         ),
         cross_attention_cfg=(None, TransformerAttentionLayer.default_config()),
+        batch_axis_names=("data", ("replica", "data", "fsdp")),
+        fsdp_axis_names=("fsdp",),
+        tp_axis_names=("model",),
     )
     def test_set_double_shard_weights_config(
-        self, self_attention_input_linear_cfg, cross_attention_cfg
+        self,
+        self_attention_input_linear_cfg,
+        cross_attention_cfg,
+        batch_axis_names,
+        fsdp_axis_names,
+        tp_axis_names,
     ):
         cfg: TransformerLayer.Config = TransformerLayer.default_config().set(
             cross_attention=cross_attention_cfg
         )
         cfg.self_attention.attention.input_linear = self_attention_input_linear_cfg
-        set_double_shard_weights_config(cfg)
+        set_double_shard_weights_config(
+            cfg,
+            batch_axis_names=batch_axis_names,
+            fsdp_axis_names=fsdp_axis_names,
+            tp_axis_names=tp_axis_names,
+        )
 
         ff_layer = cfg.feed_forward
-        self.assertSequenceEqual(ff_layer.linear1.param_partition_spec, ("data", "model"))
-        self.assertSequenceEqual(ff_layer.linear2.param_partition_spec, ("model", "data"))
-        self.assertSequenceEqual(ff_layer.linear1.output_partition_spec, ("data", None, "model"))
-        self.assertSequenceEqual(ff_layer.linear2.output_partition_spec, ("data", None, "model"))
+        self.assertSequenceEqual(
+            ff_layer.linear1.param_partition_spec, (fsdp_axis_names, tp_axis_names)
+        )
+        self.assertSequenceEqual(
+            ff_layer.linear2.param_partition_spec, (tp_axis_names, fsdp_axis_names)
+        )
+        self.assertSequenceEqual(
+            ff_layer.linear1.output_partition_spec, (batch_axis_names, None, tp_axis_names)
+        )
+        self.assertSequenceEqual(
+            ff_layer.linear2.output_partition_spec, (batch_axis_names, None, tp_axis_names)
+        )
 
         self_atten = cfg.self_attention.attention
         # Shard weights.
         self.assertSequenceEqual(
-            self_atten.input_linear.layer.param_partition_spec, ("data", "model", None)
+            self_atten.input_linear.layer.param_partition_spec,
+            (fsdp_axis_names, tp_axis_names, None),
         )
         self.assertSequenceEqual(
-            self_atten.output_linear.param_partition_spec, ("data", "model", None)
+            self_atten.output_linear.param_partition_spec, (fsdp_axis_names, tp_axis_names, None)
         )
 
         if cross_attention_cfg is None:
@@ -2419,10 +2441,12 @@ class ConfigHelperTest(TestCase):
             cross_atten = cfg.self_attention.attention
             # Shard weights.
             self.assertSequenceEqual(
-                cross_atten.input_linear.layer.param_partition_spec, ("data", "model", None)
+                cross_atten.input_linear.layer.param_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
             )
             self.assertSequenceEqual(
-                cross_atten.output_linear.param_partition_spec, ("data", "model", None)
+                cross_atten.output_linear.param_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
             )
 
 

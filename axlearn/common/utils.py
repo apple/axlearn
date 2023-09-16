@@ -436,17 +436,20 @@ def input_partition_spec() -> PartitionSpec:
     )
 
 
-def shard_input_batch(input_batch: NestedTensor) -> NestedTensor:
+def shard_input_batch(
+    input_batch: NestedTensor, *, batch_axis_names: Union[str, Sequence[str]] = "data"
+) -> NestedTensor:
     """Constrains all leaf values in the input batch to be partitioned over one axis.
 
     Args:
         input_batch: The inputs to be constrained.
+        batch_axis_names: The name(s) of the batch axes.
 
     Returns:
         Inputs wrapped with sharding constraints.
     """
     return jax.tree_util.tree_map(
-        lambda x: with_sharding_constraint(x, PartitionSpec("data")), input_batch
+        lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)), input_batch
     )
 
 
