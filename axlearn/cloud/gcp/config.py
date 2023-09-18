@@ -68,7 +68,8 @@ def gcp_settings(
         SystemExit: If a required config could not be read, i.e. the value is None even after
         applying default (if applicable).
     """
-    config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=True)
+    required = required and default is None
+    config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=required)
     flag_values = _flag_values()
     project = flag_values.get("project", None)
     zone = flag_values.get("zone", None)
@@ -77,8 +78,8 @@ def gcp_settings(
     else:
         # Try to infer from active config.
         config_name = configs.get("_active", None)
-    project_configs = configs.get(config_name, None)
-    if project_configs is None:
+    project_configs = configs.get(config_name, {})
+    if required and not project_configs:
         # TODO(markblee): Link to docs once available.
         logging.error(
             "Unknown settings for project=%s and zone=%s; "

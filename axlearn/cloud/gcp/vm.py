@@ -232,7 +232,7 @@ def _vm_config(
         "items": [
             {"key": "bundle_bucket", "value": gcp_settings("ttl_bucket")},
             {"key": "enable-oslogin", "value": "false"},
-            {"key": "taskname", "value": name},
+            {"key": "job_name", "value": name},
             {"key": "startup-script", "value": startup_script_contents},
             {"key": "zone", "value": gcp_settings("zone")},
             {

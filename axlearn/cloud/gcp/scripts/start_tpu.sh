@@ -18,13 +18,13 @@ get_metadata() {
 }
 
 BUCKET=$(get_metadata bundle_bucket)
-TASKNAME=$(get_metadata taskname)
+JOB_NAME=$(get_metadata job_name)
 ZONE=$(get_metadata zone)
 TPU_TYPE=$(get_metadata tpu_type)
 DOCKER_REGISTRY=$(get_metadata docker_registry)
 BUNDLER_TYPE=$(get_metadata bundler_type)
 
-GS_TASK_PATH="gs://${BUCKET}/axlearn/tasks/${TASKNAME}"
+GS_JOB_PATH="gs://${BUCKET}/axlearn/jobs/${JOB_NAME}"
 BASE_LOG_ROOT="/output/logs"
 mkdir -p ${BASE_LOG_ROOT}
 chmod -R 776 ${BASE_LOG_ROOT}
@@ -91,7 +91,7 @@ gcloud auth list >> ${SETUP_LOG_PATH}
 # TPU request-create-time set when slice (or multi-slice) creation was triggered.
 CREATE_REQUEST_TIME=$(get_metadata create_request_time)
 set_ready_label() {
-  REMOTE_FLAG="${GS_TASK_PATH}/tpu_vm_ready_flags/${CREATE_REQUEST_TIME}/$(hostname)-ready"
+  REMOTE_FLAG="${GS_JOB_PATH}/tpu_vm_ready_flags/${CREATE_REQUEST_TIME}/$(hostname)-ready"
   LOCAL_FLAG="/tmp/label"
   journalctl -u google-startup-scripts.service > "${LOCAL_FLAG}"
   gsutil cp "${LOCAL_FLAG}" "${REMOTE_FLAG}"
@@ -103,4 +103,4 @@ echo "Begin setting ready label" >> ${SETUP_LOG_PATH}
 set_ready_label
 
 # Copy logs.
-gsutil cp ${SETUP_LOG_PATH} "${GS_TASK_PATH}/logs/setup_log-$(hostname)"
+gsutil cp ${SETUP_LOG_PATH} "${GS_JOB_PATH}/logs/setup_log-$(hostname)"

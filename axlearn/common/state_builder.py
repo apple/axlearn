@@ -27,10 +27,12 @@ from axlearn.common.checkpointer import (
 )
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     InstantiableConfig,
     Required,
     config_class,
     config_for_function,
+    maybe_instantiate,
 )
 from axlearn.common.module import Module
 from axlearn.common.optimizer_base import OptStateSpec
@@ -611,14 +613,14 @@ class FlaxPretrainedBuilder(Builder):
 
 def torch_to_axlearn_converter(
     module: str = "axlearn.common.param_converter",
-    dst_layer: Optional[Union[BaseLayer, Type]] = None,
+    dst_layer: Optional[ConfigOr[Union[BaseLayer, Type]]] = None,
 ):
     """See HuggingFacePreTrainedBuilder.converter."""
     # Lazily import to avoid introducing a dependency otherwise.
     # TODO(bwzhang@): The fairseq layer is not supported in TPU.
     # pylint: disable-next=import-outside-toplevel
     torch_to_axlearn = import_module(module).torch_to_axlearn
-    return functools.partial(torch_to_axlearn, dst_layer=dst_layer)
+    return functools.partial(torch_to_axlearn, dst_layer=maybe_instantiate(dst_layer))
 
 
 class HuggingFacePreTrainedBuilder(Builder):

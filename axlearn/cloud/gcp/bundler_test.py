@@ -34,7 +34,7 @@ class RegistryTest(TestCase):
                 bundler_type=GCSTarBundler.TYPE,
                 spec=["external=test_external"],
             )
-            self.assertEqual(cfg.remote_dir, "gs://default_bucket/axlearn/tasks")
+            self.assertEqual(cfg.remote_dir, "gs://default_bucket/axlearn/jobs")
             self.assertEqual(cfg.external, "test_external")
 
     @parameterized.parameters(ArtifactRegistryBundler, CloudBuildBundler)
