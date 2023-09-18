@@ -218,18 +218,17 @@ class BastionJobTest(parameterized.TestCase):
             for m in mocks:
                 stack.enter_context(m)
 
-            cfg = BastionJob.default_config().set(
-                job_dir=tmpdir,
-                output_dir=tmpdir,
-                scheduler=JobScheduler.default_config().set(project_quota_file="test"),
-                cleaner=TPUCleaner.default_config(),
-                max_tries=1,
-            )
-            bastion = cfg.set(
-                name="test", project="test", zone="test", retry_interval=30, command=""
-            ).instantiate()
+            with mock.patch(f"{module_name}._bastion_dir", return_value=tmpdir):
+                cfg = BastionJob.default_config().set(
+                    scheduler=JobScheduler.default_config().set(project_quota_file="test"),
+                    cleaner=TPUCleaner.default_config(),
+                    max_tries=1,
+                )
+                bastion = cfg.set(
+                    name="test", project="test", zone="test", retry_interval=30, command=""
+                ).instantiate()
 
-            yield bastion
+                yield bastion
 
     @parameterized.product(
         [

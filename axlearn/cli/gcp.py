@@ -53,6 +53,11 @@ def add_cmd_group(*, parent: CommandGroup):
         help="Bundle the local directory",
     )
     gcp_cmd.add_cmd_from_module(
+        "launch",
+        module="axlearn.cloud.gcp.jobs.launch",
+        help="Launch arbitrary commands on remote compute",
+    )
+    gcp_cmd.add_cmd_from_module(
         "tpu",
         module="axlearn.cloud.gcp.jobs.tpu_runner",
         help="Launch arbitrary commands on TPU-VMs",

@@ -2,6 +2,7 @@
 
 """GCP general-purpose utilities."""
 
+import functools
 import re
 import subprocess
 import sys
@@ -17,10 +18,10 @@ from axlearn.cloud.common.utils import infer_cli_name
 from axlearn.cloud.gcp.scopes import DEFAULT_APPLICATION
 
 
-def common_flags():
-    """Defines common GCP flags."""
-    flags.DEFINE_string("project", None, "The GCP project name.")
-    flags.DEFINE_string("zone", None, "The GCP zone name.")
+def common_flags(**kwargs):
+    """Defines common GCP flags. Keyword args will be forwarded to flag definitions."""
+    flags.DEFINE_string("project", None, "The GCP project name.", **kwargs)
+    flags.DEFINE_string("zone", None, "The GCP zone name.", **kwargs)
 
 
 def get_credentials(
@@ -41,7 +42,7 @@ def get_credentials(
 
     try:
         credentials, project_id = google.auth.default()
-        logging.info("Using credential for project id = %s", project_id)
+        logging.log_first_n(logging.INFO, "Using credential for project_id=%s", 1, project_id)
     except (gauthexceptions.RefreshError, gauthexceptions.DefaultCredentialsError):
         logging.error("Please run '%s gcp auth' before this script.", infer_cli_name())
         logging.error("Please also verify if default project id is correct.")
@@ -74,10 +75,24 @@ def running_from_vm() -> bool:
     return (out.returncode == 0) and "Metadata-Flavor: Google" in out.stdout
 
 
-def is_valid_resource_name(name: str) -> bool:
+def is_valid_resource_name(name: Optional[str]) -> bool:
     """Validates names (e.g. TPUs, VMs, jobs) to ensure compat with GCP.
 
     Reference:
     https://cloud.google.com/compute/docs/naming-resources#resource-name-format
     """
-    return re.fullmatch(r"^[a-z]([-a-z0-9]*[a-z0-9])?", name) is not None
+    return name is not None and re.fullmatch(r"^[a-z]([-a-z0-9]*[a-z0-9])?", name) is not None
+
+
+def catch_auth(fn):
+    """Wraps a function by catching auth errors."""
+
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        try:
+            fn(*args, **kwargs)
+        except gauthexceptions.RefreshError:
+            logging.error("Please run `%s gcp auth`.", infer_cli_name())
+            sys.exit(1)
+
+    return wrapped

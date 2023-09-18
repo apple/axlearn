@@ -20,7 +20,7 @@ import pytest
 from absl import flags, logging
 from absl.testing import absltest
 
-from axlearn.cloud.common.utils import configure_logging, generate_taskname
+from axlearn.cloud.common.utils import configure_logging, generate_job_name
 from axlearn.cloud.gcp.bundler import GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, TPUJob, _kill_ssh_agent, _start_ssh_agent
@@ -74,7 +74,7 @@ class TPUJobTest(TestCase):
     """Tests TPUJob."""
 
     def test_execute_from_local(self):
-        jobname = generate_taskname()
+        jobname = generate_job_name()
         atexit.register(delete_tpu, jobname, credentials=get_credentials())
         project = gcp_settings("project")
         zone = gcp_settings("zone")
@@ -126,7 +126,7 @@ class CPUJobTest(TestCase):
     """Tests CPUJob."""
 
     def test_execute_from_local(self):
-        jobname = generate_taskname()
+        jobname = generate_job_name()
         atexit.register(delete_vm, jobname, credentials=get_credentials())
         cfg = DummyBastionJob.default_config().set(
             name=jobname,
