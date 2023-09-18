@@ -159,7 +159,7 @@ def _create_legacy_tpu(
                 # Now check for when boot script is complete:
                 total_vms = infer_tpu_workers(tpu_type)
                 ready_flags_base_path = (
-                    f"gs://{gcp_settings('ttl_bucket')}/axlearn/tasks/{name}/tpu_vm_ready_flags"
+                    f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{name}/tpu_vm_ready_flags"
                 )
                 node = resource.get(name=f"{tpu_path_prefix}/nodes/{name}").execute()
                 ready_flags_path = (
@@ -388,7 +388,7 @@ def _create_multislice_tpu(
             # TODO(markblee,tom_gunter): Proper health checks for queued resources.
             num_vms = num_slices * infer_tpu_workers(tpu_type)
             ready_flags_base_path = (
-                f"gs://{gcp_settings('ttl_bucket')}/axlearn/tasks/{name}/tpu_vm_ready_flags"
+                f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{name}/tpu_vm_ready_flags"
             )
             # Only one node spec is permitted (even though it's a list).
             create_request_time = node["tpu"]["nodeSpec"][0]["node"]["metadata"][
@@ -557,7 +557,7 @@ def _tpu_body(
         "metadata": {
             "bundle_bucket": gcp_settings("ttl_bucket"),
             "enable-oslogin": "false",
-            "taskname": name,
+            "job_name": name,
             "startup-script": startup_script_contents,
             "zone": gcp_settings("zone"),
             "tpu_type": tpu_type,

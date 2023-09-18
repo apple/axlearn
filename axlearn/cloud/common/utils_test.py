@@ -8,6 +8,7 @@ import tempfile
 from typing import Dict, Sequence, Union
 from unittest import mock
 
+from absl import app
 from absl.testing import parameterized
 
 from axlearn.cloud import ROOT_MODULE
@@ -78,14 +79,18 @@ class UtilsTest(parameterized.TestCase):
         dict(argv=["cli", "activate"], expected="activate"),
         dict(argv=["cli", "cleanup"], expected="cleanup"),
         dict(argv=["cli", "list", "something"], expected="list"),
+        dict(argv=["cli", "--flag1", "activate"], expected="activate"),
+        dict(argv=["cli"], default="list", expected="list"),
+        dict(argv=["cli", "invalid"], default="list", expected="list"),
+        dict(argv=["cli", "invalid", "activate"], default="list", expected="list"),
         # Test failure case.
-        dict(argv=[], expected=SystemExit()),
-        dict(argv=["cli", "invalid"], expected=SystemExit()),
+        dict(argv=[], expected=app.UsageError("")),
+        dict(argv=["cli", "invalid"], expected=app.UsageError("")),
     )
-    def test_parse_action(self, argv, expected):
+    def test_parse_action(self, argv, expected, default=None):
         options = ["activate", "list", "cleanup"]
         if isinstance(expected, BaseException):
             with self.assertRaises(type(expected)):
-                utils.parse_action(argv, options=options)
+                utils.parse_action(argv, options=options, default=default)
         else:
-            self.assertEqual(expected, utils.parse_action(argv, options=options))
+            self.assertEqual(expected, utils.parse_action(argv, options=options, default=default))
