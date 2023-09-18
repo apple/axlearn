@@ -92,6 +92,8 @@ class SpmdTrainer(Module):
         mesh_shape: Required[Sequence[int]] = REQUIRED
         # The mesh axis names. The names can be referenced in ParameterSpec.mesh_axes.
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
+        # Subset of mesh axis names over which the leaves of the input batch are sharded.
+        batch_axis_names: Union[str, Sequence[str]] = "data"
 
         # The model config.
         model: Required[BaseModel.Config] = REQUIRED
@@ -668,7 +670,9 @@ class SpmdTrainer(Module):
         state: _TrainerState,
         input_batch: Dict[str, Any],
     ) -> Tuple[_TrainerState, NestedTensor]:
-        input_batch = utils.shard_input_batch(input_batch)
+        input_batch = utils.shard_input_batch(
+            input_batch, batch_axis_names=self.config.batch_axis_names
+        )
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
             state.prng_key, 4
         )
