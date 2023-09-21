@@ -184,7 +184,7 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
                 cleanup_proc=None,
             ),
         }
-        with mock.patch(f"{launch.__name__}.download_job_batch", return_value=mock_jobs):
+        with mock.patch(f"{launch.__name__}.download_job_batch", return_value=(mock_jobs, set())):
             job = self._mock_config().instantiate()
             out = job._list()
             self.assertEqual(out["jobs"], mock_jobs)

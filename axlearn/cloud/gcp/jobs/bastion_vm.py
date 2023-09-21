@@ -143,7 +143,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from subprocess import CalledProcessError
-from typing import IO, Any, Dict, Optional, Union
+from typing import IO, Any, Dict, List, Optional, Set, Tuple, Union
 
 import tensorflow as tf
 from absl import app, flags, logging
@@ -154,16 +154,6 @@ from axlearn.cloud.common.scheduler import JobMetadata, JobScheduler, ResourceMa
 from axlearn.cloud.common.utils import configure_logging, parse_action, send_signal
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, GCPJob, docker_command
-
-# TODO(markblee): Switch to using tf.io everywhere, generalize for non-GCP environments, and move to
-# axlearn/cloud/common.
-from axlearn.cloud.gcp.storage import (
-    blob_exists,
-    delete_blob,
-    download_blob,
-    list_blobs,
-    upload_blob,
-)
 from axlearn.cloud.gcp.tpu_cleaner import Cleaner, TPUCleaner
 from axlearn.cloud.gcp.utils import common_flags
 from axlearn.cloud.gcp.vm import _compute_resource, create_vm, delete_vm, get_vm_node
@@ -311,7 +301,7 @@ def _download_jobspec(
     """Loads jobspec from gs path."""
     remote_file = os.path.join(remote_dir, job_name)
     local_file = os.path.join(local_dir, job_name)
-    download_blob(remote_file, local_file)
+    tf.io.gfile.copy(remote_file, local_file, overwrite=True)
     return deserialize_jobspec(local_file)
 
 
@@ -320,7 +310,7 @@ def _upload_jobspec(spec: BastionJobSpec, *, remote_dir: str, local_dir: str = _
     local_file = os.path.join(local_dir, spec.name)
     remote_file = os.path.join(remote_dir, spec.name)
     serialize_jobspec(spec, local_file)
-    upload_blob(local_file, url=remote_file)
+    tf.io.gfile.copy(local_file, remote_file, overwrite=True)
 
 
 def _bastion_dir(bastion: str) -> str:
@@ -401,22 +391,23 @@ class Job:
 def _download_job_state(job_name: str, *, remote_dir: str) -> JobState:
     """Loads job state from gs path."""
     remote_file = os.path.join(remote_dir, job_name)
-    if blob_exists(remote_file):
+    try:
+        # Note: tf.io.gfile.GFile seems to hit libcurl errors with ThreadPoolExecutor.
         with tempfile.NamedTemporaryFile("r+") as f:
-            download_blob(remote_file, f.name)
+            tf.io.gfile.copy(remote_file, f.name, overwrite=True)
             state = f.read().strip().upper()
             return JobState[state]
-    # No job state, defaults to PENDING.
-    return JobState.PENDING
+    except tf.errors.NotFoundError:
+        # No job state, defaults to PENDING.
+        return JobState.PENDING
 
 
 def _upload_job_state(job_name: str, state: JobState, *, remote_dir: str, verbose: bool = True):
     """Uploads job state to gs path."""
     remote_file = os.path.join(remote_dir, job_name)
-    with tempfile.NamedTemporaryFile("w") as f:
+    logging.log_if(logging.INFO, "Writing %s to %s.", verbose, state.name, remote_file)
+    with tf.io.gfile.GFile(remote_file, mode="w") as f:
         f.write(state.name)
-        f.flush()
-        upload_blob(f.name, url=remote_file, verbose=verbose)
 
 
 def _start_command(job: Job, *, remote_log_dir: str):
@@ -426,8 +417,10 @@ def _start_command(job: Job, *, remote_log_dir: str):
     # If a log dir exists for this job, download it. This can happen if a job is resumed.
     remote_log = os.path.join(remote_log_dir, job.spec.name)
     local_log = os.path.join(_LOG_DIR, job.spec.name)
-    if blob_exists(remote_log):
-        download_blob(remote_log, local_log)
+    try:
+        tf.io.gfile.copy(remote_log, local_log, overwrite=True)
+    except tf.errors.NotFoundError:
+        pass
     # Pipe all outputs to the local _LOG_DIR.
     job.command_proc = _piped_popen(job.spec.command, local_log)
     logging.info("Started command for the job %s: %s", job.spec.name, job.spec.command)
@@ -449,6 +442,22 @@ def _start_cleanup_command(job: Job):
         )
 
 
+def _listdir(path: str) -> List[str]:
+    """Wraps tf.io.gfile.listdir by returning empty list if dir is not found."""
+    try:
+        return tf.io.gfile.listdir(path)
+    except tf.errors.NotFoundError:
+        return []
+
+
+def _remove(path: str):
+    """Wraps tf.io.gfile.remove by catching not found errors."""
+    try:
+        tf.io.gfile.remove(path)
+    except tf.errors.NotFoundError:
+        pass
+
+
 def download_job_batch(
     *,
     spec_dir: str,
@@ -456,7 +465,7 @@ def download_job_batch(
     user_state_dir: str,
     local_spec_dir: str = _JOB_DIR,
     verbose: bool = False,
-) -> Dict[str, Job]:
+) -> Tuple[Dict[str, Job], Set[str]]:
     """Downloads a batch of jobs.
 
     Args:
@@ -467,61 +476,71 @@ def download_job_batch(
         verbose: Verbose logging.
 
     Returns:
-        A mapping from job name to Job(spec, state).
+        A mapping from job name to Job(spec, state), and
+        A set of job names whose state originates from user_state_dir.
     """
-    # Figure out which statefiles to download from GCS. If user has written to "user_states",
-    # those take precedence over bastion's statefiles. For example, user may write a
-    # "cancelling" statefile.
-    # TODO(markblee): Prevent two situations:
-    # 1. Setting a user state to anything other than CANCELLING.
-    # 2. Overriding a job state to CANCELLING when it's already in CLEANING/COMPLETED.
-    user_states = {os.path.basename(f) for f in list_blobs(user_state_dir)}
+    jobspecs = _listdir(spec_dir)
+    user_states = _listdir(user_state_dir)
     if verbose:
         logging.info("User states %s", user_states)
-    job_names = []
-    state_dirs = []
-    for jobspec in list_blobs(spec_dir):
-        job_name = os.path.basename(jobspec)
-        # User states override bastion states.
-        job_state_dir = user_state_dir if job_name in user_states else state_dir
-        job_names.append(job_name)
-        state_dirs.append(job_state_dir)
-        if verbose:
-            logging.info("Downloading %s from %s", job_name, job_state_dir)
-    jobs = {}
-    # max_workers matches urllib3's default connection pool size.
-    with ThreadPoolExecutor(max_workers=10) as pool:
+
+    # Download all files from spec_dir, state_dir, and user_state_dir.
+    with ThreadPoolExecutor() as pool:
         download_spec_fn = functools.partial(
             _download_jobspec,
             remote_dir=spec_dir,
             local_dir=local_spec_dir,
         )
-        spec_futs = [pool.submit(download_spec_fn, job_name) for job_name in job_names]
-        state_futs = [
-            pool.submit(_download_job_state, job_name, remote_dir=job_state_dir)
-            for job_name, job_state_dir in zip(job_names, state_dirs)
-        ]
-        wait(spec_futs)
-        wait(state_futs)
-        for i, (job_name, spec_fut, state_fut) in enumerate(zip(job_names, spec_futs, state_futs)):
+        spec_futs = {job_name: pool.submit(download_spec_fn, job_name) for job_name in jobspecs}
+        job_state_futs = {
+            job_name: pool.submit(_download_job_state, job_name, remote_dir=state_dir)
+            for job_name in jobspecs
+        }
+        user_state_futs = {
+            job_name: pool.submit(_download_job_state, job_name, remote_dir=user_state_dir)
+            for job_name in user_states
+        }
+        wait(spec_futs.values())
+        wait(job_state_futs.values())
+        wait(user_state_futs.values())
+        # Construct Jobs for each spec. The state of the job depends on the following:
+        # 1. User state must be CANCELLING. We ignore other user states, e.g., a user should not be
+        #     able to bypass scheduling by initiating a state change to ACTIVE.
+        # 2. Job state must not be CLEANING/COMPLETED, since it doesn't make sense to progress
+        #     backwards to CANCELLING.
+        #
+        # If these conditions are met, we pick the user state; otherwise, we keep job state.
+        # We also keep track of which jobs have a user state (whether it was used or not), so that
+        # we can handle the appropriate cleanup in the update step.
+        jobs = {}
+        jobs_with_user_states = set()
+        for job_name in jobspecs:
             try:
-                # Mapping from job_name to (spec, state).
-                jobs[job_name] = Job(
-                    spec=spec_fut.result(),
-                    state=state_fut.result(),
-                    command_proc=None,
-                    cleanup_proc=None,
-                )
+                spec = spec_futs[job_name].result()
+                state = job_state_futs[job_name].result()
+                if job_name in user_state_futs:
+                    user_state = user_state_futs[job_name].result()
+                else:
+                    user_state = None
             except Exception as e:  # pylint: disable=broad-except
                 # TODO(markblee): Distinguish transient vs non-transient errors.
-                logging.warning(
-                    "Failed to load job %s with spec from %s and state from %s: %s",
-                    job_name,
-                    spec_dir,
-                    state_dirs[i],
-                    e,
-                )
-    return jobs
+                logging.warning("Failed to load job %s with error: %s", job_name, e)
+                continue
+
+            if user_state is not None:
+                if user_state == JobState.CANCELLING and state not in (
+                    JobState.CLEANING,
+                    JobState.COMPLETED,
+                ):
+                    state = user_state
+                else:
+                    logging.warning(
+                        "User state (%s) ignored for job %s (%s).", user_state, job_name, state
+                    )
+                # Even if user_state is ignored, we still want to clean it up.
+                jobs_with_user_states.add(job_name)
+            jobs[job_name] = Job(spec=spec, state=state, command_proc=None, cleanup_proc=None)
+    return jobs, jobs_with_user_states
 
 
 class BastionJob(GCPJob):
@@ -565,6 +584,8 @@ class BastionJob(GCPJob):
         # Local active jobs (and respective commands, files, etc).
         # TODO(markblee): Rename this, as it includes more than just ACTIVE jobs (e.g. PENDING).
         self._active_jobs: Dict[str, Job] = {}
+        # A set of job names which require cleanup of user states.
+        self._jobs_with_user_states: Set[str] = set()
         # Log sync process.
         self._sync_log_proc = None
 
@@ -684,9 +705,10 @@ class BastionJob(GCPJob):
         proc.fd.close()
         # Upload outputs to log dir.
         _catch_with_error_log(
-            upload_blob,
+            tf.io.gfile.copy,
             proc.fd.name,
-            url=os.path.join(self._log_dir, os.path.basename(proc.fd.name)),
+            os.path.join(self._log_dir, os.path.basename(proc.fd.name)),
+            overwrite=True,
         )
         # Remove the local output file.
         if os.path.exists(proc.fd.name):
@@ -701,20 +723,18 @@ class BastionJob(GCPJob):
 
         More specifically, this function:
         1. Downloads all active jobspecs from GCS.
-        2. Downloads all statefiles for active jobspecs from GCS:
-            - If statefile exists in "user_states", use it;
-            - Otherwise, if statefile exists in "states", use it;
-            - Otherwise, default to ACTIVE.
+        2. Downloads all statefiles for active jobspecs from GCS (see `download_job_batch` for
+            details).
 
         We use these jobspecs to update the local self._active_jobs.
         """
-        active_jobs = download_job_batch(
+        active_jobs, jobs_with_user_states = download_job_batch(
             spec_dir=self._active_dir,
             state_dir=self._state_dir,
             user_state_dir=self._user_state_dir,
             verbose=True,
         )
-
+        self._jobs_with_user_states = jobs_with_user_states
         # Iterate over unique job names.
         # pylint: disable-next=use-sequence-for-iteration
         for job_name in {*active_jobs.keys(), *self._active_jobs.keys()}:
@@ -836,9 +856,7 @@ class BastionJob(GCPJob):
             # Copy the jobspec to "complete" dir.
             local_jobspec = os.path.join(_JOB_DIR, job.spec.name)
             if os.path.exists(local_jobspec):
-                remote_jobspec = os.path.join(self._complete_dir, job.spec.name)
-                if not blob_exists(remote_jobspec):
-                    _upload_jobspec(job.spec, local_dir=_JOB_DIR, remote_dir=self._complete_dir)
+                _upload_jobspec(job.spec, local_dir=_JOB_DIR, remote_dir=self._complete_dir)
                 os.remove(local_jobspec)
 
         else:
@@ -851,9 +869,8 @@ class BastionJob(GCPJob):
         _upload_job_state(job.spec.name, job.state, remote_dir=self._state_dir, verbose=False)
 
         # Remove any remote "user_states" now that "states" dir has synchronized.
-        user_state = os.path.join(self._user_state_dir, job.spec.name)
-        if blob_exists(user_state):
-            delete_blob(user_state)
+        if job.spec.name in self._jobs_with_user_states:
+            _remove(os.path.join(self._user_state_dir, job.spec.name))
 
         return job
 
@@ -924,8 +941,8 @@ class BastionJob(GCPJob):
             logging.info("Deleting jobspec for %s", job_name)
             # Delete jobspec before state. This ensures that we won't pickup the job again in
             # _sync_jobs, and that state files are always associated with a jobspec.
-            delete_blob(os.path.join(self._active_dir, job_name))
-            delete_blob(os.path.join(self._state_dir, job_name))
+            _remove(os.path.join(self._active_dir, job_name))
+            _remove(os.path.join(self._state_dir, job_name))
             logging.info("Job %s is complete.", job_name)
 
         # Remove remote jobspecs for COMPLETED jobs that finished gc'ing.
@@ -1062,7 +1079,7 @@ class SubmitBastionJob(CPUJob):
         cfg: SubmitBastionJob.Config = self.config
         try:
             jobspec = os.path.join(self._job_dir(), "active", cfg.job_name)
-            if not blob_exists(jobspec):
+            if not tf.io.gfile.exists(jobspec):
                 raise ValueError(f"Unable to locate jobspec {jobspec}")
             _upload_job_state(
                 cfg.job_name,
@@ -1088,11 +1105,11 @@ class SubmitBastionJob(CPUJob):
             )
         logging.info("Submitting command to bastion: %s", cfg.command)
         dst = os.path.join(self._job_dir(), "active", cfg.job_name)
-        if blob_exists(dst):
+        if tf.io.gfile.exists(dst):
             logging.info("\n\nNote: Job is already running. To restart it, cancel the job first.\n")
         else:
             # Upload the job for bastion to pickup.
-            upload_blob(cfg.job_spec_file, url=dst)
+            tf.io.gfile.copy(cfg.job_spec_file, dst)
 
         print(
             "\nView bastion outputs with:\n"
@@ -1168,7 +1185,7 @@ def main(argv):
             while True:
                 # pylint: disable-next=protected-access
                 dst = os.path.join(job._job_dir(), "active", cfg.job_name)
-                if blob_exists(dst):
+                if tf.io.gfile.exists(dst):
                     logging.info("Waiting for job to stop (use ctrl+c to stop waiting)...")
                     time.sleep(10)
                 else:
