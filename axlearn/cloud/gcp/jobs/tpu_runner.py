@@ -1,6 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
-"""Launches a TPU-VM and runs a command on it.
+"""Creates a TPU-VM and executes the given command on it.
 
 By default, the script will monitor the status of the job and restart/delete if necessary.
 
@@ -290,13 +290,17 @@ class TPURunnerJob(TPUJob):
     class Status(enum.Enum):
         """TPU job status."""
 
-        UNKNOWN = 0
-        FAILED = 1
-        SUCCESS = 2
-        NOT_STARTED = 3
-        RUNNING = 4
-        NOT_RUNNING = 5
-        STUCK = 6
+        UNKNOWN = "UNKNOWN"
+        FAILED = "FAILED"
+        SUCCESS = "SUCCESS"
+        # The VM itself has not been provisioned.
+        NOT_STARTED = "NOT_STARTED"
+        # The VM is provisioned, but the command is not running.
+        NOT_RUNNING = "NOT_RUNNING"
+        # The VM is provisioned and the command is running.
+        RUNNING = "RUNNING"
+        # The liveness check failed.
+        STUCK = "STUCK"
 
     # pylint: disable-next=no-self-use
     def _status_flag(self, status: Status):
@@ -530,7 +534,8 @@ def main(argv):
     elif action == "stop":
         job._delete()  # pylint: disable=protected-access
     else:
-        raise ValueError(f"Unknown action {action}")
+        # Unreachable -- `parse_action` will handle validation.
+        raise app.UsageError(f"Unknown action {action}")
 
 
 if __name__ == "__main__":

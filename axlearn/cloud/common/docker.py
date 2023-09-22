@@ -2,6 +2,7 @@
 
 """Utilities to invoke docker commands."""
 
+import os
 import pathlib
 import subprocess
 from typing import Dict, Optional
@@ -49,7 +50,9 @@ def build(
     cli_args.append(context)
 
     # Execute command.
-    _run(cli_args)
+    env_copy = os.environ.copy()
+    env_copy["DOCKER_BUILDKIT"] = "1"
+    _run(cli_args, env=env_copy)
     return image
 
 
@@ -66,8 +69,10 @@ def push(image: str) -> str:
     return image
 
 
-def _run(*args):
-    with subprocess.Popen(*args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as proc:
+def _run(*args, **kwargs):
+    with subprocess.Popen(
+        *args, **kwargs, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    ) as proc:
         for line in proc.stdout:
             logging.info(line.decode("utf-8").strip())
         handle_popen(proc)

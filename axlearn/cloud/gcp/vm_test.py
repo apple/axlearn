@@ -4,11 +4,20 @@
 
 from absl.testing import parameterized
 
-from axlearn.cloud.gcp.vm import VmInfo, format_vm_info
+from axlearn.cloud.gcp.vm import VmInfo, format_vm_info, get_vm_node_status
 
 
 class VmUtilsTest(parameterized.TestCase):
     """Tests VM utils."""
+
+    @parameterized.parameters(
+        dict(node={}, expected="UNKNOWN"),
+        dict(node={"status": "RUNNING"}, expected="RUNNING"),
+        dict(node={"status": "RUNNING", "labels": {"boot_status": ""}}, expected="RUNNING"),
+        dict(node={"status": "RUNNING", "labels": {"boot_status": "done"}}, expected="BOOTED"),
+    )
+    def test_get_vm_node_status(self, node, expected):
+        self.assertEqual(expected, get_vm_node_status(node))
 
     def test_format_vm_info(self):
         vms = [

@@ -68,12 +68,10 @@ class Job(Configurable):
                 interval=cfg.retry_interval,
                 max_tries=cfg.max_tries,
             )
-        except Exception as e:  # pylint: disable=broad-except
+        except Exception:  # pylint: disable=broad-except
             # Cleanup on unexpected failure or exhausted retries.
-            logging.error(e)
             self._delete()
-
-        return None
+            raise
 
 
 # TODO(markblee): Consider adding exponential backoff.

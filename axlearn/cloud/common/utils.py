@@ -5,11 +5,13 @@
 import logging as pylogging
 import os
 import shlex
+import signal
 import subprocess
 import uuid
 from typing import Dict, List, Optional, Sequence, Union
 
 import pkg_resources
+import psutil
 from absl import app, logging
 
 from axlearn.cloud import ROOT_MODULE_NAME
@@ -134,12 +136,13 @@ def get_pyproject_version() -> str:
     return pkg_resources.get_distribution(ROOT_MODULE_NAME).version
 
 
-def parse_kv_flags(kv_flags: Sequence[str]) -> Dict[str, str]:
+def parse_kv_flags(kv_flags: Sequence[str], *, delimiter: str = ":") -> Dict[str, str]:
     """Parses sequence of k:v into a dict.
 
     Args:
         kv_flags: A sequence of strings in the format "k:v". If a key appears twice, the last
             occurrence "wins".
+        delimiter: The separator between the key and value.
 
     Returns:
         A dict where keys and values are parsed from "k:v".
@@ -149,9 +152,9 @@ def parse_kv_flags(kv_flags: Sequence[str]) -> Dict[str, str]:
     """
     metadata = {}
     for kv in kv_flags:
-        parts = kv.split(":")
+        parts = kv.split(delimiter)
         if len(parts) != 2:
-            raise ValueError(f"Expected key:value, got {kv}")
+            raise ValueError(f"Expected key{delimiter}value, got {kv}")
         metadata[parts[0]] = parts[1]
     return metadata
 
@@ -256,3 +259,16 @@ def parse_action(
     if action is None or action not in options:  # No action nor default provided.
         raise app.UsageError(f"Invalid action: {action}. Expected one of [{','.join(options)}].")
     return action
+
+
+def send_signal(popen: subprocess.Popen, sig: int = signal.SIGKILL):
+    """Sends a signal (default SIGKILL) to the process (and child processes)."""
+    # Note: kill() might leave orphan processes if proc spawned child processes.
+    # We use psutil to recursively kill() all children.
+    try:
+        parent = psutil.Process(popen.pid)
+    except psutil.NoSuchProcess:
+        return  # Nothing to do.
+    for child in parent.children(recursive=True):
+        child.send_signal(sig)
+    popen.send_signal(sig)

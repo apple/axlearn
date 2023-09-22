@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 
 ARG TARGET=base
+ARG BASE_IMAGE=python:3.8-slim
 
-FROM python:3.8-slim AS base
+FROM ${BASE_IMAGE} AS base
 
 RUN apt-get update
 RUN apt-get install -y apt-transport-https ca-certificates gnupg curl gcc g++
@@ -59,6 +60,15 @@ FROM base AS bastion
 # TODO(markblee): Is there a way to skip the "production" deps?
 COPY . /root/
 RUN pip install .[gcp,vertexai_tensorboard]
+
+################################################################################
+# Dataflow container spec.                                                     #
+################################################################################
+
+FROM base AS dataflow
+
+RUN pip install .[gcp,dataflow]
+COPY . .
 
 ################################################################################
 # Final target spec.                                                           #

@@ -117,6 +117,13 @@ vertexai_tensorboard = [
     "setuptools==65.7.0",
     "google-cloud-aiplatform[tensorboard]",
 ]
+# Dataflow dependencies.
+dataflow = [
+    "apache-beam==2.38.0",
+    "apache-beam[gcp]",
+    "google-apitools",  # for beam pipeline
+    "orjson==3.8.7",  # 3.8.8 fails: https://github.com/ijl/orjson/issues/365
+]
 
 [tool.flit.module]
 # This defines the import name. https://flit.pypa.io/en/stable/pyproject_toml.html#module-section
