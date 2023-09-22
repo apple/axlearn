@@ -32,7 +32,7 @@ from axlearn.common.text_dual_encoder import (
     TextEmbeddingStreamEncoder,
 )
 from axlearn.common.text_encoder import TextEmbeddingEncoder
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, get_recursively
 
 HIDDEN_DIM = 16
 VOCAB_SIZE = 32
@@ -70,13 +70,11 @@ def sample_text_embedding_stream_encoder_config(
 
 
 def sample_contrastive_loss_layer_config(
-    *, left_encoder_emb_field_name=None, right_encoder_emb_field_name=None
+    *, left_encoder_name=LEFT_ENCODER_NAME, right_encoder_name=RIGHT_ENCODER_NAME
 ) -> TextEmbeddingAsymmetricContrastiveLossLayer.Config:
     return TextEmbeddingAsymmetricContrastiveLossLayer.default_config().set(
-        left_encoder_name=LEFT_ENCODER_NAME,
-        right_encoder_name=RIGHT_ENCODER_NAME,
-        left_encoder_emb_field_name=left_encoder_emb_field_name,
-        right_encoder_emb_field_name=right_encoder_emb_field_name,
+        left_encoder_name=left_encoder_name,
+        right_encoder_name=right_encoder_name,
     )
 
 
@@ -334,14 +332,18 @@ class TestTextEmbeddingAsymmetricContrastiveLossLayer(TestCase):
                 prng_key=jax.random.PRNGKey(0),
             )
 
-    @parameterized.parameters(("emb_1", "emb_2"), ("emb_1", None), (None, "emb_2"), (None, None))
-    def test_encoder_emb_field_name(self, left_emb_field, right_emb_field):
+    @parameterized.parameters(
+        ([LEFT_ENCODER_NAME, "emb_1"], [RIGHT_ENCODER_NAME, "emb_2"]),
+        ([LEFT_ENCODER_NAME, "emb_1"], [RIGHT_ENCODER_NAME]),
+        ([LEFT_ENCODER_NAME], [RIGHT_ENCODER_NAME, "emb_2"]),
+    )
+    def test_complex_encoder_name(self, left_encoder_name, right_encoder_name):
         # pytype: disable=attribute-error
         model_cfg = sample_contrastive_loss_layer_config(
-            left_encoder_emb_field_name=left_emb_field,
-            right_encoder_emb_field_name=right_emb_field,
+            left_encoder_name=left_encoder_name,
+            right_encoder_name=right_encoder_name,
         )
-        model_cfg.set(name="test_encoder_emb_field_name")
+        model_cfg.set(name="test_complex_encoder_name")
         model = model_cfg.instantiate(parent=None)
         model_params = model.initialize_parameters_recursively(jax.random.PRNGKey(0))
 
@@ -371,29 +373,19 @@ class TestTextEmbeddingAsymmetricContrastiveLossLayer(TestCase):
             is_training=True,
             prng_key=jax.random.PRNGKey(0),
         )
-        if left_emb_field is None:
-            left_emb_shape = input_batch[LEFT_ENCODER_NAME][POSITIVE_EMBEDDINGS].shape[0]
-        else:
-            left_emb_shape = input_batch[LEFT_ENCODER_NAME][left_emb_field][
-                POSITIVE_EMBEDDINGS
-            ].shape[0]
+        left_emb_shape = get_recursively(input_batch, left_encoder_name)[POSITIVE_EMBEDDINGS].shape[
+            0
+        ]
 
-        if right_emb_field is None:
-            negative_emb_shape = input_batch[RIGHT_ENCODER_NAME][NEGATIVE_EMBEDDINGS].shape
-            right_emb_shape = (
-                input_batch[RIGHT_ENCODER_NAME][POSITIVE_EMBEDDINGS].shape[0]
-                + negative_emb_shape[0] * negative_emb_shape[1]
-            )
-        else:
-            negative_emb_shape = input_batch[RIGHT_ENCODER_NAME][right_emb_field][
-                NEGATIVE_EMBEDDINGS
-            ].shape
-            right_emb_shape = (
-                input_batch[RIGHT_ENCODER_NAME][NEGATIVE_EMBEDDINGS].shape[0]
-                + negative_emb_shape[0] * negative_emb_shape[1]
-            )
+        negative_emb_shape = get_recursively(input_batch, right_encoder_name)[
+            NEGATIVE_EMBEDDINGS
+        ].shape
+        right_emb_shape = (
+            get_recursively(input_batch, right_encoder_name)[POSITIVE_EMBEDDINGS].shape[0]
+            + negative_emb_shape[0] * negative_emb_shape[1]
+        )
 
-            assert outputs[1][SIMILARITY_MATRIX].shape == (left_emb_shape, right_emb_shape)
+        assert outputs[1][SIMILARITY_MATRIX].shape == (left_emb_shape, right_emb_shape)
         # pytype: enable=attribute-error
 
 
