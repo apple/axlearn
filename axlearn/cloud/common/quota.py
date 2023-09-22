@@ -2,6 +2,7 @@
 
 """Utilities to retrieve quotas."""
 
+import re
 from collections import defaultdict
 from typing import Dict, List
 
@@ -73,7 +74,8 @@ def get_user_projects(path: str, user_id: str) -> List[str]:
         if cfg["toml-schema"]["version"] == "1":
             user_in_projects = []
             for project_id, project_members in cfg["project_membership"].items():
-                if user_id in project_members:
-                    user_in_projects.append(project_id.lower())
+                for member in project_members:
+                    if re.fullmatch(member, user_id):
+                        user_in_projects.append(project_id.lower())
             return user_in_projects
         raise ValueError(f"Unsupported schema version {cfg['toml-schema']['version']}")

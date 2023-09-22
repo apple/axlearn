@@ -22,7 +22,8 @@ _mock_config = {
     },
     "project_membership": {
         "team1": ["user1"],
-        "team2": ["user1", "user2"],
+        "team2": ["user[12]"],
+        "team3": [".*"],
     },
 }
 
@@ -54,9 +55,9 @@ class QuotaUtilsTest(parameterized.TestCase):
                 get_resource_limits(f.name)
 
     @parameterized.parameters(
-        dict(user="user1", expected=["team1", "team2"]),
-        dict(user="user2", expected=["team2"]),
-        dict(user="user3", expected=[]),
+        dict(user="user1", expected=["team1", "team2", "team3"]),
+        dict(user="user2", expected=["team2", "team3"]),
+        dict(user="user12", expected=["team3"]),
     )
     def test_get_user_projects(self, user: str, expected: Sequence[str]):
         with tempfile.NamedTemporaryFile("r+") as f:

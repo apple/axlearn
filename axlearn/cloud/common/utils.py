@@ -5,13 +5,14 @@
 import logging as pylogging
 import os
 import shlex
+import signal
 import subprocess
-import sys
 import uuid
 from typing import Dict, List, Optional, Sequence, Union
 
 import pkg_resources
-from absl import logging
+import psutil
+from absl import app, logging
 
 from axlearn.cloud import ROOT_MODULE_NAME
 
@@ -55,8 +56,8 @@ def handle_popen(proc: subprocess.Popen):
         )
 
 
-def generate_taskname() -> str:
-    """Generate a unique task name."""
+def generate_job_name() -> str:
+    """Generate a unique job name."""
     return f"{os.environ['USER'].replace('_', '')}-{uuid.uuid4().hex.lower()[:6]}"
 
 
@@ -135,12 +136,13 @@ def get_pyproject_version() -> str:
     return pkg_resources.get_distribution(ROOT_MODULE_NAME).version
 
 
-def parse_kv_flags(kv_flags: Sequence[str]) -> Dict[str, str]:
+def parse_kv_flags(kv_flags: Sequence[str], *, delimiter: str = ":") -> Dict[str, str]:
     """Parses sequence of k:v into a dict.
 
     Args:
         kv_flags: A sequence of strings in the format "k:v". If a key appears twice, the last
             occurrence "wins".
+        delimiter: The separator between the key and value.
 
     Returns:
         A dict where keys and values are parsed from "k:v".
@@ -150,9 +152,9 @@ def parse_kv_flags(kv_flags: Sequence[str]) -> Dict[str, str]:
     """
     metadata = {}
     for kv in kv_flags:
-        parts = kv.split(":")
+        parts = kv.split(delimiter)
         if len(parts) != 2:
-            raise ValueError(f"Expected key:value, got {kv}")
+            raise ValueError(f"Expected key{delimiter}value, got {kv}")
         metadata[parts[0]] = parts[1]
     return metadata
 
@@ -231,25 +233,42 @@ def parse_action(
 ) -> str:
     """Parses action from argv, or exits with usage info.
 
-    The action is always expected to be in argv[1].
+    The action is inferred from the first positional arg in argv[1:] (where argv[0] is interpreted
+    as the CLI name).
 
     Args:
-        argv: Positional CLI arguments. Does not include --flags.
+        argv: CLI arguments, possibly including --flags.
         options: Possible actions.
-        default: Optional default action if none specified.
+        default: Optional default action if unable to infer action from argv.
 
     Returns:
         The chosen action.
 
     Raises:
-        SystemExit: if an invalid action (or no action and default is None) is provided.
+        absl.app.UsageError: if an invalid action (or no action and default is None) is provided.
     """
     assert default is None or default in options
-    action = argv[1] if len(argv) >= 2 else default
-    if action is None or action not in options:
-        print(
-            f"Invalid action: {action}. Expected one of [{','.join(options)}]. "
-            "Please rerun with --help."
-        )
-        sys.exit(1)
+    action = None
+    for arg in argv[1:]:
+        arg = arg.strip()
+        if not arg.startswith("--"):
+            action = arg
+            break
+    if action not in options:
+        action = default
+    if action is None or action not in options:  # No action nor default provided.
+        raise app.UsageError(f"Invalid action: {action}. Expected one of [{','.join(options)}].")
     return action
+
+
+def send_signal(popen: subprocess.Popen, sig: int = signal.SIGKILL):
+    """Sends a signal (default SIGKILL) to the process (and child processes)."""
+    # Note: kill() might leave orphan processes if proc spawned child processes.
+    # We use psutil to recursively kill() all children.
+    try:
+        parent = psutil.Process(popen.pid)
+    except psutil.NoSuchProcess:
+        return  # Nothing to do.
+    for child in parent.children(recursive=True):
+        child.send_signal(sig)
+    popen.send_signal(sig)

@@ -91,19 +91,26 @@ class FlashAttention(MultiheadAttention):
         mesh = thread_resources.env.physical_mesh
         # We need to manually partition jax-triton calls.
         # Note: shard_map doesn't support kwargs.
+        # We assume that the batch is partitioned over all but the last mesh axis name.
+        batch_axis_names = mesh.axis_names[:-1]
+        # We also assume that the last axis is for tensor-parallelism.
+        tensor_parallel_axis_name = mesh.axis_names[-1]
+        # TODO(tom_gunter,markblee): Better validation of axis names.
+        if tensor_parallel_axis_name != "model":
+            raise NotImplementedError("Running without tensor-parallel axis is not supported.")
         partitioned_mha = shard_map(
             jit_mha,
             mesh=mesh,
             in_specs=(
                 # QKV [batch_size, seq_len, num_heads, per_head_dim].
-                PartitionSpec("data", None, "model", None),
-                PartitionSpec("data", None, "model", None),
-                PartitionSpec("data", None, "model", None),
+                PartitionSpec(batch_axis_names, None, tensor_parallel_axis_name, None),
+                PartitionSpec(batch_axis_names, None, tensor_parallel_axis_name, None),
+                PartitionSpec(batch_axis_names, None, tensor_parallel_axis_name, None),
                 # Bias [batch_size, num_heads, seq_len, seq_len].
-                PartitionSpec("data", "model", None, None),
+                PartitionSpec(batch_axis_names, tensor_parallel_axis_name, None, None),
             ),
             # O [batch_size, seq_len, num_heads, per_head_dim].
-            out_specs=PartitionSpec("data", None, "model", None),
+            out_specs=PartitionSpec(batch_axis_names, None, tensor_parallel_axis_name, None),
             # Disables a checking pass which jax can't apply when there's a triton_call in the body.
             check_rep=False,
         )

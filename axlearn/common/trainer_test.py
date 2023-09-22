@@ -123,7 +123,11 @@ class DummyInput(Module):
         return ds
 
     def __iter__(self):
-        return iter(self.dataset())
+        # Use a different __iter__ than iter(self.dataset()), to test that input iter can be
+        # checkpointed properly even with a custom __iter__ (note that a custom __iter__ is not
+        # guaranteed to be savable).
+        for input_batch in self.dataset():
+            yield input_batch
 
 
 class DummyModel(BaseModel):

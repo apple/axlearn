@@ -3,13 +3,14 @@
 """Tests common utils."""
 import sys
 from collections import OrderedDict
-from typing import Any, Iterable, NamedTuple, Optional, Type
+from typing import Any, Iterable, NamedTuple, Optional, Sequence, Type
 
 # pylint: disable=no-self-use
 import chex
 import jax
 import jaxlib
 import numpy as np
+import pytest
 import tensorflow as tf
 import torch
 from absl.testing import absltest, parameterized
@@ -29,6 +30,7 @@ from axlearn.common.test_utils import (
     TestCase,
     TestWithTemporaryCWD,
     ThirdPartyInitializer,
+    is_supported_mesh_shape,
     prng_impl,
     read_param_init_specs_recursively,
     read_per_param_settings,
@@ -54,6 +56,7 @@ from axlearn.common.utils import (
     runtime_checks,
     set_data_dir,
     set_recursively,
+    shard_input_batch,
     split_prng_key,
     tree_paths,
     validate_float_dtype,
@@ -405,8 +408,8 @@ class TreeUtilsTest(TestCase):
         ((1, 1, 1), ("pipeline", "data", "model")),
     )
     def test_input_partition_spec(self, mesh_shape, mesh_axis_names):
-        if jax.device_count() != np.prod(mesh_shape):
-            return
+        if not is_supported_mesh_shape(mesh_shape):
+            pytest.skip(reason=f"Unsupported mesh {mesh_shape}.")
         devices = mesh_utils.create_device_mesh(mesh_shape)
         with jax.sharding.Mesh(devices, mesh_axis_names):
             self.assertSequenceEqual(
@@ -415,6 +418,27 @@ class TreeUtilsTest(TestCase):
                     mesh_axis_names,
                 ),
             )
+
+    @parameterized.parameters(
+        ((1, 4), ("data", "model"), "data"),
+        ((1, 2, 2, 2), ("replica", "data", "fsdp", "model"), ("replica", "data", "fsdp")),
+    )
+    def test_shard_input_batch(
+        self,
+        mesh_shape: Sequence[int],
+        mesh_axis_names: Sequence[str],
+        batch_axis_names: Sequence[str],
+    ):
+        if not is_supported_mesh_shape(mesh_shape):
+            pytest.skip(reason=f"Unsupported mesh {mesh_shape}.")
+        devices = mesh_utils.create_device_mesh(mesh_shape)
+        with jax.sharding.Mesh(devices, mesh_axis_names):
+            sharded_batch = shard_input_batch(
+                jnp.ones(jnp.prod(jnp.asarray(mesh_shape))),
+                batch_axis_names=batch_axis_names,
+            )
+            # Check that the batch has been sharded.
+            self.assertEqual(sharded_batch.sharding.spec, PartitionSpec(batch_axis_names))
 
     def test_complete_partition_spec_tree(self):
         data = dict(

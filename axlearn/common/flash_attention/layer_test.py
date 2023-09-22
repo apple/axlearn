@@ -1,6 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests FlashAttention layers."""
+from contextlib import nullcontext
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -62,19 +64,79 @@ def _fake_inputs(*, batch: int, num_heads: int, seq_len: int, hidden_dim: int):
 class TestFlashAttention(TestCase):
     """Tests FlashAttention layer."""
 
-    @parameterized.product(
-        [
-            dict(batch=2, seq_len=384, num_heads=4, per_head_dim=32, mesh=(1, 1)),
-            dict(batch=2, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(1, 1)),
-            dict(batch=8, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(8, 1)),
-        ],
-        causal=[False, True],
-    )
-    def test_forward(self, batch, seq_len, num_heads, per_head_dim, mesh, causal):
+    _TEST_CONFIGS = [
+        dict(
+            batch=2,
+            seq_len=384,
+            num_heads=4,
+            per_head_dim=32,
+            mesh=(1, 1),
+            mesh_axis_names=("data", "model"),
+        ),
+        dict(
+            batch=2,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(1, 1),
+            mesh_axis_names=("data", "model"),
+        ),
+        dict(
+            batch=2,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(1, 1),
+            mesh_axis_names=("data", "fsdp"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(8, 1),
+            mesh_axis_names=("data", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(1, 1, 8, 1),
+            mesh_axis_names=("replica", "data", "fsdp", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(1, 1, 8),
+            mesh_axis_names=("replica", "data", "fsdp"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(1, 2, 4, 1),
+            mesh_axis_names=("replica", "data", "fsdp", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(1, 2, 2, 2),
+            mesh_axis_names=("replica", "data", "fsdp", "model"),
+        ),
+    ]
+
+    @parameterized.product(_TEST_CONFIGS, causal=[False, True])
+    def test_forward(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names, causal):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
-        with Mesh(mesh_utils.create_device_mesh(mesh), ("data", "model")):
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             hidden_dim = num_heads * per_head_dim
             kwargs = dict(
                 query_dim=hidden_dim,
@@ -114,29 +176,26 @@ class TestFlashAttention(TestCase):
                 inputs=ref_inputs,
                 is_training=True,
             )
-            test_out, _ = F(
-                test_layer,
-                prng_key=jax.random.PRNGKey(5),
-                state=params,
-                inputs=inputs,
-                is_training=True,
-            )
-            # TODO(markblee): Test probs.
-            self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
+            tensor_parallel_axis_name = mesh_axis_names[-1]
+            with self.assertRaises(
+                NotImplementedError
+            ) if tensor_parallel_axis_name == "fsdp" else nullcontext():
+                test_out, _ = F(
+                    test_layer,
+                    prng_key=jax.random.PRNGKey(5),
+                    state=params,
+                    inputs=inputs,
+                    is_training=True,
+                )
+                # TODO(markblee): Test probs.
+                self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
 
-    @parameterized.product(
-        [
-            dict(batch=2, seq_len=384, num_heads=4, per_head_dim=32, mesh=(1, 1)),
-            dict(batch=2, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(1, 1)),
-            dict(batch=8, seq_len=2048, num_heads=4, per_head_dim=64, mesh=(8, 1)),
-        ],
-        causal=[False, True],
-    )
-    def test_backward(self, batch, seq_len, num_heads, per_head_dim, mesh, causal):
+    @parameterized.product(_TEST_CONFIGS, causal=[False, True])
+    def test_backward(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names, causal):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
-        with Mesh(mesh_utils.create_device_mesh(mesh), ("data", "model")):
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
 
             class DummyModel(BaseLayer):
                 """A dummy model."""
@@ -207,7 +266,10 @@ class TestFlashAttention(TestCase):
                 return loss
 
             ref_value, ref_grads = jax.value_and_grad(loss)(params, ref_inputs, ref_layer)
-            test_value, test_grads = jax.value_and_grad(loss)(params, inputs, test_layer)
-
-            self.assertNestedAllClose(ref_value, test_value, atol=1e-5)
-            self.assertNestedAllClose(ref_grads, test_grads, atol=1e-5)
+            tensor_parallel_axis_name = mesh_axis_names[-1]
+            with self.assertRaises(
+                NotImplementedError
+            ) if tensor_parallel_axis_name == "fsdp" else nullcontext():
+                test_value, test_grads = jax.value_and_grad(loss)(params, inputs, test_layer)
+                self.assertNestedAllClose(ref_value, test_value, atol=1e-5)
+                self.assertNestedAllClose(ref_grads, test_grads, atol=1e-5)

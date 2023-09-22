@@ -48,7 +48,7 @@ Examples (cloudbuild):
 
 import os
 import subprocess
-from typing import Dict, List
+from typing import Dict
 
 from absl import app, flags, logging
 
@@ -74,17 +74,8 @@ class GCSTarBundler(BaseTarBundler):
         cfg = super().default_config()
         # Read from settings by default, if available.
         if ttl_bucket := gcp_settings("ttl_bucket", required=False):
-            cfg.set(remote_dir=f"gs://{ttl_bucket}/axlearn/tasks")
+            cfg.set(remote_dir=f"gs://{ttl_bucket}/axlearn/jobs")
         return cfg
-
-    @classmethod
-    def from_spec(cls, spec: List[str]) -> BaseTarBundler.Config:
-        """Converts a spec to a bundler.
-
-        Possible options:
-        - remote_dir: The GCS directory to upload the bundle to.
-        """
-        return cls.default_config().set(**dict(kv.split("=") for kv in spec))
 
     def _copy_to_local_command(self, *, remote_bundle_id: str, local_bundle_id: str) -> str:
         """Assumes that bundling happens in an environment where `gsutil` is available."""
@@ -136,10 +127,12 @@ class CloudBuildBundler(BaseDockerBundler):
         context: str,
         labels: Dict[str, str],
     ):
+        cfg = self.config
         build_args = "\n".join(
             [f'    "--build-arg", "{key}={value}",' for key, value in args.items()]
         )
         labels = "\n".join([f'    "--label", "{key}={value}",' for key, value in labels.items()])
+        build_target = f'    "--build-target", "{cfg.target}",' if cfg.target else ""
         cloudbuild_yaml = f"""
 steps:
 - name: "gcr.io/cloud-builders/docker"
@@ -148,6 +141,7 @@ steps:
     "-f", "{os.path.relpath(dockerfile, context)}",
     "-t", "{image}",
     "--cache-from", "{image}",
+    {build_target}
     {build_args}
     {labels}
     "."

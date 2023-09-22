@@ -6,12 +6,21 @@ import multiprocessing
 import re
 
 from absl import logging
-from google.cloud.aiplatform import initializer
-from google.cloud.aiplatform.tensorboard import uploader, uploader_utils
-from google.cloud.aiplatform.utils import TensorboardClientWithOverride
+
+try:
+    from google.cloud.aiplatform import initializer
+    from google.cloud.aiplatform.tensorboard import uploader, uploader_utils
+    from google.cloud.aiplatform.utils import TensorboardClientWithOverride
+
+    _VERTEXAI_INSTALLED = True
+except (ImportError, ModuleNotFoundError):
+    _VERTEXAI_INSTALLED = False
+
 
 from axlearn.cloud.gcp import config as gcp_config
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
+
+_VERTEXAI_EXP_NAME_MAX_LEN = 128
 
 
 def _vertexai_experiment_name_from_output_dir(output_dir: str) -> str:
@@ -22,12 +31,17 @@ def _vertexai_experiment_name_from_output_dir(output_dir: str) -> str:
         raise ValueError(rf"{output_dir} does not match '{pattern}'.")
     # Vertex AI Tensorboard requires experiment_name to match "[a-z0-9][a-z0-9-]+".
     experiment_name = match.group(1).lower().replace("/", "-").replace("_", "-").replace(".", "-")
+    if len(experiment_name) >= _VERTEXAI_EXP_NAME_MAX_LEN:  # Vertex AI length limit.
+        raise ValueError(
+            rf"Experiment name must be less than {_VERTEXAI_EXP_NAME_MAX_LEN} chars long."
+            rf"{experiment_name} is {len(experiment_name)} chars."
+        )
     return experiment_name
 
 
 def is_vertexai_tensorboard_configured() -> bool:
     """Checks the config to see whether VertexAI Tensorboard should be enabled."""
-    return bool(
+    return _VERTEXAI_INSTALLED and bool(
         gcp_config.gcp_settings("vertexai_tensorboard", required=False)
         and gcp_config.gcp_settings("vertexai_region", required=False)
         and gcp_config.gcp_settings("project", required=False)

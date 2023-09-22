@@ -4,10 +4,15 @@
 
 import contextlib
 import os
+import shlex
+import signal
+import subprocess
 import tempfile
+import time
 from typing import Dict, Sequence, Union
 from unittest import mock
 
+from absl import app
 from absl.testing import parameterized
 
 from axlearn.cloud import ROOT_MODULE
@@ -49,15 +54,27 @@ class UtilsTest(parameterized.TestCase):
                 key2="value2",
             ),
         ),
+        dict(
+            kv_flags=["key1=value1", "key2=value2", "key1=value3"],
+            expected=dict(
+                key1="value3",
+                key2="value2",
+            ),
+            delimiter="=",
+        ),
         dict(kv_flags=[], expected={}),
         dict(kv_flags=["malformatted"], expected=ValueError()),
+        dict(kv_flags=["a:b"], delimiter="=", expected=ValueError()),
+        dict(kv_flags=["a:b:c"], expected=ValueError()),
     )
-    def test_parse_kv_flags(self, kv_flags: Sequence[str], expected: Union[Dict, Exception]):
+    def test_parse_kv_flags(
+        self, kv_flags: Sequence[str], expected: Union[Dict, Exception], delimiter: str = ":"
+    ):
         if issubclass(type(expected), ValueError):
             with self.assertRaises(type(expected)):
-                utils.parse_kv_flags(kv_flags)
+                utils.parse_kv_flags(kv_flags, delimiter=delimiter)
         else:
-            self.assertEqual(expected, utils.parse_kv_flags(kv_flags))
+            self.assertEqual(expected, utils.parse_kv_flags(kv_flags, delimiter=delimiter))
 
     def test_format_table(self):
         headings = ["COLUMN1", "LONG_COLUMN2", "COL3"]
@@ -78,14 +95,49 @@ class UtilsTest(parameterized.TestCase):
         dict(argv=["cli", "activate"], expected="activate"),
         dict(argv=["cli", "cleanup"], expected="cleanup"),
         dict(argv=["cli", "list", "something"], expected="list"),
+        dict(argv=["cli", "--flag1", "activate"], expected="activate"),
+        dict(argv=["cli"], default="list", expected="list"),
+        dict(argv=["cli", "invalid"], default="list", expected="list"),
+        dict(argv=["cli", "invalid", "activate"], default="list", expected="list"),
         # Test failure case.
-        dict(argv=[], expected=SystemExit()),
-        dict(argv=["cli", "invalid"], expected=SystemExit()),
+        dict(argv=[], expected=app.UsageError("")),
+        dict(argv=["cli", "invalid"], expected=app.UsageError("")),
     )
-    def test_parse_action(self, argv, expected):
+    def test_parse_action(self, argv, expected, default=None):
         options = ["activate", "list", "cleanup"]
         if isinstance(expected, BaseException):
             with self.assertRaises(type(expected)):
-                utils.parse_action(argv, options=options)
+                utils.parse_action(argv, options=options, default=default)
         else:
-            self.assertEqual(expected, utils.parse_action(argv, options=options))
+            self.assertEqual(expected, utils.parse_action(argv, options=options, default=default))
+
+    def test_send_signal(self):
+        """Tests send_signal by starting a subprocess which has child subprocesses.
+
+        Unlike p.kill(), send_signal(p, sig=signal.SIGKILL) should recursively kill the children,
+        which does not leave orphan processes running. This test will fail by replacing
+        send_signal(p, sig=signal.SIGKILL) with p.kill().
+        """
+        test_script = os.path.join(os.path.dirname(__file__), "testdata/counter.py")
+        with tempfile.NamedTemporaryFile("r+") as f:
+
+            def _read_count():
+                f.seek(0, 0)
+                return int(f.read())
+
+            # pylint: disable-next=consider-using-with
+            p = subprocess.Popen(
+                shlex.split(f"python3 {test_script} {f.name} parent"), start_new_session=True
+            )
+            time.sleep(1)
+            # Check that the count has incremented.
+            self.assertGreater(_read_count(), 0)
+            # Kill the subprocess.
+            utils.send_signal(p, sig=signal.SIGKILL)
+            # Get the count again, after kill has finished.
+            count = _read_count()
+            self.assertGreater(count, 0)
+            # Wait for some ticks.
+            time.sleep(1)
+            # Ensure that the count is still the same.
+            self.assertEqual(_read_count(), count)

@@ -37,6 +37,7 @@ from axlearn.cloud.common.utils import (
     get_git_revision,
     get_git_status,
     get_pyproject_version,
+    parse_kv_flags,
     running_from_source,
 )
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
@@ -185,6 +186,8 @@ class BaseDockerBundler(Bundler):
         dockerfile: Required[str] = REQUIRED
         # Docker build args.
         build_args: Dict[str, str] = {}
+        # Build target.
+        target: Optional[str] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -217,15 +220,9 @@ class BaseDockerBundler(Bundler):
         All other specs are treated as build args.
         """
         cfg = cls.default_config()
-        kwargs = {}
-        build_args = {}
-        for kv in spec:
-            k, v = kv.split("=")
-            if k in cfg:
-                kwargs[k] = v
-            else:
-                # All other specs are treated as build args.
-                build_args[k] = v
+        kwargs = parse_kv_flags(spec, delimiter="=")
+        # Non-config specs are treated as build args.
+        build_args = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k not in cfg}
         return cfg.set(build_args=build_args, **kwargs)
 
     # pylint: disable-next=arguments-renamed
@@ -353,6 +350,7 @@ class DockerBundler(BaseDockerBundler):
                 image=image,
                 args=args,
                 context=context,
+                target=self.config.target,
                 labels=labels,
             )
         )
@@ -372,6 +370,8 @@ class BaseTarBundler(Bundler):
         remote_dir: Required[str] = REQUIRED
         # Optional list of --find-links to use in pip install.
         find_links: Optional[Union[str, Sequence[str]]] = None
+        # Whether to install in editable mode.
+        editable: bool = False
 
     @classmethod
     def from_spec(cls, spec: List[str]) -> Config:
@@ -380,7 +380,7 @@ class BaseTarBundler(Bundler):
         Possible options:
         - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf.io.
         """
-        return cls.default_config().set(**dict(kv.split("=") for kv in spec))
+        return cls.default_config().set(**parse_kv_flags(spec, delimiter="="))
 
     def id(self, name: str) -> str:
         """Returns the full image identifier from the tag."""
@@ -419,7 +419,8 @@ class BaseTarBundler(Bundler):
                         f.write(f"{extra}\n")
                     else:
                         pyproject_extras.append(extra)
-                f.write(f".[{','.join(pyproject_extras)}]" if pyproject_extras else ".")
+                deps = f".[{','.join(pyproject_extras)}]" if pyproject_extras else "."
+                f.write(f"-e {deps}" if cfg.editable else deps)
 
             # Tar it up.
             tar_path = temp_dir / "axlearn.tar.gz"
@@ -498,24 +499,22 @@ def get_bundler_config(*, bundler_type: str, spec: List[str]) -> Bundler.Config:
     )
 
 
-def bundler_flags():
-    """Common bundler flags."""
-    flags.DEFINE_string(
-        "bundler_type",
-        None,
-        "Bundler type.",
-        required=True,
-    )
+def bundler_flags(**kwargs):
+    """Common bundler flags. Keyword args will be forwarded to flag definitions."""
+
+    flags.DEFINE_string("bundler_type", None, "Bundler type.", required=True, **kwargs)
     flags.DEFINE_multi_string(
         "bundler_spec",
         [],
         "Bundler spec provided as key=value. "
         "Refer to each bundler's `from_spec` method docstring for details.",
+        **kwargs,
     )
     flags.DEFINE_multi_string(
         "bundler_exclude",
         BUNDLE_EXCLUDE,
         "Files/folders in root to exclude from code bundle.",
+        **kwargs,
     )
 
 

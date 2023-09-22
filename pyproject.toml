@@ -15,7 +15,7 @@ dependencies = [
     "attrs>=21.3.0",
     "absl-py",
     "chex>=0.1.6",
-    "flax>=0.7.1",  # only for checkpoints
+    "flax==0.7.1",  # only for checkpoints. Will require python 3.9 on 0.7.3.
     "importlab==0.7",  # breaks pytype on 0.8
     "jax==0.4.13",
     "jaxlib==0.4.13",
@@ -42,7 +42,7 @@ apple-silicon = [
     "attrs>=21.3.0",
     "absl-py",
     "chex>=0.1.6",
-    "flax>=0.7.1",  # only for checkpoints
+    "flax==0.7.1",  # only for checkpoints. Will require python 3.9 on 0.7.3.
     "jax==0.4.13",
     "jaxlib==0.4.13",
     "nltk==3.7",  # for text preprocessing
@@ -116,6 +116,13 @@ vertexai_tensorboard = [
     # [2] https://github.com/pypa/setuptools/issues/3772
     "setuptools==65.7.0",
     "google-cloud-aiplatform[tensorboard]",
+]
+# Dataflow dependencies.
+dataflow = [
+    "apache-beam==2.38.0",
+    "apache-beam[gcp]",
+    "google-apitools",  # for beam pipeline
+    "orjson==3.8.7",  # 3.8.8 fails: https://github.com/ijl/orjson/issues/365
 ]
 
 [tool.flit.module]
