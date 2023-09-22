@@ -136,6 +136,7 @@ import multiprocessing
 import os
 import re
 import shlex
+import signal
 import subprocess
 import tempfile
 import time
@@ -144,14 +145,13 @@ from datetime import datetime, timezone
 from subprocess import CalledProcessError
 from typing import IO, Any, Dict, Optional, Union
 
-import psutil
 import tensorflow as tf
 from absl import app, flags, logging
 
 from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH
 from axlearn.cloud.common.scheduler import JobMetadata, JobScheduler, ResourceMap, Scheduler
-from axlearn.cloud.common.utils import configure_logging, parse_action
+from axlearn.cloud.common.utils import configure_logging, parse_action, send_signal
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, GCPJob, docker_command
 
@@ -166,7 +166,7 @@ from axlearn.cloud.gcp.storage import (
 )
 from axlearn.cloud.gcp.tpu_cleaner import Cleaner, TPUCleaner
 from axlearn.cloud.gcp.utils import common_flags
-from axlearn.cloud.gcp.vm import _compute_resource, _get_vm_node, create_vm, delete_vm
+from axlearn.cloud.gcp.vm import _compute_resource, create_vm, delete_vm, get_vm_node
 from axlearn.common.config import REQUIRED, Required, config_class
 
 _SHARED_BASTION_SUFFIX = "shared-bastion"
@@ -387,19 +387,6 @@ def _catch_with_error_log(fn, *args, **kwargs) -> Any:
     except Exception as e:  # pylint: disable=broad-except
         logging.error("[Caught] %s failed with error: %s", fn, e)
     return None
-
-
-def _kill_popen(popen: subprocess.Popen):
-    """Kills the process (and child processes) with SIGKILL."""
-    # Note: kill() might leave orphan processes if proc spawned child processes.
-    # We use psutil to recursively kill() all children.
-    try:
-        parent = psutil.Process(popen.pid)
-    except psutil.NoSuchProcess:
-        return  # Nothing to do.
-    for child in parent.children(recursive=True):
-        child.kill()
-    popen.kill()
 
 
 @dataclasses.dataclass
@@ -691,7 +678,7 @@ class BastionJob(GCPJob):
     def _wait_and_close_proc(self, proc: _PipedProcess, kill: bool = False):
         """Cleans up the process/fds and upload logs to gs."""
         if kill:
-            _kill_popen(proc.popen)
+            send_signal(proc.popen, sig=signal.SIGKILL)
         # Note: proc should already be polled and completed, so wait is nonblocking.
         proc.popen.wait()
         proc.fd.close()
@@ -1092,7 +1079,7 @@ class SubmitBastionJob(CPUJob):
 
     def _execute(self):
         cfg: SubmitBastionJob.Config = self.config
-        node = _get_vm_node(cfg.name, _compute_resource(self._get_job_credentials()))
+        node = get_vm_node(cfg.name, _compute_resource(self._get_job_credentials()))
         if node is None or node.get("status", None) != "RUNNING":
             logging.warning(
                 "Bastion %s does not appear to be running yet. "

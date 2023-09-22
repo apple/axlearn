@@ -4,10 +4,8 @@
 # pylint: disable=no-self-use,protected-access
 import contextlib
 import os
-import shlex
 import subprocess
 import tempfile
-import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Sequence
 from unittest import mock
@@ -23,7 +21,6 @@ from axlearn.cloud.gcp.jobs.bastion_vm import (
     BastionJob,
     Job,
     JobState,
-    _kill_popen,
     _PipedProcess,
     deserialize_jobspec,
     download_job_batch,
@@ -31,40 +28,6 @@ from axlearn.cloud.gcp.jobs.bastion_vm import (
     serialize_jobspec,
 )
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
-
-
-class TestSubprocess(parameterized.TestCase):
-    """Tests subprocess utils."""
-
-    def test_kill(self):
-        """Tests _kill_popen by starting a subprocess which has child subprocesses.
-
-        Unlike kill(), _kill_popen should recursively kill the children, which does not leave orphan
-        processes running. This test will fail by replacing _kill_popen(p) with p.kill().
-        """
-        test_script = os.path.join(os.path.dirname(__file__), "testdata/counter.py")
-        with tempfile.NamedTemporaryFile("r+") as f:
-
-            def _read_count():
-                f.seek(0, 0)
-                return int(f.read())
-
-            # pylint: disable-next=consider-using-with
-            p = subprocess.Popen(
-                shlex.split(f"python3 {test_script} {f.name} parent"), start_new_session=True
-            )
-            time.sleep(1)
-            # Check that the count has incremented.
-            self.assertGreater(_read_count(), 0)
-            # Kill the subprocess.
-            _kill_popen(p)
-            # Get the count again, after kill has finished.
-            count = _read_count()
-            self.assertGreater(count, 0)
-            # Wait for some ticks.
-            time.sleep(1)
-            # Ensure that the count is still the same.
-            self.assertEqual(_read_count(), count)
 
 
 class TestDownloadJobBatch(parameterized.TestCase):
@@ -288,7 +251,7 @@ class BastionJobTest(parameterized.TestCase):
             _upload_job_state=mock.DEFAULT,
             upload_blob=mock.DEFAULT,
             delete_blob=mock.DEFAULT,
-            _kill_popen=mock.DEFAULT,
+            send_signal=mock.DEFAULT,
         )
         with self._patch_bastion(popen_spec) as bastion, patch_fns as mock_fns:
             # Run a couple updates to test transition to PENDING and staying in PENDING.
@@ -302,7 +265,7 @@ class BastionJobTest(parameterized.TestCase):
 
                 if orig_command_proc is not None:
                     # Kill should have been called, and fd should have been closed.
-                    mock_fns["_kill_popen"].assert_called()
+                    mock_fns["send_signal"].assert_called()
                     self.assertTrue(
                         orig_command_proc.fd.close.called  # pytype: disable=attribute-error
                     )
@@ -571,7 +534,7 @@ class BastionJobTest(parameterized.TestCase):
             download_blob=mock.DEFAULT,
             upload_blob=mock.DEFAULT,
             delete_blob=mock.DEFAULT,
-            _kill_popen=mock.DEFAULT,
+            send_signal=mock.DEFAULT,
         )
         with self._patch_bastion(popen_spec()) as bastion, patch_fns as mock_fns:
             bastion._active_jobs = active_jobs
@@ -619,7 +582,7 @@ class BastionJobTest(parameterized.TestCase):
 
                 # For jobs that went from ACTIVE to PENDING, expect kill() to have been called.
                 if active_jobs[job.spec.name] == JobState.ACTIVE and job.state == JobState.PENDING:
-                    mock_fns["_kill_popen"].assert_called()
+                    mock_fns["send_signal"].assert_called()
                     self.assertFalse(
                         active_jobs[
                             job.spec.name

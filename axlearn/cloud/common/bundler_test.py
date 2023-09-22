@@ -63,6 +63,7 @@ class RegistryTest(TestCase):
                 "build_arg1=test_build_arg",
                 # Make sure parent configs can be set from spec.
                 "external=test_external",
+                "target=test_target",
             ],
         )
         self.assertEqual(cfg.image, "test_image")
@@ -70,6 +71,7 @@ class RegistryTest(TestCase):
         self.assertEqual(cfg.dockerfile, "test_dockerfile")
         self.assertEqual(cfg.build_args, {"build_arg1": "test_build_arg"})
         self.assertEqual(cfg.external, "test_external")
+        self.assertEqual(cfg.target, "test_target")
 
 
 class BaseTarBundlerTest(TestWithTemporaryCWD):

@@ -63,7 +63,8 @@ class JobTest(TestCase):
 
         # Test max tries.
         job = cfg.set(n=cfg.max_tries).instantiate()
-        job.execute()
+        with self.assertRaisesRegex(ValueError, "Failed to execute"):
+            job.execute()
         self.assertEqual(cfg.max_tries, job.i)
         self.assertTrue(job.delete_called)
 

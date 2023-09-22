@@ -59,7 +59,7 @@ def create_vm(
     resource = _compute_resource(credentials)
     attempt = 0
     while True:
-        node = _get_vm_node(name, resource)
+        node = get_vm_node(name, resource)
         if node is None:  # VM doesn't exist.
             if attempt:
                 # Exponential backoff capped at 512s.
@@ -92,25 +92,42 @@ def create_vm(
             except (errors.HttpError, Exception) as e:
                 raise VMCreationError("Couldn't create VM") from e
         else:  # VM exists.
-            status = node["status"]
-            if status != "RUNNING":
-                logging.info("VM %s showing %s, waiting for RUNNING.", name, status)
-                time.sleep(10)
-                continue
-            if "labels" in node:
-                # Boot script may have completed.
-                boot_status = node["labels"].get("boot_status")
-                if boot_status == "done":
-                    logging.info("VM %s is running and booted.", name)
-                    logging.info("SSH to VM with: %s gcp sshvm %s", infer_cli_name(), name)
-                    return
+            status = get_vm_node_status(node)
+            if status == "BOOTED":
+                logging.info("VM %s is running and booted.", name)
+                logging.info("SSH to VM with: %s gcp sshvm %s", infer_cli_name(), name)
+                return
+            elif status == "RUNNING":
                 logging.info(
                     "VM %s RUNNING, waiting for boot to complete "
-                    "(which usually takes a few minutes): %s",
+                    "(which usually takes a few minutes)",
                     name,
-                    boot_status,
                 )
-                time.sleep(10)
+            else:
+                logging.info("VM %s showing %s, waiting for RUNNING.", name, status)
+            time.sleep(10)
+
+
+def get_vm_node_status(node: Dict[str, Any]) -> str:
+    """Get the status from the given VM node info.
+
+    Args:
+        node: Node as returned by `get_vm_node`.
+
+    Returns:
+        The node status. For valid statuses see:
+        https://cloud.google.com/compute/docs/instances/instance-life-cycle
+
+        On top of regular VM statuses, this also returns:
+        * BOOTED: VM is RUNNING + finished booting.
+        * UNKNOWN: VM is missing a status.
+    """
+    status = node.get("status", "UNKNOWN")
+    if status == "RUNNING" and "labels" in node:
+        # Check boot status.
+        if node["labels"].get("boot_status", None) == "done":
+            return "BOOTED"
+    return status
 
 
 def delete_vm(name: str, *, credentials: Credentials):
@@ -124,7 +141,7 @@ def delete_vm(name: str, *, credentials: Credentials):
         VMDeletionError: If an exeption is raised on the deletion request.
     """
     resource = _compute_resource(credentials)
-    node = _get_vm_node(name, resource)
+    node = get_vm_node(name, resource)
     if node is None:  # VM doesn't exist.
         logging.info("VM %s doesn't exist.", name)
         return
@@ -303,7 +320,7 @@ def _vm_config(
     return config
 
 
-def _get_vm_node(name: str, resource: discovery.Resource) -> Optional[Dict[str, Any]]:
+def get_vm_node(name: str, resource: discovery.Resource) -> Optional[Dict[str, Any]]:
     """Gets information about a VM node.
 
     Args:
