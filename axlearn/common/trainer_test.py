@@ -3,6 +3,7 @@
 """Tests SpmdTrainer."""
 # pylint: disable=no-self-use
 import copy
+import dataclasses
 import os.path
 import shutil
 import tempfile
@@ -31,7 +32,7 @@ from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_pol
 from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
-from axlearn.common.trainer import SpmdTrainer, _prune_empty, _TrainerState
+from axlearn.common.trainer import SpmdTrainer, _create_device_mesh, _prune_empty, _TrainerState
 from axlearn.common.utils import NestedTensor, Tensor, as_tensor, flatten_items, match_regex_rules
 
 FLAGS = flags.FLAGS
@@ -810,6 +811,111 @@ class TrainerTest(test_utils.TestCase):
                 flatten_items(init_params), flatten_items(updated_params)
             ):
                 self.assertGreater(np.max(np.abs(updated_p - init_p)), 1e-3, msg=path)
+
+
+@dataclasses.dataclass(frozen=True)
+class DummyDevice:
+    """Mock device for testing."""
+
+    platform: str
+    device_kind: str
+    process_index: int
+
+
+@dataclasses.dataclass(frozen=True)
+class DummyTpuDevice(DummyDevice):
+    """Mock TPU device for testing."""
+
+    coords: Sequence[int]
+    core_on_chip: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class DummyMultiSliceTpuDevice(DummyTpuDevice):
+    """Mock multi-slice TPU device for testing."""
+
+    slice_index: int = 0
+
+
+class DeviceMeshTest(test_utils.TestCase):
+    @parameterized.parameters(
+        {"logical_mesh": (2, 8)},
+        {"logical_mesh": (4, 4)},
+        {"logical_mesh": (1, 2, 8)},
+    )
+    def test_create_device_mesh_tpuv4(self, logical_mesh: Sequence[int]):
+        physical_mesh = (4, 4, 1)
+        coords = [
+            (x, y, z)
+            for x in range(physical_mesh[0])
+            for y in range(physical_mesh[1])
+            for z in range(physical_mesh[2])
+        ]
+        devices = [
+            DummyTpuDevice(
+                platform="tpu",
+                device_kind="TPU v4",
+                process_index=ix // 4,
+                coords=coord,
+            )
+            for ix, coord in enumerate(coords)
+        ]
+        # Check that the constructed mesh has the expected shape.
+        self.assertEqual(
+            _create_device_mesh(mesh_shape=logical_mesh, devices=devices).shape, logical_mesh
+        )
+
+    @parameterized.parameters(
+        {"logical_mesh": (2, 16)},
+        {"logical_mesh": (2, 4, 4)},
+    )
+    def test_create_device_mesh_multi_slice_tpuv4(self, logical_mesh: Sequence[int]):
+        slice_physical_mesh = (4, 4, 1)
+        num_slices = 2
+        coords = [
+            (x, y, z)
+            for x in range(slice_physical_mesh[0])
+            for y in range(slice_physical_mesh[1])
+            for z in range(slice_physical_mesh[2])
+        ]
+        devices = [
+            DummyMultiSliceTpuDevice(
+                platform="tpu",
+                device_kind="TPU v4",
+                process_index=(len(coords) * slice_index + ix) // 4,
+                coords=coord,
+                slice_index=slice_index,
+            )
+            for ix, coord in enumerate(coords)
+            for slice_index in range(num_slices)
+        ]
+        # Check that the constructed mesh has the expected shape.
+        device_mesh = _create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+        self.assertEqual(device_mesh.shape, logical_mesh)
+        # Check that the sub_mesh along the first axis only contains devices from one of the slices.
+        for ix, sub_mesh in enumerate(device_mesh):
+            self.assertTrue(all(el.slice_index == ix for el in sub_mesh.flatten()))
+
+    @parameterized.parameters(
+        {"logical_mesh": (8, 2, 4)},
+        {"logical_mesh": (16, 4)},
+        {"logical_mesh": (2, 32)},
+    )
+    def test_create_device_mesh_gpu(self, logical_mesh: Sequence[int] = (8, 2, 4)):
+        num_gpus_per_process = 8
+        num_granules = 8
+        devices = [
+            DummyDevice(
+                platform="gpu",
+                device_kind="gpu",
+                process_index=(num_gpus_per_process * granule_index + ix) // num_gpus_per_process,
+            )
+            for ix in range(num_gpus_per_process)
+            for granule_index in range(num_granules)
+        ]
+        # Check that the constructed mesh has the expected shape.
+        device_mesh = _create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+        self.assertEqual(device_mesh.shape, logical_mesh)
 
 
 if __name__ == "__main__":
