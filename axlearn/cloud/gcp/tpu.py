@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import cloud_tpu_client
 from absl import logging
@@ -69,7 +69,10 @@ def create_tpu(
         ValueError: If an invalid name is provided.
     """
     if not is_valid_resource_name(name):
-        raise ValueError(f"{name} is not a valid resource name.")
+        raise ValueError(
+            f"{name} is not a valid resource name. Please see "
+            "https://cloud.google.com/compute/docs/naming-resources#resource-name-format."
+        )
     # First try the QRM API, and fall-back to legacy API if we detect a quota-related error.
     try:
         _create_multislice_tpu(
@@ -94,6 +97,14 @@ def create_tpu(
         )
 
 
+def _read_error(e: errors.HttpError) -> Dict[str, Any]:
+    """Reads error details from HttpError."""
+    data = json.loads(e.content.decode("utf-8"))
+    if isinstance(data, list):
+        data = data[0]
+    return data.get("error", {})
+
+
 def _execute_create_tpu_request(req: HttpRequest):
     """Wraps request execution with quota error checks.
 
@@ -109,12 +120,10 @@ def _execute_create_tpu_request(req: HttpRequest):
         ):
             raise TPUQuotaLimitError(resp["message"])
     except errors.HttpError as e:
-        data = json.loads(e.content.decode("utf-8"))
-        if isinstance(data, list):
-            data = data[0]
+        error = _read_error(e)
         # Code 429 is raised if the user lacks a legacy reservation.
-        if data.get("error", {}).get("code") == 429:
-            raise TPUQuotaLimitError(data["error"]["message"]) from e
+        if error.get("code") == 429:
+            raise TPUQuotaLimitError(error["message"]) from e
         raise  # Re-raise original.
 
 
@@ -133,8 +142,9 @@ def _create_legacy_tpu(
 
     See `create_tpu` docstring for details.
     """
+    project, zone = gcp_settings("project"), gcp_settings("zone")
     resource = _tpu_resource(credentials)
-    tpu_path_prefix = f"projects/{gcp_settings('project')}/locations/{gcp_settings('zone')}"
+    tpu_path_prefix = f"projects/{project}/locations/{zone}"
     attempt = 0
     boot_timeout = (
         3600  # If we haven't booted after TPU READY + this many seconds, raise exception.
@@ -146,48 +156,34 @@ def _create_legacy_tpu(
             node_act = node["acceleratorType"]
             if node_act != tpu_type:
                 raise TPUCreationError(f"TPU {name} exists, but has tpu_type: {node_act}")
-            state = node["state"]
-            if state == "READY":
+            status = get_tpu_node_status(name, node=node)
+            if status["state"] == "READY":
                 logging.info("TPU %s is READY, checking health.", name)
-                client = cloud_tpu_client.Client(
-                    name, project=gcp_settings("project"), zone=gcp_settings("zone")
-                )
-                while client.health() == "UNHEALTHY_MAINTENANCE":
-                    logging.info("TPU %s is not HEALTHY, waiting until HEALTHY.", name)
+                # Wait for TPU to become healthy.
+                client = cloud_tpu_client.Client(name, project=project, zone=zone)
+                while (health := client.health()) != "HEALTHY":
+                    logging.info("TPU %s is not HEALTHY (%s), waiting until HEALTHY.", name, health)
                     time.sleep(10)
                 logging.info("TPU %s is READY and HEALTHY.", name)
-                # Now check for when boot script is complete:
-                total_vms = infer_tpu_workers(tpu_type)
-                ready_flags_base_path = (
-                    f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{name}/tpu_vm_ready_flags"
-                )
-                node = resource.get(name=f"{tpu_path_prefix}/nodes/{name}").execute()
-                ready_flags_path = (
-                    f"{ready_flags_base_path}/{node['metadata']['create_request_time']}/"
-                )
-                logging.info(
-                    "Checking for boot status on %d TPU-VM endpoints at %s.",
-                    total_vms,
-                    ready_flags_path,
-                )
+                # Now check for when boot script is complete.
+                num_vms = infer_tpu_workers(tpu_type)
+                logging.info("Checking for boot status on %d TPU-VM endpoints.", num_vms)
                 booted_monitor_start = time.perf_counter()
-                while len(list_blobs(ready_flags_path)) < total_vms:
+                while (status := get_tpu_node_status(name, node=node))["num_booted"] < num_vms:
                     if time.perf_counter() - booted_monitor_start >= boot_timeout:
                         raise TPUCreationError(
-                            f"Timed out after {boot_timeout}s waiting for {total_vms} to boot."
+                            f"Timed out after {boot_timeout}s waiting for {num_vms} to boot."
                         )
-                    logging.info(
-                        "%d/%d are now booted.", len(list_blobs(ready_flags_path)), total_vms
-                    )
+                    logging.info("%d/%d are now booted.", status["num_booted"], num_vms)
                     time.sleep(10)
                 logging.info("All endpoints READY, HEALTHY and booted for TPU %s", name)
                 return
-            if state == "PREEMPTED":
+            if status["state"] == "PREEMPTED":
                 logging.info("TPU %s is PREEMPTED, will delete and restart.", name)
                 _delete_legacy_tpu(name, credentials=credentials)
                 continue
             # TPU not ready, wait and check again.
-            logging.info("TPU %s showing %s, waiting for READY.", name, state)
+            logging.info("TPU %s showing %s, waiting for READY.", name, status["state"])
             time.sleep(10)
         else:  # TPU does not exist.
             if attempt:
@@ -222,6 +218,35 @@ def _create_legacy_tpu(
                 raise  # Re-raise.
             except (errors.HttpError, Exception) as e:
                 raise TPUCreationError("Failed to create TPU-VM") from e
+
+
+def get_tpu_node_status(name: str, *, node: Dict[str, Any]) -> Dict[str, Union[str, int]]:
+    """Get the status from the given TPU node.
+
+    For possible states, see:
+    https://cloud.google.com/tpu/docs/reference/rest/v2alpha1/projects.locations.nodes#Node.State
+    For possible health statuses:
+    https://cloud.google.com/tpu/docs/reference/rest/v1/projects.locations.nodes#health
+
+    Args:
+        name: Name of the node.
+        node: Node as returned by `get_queued_tpu_node`.
+
+    Returns:
+        A dict with keys:
+        * "state": The current node state.
+        * "num_booted": How many VMs have booted.
+    """
+    state = node["state"]
+    num_booted = 0
+    if state == "READY":
+        # Check for boot script status.
+        ready_flags_base_path = (
+            f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{name}/tpu_vm_ready_flags"
+        )
+        ready_flags_path = f"{ready_flags_base_path}/{node['metadata']['create_request_time']}/"
+        num_booted = len(list_blobs(ready_flags_path))
+    return dict(state=state, num_booted=num_booted)
 
 
 def delete_tpu(name: str, *, credentials: Credentials, wait: bool = True):
@@ -337,6 +362,7 @@ def _create_multislice_tpu(
 
     See `create_tpu` docstring for details.
     """
+    project, zone = gcp_settings("project"), gcp_settings("zone")
     resource = _qrm_resource(credentials)
     attempt = 0
     boot_timeout = (
@@ -356,7 +382,7 @@ def _create_multislice_tpu(
             try:
                 attempt += 1
                 request = resource.create(
-                    parent=f"projects/{gcp_settings('project')}/locations/{gcp_settings('zone')}",
+                    parent=f"projects/{project}/locations/{zone}",
                     queuedResourceId=name,
                     body=_qrm_body(
                         name,
@@ -374,41 +400,33 @@ def _create_multislice_tpu(
             except TPUQuotaLimitError:
                 raise  # Re-raise.
             except (errors.HttpError, Exception) as e:
+                # Workaround a GCP bug that throws 409 "Resource already exists" even for resources
+                # that were just created.
+                error = _read_error(e)
+                if error.get("code") == 409:
+                    logging.warning(
+                        "Got 409 even though resource was just created. Attempting to ignore..."
+                    )
+                    continue
                 raise TPUCreationError("Failed to create queued resource") from e
             continue
         # Else multi-slice does exist.
-        state = node["state"]["state"]
+        status = get_queued_tpu_node_status(name, node=node)
+        state = status["state"]
         logging.info("Queued resource %s is in state %s.", name, state)
         if state in ["ACCEPTED", "PROVISIONING"]:
             # Either trying to find capacity or provisioning capacity.
             time.sleep(60)
         elif state == "ACTIVE":
-            # Startup script has (in theory) begun running on all nodes in slice.
             logging.info("Slice %s is ACTIVE.", name)
-            # TODO(markblee,tom_gunter): Proper health checks for queued resources.
             num_vms = num_slices * infer_tpu_workers(tpu_type)
-            ready_flags_base_path = (
-                f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{name}/tpu_vm_ready_flags"
-            )
-            # Only one node spec is permitted (even though it's a list).
-            create_request_time = node["tpu"]["nodeSpec"][0]["node"]["metadata"][
-                "create_request_time"
-            ]
-            ready_flags_path = f"{ready_flags_base_path}/{create_request_time}/"
-            logging.info(
-                "Checking for boot status on %d TPU-VM endpoints at %s.",
-                num_vms,
-                ready_flags_path,
-            )
             booted_monitor_start = time.perf_counter()
-            while len(list_blobs(ready_flags_path)) < num_vms:
+            while (status := get_queued_tpu_node_status(name, node=node))["num_booted"] < num_vms:
                 if time.perf_counter() - booted_monitor_start >= boot_timeout:
                     raise TPUCreationError(
                         f"Timed out after {boot_timeout}s waiting for {num_vms} to boot."
                     )
-                logging.info(
-                    "%s are now booted.", f"{len(list_blobs(ready_flags_path))} / {num_vms}"
-                )
+                logging.info("%s are now booted.", f"{status['num_booted']} / {num_vms}")
                 time.sleep(10)
             logging.info("All endpoints READY, HEALTHY and booted for multislice TPU %s", name)
             return
@@ -417,6 +435,36 @@ def _create_multislice_tpu(
             _delete_multislice_tpu(name, credentials=credentials)
         elif state != "DELETING":
             raise TPUCreationError(f"Unknown TPU state value: {state}")
+
+
+def get_queued_tpu_node_status(name: str, *, node: Dict[str, Any]) -> Dict[str, Union[str, int]]:
+    """Get the status from the given queued TPU node.
+
+    For possible states, see:
+    https://cloud.google.com/tpu/docs/reference/rest/v2alpha1/projects.locations.queuedResources#State
+
+    Args:
+        name: Name of the node (without multi-slice suffix).
+        node: Node as returned by `get_queued_tpu_node`.
+
+    Returns:
+        A dict with keys:
+        * "state": The current node state.
+        * "num_booted": How many VMs have booted.
+    """
+    state = node["state"]["state"]
+    num_booted = 0
+    if state == "ACTIVE":
+        # Startup script has (in theory) begun running on all nodes in slice.
+        # TODO(markblee,tom_gunter): Proper health checks for queued resources.
+        ready_flags_base_path = (
+            f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{name}/tpu_vm_ready_flags"
+        )
+        # Only one node spec is permitted (even though it's a list).
+        create_request_time = node["tpu"]["nodeSpec"][0]["node"]["metadata"]["create_request_time"]
+        ready_flags_path = f"{ready_flags_base_path}/{create_request_time}/"
+        num_booted = len(list_blobs(ready_flags_path))
+    return dict(state=state, num_booted=num_booted)
 
 
 @dataclass
