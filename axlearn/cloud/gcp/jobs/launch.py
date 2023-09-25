@@ -217,7 +217,7 @@ class BaseBastionLaunchJob(Job):
         bastion: SubmitBastionJob = cfg.bastion.instantiate()
         with tempfile.TemporaryDirectory() as tmpdir:
             base_dir = bastion._output_dir()
-            jobs = download_job_batch(
+            jobs, _ = download_job_batch(
                 spec_dir=f"{base_dir}/jobs/active",
                 state_dir=f"{base_dir}/jobs/states",
                 user_state_dir=f"{base_dir}/jobs/user_states",
