@@ -60,7 +60,7 @@ import enum
 import pathlib
 import subprocess
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 from absl import app, flags, logging
 
@@ -82,16 +82,13 @@ from axlearn.cloud.gcp.tpu import (
     delete_tpu,
     format_tpu_info,
     get_queued_tpu_node,
+    get_queued_tpu_node_status,
     get_tpu_node,
+    get_tpu_node_status,
     infer_tpu_workers,
     list_tpu_info,
 )
-from axlearn.cloud.gcp.utils import (
-    common_flags,
-    get_credentials,
-    is_valid_resource_name,
-    running_from_vm,
-)
+from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials, running_from_vm
 from axlearn.cloud.gcp.vertexai_tensorboard import (
     VertexAITensorboardUploader,
     is_vertexai_tensorboard_configured,
@@ -162,18 +159,13 @@ class TPURunnerJob(TPUJob):
         vertexai_tb_uploader: Optional[VertexAITensorboardUploader] = None
 
     @classmethod
-    def default_config(cls) -> Config:
-        cfg = super().default_config()
-        cfg.bundler = GCSTarBundler.default_config().set(extras="gcp")
-        return cfg
-
-    @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg = super().from_flags(fv, **kwargs)
         cfg.name = cfg.name or generate_job_name()
         cfg.output_dir = (
             cfg.output_dir or f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{cfg.name}"
         )
+        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
         return cfg
 
     def __init__(self, cfg: Config) -> None:
@@ -332,7 +324,7 @@ class TPURunnerJob(TPUJob):
         # Set env vars, run the command and pipe outputs to run log.
         # Depending on command returncode, emit either success or failure flag.
         # Note that we use PIPESTATUS[0] to check the returncode of the first command in the pipe.
-        cmd = f"""echo "Starting command..." >> {self._run_log}; mkdir -p {self._output_dir} &&
+        cmd = f"""mkdir -p {self._output_dir}; echo "Starting command..." >> {self._run_log};
             {cmd} 2>&1 | stdbuf -oL sed "s/^/$HOSTNAME: /" | tee -a {self._run_log};
             if [ ${{PIPESTATUS[0]}} -eq 0 ]; then
                 echo "Setting status to SUCCESS..." >> {self._run_log};
@@ -367,7 +359,7 @@ class TPURunnerJob(TPUJob):
     def _delete(self):
         cfg: TPURunnerJob.Config = self.config
         logging.info("Copying outputs from %s...", self._output_dir)
-        self._copy_outputs(src=f"{self._output_dir}/", dst=f"{cfg.output_dir}/output/$HOSTNAME")
+        self._copy_outputs(src=f"{self._output_dir}/*", dst=f"{cfg.output_dir}/output/$HOSTNAME/")
         logging.info("Start deleting TPU %s...", cfg.name)
         delete_tpu(cfg.name, credentials=self._get_job_credentials(DEFAULT_TPU_SCOPES))
         logging.info("Finished deleting %s.", cfg.name)
@@ -384,16 +376,23 @@ class TPURunnerJob(TPUJob):
 
         TODO(markblee): If TPU util is low or idle core duration is high, return IDLE.
         """
-        cfg = self.config
+        cfg: TPURunnerJob.Config = self.config
         credentials = self._get_job_credentials(DEFAULT_TPU_SCOPES)
 
-        # If no TPU, return NOT_STARTED.
+        # If no TPU, or TPU not fully booted, return NOT_STARTED.
+        num_booted = 0
         if cfg.num_slices > 1:
             node = get_queued_tpu_node(cfg.name, _qrm_resource(credentials))
+            num_vms = cfg.num_slices * infer_tpu_workers(cfg.tpu_type)
+            if node is not None:
+                num_booted = get_queued_tpu_node_status(cfg.name, node=node)["num_booted"]
         else:
             node = get_tpu_node(cfg.name, _tpu_resource(credentials))
-        # TODO(markblee): Also check for TPU boot status.
-        if node is None:
+            num_vms = infer_tpu_workers(cfg.tpu_type)
+            if node is not None:
+                num_booted = get_tpu_node_status(cfg.name, node=node)["num_booted"]
+        if num_booted < num_vms:
+            logging.info("TPU doesn't exist or not fully booted: %d/%d", num_booted, num_vms)
             return TPURunnerJob.Status.NOT_STARTED
 
         # Probe liveness monitor.
@@ -488,50 +487,45 @@ class TPURunnerJob(TPUJob):
                 time.sleep(cfg.status_interval_seconds)
 
 
-def main(argv):
-    action = parse_action(argv, options=["start", "stop", "list"], default="start")
+@catch_auth
+def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
+    action = parse_action(argv, options=["start", "stop", "list"])
 
     if action == "list":
         print(format_tpu_info(list_tpu_info(get_credentials())))
         return
 
-    if not is_valid_resource_name(FLAGS.name):
-        raise app.UsageError(
-            "Job name is invalid. Please see "
-            "https://cloud.google.com/compute/docs/naming-resources#resource-name-format."
-        )
-
-    if not FLAGS.tpu_type:
-        raise app.UsageError("--tpu_type is required.")
-
-    command = " ".join(argv[2:])
-    if not command:
-        raise app.UsageError("Command is required.")
-
-    default_env = dict(
-        # Use a large refresh to mitigate DNS timeout issues until tf>2.12 upgrade.
-        GCS_RESOLVE_REFRESH_SECS=600,
-        TPU_TYPE=FLAGS.tpu_type,
-        NUM_TPU_SLICES=FLAGS.num_slices,
-        XLA_FLAGS=f"--xla_dump_to=/output/{FLAGS.name}/xla",
-        TF_CPP_MIN_LOG_LEVEL=0,
-    )
-
-    vertexai_tb_uploader = None
-    if is_vertexai_tensorboard_configured():
-        vertexai_tb_uploader = VertexAITensorboardUploader.default_config()
-
-    cfg = TPURunnerJob.from_flags(FLAGS).set(
-        env_vars={**default_env, **parse_kv_flags(FLAGS.env)},
-        command=command,
-        vertexai_tb_uploader=vertexai_tb_uploader,
-        bundler=get_bundler_config(bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec),
-    )
-    job: TPURunnerJob = cfg.instantiate()
+    cfg = TPURunnerJob.from_flags(flag_values)
 
     if action == "start":
+        if not flag_values.tpu_type:
+            raise app.UsageError("--tpu_type is required.")
+
+        command = " ".join(argv[2:])
+        if not command:
+            raise app.UsageError("Command is required.")
+
+        default_env = dict(
+            # Use a large refresh to mitigate DNS timeout issues until tf>2.12 upgrade.
+            GCS_RESOLVE_REFRESH_SECS=600,
+            TPU_TYPE=flag_values.tpu_type,
+            NUM_TPU_SLICES=flag_values.num_slices,
+            XLA_FLAGS=f"--xla_dump_to=/output/{flag_values.name}/xla",
+            TF_CPP_MIN_LOG_LEVEL=0,
+        )
+        vertexai_tb_uploader = None
+        if is_vertexai_tensorboard_configured():
+            vertexai_tb_uploader = VertexAITensorboardUploader.default_config()
+
+        cfg.set(
+            env_vars={**default_env, **parse_kv_flags(flag_values.env)},
+            command=command,
+            vertexai_tb_uploader=vertexai_tb_uploader,
+        )
+        job: TPURunnerJob = cfg.instantiate()
         job.execute()
     elif action == "stop":
+        job: TPURunnerJob = cfg.set(command="").instantiate()
         job._delete()  # pylint: disable=protected-access
     else:
         # Unreachable -- `parse_action` will handle validation.

@@ -82,7 +82,7 @@ def mock_vm(module_name: str, running_from_vm: bool = True):
 
 
 @contextlib.contextmanager
-def mock_credentials():
+def _mock_credentials():
     mocks = [
         mock.patch(f"{gcp_job.__name__}.get_credentials"),
         mock.patch(f"{cpu_runner.__name__}.get_credentials"),
@@ -118,7 +118,7 @@ class CPURunnerJobTest(TestWithTemporaryCWD):
 
         mock_execute = mock.patch.object(job, "_execute_remote_cmd", return_value=None)
 
-        with mock_execute, mock_credentials(), mock_vm(cpu_runner.__name__) as mocks:
+        with mock_execute, _mock_credentials(), mock_vm(cpu_runner.__name__) as mocks:
             job._start()
             mocks["create_vm"].assert_called()
             # Bundling should happen outside of start.
@@ -133,7 +133,7 @@ class CPURunnerJobTest(TestWithTemporaryCWD):
 
         mock_execute = mock.patch.object(job, "_execute_remote_cmd", return_value=None)
 
-        with mock_execute, mock_credentials(), mock_vm(cpu_runner.__name__) as mocks:
+        with mock_execute, _mock_credentials(), mock_vm(cpu_runner.__name__) as mocks:
             job._delete()
             # Without any VM, no delete should be issued.
             self.assertEqual(False, mocks["delete_vm"].called)
@@ -175,7 +175,7 @@ class CPURunnerJobTest(TestWithTemporaryCWD):
                     self.assertEqual("FAILED", job._status_file.read_text().strip())
 
         mock_execute = mock.patch.object(job, "_execute_remote_cmd", side_effect=execute_command)
-        with mock_execute, mock_credentials(), mock_vm(cpu_runner.__name__):
+        with mock_execute, _mock_credentials(), mock_vm(cpu_runner.__name__):
             job._run_command()
             # Install should happen at run_command.
             job._bundler.install_command.assert_called()
@@ -217,7 +217,7 @@ class CPURunnerJobTest(TestWithTemporaryCWD):
             )
 
         mock_execute = mock.patch.object(job, "_execute_remote_cmd", side_effect=execute_command)
-        with mock_execute, mock_credentials(), mock_vm(cpu_runner.__name__):
+        with mock_execute, _mock_credentials(), mock_vm(cpu_runner.__name__):
             self.assertEqual(CPURunnerJob.Status.NOT_STARTED, job._get_status())
             job._start()
 
@@ -287,7 +287,7 @@ class CPURunnerMainTest(TestWithTemporaryCWD):
     @parameterized.parameters(True, False)
     def test_list(self, running_from_vm):
         # Test that list can be invoked without additional flags.
-        with _mock_job(running_from_vm), mock_credentials():
+        with _mock_job(running_from_vm), _mock_credentials():
             main(["cli", "list"])
 
     @parameterized.parameters(True, False)
@@ -305,10 +305,10 @@ class CPURunnerMainTest(TestWithTemporaryCWD):
 
         with _mock_job(running_from_vm) as mock_job:
             with self.assertRaisesRegex(app.UsageError, "Invalid action"):
-                main(["cli"])
+                main(["cli"], flag_values=fv)
 
             with self.assertRaisesRegex(app.UsageError, "Command is required"):
-                main(["cli", "start"])
+                main(["cli", "start"], flag_values=fv)
 
             main(["cli", "start", "--", "test_command"], flag_values=fv)
             if not running_from_vm:
