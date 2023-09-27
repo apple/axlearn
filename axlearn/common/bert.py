@@ -146,7 +146,10 @@ class BertLMHead(BaseClassificationHead):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        self._add_child("inner_head", cfg.inner_head.set(dim=cfg.input_dim))
+        if hasattr(cfg.inner_head, "input_dim"):
+            self._add_child("inner_head", cfg.inner_head.set(input_dim=cfg.input_dim))
+        else:
+            self._add_child("inner_head", cfg.inner_head.set(dim=cfg.input_dim))
         self._add_child(
             "transform", cfg.transform.set(input_dim=cfg.input_dim, output_dim=cfg.input_dim)
         )

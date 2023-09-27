@@ -1,10 +1,4 @@
 # Copyright © 2023 Apple Inc.
-#
-# Some of the code in this file is adapted from:
-#
-# naver/splade:
-# Copyright (c) 2021-present NAVER Corp.
-# Licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
 
 """Tests pooling layers."""
 # pylint: disable=no-self-use
@@ -12,8 +6,6 @@ import itertools
 
 import jax
 import jax.random
-import numpy as np
-import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
@@ -27,10 +19,8 @@ from axlearn.common.poolings import (
     LastNTokenPooling,
     MaxPooling,
     PoolingWithProjection,
-    SpladePooling,
 )
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import shapes
 
 
@@ -439,116 +429,6 @@ class PoolingTest(TestCase):
 
         assert_allclose(outputs, jnp.zeros((inputs.shape[0], n, output_dim)), atol=atol)
         self.assertEqual(outputs.dtype, dtype)
-
-
-class SpladePoolingTest(TestCase):
-    def ref_splade_implementation(
-        self, inputs, attention_mask, agg, model_args
-    ):  # pylint: disable=no-self-use
-        """Reference splade implementation.
-
-        Ref: https://github.com/naver/splade/blob/main/splade/models/transformer_rep.py#L188-L193
-        """
-        mapping_layer = torch.nn.Sequential(
-            torch.nn.Linear(model_args["input_dim"], model_args["intermediate_dim"]),
-            torch.nn.GELU("tanh"),
-            torch.nn.LayerNorm([model_args["intermediate_dim"]], eps=1e-8),
-            torch.nn.Linear(model_args["intermediate_dim"], model_args["output_dim"]),
-        )
-        out = mapping_layer(inputs)
-        if agg == "sum":
-            values = torch.sum(
-                torch.log(1 + torch.relu(out)) * attention_mask.unsqueeze(-1), dim=1, keepdims=True
-            )
-        else:
-            values, _ = torch.max(
-                torch.log(1 + torch.relu(out)) * attention_mask.unsqueeze(-1), dim=1, keepdims=True
-            )
-        return (
-            values,
-            {
-                "input_mapping": {
-                    "linear": mapping_layer[0],
-                    "norm": mapping_layer[2],
-                },
-                "vocab_mapping": mapping_layer[3],
-            },
-        )
-
-    def verify_splade_against_ref(self, inputs, splade_layer, paddings, agg, model_args):
-        # Process the paddings.
-        if paddings is None:
-            torch_paddings = torch.ones((inputs.shape[:-1]))
-            axlearn_paddings = None
-        else:
-            torch_paddings = torch.from_numpy(paddings.astype(np.float))
-            # axlearn_paddings = True means padded tokens.
-            axlearn_paddings = jnp.asarray((1 - paddings).astype(np.bool))
-
-        # Reference output.
-        ref_output, ref_model_params = self.ref_splade_implementation(
-            torch.from_numpy(inputs), torch_paddings, agg, model_args
-        )
-
-        # Set Splade layer parameters.
-        layer_params = {
-            "vocab_mapping": {
-                "input_mapping": parameters_from_torch_layer(
-                    ref_model_params["input_mapping"]["linear"]
-                ),
-                "input_norm": parameters_from_torch_layer(
-                    ref_model_params["input_mapping"]["norm"]
-                ),
-                "vocab_mapping": parameters_from_torch_layer(ref_model_params["vocab_mapping"]),
-            }
-        }
-
-        layer_output, _ = F(
-            splade_layer,
-            inputs=dict(tokens=jnp.asarray(inputs), paddings=axlearn_paddings),
-            state=layer_params,
-            is_training=True,
-            prng_key=jax.random.PRNGKey(0),
-        )
-        assert_allclose(layer_output, ref_output.detach().numpy())
-
-    def test_splade_lm_head(self, mode="max"):
-        # set up the env.
-        batch_size = 2
-        length = 12
-        dim = 32
-        intermediate_dim = 48
-        vocab_size = 64
-
-        # test w/o paddings
-        splade_layer_cfg = SpladePooling.default_config().set(
-            name="splade_head",
-            input_dim=dim,
-            output_dim=vocab_size,
-            splade_mode=mode,
-        )
-        splade_layer_cfg.vocab_mapping.intermediate_dim = intermediate_dim
-        splade_layer = splade_layer_cfg.instantiate(parent=None)
-        model_args = {
-            "input_dim": dim,
-            "intermediate_dim": intermediate_dim,
-            "output_dim": vocab_size,
-        }
-        inputs = np.random.random((batch_size, length, dim)).astype(np.float32)
-        self.verify_splade_against_ref(
-            inputs, splade_layer, paddings=None, agg=mode, model_args=model_args
-        )
-
-        # test w/ paddings
-        inputs = np.random.random((batch_size, length, dim)).astype(np.float32)
-        paddings = np.random.randint(0, 2, (batch_size, length))
-        self.verify_splade_against_ref(
-            inputs, splade_layer, paddings=paddings, agg=mode, model_args=model_args
-        )
-
-    def test_all_splade_mode(self):
-        self.test_splade_lm_head(mode="max")
-        self.test_splade_lm_head(mode="sum")
 
 
 if __name__ == "__main__":
