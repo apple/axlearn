@@ -24,6 +24,6 @@ repos:
   - id: pylint
     name: pylint
     entry: pylint
-    args: ["--output-format=parseable"]
+    args: ['--msg-template="{abspath}:{line}: [{msg_id}({symbol}), {obj}] {msg}"']
     language: system
     types: [python]
