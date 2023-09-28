@@ -67,7 +67,7 @@ def param_init_debug_string(
         delegates={
             HF_MODULE_KEY: ParamInitSpec(
                 shape=None,
-                initializer=ThirdPartyInitializer("hf"),
+                initializer=ThirdPartyInitializer.default_config().set(library="hf").instantiate(),
                 fan_axes=None,
             ),
         },

@@ -7,7 +7,6 @@ import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
 
-from axlearn.common.config import config_for_class
 from axlearn.common.param_init import (
     PARAM_REGEXP_BIAS,
     PARAM_REGEXP_SCALE,
@@ -26,7 +25,7 @@ class DefaultInitializerTest(TestCase):
     def test_bias(self, bias_init_value):
         cfg = DefaultInitializer.default_config().set(
             init_by_param_name={
-                PARAM_REGEXP_BIAS: config_for_class(ConstantInitializer).set(value=bias_init_value)
+                PARAM_REGEXP_BIAS: ConstantInitializer.default_config().set(value=bias_init_value)
             }
         )
         init: DefaultInitializer = cfg.instantiate()
@@ -123,10 +122,10 @@ class DefaultInitializerTest(TestCase):
         )
         cfg = DefaultInitializer.default_config().set(
             init_by_param_name={
-                ".*bbias": config_for_class(ConstantInitializer).set(value=-10),
+                ".*bbias": ConstantInitializer.default_config().set(value=-10),
                 # Note this overwrites the default entry.
-                PARAM_REGEXP_BIAS: config_for_class(ConstantInitializer).set(value=2.718),
-                "bias": config_for_class(ConstantInitializer).set(value=6),
+                PARAM_REGEXP_BIAS: ConstantInitializer.default_config().set(value=2.718),
+                "bias": ConstantInitializer.default_config().set(value=6),
             }
         )
         init: DefaultInitializer = cfg.instantiate()
@@ -214,7 +213,7 @@ class PerGroupInitializerTest(TestCase):
     def test_constant_init(
         self,
     ):
-        init_cfg = config_for_class(ConstantInitializer).set(value=0.5)
+        init_cfg = ConstantInitializer.default_config().set(value=0.5)
         init = init_cfg.instantiate()
         per_group_init = (
             PerGroupInitializer.default_config()

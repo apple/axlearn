@@ -35,13 +35,7 @@ from axlearn.common.attention import (
     scaled_hidden_dim,
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import (
     Conv2D,
     Dropout,
@@ -187,7 +181,7 @@ class Encoder1D(BaseLayer):
         # pylint: disable=no-member
         # https://github.com/google-research/vision_transformer/blob/dc8ddbcdeefd281d6cc7fea0c97355495688ca9c/vit_jax/models.py#L189
         if cfg.use_pos_emb:
-            cfg.pos_emb.param_init = config_for_class(GaussianInitializer).set(std=0.02)
+            cfg.pos_emb.param_init = GaussianInitializer.default_config().set(std=0.02)
         # Vision transformer uses 'gelu' and dropout=0.1 by default.
         set_dropout_rate_recursively(cfg, dropout_rate=0.1)
         transformer_layer_cfg = cfg.transformer.layer
@@ -336,13 +330,13 @@ class VisionTransformer(BaseLayer):
             param_specs["cls_token"] = ParameterSpec(
                 shape=(1, cfg.num_cls_tokens, cfg.output_dim),
                 mesh_axes=(None, None, "model"),
-                initializer=param_init.ConstantInitializer(0.0),
+                initializer=param_init.constant_initializer(0.0),
             )
         if cfg.use_mask_tokens:
             param_specs["mask_token"] = ParameterSpec(
                 shape=(1, 1, cfg.output_dim),
                 mesh_axes=(None, None, "model"),
-                initializer=param_init.GaussianInitializer(std=0.02),
+                initializer=param_init.gaussian_initializer(std=0.02),
             )
         return param_specs
 

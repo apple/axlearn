@@ -11,13 +11,7 @@ from typing import Dict, Iterable, Optional
 import numpy as np
 
 from axlearn.common.base_layer import BaseLayer
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import BatchNorm, Conv2D, get_activation_fn, set_norm_recursively
 from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.param_init import (
@@ -386,7 +380,7 @@ def efficientdet_boxclasshead_config(
 
     class_head_param_init = DefaultInitializer.default_config().set(
         init_by_param_name={
-            PARAM_REGEXP_BIAS: config_for_class(ConstantInitializer).set(
+            PARAM_REGEXP_BIAS: ConstantInitializer.default_config().set(
                 value=-np.log((1 - 0.01) / 0.01),
             ),
             PARAM_REGEXP_WEIGHT: WeightInitializer.default_config().set(

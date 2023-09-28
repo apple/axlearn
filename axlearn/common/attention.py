@@ -62,7 +62,6 @@ from axlearn.common.config import (
     InstantiableConfig,
     Required,
     config_class,
-    config_for_class,
     config_for_function,
 )
 from axlearn.common.layers import (
@@ -80,6 +79,7 @@ from axlearn.common.param_init import (
     DefaultInitializer,
     FanAxes,
     WeightInitializer,
+    constant_initializer,
 )
 from axlearn.common.pipeline import Pipeline
 from axlearn.common.repeat import Repeat
@@ -1065,7 +1065,7 @@ class PerDimScale(BaseLayer):
     @classmethod
     def default_config(cls) -> Config:
         cfg: PerDimScale.Config = super().default_config()
-        cfg.param_init = config_for_class(ConstantInitializer).set(value=0.0)
+        cfg.param_init = ConstantInitializer.default_config().set(value=0.0)
         return cfg
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
@@ -1584,7 +1584,7 @@ class MultiheadAttentionXL(MultiheadAttention):
         params = super()._create_layer_parameter_specs()
         params["u_bias"] = params["v_bias"] = ParameterSpec(
             shape=(cfg.num_heads, self.per_head_dim()),
-            initializer=ConstantInitializer(0),
+            initializer=constant_initializer(0),
             mesh_axes=cfg.relative_pos_linear.param_partition_spec[-2:],
         )
         return params
