@@ -25,7 +25,7 @@ from tensorflow.python.summary.summary_iterator import (  # pylint: disable=no-n
 from axlearn.common import param_init, test_utils
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
-from axlearn.common.config import config_class, config_for_class, config_for_function
+from axlearn.common.config import config_class, config_for_function
 from axlearn.common.evaler import (
     CompositeMetricCalculator,
     GlobalMetricCalculator,
@@ -108,7 +108,7 @@ class DummyModel(BaseModel):
             param_partition_spec=("model", None),
         )
         cfg.name = cls.__name__
-        cfg.param_init = config_for_class(param_init.ConstantInitializer).set(value=1.0)
+        cfg.param_init = param_init.ConstantInitializer.default_config().set(value=1.0)
         return cfg
 
     def __init__(self, cfg: BaseModel.Config, *, parent: Optional[Module]):
