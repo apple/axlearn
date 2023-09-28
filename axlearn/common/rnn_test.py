@@ -121,7 +121,7 @@ class StackedRNNTest(TestCase):
                     hidden_dim=hidden_dim,
                     norm=norm_cfg,
                 ),
-                param_init=config_for_class(GaussianInitializer).set(std=10.0),
+                param_init=GaussianInitializer.default_config().set(std=10.0),
             )
             .instantiate(parent=None)
         )
@@ -239,7 +239,7 @@ class StackedRNNTest(TestCase):
                 name="test",
                 input_dim=input_dim,
                 layers=layer_cfgs,
-                param_init=config_for_class(GaussianInitializer).set(std=10.0),
+                param_init=GaussianInitializer.default_config().set(std=10.0),
             )
             .instantiate(parent=None)
         )

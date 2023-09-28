@@ -157,7 +157,7 @@ class HelpersTest(TestCase):
                 num_codebooks=num_groups,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        ".*codebook$": config_for_class(ConstantInitializer).set(value=0.0),
+                        ".*codebook$": ConstantInitializer.default_config().set(value=0.0),
                     }
                 ),
             )

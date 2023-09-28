@@ -460,7 +460,7 @@ class CLIPFusionNetwork(FusionNetwork):
 
         # Ref: https://arxiv.org/pdf/2103.00020.pdf pp.5 Sect. 2.5
         # Ref: https://arxiv.org/pdf/1805.01978.pdf pp.3 Eq.2 and pp.5 Sect. 3.4
-        log_logit_scale_init: InstantiableConfig = config_for_class(ConstantInitializer).set(
+        log_logit_scale_init: InstantiableConfig = ConstantInitializer.default_config().set(
             value=np.log(1 / 0.07)
         )
         temperature_max_cap: float = 100

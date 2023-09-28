@@ -55,7 +55,7 @@ class BEITImageQuantizerTest(TestCase):
             name="test",
             input_dim=model_dim,
             rate=rate,
-            param_init=config_for_class(ConstantInitializer).set(value=2),
+            param_init=ConstantInitializer.default_config().set(value=2),
         )
         layer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))

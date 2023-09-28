@@ -1937,9 +1937,7 @@ class RedirectToSharedModuleTest(TestCase):
             cfg = ParentLayer.default_config().set(
                 shared_modules=["shared_bias"],
                 children=dict(
-                    shared_bias=BiasLayer.default_config().set(
-                        param_init=config_for_class(ConstantInitializer).set(value=1)
-                    ),
+                    shared_bias=BiasLayer.default_config().set(param_init=constant_initializer(1)),
                     parent_a=ParentLayer.default_config().set(
                         children=dict(
                             redirect_1=RedirectToSharedModule.default_config().set(

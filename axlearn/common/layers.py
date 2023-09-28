@@ -37,10 +37,10 @@ from axlearn.common.module import Module, child_context
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,
-    ConstantInitializer,
     DefaultInitializer,
     FanAxes,
     WeightInitializer,
+    constant_initializer,
 )
 from axlearn.common.utils import (
     NestedTensor,
@@ -476,14 +476,14 @@ class BatchNorm(BaseNormalizationLayer):
                 shape=[cfg.input_dim],
                 dtype=jnp.float32,
                 mesh_axes=(None,),
-                initializer=ConstantInitializer(0.0),
+                initializer=constant_initializer(0.0),
                 weight_decay_scale=0,
             ),
             "moving_variance": ParameterSpec(
                 shape=[cfg.input_dim],
                 dtype=jnp.float32,
                 mesh_axes=(None,),
-                initializer=ConstantInitializer(1.0),
+                initializer=constant_initializer(1.0),
                 weight_decay_scale=0,
             ),
         }

@@ -49,7 +49,9 @@ class TestLayer(BaseLayer):
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
         return dict(
-            inc=ParameterSpec(shape=[], mesh_axes=[], initializer=param_init.ConstantInitializer(1))
+            inc=ParameterSpec(
+                shape=[], mesh_axes=[], initializer=param_init.constant_initializer(1)
+            )
         )
 
     def init_forward_state(self, batch_size):

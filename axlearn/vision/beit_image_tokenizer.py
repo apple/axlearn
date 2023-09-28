@@ -70,7 +70,7 @@ class BEiTStochasticDepth(BaseLayer):
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
-        cfg.param_init = config_for_class(ConstantInitializer).set(value=1)
+        cfg.param_init = ConstantInitializer.default_config().set(value=1)
         return cfg
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:

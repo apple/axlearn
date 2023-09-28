@@ -139,7 +139,7 @@ class LoraLinearAdapter(_BaseLoraAdapter):
                 param_partition_spec=["model", None],
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        PARAM_REGEXP_WEIGHT: config_for_class(ConstantInitializer).set(value=0.0)
+                        PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
                     }
                 ),
                 bias=False,
@@ -311,7 +311,7 @@ class LoraMultiheadOutputAdapter(_BaseLoraAdapter):
                 bias=False,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        PARAM_REGEXP_WEIGHT: config_for_class(ConstantInitializer).set(value=0.0)
+                        PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
                     }
                 ),
             ),
@@ -393,7 +393,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
                 num_enabled=self._num_enbaled,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        PARAM_REGEXP_WEIGHT: config_for_class(ConstantInitializer).set(value=0.0)
+                        PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
                     }
                 ),
             ),

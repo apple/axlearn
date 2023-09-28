@@ -461,7 +461,7 @@ class WeightedFeatureFusion(BaseLayer):
         # Activation function to apply after the fusion.
         activation: str = "linear"
         # Default initializer is set to 1.0
-        param_init: InstantiableConfig = config_for_class(ConstantInitializer).set(value=1.0)
+        param_init: InstantiableConfig = ConstantInitializer.default_config().set(value=1.0)
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)

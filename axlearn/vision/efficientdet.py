@@ -386,7 +386,7 @@ def efficientdet_boxclasshead_config(
 
     class_head_param_init = DefaultInitializer.default_config().set(
         init_by_param_name={
-            PARAM_REGEXP_BIAS: config_for_class(ConstantInitializer).set(
+            PARAM_REGEXP_BIAS: ConstantInitializer.default_config().set(
                 value=-np.log((1 - 0.01) / 0.01),
             ),
             PARAM_REGEXP_WEIGHT: WeightInitializer.default_config().set(
