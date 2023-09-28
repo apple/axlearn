@@ -47,7 +47,7 @@ _CODE_BOOK = jnp.array(
 
 def _create_prngkeyarray(key_data: List[int]) -> jax.random.KeyArray:
     # pylint: disable-next=protected-access
-    return jax._src.prng.PRNGKeyArrayImpl(
+    return jax._src.prng.PRNGKeyArrayImpl(  # pytype: disable=module-attr
         impl=jax.random.default_prng_impl(), key_data=jnp.array(key_data, dtype=jnp.uint32)
     )
 
