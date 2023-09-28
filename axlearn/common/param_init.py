@@ -8,13 +8,7 @@ import jax
 from absl import logging
 from jax import numpy as jnp
 
-from axlearn.common.config import (
-    REQUIRED,
-    Configurable,
-    InstantiableConfig,
-    Required,
-    config_class,
-)
+from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
 
 Shape = Sequence[int]
 

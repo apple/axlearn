@@ -24,12 +24,7 @@ import jax.numpy as jnp
 
 from axlearn.common.attention import scaled_hidden_dim
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    FunctionConfigBase,
-    Required,
-    config_class,
-)
+from axlearn.common.config import REQUIRED, FunctionConfigBase, Required, config_class
 from axlearn.common.layers import (
     L2Norm,
     LayerNorm,

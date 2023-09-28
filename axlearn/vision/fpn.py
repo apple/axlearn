@@ -28,12 +28,7 @@ import numpy as np
 from jax import numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import (
     BatchNorm,
     Conv2D,

@@ -22,12 +22,7 @@ from axlearn.common.attention import (
     MultiheadOutputLinear,
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Dropout, Linear
 from axlearn.common.module import Module
 from axlearn.common.param_init import (
