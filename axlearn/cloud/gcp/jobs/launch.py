@@ -146,6 +146,8 @@ class BaseBastionLaunchJob(Job):
         user_id: Required[str] = REQUIRED
         # Project ID for bastion quota and scheduling.
         project_id: Required[str] = REQUIRED
+        # Job priority.
+        priority: Required[int] = REQUIRED
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -159,6 +161,12 @@ class BaseBastionLaunchJob(Job):
         flags.DEFINE_string("name", generate_job_name(), "Job name.", **common_kwargs)
         flags.DEFINE_string(
             "bastion", shared_bastion_name(), "Name of bastion VM to use.", **common_kwargs
+        )
+        flags.DEFINE_integer(
+            "priority",
+            5,
+            "Job priority. Smaller means higher priority.",
+            **common_kwargs,
         )
         flags.DEFINE_string(
             "user_id",
@@ -282,6 +290,7 @@ class BaseBastionLaunchJob(Job):
                 project_id=cfg.project_id or "none",
                 creation_time=datetime.now(),
                 resources=self._resources(),
+                priority=cfg.priority,
             )
             serialize_jobspec(new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata), f)
             bastion: SubmitBastionJob = cfg.bastion.set(job_spec_file=f.name).instantiate()
