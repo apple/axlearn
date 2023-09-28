@@ -35,7 +35,6 @@ from axlearn.common.config import (
     InstantiableConfig,
     Required,
     config_class,
-    config_for_class,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import (

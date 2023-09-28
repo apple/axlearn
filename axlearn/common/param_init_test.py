@@ -7,7 +7,6 @@ import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
 
-from axlearn.common.config import config_for_class
 from axlearn.common.param_init import (
     PARAM_REGEXP_BIAS,
     PARAM_REGEXP_SCALE,

@@ -29,7 +29,6 @@ from axlearn.common.config import (
     FunctionConfigBase,
     Required,
     config_class,
-    config_for_class,
 )
 from axlearn.common.layers import (
     L2Norm,

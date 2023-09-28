@@ -34,7 +34,6 @@ from axlearn.common.config import (
     InstantiableConfig,
     Required,
     config_class,
-    config_for_class,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import Dropout, Embedding, LayerNorm, set_dropout_rate_recursively

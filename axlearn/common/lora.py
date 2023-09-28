@@ -27,7 +27,6 @@ from axlearn.common.config import (
     InstantiableConfig,
     Required,
     config_class,
-    config_for_class,
 )
 from axlearn.common.layers import Dropout, Linear
 from axlearn.common.module import Module

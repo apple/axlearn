@@ -11,13 +11,7 @@ from typing import Dict, Iterable, Optional
 import numpy as np
 
 from axlearn.common.base_layer import BaseLayer
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import BatchNorm, Conv2D, get_activation_fn, set_norm_recursively
 from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.param_init import (

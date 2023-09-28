@@ -656,7 +656,11 @@ class ReadParamInitSpecsRecursivelyTest(TestCase):
         )
         delegates = {
             "dummy": ParamInitSpec(
-                shape=None, initializer=ThirdPartyInitializer("dummy_delegate"), fan_axes=None
+                shape=None,
+                initializer=ThirdPartyInitializer.default_config()
+                .set(library="dummy_delegate")
+                .instantiate(),
+                fan_axes=None,
             ),
         }
         param_init_specs = read_param_init_specs_recursively(layer, delegates=delegates)

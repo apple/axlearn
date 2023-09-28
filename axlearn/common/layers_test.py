@@ -25,7 +25,7 @@ from sklearn.metrics import recall_score as sklearn_recall_score
 
 from axlearn.common import module, utils
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import config_class, config_for_class
+from axlearn.common.config import config_class
 from axlearn.common.decoder import Decoder
 from axlearn.common.layers import (
     BatchNorm,
@@ -67,7 +67,7 @@ from axlearn.common.layers import (
 from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
-from axlearn.common.param_init import ConstantInitializer, FanAxes
+from axlearn.common.param_init import FanAxes, constant_initializer
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import as_tensor, flatten_items, shapes

@@ -8,7 +8,6 @@ from absl import logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
-from axlearn.common.config import config_for_class
 from axlearn.common.layers import GroupNorm, LayerNorm
 from axlearn.common.module import functional as F
 from axlearn.common.param_init import GaussianInitializer

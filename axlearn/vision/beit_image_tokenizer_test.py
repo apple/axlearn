@@ -4,7 +4,6 @@
 import jax
 from absl.testing import absltest, parameterized
 
-from axlearn.common.config import config_for_class
 from axlearn.common.module import functional as F
 from axlearn.common.param_init import ConstantInitializer
 from axlearn.common.test_utils import TestCase, assert_allclose
