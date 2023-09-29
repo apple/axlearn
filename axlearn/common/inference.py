@@ -30,7 +30,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
-from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
@@ -212,7 +211,7 @@ class InferenceRunner(Module):
             [device.platform for device in jax.local_devices()],
         )
         logging.info("Mesh shape: %s", cfg.mesh_shape)
-        devices = mesh_utils.create_device_mesh(cfg.mesh_shape)
+        devices = utils.create_device_mesh(cfg.mesh_shape)
         mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
         logging.info("Global mesh: %s", mesh)
         self._mesh = mesh
