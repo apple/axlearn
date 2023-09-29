@@ -328,7 +328,11 @@ def set_current_context(context: InvocationContext):
             )
     try:
         _global_context_stack.stack.append(context)
-        yield context
+        if context.name != "remat":  # "remat" is already automatically added to JAX scope by JAX.
+            with jax.named_scope(f"{context.name}[{context.module.__class__.__qualname__}]"):
+                yield context
+        else:
+            yield context
     finally:
         _global_context_stack.stack.pop(-1)
 
