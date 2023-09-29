@@ -29,13 +29,7 @@ from axlearn.common.attention import (
     scaled_hidden_dim,
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import Dropout, Embedding, LayerNorm, set_dropout_rate_recursively
 from axlearn.common.module import Module, NestedTensor, Tensor, child_context
@@ -296,7 +290,7 @@ class MultiModalEncoder(BaseLayer):
             }
         )
         # pylint: disable=no-member
-        cfg.visual_pos_emb.param_init = config_for_class(GaussianInitializer).set(std=0.02)
+        cfg.visual_pos_emb.param_init = GaussianInitializer.default_config().set(std=0.02)
         transformer_layer_cfg = cfg.transformer.layer
         transformer_layer_cfg.feed_forward.activation = "nn.gelu"
         transformer_layer_cfg.feed_forward.norm = layer_norm_config()
@@ -312,13 +306,13 @@ class MultiModalEncoder(BaseLayer):
             param_specs["cls_token"] = ParameterSpec(
                 shape=(1, cfg.num_cls_tokens, cfg.output_dim),
                 mesh_axes=(None, None, "model"),
-                initializer=param_init.ConstantInitializer(0.0),
+                initializer=param_init.constant_initializer(0.0),
             )
         if cfg.use_mask_tokens:
             param_specs["mask_token"] = ParameterSpec(
                 shape=(1, 1, cfg.output_dim),
                 mesh_axes=(None, None, "model"),
-                initializer=param_init.ConstantInitializer(0.0),
+                initializer=param_init.constant_initializer(0.0),
             )
         return param_specs
 

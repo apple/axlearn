@@ -52,9 +52,9 @@ from axlearn.common.loss import mean_squared_error
 from axlearn.common.module import Module, child_context
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,
-    ConstantInitializer,
     DefaultInitializer,
     WeightInitializer,
+    constant_initializer,
 )
 from axlearn.common.utils import NestedTensor, Tensor
 
@@ -146,7 +146,10 @@ class BertLMHead(BaseClassificationHead):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        self._add_child("inner_head", cfg.inner_head.set(dim=cfg.input_dim))
+        if hasattr(cfg.inner_head, "input_dim"):
+            self._add_child("inner_head", cfg.inner_head.set(input_dim=cfg.input_dim))
+        else:
+            self._add_child("inner_head", cfg.inner_head.set(dim=cfg.input_dim))
         self._add_child(
             "transform", cfg.transform.set(input_dim=cfg.input_dim, output_dim=cfg.input_dim)
         )
@@ -158,7 +161,7 @@ class BertLMHead(BaseClassificationHead):
             output_bias=ParameterSpec(
                 shape=[cfg.num_classes],
                 mesh_axes=(None,),
-                initializer=ConstantInitializer(0.0),
+                initializer=constant_initializer(0.0),
             ),
         )
 

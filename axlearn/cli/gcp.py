@@ -47,6 +47,7 @@ def add_cmd_group(*, parent: CommandGroup):
     )
 
     # Interact with jobs.
+    # TODO(markblee): Make the distinction between launch, tpu, and bastion more clear.
     gcp_cmd.add_cmd_from_module(
         "bundle",
         module="axlearn.cloud.gcp.bundler",
@@ -60,12 +61,22 @@ def add_cmd_group(*, parent: CommandGroup):
     gcp_cmd.add_cmd_from_module(
         "tpu",
         module="axlearn.cloud.gcp.jobs.tpu_runner",
-        help="Launch arbitrary commands on TPU-VMs",
+        help="Create a TPU-VM and execute the given command on it",
+    )
+    gcp_cmd.add_cmd_from_module(
+        "vm",
+        module="axlearn.cloud.gcp.jobs.cpu_runner",
+        help="Create a VM and execute the given command on it",
     )
     gcp_cmd.add_cmd_from_module(
         "bastion",
         module="axlearn.cloud.gcp.jobs.bastion_vm",
         help="Launch jobs through Bastion orchestrator",
+    )
+    gcp_cmd.add_cmd_from_module(
+        "dataflow",
+        module="axlearn.cloud.gcp.jobs.dataflow",
+        help="Run Dataflow jobs locally or on GCP",
     )
 
     # Auth command.

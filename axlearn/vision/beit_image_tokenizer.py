@@ -24,13 +24,7 @@ import jax.numpy as jnp
 
 from axlearn.common.attention import scaled_hidden_dim
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    FunctionConfigBase,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, FunctionConfigBase, Required, config_class
 from axlearn.common.layers import (
     L2Norm,
     LayerNorm,
@@ -70,7 +64,7 @@ class BEiTStochasticDepth(BaseLayer):
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
-        cfg.param_init = config_for_class(ConstantInitializer).set(value=1)
+        cfg.param_init = ConstantInitializer.default_config().set(value=1)
         return cfg
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:

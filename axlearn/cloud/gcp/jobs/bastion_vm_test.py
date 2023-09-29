@@ -4,10 +4,8 @@
 # pylint: disable=no-self-use,protected-access
 import contextlib
 import os
-import shlex
 import subprocess
 import tempfile
-import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Sequence
 from unittest import mock
@@ -20,10 +18,10 @@ from axlearn.cloud.common.types import ResourceMap
 from axlearn.cloud.gcp.jobs import bastion_vm
 from axlearn.cloud.gcp.jobs.bastion_vm import (
     _JOB_DIR,
+    _LOG_DIR,
     BastionJob,
     Job,
     JobState,
-    _kill_popen,
     _PipedProcess,
     deserialize_jobspec,
     download_job_batch,
@@ -31,40 +29,6 @@ from axlearn.cloud.gcp.jobs.bastion_vm import (
     serialize_jobspec,
 )
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
-
-
-class TestSubprocess(parameterized.TestCase):
-    """Tests subprocess utils."""
-
-    def test_kill(self):
-        """Tests _kill_popen by starting a subprocess which has child subprocesses.
-
-        Unlike kill(), _kill_popen should recursively kill the children, which does not leave orphan
-        processes running. This test will fail by replacing _kill_popen(p) with p.kill().
-        """
-        test_script = os.path.join(os.path.dirname(__file__), "testdata/counter.py")
-        with tempfile.NamedTemporaryFile("r+") as f:
-
-            def _read_count():
-                f.seek(0, 0)
-                return int(f.read())
-
-            # pylint: disable-next=consider-using-with
-            p = subprocess.Popen(
-                shlex.split(f"python3 {test_script} {f.name} parent"), start_new_session=True
-            )
-            time.sleep(1)
-            # Check that the count has incremented.
-            self.assertGreater(_read_count(), 0)
-            # Kill the subprocess.
-            _kill_popen(p)
-            # Get the count again, after kill has finished.
-            count = _read_count()
-            self.assertGreater(count, 0)
-            # Wait for some ticks.
-            time.sleep(1)
-            # Ensure that the count is still the same.
-            self.assertEqual(_read_count(), count)
 
 
 class TestDownloadJobBatch(parameterized.TestCase):
@@ -76,61 +40,83 @@ class TestDownloadJobBatch(parameterized.TestCase):
         user_state_dir = "gs://user_state_dir"
 
         user_states = {
-            f"{user_state_dir}/job_test1": JobState.CANCELLING,
+            "job_test1": JobState.CANCELLING,
+            "job_test2": JobState.ACTIVE,
+            "job_test0": JobState.CANCELLING,
+            "job_test3": JobState.CANCELLING,
         }
         states = {
-            f"{state_dir}/job_test2": JobState.CLEANING,
-            f"{state_dir}/job_test1": JobState.ACTIVE,
-            f"{state_dir}/job_test0": JobState.ACTIVE,
+            "job_test1": JobState.ACTIVE,
+            "job_test0": JobState.CLEANING,
+            "job_test3": JobState.COMPLETED,
+            "job_test4": JobState.PENDING,
         }
         jobspecs = {
-            f"{spec_dir}/job_test2": mock.Mock(),
-            f"{spec_dir}/job_test1": mock.Mock(),
-            f"{spec_dir}/job_test0": mock.Mock(),
+            "job_test2": mock.Mock(),
+            "job_test1": mock.Mock(),
+            "job_test0": mock.Mock(),
+            "job_test3": mock.Mock(),
+            "job_test4": mock.Mock(),
+        }
+        expected = {
+            # User state is invalid and is ignored. Job state defaults to PENDING, since it's
+            # missing a state.
+            "job_test2": JobState.PENDING,
+            # User state should take effect.
+            "job_test1": JobState.CANCELLING,
+            # User state should not affect CLEANING/COMPLETED.
+            "job_test0": JobState.CLEANING,
+            "job_test3": JobState.COMPLETED,
+            # Has no user state.
+            "job_test4": JobState.PENDING,
         }
 
-        def mock_list_blobs(blob_dir):
-            if blob_dir == user_state_dir:
-                return list(user_states.keys())
-            if blob_dir == spec_dir:
+        def mock_listdir(path):
+            if path == spec_dir:
                 return list(jobspecs.keys())
+            if path == state_dir:
+                return list(states.keys())
+            if path == user_state_dir:
+                return list(user_states.keys())
             assert False  # Should not be reached.
 
-        def mock_download_jobspec(job_name, *, remote_dir, **kwargs):
+        def mock_download_jobspec(job_name, **kwargs):
             del kwargs
-            return jobspecs[os.path.join(remote_dir, job_name)]
+            return jobspecs[job_name]
 
         def mock_download_job_state(job_name, *, remote_dir, **kwargs):
             del kwargs
-            key = os.path.join(remote_dir, job_name)
-            if key in user_states:
-                return user_states[key]
-            return states[key]
+            if remote_dir == state_dir:
+                # Job state may be initially missing, thus defaults to PENDING.
+                return states.get(job_name, JobState.PENDING)
+            if remote_dir == user_state_dir:
+                # We should only query user states if one exists, so don't use get().
+                return user_states[job_name]
+            assert False  # Should not be reached.
 
         patch_fns = mock.patch.multiple(
             bastion_vm.__name__,
-            list_blobs=mock.Mock(side_effect=mock_list_blobs),
             _download_jobspec=mock.Mock(side_effect=mock_download_jobspec),
             _download_job_state=mock.Mock(side_effect=mock_download_job_state),
         )
+        patch_tfio = mock.patch(
+            f"{bastion_vm.__name__}.tf.io.gfile.listdir", side_effect=mock_listdir
+        )
 
         # Ensure that results are in the right order and pairing.
-        with patch_fns, tempfile.TemporaryDirectory() as tmpdir:
-            jobs = download_job_batch(
+        with patch_fns, patch_tfio, tempfile.TemporaryDirectory() as tmpdir:
+            jobs, jobs_with_user_states = download_job_batch(
                 spec_dir=spec_dir,
                 state_dir=state_dir,
                 user_state_dir=user_state_dir,
                 local_spec_dir=tmpdir,
             )
-            self.assertSameElements(["job_test0", "job_test1", "job_test2"], jobs.keys())
+            self.assertSameElements(expected.keys(), jobs.keys())
+            # "job_test1" is the only valid user state, but we still cleanup the others.
+            self.assertSameElements(jobs_with_user_states, user_states.keys())
             for job_name, job in jobs.items():
-                # Make sure the states are expected. User states take precedence.
-                expect_state = user_states.get(
-                    os.path.join(user_state_dir, job_name),
-                    states[os.path.join(state_dir, job_name)],
-                )
-                self.assertEqual(job.state, expect_state)
-                self.assertEqual(job.spec, jobspecs[os.path.join(spec_dir, job_name)])
+                self.assertEqual(job.state, expected[job_name])
+                self.assertEqual(job.spec, jobspecs[job_name])
 
 
 class TestJobSpec(parameterized.TestCase):
@@ -284,13 +270,18 @@ class BastionJobTest(parameterized.TestCase):
         )
         patch_fns = mock.patch.multiple(
             bastion_vm.__name__,
-            blob_exists=mock.Mock(return_value=user_state_exists),
             _upload_job_state=mock.DEFAULT,
-            upload_blob=mock.DEFAULT,
-            delete_blob=mock.DEFAULT,
-            _kill_popen=mock.DEFAULT,
+            send_signal=mock.DEFAULT,
         )
-        with self._patch_bastion(popen_spec) as bastion, patch_fns as mock_fns:
+        patch_tfio = mock.patch.multiple(
+            f"{bastion_vm.__name__}.tf.io.gfile",
+            exists=mock.Mock(return_value=user_state_exists),
+            copy=mock.DEFAULT,
+            remove=mock.DEFAULT,
+        )
+        with self._patch_bastion(
+            popen_spec
+        ) as bastion, patch_fns as mock_fns, patch_tfio as mock_tfio:
             # Run a couple updates to test transition to PENDING and staying in PENDING.
             for _ in range(2):
                 orig_command_proc = job.command_proc
@@ -302,13 +293,18 @@ class BastionJobTest(parameterized.TestCase):
 
                 if orig_command_proc is not None:
                     # Kill should have been called, and fd should have been closed.
-                    mock_fns["_kill_popen"].assert_called()
+                    mock_fns["send_signal"].assert_called()
                     self.assertTrue(
                         orig_command_proc.fd.close.called  # pytype: disable=attribute-error
                     )
 
                     # Log should be uploaded if command was initially running.
-                    mock_fns["upload_blob"].assert_called()
+                    upload_call = mock.call(
+                        orig_command_proc.fd.name,
+                        os.path.join(bastion._log_dir, os.path.basename(orig_command_proc.fd.name)),
+                        overwrite=True,
+                    )
+                    mock_tfio["copy"].assert_has_calls([upload_call], any_order=False)
 
                 # Cleanup command should not be involved.
                 updated_job.cleanup_proc.popen.poll.assert_not_called()
@@ -378,18 +374,21 @@ class BastionJobTest(parameterized.TestCase):
             cleanup_proc=mock_proc("cleanup", "test_cleanup"),
         )
 
-        def mock_blob_exists(f):
+        def mock_tfio_exists(f):
             if "logs" in f and os.path.basename(f) == "test_job":
                 return logfile_exists
             return False
 
-        patch_network = mock.patch.multiple(
+        patch_fns = mock.patch.multiple(
             bastion_vm.__name__,
-            blob_exists=mock.MagicMock(side_effect=mock_blob_exists),
-            download_blob=mock.DEFAULT,
             _upload_job_state=mock.DEFAULT,
         )
-        with self._patch_bastion(popen_spec) as bastion, patch_network as mock_network:
+        patch_tfio = mock.patch.multiple(
+            f"{bastion_vm.__name__}.tf.io.gfile",
+            exists=mock.MagicMock(side_effect=mock_tfio_exists),
+            copy=mock.DEFAULT,
+        )
+        with patch_fns, self._patch_bastion(popen_spec) as bastion, patch_tfio as mock_tfio:
             # Initially, job should have no command.
             self.assertIsNone(job.command_proc)
 
@@ -399,7 +398,12 @@ class BastionJobTest(parameterized.TestCase):
             # Command should be started on the first update.
             self.assertIsNotNone(updated_job.command_proc)
             # Log should be downloaded if it exists.
-            self.assertEqual(mock_network["download_blob"].called, logfile_exists)
+            download_call = mock.call(
+                os.path.join(bastion._log_dir, job.spec.name),
+                os.path.join(_LOG_DIR, job.spec.name),
+                overwrite=True,
+            )
+            mock_tfio["copy"].assert_has_calls([download_call], any_order=False)
 
             # Run until expected job completion.
             for _ in range(expect_poll_calls - 1):
@@ -562,19 +566,26 @@ class BastionJobTest(parameterized.TestCase):
                 cleanup_proc=mock_proc("cleanup", cleanup_poll=1),  # Should have cleanup_proc.
             ),
         }
+        # Pretend that only 'cleaning_cancel' came from a user state.
+        jobs_with_user_states = {"cleaning_cancel"}
 
         # Patch all network calls and utils.
         patch_fns = mock.patch.multiple(
             bastion_vm.__name__,
             _upload_job_state=mock.DEFAULT,
-            blob_exists=mock.DEFAULT,
-            download_blob=mock.DEFAULT,
-            upload_blob=mock.DEFAULT,
-            delete_blob=mock.DEFAULT,
-            _kill_popen=mock.DEFAULT,
+            send_signal=mock.DEFAULT,
         )
-        with self._patch_bastion(popen_spec()) as bastion, patch_fns as mock_fns:
+        patch_tfio = mock.patch.multiple(
+            f"{bastion_vm.__name__}.tf.io.gfile",
+            exists=mock.DEFAULT,
+            copy=mock.DEFAULT,
+            remove=mock.DEFAULT,
+        )
+        with self._patch_bastion(
+            popen_spec()
+        ) as bastion, patch_fns as mock_fns, patch_tfio as mock_tfio:
             bastion._active_jobs = active_jobs
+            bastion._jobs_with_user_states = jobs_with_user_states
             bastion._update_jobs()
 
             # Ensure _active_jobs membership stays same.
@@ -603,23 +614,25 @@ class BastionJobTest(parameterized.TestCase):
                     self.assertIsNone(job.cleanup_proc)
 
                     # Remote jobspec should not be deleted until gc.
-                    for delete_call in mock_fns["delete_blob"].mock_calls:
+                    for delete_call in mock_tfio["remove"].mock_calls:
                         self.assertNotIn(
                             os.path.join(_JOB_DIR, job.spec.name),
                             delete_call.args,
                         )
 
-                # User states should be deleted.
-                self.assertTrue(
+                # User states should only be deleted if the job's state was read from
+                # user_state_dir.
+                self.assertEqual(
                     any(
                         os.path.join(bastion._user_state_dir, job.spec.name) in delete_call.args
-                        for delete_call in mock_fns["delete_blob"].mock_calls
-                    )
+                        for delete_call in mock_tfio["remove"].mock_calls
+                    ),
+                    job.spec.name in bastion._jobs_with_user_states,
                 )
 
                 # For jobs that went from ACTIVE to PENDING, expect kill() to have been called.
                 if active_jobs[job.spec.name] == JobState.ACTIVE and job.state == JobState.PENDING:
-                    mock_fns["_kill_popen"].assert_called()
+                    mock_fns["send_signal"].assert_called()
                     self.assertFalse(
                         active_jobs[
                             job.spec.name
@@ -692,8 +705,11 @@ class BastionJobTest(parameterized.TestCase):
         # We pretend that only some jobs are "fully gc'ed".
         fully_gced = ["completed_gced"]
 
-        patch_network = mock.patch.multiple(bastion_vm.__name__, delete_blob=mock.DEFAULT)
-        with self._patch_bastion() as bastion, patch_network as mock_network:
+        patch_tfio = mock.patch.multiple(
+            f"{bastion_vm.__name__}.tf.io.gfile",
+            remove=mock.DEFAULT,
+        )
+        with self._patch_bastion() as bastion, patch_tfio as mock_tfio:
 
             def mock_clean(jobs: Dict[str, ResourceMap]) -> Sequence[str]:
                 self.assertTrue(
@@ -713,18 +729,13 @@ class BastionJobTest(parameterized.TestCase):
             for job_name in fully_gced:
                 deleted_state = any(
                     os.path.join(bastion._state_dir, job_name) in delete_call.args
-                    for delete_call in mock_network["delete_blob"].mock_calls
+                    for delete_call in mock_tfio["remove"].mock_calls
                 )
                 deleted_jobspec = any(
                     os.path.join(bastion._active_dir, job_name) in delete_call.args
-                    for delete_call in mock_network["delete_blob"].mock_calls
+                    for delete_call in mock_tfio["remove"].mock_calls
                 )
                 self.assertEqual(
                     active_jobs[job_name].state == JobState.COMPLETED,
                     deleted_state and deleted_jobspec,
                 )
-
-    # TODO(markblee): Implement the following checks in sync_jobs.
-    # def test_sync_jobs(self):
-    #     # Only support user state of CANCELLING.
-    #     # CANCELLING/CLEANING should not go back to CANCELLING.

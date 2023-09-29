@@ -50,6 +50,7 @@ class RegistryTest(TestCase):
                     "build_arg1=test_build_arg",
                     # Make sure parent configs can be set from spec.
                     "external=test_external",
+                    "target=test_target",
                 ],
             )
             self.assertEqual(cfg.image, "test_image")
@@ -57,6 +58,7 @@ class RegistryTest(TestCase):
             self.assertEqual(cfg.dockerfile, "test_dockerfile")
             self.assertEqual(cfg.build_args, {"build_arg1": "test_build_arg"})
             self.assertEqual(cfg.external, "test_external")
+            self.assertEqual(cfg.target, "test_target")
 
             self.assertEqual(cfg.instantiate().TYPE, bundler_cls.TYPE)
 
@@ -67,10 +69,16 @@ class RegistryTest(TestCase):
         ):
             cfg = get_bundler_config(
                 bundler_type=bundler_cls.TYPE,
-                spec=["image=test_image", "build_arg1=test_build_arg", "external=test_external"],
+                spec=[
+                    "image=test_image",
+                    "build_arg1=test_build_arg",
+                    "external=test_external",
+                    "target=test_target",
+                ],
             )
             self.assertEqual(cfg.image, "test_image")
             self.assertEqual(cfg.repo, "default_repo")
             self.assertEqual(cfg.dockerfile, "default_dockerfile")
             self.assertEqual(cfg.build_args, {"build_arg1": "test_build_arg"})
             self.assertEqual(cfg.external, "test_external")
+            self.assertEqual(cfg.target, "test_target")

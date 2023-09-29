@@ -25,7 +25,7 @@ from sklearn.metrics import recall_score as sklearn_recall_score
 
 from axlearn.common import module, utils
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import config_class, config_for_class
+from axlearn.common.config import config_class
 from axlearn.common.decoder import Decoder
 from axlearn.common.layers import (
     BatchNorm,
@@ -1938,7 +1938,7 @@ class RedirectToSharedModuleTest(TestCase):
                 shared_modules=["shared_bias"],
                 children=dict(
                     shared_bias=BiasLayer.default_config().set(
-                        param_init=config_for_class(ConstantInitializer).set(value=1)
+                        param_init=ConstantInitializer.default_config().set(value=1)
                     ),
                     parent_a=ParentLayer.default_config().set(
                         children=dict(

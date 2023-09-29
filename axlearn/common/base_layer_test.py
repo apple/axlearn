@@ -42,7 +42,7 @@ class TestLayer(BaseLayer):
                 shape=[],
                 mesh_axes=None,
                 dtype=jnp.float32,
-                initializer=param_init.ConstantInitializer(value=1.0),
+                initializer=param_init.constant_initializer(1.0),
             )
         }
 

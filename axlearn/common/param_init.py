@@ -8,7 +8,7 @@ import jax
 from absl import logging
 from jax import numpy as jnp
 
-from axlearn.common.config import Configurable, InstantiableConfig, config_class, config_for_class
+from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
 
 Shape = Sequence[int]
 
@@ -35,7 +35,7 @@ class FanAxes(NamedTuple):
     batch_axis: Union[Tuple[int, ...], int] = ()
 
 
-class Initializer:
+class Initializer(Configurable):
     """Base class for initializers."""
 
     def initialize(
@@ -61,8 +61,9 @@ class Initializer:
 class ConstantInitializer(Initializer):
     """Constant initializer."""
 
-    def __init__(self, value: Any):
-        self._value = value
+    @config_class
+    class Config(Initializer.Config):
+        value: Required[Any] = REQUIRED
 
     def initialize(
         self,
@@ -73,7 +74,7 @@ class ConstantInitializer(Initializer):
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
     ) -> jnp.ndarray:
-        return jnp.full(shape=shape, fill_value=self._value, dtype=dtype)
+        return jnp.full(shape=shape, fill_value=self.config.value, dtype=dtype)
 
     def debug_string(
         self,
@@ -81,14 +82,19 @@ class ConstantInitializer(Initializer):
         shape: Optional[Shape] = None,
         axes: Optional[FanAxes] = None,
     ) -> str:
-        return f"constant({self._value})"
+        return f"constant({self.config.value})"
+
+
+def constant_initializer(value: Any) -> ConstantInitializer:
+    return ConstantInitializer.default_config().set(value=value).instantiate()
 
 
 class GaussianInitializer(Initializer):
     """Gaussian initializer."""
 
-    def __init__(self, std: float):
-        self._std = std
+    @config_class
+    class Config(Initializer.Config):
+        std: Required[float] = REQUIRED
 
     def initialize(
         self,
@@ -99,7 +105,7 @@ class GaussianInitializer(Initializer):
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
     ) -> jnp.ndarray:
-        return jax.random.normal(prng_key, shape=shape, dtype=dtype) * self._std
+        return jax.random.normal(prng_key, shape=shape, dtype=dtype) * self.config.std
 
     def debug_string(
         self,
@@ -107,7 +113,11 @@ class GaussianInitializer(Initializer):
         shape: Optional[Shape] = None,
         axes: Optional[FanAxes] = None,
     ) -> str:
-        return f"normal(0, {self._std}^2)"
+        return f"normal(0, {self.config.std}^2)"
+
+
+def gaussian_initializer(std: float) -> ConstantInitializer:
+    return GaussianInitializer.default_config().set(std=std).instantiate()
 
 
 def truncated_normal(stddev: float = 1e-2, dtype: jnp.dtype = jnp.float_):
@@ -148,7 +158,7 @@ def uniform(scale: float = 1.0, dtype: jnp.dtype = jnp.float_):
     return init
 
 
-class WeightInitializer(Configurable, Initializer):
+class WeightInitializer(Initializer):
     """Default weight initializer.
 
     The default config is Xavier initializer, i.e.
@@ -240,11 +250,11 @@ class WeightInitializer(Configurable, Initializer):
             )
 
 
-class DefaultInitializer(Configurable, Initializer):
+class DefaultInitializer(Initializer):
     """The default initializer."""
 
     @config_class
-    class Config(Configurable.Config):
+    class Config(Initializer.Config):
         # Initializer rules dictionary.
         # Each entry is a (regexp, config) pair. The first match (the insertion order) "wins".
         # Note that `DefaultInitializer.__init__` populates the dict with some default values,
@@ -255,11 +265,11 @@ class DefaultInitializer(Configurable, Initializer):
         """Default initializers for common param names if not specified by the user."""
         # The default bias initializer is constant(0.).
         cfg.init_by_param_name.setdefault(
-            PARAM_REGEXP_BIAS, config_for_class(ConstantInitializer).set(value=0.0)
+            PARAM_REGEXP_BIAS, ConstantInitializer.default_config().set(value=0.0)
         )
         # The default scale initializer is constant(1.).
         cfg.init_by_param_name.setdefault(
-            PARAM_REGEXP_SCALE, config_for_class(ConstantInitializer).set(value=1.0)
+            PARAM_REGEXP_SCALE, ConstantInitializer.default_config().set(value=1.0)
         )
         # The default weight initializer is WeightInitializer.
         cfg.init_by_param_name.setdefault(PARAM_REGEXP_WEIGHT, WeightInitializer.default_config())
@@ -307,7 +317,7 @@ class DefaultInitializer(Configurable, Initializer):
         raise NotImplementedError(f"Unsupported parameter name ({name})")
 
 
-class PerGroupInitializer(Configurable, Initializer):
+class PerGroupInitializer(Initializer):
     """The per-group initializer.
 
     This initializer splits the last axis into a number of groups and initializes each group
@@ -321,7 +331,7 @@ class PerGroupInitializer(Configurable, Initializer):
     """
 
     @config_class
-    class Config(Configurable.Config):
+    class Config(Initializer.Config):
         # The initializer used to initialize weights for each group.
         initializer: Optional[InstantiableConfig] = DefaultInitializer.default_config()
         # The number of groups.

@@ -7,11 +7,9 @@ import time
 from typing import Any, Dict, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
-import numpy as np
 import tensorflow as tf
 from absl import logging
 from jax import numpy as jnp
-from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
@@ -159,7 +157,7 @@ class SpmdTrainer(Module):
             [device.platform for device in jax.local_devices()],
         )
         self._step_log("Mesh shape: %s", cfg.mesh_shape)
-        devices = self._create_device_mesh()
+        devices = utils.create_device_mesh(mesh_shape=cfg.mesh_shape)
         mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
         self._step_log("Global mesh: %s", mesh)
         self._mesh = mesh
@@ -747,53 +745,3 @@ class SpmdTrainer(Module):
             loss=loss,
             aux=forward_aux,
         )
-
-    def _create_device_mesh(self) -> np.ndarray:
-        """Constructs a device mesh.
-
-        We first determine if we are running in a multislice environment or not.
-            * If not, we construct a mesh according to the configured mesh_shape.
-            * If we are, we split the first axis of the configured mesh shape across the slices.
-                The first axis is expected to be the least communication intensive.
-
-        Returns:
-            A numpy array containing the JAX devices with shape determined by config mesh_shape.
-        """
-        devices = np.asarray(jax.devices())
-        # Check if the devices are part of a multi-slice TPU configuration.
-        # <https://github.com/google/jax/blob/b81b79c1b0d2ec/jax/experimental/mesh_utils.py#L313>
-        is_multi_slice_tpu_env = hasattr(devices[0], "slice_index")
-        cfg = self.config
-        if not is_multi_slice_tpu_env:
-            try:
-                return mesh_utils.create_device_mesh(cfg.mesh_shape)
-            except NotImplementedError as e:
-                logging.warning(
-                    "mesh_utils.create_device_mesh cannot handle shape %s: %s. "
-                    "Falling back to the naive mesh.",
-                    cfg.mesh_shape,
-                    e,
-                )
-                return devices.reshape(cfg.mesh_shape)
-        self._step_log("Building multislice device mesh.")
-        # At the moment we only break the first device axis (the least communication intensive)
-        # across slices.
-        ici_mesh_shape = cfg.mesh_shape
-        max_slice_index = 0
-        for device in devices.flatten():
-            max_slice_index = max(max_slice_index, device.slice_index)
-        num_slices = max_slice_index + 1
-        assert ici_mesh_shape[0] % num_slices == 0, "First mesh shape axis must divide num slices."
-        # Truncate intra-slice mesh.
-        ici_mesh_shape = (ici_mesh_shape[0] // num_slices, *ici_mesh_shape[1:])
-        self._step_log("Inferred intra-slice mesh shape: %s", ici_mesh_shape)
-        # Configure data center (inter-slice) mesh.
-        dcn_mesh_shape = (num_slices,) + (1,) * len(ici_mesh_shape[1:])
-        self._step_log("Inferred inter-slice mesh shape: %s", dcn_mesh_shape)
-        # Check we have the right number of devices.
-        total_parallelism = np.product(dcn_mesh_shape) * np.product(ici_mesh_shape)
-        assert total_parallelism == len(devices), (
-            f"Num devices {len(devices)} does not match the product of "
-            f"inter and intra slice parallelism {total_parallelism}."
-        )
-        return mesh_utils.create_hybrid_device_mesh(ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape)

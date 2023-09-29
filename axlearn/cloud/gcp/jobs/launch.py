@@ -146,6 +146,8 @@ class BaseBastionLaunchJob(Job):
         user_id: Required[str] = REQUIRED
         # Project ID for bastion quota and scheduling.
         project_id: Required[str] = REQUIRED
+        # Job priority.
+        priority: Required[int] = REQUIRED
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -159,6 +161,12 @@ class BaseBastionLaunchJob(Job):
         flags.DEFINE_string("name", generate_job_name(), "Job name.", **common_kwargs)
         flags.DEFINE_string(
             "bastion", shared_bastion_name(), "Name of bastion VM to use.", **common_kwargs
+        )
+        flags.DEFINE_integer(
+            "priority",
+            5,
+            "Job priority. Smaller means higher priority.",
+            **common_kwargs,
         )
         flags.DEFINE_string(
             "user_id",
@@ -217,7 +225,7 @@ class BaseBastionLaunchJob(Job):
         bastion: SubmitBastionJob = cfg.bastion.instantiate()
         with tempfile.TemporaryDirectory() as tmpdir:
             base_dir = bastion._output_dir()
-            jobs = download_job_batch(
+            jobs, _ = download_job_batch(
                 spec_dir=f"{base_dir}/jobs/active",
                 state_dir=f"{base_dir}/jobs/states",
                 user_state_dir=f"{base_dir}/jobs/user_states",
@@ -282,13 +290,15 @@ class BaseBastionLaunchJob(Job):
                 project_id=cfg.project_id or "none",
                 creation_time=datetime.now(),
                 resources=self._resources(),
+                priority=cfg.priority,
             )
             serialize_jobspec(new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata), f)
             bastion: SubmitBastionJob = cfg.bastion.set(job_spec_file=f.name).instantiate()
             bastion._execute()
         print(
             f"\nStop/cancel the job with:\n"
-            f"{infer_cli_name()} gcp launch stop --name={cfg.name} --bastion={cfg.bastion.name}"
+            f"{infer_cli_name()} gcp launch stop "
+            f"--name={cfg.name} --bastion={cfg.bastion.name} --instance_type={cfg.instance_type}"
         )
 
     def _jobs_table(self, jobs: Dict[str, BastionJob]) -> Dict:

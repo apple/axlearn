@@ -87,6 +87,7 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
             command="test_command",
             max_tries=1,
             retry_interval=60,
+            priority=3,
         )
         cfg.set(**kwargs)
 
@@ -99,6 +100,7 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
                     self.assertEqual(spec.command, cfg.command)
                     self.assertEqual(spec.metadata.user_id, cfg.user_id)
                     self.assertEqual(spec.metadata.project_id, cfg.project_id or "none")
+                    self.assertEqual(spec.metadata.priority, cfg.priority)
             return mock.MagicMock()
 
         return cfg.set(bastion=config_for_function(dummy_submit_job).set(name="test_bastion"))
@@ -184,7 +186,7 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
                 cleanup_proc=None,
             ),
         }
-        with mock.patch(f"{launch.__name__}.download_job_batch", return_value=mock_jobs):
+        with mock.patch(f"{launch.__name__}.download_job_batch", return_value=(mock_jobs, set())):
             job = self._mock_config().instantiate()
             out = job._list()
             self.assertEqual(out["jobs"], mock_jobs)
