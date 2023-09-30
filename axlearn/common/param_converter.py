@@ -69,7 +69,7 @@ from axlearn.common.dit import (
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.encoder import EncoderModel
-from axlearn.common.layers import Conv2D, Embedding, LayerNorm, Linear, RMSNorm
+from axlearn.common.layers import Conv2D, Embedding, LayerNorm, LayerNormStateless, Linear, RMSNorm
 from axlearn.common.t5 import T5Decoder, T5Encoder, T5EncoderDecoderModel
 from axlearn.common.text_encoder import TextEmbeddingEncoder
 from axlearn.common.utils import NestedTensor, Tensor, VDict, as_tensor
@@ -303,9 +303,20 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
             return
 
     if isinstance(dst, torch.nn.LayerNorm):
-        check_supported(LayerNorm)
-        dst.weight.data = as_torch_tensor(src["scale"])
-        dst.bias.data = as_torch_tensor(src["bias"])
+        check_supported(LayerNorm, LayerNormStateless)
+        if isinstance(layer, LayerNorm):
+            if not dst.elementwise_affine:
+                raise ValueError(
+                    f"elementwise_affine must be True for conversion from LayerNorm: {layer}"
+                )
+            dst.weight.data = as_torch_tensor(src["scale"])
+            dst.bias.data = as_torch_tensor(src["bias"])
+        else:
+            if dst.elementwise_affine:
+                raise ValueError(
+                    f"elementwise_affine must be False for conversion from LayerNormStateless: {layer}"
+                )
+            # No parameter to set.
     elif isinstance(dst, torch.nn.Linear):
         check_supported(Linear, MultiheadInputLinear)
         if isinstance(layer, MultiheadInputLinear):
@@ -652,7 +663,10 @@ def torch_to_axlearn(
             return as_tensor(convert_fn(src=src, dst=dst_layer))
 
     if isinstance(src, torch.nn.LayerNorm):
-        dst = dict(scale=src.weight, bias=src.bias)
+        if src.elementwise_affine:
+            dst = dict(scale=src.weight, bias=src.bias)
+        else:
+            dst = {}
     elif isinstance(src, torch.nn.Linear):
         # torch.nn.Linear.weight uses layout (output, input) while AXLearn uses (input, output).
         dst = dict(weight=src.weight.transpose(0, 1))
