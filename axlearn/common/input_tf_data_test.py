@@ -315,7 +315,7 @@ class TfdsTest(parameterized.TestCase):
             dataset_name=dataset_name,
             split=split,
             is_training=is_training,
-            shuffle_buffer_size=8 if is_training else 0,
+            train_shuffle_buffer_size=8,
             decoders=decoders,
         )
         ds = source.instantiate()
