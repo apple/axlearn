@@ -222,6 +222,7 @@ class TestCase(parameterized.TestCase):
                 self.assertEqual(a_value.dtype, b_value.dtype)
 
 
+# TODO(markblee): Move this to axlearn/experiments/test_utils.py, where it's used.
 class TrainerConfigTestCase(TestCase):
     """Base class for testing trainer configs."""
 
