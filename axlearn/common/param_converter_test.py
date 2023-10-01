@@ -173,30 +173,12 @@ class ParameterTest(BaseParamConverterTest):
         # pooler=bert.BertPooler.default_config()
         return model_cfg
 
-    def test_layer_norm(self):
+    @parameterized.parameters(LayerNorm, LayerNormStateless)
+    def test_layer_norm(self, norm_cls):
         batch, dim = 20, 10
-        cfg = LayerNorm.default_config().set(input_dim=dim)
+        cfg = norm_cls.default_config().set(input_dim=dim)
         layer = cfg.set(name="convert_test").instantiate(parent=None)
-        hf_layer = torch.nn.LayerNorm(dim)
-
-        inputs = jax.random.uniform(
-            jax.random.PRNGKey(1), shape=(batch, dim), minval=-10, maxval=10
-        )
-
-        out, hf_out = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=hf_layer,
-            test_inputs=[inputs],
-            ref_inputs=as_torch_tensor(inputs),
-            test_torch_to_axlearn=True,
-        )
-        self.assertNestedAllClose(out, hf_out)
-
-    def test_layer_norm_stateless(self):
-        batch, dim = 20, 10
-        cfg = LayerNormStateless.default_config().set(input_dim=dim)
-        layer = cfg.set(name="convert_test").instantiate(parent=None)
-        hf_layer = torch.nn.LayerNorm(dim, elementwise_affine=False)
+        hf_layer = torch.nn.LayerNorm(dim, elementwise_affine=(norm_cls == LayerNorm))
 
         inputs = jax.random.uniform(
             jax.random.PRNGKey(1), shape=(batch, dim), minval=-10, maxval=10
