@@ -60,12 +60,13 @@ from axlearn.common.utils_spmd import setup as setup_spmd
 # pylint: enable=wrong-import-position
 
 flags.DEFINE_string(
-    "config_module",
+    "module",
     None,
     "The trainer config module. "
     "Only configs from the module will be loaded to avoid dependency on other modules.",
     required=True,
 )
+flags.DEFINE_alias("config_module", "module")
 flags.DEFINE_string("config", None, "The trainer config name.", required=True)
 flags.DEFINE_string(
     "data_dir",
@@ -87,6 +88,7 @@ flags.DEFINE_integer(
     "num_processes", None, "Total number of hosts (nodes). Set this None for tpu backend."
 )
 flags.DEFINE_integer("process_id", None, "Host process id. Set this None for tpu backend.")
+# TODO(markblee): Remove this flag.
 flags.DEFINE_boolean(
     "filter_info_logs",
     None,

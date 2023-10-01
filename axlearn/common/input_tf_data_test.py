@@ -17,6 +17,7 @@ from axlearn.common.input_fake import fake_serialized_json_source, fake_source, 
 from axlearn.common.input_tf_data import (
     BuildDatasetFn,
     DatasetToDatasetFn,
+    Input,
     _infer_num_examples,
     _infer_num_shards,
     _maybe_shard_examples,
@@ -25,6 +26,7 @@ from axlearn.common.input_tf_data import (
     chain,
     concatenate_datasets,
     default_pad_example_fn,
+    disable_shuffle_recursively,
     extract_from_sequence,
     identity,
     pack_to_batch,
@@ -1103,6 +1105,23 @@ class TrimAndPadTest(parameterized.TestCase):
     ):
         t = trim_and_pad_tensor(input_tensor, max_len=max_len, pad_id=pad_id)
         tf.debugging.assert_equal(expected_tensor, t)
+
+
+class DisableShuffleRecursivelyTest(parameterized.TestCase):
+    """Tests disable_shuffle_recursively."""
+
+    def test_disable_shuffle_recursively(self):
+        cfg = Input.default_config().set(
+            source=config_for_function(with_processor).set(
+                source=config_for_function(tfds_dataset).set(
+                    shuffle_buffer_size=10, shuffle_files=True
+                ),
+                processor=config_for_function(identity),
+            )
+        )
+        disable_shuffle_recursively(cfg)
+        self.assertEqual(cfg.source.source.shuffle_buffer_size, 0)
+        self.assertEqual(cfg.source.source.shuffle_files, False)
 
 
 if __name__ == "__main__":
