@@ -306,15 +306,13 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
         check_supported(LayerNorm, LayerNormStateless)
         if isinstance(layer, LayerNorm):
             if not dst.elementwise_affine:
-                raise ValueError(
-                    f"elementwise_affine must be True for conversion from LayerNorm: {layer}"
-                )
+                raise ValueError("elementwise_affine must be True for conversion from LayerNorm")
             dst.weight.data = as_torch_tensor(src["scale"])
             dst.bias.data = as_torch_tensor(src["bias"])
         else:
             if dst.elementwise_affine:
                 raise ValueError(
-                    f"elementwise_affine must be False for conversion from LayerNormStateless: {layer}"
+                    f"elementwise_affine must be False for conversion from LayerNormStateless"
                 )
             # No parameter to set.
     elif isinstance(dst, torch.nn.Linear):
