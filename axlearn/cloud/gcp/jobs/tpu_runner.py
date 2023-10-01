@@ -58,14 +58,16 @@ Examples:
 
 import enum
 import pathlib
+import shlex
 import subprocess
 import time
 from typing import Dict, Optional, Sequence
 
 from absl import app, flags, logging
 
-from axlearn.cloud.common.bundler import DockerBundler, bundler_flags, get_bundler_config
+from axlearn.cloud.common.bundler import Bundler, DockerBundler, bundler_flags, get_bundler_config
 from axlearn.cloud.common.utils import (
+    canonicalize_to_list,
     configure_logging,
     generate_job_name,
     parse_action,
@@ -93,7 +95,7 @@ from axlearn.cloud.gcp.vertexai_tensorboard import (
     VertexAITensorboardUploader,
     is_vertexai_tensorboard_configured,
 )
-from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
 from axlearn.common.liveness_monitor import LivenessMonitor
 
 FLAGS = flags.FLAGS
@@ -139,6 +141,21 @@ def launch_flags(flag_values: flags.FlagValues = FLAGS):
     )
 
 
+def with_tpu_extras(bundler: Bundler.Config):
+    """Configures bundler to install 'tpu' extras."""
+    # Note: find_links is only applicable for tar bundlers.
+    # For docker bundlers, point to the TPU build target.
+    maybe_set_config(
+        bundler,
+        "find_links",
+        ["https://storage.googleapis.com/jax-releases/libtpu_releases.html"],
+    )
+    extras = canonicalize_to_list(bundler.extras)
+    extras.append("tpu")
+    bundler.set(extras=extras)
+    return bundler
+
+
 class TPURunnerJob(TPUJob):
     """Launches and monitors a TPU job."""
 
@@ -165,7 +182,9 @@ class TPURunnerJob(TPUJob):
         cfg.output_dir = (
             cfg.output_dir or f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{cfg.name}"
         )
-        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
+        cfg.bundler = with_tpu_extras(
+            get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
+        )
         return cfg
 
     def __init__(self, cfg: Config) -> None:
@@ -467,7 +486,11 @@ class TPURunnerJob(TPUJob):
                 logging.info("TPU-VMs have started.")
             # TPU-VM is ready but not running command -- start the command.
             elif status == TPURunnerJob.Status.NOT_RUNNING:
-                logging.info("Job is not running. Running the command...")
+                logging.info(
+                    "Job is not running. Running the command... "
+                    "Logs will be synced to: %s/output/",
+                    cfg.output_dir,
+                )
                 self._run_command()
             # Running, sleep and check back in a bit.
             elif status == TPURunnerJob.Status.RUNNING:
@@ -501,7 +524,8 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         if not flag_values.tpu_type:
             raise app.UsageError("--tpu_type is required.")
 
-        command = " ".join(argv[2:])
+        # Use shlex join so that quoted commands (e.g. 'a && b') retain quotes.
+        command = shlex.join(argv[2:])
         if not command:
             raise app.UsageError("Command is required.")
 
