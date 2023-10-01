@@ -64,7 +64,7 @@ class COCOMetricCalculatorTest(TestCase, parameterized.TestCase):
         cfg.source.set(
             dataset_name="coco/2017",
             split="validation",
-            shuffle_buffer_size=100 if is_training else 0,
+            train_shuffle_buffer_size=100,
         )
         cfg.processor.set(image_size=(image_size, image_size))
         cfg.batcher.set(global_batch_size=batch_size)
