@@ -29,9 +29,8 @@ evalers['eval_train'].input.source.fn: 'axlearn.common.input_tf_data.tfds_datase
 evalers['eval_train'].input.source.read_config.decode_parallelism: 128
 evalers['eval_train'].input.source.read_config.fn: 'axlearn.common.input_tf_data.tfds_read_config'
 evalers['eval_train'].input.source.read_config.read_parallelism: 1
-evalers['eval_train'].input.source.shuffle_buffer_size: 0
-evalers['eval_train'].input.source.shuffle_files: False
 evalers['eval_train'].input.source.split: 'train[:50000]'
+evalers['eval_train'].input.source.train_shuffle_buffer_size: 0
 evalers['eval_train'].klass: 'axlearn.common.evaler.SpmdEvaler'
 evalers['eval_train'].metric_calculator.klass: 'axlearn.common.evaler.ModelSummaryAccumulator'
 evalers['eval_train'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
@@ -59,9 +58,8 @@ evalers['eval_validation'].input.source.fn: 'axlearn.common.input_tf_data.tfds_d
 evalers['eval_validation'].input.source.read_config.decode_parallelism: 128
 evalers['eval_validation'].input.source.read_config.fn: 'axlearn.common.input_tf_data.tfds_read_config'
 evalers['eval_validation'].input.source.read_config.read_parallelism: 1
-evalers['eval_validation'].input.source.shuffle_buffer_size: 0
-evalers['eval_validation'].input.source.shuffle_files: False
 evalers['eval_validation'].input.source.split: 'validation'
+evalers['eval_validation'].input.source.train_shuffle_buffer_size: 0
 evalers['eval_validation'].klass: 'axlearn.common.evaler.SpmdEvaler'
 evalers['eval_validation'].metric_calculator.klass: 'axlearn.common.evaler.ModelSummaryAccumulator'
 evalers['eval_validation'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
@@ -85,8 +83,8 @@ input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
 input.source.read_config.decode_parallelism: 128
 input.source.read_config.fn: 'axlearn.common.input_tf_data.tfds_read_config'
 input.source.read_config.read_parallelism: 1
-input.source.shuffle_buffer_size: 1024
 input.source.split: 'train'
+input.source.train_shuffle_buffer_size: 1024
 klass: 'axlearn.common.trainer.SpmdTrainer'
 learner.ema.fn: 'axlearn.common.optimizers.param_ema'
 learner.enable_per_variable_summaries: False
