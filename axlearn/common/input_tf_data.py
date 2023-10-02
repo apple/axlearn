@@ -214,7 +214,7 @@ def tfds_dataset(
     *,
     split: str,
     is_training: bool,
-    train_shuffle_buffer_size: int,
+    train_shuffle_buffer_size: Optional[int] = None,
     train_shuffle_files: Optional[bool] = None,
     data_dir: Optional[str] = None,
     download: bool = False,
@@ -229,7 +229,7 @@ def tfds_dataset(
         is_training: Whether the examples are used for training.
             If True, examples will be read in parallel and shuffled.
             Otherwise examples will be read sequentially to ensure a deterministic order.
-        train_shuffle_buffer_size: The shuffle buffer size when is_training=True.
+        train_shuffle_buffer_size: The shuffle buffer size (required) when is_training=True.
             If is_training=False or shuffle_buffer_size <= 0, no shuffling is done.
         train_shuffle_files: Whether to shuffle files when is_training=True.
             If is_training=False, no shuffling is done.
@@ -244,8 +244,13 @@ def tfds_dataset(
 
     Returns:
         A BuildDatasetFn, which returns a tf.data.Dataset for the specified TFDS.
+
+    Raises:
+        ValueError: if train_shuffle_buffer_size is None when is_training=True.
     """
     if is_training:
+        if train_shuffle_buffer_size is None:
+            raise ValueError("train_shuffle_buffer_size is required when is_training=True")
         shuffle_files = (
             train_shuffle_buffer_size > 0 if train_shuffle_files is None else train_shuffle_files
         )
