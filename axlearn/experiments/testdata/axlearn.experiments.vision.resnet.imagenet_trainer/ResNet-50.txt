@@ -31,6 +31,7 @@ evalers['eval_train'].input.source.read_config.fn: 'axlearn.common.input_tf_data
 evalers['eval_train'].input.source.read_config.read_parallelism: 1
 evalers['eval_train'].input.source.split: 'train[:50000]'
 evalers['eval_train'].input.source.train_shuffle_buffer_size: 0
+evalers['eval_train'].input.source.train_shuffle_files: False
 evalers['eval_train'].klass: 'axlearn.common.evaler.SpmdEvaler'
 evalers['eval_train'].metric_calculator.klass: 'axlearn.common.evaler.ModelSummaryAccumulator'
 evalers['eval_train'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
@@ -60,6 +61,7 @@ evalers['eval_validation'].input.source.read_config.fn: 'axlearn.common.input_tf
 evalers['eval_validation'].input.source.read_config.read_parallelism: 1
 evalers['eval_validation'].input.source.split: 'validation'
 evalers['eval_validation'].input.source.train_shuffle_buffer_size: 0
+evalers['eval_validation'].input.source.train_shuffle_files: False
 evalers['eval_validation'].klass: 'axlearn.common.evaler.SpmdEvaler'
 evalers['eval_validation'].metric_calculator.klass: 'axlearn.common.evaler.ModelSummaryAccumulator'
 evalers['eval_validation'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
