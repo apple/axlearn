@@ -1114,14 +1114,14 @@ class DisableShuffleRecursivelyTest(parameterized.TestCase):
         cfg = Input.default_config().set(
             source=config_for_function(with_processor).set(
                 source=config_for_function(tfds_dataset).set(
-                    shuffle_buffer_size=10, shuffle_files=True
+                    train_shuffle_buffer_size=10, train_shuffle_files=True
                 ),
                 processor=config_for_function(identity),
             )
         )
         disable_shuffle_recursively(cfg)
-        self.assertEqual(cfg.source.source.shuffle_buffer_size, 0)
-        self.assertEqual(cfg.source.source.shuffle_files, False)
+        self.assertEqual(cfg.source.source.train_shuffle_buffer_size, 0)
+        self.assertEqual(cfg.source.source.train_shuffle_files, False)
 
 
 if __name__ == "__main__":

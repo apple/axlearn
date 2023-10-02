@@ -921,9 +921,9 @@ def disable_shuffle_recursively(cfg: Input.Config):
     def enter_fn(_, child, default_kv):
         if isinstance(child, ConfigBase):
             for k in child.keys():
-                if k.endswith("shuffle_buffer_size"):
+                if k.endswith("train_shuffle_buffer_size"):
                     setattr(child, k, 0)
-                elif k == "shuffle_files":
+                elif k == "train_shuffle_files":
                     setattr(child, k, False)
                 elif "shuffle" in k:
                     logging.warning(
