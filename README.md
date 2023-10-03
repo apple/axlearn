@@ -2,6 +2,18 @@
 
 **This library is under active development and the API is subject to change.**
 
+## Table of Contents
+
+| Section | Description |
+| - | - |
+| [Introduction](#introduction) | What is AXLearn? |
+| [Getting Started](docs/01-start.md) | Getting up and running with AXLearn. |
+| [Concepts](docs/02-concepts.md) | Core concepts and design principles. |
+| [CLI User Guide](docs/03-cli.md) | How to use the CLI. |
+| [Infrastructure](docs/04-infrastructure.md) | Core infrastructure components. |
+
+## Introduction
+
 AXLearn is a library built on top of [JAX](https://jax.readthedocs.io/) and
 [XLA](https://www.tensorflow.org/xla) to support development of large-scale deep learning models.
 
@@ -22,3 +34,5 @@ per-accelerator basis.
 AXLearn supports a wide range of applications, including natural language processing, computer
 vision, and speech recognition and contains baseline configurations for training state-of-the-art
 models.
+
+Please see [Concepts](docs/02-concepts.md) for more details on the core components and design of AXLearn, or [Getting Started](docs/01-start.md) if you want to get your hands dirty.
