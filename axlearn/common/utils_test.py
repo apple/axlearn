@@ -44,6 +44,7 @@ from axlearn.common.utils import (
     as_numpy_array,
     as_tensor,
     cast_floats,
+    check_jax_type,
     check_param_shape_alignment,
     complete_partition_spec_tree,
     copy_recursively,
@@ -530,6 +531,11 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(None, check_param_shape_alignment(target_tree, align_target_tree))
         error_msg = "(linear1/weight/0) shape is different: source: (32), target: (15)."
         self.assertEqual(error_msg, check_param_shape_alignment(target_tree, misalign_target_tree))
+
+    def test_check_jax_type(self):
+        check_jax_type(args=(1, 1.0, jax.numpy.ones(1), None, [{"key": 1}]))
+        with self.assertRaises(ValueError):
+            check_jax_type(args=([{"key": "1"}],))
 
 
 class SimilarNamesTest(TestCase):
