@@ -16,12 +16,12 @@ from axlearn.cloud.gcp.vertexai_tensorboard import (
 )
 
 
-def fake_process(target, *args, **kwargs):
-    del args, kwargs
+def fake_process(target, *args, kwargs, **rest):
+    del args, rest
 
     class FakeProcess:
         def start(self):  # pylint: disable=no-self-use
-            return target()
+            return target(**kwargs)
 
     return FakeProcess()
 
