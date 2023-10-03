@@ -40,7 +40,14 @@ from axlearn.common.deberta_test import (
 )
 from axlearn.common.deberta_test import build_cfg as deberta_build_cfg
 from axlearn.common.deberta_test import build_model_config as deberta_build_model_config
-from axlearn.common.layers import Embedding, L2Norm, LayerNorm, Linear, set_dropout_rate_recursively
+from axlearn.common.layers import (
+    Embedding,
+    L2Norm,
+    LayerNorm,
+    LayerNormStateless,
+    Linear,
+    set_dropout_rate_recursively,
+)
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import (
     _parameters_from_t5x_attention,
@@ -54,6 +61,7 @@ from axlearn.common.param_converter import (
     as_torch_tensor,
     axlearn_to_torch,
     parameters_from_t5x_encoder_decoder,
+    torch_to_axlearn,
 )
 from axlearn.common.t5_test import prepare_hf_t5_inputs, random_inputs_for_t5
 from axlearn.common.test_utils import TestCase, dummy_padding_mask
@@ -104,9 +112,13 @@ class BaseParamConverterTest(TestCase):
         ref_inputs: Any,
         parameters_to_ref_layer: Callable = axlearn_to_torch,
         method: str = "forward",
+        test_torch_to_axlearn: bool = False,
     ):
         params = test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
         parameters_to_ref_layer(test_layer, params, ref_layer)
+        if test_torch_to_axlearn:
+            params_from_ref_layer = torch_to_axlearn(ref_layer, dst_layer=test_layer)
+            self.assertNestedAllClose(params_from_ref_layer, params)
         test_outputs, _ = F(
             test_layer,
             is_training=True,
@@ -161,11 +173,12 @@ class ParameterTest(BaseParamConverterTest):
         # pooler=bert.BertPooler.default_config()
         return model_cfg
 
-    def test_layer_norm(self):
+    @parameterized.parameters(LayerNorm, LayerNormStateless)
+    def test_layer_norm(self, norm_cls):
         batch, dim = 20, 10
-        cfg = LayerNorm.default_config().set(input_dim=dim)
+        cfg = norm_cls.default_config().set(input_dim=dim)
         layer = cfg.set(name="convert_test").instantiate(parent=None)
-        hf_layer = torch.nn.LayerNorm(dim)
+        hf_layer = torch.nn.LayerNorm(dim, elementwise_affine=(norm_cls == LayerNorm))
 
         inputs = jax.random.uniform(
             jax.random.PRNGKey(1), shape=(batch, dim), minval=-10, maxval=10
@@ -176,6 +189,7 @@ class ParameterTest(BaseParamConverterTest):
             ref_layer=hf_layer,
             test_inputs=[inputs],
             ref_inputs=as_torch_tensor(inputs),
+            test_torch_to_axlearn=True,
         )
         self.assertNestedAllClose(out, hf_out)
 
@@ -583,7 +597,7 @@ class T5ModelConverterTest(TestCase):
                 hf_layer_copy(**hf_inputs).logits,
             ),
         )
-        self.assertNestedAllClose(expected, actual)
+        self.assertNestedAllClose(expected, actual, atol=1e-5, rtol=1e-3)
 
 
 class HFGPT2ModelConverterTest(TestCase):

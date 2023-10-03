@@ -46,6 +46,7 @@ Examples:
 
 import functools
 import os
+import shlex
 import sys
 import tempfile
 from collections import defaultdict
@@ -60,7 +61,6 @@ from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_user_projects
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.common.types import ResourceMap, ResourceType
 from axlearn.cloud.common.utils import (
-    canonicalize_to_list,
     configure_logging,
     format_table,
     generate_job_name,
@@ -93,7 +93,6 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
     maybe_instantiate,
-    maybe_set_config,
 )
 
 FLAGS = flags.FLAGS
@@ -146,6 +145,8 @@ class BaseBastionLaunchJob(Job):
         user_id: Required[str] = REQUIRED
         # Project ID for bastion quota and scheduling.
         project_id: Required[str] = REQUIRED
+        # Job priority.
+        priority: Required[int] = REQUIRED
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -159,6 +160,12 @@ class BaseBastionLaunchJob(Job):
         flags.DEFINE_string("name", generate_job_name(), "Job name.", **common_kwargs)
         flags.DEFINE_string(
             "bastion", shared_bastion_name(), "Name of bastion VM to use.", **common_kwargs
+        )
+        flags.DEFINE_integer(
+            "priority",
+            5,
+            "Job priority. Smaller means higher priority.",
+            **common_kwargs,
         )
         flags.DEFINE_string(
             "user_id",
@@ -282,6 +289,7 @@ class BaseBastionLaunchJob(Job):
                 project_id=cfg.project_id or "none",
                 creation_time=datetime.now(),
                 resources=self._resources(),
+                priority=cfg.priority,
             )
             serialize_jobspec(new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata), f)
             bastion: SubmitBastionJob = cfg.bastion.set(job_spec_file=f.name).instantiate()
@@ -385,16 +393,7 @@ class LaunchTPUJob(BaseBastionLaunchJob):
         cfg = super().from_flags(fv, **kwargs)
 
         # Construct bundler config.
-        # Ensure that TPU deps are always installed. Note: find_links is only applicable for tar
-        # bundlers. For docker bundlers, point to the TPU build target.
-        maybe_set_config(
-            cfg.bundler,
-            "find_links",
-            ["https://storage.googleapis.com/jax-releases/libtpu_releases.html"],
-        )
-        extras = canonicalize_to_list(cfg.bundler.extras)
-        extras.append("tpu")
-        cfg.bundler.set(extras=extras)
+        cfg.bundler = tpu_runner.with_tpu_extras(cfg.bundler)
 
         # Save flags values corresponding to our launch flags.
         launch_fv = flags.FlagValues()
@@ -575,7 +574,7 @@ def main(_):
     command = ""
     for i, arg in enumerate(sys.argv):
         if arg.strip() == "--":
-            command = " ".join(sys.argv[i + 1 :])
+            command = shlex.join(sys.argv[i + 1 :])
             break
     cfg = launcher.job_cls.from_flags(FLAGS, command=command)
     job: BaseBastionLaunchJob = cfg.instantiate()

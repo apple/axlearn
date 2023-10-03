@@ -23,7 +23,13 @@ from axlearn.common import optimizers, schedule, utils_spmd
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import every_n_steps_policy
-from axlearn.common.config import InstantiableConfig, config_for_function
+from axlearn.common.config import (
+    REQUIRED,
+    InstantiableConfig,
+    Required,
+    config_class,
+    config_for_function,
+)
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import Learner
 from axlearn.common.module import functional as F
@@ -216,6 +222,7 @@ class TestCase(parameterized.TestCase):
                 self.assertEqual(a_value.dtype, b_value.dtype)
 
 
+# TODO(markblee): Move this to axlearn/experiments/test_utils.py, where it's used.
 class TrainerConfigTestCase(TestCase):
     """Base class for testing trainer configs."""
 
@@ -322,8 +329,9 @@ class ThirdPartyInitializer(Initializer):
     """An stand-in initializer that indicates that initialization is delegated to a third party
     library, like HuggingFace."""
 
-    def __init__(self, library: str):
-        self._library = library
+    @config_class
+    class Config(Initializer.Config):
+        library: Required[str] = REQUIRED
 
     def debug_string(
         self,
@@ -331,7 +339,7 @@ class ThirdPartyInitializer(Initializer):
         shape: Optional[Shape] = None,
         axes: Optional[FanAxes] = None,
     ) -> str:
-        return f"delegated({self._library})"
+        return f"delegated({self.config.library})"
 
 
 # When pytype supports recursive types, switch to:

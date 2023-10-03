@@ -18,7 +18,6 @@ from absl.testing import absltest, parameterized
 from fairseq.modules import GumbelVectorQuantizer as fairseq_gumbel_vq
 
 from axlearn.common import schedule
-from axlearn.common.config import config_for_class
 from axlearn.common.module import functional as F
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_init import ConstantInitializer, DefaultInitializer
@@ -157,7 +156,7 @@ class HelpersTest(TestCase):
                 num_codebooks=num_groups,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        ".*codebook$": config_for_class(ConstantInitializer).set(value=0.0),
+                        ".*codebook$": ConstantInitializer.default_config().set(value=0.0),
                     }
                 ),
             )

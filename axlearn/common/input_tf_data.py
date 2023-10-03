@@ -29,6 +29,7 @@ from typing_extensions import Protocol
 
 from axlearn.common.config import (
     REQUIRED,
+    ConfigBase,
     ConfigOr,
     InstantiableConfig,
     Required,
@@ -54,6 +55,7 @@ class DatasetToDatasetFn(Protocol):
         ...
 
 
+# TODO(markblee): Deprecate in favor of maybe_set_config.
 def maybe_set_is_training(cfg: ConfigOr[Any], *, is_training: Optional[bool]) -> ConfigOr[Any]:
     if is_training is not None and hasattr(cfg, "is_training"):
         return cfg.set(is_training=is_training)
@@ -245,6 +247,7 @@ def tfds_dataset(
     Raises:
         ValueError: If shuffle_buffer_size > 0 when is_training is False.
     """
+    # TODO(ruomingp,markblee): Update the API to take train_shuffle_buffer_size instead.
     if not is_training and shuffle_buffer_size > 0:
         # Note that it's OK for is_training=True and shuffle_buffer_size=0 so that the inputs are
         # deterministic.
@@ -900,6 +903,28 @@ class Input(Module):
     def __iter__(self) -> Iterable[NestedTensor]:
         for input_batch in self.dataset():
             yield as_numpy_array(input_batch)
+
+
+def disable_shuffle_recursively(cfg: Input.Config):
+    """Disables all shuffling on the input config.
+
+    This is useful for disabling shuffle during eval, or for deterministic input pipelines.
+    """
+
+    def enter_fn(_, child, default_kv):
+        if isinstance(child, ConfigBase):
+            for k in child.keys():
+                if k.endswith("shuffle_buffer_size"):
+                    setattr(child, k, 0)
+                elif k == "shuffle_files":
+                    setattr(child, k, False)
+                elif "shuffle" in k:
+                    logging.warning(
+                        "Encountered an unrecognized key %s with 'shuffle' in the name.", k
+                    )
+        return default_kv
+
+    cfg.visit(visit_fn=lambda k, v: None, enter_fn=enter_fn)
 
 
 def preserve_element_spec(

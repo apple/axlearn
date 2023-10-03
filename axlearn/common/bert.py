@@ -52,9 +52,9 @@ from axlearn.common.loss import mean_squared_error
 from axlearn.common.module import Module, child_context
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,
-    ConstantInitializer,
     DefaultInitializer,
     WeightInitializer,
+    constant_initializer,
 )
 from axlearn.common.utils import NestedTensor, Tensor
 
@@ -161,7 +161,7 @@ class BertLMHead(BaseClassificationHead):
             output_bias=ParameterSpec(
                 shape=[cfg.num_classes],
                 mesh_axes=(None,),
-                initializer=ConstantInitializer(0.0),
+                initializer=constant_initializer(0.0),
             ),
         )
 

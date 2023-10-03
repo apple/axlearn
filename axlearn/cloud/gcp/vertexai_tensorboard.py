@@ -48,6 +48,36 @@ def is_vertexai_tensorboard_configured() -> bool:
     )
 
 
+# Keep as a top-level function so that it is pickleable.
+def _start_vertexai_tensorboard(*, project_id: str, region: str, resource_name: str, logdir: str):
+    api_client = initializer.global_config.create_client(
+        client_class=TensorboardClientWithOverride,
+        location_override=region,
+    )
+
+    (
+        blob_storage_bucket,
+        blob_storage_folder,
+    ) = uploader_utils.get_blob_storage_bucket_and_folder(api_client, resource_name, project_id)
+    tb_uploader = uploader.TensorBoardUploader(
+        experiment_name=_vertexai_experiment_name_from_output_dir(logdir),
+        experiment_display_name=_vertexai_experiment_name_from_output_dir(logdir),
+        description=None,
+        tensorboard_resource_name=resource_name,
+        blob_storage_bucket=blob_storage_bucket,
+        blob_storage_folder=blob_storage_folder,
+        allowed_plugins=["scalars", "histograms", "distributions", "hparams", "text"],
+        writer_client=api_client,
+        logdir=logdir,
+        one_shot=False,
+        event_file_inactive_secs=None,
+        verbosity=0,
+        run_name_prefix=None,
+    )
+    tb_uploader.create_experiment()
+    tb_uploader.start_uploading()
+
+
 class VertexAITensorboardUploader(Configurable):
     """Vertex AI Tensorboard Uploader.
 
@@ -88,43 +118,6 @@ class VertexAITensorboardUploader(Configurable):
     def upload(self):
         """Uploads summaries in output_dir to Vertex AI. Runs/Keeps uploader process alive."""
         cfg = self.config
-
-        def fn():
-            api_client = initializer.global_config.create_client(
-                client_class=TensorboardClientWithOverride,
-                location_override=cfg.region,
-            )
-
-            (
-                blob_storage_bucket,
-                blob_storage_folder,
-            ) = uploader_utils.get_blob_storage_bucket_and_folder(
-                api_client, self._resource_name, cfg.project_id
-            )
-            tb_uploader = uploader.TensorBoardUploader(
-                experiment_name=_vertexai_experiment_name_from_output_dir(cfg.summary_dir),
-                experiment_display_name=_vertexai_experiment_name_from_output_dir(cfg.summary_dir),
-                description=None,
-                tensorboard_resource_name=self._resource_name,
-                blob_storage_bucket=blob_storage_bucket,
-                blob_storage_folder=blob_storage_folder,
-                allowed_plugins=["scalars", "histograms", "distributions", "hparams", "text"],
-                writer_client=api_client,
-                logdir=cfg.summary_dir,
-                one_shot=False,
-                event_file_inactive_secs=None,
-                verbosity=0,
-                run_name_prefix=None,
-            )
-            tb_uploader.create_experiment()
-            logging.info(
-                "View your Tensorboard at: "
-                "https://%s.tensorboard.googleusercontent.com/experiment/%s",
-                cfg.region,
-                tb_uploader.get_experiment_resource_name().replace("/", "+"),
-            )
-            tb_uploader.start_uploading()
-
         # TODO(vivekrathod): Refactor this pattern into a reusable class so we can apply it to all
         # the helper processes associated with a Jobs such as syncing logs, uploading summaries
         # among others.
@@ -139,8 +132,27 @@ class VertexAITensorboardUploader(Configurable):
 
         if self._uploader_proc is None:
             logging.info("Starting VertexAI Tensorboard uploader.")
-            self._uploader_proc = multiprocessing.Process(target=fn, daemon=True)
+            kwargs = dict(
+                project_id=cfg.project_id,
+                region=cfg.region,
+                resource_name=self._resource_name,
+                logdir=cfg.summary_dir,
+            )
+            self._uploader_proc = multiprocessing.Process(
+                target=_start_vertexai_tensorboard, kwargs=kwargs, daemon=True
+            )
             self._uploader_proc.start()
             logging.info("VertexAI Tensorboard uploader started.")
-        else:
-            logging.info("VertexAI Tensorboard uploader is still running.")
+
+        # For Tensorboard experiment format, see:
+        # https://cloud.google.com/vertex-ai/docs/reference/rest/v1beta1/projects.locations.tensorboards.experiments
+        experiment = (
+            f"projects/{cfg.project_id}/locations/{cfg.region}/tensorboards/{cfg.instance_id}/"
+            f"experiments/{_vertexai_experiment_name_from_output_dir(cfg.summary_dir)}"
+        )
+        logging.info(
+            "VertexAI Tensorboard is running. View your Tensorboard at: "
+            "https://%s.tensorboard.googleusercontent.com/experiment/%s",
+            cfg.region,
+            experiment.replace("/", "+"),
+        )
