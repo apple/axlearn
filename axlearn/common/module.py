@@ -50,7 +50,9 @@ import numpy as np
 from absl import logging
 from typing_extensions import Protocol
 
+from axlearn.common import traceback_util
 from axlearn.common.config import REQUIRED, Configurable, Required, RequiredFieldValue, config_class
+from axlearn.common.traceback_util import annotate_stack, no_stack_summary
 from axlearn.common.utils import NestedTensor, Tensor, partial_with_fn_metadata, prune_tree
 
 
@@ -344,20 +346,23 @@ def child_context(name: str, **kwargs):
         yield c
 
 
+@traceback_util.wrap
+@no_stack_summary
 def _call_method_in_context(
     module: "Module", *args, method_fn: Callable, method_name: str, **kwargs
 ):
+    @no_stack_summary
+    # Save call information on the stack so we can get this information from the traceback object.
+    @annotate_stack(
+        module_call=True,
+        module_type=type(module),
+        method_name=method_name,
+        arg_types=[type(a) for a in args],
+        kwarg_types={k: type(v) for k, v in kwargs.items()},
+    )
     def thunk():
-        try:
-            # pylint: disable-next=protected-access
-            x = module._call_thunk(*args, method_fn=method_fn, **kwargs)()
-        except TypeError as e:
-            arg_types = [type(a) for a in args]
-            kwarg_types = {k: type(v) for k, v in kwargs.items()}
-            raise TypeError(
-                f"{type(module)}.{method_name}(args={arg_types}, kwargs={kwarg_types}): {e}"
-            ) from e
-        return x
+        # pylint: disable-next=protected-access
+        return module._call_thunk(*args, method_fn=method_fn, **kwargs)()
 
     if len(args) > 1:
         logging.log_first_n(
@@ -372,6 +377,7 @@ def _call_method_in_context(
     if context is None:
         return thunk()
 
+    @no_stack_summary
     def call_thunk_in_context(reversed_path):
         if not reversed_path:
             return thunk()
@@ -436,6 +442,7 @@ class Module(Configurable):
         }
 
     def _wrap_method_with_auto_child_context(self, *, method_fn, method_name):
+        @no_stack_summary
         def wrap_method_fn(self, *args, method_fn=method_fn, **kwargs):
             return _call_method_in_context(
                 self, *args, method_fn=method_fn, method_name=method_name, **kwargs
@@ -676,6 +683,7 @@ class Module(Configurable):
     def get_module_outputs(self):
         return self.get_invocation_context().get_module_outputs()
 
+    @no_stack_summary
     def __call__(self, *args, **kwargs) -> Any:
         """A shortcut for self.forward(*args, **kwargs).
 
@@ -694,6 +702,7 @@ class Module(Configurable):
 
     def _call_thunk(self, *args, method_fn, **kwargs) -> Callable[[], Any]:
         # Build nullary that that evaluates <method_fn(self, *args, **kwargs)> when called.
+        @no_stack_summary
         def nullary():
             return method_fn(self, *args, **kwargs)
 

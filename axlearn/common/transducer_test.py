@@ -318,8 +318,7 @@ class AlignmentTest(parameterized.TestCase, tf.test.TestCase):
             am_paddings=am_paddings,
             lm_paddings=lm_paddings,
         )
-        # pylint: disable-next=protected-access
-        with self.assertRaises(jax._src.checkify.JaxRuntimeError):
+        with self.assertRaises(checkify.JaxRuntimeError):
             err.throw()
 
     @parameterized.product(
