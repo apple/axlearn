@@ -285,11 +285,6 @@ class SpmdTrainer(Module):
                 return None
 
             with self.checkpointer:
-                can_donate_buffers = all(
-                    device.platform in ("gpu", "tpu") for device in self._mesh.local_devices
-                )
-                if can_donate_buffers:
-                    logging.info("Donating buffers for jit")
                 self._jit_train_step = pjit(
                     self._train_step,
                     in_shardings=(
@@ -304,7 +299,7 @@ class SpmdTrainer(Module):
                             aux=None,
                         ),
                     ),
-                    donate_argnums=(0,) if can_donate_buffers else (),  # donate the state
+                    donate_argnums=(0,),  # donate the state
                 )
 
                 logging.info("Starting loop...")
@@ -628,7 +623,7 @@ class SpmdTrainer(Module):
             # pjit currently requires all parameters to be specified as positional args.
             self._trainer_state, outputs = self._jit_train_step(self._trainer_state, input_batch)
 
-        if self.step % 100 == 0:
+        if self.step % 100 == 0 or 0 <= self.step <= 5:
             self._step_log(
                 "loss=%s aux=%s",
                 outputs["loss"],
