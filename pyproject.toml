@@ -84,9 +84,9 @@ gcp = [
     "cloud-tpu-client",  # for creating and managing TPUs.
     "crcmod",  # for file uploads.
     "google-api-python-client==1.8.0",
-    "google-auth==1.35.0",
+    "google-auth==2.23.0",
     "google-cloud-storage==2.2.1",
-    "google-cloud-core==1.7.3",
+    "google-cloud-core==2.3.3",
 ]
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
@@ -119,7 +119,7 @@ vertexai_tensorboard = [
 ]
 # Dataflow dependencies.
 dataflow = [
-    "apache-beam==2.38.0",
+    "apache-beam==2.49.0",
     "apache-beam[gcp]",
     "google-apitools",  # for beam pipeline
     "orjson==3.8.7",  # 3.8.8 fails: https://github.com/ijl/orjson/issues/365
