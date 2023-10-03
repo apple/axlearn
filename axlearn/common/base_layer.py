@@ -19,6 +19,7 @@ from axlearn.common.utils import (
     PartitionSpec,
     Tensor,
     TensorSpec,
+    check_jax_type,
     flatten_items,
     get_or_none,
 )
@@ -184,9 +185,21 @@ class BaseLayer(Module):
             3, "BaseLayer._call_thunk %s.%s: remat=%s", self.path(), method_fn, cfg.remat_spec
         )
 
+        has_no_remat = getattr(method_fn, "_no_remat", False)
+
         nullary = super()._call_thunk(*args, method_fn=method_fn, **kwargs)
-        if current_context() is None or cfg.remat_spec is None or not self.is_training:
+        if (
+            current_context() is None
+            or cfg.remat_spec is None
+            or not self.is_training
+            or has_no_remat
+        ):
             return nullary
+
+        # Remat always uses abstract tracers even if concrete information is available.
+        # This means that all inputs and outputs to a remat function need to be JAX types.
+        # We print a nice error if the inputs are not.
+        check_jax_type(args=args, kwargs=kwargs, msg=f"Call to {self}.{method_fn} failed.")
 
         def nullary_with_remat():
             def fn(*args, **kwargs):
@@ -396,3 +409,27 @@ class BaseLayer(Module):
         self.add_summary(f"activations/{name}_mean", WeightedScalar(activations_mean, weights))
         # Average of per hidden unit norm.
         self.add_summary(f"activations/{name}_norm", WeightedScalar(activations_norm_mean, weights))
+
+
+def no_remat(fn: Callable) -> Callable:
+    """Annotates fn so that remat will not be applied to it.
+
+    This can be used to prevent tracers from leaking into helper methods that depend
+    only on data available at compile time when using `remat_spec`. For example, the following
+    method cannot be used in a class that uses remat_spec without using @no_remat:
+
+    ```
+    def fn(self, st: str):
+        if st=='three':
+            return 3
+    ```
+
+    Args:
+        fn: The method to annotate.
+
+    Returns:
+        The input `fn` after having been annotated.
+    """
+    # pylint: disable=protected-access
+    fn._no_remat = True
+    return fn

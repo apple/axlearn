@@ -778,6 +778,40 @@ def check_param_shape_alignment(
         return "\n".join(output_str)
 
 
+def check_jax_type(
+    *,
+    args: Optional[Sequence] = None,
+    kwargs: Optional[dict] = None,
+    pretty_named_args: Optional[dict] = None,
+    msg: Optional[str] = None,
+):
+    """Checks that the supplied arguments are valid JAX types and raise ValueError if not.
+
+    Args:
+        args: Positional arguments of a function call to check.
+        kwargs: Keyword arguments of a function call to check.
+        pretty_named_args: Arguments that already have a human readable name to check.
+        msg: A prefix to print with a line break before the error message produced by this function.
+    """
+    if pretty_named_args is None:
+        pretty_named_args = {}
+    if args is not None:
+        pretty_named_args.update({f"args[{i}]": args[i] for i in range(len(args))})
+    if kwargs is not None:
+        pretty_named_args.update({f"kwargs[{key}]": kwargs[key] for key in kwargs})
+
+    for name, arg in pretty_named_args.items():
+        values, _ = jax.tree_util.tree_flatten(arg)
+        for value in values:
+            if not isinstance(value, (type(None), jax.Array, int, float)):
+                if msg is None:
+                    msg = ""
+                else:
+                    msg += "\n"
+                msg += f"Argument f{name} has leaf with non-JAX type {type(value)}"
+                raise ValueError(msg)
+
+
 def validate_float_dtype(dtype: jnp.dtype):
     """Validates if the provided dtype is both a float and amongst the set supported.
 
