@@ -3,8 +3,9 @@
 """Tests BaseLayer."""
 import math
 from functools import partial
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+import jax.ad_checkpoint
 import jax.core
 import jax.interpreters.ad
 import jax.random
@@ -20,6 +21,7 @@ from axlearn.common.base_layer import (
     ParameterNoise,
     ParameterSpec,
     RematSpec,
+    no_remat,
 )
 from axlearn.common.config import config_class
 from axlearn.common.module import Module, OutputCollection
@@ -403,6 +405,58 @@ class BaseLayerTest(TestCase):
             atol=1e-6,
             rtol=1e-6,
         )
+
+    def test_no_remat_inheritance(self):
+        # Check that @no_remat is preserved by inheritance unless the method
+        # is explicitly overriden by one without @no_remat.
+        class AnotherTestLayer(BaseLayer):
+            @no_remat
+            def fn(self, st: str):
+                pass
+
+        class Subclass1(AnotherTestLayer):
+            pass
+
+        class Subclass2(AnotherTestLayer):
+            def fn(self, st: str):
+                pass
+
+        self.assertTrue(hasattr(AnotherTestLayer.fn, "_no_remat"))
+        self.assertTrue(hasattr(Subclass1.fn, "_no_remat"))
+        self.assertFalse(hasattr(Subclass2.fn, "_no_remat"))
+
+    def test_no_remat(self):
+        # pylint: disable=missing-class-docstring
+        # Checks that using @no_remat allows calling a function with a non-JAX type.
+        class AnotherTestLayer(BaseLayer):
+            @config_class
+            class Config(BaseLayer.Config):
+                remat_spec: Optional[RematSpec] = RematSpec(
+                    policy=jax_remat_policies.nothing_saveable
+                )
+
+            def forward(self, x):
+                b = self.fn("three")
+                x = b * x
+                return x.sum()
+
+            @no_remat
+            def fn(self, st: str):
+                if st == "three":
+                    return 3
+
+        # Pytype doesn't like us directly accessing the _no_remat attribute, so we use getattr.
+        self.assertTrue(getattr(AnotherTestLayer.fn, "_no_remat", False))
+
+        layer = AnotherTestLayer.default_config().set(name="tmp").instantiate(parent=None)
+        params = {}
+        rng = jax.random.PRNGKey(0)
+        jit_value_and_grad = jax.jit(
+            lambda *args, inputs, **kwargs: jax.value_and_grad(
+                lambda inputs: F(layer, *args, inputs=inputs, is_training=True, **kwargs)[0]
+            )(inputs)
+        )
+        _ = jit_value_and_grad(prng_key=rng, state=params, inputs=[jax.numpy.ones(5)])
 
 
 class ComputeFanAxesTest(TestCase):
