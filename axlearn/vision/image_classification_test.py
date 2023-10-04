@@ -17,6 +17,7 @@ from torchvision.models.resnet import resnet18, resnet34, resnet50, resnet101, r
 
 from axlearn.common import utils
 from axlearn.common.config import InstantiableConfig
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils import as_tensor
@@ -203,11 +204,11 @@ class ViTClassificationModelTest(TestCase):
             self.assertEqual(loss, 0)
         self.assertIn("logits", aux)
         self.assertAlmostEqual(
-            output_collection.summaries["metric"]["loss"], (loss, num_valid_examples)
+            output_collection.summaries["metric"]["loss"], WeightedScalar(loss, num_valid_examples)
         )
         self.assertAlmostEqual(
             output_collection.summaries["metric"]["accuracy"],
-            (0.0, num_valid_examples),
+            WeightedScalar(0.0, num_valid_examples),
         )
 
 

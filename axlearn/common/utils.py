@@ -123,7 +123,9 @@ def _concat(*, prefix: str, suffix: str, separator: str):
     return f"{prefix}{separator}{suffix}" if prefix else f"{suffix}"
 
 
-def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
+def tree_paths(
+    tree: NestedTree, separator: str = "/", is_leaf: Optional[Callable] = None
+) -> NestedTree:
     """Returns a tree of the same structure as `nested_tensor` but with corresponding paths instead
     of values.
 
@@ -133,6 +135,8 @@ def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
     Args:
         tree: A nested structure.
         separator: The separator between parts of a path.
+        is_leaf: A Callable to evaluate whether the given node should be considered a leaf when
+                 it otherwise would not, similarly to the is_leaf in jax.tree_util.tree_map.
 
     Returns:
         A nested structure with the same structure as `tree`, but each leaf will be a string path.
@@ -140,8 +144,13 @@ def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
         tree_paths.
     """
 
+    if is_leaf is None:
+        is_leaf = lambda x: False
+
     def visit(tree, prefix):
-        if tree is None:
+        if is_leaf(tree):
+            return prefix
+        elif tree is None:
             # None is considered part of the tree structure, not a tree leaf.
             return tree
         elif hasattr(tree, "items"):

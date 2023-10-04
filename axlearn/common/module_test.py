@@ -6,6 +6,7 @@ import contextlib
 import threading
 from typing import List, Optional
 
+import chex
 import jax.random
 import numpy as np
 from absl.testing import absltest
@@ -29,6 +30,7 @@ from axlearn.common.module import (
     scan_in_context,
     set_current_context,
 )
+from axlearn.common.summary import ImageSummary
 from axlearn.common.test_utils import TestWithTemporaryCWD
 from axlearn.common.utils import match_regex_rules
 
@@ -58,6 +60,26 @@ class OutputCollectionTest(absltest.TestCase):
         self.assertEqual({"x": 1, "y": 4}, c1.summaries)
         self.assertEqual({"x": 2, "y": 5}, c1.state_updates)
         self.assertEqual({"x": 3, "y": 6}, c1.module_outputs)
+
+    def test_module_add_summary_image(self):
+        val = jnp.ones((2, 5, 5, 4))  # 4 means RGBA
+
+        class _TestModule(Module):
+            def forward(self):
+                self.add_summary("img0", ImageSummary(val))
+
+        module = _TestModule.default_config().set(name="tmp").instantiate(parent=None)
+
+        # Test that it works under jit.
+        @jax.jit
+        def _test():
+            _, output_collection = F(
+                module, prng_key=jax.random.PRNGKey(0), state={}, inputs=[], is_training=True
+            )
+            return output_collection
+
+        output_collection = _test()
+        chex.assert_trees_all_equal(output_collection.summaries["img0"].value(), val)
 
 
 class TestModule(Module):
