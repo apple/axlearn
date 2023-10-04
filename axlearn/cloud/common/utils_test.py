@@ -65,7 +65,7 @@ class UtilsTest(parameterized.TestCase):
         dict(kv_flags=[], expected={}),
         dict(kv_flags=["malformatted"], expected=ValueError()),
         dict(kv_flags=["a:b"], delimiter="=", expected=ValueError()),
-        dict(kv_flags=["a:b:c"], expected=ValueError()),
+        dict(kv_flags=["a=b=c"], delimiter="=", expected=dict(a="b=c")),
     )
     def test_parse_kv_flags(
         self, kv_flags: Sequence[str], expected: Union[Dict, Exception], delimiter: str = ":"

@@ -152,7 +152,7 @@ def parse_kv_flags(kv_flags: Sequence[str], *, delimiter: str = ":") -> Dict[str
     """
     metadata = {}
     for kv in kv_flags:
-        parts = kv.split(delimiter)
+        parts = kv.split(delimiter, maxsplit=1)
         if len(parts) != 2:
             raise ValueError(f"Expected key{delimiter}value, got {kv}")
         metadata[parts[0]] = parts[1]
