@@ -185,21 +185,24 @@ class BaseLayer(Module):
             3, "BaseLayer._call_thunk %s.%s: remat=%s", self.path(), method_fn, cfg.remat_spec
         )
 
-        has_no_remat = getattr(method_fn, "_no_remat", False)
-
         nullary = super()._call_thunk(*args, method_fn=method_fn, **kwargs)
         if (
             current_context() is None
             or cfg.remat_spec is None
             or not self.is_training
-            or has_no_remat
+            or getattr(method_fn, "_no_remat", False)
         ):
             return nullary
 
         # Remat always uses abstract tracers even if concrete information is available.
         # This means that all inputs and outputs to a remat function need to be JAX types.
         # We print a nice error if the inputs are not.
-        check_jax_type(args=args, kwargs=kwargs, msg=f"Call to {self}.{method_fn} failed.")
+        check_jax_type(
+            args=args,
+            kwargs=kwargs,
+            msg=f"Attempt to use remat on {self}.{method_fn} "
+            "failed. Consider decorating with @no_remat.",
+        )
 
         def nullary_with_remat():
             def fn(*args, **kwargs):

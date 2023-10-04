@@ -792,6 +792,9 @@ def check_jax_type(
         kwargs: Keyword arguments of a function call to check.
         pretty_named_args: Arguments that already have a human readable name to check.
         msg: A prefix to print with a line break before the error message produced by this function.
+
+    Raises:
+        ValueError: If the supplied arguments are not valid jax types.
     """
     if pretty_named_args is None:
         pretty_named_args = {}
@@ -808,7 +811,7 @@ def check_jax_type(
                     msg = ""
                 else:
                     msg += "\n"
-                msg += f"Argument f{name} has leaf with non-JAX type {type(value)}"
+                msg += f"Argument {name} has leaf with non-JAX type {type(value)}"
                 raise ValueError(msg)
 
 

@@ -534,8 +534,12 @@ class TreeUtilsTest(TestCase):
 
     def test_check_jax_type(self):
         check_jax_type(args=(1, 1.0, jax.numpy.ones(1), None, [{"key": 1}]))
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "non-JAX type"):
             check_jax_type(args=([{"key": "1"}],))
+        with self.assertRaisesRegex(ValueError, "non-JAX type"):
+            check_jax_type(kwargs={"key": "1"})
+        with self.assertRaisesRegex(ValueError, "^Argument key has leaf with non-JAX type"):
+            check_jax_type(pretty_named_args={"key": "1"})
 
 
 class SimilarNamesTest(TestCase):
