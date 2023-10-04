@@ -455,7 +455,7 @@ class DetectionInput(input_tf_data.Input):
         cfg = super().default_config()  # type: DetectionInput.Config
         cfg.source = config_for_function(input_tf_data.tfds_dataset).set(
             dataset_name="coco/2017",
-            shuffle_buffer_size=1024,  # to be tuned.
+            train_shuffle_buffer_size=1024,  # to be tuned.
         )
         # Default processor settings for COCO detection.
         cfg.processor = config_for_function(_process_example).set(

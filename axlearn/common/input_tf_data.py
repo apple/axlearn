@@ -214,8 +214,8 @@ def tfds_dataset(
     *,
     split: str,
     is_training: bool,
-    shuffle_buffer_size: int,
-    shuffle_files: Optional[bool] = None,
+    train_shuffle_buffer_size: Optional[int] = None,
+    train_shuffle_files: Optional[bool] = None,
     data_dir: Optional[str] = None,
     download: bool = False,
     read_config: Optional[InstantiableConfig] = None,
@@ -229,10 +229,11 @@ def tfds_dataset(
         is_training: Whether the examples are used for training.
             If True, examples will be read in parallel and shuffled.
             Otherwise examples will be read sequentially to ensure a deterministic order.
-        shuffle_buffer_size: The shuffle buffer size.
-            If shuffle_buffer_size <= 0, no shuffling is done.
-            If is_training=False, shuffle_buffer_size is always expected to be <= 0.
-        shuffle_files: Whether to shuffle files. If None, infer from shuffle_buffer_size > 0.
+        train_shuffle_buffer_size: The shuffle buffer size (required) when is_training=True.
+            If is_training=False or shuffle_buffer_size <= 0, no shuffling is done.
+        train_shuffle_files: Whether to shuffle files when is_training=True.
+            If is_training=False, no shuffling is done.
+            If is_training=True and train_shuffle_files is None, infer from shuffle_buffer_size > 0.
         data_dir: Used for tfds.load. If None, use the value of the environment variable
             DATA_DIR, TFDS_DATA_DIR, or "~/tensorflow_datasets" (in that order).
         download: Whether to download the examples. If false, use the data under data_dir.
@@ -245,13 +246,22 @@ def tfds_dataset(
         A BuildDatasetFn, which returns a tf.data.Dataset for the specified TFDS.
 
     Raises:
-        ValueError: If shuffle_buffer_size > 0 when is_training is False.
+        ValueError: if train_shuffle_buffer_size is None when is_training=True.
     """
-    # TODO(ruomingp,markblee): Update the API to take train_shuffle_buffer_size instead.
-    if not is_training and shuffle_buffer_size > 0:
-        # Note that it's OK for is_training=True and shuffle_buffer_size=0 so that the inputs are
-        # deterministic.
-        raise ValueError("Shuffling should be disabled if is_training=False")
+    if is_training:
+        if train_shuffle_buffer_size is None:
+            raise ValueError("train_shuffle_buffer_size is required when is_training=True")
+        shuffle_files = (
+            train_shuffle_buffer_size > 0 if train_shuffle_files is None else train_shuffle_files
+        )
+        shuffle_buffer_size = train_shuffle_buffer_size
+    else:
+        # Disable shuffling.
+        #
+        # Note that it's OK for is_training=True and train_shuffle_buffer_size=0 so that the inputs
+        # are deterministic.
+        shuffle_buffer_size = 0
+        shuffle_files = False
 
     if data_dir is None:
         data_dir = get_data_dir()
@@ -260,9 +270,6 @@ def tfds_dataset(
         read_config = config_for_function(tfds_read_config).set(is_training=is_training)
     else:
         read_config = read_config.set(is_training=is_training)
-
-    if shuffle_files is None:
-        shuffle_files = shuffle_buffer_size > 0
 
     def fn() -> tf.data.Dataset:
         local_read_config = read_config.clone()
@@ -914,9 +921,9 @@ def disable_shuffle_recursively(cfg: Input.Config):
     def enter_fn(_, child, default_kv):
         if isinstance(child, ConfigBase):
             for k in child.keys():
-                if k.endswith("shuffle_buffer_size"):
+                if k.endswith("train_shuffle_buffer_size"):
                     setattr(child, k, 0)
-                elif k == "shuffle_files":
+                elif k == "train_shuffle_files":
                     setattr(child, k, False)
                 elif "shuffle" in k:
                     logging.warning(

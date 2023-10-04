@@ -375,7 +375,7 @@ class ImagenetInput(input_tf_data.Input):
         cfg = super().default_config()  # type: ImagenetInput.Config
         cfg.source = config_for_function(input_tf_data.tfds_dataset).set(
             dataset_name="imagenet2012",
-            shuffle_buffer_size=1024,  # to be tuned.
+            train_shuffle_buffer_size=1024,  # to be tuned.
         )
         cfg.processor = config_for_function(_process_example).set(
             image_size=(224, 224),
