@@ -411,9 +411,11 @@ class ParameterTest(BaseParamConverterTest):
         self.assertNestedAllClose(out.data, hf_out[0])
 
     @parameterized.product(
-        hf_model=[hf_bert.BertEncoder, hf_roberta.RobertaEncoder], remat=[False, True]
+        hf_model=[hf_bert.BertEncoder, hf_roberta.RobertaEncoder],
+        remat=[False, True],
+        test_torch_to_axlearn=[False, True],
     )
-    def test_bert_encoder(self, hf_model, remat):
+    def test_bert_encoder(self, hf_model, remat, test_torch_to_axlearn):
         batch = 3
         cfg = self._param_converter_bert_encoder_config_from_hf(self.hf_cfg, remat)
         cfg = cfg.transformer.set(input_dim=self.hf_cfg.hidden_size)
@@ -434,6 +436,7 @@ class ParameterTest(BaseParamConverterTest):
                 hidden_states=as_torch_tensor(inputs),
                 return_dict=False,
             ),
+            test_torch_to_axlearn=test_torch_to_axlearn,
         )
         self.assertNestedAllClose(out.data, hf_out[0])
 
