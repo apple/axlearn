@@ -86,6 +86,15 @@ class TreeUtilsTest(TestCase):
             tree_paths(Combo(head=1, tail=Combo(head=2, tail=3))),
         )
 
+        # With is_leaf set.
+        self.assertEqual(
+            ["0", {"a": "1/a", "b": "1/b"}],
+            tree_paths(
+                [Combo(head=1, tail=2), {"a": Combo(head=3, tail=4), "b": 5}],
+                is_leaf=lambda x: isinstance(x, Combo),
+            ),
+        )
+
         @chex.dataclass
         class DataclassCombo:
             scalar: int

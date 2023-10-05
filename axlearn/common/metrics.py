@@ -1,23 +1,29 @@
 # Copyright © 2023 Apple Inc.
 
 """Metrics."""
-from typing import Any, Dict, NamedTuple
+import typing
+from typing import Any, Dict, Optional, Union
 
 import jax
 from absl import logging
 
 from axlearn.common.config import Configurable
 from axlearn.common.module import Summable
-from axlearn.common.utils import Tensor
+from axlearn.common.summary import Summary
+from axlearn.common.utils import NestedTensor, Tensor
 
 
-class WeightedScalarValue(NamedTuple):
+class WeightedScalarValue(Summary):
     """A weighted scalar value represents a mean value and a weight."""
 
     mean: Tensor
     weight: Tensor
 
+    def value(self) -> Optional[Union[NestedTensor, int, float]]:
+        return self.mean
 
+
+@typing.runtime_checkable  # Needed for isinstance checks to work.
 class WeightedScalar(WeightedScalarValue, Summable):
     """A weighted scalar represents a weighted Summable value."""
 
