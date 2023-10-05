@@ -122,8 +122,7 @@ class CommandGroup:
             self.parser: argparse_flags.ArgumentParser = parent.subparsers.add_parser(
                 name, **kwargs
             )
-            # Don't let child child defaults propagate backwards to parent.
-            self.namespace = parent.namespace
+            self.namespace = parent.namespace  # Copy reference.
             argv = _drop_one(parent.argv, name)  # Copy value.
 
         self.argv = argv
