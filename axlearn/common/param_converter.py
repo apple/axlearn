@@ -42,6 +42,7 @@ from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
 from axlearn.common.attention import (
     BaseMultiheadLinear,
+    BaseStackedTransformerLayer,
     FusedQKVLinear,
     LearnedPositionalEmbedding,
     MultiheadAttention,
@@ -68,7 +69,7 @@ from axlearn.common.dit import (
     TimeStepEmbedding,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
-from axlearn.common.encoder import EncoderModel
+from axlearn.common.encoder import Encoder, EncoderModel
 from axlearn.common.layers import Conv2D, Embedding, LayerNorm, LayerNormStateless, Linear, RMSNorm
 from axlearn.common.t5 import T5Decoder, T5Encoder, T5EncoderDecoderModel
 from axlearn.common.text_encoder import TextEmbeddingEncoder
@@ -716,7 +717,9 @@ def torch_to_axlearn(
     elif isinstance(src, hf_encoder_decoder.EncoderDecoderModel):
         dst = _parameters_from_encoder_decoder_model(src)
     elif isinstance(src, hf_bert.BertModel):
-        dst = _parameters_from_bert_model(src)
+        dst = _parameters_from_bert_model(src, dst_layer=dst_layer)
+    elif isinstance(src, (hf_bert.BertEncoder, hf_roberta.RobertaEncoder)):
+        dst = _parameters_from_bert_encoder(src, dst_layer=dst_layer)
     elif isinstance(src, hf_roberta.RobertaModel):
         dst = _parameters_from_roberta_model(src)
     elif isinstance(src, hf_xlnet.XLNetRelativeAttention):
@@ -1142,9 +1145,10 @@ def _parameters_from_attention_dense(
         )
         i_proj[dst_proj] = dense_params
     output_dense = output.dense
+    o_proj = torch_to_axlearn(output_dense)
     o_proj = dict(
-        weight=output_dense.weight.view(-1, num_heads, per_head_dim),
-        bias=output_dense.bias,
+        weight=o_proj["weight"].transpose().reshape(-1, num_heads, per_head_dim),
+        bias=o_proj["bias"],
     )
     return dict(i_proj=i_proj, o_proj=o_proj, dropout={})
 
@@ -1399,10 +1403,26 @@ def _parameters_from_bert_pooler(src: hf_bert.BertPooler):
     )
 
 
-def _parameters_from_bert_encoder(src: Union[hf_bert.BertEncoder, hf_roberta.RobertaEncoder]):
-    return {
-        f"layer{i}": _parameters_from_roberta_layer(module) for i, module in enumerate(src.layer)
+def _parameters_from_bert_encoder(
+    src: Union[hf_bert.BertEncoder, hf_roberta.RobertaEncoder],
+    dst_layer: Optional[BaseStackedTransformerLayer] = None,
+):
+    transformer_layers = {
+        i: _parameters_from_roberta_layer(module) for i, module in enumerate(src.layer)
     }
+    num_layers = len(transformer_layers)
+    if dst_layer is not None and isinstance(dst_layer, RepeatedTransformerLayer):
+        return dict(
+            repeat=VDict(
+                # pylint: disable-next=no-value-for-parameter
+                layer=jax.tree_util.tree_map(
+                    lambda *inputs: jnp.stack(inputs),
+                    *[transformer_layers[i] for i in range(num_layers)],
+                )
+            )
+        )
+    else:
+        return {f"layer{i}": transformer_layers[i] for i in range(num_layers)}
 
 
 # Note: Hugging Face RoBERTa uses slightly different embeddings from BERT.
@@ -1416,10 +1436,12 @@ def _parameters_from_roberta_model(src: hf_roberta.RobertaModel):
     return params
 
 
-def _parameters_from_bert_model(src: hf_bert.BertModel):
+def _parameters_from_bert_model(src: hf_bert.BertModel, dst_layer: Optional[Encoder] = None):
     encoder = dict(
         emb=_parameters_from_bert_embeddings(src.embeddings),
-        transformer=_parameters_from_bert_encoder(src.encoder),
+        transformer=_parameters_from_bert_encoder(
+            src.encoder, dst_layer=dst_layer.transformer if dst_layer is not None else None
+        ),
         attention_mask={},
     )
     params = dict(encoder=encoder)
