@@ -5,7 +5,8 @@ import json
 import os
 from abc import ABC
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Type
+from urllib.parse import urlparse
 
 import jax.numpy as jnp
 import jax.random
@@ -21,6 +22,9 @@ from axlearn.common.module import Module, NestedTensor  # pylint: disable=unused
 from axlearn.common.utils import Tensor
 
 HF_MODULE_KEY = "hf_module"
+# A function that takes a single argument denoting the URI, and returns a local path
+# after the resource has been downloaded or mounted locally.
+SchemeLoadingHandler = Callable[[str], str]
 
 
 def get_hf_models_cache_dir() -> Path:
@@ -89,7 +93,8 @@ class HfModuleWrapper(BaseModel, ABC):
         dtype: Required[jnp.dtype] = REQUIRED
         # Type of HF pretrained model.
         hf_model_type: Required[Type[FlaxPreTrainedModel]] = REQUIRED
-        # A local or GCS path to the Hugging Face model directory.
+        # A local or remote path to the Hugging Face model directory.
+        # For a remote path only schemes in uri_scheme_handlers are supported (by default gs).
         pretrained_model_path: Optional[str] = None
         # Initialize model parameters from PyTorch checkpoint rather than Flax checkpoint.
         from_pt: Optional[bool] = False
@@ -103,14 +108,43 @@ class HfModuleWrapper(BaseModel, ABC):
         # Keys to skip when copying weights from pre-trained models.
         # Key names refer to dictionary key names in the model's config.json, and has no dots.
         pretrained_keys_to_skip: Optional[Sequence[str]] = []
+        # A mapping from a URI scheme such as "gs" to the SchemeLoadingHandler
+        # to use when loading a model from pretrained_model_path with this scheme.
+        uri_scheme_handlers: Optional[Mapping[str, SchemeLoadingHandler]] = None
+
+    @classmethod
+    def default_config(cls: Type["HfModuleWrapper"]) -> Config:
+        cfg = super().default_config()
+        cfg.uri_scheme_handlers = dict(gs=download_hf_models_from_gs)
+        return cfg
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
+        self._local_pretrained_model_path = None
         if cfg.pretrained_model_path is not None:
             hf_config_cls = cfg.hf_model_type.config_class
-            with tf.io.gfile.GFile(os.path.join(cfg.pretrained_model_path, "config.json")) as f:
+
+            uri = urlparse(cfg.pretrained_model_path)
+            if uri.scheme != "":
+                if uri.scheme not in cfg.uri_scheme_handlers:
+                    raise ValueError(
+                        f"pretrained_model_path {cfg.pretrained_model_path} has "
+                        f"URI scheme {uri.scheme} which is not supported in uri_scheme_handlers. "
+                        f"Supported ones are: {','.join(cfg.uri_scheme_handlers.keys())}."
+                    )
+                self._local_pretrained_model_path = cfg.uri_scheme_handlers[uri.scheme](
+                    cfg.pretrained_model_path
+                )
+            else:
+                self._local_pretrained_model_path = cfg.pretrained_model_path
+
+            logging.info("Using model path %s", self._local_pretrained_model_path)
+
+            with open(
+                os.path.join(self._local_pretrained_model_path, "config.json"), encoding="utf-8"
+            ) as f:
                 final_hf_config = hf_config_cls(**json.load(f))
 
             if cfg.hf_config is not None:
@@ -148,35 +182,9 @@ class HfModuleWrapper(BaseModel, ABC):
             return prebuilt
         params = super().initialize_parameters_recursively(prng_key, prebuilt=prebuilt)
         cfg = self.config
-        if cfg.pretrained_model_path is not None:
-            if cfg.pretrained_model_path.startswith("gs://"):
-                # Cache the model locally, if it is not already cached.
-                model_name = cfg.pretrained_model_path.rstrip("/").split("/")[-1]
-                cache_dir = get_hf_models_cache_dir()
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                local_pretrained_model_path = cache_dir / model_name
-                if not local_pretrained_model_path.exists():
-                    local_pretrained_model_path.mkdir(parents=True)
-                    for filename in tf.io.gfile.listdir(cfg.pretrained_model_path):
-                        logging.info(
-                            "Downloading %s to %s",
-                            os.path.join(cfg.pretrained_model_path, filename),
-                            local_pretrained_model_path / filename,
-                        )
-                        tf.io.gfile.copy(
-                            os.path.join(cfg.pretrained_model_path, filename),
-                            str(local_pretrained_model_path / filename),
-                        )
-                else:
-                    logging.info(
-                        "Found cache %s, skipping downloading model from %s",
-                        local_pretrained_model_path,
-                        cfg.pretrained_model_path,
-                    )
-            else:
-                local_pretrained_model_path = cfg.pretrained_model_path
+        if self._local_pretrained_model_path is not None:
             hf_model = cfg.hf_model_type.from_pretrained(
-                local_pretrained_model_path, from_pt=cfg.from_pt
+                self._local_pretrained_model_path, from_pt=cfg.from_pt
             )
             hf_module_params = params[HF_MODULE_KEY]
             hf_module_params["params"] = {
