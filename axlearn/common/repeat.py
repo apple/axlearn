@@ -53,6 +53,7 @@ from typing import Callable, NamedTuple, Optional, Sequence
 
 import jax
 
+from axlearn.common import param_init
 from axlearn.common.base_layer import (
     BaseLayer,
     FactorizationSpec,
@@ -120,15 +121,15 @@ class Repeat(BaseLayer):
                 shape=(cfg.num_layers, *spec.shape),
                 mesh_axes=PartitionSpec(None, *spec.mesh_axes),
                 factorization=transform_factorization_spec(spec.factorization),
+                fan_axes=param_init.maybe_prepend_axis(
+                    spec.fan_axes, axis_type=param_init.FanAxes.AxisType.BATCH_AXIS
+                ),
             ),
             specs,
         )
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         def init(prng_key_i, prebuilt_i):
             return VDict(

@@ -49,6 +49,7 @@ import jax
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
+from axlearn.common import param_init
 from axlearn.common.base_layer import (
     BaseLayer,
     FactorizationSpec,
@@ -835,15 +836,15 @@ class FusedQKVLinear(BaseQKVLinear):
                 shape=(3, *spec.shape),
                 mesh_axes=PartitionSpec(None, *spec.mesh_axes),
                 factorization=transform_factorization_spec(spec.factorization),
+                fan_axes=param_init.maybe_prepend_axis(
+                    spec.fan_axes, axis_type=param_init.FanAxes.AxisType.BATCH_AXIS
+                ),
             ),
             specs,
         )
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
             return prebuilt
@@ -2494,10 +2495,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             self._layers.append(self._add_child(f"layer{i}", layer_cfg))
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         cfg = self.config  # type: StackedTransformerLayer.Config
         prng_key = split_prng_key(prng_key, cfg.num_layers)
@@ -2815,10 +2813,7 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         self._add_child("repeat", repeat_cfg)
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         # We need to call self.repeat.initialize_parameters_recursively() with the same prng_key
         # to ensure initialization parity with StackedTransformerLayer.
@@ -2949,10 +2944,7 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
         self._add_child("pipeline", pipeline_cfg)
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         cfg = self.config  # type: PipelinedTransformerLayer.Config
         # We pre-split all num_layers keys to ensure initialization parity with

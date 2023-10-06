@@ -2,6 +2,7 @@
 
 """Modules for configurable parameter initialization."""
 import re
+from enum import Enum
 from typing import Any, Dict, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
@@ -27,12 +28,125 @@ class FanAxes(NamedTuple):
     https://jax.readthedocs.io/en/latest/_autosummary/jax.nn.initializers.variance_scaling.html.
     """
 
+    class AxisType(Enum):
+        IN_AXIS = "in_axis"
+        OUT_AXIS = "out_axis"
+        BATCH_AXIS = "batch_axis"
+        NONE = None
+
     # Input axis or sequence of axes of the fan "input" dimension.
     in_axis: Union[Tuple[int, ...], int]
     # Output axis or sequence of axes of the fan "output" dimension.
     out_axis: Union[Tuple[int, ...], int]
     # Batch axis or sequence of axes that should be ignored when computing fan.
     batch_axis: Union[Tuple[int, ...], int] = ()
+
+    def canonicalize(self) -> "FanAxes":
+        """Returns a FanAxes equivalent to this one where all fields are tuples."""
+
+        def canonicalize(maybe_tuple: Union[None, int, Sequence[Union[int]]]) -> Tuple[int, ...]:
+            if maybe_tuple is None:
+                return tuple()
+            if isinstance(maybe_tuple, int):
+                return (maybe_tuple,)
+            if isinstance(maybe_tuple, Tuple):
+                return tuple(sorted(maybe_tuple))
+            raise TypeError(f"Invalid type {type(maybe_tuple)} for data {maybe_tuple}.")
+
+        axes = {}
+        for typ in self._fields:
+            axes[typ] = canonicalize(getattr(self, typ))
+        return FanAxes(**axes)
+
+    def __eq__(self, other):
+        if not isinstance(other, FanAxes):
+            return False
+        return self.canonicalize()._asdict() == other.canonicalize()._asdict()
+
+    # We can't insert into other locations besides the start and end
+    # because FanAxes doesn't know the number of dimensions of the parameter shape.
+    def _insert_axis(self, axis: int, *, axis_type: "FanAxes.AxisType") -> "FanAxes":
+        """Returns a copy of this where a new axis of the given type has been inserted
+        at the given index, moving the other axes accordingly.
+
+        Only 0 and -1 are supported for locations.
+
+        Args:
+            axis: The index of the new axis.
+            axis_type: The type of axis to insert.
+
+        Returns:
+            A copy of this where a new axis of the given type has been prepended
+            to the beginning of the shape.
+
+        Raises:
+            ValueError: If axis is not 0 or -1.
+        """
+        if axis not in (0, -1):
+            raise ValueError("Location must be either 0 or -1.")
+
+        def move_axis(index: int):
+            if index >= 0 and axis == 0:
+                index += 1
+            elif index < 0 and axis == -1:
+                index -= 1
+            return index
+
+        fan_axes = self.canonicalize()
+        fan_axes = fan_axes._asdict()
+
+        # Dictionary with moved axis indices.
+        fan_axes = {
+            key: tuple(move_axis(index) for index in value) for key, value in fan_axes.items()
+        }
+        if axis_type != FanAxes.AxisType.NONE:
+            tmp = list(fan_axes[axis_type.value])
+            tmp.insert(axis, axis)
+            fan_axes[axis_type.value] = tuple(tmp)
+        return FanAxes(**fan_axes)
+
+    def prepend_axis(self, *, axis_type: "FanAxes.AxisType") -> "FanAxes":
+        """Returns a copy of this where a new axis of the given type has been prepended
+        to the beginning of the shape.
+
+        Args:
+            axis_type: The type of axis to insert.
+
+        Returns:
+            A copy of this where a new axis of the given type has been prepended
+            to the beginning of the shape.
+        """
+        return self._insert_axis(0, axis_type=axis_type)
+
+    def append_axis(self, *, axis_type: "FanAxes.AxisType") -> "FanAxes":
+        """Returns a copy of this where a new axis of the given type has been appended
+        to the end of the shape.
+
+        Args:
+            axis_type: The type of axis to insert.
+
+        Returns:
+            A copy of this where a new axis of the given type has been appended
+            to the end of the shape.
+        """
+        return self._insert_axis(-1, axis_type=axis_type)
+
+
+def maybe_prepend_axis(fan_axes: Optional[FanAxes], *, axis_type: FanAxes.AxisType):
+    """Returns `fan_axes.prepend_axis(axis_type=axis_type)` if `fan_axes` is not None.
+    Otherwise returns None.
+
+    Args:
+        fan_axes: The `FanAxes` object.
+        axis_type: The argument supplied to `fan_axes.prepend_axis()`.
+
+    Returns:
+        `fan_axes.prepend_axis(axis_type=axis_type)` if `fan_axes` is not None.
+        Otherwise returns None.
+    """
+    if fan_axes is None:
+        return None
+    return fan_axes.prepend_axis(axis_type=axis_type)
 
 
 class Initializer(Configurable):
