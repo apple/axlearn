@@ -30,6 +30,7 @@ from typing import (
     Union,
 )
 
+import flax.struct
 import jax
 import numpy as np
 from absl import logging
@@ -158,6 +159,8 @@ def tree_paths(
                 (k, visit(v, _concat(prefix=prefix, suffix=k, separator=separator)))
                 for k, v in tree.items()
             )
+        elif isinstance(tree, flax.struct.PyTreeNode):
+            return type(tree)(**visit(dataclasses.asdict(tree), prefix))
         elif is_named_tuple(tree):
             return type(tree)(**visit(tree._asdict(), prefix))
         elif isinstance(tree, (list, tuple)):
