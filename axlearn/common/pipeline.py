@@ -30,6 +30,7 @@ import jax
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
+from axlearn.common import param_init
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, NestedParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.module import (
@@ -147,6 +148,9 @@ class Pipeline(BaseLayer):
                 shape=(cfg.num_layers, *spec.shape),
                 mesh_axes=PartitionSpec("pipeline", *spec.mesh_axes),
                 factorization=transform_factorization_spec(spec.factorization),
+                fan_axes=param_init.maybe_prepend_axis(
+                    spec.fan_axes, axis_type=param_init.FanAxes.AxisType.BATCH_AXIS
+                ),
             ),
             specs,
         )

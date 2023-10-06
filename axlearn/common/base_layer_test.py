@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests BaseLayer."""
+import dataclasses
 import math
 from functools import partial
 from typing import Dict, List, Optional
@@ -500,8 +501,8 @@ class ComputeFanAxesTest(TestCase):
             FanAxes(in_axis=(1, 2), out_axis=3),
             {
                 "fan_in": 6 * 12 * 4 * 4,
-                "fan_out": 6 * 8 * 12,
-                "fan_avg": 6 * 10 * 14,
+                "fan_out": 6 * 12 * 8,
+                "fan_avg": 6 * 12 * 12,
             },
         ),
         (
@@ -509,8 +510,8 @@ class ComputeFanAxesTest(TestCase):
             FanAxes(in_axis=(1, 2), out_axis=3, batch_axis=0),
             {
                 "fan_in": 12 * 4 * 4,
-                "fan_out": 8 * 12,
-                "fan_avg": 10 * 14,
+                "fan_out": 12 * 8,
+                "fan_avg": 12 * 12,
             },
         ),
     )
@@ -534,6 +535,8 @@ class ComputeFanAxesTest(TestCase):
                         layer._compute_fan_axes("weight", param_spec_map["weight"]),
                         fan_axes,
                     )
+                    spec = dataclasses.replace(param_spec_map["weight"], fan_axes=fan_axes)
+                    self.assertEqual(spec.fans(), fans)
                     layer_params = layer.initialize_parameters_recursively(jax.random.PRNGKey(1))
                     weight = layer_params["weight"]
                     fan = fans[fan_type]
@@ -541,6 +544,14 @@ class ComputeFanAxesTest(TestCase):
                     expected_std = scale / math.sqrt(fan)
                     actual_std = np.std(weight)
                     self.assertBetween(actual_std, expected_std / 1.5, expected_std * 1.5)
+
+    def test_fan_axes_in_create_parameter_specs_recursively(self):
+        layer_cfg = self.BatchedCustomFanLayer.default_config().set(name="test")
+        layer = layer_cfg.instantiate(parent=None)
+        specs = layer.create_parameter_specs_recursively()
+        self.assertEqual(
+            specs["weight"].fan_axes, FanAxes(in_axis=(1, 2), out_axis=3, batch_axis=0)
+        )
 
 
 if __name__ == "__main__":
