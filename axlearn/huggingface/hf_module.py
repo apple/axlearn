@@ -5,8 +5,7 @@ import json
 import os
 from abc import ABC
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Type
-from urllib.parse import urlparse
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Type
 
 import jax.numpy as jnp
 import jax.random
@@ -40,29 +39,29 @@ def get_hf_models_cache_dir() -> Path:
     return hf_models_cache_dir
 
 
-def download_hf_models_from_gs(gs_path: str) -> str:
-    """Downloads HuggingFace model artifacts from gs buckets.
+def download_hf_models_from_remote(remote_path: str) -> str:
+    """Downloads HuggingFace model artifacts from remote storage like gs://.
 
     Args:
-        gs_path: Model artifacts location.
+        remote_path: Model artifacts location.
 
     Returns:
         Local path of downloaded models.
     """
-    model_name = gs_path.rstrip("/").split("/")[-1]
+    model_name = remote_path.rstrip("/").split("/")[-1]
     cache_dir = get_hf_models_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
     local_pretrained_model_path = cache_dir / model_name
     if not local_pretrained_model_path.exists():
         local_pretrained_model_path.mkdir(parents=True)
-        for filename in tf.io.gfile.listdir(gs_path):
+        for filename in tf.io.gfile.listdir(remote_path):
             logging.info(
                 "Downloading %s to %s",
-                os.path.join(gs_path, filename),
+                os.path.join(remote_path, filename),
                 local_pretrained_model_path / filename,
             )
             tf.io.gfile.copy(
-                os.path.join(gs_path, filename),
+                os.path.join(remote_path, filename),
                 str(local_pretrained_model_path / filename),
             )
     return str(local_pretrained_model_path)
@@ -94,7 +93,7 @@ class HfModuleWrapper(BaseModel, ABC):
         # Type of HF pretrained model.
         hf_model_type: Required[Type[FlaxPreTrainedModel]] = REQUIRED
         # A local or remote path to the Hugging Face model directory.
-        # For a remote path only schemes in uri_scheme_handlers are supported (by default gs).
+        # Schemes must be supported by tf.io.
         pretrained_model_path: Optional[str] = None
         # Initialize model parameters from PyTorch checkpoint rather than Flax checkpoint.
         from_pt: Optional[bool] = False
@@ -108,14 +107,10 @@ class HfModuleWrapper(BaseModel, ABC):
         # Keys to skip when copying weights from pre-trained models.
         # Key names refer to dictionary key names in the model's config.json, and has no dots.
         pretrained_keys_to_skip: Optional[Sequence[str]] = []
-        # A mapping from a URI scheme such as "gs" to the SchemeLoadingHandler
-        # to use when loading a model from pretrained_model_path with this scheme.
-        uri_scheme_handlers: Optional[Mapping[str, SchemeLoadingHandler]] = None
 
     @classmethod
     def default_config(cls: Type["HfModuleWrapper"]) -> Config:
         cfg = super().default_config()
-        cfg.uri_scheme_handlers = dict(gs=download_hf_models_from_gs)
         return cfg
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
@@ -126,20 +121,7 @@ class HfModuleWrapper(BaseModel, ABC):
         if cfg.pretrained_model_path is not None:
             hf_config_cls = cfg.hf_model_type.config_class
 
-            uri = urlparse(cfg.pretrained_model_path)
-            if uri.scheme != "":
-                if uri.scheme not in cfg.uri_scheme_handlers:
-                    raise ValueError(
-                        f"pretrained_model_path {cfg.pretrained_model_path} has "
-                        f"URI scheme {uri.scheme} which is not supported in uri_scheme_handlers. "
-                        f"Supported ones are: {','.join(cfg.uri_scheme_handlers.keys())}."
-                    )
-                self._local_pretrained_model_path = cfg.uri_scheme_handlers[uri.scheme](
-                    cfg.pretrained_model_path
-                )
-            else:
-                self._local_pretrained_model_path = cfg.pretrained_model_path
-
+            self._local_pretrained_model_path = download_hf_models_from_remote(cfg.pretrained_model_path)
             logging.info("Using model path %s", self._local_pretrained_model_path)
 
             with open(
