@@ -58,6 +58,15 @@ class _TrainerState(NamedTuple):
     learner: Union[NestedTensor, NestedPartitionSpec]
 
 
+# The device mesh shape in the form of a tuple of ints.
+MeshShape = Sequence[int]
+
+
+class MeshRule(NamedTuple):
+    selector_regex: str
+    mesh_shape: MeshShape
+
+
 # pylint: disable-next=too-many-instance-attributes
 class SpmdTrainer(Module):
     """A trainer implementation that supports partitioning of computation and data with GSPMD."""
@@ -85,13 +94,24 @@ class SpmdTrainer(Module):
         # The maximum number of steps.
         max_step: Union[int, float] = math.inf
 
-        # The device mesh shape in the form of a tuple of ints.
-        # Must have the same length as mesh_axis_names.
-        mesh_shape: Required[Sequence[int]] = REQUIRED
+        # The default mesh configuration.
+        #
+        # Each mesh shape must have the same length as mesh_axis_names.
+        mesh_shape: Required[MeshShape] = REQUIRED
         # The mesh axis names. The names can be referenced in ParameterSpec.mesh_axes.
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
         # Subset of mesh axis names over which the leaves of the input batch are sharded.
         batch_axis_names: Union[str, Sequence[str]] = "data"
+
+        # An optional list of rules to override the default mesh configuration.
+        #
+        # This is useful when we want to use a different mesh configuration depending on the
+        # device type (e.g., A100_80GB vs. A100_40GB vs. TPUv4).
+        #
+        # Given a `mesh_selector` string (usually representing the device type), the first rule
+        # that matches the selector will be applied to determine the mesh shape.
+        # If no rule matches, the default mesh configuration will be used.
+        mesh_rule_book: Optional[Sequence[MeshRule]] = None
 
         # The model config.
         model: Required[BaseModel.Config] = REQUIRED
