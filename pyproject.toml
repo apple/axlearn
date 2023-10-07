@@ -92,6 +92,7 @@ gcp = [
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
+    "axlearn[gcp]",
     "jax[tpu]==0.4.13",
 ]
 # Note: Currently tested on x86.
