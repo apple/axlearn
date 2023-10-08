@@ -761,7 +761,7 @@ class SpmdTrainer(Module):
         )
 
 
-def select_mesh_config(trainer_config: SpmdTrainer.Confg, *, mesh_selector: str):
+def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str):
     if trainer_config.mesh_rules:
         mesh = match_regex_rules(mesh_selector, rules=trainer_config.mesh_rules, default_value=None)
         logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh)
