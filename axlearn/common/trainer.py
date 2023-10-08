@@ -103,7 +103,7 @@ class SpmdTrainer(Module):
         # An optional list of (regex, MeshShape) pairs to override the default mesh configuration.
         #
         # This is useful when we want to use different mesh shapes depending on the
-        # device types (e.g., A100_80GB vs. A100_40GB vs. TPUv4).
+        # device types (e.g., 'tpu-v4-128' vs. 'gpu-p4de.24xlarge-32').
         #
         # Given a `mesh_selector` string (usually representing the device type), the first rule
         # that with a regex that matches the selector will determine the mesh shape.
