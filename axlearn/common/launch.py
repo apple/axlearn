@@ -91,7 +91,7 @@ flags.DEFINE_integer("process_id", None, "Host process id. Set this None for tpu
 flags.DEFINE_string(
     "mesh_selector",
     None,
-    "The mesh selector string. " "See `SpmdTrainer.Config.mesh_rules` for details.",
+    "The mesh selector string. See `SpmdTrainer.Config.mesh_rules` for details.",
 )
 # TODO(markblee): Remove this flag.
 flags.DEFINE_boolean(
