@@ -105,8 +105,10 @@ class SpmdTrainer(Module):
         # This is useful when we want to use different mesh shapes depending on the
         # device types (e.g., 'tpu-v4-128' vs. 'gpu-p4de.24xlarge-32').
         #
-        # Given a `mesh_selector` string (usually representing the device type), the first rule
-        # that with a regex that matches the selector will determine the mesh shape.
+        # Given a `mesh_selector` string (usually representing the device type and set by user's
+        # launch script), the first rule that with a regex that matches the selector will determine
+        # the mesh shape.
+        #
         # If no rule matches, the default mesh configuration will be used.
         mesh_rules: Optional[Sequence[Tuple[str, MeshShape]]] = None
 
