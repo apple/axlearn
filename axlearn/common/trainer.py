@@ -32,6 +32,7 @@ from axlearn.common.utils import (
     Tensor,
     count_model_params,
     flatten_items,
+    match_regex_rules,
     prune_tree,
 )
 
@@ -60,11 +61,6 @@ class _TrainerState(NamedTuple):
 
 # The device mesh shape in the form of a tuple of ints.
 MeshShape = Sequence[int]
-
-
-class MeshRule(NamedTuple):
-    selector_regex: str
-    mesh_shape: MeshShape
 
 
 # pylint: disable-next=too-many-instance-attributes
@@ -103,15 +99,15 @@ class SpmdTrainer(Module):
         # Subset of mesh axis names over which the leaves of the input batch are sharded.
         batch_axis_names: Union[str, Sequence[str]] = "data"
 
-        # An optional list of rules to override the default mesh configuration.
+        # An optional list of (regex, MeshShape) pairs to override the default mesh configuration.
         #
-        # This is useful when we want to use a different mesh configuration depending on the
-        # device type (e.g., A100_80GB vs. A100_40GB vs. TPUv4).
+        # This is useful when we want to use different mesh shapes depending on the
+        # device types (e.g., A100_80GB vs. A100_40GB vs. TPUv4).
         #
         # Given a `mesh_selector` string (usually representing the device type), the first rule
-        # that matches the selector will be applied to determine the mesh shape.
+        # that with a regex that matches the selector will determine the mesh shape.
         # If no rule matches, the default mesh configuration will be used.
-        mesh_rule_book: Optional[Sequence[MeshRule]] = None
+        mesh_rules: Optional[Sequence[Tuple[str, MeshShape]]] = None
 
         # The model config.
         model: Required[BaseModel.Config] = REQUIRED
@@ -760,3 +756,11 @@ class SpmdTrainer(Module):
             loss=loss,
             aux=forward_aux,
         )
+
+
+def select_mesh_config(trainer_config: SpmdTrainer.Confg, *, mesh_selector: str):
+    if trainer_config.mesh_rules:
+        mesh = match_regex_rules(mesh_selector, rules=trainer_config.mesh_rules, default_value=None)
+        logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh)
+        if mesh is not None:
+            trainer_config.mesh_shape = mesh
