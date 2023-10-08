@@ -31,7 +31,7 @@ from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_pol
 from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
-from axlearn.common.trainer import SpmdTrainer, _prune_empty, _TrainerState
+from axlearn.common.trainer import SpmdTrainer, _prune_empty, _TrainerState, select_mesh_config
 from axlearn.common.utils import NestedTensor, Tensor, as_tensor, flatten_items, match_regex_rules
 
 FLAGS = flags.FLAGS
@@ -810,6 +810,39 @@ class TrainerTest(test_utils.TestCase):
                 flatten_items(init_params), flatten_items(updated_params)
             ):
                 self.assertGreater(np.max(np.abs(updated_p - init_p)), 1e-3, msg=path)
+
+
+class SelectMeshConfigTest(test_utils.TestCase):
+    def test_select_mesh_config(self):
+        cfg = SpmdTrainer.default_config()
+        self.assertIs(cfg.mesh_shape, REQUIRED)
+
+        # When mesh_rules=None.
+        self.assertIsNone(cfg.mesh_rules)
+        select_mesh_config(cfg, mesh_selector="tpu-v4-128")
+        # cfg.mesh_shape remains unchanged.
+        self.assertIs(cfg.mesh_shape, REQUIRED)
+
+        # When no mesh rule matches the selector.
+        cfg.mesh_rules = (("tpu-v4-64", (4, 1, 8, 1)),)
+        select_mesh_config(cfg, mesh_selector="tpu-v4-128")
+        # cfg.mesh_shape still remains unchanged.
+        self.assertIs(cfg.mesh_shape, REQUIRED)
+
+        # When there is a match.
+        select_mesh_config(cfg, mesh_selector="tpu-v4-64")
+        # cfg.mesh_shape is overridden.
+        self.assertEqual(cfg.mesh_shape, (4, 1, 8, 1))
+
+        # When there is a match.
+        cfg.mesh_rules = (
+            ("gpu-(p5.48xlarge|p4de.24xlarge)-32", (4, 1, 8, 1)),
+            ("gpu.*", None),
+        )
+        select_mesh_config(cfg, mesh_selector="gpu-p5.48xlarge-32")
+        self.assertEqual(cfg.mesh_shape, (4, 1, 8, 1))
+        select_mesh_config(cfg, mesh_selector="gpu-p4d.24xlarge-128")
+        self.assertIsNone(cfg.mesh_shape)
 
 
 if __name__ == "__main__":
