@@ -92,7 +92,8 @@ class SpmdTrainer(Module):
 
         # The default mesh configuration.
         #
-        # Each mesh shape must have the same length as mesh_axis_names.
+        # The mesh shape, if specified, must have the same length as mesh_axis_names.
+        # Use `mesh_rules` to set different mesh shapes depending on the hardware platform.
         mesh_shape: Required[MeshShape] = REQUIRED
         # The mesh axis names. The names can be referenced in ParameterSpec.mesh_axes.
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
