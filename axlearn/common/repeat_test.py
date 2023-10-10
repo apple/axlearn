@@ -256,9 +256,7 @@ class RepeatTest(TestCase):
             assert_allclose(
                 0.5 * (batch_size - 1) + jnp.arange(num_layers, dtype=dtype) * multiple_values,
                 [
-                    output_collection.summaries["repeat_layer"][f"layer{i}"]["layer1"][
-                        "carry_mean"
-                    ]
+                    output_collection.summaries["repeat_layer"][f"layer{i}"]["layer1"]["carry_mean"]
                     for i in range(num_layers)
                 ],
             )
