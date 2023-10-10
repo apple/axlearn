@@ -181,7 +181,7 @@ class RepeatTest(TestCase):
             {
                 "repeat_layer": {
                     "layer": {},
-                    **{f"layer_{i}": {"carry_mean": tuple()} for i in range(num_layers)},
+                    **{f"layer{i}": {"carry_mean": tuple()} for i in range(num_layers)},
                 }
             },
             shapes(output_collection.summaries),
@@ -189,7 +189,7 @@ class RepeatTest(TestCase):
         assert_allclose(
             0.5 * (batch_size - 1) + jnp.arange(num_layers, dtype=dtype),
             [
-                output_collection.summaries["repeat_layer"][f"layer_{i}"]["carry_mean"]
+                output_collection.summaries["repeat_layer"][f"layer{i}"]["carry_mean"]
                 for i in range(num_layers)
             ],
         )
@@ -256,7 +256,7 @@ class RepeatTest(TestCase):
             assert_allclose(
                 0.5 * (batch_size - 1) + jnp.arange(num_layers, dtype=dtype) * multiple_values,
                 [
-                    output_collection.summaries["repeat_layer"][f"layer_{i}"]["layer1"][
+                    output_collection.summaries["repeat_layer"][f"layer{i}"]["layer1"][
                         "carry_mean"
                     ]
                     for i in range(num_layers)
@@ -316,10 +316,10 @@ class RepeatTest(TestCase):
         )
 
         for forward_path, output_path, remat_methods in [
-            ("repeat", "repeat/layer_{i}/redirect/carry_mean", ["forward"]),
+            ("repeat", "repeat/layer{i}/redirect/carry_mean", ["forward"]),
             (
                 "nested/repeat",
-                "nested/repeat/layer_{i}/redirect/carry_mean",
+                "nested/repeat/layer{i}/redirect/carry_mean",
                 ["forward", "forward"],
             ),
         ]:

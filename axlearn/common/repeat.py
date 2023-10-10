@@ -194,8 +194,12 @@ class Repeat(BaseLayer):
         layer_output.module_outputs.update(**layer_output_collection.module_outputs)
         layer_output.state_updates.update(**layer_output_collection.state_updates)
 
+        # Each summary value in `layer_output_collection` has shape (num_layers, ...). For example,
+        # if a repeated layer outputs a scalar summary value, it will have shape [num_layers].
+        # Below we split the stacked values and output them separately under scope "layer{i}"
+        # so that scalar summaries can be handled correctly.
         for i in range(cfg.num_layers):
-            layer_i_output = this_output_collection.add_child(f"layer_{i}")
+            layer_i_output = this_output_collection.add_child(f"layer{i}")
             layer_i_output.summaries.update(
                 **jax.tree_util.tree_map(lambda x: x[i], layer_output_collection.summaries)
             )
