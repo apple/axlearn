@@ -8,6 +8,9 @@
 #
 # ofirpress/attention_with_linear_biases:
 # Copyright (c) Facebook, Inc. and its affiliates.
+#
+# facebookresearch/llama:
+# Copyright (c) Facebook, Inc. and its affiliates.
 
 """Tests attention layers."""
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
@@ -806,6 +809,41 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         self._compare_against_roformer_attention(
             ref, layer, max_sequence_length, batch_size, ref_rope_emb
         )
+
+
+class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
+    def llama_ref_precompute_freqs_cis(self, dim: int, end: int, theta: float = 10000.0):
+        """Reference LLaMA-1 implemention.
+
+        Ref:
+        https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L47-L52
+        """
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+        t = torch.arange(end, device=freqs.device)  # type: ignore
+        freqs = torch.outer(t, freqs).float()  # type: ignore
+        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
+        return freqs_cis
+
+    def test_against_llama_for_precompute_freqs_cis(self):
+        max_len = 100
+        dim = 32
+        positions = jnp.arange(max_len)
+        ajax_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
+            max_len=max_len, dim=dim
+        )
+        ajax_rope_layer = ajax_rope_cfg.set(name="rope").instantiate(parent=None)
+        ajax_rope, _ = F(
+            ajax_rope_layer,
+            inputs=dict(positions=positions),
+            state=ajax_rope_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0)),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim, max_len)
+        ajax_imag, ajax_real = ajax_rope.split(2, axis=-1)
+        llama_real, llama_imag = llama_rope.real, llama_rope.imag
+        assert_allclose(llama_real, as_tensor(ajax_real))
+        assert_allclose(llama_imag, as_tensor(ajax_imag))
 
 
 class MultiheadLinearInitTest(TestCase):
