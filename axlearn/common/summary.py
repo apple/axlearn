@@ -1,7 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
 """Summary objects that can be logged."""
-
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import jax
@@ -22,7 +21,14 @@ class Summary(struct.PyTreeNode):
     """
 
     def __post_init__(self):
-        self.validate()
+        # Work around jax bug in PJIT where they sometimes indiscriminately instantiate
+        # pytrees with object() field values even if it's not valid.
+        # There is a comment in the jax source indicating that this will be fixed eventually.
+        # https://github.com/google/jax/blob/b81a3e1fd774ebdbc3015f1bc977bfacb5d4b745/jax/_src/pjit.py#L935-L938
+        leaves, _ = jax.tree_util.tree_flatten(self)
+        # pylint: disable-next=unidiomatic-typecheck
+        if not all(type(leaf) == object for leaf in leaves):
+            self.validate()
 
     def value(self) -> Optional[Union[NestedTensor, int, float]]:
         """Returns a value for logging."""
@@ -44,8 +50,8 @@ class ImageSummary(Summary):
 
     Supported channels values are 1 for grayscale, 3 for RGB, and 4 for RGBA.
 
-    The image retunred by value will be padded to ndim==4 if this was instantiated with a tensor
-    with ndim==3.
+    The image returned by `value()` will be padded to `ndim==4` if this was instantiated with a
+    tensor with `ndim==3`.
     """
 
     _value: Tensor

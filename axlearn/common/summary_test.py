@@ -1,8 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for summary.py"""
-# pylint: disable=missing-class-docstring
-
+import functools
 import os
 import tempfile
 
@@ -12,6 +11,7 @@ import numpy as np
 import pytest
 import tensorflow as tf
 import wandb
+from jax.experimental.pjit import pjit
 from tensorboard.backend.event_processing import event_accumulator
 
 from axlearn.common.module import Module
@@ -22,6 +22,8 @@ from axlearn.common.test_utils import TestCase
 
 
 class SummaryTest(TestCase):
+    """Tests for `Summary`."""
+
     def test_add_summary_image(self):
         tempdir = tempfile.mkdtemp()
         writer: SummaryWriter = (
@@ -58,6 +60,8 @@ class SummaryTest(TestCase):
     @pytest.mark.skipif("WANDB_API_KEY" not in os.environ, reason="wandb api key not found.")
     def test_callback_summary(self):
         class _TestModule(Module):
+            """A test `Module`."""
+
             def forward(self):
                 # This logs a 7 row table with two columns where each cell contains a 16 x 16 color
                 # image.
@@ -99,3 +103,21 @@ class SummaryTest(TestCase):
                 # Not sure how to check it was actually written in offline mode.
             finally:
                 wandb.finish()
+
+    def test_with_pjit_out_shardings(self):
+        """There is a JAX bug where PJIT with out_shardings doesn't consistently support pytrees
+        that validate themselves. This tests that summaries still work under conditions that trigger
+        this bug.
+        """
+
+        @functools.partial(pjit, out_shardings=(None, None))
+        def f():
+            return ImageSummary(jax.numpy.ones((4, 5, 6))), None
+
+        f()
+
+    def test_validate(self):
+        """Check validate() works in normal conditions."""
+        with self.assertRaises(ValueError):
+            ImageSummary(jax.numpy.ones((1, 1)))
+        ImageSummary(jax.numpy.ones((1, 1, 1)))
