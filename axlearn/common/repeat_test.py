@@ -178,12 +178,20 @@ class RepeatTest(TestCase):
             )
         # Check summaries.
         self.assertEqual(
-            {"repeat_layer": {"layer": {"carry_mean": (num_layers,)}}},
+            {
+                "repeat_layer": {
+                    "layer": {},
+                    **{f"layer_{i}": {"carry_mean": tuple()} for i in range(num_layers)},
+                }
+            },
             shapes(output_collection.summaries),
         )
         assert_allclose(
             0.5 * (batch_size - 1) + jnp.arange(num_layers, dtype=dtype),
-            output_collection.summaries["repeat_layer"]["layer"]["carry_mean"],
+            [
+                output_collection.summaries["repeat_layer"][f"layer_{i}"]["carry_mean"]
+                for i in range(num_layers)
+            ],
         )
         if remat_spec is None:
             # pylint: disable-next=protected-access
@@ -247,7 +255,12 @@ class RepeatTest(TestCase):
             )
             assert_allclose(
                 0.5 * (batch_size - 1) + jnp.arange(num_layers, dtype=dtype) * multiple_values,
-                output_collection.summaries["repeat_layer"]["layer"]["layer1"]["carry_mean"],
+                [
+                    output_collection.summaries["repeat_layer"][f"layer_{i}"]["layer1"][
+                        "carry_mean"
+                    ]
+                    for i in range(num_layers)
+                ],
             )
             if remat_spec is None:
                 # pylint: disable-next=protected-access
@@ -303,8 +316,12 @@ class RepeatTest(TestCase):
         )
 
         for forward_path, output_path, remat_methods in [
-            ("repeat", "repeat/layer/redirect/carry_mean", ["forward"]),
-            ("nested/repeat", "nested/repeat/layer/redirect/carry_mean", ["forward", "forward"]),
+            ("repeat", "repeat/layer_{i}/redirect/carry_mean", ["forward"]),
+            (
+                "nested/repeat",
+                "nested/repeat/layer_{i}/redirect/carry_mean",
+                ["forward", "forward"],
+            ),
         ]:
             (carry, output_forward_state), output_collection = F(
                 layer,
@@ -327,18 +344,12 @@ class RepeatTest(TestCase):
                 ),
             )
 
-            # Construct expected output.
-            expected_shapes = curr = {}
-            for path in output_path.split("/")[:-1]:
-                curr[path] = curr.get(path, {})
-                curr = curr[path]
-            curr[output_path.rsplit("/", maxsplit=1)[-1]] = (num_layers,)
-
-            # Compare.
-            self.assertEqual(expected_shapes, shapes(output_collection.summaries))
             assert_allclose(
                 0.5 * (batch_size - 1) + jnp.arange(num_layers, dtype=dtype),
-                get_recursively(output_collection.summaries, output_path.split("/")),
+                [
+                    get_recursively(output_collection.summaries, output_path.format(i=i))
+                    for i in range(num_layers)
+                ],
             )
 
             # Test remat spec.
