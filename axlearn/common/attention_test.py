@@ -8,6 +8,9 @@
 #
 # ofirpress/attention_with_linear_biases:
 # Copyright (c) Facebook, Inc. and its affiliates.
+#
+# facebookresearch/llama:
+# Copyright (c) Facebook, Inc. and its affiliates.
 
 """Tests attention layers."""
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
