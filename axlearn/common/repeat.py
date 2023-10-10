@@ -201,7 +201,7 @@ class Repeat(BaseLayer):
         for i in range(cfg.num_layers):
             layer_i_output = this_output_collection.add_child(f"layer{i}")
             layer_i_output.summaries.update(
-                **jax.tree_util.tree_map(lambda x: x[i], layer_output_collection.summaries)
+                **jax.tree_util.tree_map(lambda x, i=i: x[i], layer_output_collection.summaries)
             )
 
         return self.Output(carry=carry, ys=ys)
