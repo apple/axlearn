@@ -845,6 +845,44 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         assert_allclose(llama_real, as_tensor(ajax_real))
         assert_allclose(llama_imag, as_tensor(ajax_imag))
 
+    @parameterized.parameters([jnp.float32, jnp.bfloat16])
+    def test_roformer_qkv_linear(self, dtype: jnp.dtype):
+        seq_len = 6
+        batch_size = 2
+        model_dim = 16
+        num_heads = 4
+        per_head_dim = model_dim // num_heads
+        roformer_qkv_linear = (
+            RoFormerQKVLinear.default_config()
+            .set(
+                name="roformer_qkv_linear",
+                max_seq_length=seq_len,
+                query_dim=model_dim,
+                key_dim=model_dim,
+                value_dim=model_dim,
+                num_heads=num_heads,
+                per_head_dim=per_head_dim,
+            )
+            .instantiate(parent=None)
+        )
+        query = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, model_dim))
+        key = jax.random.uniform(jax.random.PRNGKey(2), shape=(batch_size, seq_len, model_dim))
+        value = jax.random.uniform(jax.random.PRNGKey(3), shape=(batch_size, seq_len, model_dim))
+        roformer_qkv_linear_state = roformer_qkv_linear.initialize_parameters_recursively(
+            jax.random.PRNGKey(0)
+        )
+        input_batch = dict(query=query, key=key, value=value)
+        layer_outputs, _ = F(
+            roformer_qkv_linear,
+            inputs=utils.cast_floats(input_batch, to_dtype=dtype),
+            state=utils.cast_floats(roformer_qkv_linear_state, to_dtype=dtype),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertEqual(layer_outputs.query.dtype, dtype)
+        self.assertEqual(layer_outputs.key.dtype, dtype)
+        self.assertEqual(layer_outputs.value.dtype, dtype)
+
 
 class MultiheadLinearInitTest(TestCase):
     """Tests MultiheadLinear initialization."""
