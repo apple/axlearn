@@ -4,7 +4,6 @@
 import math
 import os.path
 import time
-from functools import reduce
 from typing import Any, Dict, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
@@ -790,18 +789,23 @@ def infer_mesh_shape(mesh_shape: MeshShape, *, num_devices: Optional[int] = None
             If None, defaults to len(jax.devices()).
 
     Returns
-        a new MeshShape with inferred value for -1.
+        A new MeshShape with inferred value for -1.
     """
     if -1 not in mesh_shape:
         return mesh_shape
 
-    assert mesh_shape.count(-1) == 1, f"only one axis can be -1 in mesh shape, but get {mesh_shape}"
+    if mesh_shape.count(-1) > 1:
+        raise ValueError(f"only one axis can be -1 in mesh shape, but get {mesh_shape}")
 
     # handle the case with one -1
-    prod = -1 * reduce(lambda x, y: x * y, mesh_shape)
+    prod = math.prod(mesh_shape, start=-1)
     if num_devices is None:
         num_devices = len(jax.devices())
-    assert num_devices % prod == 0, f"invalid mesh shape {mesh_shape}"
+    if num_devices % prod != 0:
+        raise ValueError(
+            f"Unable to infer -1 in mesh shape {mesh_shape} as num_devices {num_devices}"
+            f"is not a multiple of production {prod} of other meshes."
+        )
 
     new_mesh_shape = tuple(x if x != -1 else num_devices // prod for x in mesh_shape)
     logging.info("Infer mesh shape from %s to %s", mesh_shape, new_mesh_shape)

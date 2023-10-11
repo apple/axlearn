@@ -858,11 +858,11 @@ class InferMeshShapeTest(test_utils.TestCase):
         self.assertEqual(mesh_shape, (4, 1, 8, 1))
 
         # When there is mutiple -1
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(ValueError):
             infer_mesh_shape((-1, 1, -1, 8))
 
         # When num_devices is not a mutiple of products of mesh_shape
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(ValueError):
             infer_mesh_shape((-1, 1, 8, 1), num_devices=4)
 
         # When one -1 for a valid mesh shape
