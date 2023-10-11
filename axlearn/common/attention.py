@@ -963,7 +963,12 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
 
 
 def apply_rotary_position_embeddings(
-    *, query: Tensor, key: Tensor, value: Tensor, sinusoidal_pos: Tensor
+    *,
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    sinusoidal_pos: Tensor,
+    rotary_value: bool,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """This is a jax implementation (a copy) of the RoPE apply_rotary_position_embeddings.
 
@@ -975,12 +980,14 @@ def apply_rotary_position_embeddings(
         key: Key embeddings with shape [batch_size, seq_len, num_heads, dim].
         value: Value embeddings with shape [batch_size, seq_len, num_heads, dim].
         sinusoidal_pos: Rotary position embeddings with shape [1, seq_len, 1, dim].
+        rotary_value: Whether to apply rotary position embeddings on value layer.
 
     Returns:
         A tuple of:
         Rotary position affined query embeddings with shape [batch_size, seq_len, num_heads, dim]
         Rotary position affined key embeddings with shape [batch_size, seq_len, num_heads, dim]
         Rotary position affined value embeddings with shape [batch_size, seq_len, num_heads, dim]
+            if rotary_value == True, else original value embeddings
     """
     # sin [batch_size, num_heads, sequence_length, embed_size_per_head//2]
     # cos [batch_size, num_heads, sequence_length, embed_size_per_head//2]
@@ -997,11 +1004,12 @@ def apply_rotary_position_embeddings(
     # rotate_half_key_layer [-k1,k0,-k3,k2......,-kd-1,kd-2]
     rotate_half_key = jnp.reshape(jnp.stack([-key[..., 1::2], key[..., ::2]], axis=-1), key.shape)
     key = key * cos_pos + rotate_half_key * sin_pos
-    # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
-    rotate_half_value = jnp.reshape(
-        jnp.stack([-value[..., 1::2], value[..., ::2]], axis=-1), value.shape
-    )
-    value = value * cos_pos + rotate_half_value * sin_pos
+    if rotary_value:
+        # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
+        rotate_half_value = jnp.reshape(
+            jnp.stack([-value[..., 1::2], value[..., ::2]], axis=-1), value.shape
+        )
+        value = value * cos_pos + rotate_half_value * sin_pos
     return query, key, value
 
 
@@ -1020,6 +1028,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
             RoFormerSinusoidalPositionalEmbedding.default_config()
         )
         input_linear: BaseQKVLinear.Config = QKVLinear.default_config()
+        rotary_value: Required[bool] = REQUIRED
 
     def __init__(self, cfg: QKVLinear.Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1048,8 +1057,13 @@ class RoFormerQKVLinear(BaseQKVLinear):
         positions = jnp.arange(cfg.max_seq_length)
         # sinusoidal_pos_emb shape should be [1, num_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(self.rope_pos_emb_layer.forward(positions), [0, 2])
-        kwargs = {"sinusoidal_pos": sinusoidal_pos_emb, "query": query, "key": key, "value": value}
-        query, key, value = apply_rotary_position_embeddings(**kwargs)
+        query, key, value = apply_rotary_position_embeddings(
+            sinusoidal_pos=sinusoidal_pos_emb,
+            query=query,
+            key=key,
+            value=value,
+            rotary_value=cfg.rotary_value,
+        )
 
         return self.Output(query, key, value)
 

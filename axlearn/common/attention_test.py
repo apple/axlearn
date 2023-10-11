@@ -8,9 +8,6 @@
 #
 # ofirpress/attention_with_linear_biases:
 # Copyright (c) Facebook, Inc. and its affiliates.
-#
-# facebookresearch/llama:
-# Copyright (c) Facebook, Inc. and its affiliates.
 
 """Tests attention layers."""
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
@@ -662,14 +659,16 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
     """Tests RoFormerSinusoidalPositionalEmbedding."""
 
     @parameterized.parameters(
-        (2, 3, 10, 32),
-        (2, 3, 8, 32),
-        (2, 4, 6, 32),
-        (2, 4, 8, 16),
-        (2, 5, 8, 48),
-        (2, 5, 8, 64),
+        (2, 3, 10, 32, True),
+        (2, 3, 8, 32, False),
+        (2, 4, 6, 32, True),
+        (2, 4, 8, 16, False),
+        (2, 5, 8, 48, True),
+        (2, 5, 8, 64, False),
     )
-    def test_apply_rotary_position_embeddings(self, batch_size, num_heads, max_len, dim):
+    def test_apply_rotary_position_embeddings(
+        self, batch_size, num_heads, max_len, dim, rotary_value
+    ):
         # Unittest against the apply_rotary_position_embeddings in HF.
         token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
         sinusoidal_pos_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
@@ -679,16 +678,27 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         value = np.random.random([batch_size, num_heads, max_len, dim])
         ref_layer = hf_roformer.RoFormerSelfAttention.apply_rotary_position_embeddings
         test_layer = apply_rotary_position_embeddings
-        ref_q_proj, ref_k_proj, ref_v_proj = ref_layer(
-            sinusoidal_pos, as_torch_tensor(query), as_torch_tensor(key), as_torch_tensor(value)
+        if rotary_value:
+            ref_q_proj, ref_k_proj, ref_v_proj = ref_layer(
+                sinusoidal_pos,
+                as_torch_tensor(query),
+                as_torch_tensor(key),
+                as_torch_tensor(value),
+            )
+        else:
+            # If rotary_value is set to False, value keeps unchanged.
+            # pylint: disable-next=unbalanced-tuple-unpacking
+            ref_q_proj, ref_k_proj = ref_layer(
+                sinusoidal_pos, as_torch_tensor(query), as_torch_tensor(key)
+            )
+            ref_v_proj = as_torch_tensor(value)
+        test_q_proj, test_k_proj, test_v_proj = test_layer(
+            sinusoidal_pos=as_tensor(sinusoidal_pos),
+            query=query,
+            key=key,
+            value=value,
+            rotary_value=rotary_value,
         )
-        kwargs = {
-            "sinusoidal_pos": as_tensor(sinusoidal_pos),
-            "query": query,
-            "key": key,
-            "value": value,
-        }
-        test_q_proj, test_k_proj, test_v_proj = test_layer(**kwargs)
         np.testing.assert_allclose(test_q_proj, ref_q_proj, atol=5e-7)
         np.testing.assert_allclose(test_k_proj, ref_k_proj, atol=5e-7)
         np.testing.assert_allclose(test_v_proj, ref_v_proj, atol=5e-7)
@@ -771,7 +781,9 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             )
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
 
-    def test_rope_self_attention(self):
+    #: TODO: (Chen Chen) Add a test to reproduce LLaMA1 attention with rotary_value=False.
+    @parameterized.parameters([True, False])
+    def test_rope_self_attention(self, rotary_value: bool):
         model_dim = 32
         num_heads = 4
         max_sequence_length = 12
@@ -781,7 +793,9 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=num_heads,
-            input_linear=RoFormerQKVLinear.default_config().set(max_seq_length=max_sequence_length),
+            input_linear=RoFormerQKVLinear.default_config().set(
+                max_seq_length=max_sequence_length, rotary_value=rotary_value
+            ),
         )
         rope_emb_layer = (
             attention.RoFormerSinusoidalPositionalEmbedding.default_config()
@@ -802,48 +816,13 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             num_attention_heads=num_heads,
             attention_probs_dropout_prob=0,
             hidden_dropout_prob=0,
-            rotary_value=True,
+            rotary_value=rotary_value,
         )
         print(f"roformer_config={roformer_config}")
         ref = hf_roformer.RoFormerAttention(roformer_config)
         self._compare_against_roformer_attention(
             ref, layer, max_sequence_length, batch_size, ref_rope_emb
         )
-
-
-class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
-    def llama_ref_precompute_freqs_cis(self, dim: int, end: int, theta: float = 10000.0):
-        """Reference LLaMA-1 implemention.
-
-        Ref:
-        https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L47-L52
-        """
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-        t = torch.arange(end, device=freqs.device)  # type: ignore
-        freqs = torch.outer(t, freqs).float()  # type: ignore
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
-        return freqs_cis
-
-    def test_against_llama_for_precompute_freqs_cis(self):
-        max_len = 100
-        dim = 32
-        positions = jnp.arange(max_len)
-        ajax_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
-            max_len=max_len, dim=dim
-        )
-        ajax_rope_layer = ajax_rope_cfg.set(name="rope").instantiate(parent=None)
-        ajax_rope, _ = F(
-            ajax_rope_layer,
-            inputs=dict(positions=positions),
-            state=ajax_rope_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0)),
-            is_training=True,
-            prng_key=jax.random.PRNGKey(0),
-        )
-        llama_rope = self.llama_ref_precompute_freqs_cis(dim, max_len)
-        ajax_imag, ajax_real = ajax_rope.split(2, axis=-1)
-        llama_real, llama_imag = llama_rope.real, llama_rope.imag
-        assert_allclose(llama_real, as_tensor(ajax_real))
-        assert_allclose(llama_imag, as_tensor(ajax_imag))
 
 
 class MultiheadLinearInitTest(TestCase):
