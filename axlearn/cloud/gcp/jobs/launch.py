@@ -56,6 +56,13 @@ from typing import Any, Callable, Dict, NamedTuple, Optional, TextIO, Tuple, Typ
 import regex as re
 from absl import app, flags, logging
 
+from axlearn.cloud.common.bastion import Job as BastionJob
+from axlearn.cloud.common.bastion import (
+    JobState,
+    download_job_batch,
+    new_jobspec,
+    serialize_jobspec,
+)
 from axlearn.cloud.common.bundler import bundler_flags, get_bundler_config
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_user_projects
 from axlearn.cloud.common.scheduler import JobMetadata
@@ -70,15 +77,7 @@ from axlearn.cloud.common.utils import (
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import Job
 from axlearn.cloud.gcp.jobs import tpu_runner
-from axlearn.cloud.gcp.jobs.bastion_vm import Job as BastionJob
-from axlearn.cloud.gcp.jobs.bastion_vm import (
-    JobState,
-    SubmitBastionJob,
-    download_job_batch,
-    new_jobspec,
-    serialize_jobspec,
-    shared_bastion_name,
-)
+from axlearn.cloud.gcp.jobs.bastion_vm import SubmitBastionJob, output_dir, shared_bastion_name
 from axlearn.cloud.gcp.tpu import (
     infer_tpu_cores,
     infer_tpu_version,
@@ -147,6 +146,8 @@ class BaseBastionLaunchJob(Job):
         project_id: Required[str] = REQUIRED
         # Job priority.
         priority: Required[int] = REQUIRED
+        # Output directory for job logs.
+        output_dir: Required[str] = REQUIRED
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -179,6 +180,12 @@ class BaseBastionLaunchJob(Job):
             "Quota project ID to use for scheduling.",
             **common_kwargs,
         )
+        flags.DEFINE_string(
+            "output_dir",
+            None,
+            "If specified, the directory to store outputs (such as logs).",
+            **common_kwargs,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
@@ -191,12 +198,14 @@ class BaseBastionLaunchJob(Job):
         Returns:
             The job config.
         """
+        # Default output_dir depends on the final value of --name.
+        fv.set_default("output_dir", f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{fv.name}")
         cfg = super().from_flags(fv, **kwargs)
         # Construct bundler config.
         cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
-        # Construct bastion/job config, excluding any output_dir or job_dir flag.
+        # Construct bastion/job config. Note that the output_dir should match the bastion dir.
         cfg.bastion = SubmitBastionJob.from_flags(fv, name=fv.bastion, job_name=cfg.name).set(
-            job_spec_file=""
+            job_spec_file="", bastion_dir=output_dir(fv.bastion)
         )
         return cfg
 
@@ -223,7 +232,7 @@ class BaseBastionLaunchJob(Job):
         cfg = self.config
         bastion: SubmitBastionJob = cfg.bastion.instantiate()
         with tempfile.TemporaryDirectory() as tmpdir:
-            base_dir = bastion._output_dir()
+            base_dir = bastion.bastion_dir
             jobs, _ = download_job_batch(
                 spec_dir=f"{base_dir}/jobs/active",
                 state_dir=f"{base_dir}/jobs/states",
@@ -362,8 +371,6 @@ class LaunchTPUJob(BaseBastionLaunchJob):
 
         # Number of TPU slices.
         num_slices: int = 1
-        # Output directory for job logs.
-        output_dir: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -487,10 +494,9 @@ class LaunchTPUJob(BaseBastionLaunchJob):
         """
         cfg = self.config
         super()._execute()
-        output_dir = cfg.output_dir or f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{cfg.name}"
         all_logs = "\n".join(
             [
-                f'gsutil cat "{output_dir}/output/*-{i}/run.log"'
+                f'gsutil cat "{cfg.output_dir}/output/*-{i}/run.log"'
                 for i in range(infer_tpu_workers(self._tpu_type(cfg.instance_type)))
             ]
         )

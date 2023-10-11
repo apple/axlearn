@@ -25,8 +25,8 @@ import tarfile
 import tempfile
 from typing import Dict, List, Optional, Sequence, Type, TypeVar, Union
 
-import tensorflow as tf
 from absl import app, flags, logging
+from tensorflow import io as tf_io
 
 from axlearn.cloud.common import config
 from axlearn.cloud.common.docker import build as docker_build
@@ -378,7 +378,7 @@ class BaseTarBundler(Bundler):
         """Converts a spec to a bundler.
 
         Possible options:
-        - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf.io.
+        - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf_io.
         """
         return cls.default_config().set(**parse_kv_flags(spec, delimiter="="))
 
@@ -431,14 +431,17 @@ class BaseTarBundler(Bundler):
             # Upload to remote.
             remote_path = self.id(name)
             logging.info("Submitting to %s.", remote_path)
-            if tf.io.gfile.exists(remote_path):
-                logging.info("Overwriting existing bundle at %s", remote_path)
-            else:
-                logging.info("Uploading bundle to: %s", remote_path)
-            tf.io.gfile.makedirs(os.path.dirname(remote_path))
-            tf.io.gfile.copy(str(tar_path), remote_path, overwrite=True)
+            self._copy_to_remote(local_path=str(tar_path), remote_path=remote_path)
 
         return remote_path
+
+    def _copy_to_remote(self, *, local_path: str, remote_path: str):
+        if tf_io.gfile.exists(remote_path):
+            logging.info("Overwriting existing bundle at %s", remote_path)
+        else:
+            logging.info("Uploading bundle to: %s", remote_path)
+        tf_io.gfile.makedirs(os.path.dirname(remote_path))
+        tf_io.gfile.copy(local_path, remote_path, overwrite=True)
 
     def _copy_to_local_command(self, *, remote_bundle_id: str, local_bundle_id: str) -> str:
         """Emits a command to copy a bundle from remote to local.

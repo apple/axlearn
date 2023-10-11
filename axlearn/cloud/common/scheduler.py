@@ -19,11 +19,11 @@ import dataclasses
 import datetime
 import queue
 from collections import defaultdict
-from typing import Any, Dict, Mapping, NamedTuple, Optional, Set
+from typing import Dict, Mapping, NamedTuple, Optional, Set
 
 from absl import logging
 
-from axlearn.cloud.common.quota import get_resource_limits
+from axlearn.cloud.common.quota import QuotaFn
 from axlearn.cloud.common.types import (
     JobQueue,
     ProjectJobs,
@@ -31,7 +31,7 @@ from axlearn.cloud.common.types import (
     ResourceMap,
     ResourceType,
 )
-from axlearn.common.config import REQUIRED, Configurable, Required, config_class
+from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
 
 _EPSILON = 1e-3
 
@@ -319,8 +319,8 @@ class JobScheduler(Configurable):
     class Config(Configurable.Config):
         """Configures JobScheduler."""
 
-        # A file containing project quota information.
-        project_quota_file: Required[str] = REQUIRED
+        # A config that instantiates to a QuotaFn.
+        quota: Required[InstantiableConfig[QuotaFn]] = REQUIRED
         # Sorter that decides ordering of jobs-to-schedule.
         sorter: ProjectJobSorter.Config = ProjectJobSorter.default_config()
         # Scheduler that decides whether to resume/suspend jobs.
@@ -332,12 +332,9 @@ class JobScheduler(Configurable):
         super().__init__(cfg)
         cfg = self.config
         # Instantiate children.
+        self._quota = cfg.quota.instantiate()
         self._sorter = cfg.sorter.instantiate()
         self._scheduler = cfg.scheduler.instantiate()
-
-    def _resource_limits(self) -> Dict[str, Any]:
-        """Loads resource limits. Subclasses can override this logic."""
-        return get_resource_limits(self.config.project_quota_file)
 
     def schedule(self, jobs: Dict[str, JobMetadata]) -> Scheduler.ScheduleResults:
         """Schedules jobs according to quotas.
@@ -360,9 +357,9 @@ class JobScheduler(Configurable):
             project_jobs[project_id] = self._sorter.sort(jobs_to_sort)
 
         # Fetch quotas each time.
-        resource_limits = self._resource_limits()
-        total_resources = resource_limits["total_resources"]
-        project_resources = resource_limits["project_resources"]
+        quota_info = self._quota()
+        total_resources = quota_info.total_resources
+        project_resources = quota_info.project_resources
 
         # Decide whether each job should run.
         schedule_results: Scheduler.ScheduleResults = self._scheduler.schedule(

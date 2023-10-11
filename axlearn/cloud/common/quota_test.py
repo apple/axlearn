@@ -8,7 +8,7 @@ from typing import Sequence
 import toml
 from absl.testing import parameterized
 
-from axlearn.cloud.common.quota import get_resource_limits, get_user_projects
+from axlearn.cloud.common.quota import QuotaInfo, get_resource_limits, get_user_projects
 
 _mock_config = {
     "toml-schema": {"version": "1"},
@@ -33,7 +33,7 @@ class QuotaUtilsTest(parameterized.TestCase):
 
     def test_resource_limits(self):
         # Make sure fractions are converted properly.
-        expected = dict(
+        expected = QuotaInfo(
             total_resources=dict(resource_type1=16, resource_type2=8),
             project_resources=dict(
                 team1=dict(resource_type1=8),

@@ -4,56 +4,74 @@
 
 import re
 from collections import defaultdict
-from typing import Dict, List
+from dataclasses import dataclass
+from typing import List, Protocol
 
-import tensorflow as tf
 import toml
+from tensorflow import io as tf_io
+
+from axlearn.cloud.common.types import ProjectResourceMap, ResourceMap
 
 QUOTA_CONFIG_PATH = "project-quotas/project-quotas.config"
 
 
-def get_resource_limits(path: str) -> Dict[str, Dict[str, float]]:
+@dataclass
+class QuotaInfo:
+    """Quota information for job scheduling."""
+
+    # A mapping from resource type to total resource limits.
+    total_resources: ResourceMap
+    # A nested mapping. Key is project identifier, value is mapping from resource type to allocated
+    # amount of resources.
+    project_resources: ProjectResourceMap
+
+
+class QuotaFn(Protocol):
+    def __call__(self) -> QuotaInfo:
+        """A callable that returns quota information for scheduling."""
+
+
+def get_resource_limits(path: str) -> QuotaInfo:
     """Attempts to read resource limits, both total and per-project.
 
     Args:
         path: Absolute path to the quota config file.
 
     Returns:
-        A dict with the following keys:
-        - resource_limits: A mapping from resource type to total resource limits.
-        - project_resources: A nested mapping. Key is project identifier, value is mapping from
-            resource type to allocated amount of resources (as percentages).
+        QuotaInfo for scheduling.
 
     Raises:
         ValueError: If unable to parse quota config file.
     """
-    with tf.io.gfile.GFile(path, mode="r") as f:
+    with tf_io.gfile.GFile(path, mode="r") as f:
         cfg = toml.loads(f.read())
         if cfg["toml-schema"]["version"] == "1":
-            total_resources = cfg["total_resources"]
-            project_resources = cfg["project_resources"]
-
-            # Project resources are typically expressed as percentages.
-            # Here we convert them to actual values.
-            total_project_resources = defaultdict(float)
-            for resources in project_resources.values():
-                for resource_type, fraction in resources.items():
-                    value = fraction * total_resources[resource_type]
-                    total_project_resources[resource_type] += value
-                    resources[resource_type] = value
-
-            for resource_type, total in total_project_resources.items():
-                if total > total_resources[resource_type]:
-                    raise ValueError(
-                        f"Sum of {resource_type} project resources ({total}) "
-                        f"exceeds total ({total_resources[resource_type]})"
-                    )
-
-            return dict(
-                total_resources=total_resources,
-                project_resources=project_resources,
+            return _convert_and_validate_resources(
+                QuotaInfo(
+                    total_resources=cfg["total_resources"],
+                    project_resources=cfg["project_resources"],
+                )
             )
         raise ValueError(f"Unsupported schema version {cfg['toml-schema']['version']}")
+
+
+def _convert_and_validate_resources(info: QuotaInfo) -> QuotaInfo:
+    # Project resources are typically expressed as percentages.
+    # Here we convert them to actual values. Conversion happens in-place.
+    total_project_resources = defaultdict(float)
+    for resources in info.project_resources.values():
+        for resource_type, fraction in resources.items():
+            value = fraction * float(info.total_resources[resource_type])
+            total_project_resources[resource_type] += value
+            resources[resource_type] = value
+
+    for resource_type, total in total_project_resources.items():
+        if total > info.total_resources[resource_type]:
+            raise ValueError(
+                f"Sum of {resource_type} project resources ({total}) "
+                f"exceeds total ({info.total_resources[resource_type]})"
+            )
+    return info
 
 
 def get_user_projects(path: str, user_id: str) -> List[str]:
@@ -69,7 +87,7 @@ def get_user_projects(path: str, user_id: str) -> List[str]:
     Raises:
         ValueError: If unable to parse quota config file.
     """
-    with tf.io.gfile.GFile(path, mode="r") as f:
+    with tf_io.gfile.GFile(path, mode="r") as f:
         cfg = toml.loads(f.read())
         if cfg["toml-schema"]["version"] == "1":
             user_in_projects = []
