@@ -1057,6 +1057,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
         positions = jnp.arange(cfg.max_seq_length)
         # sinusoidal_pos_emb shape should be [1, num_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(self.rope_pos_emb_layer.forward(positions), [0, 2])
+        sinusoidal_pos_emb = sinusoidal_pos_emb.astype(query.dtype)
         query, key, value = apply_rotary_position_embeddings(
             sinusoidal_pos=sinusoidal_pos_emb,
             query=query,
