@@ -2815,12 +2815,16 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
     XLA compilation overhead of large models with many layers.
     """
 
-    Config = BaseStackedTransformerLayer.Config
+    @config_class
+    class Config(BaseStackedTransformerLayer.Config):
+        """Configures RepeatedTransformerLayer."""
+
+        repeat: Repeat.Config = _TransformerRepeat.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config  # type: RepeatedTransformerLayer.Config
-        repeat_cfg = _TransformerRepeat.default_config().set(
+        repeat_cfg = cfg.repeat.set(
             layer=cfg.layer.set(input_dim=cfg.input_dim),
             num_layers=cfg.num_layers,
         )
