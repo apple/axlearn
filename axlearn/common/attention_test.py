@@ -878,6 +878,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
                 value_dim=model_dim,
                 num_heads=num_heads,
                 per_head_dim=per_head_dim,
+                rotary_value=False,
             )
             .instantiate(parent=None)
         )
