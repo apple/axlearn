@@ -9,12 +9,12 @@ from unittest import mock
 from absl import app, flags
 from absl.testing import parameterized
 
+from axlearn.cloud.common.bastion import Job as BastionJob
+from axlearn.cloud.common.bastion import JobState as BastionJobState
+from axlearn.cloud.common.bastion import deserialize_jobspec, new_jobspec
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.scheduler import JobMetadata
-from axlearn.cloud.gcp.jobs import launch
-from axlearn.cloud.gcp.jobs.bastion_vm import Job as BastionJob
-from axlearn.cloud.gcp.jobs.bastion_vm import JobState as BastionJobState
-from axlearn.cloud.gcp.jobs.bastion_vm import deserialize_jobspec, new_jobspec
+from axlearn.cloud.gcp.jobs import bastion_vm, launch
 from axlearn.cloud.gcp.jobs.launch import (
     BaseBastionLaunchJob,
     Launcher,
@@ -22,6 +22,7 @@ from axlearn.cloud.gcp.jobs.launch import (
     _get_launcher_or_exit,
     _match_by_regex,
 )
+from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.config import config_for_function
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
@@ -88,6 +89,7 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
             max_tries=1,
             retry_interval=60,
             priority=3,
+            output_dir="test-output",
         )
         cfg.set(**kwargs)
 
@@ -111,10 +113,10 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
         job._execute()
 
         # Test with bundler.
-        bundler = mock.MagicMock()
-        job = self._mock_config(bundler=config_for_function(lambda: bundler)).instantiate()
+        mock_bundler = mock.MagicMock()
+        job = self._mock_config(bundler=config_for_function(lambda: mock_bundler)).instantiate()
         job._execute()
-        self.assertTrue(bundler.bundle.called)
+        self.assertTrue(mock_bundler.bundle.called)
 
         # Test with invalid project id.
         project_id = "test_project"
@@ -256,11 +258,15 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
 class TestLaunchTPUJob(TestWithTemporaryCWD):
     """Tests LaunchTPUJob."""
 
-    def test_flags(self):
+    @parameterized.product(
+        name=[None, "test-name"],
+        output_dir=[None, "test-output"],
+    )
+    def test_flags(self, name, output_dir):
+        # Construct flags.
         fv = flags.FlagValues()
         flags.DEFINE_string("instance_type", "test-type", help="test", flag_values=fv)
         fv.mark_as_parsed()
-
         patch_fns = mock.patch.multiple(
             launch.__name__,
             shared_bastion_name=mock.Mock(return_value="shared-bastion"),
@@ -269,20 +275,43 @@ class TestLaunchTPUJob(TestWithTemporaryCWD):
         with patch_fns:
             LaunchTPUJob.define_flags(fv)
 
+        # Parse argv.
+        argv = ["cli"]
+        if name is not None:
+            argv.append(f"--name={name}")
+        if output_dir is not None:
+            argv.append(f"--output_dir={output_dir}")
+        fv(argv)
+
         # Check some basic flags.
         self.assertEqual(fv.bastion, "shared-bastion")
-        self.assertEqual(fv.name, "job-name")
+        self.assertEqual(fv.name, name or "job-name")
         self.assertIn("tpu_type", fv)
         self.assertIn("bundler_type", fv)
         self.assertIsNotNone(fv["name"].default)
         self.assertIsNotNone(fv["bundler_type"].default)
         self.assertEqual(fv["tpu_type"].default, "test-type")
+        self.assertEqual(fv.output_dir, output_dir)
 
         # Make sure bundler config is constructed properly.
-        cfg = LaunchTPUJob.from_flags(fv, command="test command")
-        self.assertIn("tpu", cfg.bundler.extras)
+        mock_settings = {"ttl_bucket": "ttl_bucket", "permanent_bucket": "permanent_bucket"}
+        with mock_gcp_settings(launch.__name__, settings=mock_settings), mock_gcp_settings(
+            bastion_vm.__name__, settings=mock_settings
+        ):
+            cfg = LaunchTPUJob.from_flags(fv, command="test command")
+
+            self.assertIn("tpu", cfg.bundler.extras)
+
+            # Check output_dir.
+            if output_dir is None:
+                self.assertEqual(cfg.output_dir, f"gs://ttl_bucket/axlearn/jobs/{fv.name}")
+            else:
+                self.assertEqual(cfg.output_dir, output_dir)
+
+            # Note that the bastion output_dir is not necessarily the same as the job output_dir.
+            self.assertEqual(bastion_vm.output_dir(fv.bastion), cfg.bastion.bastion_dir)
 
         # Make sure command is expected.
         for flag in ["name", "bundler_type", "tpu_type"]:
-            self.assertIn(f"--{flag}={fv[flag].default}", cfg.command)
+            self.assertIn(f"--{flag}={fv[flag].value}", cfg.command)
         self.assertIn("test command", cfg.command)

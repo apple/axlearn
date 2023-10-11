@@ -118,9 +118,7 @@ class VertexAITensorboardUploader(Configurable):
     def upload(self):
         """Uploads summaries in output_dir to Vertex AI. Runs/Keeps uploader process alive."""
         cfg = self.config
-        # TODO(vivekrathod): Refactor this pattern into a reusable class so we can apply it to all
-        # the helper processes associated with a Jobs such as syncing logs, uploading summaries
-        # among others.
+        # TODO(vivekrathod,markblee): Use Uploader.
         if self._uploader_proc is not None:
             self._uploader_proc.join(timeout=0)
             if not self._uploader_proc.is_alive():

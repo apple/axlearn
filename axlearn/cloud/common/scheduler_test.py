@@ -3,14 +3,12 @@
 """Tests job scheduler."""
 # pylint: disable=unused-argument
 
-import contextlib
 from datetime import datetime, timedelta
 from typing import Dict
-from unittest import mock
 
 from absl.testing import absltest, parameterized
 
-from axlearn.cloud.common import scheduler
+from axlearn.cloud.common.quota import QuotaInfo
 from axlearn.cloud.common.scheduler import (
     JobMetadata,
     JobQueue,
@@ -20,6 +18,7 @@ from axlearn.cloud.common.scheduler import (
     ResourceLimitCalculator,
     Scheduler,
 )
+from axlearn.common.config import config_for_function
 
 
 class ProjectJobSorterTest(absltest.TestCase):
@@ -245,22 +244,18 @@ class SchedulerTest(absltest.TestCase):
 
 def _mock_get_resource_limits(*args):
     del args
-    return {
-        "total_resources": {"v4": 15, "v3": 8, "v5": 5},
-        "project_resources": {
+    return QuotaInfo(
+        total_resources={"v4": 15, "v3": 8, "v5": 5},
+        project_resources={
             "project1": {"v4": 10, "v5": 5},
             "project2": {"v4": 5, "v3": 5},
             "project3": {"v3": 3},
         },
-    }
+    )
 
 
-@contextlib.contextmanager
-def mock_scheduler():
-    with mock.patch(
-        f"{scheduler.__name__}.get_resource_limits", side_effect=_mock_get_resource_limits
-    ):
-        yield
+def mock_quota_config():
+    return _mock_get_resource_limits
 
 
 class TestJobScheduler(parameterized.TestCase):
@@ -268,78 +263,77 @@ class TestJobScheduler(parameterized.TestCase):
 
     @parameterized.parameters([False, True])
     def test_init(self, dry_run: bool):
-        with mock_scheduler():
-            cfg = JobScheduler.default_config().set(project_quota_file="test", dry_run=dry_run)
+        cfg = JobScheduler.default_config().set(
+            quota=config_for_function(mock_quota_config),
+            dry_run=dry_run,
+        )
 
-            # Test initialization.
-            sched: JobScheduler = cfg.instantiate()
-            # pylint: disable-next=protected-access
-            self.assertEqual(sched._resource_limits(), _mock_get_resource_limits())
+        # Test initialization.
+        sched: JobScheduler = cfg.instantiate()
+        # pylint: disable-next=protected-access
+        self.assertEqual(sched._quota(), _mock_get_resource_limits())
 
-            # Test scheduling.
-            yesterday = datetime.now() - timedelta(days=1)
-            jobs = {
-                # Should be deprioritized in favor of b, since it's using part of p2's v4 quota.
-                "a": JobMetadata(
-                    user_id="a",
-                    project_id="project1",
-                    creation_time=yesterday + timedelta(seconds=1),
-                    resources={"v4": 12},
-                ),
-                # Should run since there's v4 capacity in p2 after a is pre-empted.
-                "b": JobMetadata(
-                    user_id="b",
-                    project_id="project2",
-                    creation_time=yesterday + timedelta(seconds=2),
-                    resources={"v4": 5},
-                ),
-                # Should run, due to available v3 quota in p2 and p3.
-                "c": JobMetadata(
-                    user_id="c",
-                    project_id="project2",
-                    creation_time=yesterday + timedelta(seconds=3),
-                    resources={"v3": 6},
-                ),
-                # Should not run -- the excess v5 quota allocated is only 2.5.
-                "d": JobMetadata(
-                    user_id="d",
-                    project_id="project2",
-                    creation_time=yesterday + timedelta(seconds=4),
-                    resources={"v5": 3},
-                ),
-                # Should run -- within the 2.5 excess v5 quota.
-                "e": JobMetadata(
-                    user_id="e",
-                    project_id="project3",
-                    creation_time=yesterday + timedelta(seconds=5),
-                    resources={"v5": 2.5},
-                ),
-                # Should run. Even though it has no project, there is excess v3 quota.
-                "f": JobMetadata(
-                    user_id="f",
-                    project_id="",
-                    creation_time=yesterday + timedelta(seconds=1),
-                    resources={"v3": 2},
-                ),
-            }
-            results = sched.schedule(jobs)
+        # Test scheduling.
+        yesterday = datetime.now() - timedelta(days=1)
+        jobs = {
+            # Should be deprioritized in favor of b, since it's using part of p2's v4 quota.
+            "a": JobMetadata(
+                user_id="a",
+                project_id="project1",
+                creation_time=yesterday + timedelta(seconds=1),
+                resources={"v4": 12},
+            ),
+            # Should run since there's v4 capacity in p2 after a is pre-empted.
+            "b": JobMetadata(
+                user_id="b",
+                project_id="project2",
+                creation_time=yesterday + timedelta(seconds=2),
+                resources={"v4": 5},
+            ),
+            # Should run, due to available v3 quota in p2 and p3.
+            "c": JobMetadata(
+                user_id="c",
+                project_id="project2",
+                creation_time=yesterday + timedelta(seconds=3),
+                resources={"v3": 6},
+            ),
+            # Should not run -- the excess v5 quota allocated is only 2.5.
+            "d": JobMetadata(
+                user_id="d",
+                project_id="project2",
+                creation_time=yesterday + timedelta(seconds=4),
+                resources={"v5": 3},
+            ),
+            # Should run -- within the 2.5 excess v5 quota.
+            "e": JobMetadata(
+                user_id="e",
+                project_id="project3",
+                creation_time=yesterday + timedelta(seconds=5),
+                resources={"v5": 2.5},
+            ),
+            # Should run. Even though it has no project, there is excess v3 quota.
+            "f": JobMetadata(
+                user_id="f",
+                project_id="",
+                creation_time=yesterday + timedelta(seconds=1),
+                resources={"v3": 2},
+            ),
+        }
+        results = sched.schedule(jobs)
 
-            # Get verdicts by job name.
-            job_verdicts: Dict[str, JobVerdict] = {
-                job_name: verdict
-                for project_verdicts in results.job_verdicts.values()
-                for job_name, verdict in project_verdicts.items()
-            }
-            if dry_run:
-                # All of the jobs should be scheduled, regardless.
-                expected = {"a": True, "b": True, "c": True, "d": True, "e": True, "f": True}
-            else:
-                expected = {"a": False, "b": True, "c": True, "d": False, "e": True, "f": True}
+        # Get verdicts by job name.
+        job_verdicts: Dict[str, JobVerdict] = {
+            job_name: verdict
+            for project_verdicts in results.job_verdicts.values()
+            for job_name, verdict in project_verdicts.items()
+        }
+        if dry_run:
+            # All of the jobs should be scheduled, regardless.
+            expected = {"a": True, "b": True, "c": True, "d": True, "e": True, "f": True}
+        else:
+            expected = {"a": False, "b": True, "c": True, "d": False, "e": True, "f": True}
 
-            self.assertEqual(
-                expected,
-                {
-                    job_name: job_verdict.should_run()
-                    for job_name, job_verdict in job_verdicts.items()
-                },
-            )
+        self.assertEqual(
+            expected,
+            {job_name: job_verdict.should_run() for job_name, job_verdict in job_verdicts.items()},
+        )
