@@ -31,7 +31,13 @@ from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_pol
 from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
-from axlearn.common.trainer import SpmdTrainer, _prune_empty, _TrainerState, select_mesh_config
+from axlearn.common.trainer import (
+    SpmdTrainer,
+    _prune_empty,
+    _TrainerState,
+    infer_mesh_shape,
+    select_mesh_config,
+)
 from axlearn.common.utils import NestedTensor, Tensor, as_tensor, flatten_items, match_regex_rules
 
 FLAGS = flags.FLAGS
@@ -843,6 +849,28 @@ class SelectMeshConfigTest(test_utils.TestCase):
         self.assertEqual(cfg.mesh_shape, (4, 1, 8, 1))
         select_mesh_config(cfg, mesh_selector="gpu-p4d.24xlarge-128")
         self.assertIsNone(cfg.mesh_shape)
+
+
+class InferMeshShapeTest(test_utils.TestCase):
+    def test_infer_mesh_shape_config(self):
+        # When mesh shape has no -1
+        mesh_shape = infer_mesh_shape((4, 1, 8, 1))
+        self.assertEqual(mesh_shape, (4, 1, 8, 1))
+
+        # When there is mutiple -1
+        with self.assertRaises(AssertionError):
+            infer_mesh_shape((-1, 1, -1, 8))
+
+        # When num_devices is not a mutiple of products of mesh_shape
+        with self.assertRaises(AssertionError):
+            infer_mesh_shape((-1, 1, 8, 1), num_devices=4)
+
+        # When one -1 for a valid mesh shape
+        mesh_shape = infer_mesh_shape((-1, 1, 8, 1), num_devices=32)
+        self.assertEqual(mesh_shape, (4, 1, 8, 1))
+
+        mesh_shape = infer_mesh_shape((4, 1, 8, -1), num_devices=32)
+        self.assertEqual(mesh_shape, (4, 1, 8, 1))
 
 
 if __name__ == "__main__":

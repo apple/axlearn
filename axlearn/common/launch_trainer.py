@@ -8,7 +8,7 @@ import jax
 import tensorflow as tf
 from absl import flags, logging
 
-from axlearn.common.trainer import SpmdTrainer, select_mesh_config
+from axlearn.common.trainer import SpmdTrainer, infer_mesh_shape, select_mesh_config
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
 
 # Trainer-specific flags.
@@ -52,6 +52,7 @@ def get_trainer_config(trainer_config_fn: Optional[TrainerConfigFn] = None) -> S
         select_mesh_config(trainer_config, mesh_selector=FLAGS.mesh_selector)
     trainer_config.mesh_axis_names = trainer_config.mesh_axis_names or ("data", "model")
     trainer_config.mesh_shape = trainer_config.mesh_shape or (len(jax.devices()), 1)
+    trainer_config.mesh_shape = infer_mesh_shape(trainer_config.mesh_shape)
     trainer_config.start_trace_steps = [int(el) for el in FLAGS.trace_at_steps]
 
     for eval_cfg in trainer_config.evalers.values():

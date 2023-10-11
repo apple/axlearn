@@ -4,6 +4,7 @@
 import math
 import os.path
 import time
+from functools import reduce
 from typing import Any, Dict, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
@@ -778,3 +779,31 @@ def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str
         logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh)
         if mesh is not REQUIRED:
             trainer_config.mesh_shape = mesh
+
+
+def infer_mesh_shape(mesh_shape: MeshShape, *, num_devices: Optional[int] = None) -> MeshShape:
+    """Infer the value for -1 from len(jax.devices()) and other dims if there is -1 in mesh shape.
+
+    Args:
+        mesh_shape: The original MeshShape, which might have -1 in one axis.
+        num_devices: The devices that will be used to construct the mesh.
+            If None, defaults to len(jax.devices()).
+
+    Returns
+        a new MeshShape with inferred value for -1.
+    """
+    if -1 not in mesh_shape:
+        return mesh_shape
+
+    assert mesh_shape.count(-1) == 1, f"only one axis can be -1 in mesh shape, but get {mesh_shape}"
+
+    # handle the case with one -1
+    prod = -1 * reduce(lambda x, y: x * y, mesh_shape)
+    if num_devices is None:
+        num_devices = len(jax.devices())
+    assert num_devices % prod == 0, f"invalid mesh shape {mesh_shape}"
+
+    new_mesh_shape = tuple(x if x != -1 else num_devices // prod for x in mesh_shape)
+    logging.info("Infer mesh shape from %s to %s", mesh_shape, new_mesh_shape)
+
+    return new_mesh_shape
