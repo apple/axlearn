@@ -301,6 +301,7 @@ class SpmdTrainer(Module):
                     ) as f:
                         f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
             self._log_trainer_state_stats()
+            self._step_log("Input partition specs: %s", self._input_partition_specs)
             # Log config.
             self.summary_writer.log_config(cfg, step=self.step)
 
