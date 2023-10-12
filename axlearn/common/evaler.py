@@ -21,6 +21,8 @@ from typing import (
 import jax
 from absl import logging
 from jax import numpy as jnp
+from jax.experimental import maps
+from jax.experimental.multihost_utils import host_local_array_to_global_array
 from jax.experimental.pjit import pjit
 
 from axlearn.common import summary_writer, utils
@@ -599,9 +601,14 @@ class SpmdEvaler(Module):
                     stop_trace_iter = batch_ix + 1  # We only look at one batch.
                 self.vlog(2, "Start profiling evaler %s", cfg.name)
 
+            mesh = maps.thread_resources.env.physical_mesh
             with jax.profiler.StepTraceAnnotation(cfg.name, step_num=step):
                 with jax.profiler.TraceAnnotation(f"{cfg.name}.forward"):
-                    global_input_batch = utils.host_to_global_device_array(input_batch)
+                    global_input_batch = host_local_array_to_global_array(
+                        utils.as_numpy_array(input_batch),
+                        global_mesh=mesh,
+                        pspecs=utils.input_partition_spec(),
+                    )
                     forward_outputs = self.metric_calculator.forward(
                         global_input_batch,
                         model_params=model_params,

@@ -10,6 +10,7 @@ import jax
 import tensorflow as tf
 from absl import logging
 from jax import numpy as jnp
+from jax.experimental.multihost_utils import host_local_array_to_global_array
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
@@ -246,6 +247,10 @@ class SpmdTrainer(Module):
     def trainer_state_partition_specs(self):
         return self._trainer_state_partition_specs
 
+    @property
+    def _input_partition_specs(self):
+        return utils.input_partition_spec()
+
     def model_params_for_eval(self):
         state = self.trainer_state
         if self.config.learner.ema.decay is not None:
@@ -308,7 +313,7 @@ class SpmdTrainer(Module):
                     self._train_step,
                     in_shardings=(
                         self._trainer_state_partition_specs,
-                        utils.input_partition_spec(),
+                        self._input_partition_specs,
                     ),
                     out_shardings=(
                         self._trainer_state_partition_specs,
@@ -635,7 +640,11 @@ class SpmdTrainer(Module):
         Returns:
             A dict containing 'loss' and 'aux' outputs.
         """
-        input_batch = utils.host_to_global_device_array(input_batch)
+        input_batch = host_local_array_to_global_array(
+            utils.as_numpy_array(input_batch),
+            global_mesh=self.mesh(),
+            pspecs=self._input_partition_specs,
+        )
 
         with jax.profiler.StepTraceAnnotation("train", step_num=self.step):
             # Note(Jan 2022):
