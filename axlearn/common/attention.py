@@ -898,7 +898,9 @@ class FusedQKVLinear(BaseQKVLinear):
         return self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
-def _rotary_sinusoidal_positional_embeddings(positions: Tensor, max_len: int, dim: int) -> Tensor:
+def _rotary_sinusoidal_positional_embeddings(
+    *, positions: Tensor, max_len: int, dim: int, theta: float = 10000.0
+) -> Tensor:
     """Generate the sin/cos positional embedding.
 
     Ref:
@@ -908,13 +910,14 @@ def _rotary_sinusoidal_positional_embeddings(positions: Tensor, max_len: int, di
         positions: A tensor representing the token position IDs with shape [seq_len].
         max_len: The max length of the input sequence.
         dim: The dimensionality of the positional embedding.
+        theta: A parameter to scale the frequencies.
 
     Returns:
         Rotary Positional Embedding with shape [seq_len, dim].
     """
     exponents = jnp.arange(dim).astype(jnp.float32)
     pos_array = jnp.arange(max_len).astype(jnp.float32)
-    exponents = jnp.power(10000, 2 * (exponents // 2) / dim)
+    exponents = jnp.power(theta, 2 * (exponents // 2) / dim)
     position_enc = jnp.expand_dims(pos_array, 1) / jnp.expand_dims(exponents, 0)
 
     rope_part_1 = jnp.sin(position_enc[:, 0::2])
@@ -936,6 +939,7 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
 
         max_len: Required[int] = REQUIRED  # The max length of the input sequence.
         dim: Required[int] = REQUIRED  # The dimensionality of the positional embedding.
+        theta: float = 10000.0  # The scale of base frequency.
 
     def forward(self, positions: Tensor) -> Tensor:
         """
@@ -959,7 +963,9 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
                 f"Seq. length ({seq_len}) should be less than or "
                 "equal to max length ({cfg.max_len})"
             )
-        return _rotary_sinusoidal_positional_embeddings(positions, cfg.max_len, cfg.dim)
+        return _rotary_sinusoidal_positional_embeddings(
+            positions=positions, max_len=cfg.max_len, dim=cfg.dim, theta=cfg.theta
+        )
 
 
 def apply_rotary_position_embeddings(
