@@ -70,8 +70,8 @@ class TestUtils(parameterized.TestCase):
 
         # Test that invoking CLI by itself prints the help message.
         returncode, stdout, stderr = _run(_parse([self.root_module]))
-        self.assertRegex(stdout, r"usage: .*")
-        self.assertEqual(returncode, 0, msg=stderr)
+        self.assertRegex(stderr, r".*A config file could not be found.*", msg=(stdout, stderr))
+        self.assertEqual(returncode, 1, msg=stderr)
 
         # Test that invoking subcommand by itself injects --help.
         args = _parse([self.root_module, "child1"])
