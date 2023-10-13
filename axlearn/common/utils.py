@@ -42,12 +42,14 @@ from jax.tree_util import register_pytree_node_class
 
 from axlearn.common.config import is_named_tuple
 
+# New code should use Nested[XX] instead of NestedXX.
+# Old definitions are provided for backwards compatibility.
+_NestedT = TypeVar("_NestedT")
+Nested = Union[_NestedT, Dict[str, "Nested[_NestedT]"]]
+
 Tensor = jax.Array
-# Recursive type annotations not supported by pytype yet.
-NestedTree = Union[Any, Dict[str, Any]]  # Union[Any, Dict[str, "NestedTree"]]
-# Union[..., Dict[str, "NestedTensor"]]
+NestedTree = Union[Any, Dict[str, Any]]
 NestedTensor = Union[Tensor, Dict[str, Any]]
-# NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, "NestedPartitionSpec"]]]
 NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, Any]]]
 
 _enable_numeric_checks = False
@@ -74,7 +76,6 @@ class TensorSpec:
         return jax.sharding.NamedSharding(mesh, self.mesh_axes)
 
 
-# NestedTensorSpec = Optional[Union[TensorSpec, Dict[str, "NestedTensorSpec"]]]
 NestedTensorSpec = Optional[Union[TensorSpec, Dict[str, Any]]]
 
 

@@ -102,8 +102,7 @@ class ParameterSpec(TensorSpec):
         return result
 
 
-# When pytype supports recursive types, switch to:
-# Optional[Union[ParameterSpec, Dict[str, "NestedParameterSpec"]]]
+# For new code, use Nested[ParameterSpec].
 NestedParameterSpec = Optional[Union[ParameterSpec, Dict[str, Any]]]
 
 

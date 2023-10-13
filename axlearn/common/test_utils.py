@@ -342,8 +342,7 @@ class ThirdPartyInitializer(Initializer):
         return f"delegated({self.config.library})"
 
 
-# When pytype supports recursive types, switch to:
-# Optional[Union[ParamInitSpec, Dict[str, "NestedParamInitSpec"]]]
+# For new code, use Nested[ParamInitSpec].
 NestedParamInitSpec = Optional[Union[ParamInitSpec, Dict[str, Any]]]
 
 
