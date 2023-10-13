@@ -66,10 +66,6 @@ def download_hf_models_from_remote(remote_path: str) -> str:
     return str(local_pretrained_model_path)
 
 
-# TODO(tuzhucheng): Alias download_hf_models_from_gs until we remove uses of it downstream.
-download_hf_models_from_gs = download_hf_models_from_remote
-
-
 class HfModuleWrapper(BaseModel, ABC):
     """A wrapper for Hugging Face Flax modules so that they can be used within AXLearn.
 
@@ -110,11 +106,6 @@ class HfModuleWrapper(BaseModel, ABC):
         # Keys to skip when copying weights from pre-trained models.
         # Key names refer to dictionary key names in the model's config.json, and has no dots.
         pretrained_keys_to_skip: Optional[Sequence[str]] = []
-
-    @classmethod
-    def default_config(cls: Type["HfModuleWrapper"]) -> Config:
-        cfg = super().default_config()
-        return cfg
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg, parent=parent)
