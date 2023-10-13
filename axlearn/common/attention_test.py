@@ -16,7 +16,7 @@
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
 from itertools import combinations
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import jax
 import numpy as np
@@ -828,9 +828,124 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         )
 
 
+def llama_reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """LLaMA reshape for broadcast function.
+
+    Ref:
+    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L55-L60
+    """
+    ndim = x.ndim
+    assert 0 <= 1 < ndim
+    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
+    shape = [
+        d if i == 1 or i == ndim - 1 else 1  # pylint: disable=consider-using-in
+        for i, d in enumerate(x.shape)
+    ]
+    return freqs_cis.view(*shape)
+
+
+def llama_apply_rotary_emb(
+    *,
+    xq: torch.Tensor,
+    xk: torch.Tensor,
+    freqs_cis: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """LLaMA apply rotary embeddings to input tensors using the given frequency tensor.
+
+    Ref:
+    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L63-L73
+    """
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    freqs_cis = llama_reshape_for_broadcast(freqs_cis, xq_)
+    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
+    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    return xq_out.type_as(xq), xk_out.type_as(xk)
+
+
+class RefLLaMAAttention(torch.nn.Module):
+    """Reference Implementation of LLaMA-1.
+
+    Ref:
+    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L76
+
+    The modifications are removing the dependency of ColumnParallelLinear and RowParallelLinear.
+    """
+
+    def __init__(self, n_heads: int, dim: int, max_batch_size: int, max_seq_len: int):
+        super().__init__()
+
+        self.n_local_heads = n_heads
+        self.head_dim = dim // n_heads
+
+        self.wq = torch.nn.Linear(
+            dim,
+            n_heads * self.head_dim,
+            bias=False,
+        )
+        self.wk = torch.nn.Linear(
+            dim,
+            n_heads * self.head_dim,
+            bias=False,
+        )
+        self.wv = torch.nn.Linear(
+            dim,
+            n_heads * self.head_dim,
+            bias=False,
+        )
+        self.wo = torch.nn.Linear(
+            n_heads * self.head_dim,
+            dim,
+            bias=False,
+        )
+
+        self.cache_k = torch.zeros((max_batch_size, max_seq_len, self.n_local_heads, self.head_dim))
+        self.cache_v = torch.zeros((max_batch_size, max_seq_len, self.n_local_heads, self.head_dim))
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        start_pos: int,
+        freqs_cis: torch.Tensor,
+        mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        bsz, seqlen, _ = x.shape
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+
+        xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+
+        xq, xk = llama_apply_rotary_emb(xq=xq, xk=xk, freqs_cis=freqs_cis)
+
+        self.cache_k = self.cache_k.to(xq)
+        self.cache_v = self.cache_v.to(xq)
+
+        self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
+        self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
+
+        keys = self.cache_k[:bsz, : start_pos + seqlen]
+        values = self.cache_v[:bsz, : start_pos + seqlen]
+
+        xq = xq.transpose(1, 2)
+        keys = keys.transpose(1, 2)
+        values = values.transpose(1, 2)
+        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
+        if mask is not None:
+            scores = scores + mask  # (bs, n_local_heads, slen, cache_len + slen)
+        scores = torch.nn.functional.softmax(scores.float(), dim=-1).type_as(xq)
+        output = torch.matmul(scores, values)  # (bs, n_local_heads, slen, head_dim)
+        output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
+
+        return self.wo(output)
+
+
 class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
-    def llama_ref_precompute_freqs_cis(self, dim: int, end: int, theta: float = 10000.0):
+    def llama_ref_precompute_freqs_cis(
+        self, *, dim: int, end: int, theta: float = 10000.0
+    ) -> torch.Tensor:
         """Reference LLaMA-1 implemention.
+
         Ref:
         https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L47-L52
         """
@@ -844,22 +959,24 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         max_len = 100
         dim = 32
         positions = jnp.arange(max_len)
-        ajax_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
+        axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
             max_len=max_len, dim=dim
         )
-        ajax_rope_layer = ajax_rope_cfg.set(name="rope").instantiate(parent=None)
-        ajax_rope, _ = F(
-            ajax_rope_layer,
+        axlearn_rope_layer = axlearn_rope_cfg.set(name="rope").instantiate(parent=None)
+        axlearn_rope, _ = F(
+            axlearn_rope_layer,
             inputs=dict(positions=positions),
-            state=ajax_rope_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0)),
+            state=axlearn_rope_layer.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(0)
+            ),
             is_training=True,
             prng_key=jax.random.PRNGKey(0),
         )
-        llama_rope = self.llama_ref_precompute_freqs_cis(dim, max_len)
-        ajax_imag, ajax_real = ajax_rope.split(2, axis=-1)
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len)
+        axlearn_imag, axlearn_real = axlearn_rope.split(2, axis=-1)
         llama_real, llama_imag = llama_rope.real, llama_rope.imag
-        assert_allclose(llama_real, as_tensor(ajax_real))
-        assert_allclose(llama_imag, as_tensor(ajax_imag))
+        assert_allclose(llama_real, as_tensor(axlearn_real))
+        assert_allclose(llama_imag, as_tensor(axlearn_imag))
 
     @parameterized.parameters([jnp.float32, jnp.bfloat16])
     def test_roformer_qkv_linear(self, dtype: jnp.dtype):
@@ -899,6 +1016,103 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         self.assertEqual(layer_outputs.query.dtype, dtype)
         self.assertEqual(layer_outputs.key.dtype, dtype)
         self.assertEqual(layer_outputs.value.dtype, dtype)
+
+    def test_against_llama_for_apply_rotary_emb(self):
+        max_len = 100
+        dim = 32
+        batch_size = 4
+        positions = jnp.arange(max_len)
+        axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
+            max_len=max_len, dim=dim
+        )
+        axlearn_rope_layer = axlearn_rope_cfg.set(name="rope").instantiate(parent=None)
+        axlearn_rope, _ = F(
+            axlearn_rope_layer,
+            inputs=dict(positions=positions),
+            state=axlearn_rope_layer.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(0)
+            ),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len)
+        rng = np.random.default_rng(seed=123)
+        query = rng.random([batch_size, max_len, dim])
+        key = rng.random([batch_size, max_len, dim])
+        value = rng.random([batch_size, max_len, dim])
+        llama_q, llama_k = llama_apply_rotary_emb(
+            xq=torch.Tensor(query), xk=torch.Tensor(key), freqs_cis=llama_rope
+        )
+        axlearn_q, axlearn_k, _ = attention.apply_rotary_position_embeddings(
+            query=jnp.asarray(query),
+            key=jnp.asarray(key),
+            value=jnp.asarray(value),
+            sinusoidal_pos=axlearn_rope,
+            rotary_value=False,
+        )
+
+        assert_allclose(as_tensor(llama_q.reshape(batch_size, max_len, -1)), axlearn_q, atol=5e-6)
+        assert_allclose(as_tensor(llama_k.reshape(batch_size, max_len, -1)), axlearn_k, atol=5e-6)
+
+    def test_against_llama_for_attention(self):
+        max_len = 100
+        dim = 32
+        batch_size = 4
+        n_heads = 4
+        rng = np.random.default_rng(seed=123)
+        x = rng.random([batch_size, max_len, dim])
+        ref_llama = RefLLaMAAttention(
+            n_heads=n_heads, dim=dim, max_batch_size=batch_size, max_seq_len=max_len
+        )
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim // n_heads, end=max_len)
+        llama_output = ref_llama.forward(torch.Tensor(x), 0, llama_rope, mask=None)
+
+        rope_mha_cfg = attention.MultiheadAttention.default_config().set(
+            query_dim=dim,
+            key_dim=dim,
+            value_dim=dim,
+            num_heads=n_heads,
+            input_linear=RoFormerQKVLinear.default_config().set(
+                max_seq_length=max_len,
+                rotary_value=False,
+            ),
+        )
+
+        rope_mha = rope_mha_cfg.set(name="rope").instantiate(parent=None)
+
+        state = rope_mha.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        state["i_proj"]["i_proj"]["q_proj"]["weight"] = jnp.asarray(
+            ref_llama.wq.weight.transpose(0, 1)
+            .reshape(dim, n_heads, dim // n_heads)
+            .detach()
+            .numpy()
+        )
+        state["i_proj"]["i_proj"]["k_proj"]["weight"] = jnp.asarray(
+            ref_llama.wk.weight.transpose(0, 1)
+            .reshape(dim, n_heads, dim // n_heads)
+            .detach()
+            .numpy()
+        )
+        state["i_proj"]["i_proj"]["v_proj"]["weight"] = jnp.asarray(
+            ref_llama.wv.weight.transpose(0, 1)
+            .reshape(dim, n_heads, dim // n_heads)
+            .detach()
+            .numpy()
+        )
+        state["o_proj"]["weight"] = jnp.asarray(
+            ref_llama.wo.weight.reshape(dim, n_heads, dim // n_heads).detach().numpy()
+        )
+
+        axlearn_output, _ = F(
+            rope_mha,
+            inputs=dict(query=jnp.asarray(x)),
+            state=state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        assert_allclose(
+            as_tensor(llama_output.reshape(batch_size, max_len, -1)), axlearn_output.data
+        )
 
 
 class MultiheadLinearInitTest(TestCase):
