@@ -15,8 +15,8 @@ from jax import numpy as jnp
 from tensorflow import summary as tf_summary
 
 from axlearn.common.config import REQUIRED, ConfigBase, Required, RequiredFieldValue, config_class
-from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
+from axlearn.common.summary import ImageSummary, Summary
 from axlearn.common.utils import Tensor, tree_paths
 
 try:
@@ -151,26 +151,41 @@ class SummaryWriter(BaseWriter):
         if step % cfg.write_every_n_steps != 0:
             return
         with self.summary_writer.as_default(step=step):
-            values = jax.tree_util.tree_map(
-                lambda v: v.mean if isinstance(v, WeightedScalar) else v,
-                values,
-                is_leaf=lambda x: isinstance(x, WeightedScalar),
-            )
 
-            def write(path: str, value: jnp.ndarray):
-                self.vlog(3, "SummaryWriter %s: %s=%s", self.path(), path, value)
-                if isinstance(value, Tensor) and not value.is_fully_replicated:
-                    logging.warning("SummaryWriter: %s: %s is not fully replicated", path, value)
-                elif isinstance(value, str):
-                    tf_summary.text(path, value, step=step)
-                elif isinstance(value, numbers.Number) or value.ndim == 0:
-                    tf_summary.scalar(path, value, step=step)
-                elif isinstance(value, np.ndarray) and value.ndim == 4:
-                    tf_summary.image(path, value, step=step, max_outputs=25)
+            def write(path: str, value: jax.Array):
+                if isinstance(value, Summary):
+                    raw_value = value.value()
                 else:
-                    tf_summary.histogram(path, value, step=step)
+                    raw_value = value
 
-            jax.tree_util.tree_map(write, tree_paths(values, separator="/"), values)
+                self.vlog(3, "SummaryWriter %s: %s=%s", self.path(), path, raw_value)
+
+                if isinstance(raw_value, Tensor) and not raw_value.is_fully_replicated:
+                    logging.warning(
+                        "SummaryWriter: %s: %s is not fully replicated", path, raw_value
+                    )
+                elif isinstance(value, ImageSummary):
+                    tf_summary.image(path, raw_value, step=step)
+                elif isinstance(raw_value, str):
+                    tf_summary.text(path, raw_value, step=step)
+                elif isinstance(raw_value, numbers.Number) or raw_value.ndim == 0:
+                    tf_summary.scalar(path, raw_value, step=step)
+                elif isinstance(raw_value, np.ndarray) and raw_value.ndim == 4:
+                    tf_summary.image(path, raw_value, step=step, max_outputs=25)
+                elif isinstance(raw_value, jax.Array):
+                    tf_summary.histogram(path, raw_value, step=step)
+                else:
+                    logging.warning(
+                        "SummaryWriter: Does not know how to " 'log "%s" (%s).',
+                        path,
+                        raw_value.__class__,
+                    )
+
+            def is_leaf(x):
+                return isinstance(x, Summary)
+
+            paths = tree_paths(values, separator="/", is_leaf=is_leaf)
+            jax.tree_util.tree_map(write, paths, values, is_leaf=is_leaf)
             self.summary_writer.flush()
 
 
@@ -298,28 +313,34 @@ class WandBWriter(BaseWriter):
         if step % cfg.write_every_n_steps != 0:
             return
 
-        values = jax.tree_util.tree_map(
-            lambda v: v.mean if isinstance(v, WeightedScalar) else v,
-            values,
-            is_leaf=lambda x: isinstance(x, WeightedScalar),
-        )
-        # Ensure all arrays are cast to numpy.
-        # Wandb will crash if jax.Array is present.
-        values = jax.tree_util.tree_map(
-            lambda v: np.asarray(v) if isinstance(v, jax.Array) else v,
-            values,
-        )
+        def convert(path: str, value: Any):
+            if isinstance(value, Summary):
+                raw_value = value.value()
+            else:
+                raw_value = value
+
+            self.vlog(3, "WandbWriter %s: %s=%s", self.path(), path, raw_value)
+
+            # Ensure all arrays are cast to numpy.
+            # Wandb will crash if jax.Array is present.
+            if isinstance(raw_value, jax.Array):
+                raw_value = np.asarray(raw_value)
+
+            if isinstance(value, ImageSummary):
+                return [wandb.Image(el) for el in raw_value]
+            return raw_value
+
+        def is_leaf(x):
+            return isinstance(x, Summary)
+
+        paths = tree_paths(values, separator="/", is_leaf=is_leaf)
+        values = jax.tree_util.tree_map(convert, paths, values, is_leaf=is_leaf)
+
         if cfg.prefix:
             values = {f"{cfg.prefix}/{k}": v for k, v in values.items()}
 
-        # wandb doesn't recognize dot-delimited structures, but does recognize `/`
+        # Wandb doesn't recognize dot-delimited structures, but does recognize `/`
         # and will create the proper nesting if we replace `.` with `/`.
         values = {k.replace(".", "/"): v for k, v in values.items()}
-        if cfg.convert_2d_to_image:
-            # TODO(bmckinzie): support kwargs in add_summary (e.g. `cast_to=wandb.Image`) as a
-            # more general solution for things like this.
-            values = jax.tree_util.tree_map(
-                lambda v: wandb.Image(v) if (isinstance(v, np.ndarray) and v.ndim == 2) else v,
-                values,
-            )
+
         wandb.log(values, step=step)

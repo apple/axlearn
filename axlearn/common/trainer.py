@@ -32,6 +32,7 @@ from axlearn.common.utils import (
     Tensor,
     count_model_params,
     flatten_items,
+    match_regex_rules,
     prune_tree,
 )
 
@@ -56,6 +57,10 @@ class _TrainerState(NamedTuple):
     prng_key: Union[jax.random.KeyArray, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
     learner: Union[NestedTensor, NestedPartitionSpec]
+
+
+# The device mesh shape in the form of a tuple of ints.
+MeshShape = Sequence[int]
 
 
 # pylint: disable-next=too-many-instance-attributes
@@ -85,13 +90,27 @@ class SpmdTrainer(Module):
         # The maximum number of steps.
         max_step: Union[int, float] = math.inf
 
-        # The device mesh shape in the form of a tuple of ints.
-        # Must have the same length as mesh_axis_names.
-        mesh_shape: Required[Sequence[int]] = REQUIRED
+        # The default mesh configuration.
+        #
+        # The mesh shape, if specified, must have the same length as mesh_axis_names.
+        # Use `mesh_rules` to set different mesh shapes depending on the hardware platform.
+        mesh_shape: Required[MeshShape] = REQUIRED
         # The mesh axis names. The names can be referenced in ParameterSpec.mesh_axes.
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
         # Subset of mesh axis names over which the leaves of the input batch are sharded.
         batch_axis_names: Union[str, Sequence[str]] = "data"
+
+        # An optional list of (regex, MeshShape) pairs to override the default mesh configuration.
+        #
+        # This is useful when we want to use different mesh shapes depending on the
+        # device types (e.g., 'tpu-v4-128' vs. 'gpu-p4de.24xlarge-32').
+        #
+        # Given a `mesh_selector` string (usually representing the device type and set by user's
+        # launch script), the first rule that with a regex that matches the selector will determine
+        # the mesh shape.
+        #
+        # If no rule matches, the default mesh configuration will be used.
+        mesh_rules: Optional[Sequence[Tuple[str, Optional[MeshShape]]]] = None
 
         # The model config.
         model: Required[BaseModel.Config] = REQUIRED
@@ -740,3 +759,55 @@ class SpmdTrainer(Module):
             loss=loss,
             aux=forward_aux,
         )
+
+
+def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str):
+    """Selects a mesh rule (if one matches `mesh_selector` to override mesh config.
+
+    If any of `trainer_config.mesh_rules` matches `mesh_selector`, modifies
+    `trainer_config.mesh_shape` according to the rule.
+
+    Args:
+        trainer_config: The trainer config. Will be modified if any mesh rule matches.
+        mesh_selector: A string used to select the mesh rule to apply.
+    """
+    if trainer_config.mesh_rules:
+        mesh = match_regex_rules(
+            mesh_selector, rules=trainer_config.mesh_rules, default_value=REQUIRED
+        )
+        logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh)
+        if mesh is not REQUIRED:
+            trainer_config.mesh_shape = mesh
+
+
+def infer_mesh_shape(mesh_shape: MeshShape, *, num_devices: Optional[int] = None) -> MeshShape:
+    """Infer the value for -1 from len(jax.devices()) and other dims if there is -1 in mesh shape.
+
+    Args:
+        mesh_shape: The original MeshShape, which might have -1 in one axis.
+        num_devices: The devices that will be used to construct the mesh.
+            If None, defaults to len(jax.devices()).
+
+    Returns
+        A new MeshShape with inferred value for -1.
+    """
+    if -1 not in mesh_shape:
+        return mesh_shape
+
+    if mesh_shape.count(-1) > 1:
+        raise ValueError(f"only one axis can be -1 in mesh shape, but get {mesh_shape}")
+
+    # handle the case with one -1
+    prod = math.prod(mesh_shape, start=-1)
+    if num_devices is None:
+        num_devices = len(jax.devices())
+    if num_devices % prod != 0:
+        raise ValueError(
+            f"Unable to infer -1 in mesh shape {mesh_shape} as num_devices {num_devices}"
+            f"is not a multiple of production {prod} of other meshes."
+        )
+
+    new_mesh_shape = tuple(x if x != -1 else num_devices // prod for x in mesh_shape)
+    logging.info("Infer mesh shape from %s to %s", mesh_shape, new_mesh_shape)
+
+    return new_mesh_shape

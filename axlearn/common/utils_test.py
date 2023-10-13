@@ -24,6 +24,7 @@ from axlearn.common import learner, optimizers
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import config_class, config_for_function, similar_names
 from axlearn.common.layers import BatchNorm, LayerNorm, Linear
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
 from axlearn.common.repeat import Repeat
 from axlearn.common.test_utils import (
@@ -84,6 +85,21 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(
             Combo(head="head", tail=Combo(head="tail/head", tail="tail/tail")),
             tree_paths(Combo(head=1, tail=Combo(head=2, tail=3))),
+        )
+
+        # flax.struct.PyTreeNode.
+        self.assertEqual(
+            WeightedScalar(mean="mean", weight="weight"),
+            tree_paths(WeightedScalar(mean=2, weight=3)),
+        )
+
+        # With is_leaf set.
+        self.assertEqual(
+            ["0", {"a": "1/a", "b": "1/b"}],
+            tree_paths(
+                [Combo(head=1, tail=2), {"a": Combo(head=3, tail=4), "b": 5}],
+                is_leaf=lambda x: isinstance(x, Combo),
+            ),
         )
 
         @chex.dataclass

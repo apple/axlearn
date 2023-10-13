@@ -62,6 +62,8 @@ class ParameterSpec(TensorSpec):
     initializer: Optional[param_init.Initializer] = None
     # Factorization spec for the parameter.
     factorization: Optional[FactorizationSpec] = None
+    # Fan axes information for the parameter.
+    fan_axes: Optional[FanAxes] = None
 
     # Per-parameter weight decay / l2 regularization scale.
     #
@@ -78,9 +80,29 @@ class ParameterSpec(TensorSpec):
     # Note that ParameterSpec.weight_decay_scale takes precedence over `per_param_scale`.
     weight_decay_scale: Optional[float] = None
 
+    def fans(self) -> Dict[str, float]:
+        """Returns a dictionary with keys 'fan_in', 'fan_out', and 'fan_avg' containing
+        the fan values for this parameter.
 
-# When pytype supports recursive types, switch to:
-# Optional[Union[ParameterSpec, Dict[str, "NestedParameterSpec"]]]
+        The calculation is consistent with jax's initializers: Indices without
+        an explicit axis type specified are treated as both in and out axes.
+        Batch axes are ignored.
+        """
+        sizes = {}
+        for axis_type in self.fan_axes._fields:  # pylint: disable=protected-access
+            axes = getattr(self.fan_axes, axis_type)
+            if isinstance(axes, int):
+                axes = [axes]
+            sizes[axis_type] = math.prod(self.shape[axis] for axis in axes)
+        unbatched_size = math.prod(self.shape) / sizes["batch_axis"]
+        result = dict(
+            fan_in=unbatched_size / sizes["out_axis"], fan_out=unbatched_size / sizes["in_axis"]
+        )
+        result["fan_avg"] = (result["fan_in"] + result["fan_out"]) / 2
+        return result
+
+
+# For new code, use Nested[ParameterSpec].
 NestedParameterSpec = Optional[Union[ParameterSpec, Dict[str, Any]]]
 
 
@@ -238,7 +260,11 @@ class BaseLayer(Module):
                     f"partition_spec {partition_spec} must have the same length as "
                     f"shape {param_spec.shape})"
                 )
-            param_spec = dataclasses.replace(param_spec, mesh_axes=PartitionSpec(*partition_spec))
+            param_spec = dataclasses.replace(
+                param_spec,
+                mesh_axes=PartitionSpec(*partition_spec),
+                fan_axes=self._compute_fan_axes(name=name, parameter_spec=param_spec),
+            )
             if param_spec.dtype is None:
                 param_spec = dataclasses.replace(param_spec, dtype=self.dtype())
             specs[name] = param_spec
@@ -248,10 +274,7 @@ class BaseLayer(Module):
         return specs
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         params = {}
         param_specs = self._create_layer_parameter_specs()

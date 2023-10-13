@@ -178,6 +178,7 @@ class TPURunnerJob(TPUJob):
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg = super().from_flags(fv, **kwargs)
+        # NOTE: if running on TPU, name is required as there may not be a $USER.
         cfg.name = cfg.name or generate_job_name()
         cfg.output_dir = (
             cfg.output_dir or f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{cfg.name}"

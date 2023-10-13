@@ -3,10 +3,12 @@
 """Tests TPU runner job."""
 # pylint: disable=protected-access
 import contextlib
+import os
 import tempfile
 from typing import List
 from unittest import mock
 
+import pytest
 from absl import app, flags
 from absl.testing import parameterized
 
@@ -288,6 +290,49 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
                 mocks["_run_command"].assert_called()
         except StopIteration:
             pass  # Expected.
+
+    @parameterized.product(
+        name=[None, "test-name"],
+        output_dir=[None, "test-output"],
+    )
+    def test_from_flags(self, name, output_dir):
+        if name is None and os.getenv("USER") is None:
+            pytest.skip(reason="No USER in env.")
+
+        # Construct flags.
+        fv = flags.FlagValues()
+        tpu_runner.launch_flags(flag_values=fv)
+        argv = ["cli"]
+        if name is not None:
+            argv.append(f"--name={name}")
+        if output_dir is not None:
+            argv.append(f"--output_dir={output_dir}")
+
+        # Parse argv.
+        fv(argv)
+        assert fv.name == name
+
+        # Construct config.
+        mock_settings = {"ttl_bucket": "ttl_bucket"}
+        with mock_gcp_settings(tpu_runner.__name__, settings=mock_settings), mock_gcp_settings(
+            bundler.__name__, settings=mock_settings
+        ):
+            cfg = tpu_runner.TPURunnerJob.from_flags(fv)
+
+        # If name is not provided, there should be a default.
+        if name is None:
+            self.assertIsNotNone(cfg.name)
+        else:
+            self.assertEqual(name, cfg.name)
+
+        # If output_dir is not provided, it should use the right name.
+        if output_dir is None:
+            self.assertEqual(f"gs://ttl_bucket/axlearn/jobs/{cfg.name}", cfg.output_dir)
+        else:
+            self.assertEqual(output_dir, cfg.output_dir)
+
+        # It should be instantiable.
+        cfg.set(command="").instantiate()
 
 
 @contextlib.contextmanager

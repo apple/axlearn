@@ -52,6 +52,7 @@ from typing_extensions import Protocol
 
 from axlearn.common import traceback_util
 from axlearn.common.config import REQUIRED, Configurable, Required, RequiredFieldValue, config_class
+from axlearn.common.summary import Summary
 from axlearn.common.traceback_util import annotate_stack, no_stack_summary
 from axlearn.common.utils import NestedTensor, Tensor, partial_with_fn_metadata, prune_tree
 
@@ -228,6 +229,12 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
         name: str,
         value: Union[Summable, Tensor],
     ):
+        """Adds the named value to the `OutputCollection.summaries`.
+
+        Args:
+            name: The name of the item to add.
+            value: The value to add.
+        """
         self.output_collection.summaries[name] = value
 
     def add_state_update(self, name: str, value: Tensor):
@@ -670,11 +677,13 @@ class Module(Configurable):
     def state(self):
         return self.get_invocation_context().state
 
-    def add_summary(
-        self,
-        name: str,
-        value: Union[Summable, Tensor],
-    ):
+    def add_summary(self, name: str, value: Union[Summable, Tensor, Summary]):
+        """Adds the named value to `OutputCollection.summaries`.
+
+        Args:
+            name: The name of the item to add.
+            value: The value to add.
+        """
         return self.get_invocation_context().add_summary(name, value)
 
     def add_state_update(self, name: str, value: Tensor):

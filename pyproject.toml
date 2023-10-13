@@ -85,12 +85,15 @@ gcp = [
     "crcmod",  # for file uploads.
     "google-api-python-client==1.8.0",
     "google-auth==2.23.0",
+    "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
+    "pyOpenSSL>=22.1.0",  # compat with cryptography version.
     "google-cloud-storage==2.2.1",
     "google-cloud-core==2.3.3",
 ]
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
+    "axlearn[gcp]",
     "jax[tpu]==0.4.13",
 ]
 # Note: Currently tested on x86.

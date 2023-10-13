@@ -88,6 +88,11 @@ flags.DEFINE_integer(
     "num_processes", None, "Total number of hosts (nodes). Set this None for tpu backend."
 )
 flags.DEFINE_integer("process_id", None, "Host process id. Set this None for tpu backend.")
+flags.DEFINE_string(
+    "mesh_selector",
+    None,
+    "The mesh selector string. See `SpmdTrainer.Config.mesh_rules` for details.",
+)
 # TODO(markblee): Remove this flag.
 flags.DEFINE_boolean(
     "filter_info_logs",

@@ -49,6 +49,7 @@ import jax
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
+from axlearn.common import param_init
 from axlearn.common.base_layer import (
     BaseLayer,
     FactorizationSpec,
@@ -835,15 +836,15 @@ class FusedQKVLinear(BaseQKVLinear):
                 shape=(3, *spec.shape),
                 mesh_axes=PartitionSpec(None, *spec.mesh_axes),
                 factorization=transform_factorization_spec(spec.factorization),
+                fan_axes=param_init.maybe_prepend_axis(
+                    spec.fan_axes, axis_type=param_init.FanAxes.AxisType.BATCH_AXIS
+                ),
             ),
             specs,
         )
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
             return prebuilt
@@ -962,7 +963,12 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
 
 
 def apply_rotary_position_embeddings(
-    *, query: Tensor, key: Tensor, value: Tensor, sinusoidal_pos: Tensor
+    *,
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    sinusoidal_pos: Tensor,
+    rotary_value: bool,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """This is a jax implementation (a copy) of the RoPE apply_rotary_position_embeddings.
 
@@ -974,12 +980,14 @@ def apply_rotary_position_embeddings(
         key: Key embeddings with shape [batch_size, seq_len, num_heads, dim].
         value: Value embeddings with shape [batch_size, seq_len, num_heads, dim].
         sinusoidal_pos: Rotary position embeddings with shape [1, seq_len, 1, dim].
+        rotary_value: Whether to apply rotary position embeddings on value layer.
 
     Returns:
         A tuple of:
         Rotary position affined query embeddings with shape [batch_size, seq_len, num_heads, dim]
         Rotary position affined key embeddings with shape [batch_size, seq_len, num_heads, dim]
         Rotary position affined value embeddings with shape [batch_size, seq_len, num_heads, dim]
+            if rotary_value == True, else original value embeddings
     """
     # sin [batch_size, num_heads, sequence_length, embed_size_per_head//2]
     # cos [batch_size, num_heads, sequence_length, embed_size_per_head//2]
@@ -996,11 +1004,12 @@ def apply_rotary_position_embeddings(
     # rotate_half_key_layer [-k1,k0,-k3,k2......,-kd-1,kd-2]
     rotate_half_key = jnp.reshape(jnp.stack([-key[..., 1::2], key[..., ::2]], axis=-1), key.shape)
     key = key * cos_pos + rotate_half_key * sin_pos
-    # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
-    rotate_half_value = jnp.reshape(
-        jnp.stack([-value[..., 1::2], value[..., ::2]], axis=-1), value.shape
-    )
-    value = value * cos_pos + rotate_half_value * sin_pos
+    if rotary_value:
+        # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
+        rotate_half_value = jnp.reshape(
+            jnp.stack([-value[..., 1::2], value[..., ::2]], axis=-1), value.shape
+        )
+        value = value * cos_pos + rotate_half_value * sin_pos
     return query, key, value
 
 
@@ -1019,6 +1028,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
             RoFormerSinusoidalPositionalEmbedding.default_config()
         )
         input_linear: BaseQKVLinear.Config = QKVLinear.default_config()
+        rotary_value: Required[bool] = REQUIRED
 
     def __init__(self, cfg: QKVLinear.Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1047,8 +1057,14 @@ class RoFormerQKVLinear(BaseQKVLinear):
         positions = jnp.arange(cfg.max_seq_length)
         # sinusoidal_pos_emb shape should be [1, num_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(self.rope_pos_emb_layer.forward(positions), [0, 2])
-        kwargs = {"sinusoidal_pos": sinusoidal_pos_emb, "query": query, "key": key, "value": value}
-        query, key, value = apply_rotary_position_embeddings(**kwargs)
+        sinusoidal_pos_emb = sinusoidal_pos_emb.astype(query.dtype)
+        query, key, value = apply_rotary_position_embeddings(
+            sinusoidal_pos=sinusoidal_pos_emb,
+            query=query,
+            key=key,
+            value=value,
+            rotary_value=cfg.rotary_value,
+        )
 
         return self.Output(query, key, value)
 
@@ -2494,10 +2510,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             self._layers.append(self._add_child(f"layer{i}", layer_cfg))
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         cfg = self.config  # type: StackedTransformerLayer.Config
         prng_key = split_prng_key(prng_key, cfg.num_layers)
@@ -2803,22 +2816,23 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
     XLA compilation overhead of large models with many layers.
     """
 
-    Config = BaseStackedTransformerLayer.Config
+    @config_class
+    class Config(BaseStackedTransformerLayer.Config):
+        """Configures RepeatedTransformerLayer."""
+
+        repeat: Repeat.Config = _TransformerRepeat.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config  # type: RepeatedTransformerLayer.Config
-        repeat_cfg = _TransformerRepeat.default_config().set(
+        repeat_cfg = cfg.repeat.set(
             layer=cfg.layer.set(input_dim=cfg.input_dim),
             num_layers=cfg.num_layers,
         )
         self._add_child("repeat", repeat_cfg)
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         # We need to call self.repeat.initialize_parameters_recursively() with the same prng_key
         # to ensure initialization parity with StackedTransformerLayer.
@@ -2949,10 +2963,7 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
         self._add_child("pipeline", pipeline_cfg)
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         cfg = self.config  # type: PipelinedTransformerLayer.Config
         # We pre-split all num_layers keys to ensure initialization parity with

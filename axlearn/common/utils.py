@@ -30,6 +30,7 @@ from typing import (
     Union,
 )
 
+import flax.struct
 import jax
 import numpy as np
 from absl import logging
@@ -41,12 +42,14 @@ from jax.tree_util import register_pytree_node_class
 
 from axlearn.common.config import is_named_tuple
 
+# New code should use Nested[XX] instead of NestedXX.
+# Old definitions are provided for backwards compatibility.
+_NestedT = TypeVar("_NestedT")
+Nested = Union[_NestedT, Dict[str, "Nested[_NestedT]"]]
+
 Tensor = jax.Array
-# Recursive type annotations not supported by pytype yet.
-NestedTree = Union[Any, Dict[str, Any]]  # Union[Any, Dict[str, "NestedTree"]]
-# Union[..., Dict[str, "NestedTensor"]]
+NestedTree = Union[Any, Dict[str, Any]]
 NestedTensor = Union[Tensor, Dict[str, Any]]
-# NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, "NestedPartitionSpec"]]]
 NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, Any]]]
 
 _enable_numeric_checks = False
@@ -73,7 +76,6 @@ class TensorSpec:
         return jax.sharding.NamedSharding(mesh, self.mesh_axes)
 
 
-# NestedTensorSpec = Optional[Union[TensorSpec, Dict[str, "NestedTensorSpec"]]]
 NestedTensorSpec = Optional[Union[TensorSpec, Dict[str, Any]]]
 
 
@@ -123,7 +125,9 @@ def _concat(*, prefix: str, suffix: str, separator: str):
     return f"{prefix}{separator}{suffix}" if prefix else f"{suffix}"
 
 
-def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
+def tree_paths(
+    tree: NestedTree, separator: str = "/", is_leaf: Optional[Callable] = None
+) -> NestedTree:
     """Returns a tree of the same structure as `nested_tensor` but with corresponding paths instead
     of values.
 
@@ -133,6 +137,8 @@ def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
     Args:
         tree: A nested structure.
         separator: The separator between parts of a path.
+        is_leaf: A Callable to evaluate whether the given node should be considered a leaf when
+                 it otherwise would not, similarly to the is_leaf in jax.tree_util.tree_map.
 
     Returns:
         A nested structure with the same structure as `tree`, but each leaf will be a string path.
@@ -140,8 +146,13 @@ def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
         tree_paths.
     """
 
+    if is_leaf is None:
+        is_leaf = lambda x: False
+
     def visit(tree, prefix):
-        if tree is None:
+        if is_leaf(tree):
+            return prefix
+        elif tree is None:
             # None is considered part of the tree structure, not a tree leaf.
             return tree
         elif hasattr(tree, "items"):
@@ -149,6 +160,8 @@ def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
                 (k, visit(v, _concat(prefix=prefix, suffix=k, separator=separator)))
                 for k, v in tree.items()
             )
+        elif isinstance(tree, flax.struct.PyTreeNode):
+            return type(tree)(**visit(dataclasses.asdict(tree), prefix))
         elif is_named_tuple(tree):
             return type(tree)(**visit(tree._asdict(), prefix))
         elif isinstance(tree, (list, tuple)):
