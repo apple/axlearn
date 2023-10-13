@@ -955,12 +955,15 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
         return freqs_cis
 
-    def test_against_llama_for_precompute_freqs_cis(self):
+    @parameterized.parameters([10000.0, 1000000.0])
+    def test_against_llama_for_precompute_freqs_cis(self, theta: float):
         max_len = 100
         dim = 32
         positions = jnp.arange(max_len)
         axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
-            max_len=max_len, dim=dim
+            max_len=max_len,
+            dim=dim,
+            theta=theta,
         )
         axlearn_rope_layer = axlearn_rope_cfg.set(name="rope").instantiate(parent=None)
         axlearn_rope, _ = F(
@@ -972,7 +975,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             is_training=True,
             prng_key=jax.random.PRNGKey(0),
         )
-        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len)
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len, theta=theta)
         axlearn_imag, axlearn_real = axlearn_rope.split(2, axis=-1)
         llama_real, llama_imag = llama_rope.real, llama_rope.imag
         assert_allclose(llama_real, as_tensor(axlearn_real))
