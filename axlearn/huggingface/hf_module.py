@@ -21,9 +21,6 @@ from axlearn.common.module import Module, NestedTensor  # pylint: disable=unused
 from axlearn.common.utils import Tensor
 
 HF_MODULE_KEY = "hf_module"
-# A function that takes a single argument denoting the URI, and returns a local path
-# after the resource has been downloaded or mounted locally.
-SchemeLoadingHandler = Callable[[str], str]
 
 
 def get_hf_models_cache_dir() -> Path:
