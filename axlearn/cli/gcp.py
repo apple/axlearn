@@ -16,7 +16,7 @@ def add_cmd_group(*, parent: CommandGroup):
 
     gcp_cmd = CommandGroup("gcp", parent=parent)
 
-    _, gcp_configs = load_configs(CONFIG_NAMESPACE)
+    _, gcp_configs = load_configs(CONFIG_NAMESPACE, required=True)
     active_config = gcp_configs.get("_active", None)
 
     if active_config is None:
