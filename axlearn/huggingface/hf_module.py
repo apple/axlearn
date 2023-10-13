@@ -40,7 +40,9 @@ def get_hf_models_cache_dir() -> Path:
 
 
 def download_hf_models_from_remote(remote_path: str) -> str:
-    """Downloads HuggingFace model artifacts from remote storage like gs://.
+    """Downloads HuggingFace model artifacts from remote storage like gs:// or s3://.
+
+    If the remote_path is actually local, it will just copy it to the cache_dir.
 
     Args:
         remote_path: Model artifacts location.
@@ -65,6 +67,10 @@ def download_hf_models_from_remote(remote_path: str) -> str:
                 str(local_pretrained_model_path / filename),
             )
     return str(local_pretrained_model_path)
+
+
+# TODO(tuzhucheng): Alias download_hf_models_from_gs until we remove uses of it downstream.
+download_hf_models_from_gs = download_hf_models_from_remote
 
 
 class HfModuleWrapper(BaseModel, ABC):
@@ -121,7 +127,9 @@ class HfModuleWrapper(BaseModel, ABC):
         if cfg.pretrained_model_path is not None:
             hf_config_cls = cfg.hf_model_type.config_class
 
-            self._local_pretrained_model_path = download_hf_models_from_remote(cfg.pretrained_model_path)
+            self._local_pretrained_model_path = download_hf_models_from_remote(
+                cfg.pretrained_model_path
+            )
             logging.info("Using model path %s", self._local_pretrained_model_path)
 
             with open(
