@@ -119,7 +119,7 @@ def _callback_primitive(forward, backward):
     prim = jax.core.Primitive("passthrough_with_callback")
     prim.def_impl(forward_impl)
     prim.def_abstract_eval(forward_impl)
-    jax.ad.deflinear(prim, backward_impl)
+    jax.interpreters.ad.deflinear(prim, backward_impl)
     return prim.bind
 
 

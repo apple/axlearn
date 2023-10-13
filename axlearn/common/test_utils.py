@@ -50,17 +50,6 @@ from axlearn.common.utils import (
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-# Instead of running setup() in TestCase.setUp(), we need to run it here, because setUp() runs
-# after parameterized.parameters(), so if we have
-#     @parameterized.parameters(
-#         {
-#             "data": jnp.array([[1.0, 0.8, 0, 0]], dtype=jnp.float32),
-#         }
-#     )
-# `data` will be of type jax.DeviceArray() instead of jax.Array() because we haven't called
-# jax.config.update("jax_array", True) yet.
-utils_spmd.setup()
-
 # See utils_spmd.py for where we set "jax_default_prng_impl".
 _default_prng_impl = "rbg"
 _PYTEST_OPT_REGISTERED = {}
@@ -123,6 +112,7 @@ class TestCase(parameterized.TestCase):
         return "FAKE"
 
     def setUp(self):
+        utils_spmd.setup()
         push_data_dir(self.data_dir)
 
     def tearDown(self) -> None:
