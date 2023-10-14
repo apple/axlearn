@@ -13,19 +13,184 @@ from typing import Any, Dict, Optional, Tuple
 import jax.numpy as jnp
 import optax
 from jax.nn import one_hot
-from transformers.models.bert.modeling_flax_bert import FlaxBertForQuestionAnswering
+from transformers.modeling_flax_outputs import FlaxQuestionAnsweringModelOutput
+from transformers.models.bert.modeling_flax_bert import (
+    FlaxBertForQuestionAnsweringModule,
+    FlaxBertPreTrainedModel,
+)
 from transformers.models.roberta.modeling_flax_roberta import (
-    FlaxRobertaForQuestionAnswering,
+    FlaxRobertaForQuestionAnsweringModule,
+    FlaxRobertaPreTrainedModel,
     create_position_ids_from_input_ids,
 )
 from transformers.models.xlm_roberta.modeling_flax_xlm_roberta import (
-    FlaxXLMRobertaForQuestionAnswering,
+    FlaxXLMRobertaForQuestionAnsweringModule,
+    FlaxXLMRobertaPreTrainedModel,
 )
 
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import NestedTensor
 from axlearn.common.utils import Tensor
 from axlearn.huggingface.hf_module import HfModuleWrapper
+
+
+class _FlaxRobertaForQuestionAnsweringModule(FlaxRobertaForQuestionAnsweringModule):
+    """Overrides HF implementation to not use removed (since jaxlib-0.4.14) ArrayImpl APIs.
+
+    Reference:
+    https://github.com/huggingface/transformers/blob/fc63914399b6/src/transformers/models/roberta/modeling_flax_roberta.py#L1318-L1358
+    """
+
+    def __call__(
+        self,
+        input_ids: Tensor,
+        attention_mask: Tensor,
+        token_type_ids: Tensor,
+        position_ids: Tensor,
+        head_mask: Tensor,
+        deterministic: bool = True,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+    ) -> FlaxQuestionAnsweringModelOutput:
+        outputs = self.roberta(
+            input_ids,
+            attention_mask,
+            token_type_ids,
+            position_ids,
+            head_mask,
+            deterministic=deterministic,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        hidden_states = outputs[0]
+
+        logits = self.qa_outputs(hidden_states)
+        start_logits, end_logits = jnp.split(logits, self.config.num_labels, axis=-1)
+        start_logits = start_logits.squeeze(-1)
+        end_logits = end_logits.squeeze(-1)
+
+        if not return_dict:
+            return (start_logits, end_logits) + outputs[1:]
+
+        return FlaxQuestionAnsweringModelOutput(
+            start_logits=start_logits,
+            end_logits=end_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+
+class FlaxRobertaForQuestionAnswering(FlaxRobertaPreTrainedModel):
+    module_class = _FlaxRobertaForQuestionAnsweringModule
+
+
+class _FlaxXLMRobertaForQuestionAnsweringModule(FlaxXLMRobertaForQuestionAnsweringModule):
+    """Overrides HF implementation to not use removed (since jaxlib-0.4.14) ArrayImpl APIs.
+
+    Reference:
+    https://github.com/huggingface/transformers/blob/fc63914399b/src/transformers/models/xlm_roberta/modeling_flax_xlm_roberta.py#L1333-L1373
+    """
+
+    def __call__(
+        self,
+        input_ids: Tensor,
+        attention_mask: Tensor,
+        token_type_ids: Tensor,
+        position_ids: Tensor,
+        head_mask: Tensor,
+        deterministic: bool = True,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+    ) -> FlaxQuestionAnsweringModelOutput:
+        outputs = self.roberta(
+            input_ids,
+            attention_mask,
+            token_type_ids,
+            position_ids,
+            head_mask,
+            deterministic=deterministic,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        hidden_states = outputs[0]
+
+        logits = self.qa_outputs(hidden_states)
+        start_logits, end_logits = jnp.split(logits, self.config.num_labels, axis=-1)
+        start_logits = start_logits.squeeze(-1)
+        end_logits = end_logits.squeeze(-1)
+
+        if not return_dict:
+            return (start_logits, end_logits) + outputs[1:]
+
+        return FlaxQuestionAnsweringModelOutput(
+            start_logits=start_logits,
+            end_logits=end_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+
+class FlaxXLMRobertaForQuestionAnswering(FlaxXLMRobertaPreTrainedModel):
+    module_class = _FlaxXLMRobertaForQuestionAnsweringModule
+
+
+class _FlaxBertForQuestionAnsweringModule(FlaxBertForQuestionAnsweringModule):
+    """Overrides HF implementation to not use removed (since jaxlib-0.4.14) ArrayImpl APIs.
+
+    Reference:
+    https://github.com/huggingface/transformers/blob/fc63914399b6/src/transformers/models/bert/modeling_flax_bert.py#L1543-L1583
+    """
+
+    def __call__(
+        self,
+        input_ids: Tensor,
+        attention_mask: Tensor,
+        token_type_ids: Tensor,
+        position_ids: Tensor,
+        head_mask: Tensor,
+        deterministic: bool = True,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+    ) -> FlaxQuestionAnsweringModelOutput:
+        outputs = self.bert(
+            input_ids,
+            attention_mask,
+            token_type_ids,
+            position_ids,
+            head_mask,
+            deterministic=deterministic,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        hidden_states = outputs[0]
+
+        logits = self.qa_outputs(hidden_states)
+        start_logits, end_logits = jnp.split(logits, self.config.num_labels, axis=-1)
+        start_logits = start_logits.squeeze(-1)
+        end_logits = end_logits.squeeze(-1)
+
+        if not return_dict:
+            return (start_logits, end_logits) + outputs[1:]
+
+        return FlaxQuestionAnsweringModelOutput(
+            start_logits=start_logits,
+            end_logits=end_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+
+class FlaxBertForQuestionAnswering(FlaxBertPreTrainedModel):
+    module_class = _FlaxBertForQuestionAnsweringModule
 
 
 class _HfExtractiveQuestionAnsweringWrapper(HfModuleWrapper):

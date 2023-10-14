@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG TARGET=base
-ARG BASE_IMAGE=python:3.8-slim
+ARG BASE_IMAGE=python:3.9-slim
 
 FROM ${BASE_IMAGE} AS base
 

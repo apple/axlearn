@@ -167,8 +167,6 @@ class SpmdTrainer(Module):
             utils.validate_float_dtype(cfg.train_dtype)
 
         # Create the device mesh.
-        if not jax.config.jax_array:  # pylint: disable=no-member
-            raise NotImplementedError(f"{self.__class__.__name__} requires jax_array=True")
         self._step_log(
             "Devices: global=%s local=%s %s",
             jax.device_count(),

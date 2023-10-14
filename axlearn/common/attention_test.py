@@ -976,7 +976,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
         llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len, theta=theta)
-        axlearn_imag, axlearn_real = axlearn_rope.split(2, axis=-1)
+        axlearn_imag, axlearn_real = jnp.split(axlearn_rope, 2, axis=-1)
         llama_real, llama_imag = llama_rope.real, llama_rope.imag
         assert_allclose(llama_real, as_tensor(axlearn_real))
         assert_allclose(llama_imag, as_tensor(axlearn_imag))
