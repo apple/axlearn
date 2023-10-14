@@ -457,6 +457,11 @@ class ConfigTest(parameterized.TestCase):
         with self.assertRaisesRegex(ValueError, "already specified"):
             self.assertEqual(cfg.var_kwargs, cfg.instantiate(a=3))
 
+    def test_config_for_partial_function(self):
+        cfg = config.config_for_partial_function(lambda x, y, z: (x, y, z), "x", z="z")
+        fn = cfg.instantiate()
+        self.assertEqual(fn("y"), ("x", "y", "z"))
+
     def test_to_dict_and_debug_string(self):
         def fn_with_args(*args):
             return list(args)

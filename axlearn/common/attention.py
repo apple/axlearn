@@ -42,14 +42,15 @@ On `attention_logit_biases`:
 # pylint: disable=abstract-method,too-many-lines
 import enum
 import math
+import typing
 from enum import Enum, unique
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
-from axlearn.common import param_init
+from axlearn.common import ops, param_init
 from axlearn.common.base_layer import (
     BaseLayer,
     FactorizationSpec,
@@ -64,6 +65,7 @@ from axlearn.common.config import (
     Required,
     config_class,
     config_for_function,
+    config_for_partial_function,
 )
 from axlearn.common.layers import (
     Dropout,
@@ -1108,6 +1110,28 @@ class PerDimScale(BaseLayer):
         return (x * scale).astype(x.dtype)
 
 
+ScaleFn = Callable[[int], float]  # A function mapping per_head_dim to a scale.
+
+
+def constant_scale_config(value: float) -> InstantiableConfig[ScaleFn]:
+    """A config for a constant scale function for `MultiheadAttention`.
+
+    Args:
+        value: The value to scale by.
+
+    Example:
+        `query_scale = config_for_function(constant_scale).set(value=0.01)`
+
+    Returns:
+        A config that scales by `value`.
+    """
+
+    def constant_function(_: float, value: float) -> float:
+        return value
+
+    return config_for_partial_function(constant_function, value=value)
+
+
 class MultiheadAttention(BaseLayer):
     """A basic multi-head attention layer.
 
@@ -1134,6 +1158,12 @@ class MultiheadAttention(BaseLayer):
         output_linear: MultiheadOutputLinear.Config = MultiheadOutputLinear.default_config()
         # The dropout layer.
         dropout: Dropout.Config = Dropout.default_config()
+        # The config for a function to compute a scale factor for the query matrix.
+        # If None, then self.head_dim() ** -0.5.
+        query_scale: Optional[InstantiableConfig[ScaleFn]] = None
+        # The config for a function to compute a scale factor for the key matrix.
+        # If None, then 1.
+        key_scale: Optional[InstantiableConfig[ScaleFn]] = None
         # A vector to apply per dimension scale to the query projection.
         per_dim_scale: Optional[PerDimScale.Config] = None
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
@@ -1160,6 +1190,14 @@ class MultiheadAttention(BaseLayer):
         self._add_child("dropout", cfg.dropout)
         if cfg.per_dim_scale:
             self._add_child("per_dim_scale", cfg.per_dim_scale.set(dim=self.per_head_dim()))
+        self._query_scale = self.default_query_scale_config()
+        if cfg.query_scale is not None:
+            self._query_scale = cfg.query_scale
+        self._query_scale = self._query_scale.instantiate()
+        self._key_scale = self.default_key_scale_config()
+        if cfg.key_scale is not None:
+            self._key_scale = cfg.key_scale
+        self._key_scale = self._key_scale.instantiate()
 
     def output_dim(self):
         cfg = self.config
@@ -1325,10 +1363,22 @@ class MultiheadAttention(BaseLayer):
             # The Lingvo MultiheadAttention applies a per_dim_scale on q_proj:
             # https://github.com/tensorflow/lingvo/blob/41212226eac7a26491790c2bd476b78493f93ff6/lingvo/core/batch_major_attention.py#L790
             q_proj = self.per_dim_scale(q_proj)
+        scale = self._query_scale(self.per_head_dim())
+        q_proj = q_proj * scale
+        # Force multiplying q_proj by scale before multiplying it by k_proj.
+        # This prevents constant folding of the scale factors for q_proj
+        # and k_proj, allowing increased numerical stability if the user
+        # splits the scale factor between them.
+        return ops.forward_optimization_barrier(q_proj)
 
-        q_scale = self.per_head_dim() ** -0.5
-        q_proj = q_proj * q_scale
-        return q_proj
+    def _scale_key(self, k_proj: Tensor) -> Tensor:
+        scale = self._key_scale(self.per_head_dim())
+        k_proj = k_proj * scale
+        # Force multiplying k_proj by scale before multiplying it by q_proj.
+        # This prevents constant folding of the scale factors for q_proj
+        # and k_proj, allowing increased numerical stability if the user
+        # splits the scale factor between them.
+        return ops.forward_optimization_barrier(k_proj)
 
     def _cap_logits(self, logits: Tensor) -> Tensor:
         """Caps the logits with tanh."""
@@ -1340,6 +1390,7 @@ class MultiheadAttention(BaseLayer):
 
     def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
         q_proj = self._scale_query(q_proj)
+        k_proj = self._scale_key(k_proj)
         return jnp.einsum("btnh,bsnh->bnts", q_proj, k_proj)
 
     def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
@@ -1424,6 +1475,17 @@ class MultiheadAttention(BaseLayer):
             cached_states=cached_states,
             attention_logit_biases=attention_logit_biases,
         )
+
+    @staticmethod
+    def default_query_scale_config() -> InstantiableConfig[ScaleFn]:
+        """The config for the default function used to compute the query scale."""
+        pow_real = typing.cast(Callable[..., float], pow)
+        return config_for_partial_function(pow_real, exp=-0.5)
+
+    @staticmethod
+    def default_key_scale_config() -> InstantiableConfig[ScaleFn]:
+        """The config for the default function used to compute the key scale."""
+        return constant_scale_config(1)
 
 
 def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
