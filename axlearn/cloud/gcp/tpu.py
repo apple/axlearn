@@ -592,13 +592,9 @@ def _tpu_body(
         startup_script_contents = of.read()
     docker_repo = gcp_settings("docker_repo", required=False)
 
-    if tpu_type.startswith("v4"):
-        runtime_version = "tpu-vm-v4-base"
-    elif tpu_type.startswith("v5lite"):
-        runtime_version = "v2-alpha-tpuv5-lite"
-    else:
-        # TODO(markblee): Verify whether this is still applicable on tf>2.8.0.
-        runtime_version = "tpu-vm-tf-2.8.0"
+    runtime_version = "tpu-ubuntu2204-base"
+    if not (tpu_type.startswith("v4") or tpu_type.startswith("v5lite")):
+        raise ValueError(f"Unknown TPU-VM runtime version for {tpu_type}.")
 
     body = {
         "acceleratorType": tpu_type,

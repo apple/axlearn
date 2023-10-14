@@ -41,9 +41,6 @@ def setup(
     """
     # Use a GSPMD-friendly PRNG implementation.
     jax.config.update("jax_default_prng_impl", "rbg")
-    # Use JAX array.
-    # https://jax.readthedocs.io/en/latest/jax_array_migration.html#jax-array-migration.
-    jax.config.update("jax_array", True)
     # This allows replicated jax.Arrays to be used for computation on the host.
     jax.config.update("jax_spmd_mode", "allow_all")
 
