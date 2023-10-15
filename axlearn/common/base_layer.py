@@ -6,6 +6,7 @@ import math
 from typing import Any, Callable, Dict, Optional, Sequence, Union
 
 import jax
+import jax.ad_checkpoint
 from absl import logging
 from jax import numpy as jnp
 

@@ -26,7 +26,7 @@ import dataclasses
 import functools
 from typing import NamedTuple, Optional, Tuple, Union
 
-import jax
+import jax.ad_checkpoint
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
@@ -267,7 +267,8 @@ class Pipeline(BaseLayer):
             return jnp.reshape(keys, [m + n - 1, n] + list(keys.shape[1:]))
 
         prng_keys = jax.tree_util.tree_map(stack_and_reshape, *prng_keys)
-        with child_context("layer") as layer_context:
+        layer_output_collection = new_output_collection()
+        with child_context("layer", output_collection=layer_output_collection) as layer_context:
 
             def vmap_fn(
                 state_n: Tensor, prng_key_tn: jax.random.PRNGKey, carry_tn: Tensor, x_tn: Tensor
@@ -296,8 +297,7 @@ class Pipeline(BaseLayer):
                     output_collection=output_collection_tn,
                 ):
                     carry_tn, y_tn = fn(carry_tn, x_tn)
-                # TODO(adesai22): Find way to avoid clearing intermediate outputs.
-                output_collection_tn.module_outputs.clear()
+                self.vlog(3, "output_collection_tn=%s", shapes(output_collection_tn))
                 return dict(carry=carry_tn, y=y_tn, output_collection=output_collection_tn)
 
             @functools.partial(
@@ -356,6 +356,7 @@ class Pipeline(BaseLayer):
 
                 # Parallel processing along the N axis.
                 vmap_out = jax.vmap(vmap_fn)(layer_context.state, prng_key_t, carry_input_t, x_t)
+                self.vlog(3, "vmap_out.output_collection=%s", shapes(vmap_out["output_collection"]))
                 return vmap_out["carry"], vmap_out
 
             carry_t0 = jax.tree_util.tree_map(
@@ -393,12 +394,33 @@ class Pipeline(BaseLayer):
             ys = jax.tree_util.tree_map(
                 transpose_from_pipeline_stage_outputs, ys, ys_partition_spec
             )
-            scan_output_collection = jax.tree_util.tree_map(
-                transpose_from_pipeline_stage_outputs, scan_ys["output_collection"]
+            self.vlog(3, "scan_ys.output_collection=%s", shapes(scan_ys["output_collection"]))
+            layer_output_collection.update(
+                jax.tree_util.tree_map(
+                    transpose_from_pipeline_stage_outputs, scan_ys["output_collection"]
+                )
             )
-            output_collection = layer_context.output_collection
-            output_collection.update(scan_output_collection)
+            self.vlog(3, "layer_output_collection=%s", shapes(layer_output_collection))
 
+        this_output_collection = self.get_invocation_context().output_collection
+        layer_output = this_output_collection.add_child("layer")
+        layer_output.module_outputs.update(**layer_output_collection.module_outputs)
+        layer_output.state_updates.update(**layer_output_collection.state_updates)
+        self.vlog(3, "this_output_collection=%s", shapes(this_output_collection))
+
+        # Each summary value in `layer_output_collection` has shape (N, M, ...). For example,
+        # if a repeated layer outputs a scalar summary value, it will have shape [N, M].
+        # Below we split the stacked values and output them separately under scope
+        # "layer{i}/microbatch{j}" so that scalar summaries can be handled correctly.
+        for i in range(n):
+            layer_i_output = this_output_collection.add_child(f"layer{i}")
+            for j in range(m):
+                microbatch_j_output = layer_i_output.add_child(f"microbatch{j}")
+                microbatch_j_output.summaries.update(
+                    **jax.tree_util.tree_map(
+                        lambda x, i=i, j=j: x[i, j], layer_output_collection.summaries
+                    )
+                )
         return self.Output(carry=final_carry, ys=ys)
 
     def _to_microbatches(self, inputs):
