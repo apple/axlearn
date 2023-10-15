@@ -36,6 +36,7 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
     maybe_instantiate,
+    maybe_set_config,
 )
 from axlearn.common.module import Module
 from axlearn.common.utils import NestedTensor, Tensor, as_numpy_array, get_data_dir
@@ -53,14 +54,6 @@ class DatasetToDatasetFn(Protocol):
 
     def __call__(self, ds: Optional[tf.data.Dataset], **kwargs) -> tf.data.Dataset:
         ...
-
-
-# TODO(markblee): Deprecate in favor of maybe_set_config.
-def maybe_set_is_training(cfg: ConfigOr[Any], *, is_training: Optional[bool]) -> ConfigOr[Any]:
-    if is_training is not None and hasattr(cfg, "is_training"):
-        return cfg.set(is_training=is_training)
-    else:
-        return cfg
 
 
 def tfds_read_config(
@@ -410,7 +403,7 @@ def sample_from_datasets(
         raise ValueError(f"Length of sources {sources} is not equal to length of weights {weights}")
 
     source_fns = [
-        maybe_set_is_training(source, is_training=is_training).instantiate() for source in sources
+        maybe_set_config(source, is_training=is_training).instantiate() for source in sources
     ]
 
     def fn() -> tf.data.Dataset:
@@ -453,7 +446,7 @@ def concatenate_datasets(
         raise ValueError("Expected at least one source")
 
     source_fns = [
-        maybe_set_is_training(source, is_training=is_training).instantiate() for source in sources
+        maybe_set_config(source, is_training=is_training).instantiate() for source in sources
     ]
 
     def fn() -> tf.data.Dataset:
@@ -542,8 +535,8 @@ def with_processor(
     Returns:
         A BuildDatasetFn that applies `processor` on `source`.
     """
-    source = maybe_set_is_training(source, is_training=is_training).instantiate()
-    processor = maybe_set_is_training(processor, is_training=is_training).instantiate()
+    source = maybe_set_config(source, is_training=is_training).instantiate()
+    processor = maybe_set_config(processor, is_training=is_training).instantiate()
 
     def fn() -> tf.data.Dataset:
         ds = source()
@@ -554,7 +547,7 @@ def with_processor(
 
 def chain(*args, is_training: Optional[bool] = None) -> DatasetToDatasetFn:
     if is_training is not None:
-        args = [maybe_set_is_training(processor, is_training=is_training) for processor in args]
+        args = [maybe_set_config(processor, is_training=is_training) for processor in args]
 
     def fn(ds: tf.data.Dataset) -> tf.data.Dataset:
         for processor in args:
@@ -888,13 +881,9 @@ class Input(Module):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        self._source = maybe_set_is_training(cfg.source, is_training=cfg.is_training).instantiate()
-        self._processor = maybe_set_is_training(
-            cfg.processor, is_training=cfg.is_training
-        ).instantiate()
-        self._batcher = maybe_set_is_training(
-            cfg.batcher, is_training=cfg.is_training
-        ).instantiate()
+        self._source = maybe_set_config(cfg.source, is_training=cfg.is_training).instantiate()
+        self._processor = maybe_set_config(cfg.processor, is_training=cfg.is_training).instantiate()
+        self._batcher = maybe_set_config(cfg.batcher, is_training=cfg.is_training).instantiate()
 
     @property
     def source(self) -> BuildDatasetFn:

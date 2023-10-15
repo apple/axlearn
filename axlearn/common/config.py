@@ -274,6 +274,9 @@ def _validate_and_transform_field(instance, attribute, value):
     return copy.deepcopy(value)
 
 
+_ConfigBase = TypeVar("_ConfigBase", bound="ConfigBase")
+
+
 class ConfigBase:
     """The base class of config classes."""
 
@@ -570,7 +573,7 @@ class InstantiableConfig(Generic[T], ConfigBase):
         raise NotImplementedError(type(self))
 
 
-ConfigOr = Union[T, InstantiableConfig]
+ConfigOr = Union[T, InstantiableConfig[T]]
 
 
 def maybe_instantiate(x: ConfigOr[T]) -> T:
@@ -770,8 +773,9 @@ def config_for_class(cls: Type[T]) -> Union[Any, ClassConfigBase[T]]:
     return config_cls(klass=cls)
 
 
-def maybe_set_config(cfg: Configurable.Config, key: str, value: Any):
-    """Sets `key` in the given `cfg` to `value` if the key exists."""
-    if hasattr(cfg, key):
-        setattr(cfg, key, value)
+def maybe_set_config(cfg: _ConfigBase, **kwargs) -> _ConfigBase:
+    """Applies **kwargs to the given `cfg` if the keys exist."""
+    for key, value in kwargs.items():
+        if hasattr(cfg, key):
+            setattr(cfg, key, value)
     return cfg
