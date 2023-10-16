@@ -2475,7 +2475,10 @@ class StackedTransformerTest(TestCase):
                 logging.info(
                     "%s.params=%s",
                     cls,
-                    jax.tree_util.tree_map(lambda x: f"{x.dtype}({x.shape})", layer_params),
+                    [
+                        f"{path}={value.dtype}({value.shape})"
+                        for path, value in flatten_items(layer_params)
+                    ],
                 )
 
                 def _loss(layer_params, data, mask, layer=layer):
