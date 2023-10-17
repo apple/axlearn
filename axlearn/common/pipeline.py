@@ -236,16 +236,19 @@ class Pipeline(BaseLayer):
                 xs,
             )
 
-        def pad_carry(v_carry: Tensor):
+        def pad_carry(v_carry: Tensor, partition_spec: PartitionSpec):
             """Pads input [M, microbatch_size, ...] to [M + N - 1, 1, microbatch_size, ...]."""
             # Pad to shape [M + N - 1, ...].
             v_carry = jnp.pad(v_carry, [(0, n - 1)] + [(0, 0)] * (v_carry.ndim - 1))
+            v_carry = with_sharding_constraint(v_carry, PartitionSpec(
+                PartitionSpec.UNCONSTRAINED, *partition_spec[1:]
+            ))
             # Expand to shape [M + N - 1, 1, ...].
             v_carry = jnp.expand_dims(v_carry, 1)
             return v_carry
 
         # [M + N - 1, 1, microbatch_size, ...].
-        padded_carry = jax.tree_util.tree_map(pad_carry, carry)
+        padded_carry = jax.tree_util.tree_map(pad_carry, carry, carry_partition_spec)
 
         # Transpose from "layer-major" [N, M, ...] to "pipeline-major" [N + M - 1, N, ...].
         #
@@ -339,6 +342,9 @@ class Pipeline(BaseLayer):
                             timestep {t-1}.
                         partition_spec: PartitionSpec for carry values.
                     """
+                    # Layer 0 input will be v_input_t, that is, microbatch[t] if t < M.
+                    # Layer 1..N-1 inputs will be v_carry_output_t_1[0..N-2], that is, the outputs
+                    # of layer 0..N-2 from iteration t - 1.
                     v_carry_input_t = jnp.concatenate([v_input_t, v_carry_output_t_1[:-1]], axis=0)
                     return with_sharding_constraint(
                         v_carry_input_t, PartitionSpec(*(["pipeline"] + list(partition_spec[1:])))
