@@ -240,9 +240,9 @@ class Pipeline(BaseLayer):
             """Pads input [M, microbatch_size, ...] to [M + N - 1, 1, microbatch_size, ...]."""
             # Pad to shape [M + N - 1, ...].
             v_carry = jnp.pad(v_carry, [(0, n - 1)] + [(0, 0)] * (v_carry.ndim - 1))
-            v_carry = with_sharding_constraint(v_carry, PartitionSpec(
-                PartitionSpec.UNCONSTRAINED, *partition_spec[1:]
-            ))
+            v_carry = with_sharding_constraint(
+                v_carry, PartitionSpec(PartitionSpec.UNCONSTRAINED, *partition_spec[1:])
+            )
             # Expand to shape [M + N - 1, 1, ...].
             v_carry = jnp.expand_dims(v_carry, 1)
             return v_carry
