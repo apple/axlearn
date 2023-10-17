@@ -91,7 +91,7 @@ def text_to_lm_training_input(
         logging.warning("is_training was %s, did you mean to use this processor?", is_training)
     vocab = vocab_cfg.instantiate()
     if token_adjuster_cfg is not None:
-        token_adjuster = maybe_set_config(token_adjuster_cfg, "vocab_cfg", vocab_cfg).instantiate()
+        token_adjuster = maybe_set_config(token_adjuster_cfg, vocab_cfg=vocab_cfg).instantiate()
     else:
         token_adjuster = None
 
@@ -761,9 +761,12 @@ def text2text_lm_input(
 
     # Instantiate main processor.
     processor_cfg = processor_cfg or config_for_function(make_autoregressive_inputs)
-    processor_cfg = maybe_set_config(processor_cfg, "model_type", model_type)
-    processor_cfg = maybe_set_config(processor_cfg, "max_source_length", max_source_length)
-    processor_cfg = maybe_set_config(processor_cfg, "max_target_length", max_target_length)
+    processor_cfg = maybe_set_config(
+        processor_cfg,
+        model_type=model_type,
+        max_source_length=max_source_length,
+        max_target_length=max_target_length,
+    )
     process_inputs_fn = processor_cfg.instantiate()
 
     # Instantiate post-processor. Padding can be used e.g. for eval.

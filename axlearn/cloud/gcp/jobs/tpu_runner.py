@@ -147,8 +147,7 @@ def with_tpu_extras(bundler: Bundler.Config):
     # For docker bundlers, point to the TPU build target.
     maybe_set_config(
         bundler,
-        "find_links",
-        ["https://storage.googleapis.com/jax-releases/libtpu_releases.html"],
+        find_links=["https://storage.googleapis.com/jax-releases/libtpu_releases.html"],
     )
     extras = canonicalize_to_list(bundler.extras)
     extras.append("tpu")
