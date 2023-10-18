@@ -123,11 +123,7 @@ class MethodRunner:
             else:
                 global_input_batch = input_batch
 
-            (
-                self._prng_key,
-                global_output_batch,
-                summaries,
-            ) = self._jit_run_on_batch(
+            (self._prng_key, global_output_batch, summaries,) = self._jit_run_on_batch(
                 self._prng_key,
                 global_input_batch,
             )
