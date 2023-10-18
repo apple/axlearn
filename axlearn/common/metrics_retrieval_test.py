@@ -1,6 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests retrieval metrics."""
+from typing import List
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -155,19 +157,44 @@ def test_average_precision_at_k():
         average_precision_at_k(sim, relevance_labels, top_ks_for_map)
 
 
-def test_ndcg_at_k():
-    sim = jnp.asarray([[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6], [1, 1, 1, 1, 1, 1, 1]])
-    relevance_labels = jnp.asarray(
-        [[2, 0, 1, 5, 0, 7, 8], [0, 4, 2, 0, 5, 3, 0], [0, 0, 0, 0, 0, 0, 0]]
+class NDCGTest(TestCase):
+    @parameterized.parameters(
+        {
+            "scores": [1, 5, 6, 7, 2, 4, 3],
+            "relevance_labels": [2, 0, 1, 5, 0, 7, 8],
+        },
+        {
+            "scores": [4, 3, 2, 5, 1, 7, 6],
+            "relevance_labels": [0, 4, 2, 0, 5, 3, 0],
+        },
+        {
+            "scores": [1, 1, 1, 1, 1, 1, 1],
+            "relevance_labels": [0, 0, 0, 0, 0, 0, 0],
+        },
+        {
+            "scores": [1, 1, 1, 1, 1, 1, 1],
+            "relevance_labels": [0, 0, 0, 0, 2, 2, 3],
+        },
     )
-    top_ks_for_ndcg = [1, 2, 3, -1]
-    ndcgs = ndcg_at_k(sim, relevance_labels, top_ks_for_ndcg)
+    def test_ndcg_at_k(self, scores: List[float], relevance_labels: List[float]):
+        scores = jnp.array([scores])
+        relevance_labels = jnp.array([relevance_labels])
+        top_ks_for_ndcg = [1, 2, 3, -1]
+        ndcgs = ndcg_at_k(scores=scores, relevance_labels=relevance_labels, top_ks=top_ks_for_ndcg)
 
-    for k in top_ks_for_ndcg:
-        if k == -1:
-            assert jnp.allclose(ndcg_score(relevance_labels, sim, k=7), jnp.mean(ndcgs[k]))
-        else:
-            assert jnp.allclose(ndcg_score(relevance_labels, sim, k=k), jnp.mean(ndcgs[k]))
+        for k in top_ks_for_ndcg:
+            if k == -1:
+                self.assertAlmostEqual(
+                    ndcg_score(y_true=relevance_labels, y_score=scores, k=7),
+                    ndcgs[k].item(),
+                    places=6,
+                )
+            else:
+                self.assertAlmostEqual(
+                    ndcg_score(y_true=relevance_labels, y_score=scores, k=k),
+                    ndcgs[k].item(),
+                    places=6,
+                )
 
 
 def test_average_rank():
