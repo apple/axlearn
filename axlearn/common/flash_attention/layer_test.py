@@ -10,20 +10,6 @@ from absl.testing import parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
-try:
-    import jax_triton as jt  # pytype: disable=import-error  # pylint: disable=import-error
-
-    from axlearn.common.flash_attention.layer import FlashAttention
-
-    if jt.get_compute_capability(0) < 80:
-        pytest.skip(reason="Incompatible hardware.", allow_module_level=True)
-except ModuleNotFoundError as e:
-    # Some libraries can only be installed on GPU, so we'll skip on CI.
-    pytest.skip(
-        reason=f"Skipping flash_attention tests due to missing deps: {e}",
-        allow_module_level=True,
-    )
-
 from axlearn.common.attention import (
     MultiheadAttention,
     apply_attention_logit_biases,
@@ -31,6 +17,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
+from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
@@ -102,7 +89,23 @@ class TestFlashAttention(TestCase):
             seq_len=2048,
             num_heads=4,
             per_head_dim=64,
+            mesh=(4, 1),
+            mesh_axis_names=("data", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
             mesh=(1, 1, 8, 1),
+            mesh_axis_names=("replica", "data", "fsdp", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(1, 1, 4, 1),
             mesh_axis_names=("replica", "data", "fsdp", "model"),
         ),
         dict(
@@ -118,7 +121,23 @@ class TestFlashAttention(TestCase):
             seq_len=2048,
             num_heads=4,
             per_head_dim=64,
+            mesh=(1, 1, 4),
+            mesh_axis_names=("replica", "data", "fsdp"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
             mesh=(1, 2, 4, 1),
+            mesh_axis_names=("replica", "data", "fsdp", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(1, 2, 2, 1),
             mesh_axis_names=("replica", "data", "fsdp", "model"),
         ),
         dict(
@@ -190,7 +209,10 @@ class TestFlashAttention(TestCase):
                 # TODO(markblee): Test probs.
                 self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
 
-    @parameterized.product(_TEST_CONFIGS, causal=[False, True])
+    @parameterized.product(
+        _TEST_CONFIGS,
+        causal=[False, True],
+    )
     def test_backward(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names, causal):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
@@ -233,7 +255,9 @@ class TestFlashAttention(TestCase):
                 layer=MultiheadAttention.default_config().set(**kwargs),
             )
             test_cfg = DummyModel.default_config().set(
-                layer=FlashAttention.default_config().set(**kwargs).set(causal=causal),
+                layer=FlashAttention.default_config()
+                .set(**kwargs, tpu_block_size=128)
+                .set(causal=causal),
             )
             set_bias_recursively(ref_cfg, False)
             set_bias_recursively(test_cfg, False)
@@ -271,5 +295,7 @@ class TestFlashAttention(TestCase):
                 NotImplementedError
             ) if tensor_parallel_axis_name == "fsdp" else nullcontext():
                 test_value, test_grads = jax.value_and_grad(loss)(params, inputs, test_layer)
-                self.assertNestedAllClose(ref_value, test_value, atol=1e-5)
-                self.assertNestedAllClose(ref_grads, test_grads, atol=1e-5)
+                # Can be 1e-5 on x86_64/GPU/TPU, needed to be slightly higher on ARM.
+                atol = 2e-5
+                self.assertNestedAllClose(ref_value, test_value, atol=atol)
+                self.assertNestedAllClose(ref_grads, test_grads, atol=atol)
