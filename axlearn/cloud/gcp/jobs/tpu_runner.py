@@ -145,9 +145,11 @@ def with_tpu_extras(bundler: Bundler.Config):
     """Configures bundler to install 'tpu' extras."""
     # Note: find_links is only applicable for tar bundlers.
     # For docker bundlers, point to the TPU build target.
+    find_links = canonicalize_to_list(getattr(bundler, "find_links", []))
+    find_links.append("https://storage.googleapis.com/jax-releases/libtpu_releases.html")
     maybe_set_config(
         bundler,
-        find_links=["https://storage.googleapis.com/jax-releases/libtpu_releases.html"],
+        find_links=find_links,
     )
     extras = canonicalize_to_list(bundler.extras)
     extras.append("tpu")
