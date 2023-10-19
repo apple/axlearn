@@ -8,7 +8,8 @@ import jax
 import tensorflow as tf
 from absl import flags, logging
 
-from axlearn.common.trainer import SpmdTrainer, infer_mesh_shape, select_mesh_config
+from axlearn.common.trainer import SpmdTrainer, select_mesh_config
+from axlearn.common.utils import infer_mesh_shape
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
 
 # Trainer-specific flags.

@@ -45,6 +45,7 @@ from axlearn.common.utils import (
     check_param_shape_alignment,
     flatten_items,
     get_data_dir,
+    infer_mesh_shape,
     set_data_dir,
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
@@ -417,7 +418,7 @@ class BaseConverterFromPretrainedModel(Converter):
     @config_class
     class Config(Converter.Config):
         # A config that instantiates to a TrainerConfigFn that defines the source pretrained model.
-        source_trainer_config: Required[InstantiableConfig] = REQUIRED
+        source_trainer_config: Required[InstantiableConfig[TrainerConfigFn]] = REQUIRED
         source_data_dir: Optional[str] = None
         mesh_axis_names: Optional[Sequence[str]] = None
         mesh_shape: Optional[Sequence[int]] = None
@@ -434,7 +435,7 @@ class BaseConverterFromPretrainedModel(Converter):
             trainer_cfg.mesh_axis_names = (
                 cfg.mesh_axis_names or trainer_cfg.mesh_axis_names or ("data", "model")
             )
-            trainer_cfg.mesh_shape = (
+            trainer_cfg.mesh_shape = infer_mesh_shape(
                 cfg.mesh_shape or trainer_cfg.mesh_shape or (len(jax.devices()), 1)
             )
             trainer = trainer_cfg.instantiate(parent=None)
