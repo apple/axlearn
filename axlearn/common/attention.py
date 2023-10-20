@@ -44,7 +44,7 @@ import enum
 import math
 import typing
 from enum import Enum, unique
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
 
 import jax
 from jax import numpy as jnp
@@ -1357,7 +1357,9 @@ class MultiheadAttention(BaseLayer):
         )
         return output
 
-    def _scale_query(self, q_proj: Tensor) -> Tensor:
+    T = TypeVar("T", bound=Union[float, Tensor])
+
+    def _scale_query(self, q_proj: T) -> T:
         cfg = self.config
         if cfg.per_dim_scale is not None:
             # The Lingvo MultiheadAttention applies a per_dim_scale on q_proj:
@@ -1365,15 +1367,19 @@ class MultiheadAttention(BaseLayer):
             q_proj = self.per_dim_scale(q_proj)
         scale = self._query_scale(self.per_head_dim())
         q_proj = q_proj * scale
+        if isinstance(q_proj, float):
+            return q_proj
         # Force multiplying q_proj by scale before multiplying it by k_proj.
         # This prevents constant folding of the scale factors for q_proj
         # and k_proj, allowing increased numerical stability if the user
         # splits the scale factor between them.
         return ops.forward_optimization_barrier(q_proj)
 
-    def _scale_key(self, k_proj: Tensor) -> Tensor:
+    def _scale_key(self, k_proj: T) -> T:
         scale = self._key_scale(self.per_head_dim())
         k_proj = k_proj * scale
+        if isinstance(k_proj, float):
+            return k_proj
         # Force multiplying k_proj by scale before multiplying it by q_proj.
         # This prevents constant folding of the scale factors for q_proj
         # and k_proj, allowing increased numerical stability if the user
