@@ -2554,7 +2554,6 @@ class StackedTransformerTest(TestCase):
 
             all_params = []
             all_outputs = []
-            all_summaries = []
             all_gradients = []
             all_updates = []
             for stack_cfg in stack_configs:
@@ -2584,7 +2583,10 @@ class StackedTransformerTest(TestCase):
                 logging.info(
                     "%s.params=%s",
                     cls,
-                    jax.tree_util.tree_map(lambda x: f"{x.dtype}({x.shape})", layer_params),
+                    [
+                        f"{path}={value.dtype}({value.shape})"
+                        for path, value in flatten_items(layer_params)
+                    ],
                 )
 
                 def _loss(layer_params, data, mask, layer=layer):
@@ -2604,6 +2606,10 @@ class StackedTransformerTest(TestCase):
                 loss, (aux, layer_output_collection) = value
                 layer_outputs = (loss, aux)
 
+                # Note that we do not compare summaries across stack layer types because:
+                # (1) attention layers do not emit summaries yet;
+                # (2) pipelines emit per-microbatch summaries which have a different structure
+                #     than summaries from other stack layers.
                 summaries = layer_output_collection.summaries
                 logging.info(
                     "layer_outputs=%s summaries=%s",
@@ -2661,15 +2667,16 @@ class StackedTransformerTest(TestCase):
                     }
 
                 if cls == StackedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
                         x["stack"] = recursive_stack(x["stack"])
 
                 if cls == RepeatedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
                         x["stack"] = x["stack"]["repeat"]
 
                 if cls == PipelinedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
+                        logging.info("x=%s", shapes(x))
                         if cfg.stack.stage.klass == StackedTransformerLayer:
                             # First stack within each stage.
                             x["stack"]["pipeline"]["layer"] = recursive_stack(
@@ -2691,7 +2698,6 @@ class StackedTransformerTest(TestCase):
 
                 all_params.append(layer_params)
                 all_outputs.append(layer_outputs)
-                all_summaries.append(summaries)
                 all_gradients.append(grads)
                 all_updates.append(updates)
 
@@ -2716,7 +2722,6 @@ class StackedTransformerTest(TestCase):
                 # pylint: enable=protected-access
 
             self.assertNestedAllClose(all_params[0], all_params[1])
-            self.assertNestedAllClose(all_summaries[0], all_summaries[1])
             self.assertNestedAllClose(all_outputs[0], all_outputs[1])
             self.assertNestedAllClose(all_gradients[0], all_gradients[1])
             self.assertNestedAllClose(all_updates[0], all_updates[1])

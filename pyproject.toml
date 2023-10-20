@@ -41,7 +41,7 @@ dependencies = [
 apple-silicon = [
     "attrs>=21.3.0",
     "absl-py",
-    "chex>=0.1.6",
+    "chex>=0.1.7",
     "flax==0.7.4",  # only for checkpoints.
     "jax==0.4.18",
     "jaxlib==0.4.18",

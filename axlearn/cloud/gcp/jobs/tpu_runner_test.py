@@ -294,8 +294,9 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
     @parameterized.product(
         name=[None, "test-name"],
         output_dir=[None, "test-output"],
+        bundler_spec=[None, "find_links=/custom/python/archives"],
     )
-    def test_from_flags(self, name, output_dir):
+    def test_from_flags(self, name, output_dir, bundler_spec):
         if name is None and os.getenv("USER") is None:
             pytest.skip(reason="No USER in env.")
 
@@ -307,6 +308,8 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
             argv.append(f"--name={name}")
         if output_dir is not None:
             argv.append(f"--output_dir={output_dir}")
+        if bundler_spec is not None:
+            argv.append(f"--bundler_spec={bundler_spec}")
 
         # Parse argv.
         fv(argv)
@@ -330,6 +333,21 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
             self.assertEqual(f"gs://ttl_bucket/axlearn/jobs/{cfg.name}", cfg.output_dir)
         else:
             self.assertEqual(output_dir, cfg.output_dir)
+
+        # If find_links is not provided, it should be a default.
+        if bundler_spec is None:
+            self.assertEqual(
+                ["https://storage.googleapis.com/jax-releases/libtpu_releases.html"],
+                cfg.bundler.find_links,
+            )
+        else:
+            self.assertEqual(
+                [
+                    "/custom/python/archives",
+                    "https://storage.googleapis.com/jax-releases/libtpu_releases.html",
+                ],
+                cfg.bundler.find_links,
+            )
 
         # It should be instantiable.
         cfg.set(command="").instantiate()

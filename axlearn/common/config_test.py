@@ -656,13 +656,19 @@ class ConfigTest(parameterized.TestCase):
 
         # Set the value if the key exists.
         self.assertIsNone(cfg.vlog)
-        maybe_set_config(cfg, "vlog", 1)
+        maybe_set_config(cfg, vlog=1)
         self.assertEqual(cfg.vlog, 1)
 
         # Do nothing if the key does not exist.
         not_exist_key = "not_exist_field"
         self.assertFalse(hasattr(cfg, not_exist_key))
-        maybe_set_config(cfg, not_exist_key, 3)
+        maybe_set_config(cfg, **{not_exist_key: 3})
+        self.assertFalse(hasattr(cfg, not_exist_key))
+
+        # Set multiple keys.
+        maybe_set_config(cfg, vlog=2, dtype=jnp.float32, not_exist_field=4)
+        self.assertEqual(cfg.vlog, 2)
+        self.assertEqual(cfg.dtype, jnp.float32)
         self.assertFalse(hasattr(cfg, not_exist_key))
 
 
