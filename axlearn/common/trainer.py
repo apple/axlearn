@@ -26,6 +26,7 @@ from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.utils import (
+    MeshShape,
     NestedPartitionSpec,
     NestedTensor,
     PartitionSpec,
@@ -57,10 +58,6 @@ class _TrainerState(NamedTuple):
     prng_key: Union[jax.random.KeyArray, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
     learner: Union[NestedTensor, NestedPartitionSpec]
-
-
-# The device mesh shape in the form of a tuple of ints.
-MeshShape = Sequence[int]
 
 
 # pylint: disable-next=too-many-instance-attributes
@@ -776,36 +773,3 @@ def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str
         logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh)
         if mesh is not REQUIRED:
             trainer_config.mesh_shape = mesh
-
-
-def infer_mesh_shape(mesh_shape: MeshShape, *, num_devices: Optional[int] = None) -> MeshShape:
-    """Infer the value for -1 from len(jax.devices()) and other dims if there is -1 in mesh shape.
-
-    Args:
-        mesh_shape: The original MeshShape, which might have -1 in one axis.
-        num_devices: The devices that will be used to construct the mesh.
-            If None, defaults to len(jax.devices()).
-
-    Returns
-        A new MeshShape with inferred value for -1.
-    """
-    if -1 not in mesh_shape:
-        return mesh_shape
-
-    if mesh_shape.count(-1) > 1:
-        raise ValueError(f"only one axis can be -1 in mesh shape, but get {mesh_shape}")
-
-    # handle the case with one -1
-    prod = math.prod(mesh_shape, start=-1)
-    if num_devices is None:
-        num_devices = len(jax.devices())
-    if num_devices % prod != 0:
-        raise ValueError(
-            f"Unable to infer -1 in mesh shape {mesh_shape} as num_devices {num_devices}"
-            f"is not a multiple of production {prod} of other meshes."
-        )
-
-    new_mesh_shape = tuple(x if x != -1 else num_devices // prod for x in mesh_shape)
-    logging.info("Infer mesh shape from %s to %s", mesh_shape, new_mesh_shape)
-
-    return new_mesh_shape

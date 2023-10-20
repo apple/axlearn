@@ -11,6 +11,7 @@ import contextlib
 import copy
 import dataclasses
 import functools
+import math
 import numbers
 import os
 import re
@@ -51,6 +52,9 @@ Tensor = jax.Array
 NestedTree = Union[Any, Dict[str, Any]]
 NestedTensor = Union[Tensor, Dict[str, Any]]
 NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, Any]]]
+
+# The device mesh shape in the form of a tuple of ints.
+MeshShape = Sequence[int]
 
 _enable_numeric_checks = False
 _enable_xla_runtime_errors = False
@@ -1062,3 +1066,36 @@ def create_device_mesh(
         devices=devices,
         process_is_granule=attr == "process_index",
     )
+
+
+def infer_mesh_shape(mesh_shape: MeshShape, *, num_devices: Optional[int] = None) -> MeshShape:
+    """Infer the value for -1 from len(jax.devices()) and other dims if there is -1 in mesh shape.
+
+    Args:
+        mesh_shape: The original MeshShape, which might have -1 in one axis.
+        num_devices: The devices that will be used to construct the mesh.
+            If None, defaults to len(jax.devices()).
+
+    Returns
+        A new MeshShape with inferred value for -1.
+    """
+    if -1 not in mesh_shape:
+        return mesh_shape
+
+    if mesh_shape.count(-1) > 1:
+        raise ValueError(f"only one axis can be -1 in mesh shape, but get {mesh_shape}")
+
+    # Handle the case with one -1.
+    prod = math.prod(mesh_shape, start=-1)
+    if num_devices is None:
+        num_devices = len(jax.devices())
+    if num_devices % prod != 0:
+        raise ValueError(
+            f"Unable to infer -1 in mesh shape {mesh_shape} as num_devices {num_devices} "
+            f"is not a multiple of the product {prod} of mesh axes."
+        )
+
+    new_mesh_shape = tuple(x if x != -1 else num_devices // prod for x in mesh_shape)
+    logging.info("Infer mesh shape from %s to %s", mesh_shape, new_mesh_shape)
+
+    return new_mesh_shape
