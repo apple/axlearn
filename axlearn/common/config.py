@@ -63,6 +63,7 @@ config fields with mutable values, including config values.
 import copy
 import dataclasses
 import enum
+import functools
 import inspect
 import re
 import types
@@ -216,7 +217,9 @@ def validate_config_field_value(value: Any) -> None:
             RequiredFieldValue,
             type,
             types.FunctionType,
+            types.BuiltinFunctionType,
             types.MethodType,
+            types.BuiltinMethodType,
             int,
             float,
             str,
@@ -272,6 +275,9 @@ def _validate_and_transform_field(instance, attribute, value):
     # If we do not copy here, all Config instances will share the same mutable Linear.Config
     # instance.
     return copy.deepcopy(value)
+
+
+_ConfigBase = TypeVar("_ConfigBase", bound="ConfigBase")
 
 
 class ConfigBase:
@@ -570,7 +576,7 @@ class InstantiableConfig(Generic[T], ConfigBase):
         raise NotImplementedError(type(self))
 
 
-ConfigOr = Union[T, InstantiableConfig]
+ConfigOr = Union[T, InstantiableConfig[T]]
 
 
 def maybe_instantiate(x: ConfigOr[T]) -> T:
@@ -730,6 +736,33 @@ def config_for_function(fn: Callable[..., T]) -> Union[Any, FunctionConfigBase[T
     return config_cls(fn=fn)
 
 
+# Making fn positional only allows there to be an `fn` kwarg.
+def config_for_partial_function(
+    fn: Callable[..., T], /, *args, **kwargs
+) -> InstantiableConfig[Callable[..., T]]:
+    """Similar to `config_for_function` but returns a partial function when instantiated.
+
+    Example:
+        ```
+        cfg = config_for_partial_function(pow, exp=2)
+        fn = cfg.instantiate()
+        assert fn(3) == 9
+        ```
+
+    Args:
+        fn: The function to wrap.
+        args: Positional arguments to pass to fn.
+        kwargs: Keyword arguments to pass to fn.
+
+    Returns:
+        A Config that when instantiated, returns a partial version of `fn` based on any
+        config fields that have been set.
+    """
+    cfg = config_for_class(functools.partial)
+    cfg.set(args=(fn, *args), kwargs=kwargs)
+    return cfg
+
+
 @config_class
 class ClassConfigBase(InstantiableConfig[T]):
     """The base class of configs constructed by `config_for_class`, which constructs instances of
@@ -770,8 +803,9 @@ def config_for_class(cls: Type[T]) -> Union[Any, ClassConfigBase[T]]:
     return config_cls(klass=cls)
 
 
-def maybe_set_config(cfg: Configurable.Config, key: str, value: Any):
-    """Sets `key` in the given `cfg` to `value` if the key exists."""
-    if hasattr(cfg, key):
-        setattr(cfg, key, value)
+def maybe_set_config(cfg: _ConfigBase, **kwargs) -> _ConfigBase:
+    """Applies **kwargs to the given `cfg` if the keys exist."""
+    for key, value in kwargs.items():
+        if hasattr(cfg, key):
+            setattr(cfg, key, value)
     return cfg

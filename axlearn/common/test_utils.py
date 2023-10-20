@@ -5,6 +5,7 @@ import contextlib
 import copy
 import dataclasses
 import os
+import re
 import tempfile
 from collections import OrderedDict
 from functools import partial
@@ -97,6 +98,23 @@ def as_local_tensor(x: Tensor) -> NestedTensor:
     if isinstance(x, Tensor):
         return x
     raise NotImplementedError(f"{type(x)}: {x}")
+
+
+def clean_hlo(hlo: str) -> str:
+    """Returns a cleaned version of `hlo` with non-functional parts that may impact test reliability
+    removed.
+
+    Args:
+        hlo: The hlo to clean.
+
+    Returns:
+        A cleaned version of `hlo`.
+    """
+    # Matches an escaped string literal. E.g., "hello, world\"\\"
+    escaped_str = '"' + r"""([^"\\]|\\\\|\\")*""" + '"'
+    metadata_value = "(" + escaped_str + "|" + r"\d+" + ")"
+    pattern = r"metadata=\{(\w+=" + metadata_value + r"\s*)*\}"
+    return re.sub(pattern=pattern, repl="", string=hlo)
 
 
 class ParameterConversionFn(Protocol):

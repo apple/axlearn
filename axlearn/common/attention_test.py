@@ -16,7 +16,7 @@
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
 from itertools import combinations
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import jax
 import numpy as np
@@ -32,7 +32,7 @@ from transformers.models.roberta import modeling_roberta as hf_roberta
 from transformers.models.roformer import modeling_roformer as hf_roformer
 from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
-from axlearn.common import attention, utils
+from axlearn.common import attention, test_utils, utils
 from axlearn.common.attention import (
     NEG_INF,
     BaseStackedTransformerLayer,
@@ -64,7 +64,7 @@ from axlearn.common.attention import (
     xl_attention_logits,
 )
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec, RematSpec
-from axlearn.common.config import config_class
+from axlearn.common.config import InstantiableConfig, config_class, config_for_partial_function
 from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
@@ -784,7 +784,6 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             )
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
 
-    #: TODO: (Chen Chen) Add a test to reproduce LLaMA1 attention with rotary_value=False.
     @parameterized.parameters([True, False])
     def test_rope_self_attention(self, rotary_value: bool):
         model_dim = 32
@@ -981,8 +980,11 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         assert_allclose(llama_real, as_tensor(axlearn_real))
         assert_allclose(llama_imag, as_tensor(axlearn_imag))
 
-    @parameterized.parameters([jnp.float32, jnp.bfloat16])
-    def test_roformer_qkv_linear(self, dtype: jnp.dtype):
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.bfloat16),
+        max_seq_len=(100, 6),
+    )
+    def test_roformer_qkv_linear(self, dtype: jnp.dtype, max_seq_len: int):
         seq_len = 6
         batch_size = 2
         model_dim = 16
@@ -992,7 +994,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             RoFormerQKVLinear.default_config()
             .set(
                 name="roformer_qkv_linear",
-                max_seq_length=seq_len,
+                max_seq_length=max_seq_len,
                 query_dim=model_dim,
                 key_dim=model_dim,
                 value_dim=model_dim,
@@ -1723,6 +1725,114 @@ class MultiheadAttentionTest(TestCase):
         assert_allclose(decoder_output, forward_outputs.data)
         assert_allclose(decoder_probs, forward_outputs.probs)
 
+    def _scale_query_kwargs(
+        self,
+        *,
+        query_scale: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+        key_scale: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+    ):
+        model_dim = 16
+        if isinstance(query_scale, (int, float)):
+            query_scale = attention.constant_scale_config(query_scale)
+        if isinstance(key_scale, (int, float)):
+            key_scale = attention.constant_scale_config(key_scale)
+
+        cfg = attention.MultiheadAttention.default_config().set(
+            name="test",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=2,
+            query_scale=query_scale,
+            key_scale=key_scale,
+        )
+        cfg.input_linear.layer.bias = False
+        cfg.output_linear.bias = False
+        layer = cfg.instantiate(parent=None)
+
+        param_specs = layer.create_parameter_specs_recursively()
+        layer_params = jax.tree_util.tree_map(
+            lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
+        )
+
+        batch_size = 3
+        tgt_len = 10  # Must be even.
+        query = jnp.concatenate(
+            (
+                jnp.ones([batch_size, tgt_len // 2, model_dim]),
+                jnp.zeros([batch_size, tgt_len // 2, model_dim]),
+            ),
+            axis=1,
+        )
+        kwargs = dict(
+            module=layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=dict(query=query),
+        )
+        return kwargs
+
+    @parameterized.product(query_scale=[None, 7], key_scale=[None, 11])
+    def test_scale_query_key(self, *, query_scale: Optional[float], key_scale: Optional[float]):
+        kwargs = self._scale_query_kwargs(query_scale=query_scale, key_scale=key_scale)
+        forward_outputs, _ = F(**kwargs)
+        if query_scale is None:
+            query_scale = kwargs["module"].per_head_dim() ** -0.5
+        if key_scale is None:
+            key_scale = 1
+        query_scale = float(query_scale)
+        key_scale = float(key_scale)
+        self.assertNestedAllClose(
+            forward_outputs.probs[0, 0, 0, 0],
+            # All ones matrix times all ones vector has l2 norm dim ** 1.5.
+            # Half of input tokens are all ones, half are all zeros.
+            jax.nn.sigmoid(
+                kwargs["inputs"]["query"].shape[-1] ** 3 * query_scale * key_scale,
+            )
+            / (kwargs["inputs"]["query"].shape[1] // 2),
+        )
+
+    def test_scale_query_key_dim_dependence(self):
+        query_scale = config_for_partial_function(pow, exp=1)
+        key_scale = config_for_partial_function(pow, exp=-1)
+        kwargs = self._scale_query_kwargs(query_scale=query_scale, key_scale=key_scale)
+        forward_outputs, _ = F(**kwargs)
+        self.assertNestedAllClose(
+            forward_outputs.probs[0, 0, 0, 0],
+            # All ones matrix times all ones vector has l2 norm dim ** 1.5.
+            # Half of input tokens are all ones, half are all zeros.
+            jax.nn.sigmoid(float(kwargs["inputs"]["query"].shape[-1] ** 3))
+            / (kwargs["inputs"]["query"].shape[1] // 2),
+        )
+
+    def test_scale_query_key_barrier(self):
+        """Tests that the scale factors are not combined.
+
+        Note that even without the barrier, it's not clear that they would be combined.
+        (They aren't on CPU even without the barrier.)
+        """
+        query_scale = 7
+        key_scale = 11
+        kwargs = self._scale_query_kwargs(query_scale=query_scale, key_scale=key_scale)
+
+        # Check optimized HLO scales by query_scale and key_scale as separate
+        # multiplications. This only checks the default backend, so it doesn't check
+        # what happens on gpu/tpu unless jax is configured to use them.
+        f = jax.jit(F, static_argnames=("module", "is_training"))
+        compile_options = dict(
+            xla_cpu_enable_fast_math=True,
+            xla_cpu_fast_math_honor_nans=False,
+            xla_cpu_fast_math_honor_infs=False,
+            xla_cpu_fast_math_honor_functions=False,
+            xla_cpu_fast_math_honor_division=False,
+        )
+        hlo = f.lower(**kwargs).compile(compile_options).as_text()
+        hlo = test_utils.clean_hlo(hlo)
+        self.assertIn(str(query_scale), hlo)
+        self.assertIn(str(key_scale), hlo)
+        self.assertNotIn(str(query_scale * key_scale), hlo)
+
 
 def oracle_xl_attention_logits(
     query: np.ndarray,
@@ -2446,7 +2556,6 @@ class StackedTransformerTest(TestCase):
 
             all_params = []
             all_outputs = []
-            all_summaries = []
             all_gradients = []
             all_updates = []
             for stack_cfg in stack_configs:
@@ -2476,7 +2585,10 @@ class StackedTransformerTest(TestCase):
                 logging.info(
                     "%s.params=%s",
                     cls,
-                    jax.tree_util.tree_map(lambda x: f"{x.dtype}({x.shape})", layer_params),
+                    [
+                        f"{path}={value.dtype}({value.shape})"
+                        for path, value in flatten_items(layer_params)
+                    ],
                 )
 
                 def _loss(layer_params, data, mask, layer=layer):
@@ -2496,6 +2608,10 @@ class StackedTransformerTest(TestCase):
                 loss, (aux, layer_output_collection) = value
                 layer_outputs = (loss, aux)
 
+                # Note that we do not compare summaries across stack layer types because:
+                # (1) attention layers do not emit summaries yet;
+                # (2) pipelines emit per-microbatch summaries which have a different structure
+                #     than summaries from other stack layers.
                 summaries = layer_output_collection.summaries
                 logging.info(
                     "layer_outputs=%s summaries=%s",
@@ -2553,15 +2669,16 @@ class StackedTransformerTest(TestCase):
                     }
 
                 if cls == StackedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
                         x["stack"] = recursive_stack(x["stack"])
 
                 if cls == RepeatedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
                         x["stack"] = x["stack"]["repeat"]
 
                 if cls == PipelinedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
+                        logging.info("x=%s", shapes(x))
                         if cfg.stack.stage.klass == StackedTransformerLayer:
                             # First stack within each stage.
                             x["stack"]["pipeline"]["layer"] = recursive_stack(
@@ -2583,7 +2700,6 @@ class StackedTransformerTest(TestCase):
 
                 all_params.append(layer_params)
                 all_outputs.append(layer_outputs)
-                all_summaries.append(summaries)
                 all_gradients.append(grads)
                 all_updates.append(updates)
 
@@ -2608,7 +2724,6 @@ class StackedTransformerTest(TestCase):
                 # pylint: enable=protected-access
 
             self.assertNestedAllClose(all_params[0], all_params[1])
-            self.assertNestedAllClose(all_summaries[0], all_summaries[1])
             self.assertNestedAllClose(all_outputs[0], all_outputs[1])
             self.assertNestedAllClose(all_gradients[0], all_gradients[1])
             self.assertNestedAllClose(all_updates[0], all_updates[1])

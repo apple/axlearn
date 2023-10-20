@@ -12,7 +12,10 @@ from jax.sharding import PartitionSpec
 from axlearn.common.attention import MultiheadAttention
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import ConfigBase, config_class
-from axlearn.common.flash_attention.attention import mha
+from axlearn.common.flash_attention.utils import (
+    MultiHeadAttentionImpl,
+    flash_attention_implementation,
+)
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor
 
@@ -35,9 +38,9 @@ class FlashAttention(MultiheadAttention):
     """FlashAttention layer.
 
     Is a drop-in replacement of MultiheadAttention, with some limitations:
-    * Does not yet support dropout.
-    * Does not support gradients wrt attention logit biases.
-    * Supports a subset of config fields and outputs.
+        * Does not support dropout.
+        * Does not support gradients wrt. attention logit biases.
+        * Supports a subset of config fields and outputs.
     """
 
     @config_class
@@ -45,6 +48,10 @@ class FlashAttention(MultiheadAttention):
         # If True, applies additional optimizations in the FlashAttention kernels.
         # Causal attention can still be used when False, by passing logit biases.
         causal: bool = False
+        # The block size used to tile attention computation (for TPU only).
+        # Should be less than the target sequence length and a multiple of 128 on TPU.
+        # TODO(tom_gunter): Expose GPU block-size (currently always 128) & unify.
+        tpu_block_size: int = 512
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -55,6 +62,8 @@ class FlashAttention(MultiheadAttention):
                 raise NotImplementedError(f"cfg.{key} is not supported.")
         if cfg.dropout.rate:
             raise NotImplementedError("cfg.dropout.rate is not supported.")
+        if cfg.tpu_block_size % 128 != 0:
+            raise ValueError("cfg.tpu_block_size must divide 128.")
 
     @classmethod
     def default_config(cls) -> Config:
@@ -74,6 +83,14 @@ class FlashAttention(MultiheadAttention):
     ) -> Tuple[Tensor, Tensor]:
         cfg = self.config
 
+        if jax.default_backend() == "tpu":
+            assert (
+                q_proj.shape[1] % cfg.tpu_block_size == 0
+            ), "Target seq len must divide block size."
+            assert (
+                k_proj.shape[1] % cfg.tpu_block_size == 0
+            ), "Source seq len must divide block size."
+
         if attention_logit_biases is not None:
             if attention_logit_biases.ndim != 4:
                 raise ValueError(
@@ -81,12 +98,12 @@ class FlashAttention(MultiheadAttention):
                 )
             attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
-        # shard_map-decorated function needs to be jitted.
-        @jax.jit
-        def jit_mha(query, key, value, bias):
-            return mha(
-                query, key, value, bias=bias, causal=cfg.causal, softmax_scale=self._scale_query(1)
-            )
+        jit_attn: MultiHeadAttentionImpl = flash_attention_implementation(
+            backend=jax.default_backend(),
+            causal=cfg.causal,
+            softmax_scale=self._scale_query(1),
+            block_size=cfg.tpu_block_size,
+        )
 
         mesh = thread_resources.env.physical_mesh
         # We need to manually partition jax-triton calls.
@@ -99,7 +116,7 @@ class FlashAttention(MultiheadAttention):
         if tensor_parallel_axis_name != "model":
             raise NotImplementedError("Running without tensor-parallel axis is not supported.")
         partitioned_mha = shard_map(
-            jit_mha,
+            jit_attn,
             mesh=mesh,
             in_specs=(
                 # QKV [batch_size, seq_len, num_heads, per_head_dim].
@@ -111,7 +128,8 @@ class FlashAttention(MultiheadAttention):
             ),
             # O [batch_size, seq_len, num_heads, per_head_dim].
             out_specs=PartitionSpec(batch_axis_names, None, tensor_parallel_axis_name, None),
-            # Disables a checking pass which jax can't apply when there's a triton_call in the body.
+            # Disables a checking pass which jax can't apply when there's a triton | pallas
+            # call in the body.
             check_rep=False,
         )
 

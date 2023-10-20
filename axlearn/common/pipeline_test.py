@@ -12,7 +12,7 @@ from jax import numpy as jnp
 from axlearn.common import param_init
 from axlearn.common.base_layer import BaseLayer, ParameterSpec, RematSpec
 from axlearn.common.config import config_class
-from axlearn.common.module import Module
+from axlearn.common.module import Module, OutputCollection
 from axlearn.common.module import functional as F
 from axlearn.common.pipeline import (
     Pipeline,
@@ -60,6 +60,8 @@ class TestLayer(BaseLayer):
     def forward(self, carry, forward_state):
         logging.info("TestLayer: carry=%s forward_state=%s", shapes(carry), shapes(forward_state))
         self.add_summary("carry_mean", jnp.mean(carry))
+        self.add_state_update("inc", 1)
+        self.add_module_output("out", 2)
         return carry + self.parameters["inc"], forward_state + carry
 
 
@@ -129,6 +131,7 @@ class PipelineTest(parameterized.TestCase):
                 num_layers=num_layers,
                 num_microbatches=num_microbatches,
                 remat_spec=remat_spec,
+                vlog=3,
             )
             .instantiate(parent=None)
         )
@@ -146,9 +149,11 @@ class PipelineTest(parameterized.TestCase):
             state=layer_params,
             inputs=(jnp.arange(batch_size, dtype=jnp.float32), input_forward_state),
             is_training=True,
+            drop_output_collections=(),
         )
         logging.info("forward_state=%s", output_forward_state)
-        logging.info("output_collection=%s", output_collection)
+        logging.info("state_outputs=%s", shapes(output_collection.state_updates))
+        logging.info("module_outputs=%s", shapes(output_collection.module_outputs))
         assert_allclose(carry, jnp.arange(num_layers, num_layers + batch_size))
         self.assertEqual(shapes(input_forward_state), shapes(output_forward_state))
         assert_allclose(
@@ -159,12 +164,43 @@ class PipelineTest(parameterized.TestCase):
             ).transpose([0, 2, 1]),
         )
         self.assertEqual(
-            {"layer": {"carry_mean": (num_layers, num_microbatches)}},
-            shapes(output_collection.summaries),
+            OutputCollection(
+                summaries={
+                    "layer": {},
+                    **{
+                        f"layer{i}": {
+                            f"microbatch{j}": {"carry_mean": tuple()}
+                            for j in range(num_microbatches)
+                        }
+                        for i in range(num_layers)
+                    },
+                },
+                state_updates={
+                    "layer": {"inc": (num_layers, num_microbatches)},
+                    **{
+                        f"layer{i}": {f"microbatch{j}": {} for j in range(num_microbatches)}
+                        for i in range(num_layers)
+                    },
+                },
+                module_outputs={
+                    "layer": {"out": (num_layers, num_microbatches)},
+                    **{
+                        f"layer{i}": {f"microbatch{j}": {} for j in range(num_microbatches)}
+                        for i in range(num_layers)
+                    },
+                },
+            ),
+            shapes(output_collection),
         )
         assert_allclose(
-            (batch_size - 1) / 2 + (num_layers - 1) / 2,
-            output_collection.summaries["layer"]["carry_mean"].mean(),
+            [[3.5 + i + j for j in range(num_microbatches)] for i in range(num_layers)],
+            [
+                [
+                    output_collection.summaries[f"layer{i}"][f"microbatch{j}"]["carry_mean"]
+                    for j in range(num_microbatches)
+                ]
+                for i in range(num_layers)
+            ],
         )
 
     @parameterized.parameters(None, RematSpec(prevent_cse=False))
@@ -232,16 +268,34 @@ class PipelineTest(parameterized.TestCase):
             )
             self.assertEqual(
                 {
-                    "layer": {
-                        "layer1": {"carry_mean": (num_layers, num_microbatches)},
-                        "layer2": {"carry_mean": (num_layers, num_microbatches)},
-                    }
+                    "layer": {},
+                    **{
+                        f"layer{i}": {
+                            f"microbatch{j}": {
+                                "layer1": {"carry_mean": tuple()},
+                                "layer2": {"carry_mean": tuple()},
+                            }
+                            for j in range(num_microbatches)
+                        }
+                        for i in range(num_layers)
+                    },
                 },
                 shapes(output_collection.summaries),
             )
             assert_allclose(
-                (batch_size - 1) / 2 + (num_layers - 1) / 2 * multiple_values,
-                output_collection.summaries["layer"]["layer1"]["carry_mean"].mean(),
+                [
+                    [3.5 + i * multiple_values + j for j in range(num_microbatches)]
+                    for i in range(num_layers)
+                ],
+                [
+                    [
+                        output_collection.summaries[f"layer{i}"][f"microbatch{j}"]["layer1"][
+                            "carry_mean"
+                        ]
+                        for j in range(num_microbatches)
+                    ]
+                    for i in range(num_layers)
+                ],
             )
 
 
