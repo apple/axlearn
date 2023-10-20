@@ -744,7 +744,7 @@ def config_for_partial_function(
 
     Example:
         ```
-        cfg = config_for_partial_function(pow).set(exp=2)
+        cfg = config_for_partial_function(pow, exp=2)
         fn = cfg.instantiate()
         assert fn(3) == 9
         ```
