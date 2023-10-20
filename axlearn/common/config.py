@@ -63,6 +63,7 @@ config fields with mutable values, including config values.
 import copy
 import dataclasses
 import enum
+import functools
 import inspect
 import re
 import types
@@ -216,7 +217,9 @@ def validate_config_field_value(value: Any) -> None:
             RequiredFieldValue,
             type,
             types.FunctionType,
+            types.BuiltinFunctionType,
             types.MethodType,
+            types.BuiltinMethodType,
             int,
             float,
             str,
@@ -731,6 +734,33 @@ def _config_class_for_function(fn: F) -> Type[FunctionConfigBase]:
 def config_for_function(fn: Callable[..., T]) -> Union[Any, FunctionConfigBase[T]]:
     config_cls = _config_class_for_function(fn)
     return config_cls(fn=fn)
+
+
+# Making fn positional only allows there to be an `fn` kwarg.
+def config_for_partial_function(
+    fn: Callable[..., T], /, *args, **kwargs
+) -> InstantiableConfig[Callable[..., T]]:
+    """Similar to `config_for_function` but returns a partial function when instantiated.
+
+    Example:
+        ```
+        cfg = config_for_partial_function(pow, exp=2)
+        fn = cfg.instantiate()
+        assert fn(3) == 9
+        ```
+
+    Args:
+        fn: The function to wrap.
+        args: Positional arguments to pass to fn.
+        kwargs: Keyword arguments to pass to fn.
+
+    Returns:
+        A Config that when instantiated, returns a partial version of `fn` based on any
+        config fields that have been set.
+    """
+    cfg = config_for_class(functools.partial)
+    cfg.set(args=(fn, *args), kwargs=kwargs)
+    return cfg
 
 
 @config_class
