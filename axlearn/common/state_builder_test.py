@@ -35,6 +35,7 @@ from axlearn.common.repeat import Repeat
 from axlearn.common.state_builder import (
     _BUILDERS,
     BaseConv2DStateBuilder,
+    BaseConverterFromPretrainedModel,
     Builder,
     ChainBuilder,
     ChainConverter,
@@ -724,6 +725,20 @@ class TestConv2DStateBuilders(TestCase):
             input_size=input_size,
         )
         return mock_trainer_config(input_config=input_cfg, model_config=model_cfg)
+
+
+class BaseConverterFromPretrainedModelTest(TestCase):
+    """Sanity checks for BaseConverterFromPretrainedModel."""
+
+    def test_mesh_shape(self):
+        mock_trainer_cfg, mock_state = _create_dummy_state(jax.random.PRNGKey(1))
+        cfg = BaseConverterFromPretrainedModel.default_config().set(
+            source_trainer_config=mock_trainer_cfg,
+            mesh_shape=(-1, 1),
+        )
+        # Ensure that we're able to instantiate mock_trainer_cfg with -1 in the mesh.
+        converter = cfg.set(name="test_converter").instantiate(parent=None)
+        converter.target_to_source(mock_state)
 
 
 class DiffusersPretrainedBuilderTest(TestCase):
