@@ -784,7 +784,6 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             )
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
 
-    #: TODO: (Chen Chen) Add a test to reproduce LLaMA1 attention with rotary_value=False.
     @parameterized.parameters([True, False])
     def test_rope_self_attention(self, rotary_value: bool):
         model_dim = 32
@@ -981,8 +980,11 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         assert_allclose(llama_real, as_tensor(axlearn_real))
         assert_allclose(llama_imag, as_tensor(axlearn_imag))
 
-    @parameterized.parameters([jnp.float32, jnp.bfloat16])
-    def test_roformer_qkv_linear(self, dtype: jnp.dtype):
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.bfloat16),
+        max_seq_len=(100, 6),
+    )
+    def test_roformer_qkv_linear(self, dtype: jnp.dtype, max_seq_len: int):
         seq_len = 6
         batch_size = 2
         model_dim = 16
@@ -992,7 +994,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             RoFormerQKVLinear.default_config()
             .set(
                 name="roformer_qkv_linear",
-                max_seq_length=seq_len,
+                max_seq_length=max_seq_len,
                 query_dim=model_dim,
                 key_dim=model_dim,
                 value_dim=model_dim,
