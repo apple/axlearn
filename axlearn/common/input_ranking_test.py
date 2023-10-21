@@ -79,7 +79,7 @@ class RankByValueTest(TestCase):
         )
 
         ds = rank_by_value(
-            input_field="label", output_field="rank", ascending=ascending, allow_ties=allow_ties
+            input_key="label", output_key="rank", ascending=ascending, allow_ties=allow_ties
         )(ds)
         for ex in ds.as_numpy_iterator():
             self.assertListEqual(expected_ranks, ex["rank"].tolist())
@@ -98,6 +98,4 @@ class RankByValueTest(TestCase):
         with self.assertRaisesRegex(
             NotImplementedError, "Only implemented for rank-1 tensors. Got rank-2."
         ):
-            rank_by_value(
-                input_field="label", output_field="rank", ascending=True, allow_ties=True
-            )(ds)
+            rank_by_value(input_key="label", output_key="rank", ascending=True, allow_ties=True)(ds)
