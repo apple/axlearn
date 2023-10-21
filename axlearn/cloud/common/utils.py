@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Sequence, Union
 import pkg_resources
 import psutil
 from absl import app, logging
+from tensorflow import io as tf_io
 
 from axlearn.cloud import ROOT_MODULE_NAME
 
@@ -272,3 +273,20 @@ def send_signal(popen: subprocess.Popen, sig: int = signal.SIGKILL):
     for child in parent.children(recursive=True):
         child.send_signal(sig)
     popen.send_signal(sig)
+
+
+def copy_blobs(from_prefix: str, *, to_prefix: str):
+    """Uses tf.io.gfile to replicate blobs with the from_prefix to the to_prefix."""
+    # As tf_io.gfile.copy requires a path to a file when reading from cloud storage,
+    # we traverse the `from_prefix` to find and copy all suffixes.
+    if not tf_io.gfile.isdir(from_prefix):
+        # Copy the file.
+        logging.debug("Copying file %s", from_prefix)
+        tf_io.gfile.copy(from_prefix, to_prefix, overwrite=True)
+        return
+    for blob in tf_io.gfile.glob(os.path.join(from_prefix, "*")):
+        if tf_io.gfile.isdir(blob):
+            sub_directory = os.path.basename(blob)
+            logging.info("Copying sub-directory %s", sub_directory)
+            to_prefix = os.path.join(to_prefix, sub_directory)
+        copy_blobs(blob, to_prefix=to_prefix)

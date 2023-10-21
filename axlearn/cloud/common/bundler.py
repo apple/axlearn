@@ -24,6 +24,7 @@ import shutil
 import tarfile
 import tempfile
 from typing import Dict, List, Optional, Sequence, Type, TypeVar, Union
+from urllib.parse import urlparse
 
 from absl import app, flags, logging
 from tensorflow import io as tf_io
@@ -33,6 +34,7 @@ from axlearn.cloud.common.docker import build as docker_build
 from axlearn.cloud.common.docker import push as docker_push
 from axlearn.cloud.common.utils import (
     canonicalize_to_list,
+    copy_blobs,
     get_git_branch,
     get_git_revision,
     get_git_status,
@@ -106,12 +108,18 @@ class Bundler(Configurable):
 
         # Copy any external files/dirs.
         for dep in canonicalize_to_list(cfg.external):
-            dep = pathlib.Path(dep.strip())
+            dep = dep.strip()
             logging.info("Packaging external path %s.", dep)
-            if dep.is_file():
-                shutil.copy2(dep, temp_root / dep.name, follow_symlinks=True)
+            if urlparse(dep).scheme:
+                # Has scheme so we try to use copy_blobs to handle.
+                copy_blobs(dep, to_prefix=temp_root.as_posix())
             else:
-                copytree(dep, temp_root, exclude_paths)
+                # We rely on shutil for local-to-local copy as it follows symlinks.
+                dep = pathlib.Path(dep.strip())
+                if dep.is_file():
+                    shutil.copy2(dep, temp_root / dep.name, follow_symlinks=True)
+                else:
+                    copytree(dep, temp_root, exclude_paths)
 
         # Copy the configs to the bundle directory, since the config file(s) may not be in cwd.
         # Note that configs may comprise of multiple config files, so we serialize the full configs

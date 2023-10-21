@@ -4,11 +4,13 @@
 
 import contextlib
 import os
+import pathlib
 import shlex
 import signal
 import subprocess
 import tempfile
 import time
+from filecmp import dircmp
 from typing import Dict, Sequence, Union
 from unittest import mock
 
@@ -141,3 +143,18 @@ class UtilsTest(parameterized.TestCase):
             time.sleep(1)
             # Ensure that the count is still the same.
             self.assertEqual(_read_count(), count)
+
+    def test_copy_blobs(self):
+        with tempfile.TemporaryDirectory() as read_dir:
+            read_dir_path = pathlib.Path(read_dir)
+            file_a = read_dir_path / "file.txt"
+            file_a.touch()
+            sub_directory = read_dir_path / "subdir"
+            sub_directory.mkdir()
+            file_b = sub_directory / "subdirfile.txt"
+            file_b.touch()
+            with tempfile.TemporaryDirectory() as write_dir:
+                utils.copy_blobs("file://" + read_dir, to_prefix=write_dir)
+                dcmp = dircmp(read_dir, write_dir)
+                mismatched_paths = dcmp.left_only + dcmp.right_only + dcmp.diff_files
+                self.assertEqual(len(mismatched_paths), 0)
