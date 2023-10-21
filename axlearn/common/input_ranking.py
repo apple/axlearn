@@ -10,7 +10,7 @@ from axlearn.common import input_tf_data
 
 
 def rank_by_value(
-    *, input_key: str, output_key: str, ascending: bool = True, allow_ties: bool = False
+    *, input_key: str, output_key: str, ascending: bool, allow_ties: bool
 ) -> input_tf_data.DatasetToDatasetFn:
     """Returns a DatasetToDatasetFn that stores the ranks of input_field in output_field.
 
@@ -19,10 +19,12 @@ def rank_by_value(
     Args:
         input_key: The field whose value will be ranked.
         output_key: The field to store the ranks into.
-        ascending: True to rank in ascending order or False to rank in descending order.
+        ascending: True to rank in ascending order or false to rank in descending order.
         allow_ties: If true, multiple elements could have the same rank. Ranks could have gaps
-            in between to account for duplicate ranks. For example, the ranks of [2, 2, 4]
-            would be [1, 1, 3] when allow_ties is True, and [1, 2, 3] otherwise.
+            in between to account for duplicate ranks. If false, ranks will never have ties,
+            even when values are equivalent - stable sorting by values is used.
+            For example, the ranks of [2, 2, 4] would be [1, 1, 3] when allow_ties is true,
+            and [1, 2, 3] otherwise.
 
     Returns:
         A DatasetToDatasetFn where each input example is ranked according to the value
@@ -38,7 +40,7 @@ def rank_by_value(
         inputs = example[input_key]
         if not ascending:
             inputs *= -1
-        idx = tf.argsort(inputs)
+        idx = tf.argsort(inputs, stable=True)
         ranks = tf.math.invert_permutation(idx)
         if allow_ties:
             # Construct an arange where index repeats for repeated inputs.
