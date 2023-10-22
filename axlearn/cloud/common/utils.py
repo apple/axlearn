@@ -289,4 +289,5 @@ def copy_blobs(from_prefix: str, *, to_prefix: str):
             sub_directory = os.path.basename(blob)
             logging.info("Copying sub-directory %s", sub_directory)
             to_prefix = os.path.join(to_prefix, sub_directory)
+            os.makedirs(to_prefix, exist_ok=True)
         copy_blobs(blob, to_prefix=to_prefix)

@@ -10,7 +10,6 @@ import signal
 import subprocess
 import tempfile
 import time
-from filecmp import dircmp
 from typing import Dict, Sequence, Union
 from unittest import mock
 
@@ -155,6 +154,9 @@ class UtilsTest(parameterized.TestCase):
             file_b.touch()
             with tempfile.TemporaryDirectory() as write_dir:
                 utils.copy_blobs("file://" + read_dir, to_prefix=write_dir)
-                dcmp = dircmp(read_dir, write_dir)
-                mismatched_paths = dcmp.left_only + dcmp.right_only + dcmp.diff_files
-                self.assertEqual(len(mismatched_paths), 0)
+                write_dir_path = pathlib.Path(write_dir)
+                # Check that both files have been copied.
+                copied_file_a = write_dir_path / file_a.relative_to(read_dir_path)
+                self.assertTrue(copied_file_a.exists())
+                copied_file_b = write_dir_path / file_b.relative_to(read_dir_path)
+                self.assertTrue(copied_file_b.exists())
