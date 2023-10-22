@@ -43,7 +43,6 @@ RUN ./run_tests.sh "${PYTEST_FILES}"
 # Bastion container spec.                                                      #
 ################################################################################
 
-# Bastion container for application deployment.
 FROM base AS bastion
 
 # TODO(markblee): Consider copying large directories separately, to cache more aggressively.
@@ -56,7 +55,6 @@ RUN pip install .[gcp,vertexai_tensorboard]
 # Dataflow container spec.                                                     #
 ################################################################################
 
-# Dataflow container for data processing.
 FROM base AS dataflow
 
 # Install data processing dependencies.
