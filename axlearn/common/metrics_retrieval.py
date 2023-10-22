@@ -284,18 +284,14 @@ def average_precision_at_k(
 
 def tie_averaged_dcg(y_true: Tensor, y_score: Tensor, discount: Tensor) -> Tensor:
     """Tie-aware DCG by averaging over possible permutations of ties."""
-    discount_cumsum = jnp.cumsum(discount)
     _, inv, counts = jnp.unique(
         -y_score, return_inverse=True, return_counts=True, size=discount.shape[0]
     )
     group_gains = jnp.zeros(len(counts))
     group_gains = group_gains.at[inv].add(y_true) / counts
     group_gains = jnp.where(jnp.isnan(group_gains), 0, group_gains)
-    tie_vector = jnp.cumsum(counts) - 1
-    discount_sums = jnp.concatenate(
-        [discount_cumsum[tie_vector[:1]], jnp.diff(discount_cumsum[tie_vector])]
-    )
-    return (group_gains * discount_sums).sum()
+    repeated_group_gains = jnp.repeat(group_gains, counts, total_repeat_length=discount.shape[0])
+    return jnp.cumsum(repeated_group_gains * discount)
 
 
 def ndcg_at_k(
@@ -354,34 +350,19 @@ def ndcg_at_k(
 
         dcg = compute_dcg(relevance_labels_sorted_by_scores)
         idcg = compute_dcg(sorted_relevance_labels)
-        ndcg = jnp.where(idcg == 0, 0.0, dcg / idcg)
-
-        metrics = {}
-        for k in top_ks:
-            if k == -1:
-                metrics[k] = ndcg[:, k]
-            else:
-                metrics[k] = ndcg[:, k - 1]
     else:
         auto_batch_tie_averaged_dcg = jax.vmap(tie_averaged_dcg)
-        metrics = {}
-        for k in top_ks:
-            if k == -1:
-                discounts = jnp.tile(
-                    jnp.where(jnp.arange(len(discount_factors)) < max_k, discount_factors, 0),
-                    reps=(num_queries, 1),
-                )
-                dcg = auto_batch_tie_averaged_dcg(relevance_labels, scores, discounts)
-                idcg = auto_batch_tie_averaged_dcg(relevance_labels, relevance_labels, discounts)
-                metrics[k] = jnp.where(idcg == 0, 0.0, dcg / idcg)
-            else:
-                discounts = jnp.tile(
-                    jnp.where(jnp.arange(len(discount_factors)) < k, discount_factors, 0),
-                    reps=(num_queries, 1),
-                )
-                dcg = auto_batch_tie_averaged_dcg(relevance_labels, scores, discounts)
-                idcg = auto_batch_tie_averaged_dcg(relevance_labels, relevance_labels, discounts)
-                metrics[k] = jnp.where(idcg == 0, 0.0, dcg / idcg)
+        discount_factors = jnp.tile(discount_factors, reps=(num_queries, 1))
+        dcg = auto_batch_tie_averaged_dcg(relevance_labels, scores, discount_factors)
+        idcg = auto_batch_tie_averaged_dcg(relevance_labels, relevance_labels, discount_factors)
+
+    ndcg = jnp.where(idcg == 0, 0.0, dcg / idcg)
+    metrics = {}
+    for k in top_ks:
+        if k == -1:
+            metrics[k] = ndcg[:, k]
+        else:
+            metrics[k] = ndcg[:, k - 1]
 
     return metrics
 

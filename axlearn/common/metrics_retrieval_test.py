@@ -185,7 +185,7 @@ class NDCGTest(TestCase):
         checked_jit_f = checkify.checkify(jit_f, errors=checkify.user_checks)
         _, out = checked_jit_f(y_true=y_true, y_score=y_score, discount=discount)
         ref = _tie_averaged_dcg(y_true=y_true, y_score=y_score, discount_cumsum=discount_cumsum)
-        self.assertAlmostEqual(out.item(), ref, places=6)
+        self.assertAlmostEqual(out[-1].item(), ref, places=6)
 
     @parameterized.product(
         [
