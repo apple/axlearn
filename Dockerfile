@@ -7,9 +7,6 @@ ARG BASE_IMAGE=python:3.9-slim
 # Base image for common dependencies.
 FROM ${BASE_IMAGE} AS base
 
-RUN apt-get update
-RUN apt-get install -y apt-transport-https ca-certificates gnupg curl gcc g++
-
 # Install necessary packages in a single layer.
 RUN apt-get update && \
     apt-get install -y apt-transport-https ca-certificates gnupg curl gcc g++ git jq screen ca-certificates && \
