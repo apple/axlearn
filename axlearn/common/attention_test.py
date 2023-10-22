@@ -64,7 +64,7 @@ from axlearn.common.attention import (
     xl_attention_logits,
 )
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec, RematSpec
-from axlearn.common.config import InstantiableConfig, config_class, config_for_partial_function
+from axlearn.common.config import InstantiableConfig, config_class, config_for_function
 from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
@@ -1733,9 +1733,9 @@ class MultiheadAttentionTest(TestCase):
     ):
         model_dim = 16
         if isinstance(query_scale, (int, float)):
-            query_scale = attention.constant_scale_config(query_scale)
+            query_scale = config_for_function(attention.constant_scale_fn).set(value=query_scale)
         if isinstance(key_scale, (int, float)):
-            key_scale = attention.constant_scale_config(key_scale)
+            key_scale = config_for_function(attention.constant_scale_fn).set(value=key_scale)
 
         cfg = attention.MultiheadAttention.default_config().set(
             name="test",
@@ -1794,8 +1794,8 @@ class MultiheadAttentionTest(TestCase):
         )
 
     def test_scale_query_key_dim_dependence(self):
-        query_scale = config_for_partial_function(pow, exp=1)
-        key_scale = config_for_partial_function(pow, exp=-1)
+        query_scale = config_for_function(attention.pow_scale_fn).set(exp=1)
+        key_scale = config_for_function(attention.pow_scale_fn).set(exp=-1)
         kwargs = self._scale_query_kwargs(query_scale=query_scale, key_scale=key_scale)
         forward_outputs, _ = F(**kwargs)
         self.assertNestedAllClose(

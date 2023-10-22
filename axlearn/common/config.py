@@ -63,7 +63,6 @@ config fields with mutable values, including config values.
 import copy
 import dataclasses
 import enum
-import functools
 import inspect
 import re
 import types
@@ -732,35 +731,30 @@ def _config_class_for_function(fn: F) -> Type[FunctionConfigBase]:
 
 
 def config_for_function(fn: Callable[..., T]) -> Union[Any, FunctionConfigBase[T]]:
-    config_cls = _config_class_for_function(fn)
-    return config_cls(fn=fn)
-
-
-# Making fn positional only allows there to be an `fn` kwarg.
-def config_for_partial_function(
-    fn: Callable[..., T], /, *args, **kwargs
-) -> InstantiableConfig[Callable[..., T]]:
-    """Similar to `config_for_function` but returns a partial function when instantiated.
+    """Returns an instance of FunctionConfigBase, which invokes `fn` upon instantiation.
 
     Example:
         ```
-        cfg = config_for_partial_function(pow, exp=2)
-        fn = cfg.instantiate()
-        assert fn(3) == 9
+        cfg = config_for_function(pow).set(exp=2)
+        assert cfg.set(base=3).instantiate() == 9
         ```
 
     Args:
         fn: The function to wrap.
-        args: Positional arguments to pass to fn.
-        kwargs: Keyword arguments to pass to fn.
 
     Returns:
-        A Config that when instantiated, returns a partial version of `fn` based on any
-        config fields that have been set.
+        A Config that when instantiated, invokes `fn` based on any config fields that have been set.
     """
-    cfg = config_for_class(functools.partial)
-    cfg.set(args=(fn, *args), kwargs=kwargs)
-    return cfg
+    fn_sig = inspect.signature(fn)
+    # attrs strips leading underscores, resulting in '_' becoming ''. We could get around this via
+    # using an alias, but the safer option is to require explicit names for params. See:
+    # https://github.com/python-attrs/attrs/issues/391
+    # https://github.com/python-attrs/attrs/issues/945
+    for param in ["fn", "_"]:
+        if param in fn_sig.parameters:
+            raise ValueError(f"Configured function {fn} should not have a '{param}' parameter.")
+    config_cls = _config_class_for_function(fn)
+    return config_cls(fn=fn)
 
 
 @config_class

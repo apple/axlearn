@@ -41,8 +41,8 @@ On `attention_logit_biases`:
 """
 # pylint: disable=abstract-method,too-many-lines
 import enum
+import functools
 import math
-import typing
 from enum import Enum, unique
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
 
@@ -65,7 +65,6 @@ from axlearn.common.config import (
     Required,
     config_class,
     config_for_function,
-    config_for_partial_function,
 )
 from axlearn.common.layers import (
     Dropout,
@@ -1114,23 +1113,40 @@ class PerDimScale(BaseLayer):
 ScaleFn = Callable[[int], float]  # A function mapping per_head_dim to a scale.
 
 
-def constant_scale_config(value: float) -> InstantiableConfig[ScaleFn]:
-    """A config for a constant scale function for `MultiheadAttention`.
+def constant_scale_fn(value: float) -> ScaleFn:
+    """A constant scale function for `MultiheadAttention`.
+
+    Example:
+        `key_scale = config_for_function(constant_scale_fn).set(value=0.01)`
 
     Args:
         value: The value to scale by.
 
-    Example:
-        `query_scale = config_for_function(constant_scale).set(value=0.01)`
-
     Returns:
-        A config that scales by `value`.
+        A `ScaleFn` that always returns `value`.
     """
 
-    def constant_function(_: float, value: float) -> float:
+    def constant_function(per_head_dim: int) -> float:
+        del per_head_dim
         return value
 
-    return config_for_partial_function(constant_function, value=value)
+    return constant_function
+
+
+def pow_scale_fn(exp: float) -> ScaleFn:
+    """A scale function for `MultiheadAttention` that computes `per_head_dim ** exp`.
+
+    Example:
+        `query_scale = config_for_function(pow_scale_fn).set(exp=-0.5)`
+
+    Args:
+        exp: The exponent.
+
+    Returns:
+        A `ScaleFn` that computes `per_head_dim ** exp`.
+    """
+
+    return functools.partial(pow, exp=exp)
 
 
 class MultiheadAttention(BaseLayer):
@@ -1486,13 +1502,14 @@ class MultiheadAttention(BaseLayer):
     @staticmethod
     def default_query_scale_config() -> InstantiableConfig[ScaleFn]:
         """The config for the default function used to compute the query scale."""
-        pow_real = typing.cast(Callable[..., float], pow)
-        return config_for_partial_function(pow_real, exp=-0.5)
+
+        return config_for_function(pow_scale_fn).set(exp=-0.5)
 
     @staticmethod
     def default_key_scale_config() -> InstantiableConfig[ScaleFn]:
         """The config for the default function used to compute the key scale."""
-        return constant_scale_config(1)
+
+        return config_for_function(constant_scale_fn).set(value=1)
 
 
 def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
