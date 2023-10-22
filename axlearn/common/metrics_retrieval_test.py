@@ -1,7 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests retrieval metrics."""
-import itertools
 from typing import List
 
 import jax
@@ -183,7 +182,7 @@ class NDCGTest(TestCase):
         y_score = jnp.array(y_score)
         jit_f = jax.jit(tie_averaged_dcg)
         checked_jit_f = checkify.checkify(jit_f, errors=checkify.user_checks)
-        _, out = checked_jit_f(y_true=y_true, y_score=y_score, discount=discount)
+        _, out = checked_jit_f(y_true=y_true, y_score=y_score, discount_factor=discount)
         ref = _tie_averaged_dcg(y_true=y_true, y_score=y_score, discount_cumsum=discount_cumsum)
         self.assertAlmostEqual(out[-1].item(), ref, places=6)
 
