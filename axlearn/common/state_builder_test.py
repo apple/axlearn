@@ -311,6 +311,65 @@ class PosEmbeddingConverterTest(TestCase):
         source_state = Builder.State(step=0, trainer_state=trainer.trainer_state, built_keys=set())
         return trainer_config, source_state
 
+    @parameterized.parameters(
+        [
+            ["interpolate", 64, 512],
+            ["interpolate", 512, 64],
+            ["interpolate_with_cls_token_removed", 512, 64],
+            ["interpolate_with_cls_token_removed", 64, 512],
+        ]
+    )
+    def test_interpolate(self, strategy, source_len, target_len):
+        source_trainer_config, source_state = self._mock_bert_trainer_config_and_state(
+            max_len=source_len
+        )
+        _, target_state = self._mock_bert_trainer_config_and_state(max_len=target_len)
+
+        cfg = PosEmbeddingConverter.default_config().set(
+            name="pos_emb_tester",
+            source_trainer_config=source_trainer_config,
+            strategy=strategy,
+        )
+        converter: PosEmbeddingConverter = cfg.instantiate(parent=None)
+
+        converted_state = converter.source_to_target(source_state, target_state)
+        self.assertEqual(
+            (1, source_len, 32),
+            source_state.trainer_state.model["encoder"]["emb"]["pos_emb"]["weight"].shape,
+        )
+        self.assertEqual(
+            (1, target_len, 32),
+            converted_state.trainer_state.model["encoder"]["emb"]["pos_emb"]["weight"].shape,
+        )
+
+        source_weight = replicate_to_local_data(
+            source_state.trainer_state.model["encoder"]["emb"]["pos_emb"]["weight"],
+        )
+        converted_weight = replicate_to_local_data(
+            converted_state.trainer_state.model["encoder"]["emb"]["pos_emb"]["weight"],
+        )
+        # Check weights after truncation are from source.
+        if strategy == "interpolate":
+            self.assertNestedAllClose(
+                jax.image.resize(
+                    source_weight,
+                    (source_weight.shape[0], target_len, source_weight.shape[2]),
+                    method="bilinear",
+                    antialias=False,
+                ),
+                converted_weight,
+            )
+        elif strategy == "interpolate_with_cls_token_removed":
+            self.assertNestedAllClose(
+                jax.image.resize(
+                    source_weight[:, 1:, :],
+                    (source_weight.shape[0], target_len, source_weight.shape[2]),
+                    method="bilinear",
+                    antialias=False,
+                ),
+                converted_weight,
+            )
+
     @parameterized.parameters(["truncate", "truncate_left"])
     def test_truncation(self, strategy):
         source_trainer_config, source_state = self._mock_bert_trainer_config_and_state(max_len=512)

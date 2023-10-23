@@ -912,7 +912,27 @@ class PosEmbeddingConverter(BaseConverterFromPretrainedModel):
             )(source_weight, target_weight)
         elif cfg.strategy == "keep_target":
             out["pos_emb"] = target["pos_emb"]
-        # TODO(xianzhi): Implement interpolation for shape matching.
+        elif cfg.strategy.startswith("interpolate"):
+
+            def interpolate(x):
+                if cfg.strategy == "interpolate":
+                    return jax.image.resize(
+                        x, (x.shape[0], target_len, x.shape[2]), method="bilinear", antialias=False
+                    )
+                elif cfg.strategy == "interpolate_with_cls_token_removed":
+                    return jax.image.resize(
+                        x[:, 1:, :],
+                        (x.shape[0], target_len, x.shape[2]),
+                        method="bilinear",
+                        antialias=False,
+                    )
+
+            out["pos_emb"]["weight"] = pjit(
+                interpolate,
+                in_shardings=source_weight.sharding,
+                out_shardings=target_weight.sharding,
+            )(source_weight)
+
         else:
             raise NotImplementedError(
                 f"Strategy {cfg.strategy} is not implemented for PosEmbeddingConverter."
