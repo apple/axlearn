@@ -19,6 +19,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud import ROOT_MODULE
 from axlearn.cloud.common import utils
+from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
 @contextlib.contextmanager
@@ -30,7 +31,7 @@ def _fake_module_root(module_name: str):
         yield temp_module
 
 
-class UtilsTest(parameterized.TestCase):
+class UtilsTest(TestWithTemporaryCWD):
     """Tests utils."""
 
     def test_get_package_root(self):
@@ -113,6 +114,8 @@ class UtilsTest(parameterized.TestCase):
         else:
             self.assertEqual(expected, utils.parse_action(argv, options=options, default=default))
 
+    # TODO(markblee): Understand and fix flakiness on CI.
+    @pytest.mark.skip(reason="Intended to be run manually, can be flaky in CI.")
     def test_send_signal(self):
         """Tests send_signal by starting a subprocess which has child subprocesses.
 

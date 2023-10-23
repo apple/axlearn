@@ -266,6 +266,7 @@ def send_signal(popen: subprocess.Popen, sig: int = signal.SIGKILL):
     """Sends a signal (default SIGKILL) to the process (and child processes)."""
     # Note: kill() might leave orphan processes if proc spawned child processes.
     # We use psutil to recursively kill() all children.
+    # If changing this fn, please run the `test_send_signal` test manually.
     try:
         parent = psutil.Process(popen.pid)
     except psutil.NoSuchProcess:
