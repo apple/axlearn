@@ -5,6 +5,7 @@
 import collections
 import copy
 import dataclasses
+import math
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional
 
@@ -23,6 +24,7 @@ from axlearn.common.config import (
     Configurable,
     InstantiableConfig,
     Required,
+    RequiredFieldMissingError,
     config_class,
     maybe_set_config,
 )
@@ -457,6 +459,40 @@ class ConfigTest(parameterized.TestCase):
         with self.assertRaisesRegex(ValueError, "already specified"):
             self.assertEqual(cfg.var_kwargs, cfg.instantiate(a=3))
 
+    @parameterized.parameters(
+        # Test some basic cases.
+        dict(kwargs=dict(x="x", y="y", z="z"), expected=("x", "y", "z")),
+        # Test configuring a builtin function.
+        dict(fn=pow, kwargs=dict(base=2, exp=3), expected=8),
+        # Test raising when attempting to configure positional-only args. They currently can't be
+        # reliably configured, as ordering may be lost.
+        # TODO(markblee): Add support for positional args.
+        dict(
+            fn=math.pow,
+            kwargs=dict(x=2, y=3),
+            expected=NotImplementedError("param kind POSITIONAL_ONLY"),
+        ),
+        # Not enough args, will fail when instantiating the config.
+        dict(kwargs=dict(x="x", y="y"), expected=RequiredFieldMissingError("required field .* z")),
+        # Test configuring a function with `fn` as an arg.
+        dict(fn=lambda fn: fn + 1, kwargs=dict(fn=1), expected=ValueError("'fn' parameter")),
+        # Test configuring a function with `_` as an arg.
+        dict(fn=lambda _: 1, kwargs=dict(x=2), expected=ValueError("'_' parameter")),
+    )
+    def test_config_for_function(self, kwargs, fn=None, expected=None):
+        if fn is None:
+            fn = lambda x, y, z: (x, y, z)
+
+        def build_and_invoke():
+            cfg = config.config_for_function(fn)
+            return cfg.set(**kwargs).instantiate()
+
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                build_and_invoke()
+        else:
+            self.assertEqual(build_and_invoke(), expected)
+
     def test_to_dict_and_debug_string(self):
         def fn_with_args(*args):
             return list(args)
@@ -651,13 +687,19 @@ class ConfigTest(parameterized.TestCase):
 
         # Set the value if the key exists.
         self.assertIsNone(cfg.vlog)
-        maybe_set_config(cfg, "vlog", 1)
+        maybe_set_config(cfg, vlog=1)
         self.assertEqual(cfg.vlog, 1)
 
         # Do nothing if the key does not exist.
         not_exist_key = "not_exist_field"
         self.assertFalse(hasattr(cfg, not_exist_key))
-        maybe_set_config(cfg, not_exist_key, 3)
+        maybe_set_config(cfg, **{not_exist_key: 3})
+        self.assertFalse(hasattr(cfg, not_exist_key))
+
+        # Set multiple keys.
+        maybe_set_config(cfg, vlog=2, dtype=jnp.float32, not_exist_field=4)
+        self.assertEqual(cfg.vlog, 2)
+        self.assertEqual(cfg.dtype, jnp.float32)
         self.assertFalse(hasattr(cfg, not_exist_key))
 
 

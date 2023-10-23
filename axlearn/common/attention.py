@@ -41,15 +41,16 @@ On `attention_logit_biases`:
 """
 # pylint: disable=abstract-method,too-many-lines
 import enum
+import functools
 import math
 from enum import Enum, unique
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
 
 import jax
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
-from axlearn.common import param_init
+from axlearn.common import ops, param_init
 from axlearn.common.base_layer import (
     BaseLayer,
     FactorizationSpec,
@@ -898,7 +899,9 @@ class FusedQKVLinear(BaseQKVLinear):
         return self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
-def _rotary_sinusoidal_positional_embeddings(positions: Tensor, max_len: int, dim: int) -> Tensor:
+def _rotary_sinusoidal_positional_embeddings(
+    *, positions: Tensor, max_len: int, dim: int, theta: float = 10000.0
+) -> Tensor:
     """Generate the sin/cos positional embedding.
 
     Ref:
@@ -908,13 +911,14 @@ def _rotary_sinusoidal_positional_embeddings(positions: Tensor, max_len: int, di
         positions: A tensor representing the token position IDs with shape [seq_len].
         max_len: The max length of the input sequence.
         dim: The dimensionality of the positional embedding.
+        theta: A parameter to scale the frequencies.
 
     Returns:
         Rotary Positional Embedding with shape [seq_len, dim].
     """
     exponents = jnp.arange(dim).astype(jnp.float32)
     pos_array = jnp.arange(max_len).astype(jnp.float32)
-    exponents = jnp.power(10000, 2 * (exponents // 2) / dim)
+    exponents = jnp.power(theta, 2 * (exponents // 2) / dim)
     position_enc = jnp.expand_dims(pos_array, 1) / jnp.expand_dims(exponents, 0)
 
     rope_part_1 = jnp.sin(position_enc[:, 0::2])
@@ -936,6 +940,7 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
 
         max_len: Required[int] = REQUIRED  # The max length of the input sequence.
         dim: Required[int] = REQUIRED  # The dimensionality of the positional embedding.
+        theta: float = 10000.0  # The scale of base frequency.
 
     def forward(self, positions: Tensor) -> Tensor:
         """
@@ -959,7 +964,9 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
                 f"Seq. length ({seq_len}) should be less than or "
                 "equal to max length ({cfg.max_len})"
             )
-        return _rotary_sinusoidal_positional_embeddings(positions, cfg.max_len, cfg.dim)
+        return _rotary_sinusoidal_positional_embeddings(
+            positions=positions, max_len=cfg.max_len, dim=cfg.dim, theta=cfg.theta
+        )
 
 
 def apply_rotary_position_embeddings(
@@ -1053,9 +1060,10 @@ class RoFormerQKVLinear(BaseQKVLinear):
     ) -> BaseQKVLinear.Output:
         cfg = self.config
         query, key, value = self.i_proj(query, key=key, value=value)
-        # Query should has shape of [batch_size, num_len, num_heads, dim]
-        positions = jnp.arange(cfg.max_seq_length)
-        # sinusoidal_pos_emb shape should be [1, num_len, 1, dim]
+        # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
+        # So `positions` will be in range [0, seq_len - 1).
+        positions = jnp.arange(query.shape[1])
+        # sinusoidal_pos_emb shape should be [1, seq_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(self.rope_pos_emb_layer.forward(positions), [0, 2])
         sinusoidal_pos_emb = sinusoidal_pos_emb.astype(query.dtype)
         query, key, value = apply_rotary_position_embeddings(
@@ -1102,6 +1110,45 @@ class PerDimScale(BaseLayer):
         return (x * scale).astype(x.dtype)
 
 
+ScaleFn = Callable[[int], float]  # A function mapping per_head_dim to a scale.
+
+
+def constant_scale_fn(value: float) -> ScaleFn:
+    """A constant scale function for `MultiheadAttention`.
+
+    Example:
+        `key_scale = config_for_function(constant_scale_fn).set(value=0.01)`
+
+    Args:
+        value: The value to scale by.
+
+    Returns:
+        A `ScaleFn` that always returns `value`.
+    """
+
+    def constant_function(per_head_dim: int) -> float:
+        del per_head_dim
+        return value
+
+    return constant_function
+
+
+def pow_scale_fn(exp: float) -> ScaleFn:
+    """A scale function for `MultiheadAttention` that computes `per_head_dim ** exp`.
+
+    Example:
+        `query_scale = config_for_function(pow_scale_fn).set(exp=-0.5)`
+
+    Args:
+        exp: The exponent.
+
+    Returns:
+        A `ScaleFn` that computes `per_head_dim ** exp`.
+    """
+
+    return functools.partial(pow, exp=exp)
+
+
 class MultiheadAttention(BaseLayer):
     """A basic multi-head attention layer.
 
@@ -1128,6 +1175,12 @@ class MultiheadAttention(BaseLayer):
         output_linear: MultiheadOutputLinear.Config = MultiheadOutputLinear.default_config()
         # The dropout layer.
         dropout: Dropout.Config = Dropout.default_config()
+        # The config for a function to compute a scale factor for the query matrix.
+        # If None, then self.head_dim() ** -0.5.
+        query_scale: Optional[InstantiableConfig[ScaleFn]] = None
+        # The config for a function to compute a scale factor for the key matrix.
+        # If None, then 1.
+        key_scale: Optional[InstantiableConfig[ScaleFn]] = None
         # A vector to apply per dimension scale to the query projection.
         per_dim_scale: Optional[PerDimScale.Config] = None
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
@@ -1154,6 +1207,14 @@ class MultiheadAttention(BaseLayer):
         self._add_child("dropout", cfg.dropout)
         if cfg.per_dim_scale:
             self._add_child("per_dim_scale", cfg.per_dim_scale.set(dim=self.per_head_dim()))
+        self._query_scale = self.default_query_scale_config()
+        if cfg.query_scale is not None:
+            self._query_scale = cfg.query_scale
+        self._query_scale = self._query_scale.instantiate()
+        self._key_scale = self.default_key_scale_config()
+        if cfg.key_scale is not None:
+            self._key_scale = cfg.key_scale
+        self._key_scale = self._key_scale.instantiate()
 
     def output_dim(self):
         cfg = self.config
@@ -1313,16 +1374,34 @@ class MultiheadAttention(BaseLayer):
         )
         return output
 
-    def _scale_query(self, q_proj: Tensor) -> Tensor:
+    T = TypeVar("T", bound=Union[float, Tensor])
+
+    def _scale_query(self, q_proj: T) -> T:
         cfg = self.config
         if cfg.per_dim_scale is not None:
             # The Lingvo MultiheadAttention applies a per_dim_scale on q_proj:
             # https://github.com/tensorflow/lingvo/blob/41212226eac7a26491790c2bd476b78493f93ff6/lingvo/core/batch_major_attention.py#L790
             q_proj = self.per_dim_scale(q_proj)
+        scale = self._query_scale(self.per_head_dim())
+        q_proj = q_proj * scale
+        if isinstance(q_proj, float):
+            return q_proj
+        # Force multiplying q_proj by scale before multiplying it by k_proj.
+        # This prevents constant folding of the scale factors for q_proj
+        # and k_proj, allowing increased numerical stability if the user
+        # splits the scale factor between them.
+        return ops.forward_optimization_barrier(q_proj)
 
-        q_scale = self.per_head_dim() ** -0.5
-        q_proj = q_proj * q_scale
-        return q_proj
+    def _scale_key(self, k_proj: T) -> T:
+        scale = self._key_scale(self.per_head_dim())
+        k_proj = k_proj * scale
+        if isinstance(k_proj, float):
+            return k_proj
+        # Force multiplying k_proj by scale before multiplying it by q_proj.
+        # This prevents constant folding of the scale factors for q_proj
+        # and k_proj, allowing increased numerical stability if the user
+        # splits the scale factor between them.
+        return ops.forward_optimization_barrier(k_proj)
 
     def _cap_logits(self, logits: Tensor) -> Tensor:
         """Caps the logits with tanh."""
@@ -1334,6 +1413,7 @@ class MultiheadAttention(BaseLayer):
 
     def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
         q_proj = self._scale_query(q_proj)
+        k_proj = self._scale_key(k_proj)
         return jnp.einsum("btnh,bsnh->bnts", q_proj, k_proj)
 
     def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
@@ -1418,6 +1498,18 @@ class MultiheadAttention(BaseLayer):
             cached_states=cached_states,
             attention_logit_biases=attention_logit_biases,
         )
+
+    @staticmethod
+    def default_query_scale_config() -> InstantiableConfig[ScaleFn]:
+        """The config for the default function used to compute the query scale."""
+
+        return config_for_function(pow_scale_fn).set(exp=-0.5)
+
+    @staticmethod
+    def default_key_scale_config() -> InstantiableConfig[ScaleFn]:
+        """The config for the default function used to compute the key scale."""
+
+        return config_for_function(constant_scale_fn).set(value=1)
 
 
 def rel_pos_to_abs_pos(x: Tensor) -> Tensor:

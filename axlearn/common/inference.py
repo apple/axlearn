@@ -202,8 +202,6 @@ class InferenceRunner(Module):
             utils.validate_float_dtype(cfg.inference_dtype)
 
         # Create device mesh.
-        if not jax.config.jax_array:  # pylint: disable=no-member
-            raise NotImplementedError(f"{self.__class__.__name__} requires jax_array=True")
         logging.info(
             "Devices: global=%s local=%s %s",
             jax.device_count(),
@@ -345,7 +343,7 @@ class InferenceRunner(Module):
                     self._inference_runner_state_partition_specs.prng_key,
                     data_partition_spec,  # Input batch.
                 ),
-                out_axis_resources=(
+                out_shardings=(
                     self._inference_runner_state_partition_specs.prng_key,
                     data_partition_spec,  # Output batch.
                     None,  # Summaries.

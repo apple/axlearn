@@ -610,7 +610,7 @@ def resnet_imagenet_trainer():
     trainer_cfg.checkpointer.keep_every_n_steps = 12_510
     trainer_cfg.summary_writer.write_every_n_steps = 100
 
-+   # Return the final traier config.
++   # Return the final trainer config.
 +   return trainer_cfg.set(name="resnet_imagenet")
 
 

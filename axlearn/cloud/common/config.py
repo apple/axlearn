@@ -62,11 +62,11 @@ def load_configs(
         config_file = user_config_file
 
     if required and config_file is None:
-        # TODO(markblee): Link to docs once available.
         logging.error(
             "A config file could not be found; please create one first. "
-            "Please refer to the docs for instructions. Please also make sure the config file "
-            "can be found in one of: %s",
+            "Please refer to the docs for instructions: "
+            "https://github.com/apple/axlearn/blob/main/docs/01-start.md#preparing-the-cli. "
+            "Please also make sure the config file can be found in one of: %s",
             _config_search_paths(),
         )
         sys.exit(1)

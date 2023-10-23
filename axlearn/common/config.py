@@ -216,7 +216,9 @@ def validate_config_field_value(value: Any) -> None:
             RequiredFieldValue,
             type,
             types.FunctionType,
+            types.BuiltinFunctionType,
             types.MethodType,
+            types.BuiltinMethodType,
             int,
             float,
             str,
@@ -272,6 +274,9 @@ def _validate_and_transform_field(instance, attribute, value):
     # If we do not copy here, all Config instances will share the same mutable Linear.Config
     # instance.
     return copy.deepcopy(value)
+
+
+_ConfigBase = TypeVar("_ConfigBase", bound="ConfigBase")
 
 
 class ConfigBase:
@@ -570,7 +575,7 @@ class InstantiableConfig(Generic[T], ConfigBase):
         raise NotImplementedError(type(self))
 
 
-ConfigOr = Union[T, InstantiableConfig]
+ConfigOr = Union[T, InstantiableConfig[T]]
 
 
 def maybe_instantiate(x: ConfigOr[T]) -> T:
@@ -726,6 +731,28 @@ def _config_class_for_function(fn: F) -> Type[FunctionConfigBase]:
 
 
 def config_for_function(fn: Callable[..., T]) -> Union[Any, FunctionConfigBase[T]]:
+    """Returns an instance of FunctionConfigBase, which invokes `fn` upon instantiation.
+
+    Example:
+        ```
+        cfg = config_for_function(pow).set(exp=2)
+        assert cfg.set(base=3).instantiate() == 9
+        ```
+
+    Args:
+        fn: The function to wrap.
+
+    Returns:
+        A Config that when instantiated, invokes `fn` based on any config fields that have been set.
+    """
+    fn_sig = inspect.signature(fn)
+    # attrs strips leading underscores, resulting in '_' becoming ''. We could get around this via
+    # using an alias, but the safer option is to require explicit names for params. See:
+    # https://github.com/python-attrs/attrs/issues/391
+    # https://github.com/python-attrs/attrs/issues/945
+    for param in ["fn", "_"]:
+        if param in fn_sig.parameters:
+            raise ValueError(f"Configured function {fn} should not have a '{param}' parameter.")
     config_cls = _config_class_for_function(fn)
     return config_cls(fn=fn)
 
@@ -770,8 +797,9 @@ def config_for_class(cls: Type[T]) -> Union[Any, ClassConfigBase[T]]:
     return config_cls(klass=cls)
 
 
-def maybe_set_config(cfg: Configurable.Config, key: str, value: Any):
-    """Sets `key` in the given `cfg` to `value` if the key exists."""
-    if hasattr(cfg, key):
-        setattr(cfg, key, value)
+def maybe_set_config(cfg: _ConfigBase, **kwargs) -> _ConfigBase:
+    """Applies **kwargs to the given `cfg` if the keys exist."""
+    for key, value in kwargs.items():
+        if hasattr(cfg, key):
+            setattr(cfg, key, value)
     return cfg

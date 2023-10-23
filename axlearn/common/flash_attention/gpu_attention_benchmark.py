@@ -72,7 +72,8 @@ import jax
 import jax.numpy as jnp
 import triton  # pytype: disable=import-error
 
-from axlearn.common.flash_attention.attention import mha, mha_reference
+from axlearn.common.flash_attention.gpu_attention import flash_attention
+from axlearn.common.flash_attention.utils import mha_reference
 
 
 def _perf_report(prefix: str):
@@ -153,7 +154,7 @@ def bench_flash_attention(
         )
 
         if "triton" in library:
-            fn = lambda: mha(q, k, v, bias)
+            fn = lambda: flash_attention(q, k, v, bias)
         else:
             fn = lambda: mha_reference(q, k, v, bias)
         ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
@@ -188,7 +189,7 @@ def bench_flash_attention_backward(
 
             @jax.jit
             def test_fn(q, k, v, bias):
-                return mha(q, k, v, bias).sum()
+                return flash_attention(q, k, v, bias).sum()
 
             test_bwd = jax.grad(test_fn, argnums=(0, 1, 2))
             fn = lambda: test_bwd(q, k, v, bias)

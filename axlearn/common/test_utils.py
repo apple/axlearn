@@ -5,6 +5,7 @@ import contextlib
 import copy
 import dataclasses
 import os
+import re
 import tempfile
 from collections import OrderedDict
 from functools import partial
@@ -49,17 +50,6 @@ from axlearn.common.utils import (
     set_data_dir,
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
-
-# Instead of running setup() in TestCase.setUp(), we need to run it here, because setUp() runs
-# after parameterized.parameters(), so if we have
-#     @parameterized.parameters(
-#         {
-#             "data": jnp.array([[1.0, 0.8, 0, 0]], dtype=jnp.float32),
-#         }
-#     )
-# `data` will be of type jax.DeviceArray() instead of jax.Array() because we haven't called
-# jax.config.update("jax_array", True) yet.
-utils_spmd.setup()
 
 # See utils_spmd.py for where we set "jax_default_prng_impl".
 _default_prng_impl = "rbg"
@@ -110,6 +100,23 @@ def as_local_tensor(x: Tensor) -> NestedTensor:
     raise NotImplementedError(f"{type(x)}: {x}")
 
 
+def clean_hlo(hlo: str) -> str:
+    """Returns a cleaned version of `hlo` with non-functional parts that may impact test reliability
+    removed.
+
+    Args:
+        hlo: The hlo to clean.
+
+    Returns:
+        A cleaned version of `hlo`.
+    """
+    # Matches an escaped string literal. E.g., "hello, world\"\\"
+    escaped_str = '"' + r"""([^"\\]|\\\\|\\")*""" + '"'
+    metadata_value = "(" + escaped_str + "|" + r"\d+" + ")"
+    pattern = r"metadata=\{(\w+=" + metadata_value + r"\s*)*\}"
+    return re.sub(pattern=pattern, repl="", string=hlo)
+
+
 class ParameterConversionFn(Protocol):
     def __call__(self, src: Any, *, dst_layer: BaseLayer) -> NestedTensor:
         """Converts parameters from `src` to parameters for `dst_layer`."""
@@ -123,6 +130,7 @@ class TestCase(parameterized.TestCase):
         return "FAKE"
 
     def setUp(self):
+        utils_spmd.setup()
         push_data_dir(self.data_dir)
 
     def tearDown(self) -> None:

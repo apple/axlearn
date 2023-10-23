@@ -54,6 +54,7 @@ from axlearn.common.utils import (
     flatten_items,
     get_data_dir,
     get_recursively,
+    infer_mesh_shape,
     input_partition_spec,
     match_regex_rules,
     prune_tree,
@@ -1105,6 +1106,30 @@ class DeviceMeshTest(TestCase):
         # Check that the constructed mesh has the expected shape.
         device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
         self.assertEqual(device_mesh.shape, logical_mesh)
+
+
+class InferMeshShapeTest(TestCase):
+    """Tests infer_mesh_shape."""
+
+    def test_infer_mesh_shape_config(self):
+        # When mesh sinfer_mesh_shape
+        mesh_shape = infer_mesh_shape((4, 1, 8, 1))
+        self.assertEqual(mesh_shape, (4, 1, 8, 1))
+
+        # When there is mutiple -1
+        with self.assertRaises(ValueError):
+            infer_mesh_shape((-1, 1, -1, 8))
+
+        # When num_devices is not a mutiple of products of mesh_shape
+        with self.assertRaises(ValueError):
+            infer_mesh_shape((-1, 1, 8, 1), num_devices=4)
+
+        # When one -1 for a valid mesh shape
+        mesh_shape = infer_mesh_shape((-1, 1, 8, 1), num_devices=32)
+        self.assertEqual(mesh_shape, (4, 1, 8, 1))
+
+        mesh_shape = infer_mesh_shape((4, 1, 8, -1), num_devices=32)
+        self.assertEqual(mesh_shape, (4, 1, 8, 1))
 
 
 if __name__ == "__main__":

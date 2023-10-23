@@ -6,7 +6,7 @@
 # Copyright 2023 The jax_triton Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
 
-"""Tests FlashAttention kernels.
+"""Tests GPU FlashAttention kernels.
 
 Currently tested on A100.
 """
@@ -25,7 +25,8 @@ import pytest
 try:
     import jax_triton as jt  # pytype: disable=import-error  # pylint: disable=import-error
 
-    from axlearn.common.flash_attention.attention import mha, mha_reference
+    from axlearn.common.flash_attention.gpu_attention import flash_attention
+    from axlearn.common.flash_attention.utils import mha_reference
 
     if jt.get_compute_capability(0) < 80:
         pytest.skip(reason="Incompatible hardware.", allow_module_level=True)
@@ -79,7 +80,7 @@ def test_fwd_against_ref(
         @jax.jit
         def impl(q, k, v, bias):
             fn = functools.partial(
-                mha,
+                flash_attention,
                 block_q=block_size,
                 block_k=block_size,
                 causal=causal,
@@ -90,7 +91,11 @@ def test_fwd_against_ref(
 
     else:
         impl = functools.partial(
-            mha, block_q=block_size, block_k=block_size, causal=causal, softmax_scale=sm_scale
+            flash_attention,
+            block_q=block_size,
+            block_k=block_size,
+            causal=causal,
+            softmax_scale=sm_scale,
         )
 
     o = impl(q, k, v, bias)
@@ -142,12 +147,12 @@ def test_bwd_against_ref(
     sm_scale = q.shape[-1] ** -0.5
 
     # Compare outputs.
-    jax_out = mha(q, k, v, bias, causal=causal, softmax_scale=sm_scale)
+    jax_out = flash_attention(q, k, v, bias, causal=causal, softmax_scale=sm_scale)
     jax_ref_out = mha_reference(q, k, v, bias, causal=causal, softmax_scale=sm_scale)
     chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005)
 
     def fn(q, k, v, bias):
-        return mha(
+        return flash_attention(
             q,
             k,
             v,

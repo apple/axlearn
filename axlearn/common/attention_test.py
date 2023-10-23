@@ -16,7 +16,7 @@
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
 from itertools import combinations
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
 import jax
 import numpy as np
@@ -32,7 +32,7 @@ from transformers.models.roberta import modeling_roberta as hf_roberta
 from transformers.models.roformer import modeling_roformer as hf_roformer
 from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
-from axlearn.common import attention, utils
+from axlearn.common import attention, test_utils, utils
 from axlearn.common.attention import (
     NEG_INF,
     BaseStackedTransformerLayer,
@@ -64,7 +64,7 @@ from axlearn.common.attention import (
     xl_attention_logits,
 )
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec, RematSpec
-from axlearn.common.config import config_class
+from axlearn.common.config import InstantiableConfig, config_class, config_for_function
 from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
@@ -784,7 +784,6 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             )
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
 
-    #: TODO: (Chen Chen) Add a test to reproduce LLaMA1 attention with rotary_value=False.
     @parameterized.parameters([True, False])
     def test_rope_self_attention(self, rotary_value: bool):
         model_dim = 32
@@ -828,9 +827,124 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         )
 
 
+def llama_reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """LLaMA reshape for broadcast function.
+
+    Ref:
+    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L55-L60
+    """
+    ndim = x.ndim
+    assert 0 <= 1 < ndim
+    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
+    shape = [
+        d if i == 1 or i == ndim - 1 else 1  # pylint: disable=consider-using-in
+        for i, d in enumerate(x.shape)
+    ]
+    return freqs_cis.view(*shape)
+
+
+def llama_apply_rotary_emb(
+    *,
+    xq: torch.Tensor,
+    xk: torch.Tensor,
+    freqs_cis: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """LLaMA apply rotary embeddings to input tensors using the given frequency tensor.
+
+    Ref:
+    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L63-L73
+    """
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    freqs_cis = llama_reshape_for_broadcast(freqs_cis, xq_)
+    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
+    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    return xq_out.type_as(xq), xk_out.type_as(xk)
+
+
+class RefLLaMAAttention(torch.nn.Module):
+    """Reference Implementation of LLaMA-1.
+
+    Ref:
+    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L76
+
+    The modifications are removing the dependency of ColumnParallelLinear and RowParallelLinear.
+    """
+
+    def __init__(self, n_heads: int, dim: int, max_batch_size: int, max_seq_len: int):
+        super().__init__()
+
+        self.n_local_heads = n_heads
+        self.head_dim = dim // n_heads
+
+        self.wq = torch.nn.Linear(
+            dim,
+            n_heads * self.head_dim,
+            bias=False,
+        )
+        self.wk = torch.nn.Linear(
+            dim,
+            n_heads * self.head_dim,
+            bias=False,
+        )
+        self.wv = torch.nn.Linear(
+            dim,
+            n_heads * self.head_dim,
+            bias=False,
+        )
+        self.wo = torch.nn.Linear(
+            n_heads * self.head_dim,
+            dim,
+            bias=False,
+        )
+
+        self.cache_k = torch.zeros((max_batch_size, max_seq_len, self.n_local_heads, self.head_dim))
+        self.cache_v = torch.zeros((max_batch_size, max_seq_len, self.n_local_heads, self.head_dim))
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        start_pos: int,
+        freqs_cis: torch.Tensor,
+        mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        bsz, seqlen, _ = x.shape
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+
+        xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+
+        xq, xk = llama_apply_rotary_emb(xq=xq, xk=xk, freqs_cis=freqs_cis)
+
+        self.cache_k = self.cache_k.to(xq)
+        self.cache_v = self.cache_v.to(xq)
+
+        self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
+        self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
+
+        keys = self.cache_k[:bsz, : start_pos + seqlen]
+        values = self.cache_v[:bsz, : start_pos + seqlen]
+
+        xq = xq.transpose(1, 2)
+        keys = keys.transpose(1, 2)
+        values = values.transpose(1, 2)
+        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
+        if mask is not None:
+            scores = scores + mask  # (bs, n_local_heads, slen, cache_len + slen)
+        scores = torch.nn.functional.softmax(scores.float(), dim=-1).type_as(xq)
+        output = torch.matmul(scores, values)  # (bs, n_local_heads, slen, head_dim)
+        output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
+
+        return self.wo(output)
+
+
 class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
-    def llama_ref_precompute_freqs_cis(self, dim: int, end: int, theta: float = 10000.0):
+    def llama_ref_precompute_freqs_cis(
+        self, *, dim: int, end: int, theta: float = 10000.0
+    ) -> torch.Tensor:
         """Reference LLaMA-1 implemention.
+
         Ref:
         https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L47-L52
         """
@@ -840,29 +954,37 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
         return freqs_cis
 
-    def test_against_llama_for_precompute_freqs_cis(self):
+    @parameterized.parameters([10000.0, 1000000.0])
+    def test_against_llama_for_precompute_freqs_cis(self, theta: float):
         max_len = 100
         dim = 32
         positions = jnp.arange(max_len)
-        ajax_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
-            max_len=max_len, dim=dim
+        axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
+            max_len=max_len,
+            dim=dim,
+            theta=theta,
         )
-        ajax_rope_layer = ajax_rope_cfg.set(name="rope").instantiate(parent=None)
-        ajax_rope, _ = F(
-            ajax_rope_layer,
+        axlearn_rope_layer = axlearn_rope_cfg.set(name="rope").instantiate(parent=None)
+        axlearn_rope, _ = F(
+            axlearn_rope_layer,
             inputs=dict(positions=positions),
-            state=ajax_rope_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0)),
+            state=axlearn_rope_layer.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(0)
+            ),
             is_training=True,
             prng_key=jax.random.PRNGKey(0),
         )
-        llama_rope = self.llama_ref_precompute_freqs_cis(dim, max_len)
-        ajax_imag, ajax_real = ajax_rope.split(2, axis=-1)
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len, theta=theta)
+        axlearn_imag, axlearn_real = jnp.split(axlearn_rope, 2, axis=-1)
         llama_real, llama_imag = llama_rope.real, llama_rope.imag
-        assert_allclose(llama_real, as_tensor(ajax_real))
-        assert_allclose(llama_imag, as_tensor(ajax_imag))
+        assert_allclose(llama_real, as_tensor(axlearn_real))
+        assert_allclose(llama_imag, as_tensor(axlearn_imag))
 
-    @parameterized.parameters([jnp.float32, jnp.bfloat16])
-    def test_roformer_qkv_linear(self, dtype: jnp.dtype):
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.bfloat16),
+        max_seq_len=(100, 6),
+    )
+    def test_roformer_qkv_linear(self, dtype: jnp.dtype, max_seq_len: int):
         seq_len = 6
         batch_size = 2
         model_dim = 16
@@ -872,7 +994,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             RoFormerQKVLinear.default_config()
             .set(
                 name="roformer_qkv_linear",
-                max_seq_length=seq_len,
+                max_seq_length=max_seq_len,
                 query_dim=model_dim,
                 key_dim=model_dim,
                 value_dim=model_dim,
@@ -899,6 +1021,103 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         self.assertEqual(layer_outputs.query.dtype, dtype)
         self.assertEqual(layer_outputs.key.dtype, dtype)
         self.assertEqual(layer_outputs.value.dtype, dtype)
+
+    def test_against_llama_for_apply_rotary_emb(self):
+        max_len = 100
+        dim = 32
+        batch_size = 4
+        positions = jnp.arange(max_len)
+        axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
+            max_len=max_len, dim=dim
+        )
+        axlearn_rope_layer = axlearn_rope_cfg.set(name="rope").instantiate(parent=None)
+        axlearn_rope, _ = F(
+            axlearn_rope_layer,
+            inputs=dict(positions=positions),
+            state=axlearn_rope_layer.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(0)
+            ),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len)
+        rng = np.random.default_rng(seed=123)
+        query = rng.random([batch_size, max_len, dim])
+        key = rng.random([batch_size, max_len, dim])
+        value = rng.random([batch_size, max_len, dim])
+        llama_q, llama_k = llama_apply_rotary_emb(
+            xq=torch.Tensor(query), xk=torch.Tensor(key), freqs_cis=llama_rope
+        )
+        axlearn_q, axlearn_k, _ = attention.apply_rotary_position_embeddings(
+            query=jnp.asarray(query),
+            key=jnp.asarray(key),
+            value=jnp.asarray(value),
+            sinusoidal_pos=axlearn_rope,
+            rotary_value=False,
+        )
+
+        assert_allclose(as_tensor(llama_q.reshape(batch_size, max_len, -1)), axlearn_q, atol=5e-6)
+        assert_allclose(as_tensor(llama_k.reshape(batch_size, max_len, -1)), axlearn_k, atol=5e-6)
+
+    def test_against_llama_for_attention(self):
+        max_len = 100
+        dim = 32
+        batch_size = 4
+        n_heads = 4
+        rng = np.random.default_rng(seed=123)
+        x = rng.random([batch_size, max_len, dim])
+        ref_llama = RefLLaMAAttention(
+            n_heads=n_heads, dim=dim, max_batch_size=batch_size, max_seq_len=max_len
+        )
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim // n_heads, end=max_len)
+        llama_output = ref_llama.forward(torch.Tensor(x), 0, llama_rope, mask=None)
+
+        rope_mha_cfg = attention.MultiheadAttention.default_config().set(
+            query_dim=dim,
+            key_dim=dim,
+            value_dim=dim,
+            num_heads=n_heads,
+            input_linear=RoFormerQKVLinear.default_config().set(
+                max_seq_length=max_len,
+                rotary_value=False,
+            ),
+        )
+
+        rope_mha = rope_mha_cfg.set(name="rope").instantiate(parent=None)
+
+        state = rope_mha.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        state["i_proj"]["i_proj"]["q_proj"]["weight"] = jnp.asarray(
+            ref_llama.wq.weight.transpose(0, 1)
+            .reshape(dim, n_heads, dim // n_heads)
+            .detach()
+            .numpy()
+        )
+        state["i_proj"]["i_proj"]["k_proj"]["weight"] = jnp.asarray(
+            ref_llama.wk.weight.transpose(0, 1)
+            .reshape(dim, n_heads, dim // n_heads)
+            .detach()
+            .numpy()
+        )
+        state["i_proj"]["i_proj"]["v_proj"]["weight"] = jnp.asarray(
+            ref_llama.wv.weight.transpose(0, 1)
+            .reshape(dim, n_heads, dim // n_heads)
+            .detach()
+            .numpy()
+        )
+        state["o_proj"]["weight"] = jnp.asarray(
+            ref_llama.wo.weight.reshape(dim, n_heads, dim // n_heads).detach().numpy()
+        )
+
+        axlearn_output, _ = F(
+            rope_mha,
+            inputs=dict(query=jnp.asarray(x)),
+            state=state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        assert_allclose(
+            as_tensor(llama_output.reshape(batch_size, max_len, -1)), axlearn_output.data
+        )
 
 
 class MultiheadLinearInitTest(TestCase):
@@ -1505,6 +1724,114 @@ class MultiheadAttentionTest(TestCase):
 
         assert_allclose(decoder_output, forward_outputs.data)
         assert_allclose(decoder_probs, forward_outputs.probs)
+
+    def _scale_query_kwargs(
+        self,
+        *,
+        query_scale: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+        key_scale: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+    ):
+        model_dim = 16
+        if isinstance(query_scale, (int, float)):
+            query_scale = config_for_function(attention.constant_scale_fn).set(value=query_scale)
+        if isinstance(key_scale, (int, float)):
+            key_scale = config_for_function(attention.constant_scale_fn).set(value=key_scale)
+
+        cfg = attention.MultiheadAttention.default_config().set(
+            name="test",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=2,
+            query_scale=query_scale,
+            key_scale=key_scale,
+        )
+        cfg.input_linear.layer.bias = False
+        cfg.output_linear.bias = False
+        layer = cfg.instantiate(parent=None)
+
+        param_specs = layer.create_parameter_specs_recursively()
+        layer_params = jax.tree_util.tree_map(
+            lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
+        )
+
+        batch_size = 3
+        tgt_len = 10  # Must be even.
+        query = jnp.concatenate(
+            (
+                jnp.ones([batch_size, tgt_len // 2, model_dim]),
+                jnp.zeros([batch_size, tgt_len // 2, model_dim]),
+            ),
+            axis=1,
+        )
+        kwargs = dict(
+            module=layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=dict(query=query),
+        )
+        return kwargs
+
+    @parameterized.product(query_scale=[None, 7], key_scale=[None, 11])
+    def test_scale_query_key(self, *, query_scale: Optional[float], key_scale: Optional[float]):
+        kwargs = self._scale_query_kwargs(query_scale=query_scale, key_scale=key_scale)
+        forward_outputs, _ = F(**kwargs)
+        if query_scale is None:
+            query_scale = kwargs["module"].per_head_dim() ** -0.5
+        if key_scale is None:
+            key_scale = 1
+        query_scale = float(query_scale)
+        key_scale = float(key_scale)
+        self.assertNestedAllClose(
+            forward_outputs.probs[0, 0, 0, 0],
+            # All ones matrix times all ones vector has l2 norm dim ** 1.5.
+            # Half of input tokens are all ones, half are all zeros.
+            jax.nn.sigmoid(
+                kwargs["inputs"]["query"].shape[-1] ** 3 * query_scale * key_scale,
+            )
+            / (kwargs["inputs"]["query"].shape[1] // 2),
+        )
+
+    def test_scale_query_key_dim_dependence(self):
+        query_scale = config_for_function(attention.pow_scale_fn).set(exp=1)
+        key_scale = config_for_function(attention.pow_scale_fn).set(exp=-1)
+        kwargs = self._scale_query_kwargs(query_scale=query_scale, key_scale=key_scale)
+        forward_outputs, _ = F(**kwargs)
+        self.assertNestedAllClose(
+            forward_outputs.probs[0, 0, 0, 0],
+            # All ones matrix times all ones vector has l2 norm dim ** 1.5.
+            # Half of input tokens are all ones, half are all zeros.
+            jax.nn.sigmoid(float(kwargs["inputs"]["query"].shape[-1] ** 3))
+            / (kwargs["inputs"]["query"].shape[1] // 2),
+        )
+
+    def test_scale_query_key_barrier(self):
+        """Tests that the scale factors are not combined.
+
+        Note that even without the barrier, it's not clear that they would be combined.
+        (They aren't on CPU even without the barrier.)
+        """
+        query_scale = 7
+        key_scale = 11
+        kwargs = self._scale_query_kwargs(query_scale=query_scale, key_scale=key_scale)
+
+        # Check optimized HLO scales by query_scale and key_scale as separate
+        # multiplications. This only checks the default backend, so it doesn't check
+        # what happens on gpu/tpu unless jax is configured to use them.
+        f = jax.jit(F, static_argnames=("module", "is_training"))
+        compile_options = dict(
+            xla_cpu_enable_fast_math=True,
+            xla_cpu_fast_math_honor_nans=False,
+            xla_cpu_fast_math_honor_infs=False,
+            xla_cpu_fast_math_honor_functions=False,
+            xla_cpu_fast_math_honor_division=False,
+        )
+        hlo = f.lower(**kwargs).compile(compile_options).as_text()
+        hlo = test_utils.clean_hlo(hlo)
+        self.assertIn(str(query_scale), hlo)
+        self.assertIn(str(key_scale), hlo)
+        self.assertNotIn(str(query_scale * key_scale), hlo)
 
 
 def oracle_xl_attention_logits(
@@ -2229,7 +2556,6 @@ class StackedTransformerTest(TestCase):
 
             all_params = []
             all_outputs = []
-            all_summaries = []
             all_gradients = []
             all_updates = []
             for stack_cfg in stack_configs:
@@ -2259,7 +2585,10 @@ class StackedTransformerTest(TestCase):
                 logging.info(
                     "%s.params=%s",
                     cls,
-                    jax.tree_util.tree_map(lambda x: f"{x.dtype}({x.shape})", layer_params),
+                    [
+                        f"{path}={value.dtype}({value.shape})"
+                        for path, value in flatten_items(layer_params)
+                    ],
                 )
 
                 def _loss(layer_params, data, mask, layer=layer):
@@ -2279,6 +2608,10 @@ class StackedTransformerTest(TestCase):
                 loss, (aux, layer_output_collection) = value
                 layer_outputs = (loss, aux)
 
+                # Note that we do not compare summaries across stack layer types because:
+                # (1) attention layers do not emit summaries yet;
+                # (2) pipelines emit per-microbatch summaries which have a different structure
+                #     than summaries from other stack layers.
                 summaries = layer_output_collection.summaries
                 logging.info(
                     "layer_outputs=%s summaries=%s",
@@ -2336,15 +2669,16 @@ class StackedTransformerTest(TestCase):
                     }
 
                 if cls == StackedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
                         x["stack"] = recursive_stack(x["stack"])
 
                 if cls == RepeatedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
                         x["stack"] = x["stack"]["repeat"]
 
                 if cls == PipelinedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
+                        logging.info("x=%s", shapes(x))
                         if cfg.stack.stage.klass == StackedTransformerLayer:
                             # First stack within each stage.
                             x["stack"]["pipeline"]["layer"] = recursive_stack(
@@ -2366,7 +2700,6 @@ class StackedTransformerTest(TestCase):
 
                 all_params.append(layer_params)
                 all_outputs.append(layer_outputs)
-                all_summaries.append(summaries)
                 all_gradients.append(grads)
                 all_updates.append(updates)
 
@@ -2391,7 +2724,6 @@ class StackedTransformerTest(TestCase):
                 # pylint: enable=protected-access
 
             self.assertNestedAllClose(all_params[0], all_params[1])
-            self.assertNestedAllClose(all_summaries[0], all_summaries[1])
             self.assertNestedAllClose(all_outputs[0], all_outputs[1])
             self.assertNestedAllClose(all_gradients[0], all_gradients[1])
             self.assertNestedAllClose(all_updates[0], all_updates[1])

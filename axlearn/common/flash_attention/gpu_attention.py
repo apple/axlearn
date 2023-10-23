@@ -10,7 +10,7 @@
 # Copyright 2023 The jax_triton Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
 
-"""Implements FlashAttention for jax with logit bias support.
+"""Implements FlashAttention for GPU in JAX with logit bias support.
 
 This implementation follows the original closely:
 https://github.com/HazyResearch/flash-attention/blob/9818f85fee29ac6b60c9214bce841f8109a18b1b/flash_attn/flash_attn_triton.py
@@ -175,13 +175,13 @@ def _mha_forward_kernel(
         "debug",
     ],
 )
-def mha(
+def flash_attention(
     query: Tensor,
     key: Tensor,
     value: Tensor,
     bias: Optional[Tensor] = None,
     softmax_scale: float = 1.0,
-    causal: bool = True,
+    causal: bool = False,
     block_q: int = 128,
     block_k: int = 128,
     backward_pass_impl: str = "triton",
@@ -612,27 +612,4 @@ def _mha_backward(
     return dq.astype(q.dtype), dk, dv, None
 
 
-mha.defvjp(_mha_forward, _mha_backward)
-
-
-@functools.partial(jax.jit, static_argnames=["softmax_scale", "causal"])
-def mha_reference(
-    q, k, v, bias: Optional[Tensor] = None, softmax_scale: float = 1.0, causal: bool = True
-):
-    """A simple jax attention implementation.
-
-    Reference:
-    https://github.com/jax-ml/jax-triton/blob/b11bef5805d663beb25057a07987c951f8b9f629/jax_triton/pallas/ops/attention.py#L356
-    """
-    q_seq_len = q.shape[1]
-    kv_seq_len = k.shape[1]
-    logits = jnp.einsum("bqhc,bkhc->bhqk", q, k).astype(jnp.float32)
-    if causal:
-        mask = jnp.tril(jnp.ones((1, 1, q_seq_len, kv_seq_len), dtype=bool))
-        mask = jnp.broadcast_to(mask, logits.shape)
-        logits = jnp.where(mask, logits, float("-inf"))
-    logits *= softmax_scale
-    if bias is not None:
-        logits += bias.astype(jnp.float32)
-    weights = jax.nn.softmax(logits).astype(v.dtype)
-    return jnp.einsum("bhqk,bkhc->bqhc", weights, v)
+flash_attention.defvjp(_mha_forward, _mha_backward)
