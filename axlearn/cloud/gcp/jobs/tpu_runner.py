@@ -538,6 +538,9 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             NUM_TPU_SLICES=flag_values.num_slices,
             XLA_FLAGS=f"--xla_dump_to=/output/{flag_values.name}/xla",
             TF_CPP_MIN_LOG_LEVEL=0,
+            # Forces TensorStore to retry failed requests.
+            TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60,
+            TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES=256,
         )
         vertexai_tb_uploader = None
         if is_vertexai_tensorboard_configured():
