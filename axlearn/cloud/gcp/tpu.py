@@ -414,7 +414,7 @@ def _create_multislice_tpu(
         status = get_queued_tpu_node_status(name, node=node)
         state = status["state"]
         logging.info("Queued resource %s is in state %s.", name, state)
-        if state in ["ACCEPTED", "PROVISIONING"]:
+        if state in ["ACCEPTED", "PROVISIONING", "WAITING_FOR_RESOURCES", "CREATING"]:
             # Either trying to find capacity or provisioning capacity.
             time.sleep(60)
         elif state == "ACTIVE":
