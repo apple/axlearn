@@ -15,7 +15,7 @@
 ## Introduction
 
 AXLearn is a library built on top of [JAX](https://jax.readthedocs.io/) and
-[XLA](https://www.tensorflow.org/xla) to support development of large-scale deep learning models.
+[XLA](https://www.tensorflow.org/xla) to support the development of large-scale deep learning models.
 
 AXLearn takes an object-oriented approach to the software engineering challenges that arise from
 building, iterating, and maintaining models.
@@ -24,7 +24,7 @@ integrate with other libraries such as [Flax](https://flax.readthedocs.io/) and
 [Hugging Face transformers](https://github.com/huggingface/transformers).
 
 AXLearn is built to scale.
-It supports training of models with up to hundreds of billions of parameters across thousands of
+It supports the training of models with up to hundreds of billions of parameters across thousands of
 accelerators at high utilization.
 It is also designed to run on public clouds and provides tools to deploy and manage jobs and data.
 Built on top of [GSPMD](https://arxiv.org/abs/2105.04663), AXLearn adopts a global computation
