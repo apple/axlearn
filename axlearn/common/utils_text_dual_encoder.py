@@ -23,7 +23,7 @@ from axlearn.common.state_builder import (
 )
 from axlearn.common.text_dual_encoder import TextEmbeddingStreamEncoder
 from axlearn.common.text_encoder import TextEmbeddingEncoder
-from axlearn.huggingface.hf_module import download_hf_models_from_gs
+from axlearn.huggingface.hf_module import download_hf_models_from_remote
 
 # Initializer that is consistent with Huggingface's initialization for BERT model.
 HF_PARAM_INIT = DefaultInitializer.default_config().set(
@@ -173,8 +173,7 @@ def hf_pretrained_builder_config(  # pylint: disable=dangerous-default-value
     from transformers import AutoModel
 
     def auto_from_pretrained(model_path: str):
-        if model_path.startswith("gs://"):
-            model_path = download_hf_models_from_gs(model_path)
+        model_path = download_hf_models_from_remote(model_path)
         return AutoModel.from_pretrained(model_path)
 
     builder = HuggingFacePreTrainedBuilder.default_config().set(
