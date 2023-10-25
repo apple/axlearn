@@ -15,7 +15,7 @@ conda create -n axlearn python=3.9
 conda activate axlearn
 ```
 
-The remaining steps depend on your machine hardware:
+The remaining steps depend on your machine's hardware:
 
 ### Intel (x86) Machines
 
@@ -637,7 +637,7 @@ Before launching experiments into the cloud, it's also recommended to write unit
 
 ### Summary
 
-Congratulations on getting this far! Hopefully you now have a taste of how to build experiments with AXLearn. Granted, this was a fairly quick overview of what AXLearn has to offer, and some of content may still feel abstract or foreign. For more details on the config system or other concepts, please refer to the [concepts page](02-concepts.md).
+Congratulations on getting this far! Hopefully, you now have a taste of how to build experiments with AXLearn. Granted, this was a fairly quick overview of what AXLearn has to offer, and some of the content may still feel abstract or foreign. For more details on the config system or other concepts, please refer to the [concepts page](02-concepts.md).
 
 The following section will cover how to launch your experiment in the cloud.
 
@@ -716,7 +716,7 @@ We can then test a simple `v4-8` command:
 axlearn gcp tpu start --name=$USER-test --tpu_type=v4-8 -- python3 -c "'import jax; print(jax.devices())'"
 ```
 
-This provisions a v4-8 TPU, installs `axlearn` on it, and runs the `python3` command that comes after `--`. As the job is running, any logs from the command will be sync'ed to GCS. Once the job completes, the TPU resources will be torn down.
+This provisions a v4-8 TPU, installs `axlearn` on it, and runs the `python3` command that comes after `--`. As the job is running, any logs from the command will be synced to GCS. Once the job is completed, the TPU resources will be torn down.
 
 ### Launching an Experiment
 
@@ -769,7 +769,7 @@ In an organization setting, it's typical to launch jobs from a centralized syste
 
 AXLearn provides such an orchestrator called the "bastion", which can run in GCP with minimal dependencies.
 
-It is often recommended to launch from bastion. Please see the [infrastructure docs](04-infrastructure.md) for instructions on how to set it up.
+It is often recommended to launch from the bastion. Please see the [infrastructure docs](04-infrastructure.md) for instructions on how to set it up.
 
 ## Next Steps
 
