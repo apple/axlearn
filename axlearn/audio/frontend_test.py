@@ -11,7 +11,7 @@ import pytest
 import tensorflow as tf
 from absl.testing import parameterized
 
-from axlearn.audio.frontend import LogMelFrontend, _ms_to_samples, scale_by_mean_std
+from axlearn.audio.frontend import LogMelFrontend, _ms_to_samples, normalize_by_mean_std
 from axlearn.audio.frontend_utils_test import (
     _fake_audio,
     _ref_framer,
@@ -125,8 +125,8 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
 
         # Compute again with scaling by pre-computed mean and std.
         mean, std = compute_mean_std(test_outputs)
-        cfg.scaling = config_for_function(
-            lambda: functools.partial(scale_by_mean_std, mean=mean.tolist(), std=std.tolist())
+        cfg.output_transformation = config_for_function(
+            lambda: functools.partial(normalize_by_mean_std, mean=mean.tolist(), std=std.tolist())
         )
         layer = cfg.set(name="test").instantiate(parent=None)
         test_outputs = self._jit_forward(layer, inputs, paddings)

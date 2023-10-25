@@ -28,7 +28,7 @@ from axlearn.common.module import Module
 from axlearn.common.utils import Tensor
 
 
-def scale_by_mean_std(
+def normalize_by_mean_std(
     x: Tensor, *, mean: Optional[Sequence[float]] = None, std: Optional[Sequence[float]] = None
 ) -> Tensor:
     """Scales the input by subtracting pre-computed `mean` and/or dividing by pre-computed `std`."""
@@ -63,8 +63,8 @@ class LogMelFrontend(BaseLayer):
         frame_size_ms: Required[float] = REQUIRED
         # Hop size in ms.
         hop_size_ms: Required[float] = REQUIRED
-        # Optional output scaling.
-        scaling: Optional[InstantiableConfig[Callable[[Tensor], Tensor]]] = None
+        # Optional output transformation. See `normalize_by_mean_std` for an example.
+        output_transformation: Optional[InstantiableConfig[Callable[[Tensor], Tensor]]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -79,9 +79,9 @@ class LogMelFrontend(BaseLayer):
         self._frame_size = int(frame_size)
         self._hop_size = int(hop_size)
 
-        self._scaling = None
-        if cfg.scaling is not None:
-            self._scaling = maybe_instantiate(cfg.scaling)
+        self._output_transformation = None
+        if cfg.output_transformation is not None:
+            self._output_transformation = maybe_instantiate(cfg.output_transformation)
 
         # Mel filterbank, used to convert magnitude spectrogram to mel spectrogram. Only needs to be
         # constructed once.
@@ -117,8 +117,8 @@ class LogMelFrontend(BaseLayer):
         spectrogram = magnitude_spectrogram(frames, fft_size=self._fft_size)
         # Convert to log-mel. [batch, num_frames, num_filters].
         outputs = linear_to_log_mel_spectrogram(spectrogram, weight_matrix=self._filterbank)
-        if self._scaling is not None:
-            outputs = self._scaling(outputs)
+        if self._output_transformation is not None:
+            outputs = self._output_transformation(outputs)
         # To identify padding frames, apply the framer to the input padding.
         # Consider a frame padded if it contains at least one padding sample.
         paddings = sliding_window(paddings, window_size=self._frame_size + 1, stride=self._hop_size)
