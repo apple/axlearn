@@ -365,9 +365,8 @@ def _create_multislice_tpu(
     project, zone = gcp_settings("project"), gcp_settings("zone")
     resource = _qrm_resource(credentials)
     attempt = 0
-    boot_timeout = (
-        3600  # If we haven't booted all slices after READY + this many seconds, raise exception.
-    )
+    # If we haven't booted all slices after READY + this many seconds, raise exception.
+    boot_timeout = 3600
     while True:
         node = get_queued_tpu_node(name, resource)
         if node is None:
@@ -432,9 +431,19 @@ def _create_multislice_tpu(
             return
         elif state in ["FAILED", "SUSPENDING", "SUSPENDED"]:
             logging.info("Deleting multislice TPU.")
+            # By default, blocks until deleted.
             _delete_multislice_tpu(name, credentials=credentials)
         elif state != "DELETING":
-            raise TPUCreationError(f"Unknown TPU state value: {state}")
+            # Poll until state change. Easier to track consecutive "unknown" count within this
+            # block.
+            for _ in range(10):
+                logging.warning("Unknown TPU state: %s. Will see if it resolves itself...", state)
+                time.sleep(60)
+                node = get_queued_tpu_node(name, resource)
+                if get_queued_tpu_node_status(name, node=node)["state"] != state:
+                    break
+            else:
+                raise TPUCreationError(f"TPU appears to be stuck in unknown state {state}.")
 
 
 def get_queued_tpu_node_status(name: str, *, node: Dict[str, Any]) -> Dict[str, Union[str, int]]:
