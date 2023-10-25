@@ -126,7 +126,7 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
         "dry_run", False, "Whether to run with dry-run scheduling.", flag_values=flag_values
     )
     flags.DEFINE_string(
-        "vm_type", "n2-standard-128", "Machine spec to boot for VM.", flag_values=flag_values
+        "vm_type", "n2-highmem-128", "Machine spec to boot for VM.", flag_values=flag_values
     )
     flags.DEFINE_integer("disk_size", 256, "VM disk size in GB.", flag_values=flag_values)
     flags.DEFINE_integer(
