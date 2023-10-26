@@ -308,30 +308,29 @@ def _tie_averaged_dcg(*, y_true: Tensor, y_score: Tensor, discount_factor: Tenso
         y_score: Predicted relevance scores with shape [num_items]. Users could mask y_score[i]
             with NEG_INF such that the i-th item is masked.
             The corresponding y_true[i] for a masked item must be 0.
-        discount_factor: Float tensor of shape [num_items] where element i
+        discount_factor: Float tensor of shape [max_k] where element i
             describes the discount factor the gain of item i is multiplied by.
 
     Returns:
-        A tensor of shape [max_k] (max_k == len(y_true) == len(y_score) == len(discount_factor))
-        where element k represents the tie-aware DCG@k.
+        A tensor of shape [max_k] where the k-th value (1-indexed) represents the tie-aware DCG@k.
     """
+    max_k = discount_factor.shape[0]
     # Get counts of unique scores and indices to the unique scores to restore the
-    # original sorted scores. Assume there are m "equivalence classes" (unique scores).
+    # original sorted scores.
     # inv shape: [num_items].
-    # counts shape: [num_items].
-    # In reality only the first [m] matters, the rest [m:] are all 0 and are for static shaping.
-    _, inv, counts = jnp.unique(
-        -y_score, return_inverse=True, return_counts=True, size=discount_factor.shape[0]
-    )
+    # counts shape: [max_k].
+    # We care about the counts of up to and including the first max_k equivalence classes.
+    # If there are fewer than max_k classes, the counts of the extra ones are 0s.
+    _, inv, counts = jnp.unique(-y_score, return_inverse=True, return_counts=True, size=max_k)
     # Get average gain for each equivalence class.
-    # Shape: [num_queries, m].
-    group_gains = jnp.zeros(len(counts))
+    # Average gain is calculated from all items that belongs to the same class
+    # even if when k < num_items.
+    # Shape: [max_k].
+    group_gains = jnp.zeros(max_k)
     group_gains = group_gains.at[inv].add(y_true)
     group_gains = group_gains / jnp.maximum(counts, 1)
     # Repeat each avg. gain by number of occurrences of the score in each equivalence class.
-    repeated_group_gains = jnp.repeat(
-        group_gains, counts, total_repeat_length=discount_factor.shape[0]
-    )
+    repeated_group_gains = jnp.repeat(group_gains, counts, total_repeat_length=max_k)
     # Use cumsum to get the DCG@k for each cutoff k.
     return jnp.cumsum(repeated_group_gains * discount_factor)
 
