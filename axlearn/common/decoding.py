@@ -729,7 +729,7 @@ class DecodingState(NamedTuple):
     # The current state of the autoregressive decoding caches.
     cache: NestedTensor
     # Random generator state.
-    prng_key: jax.random.KeyArray
+    prng_key: Tensor
 
 
 def _decode_init(
@@ -739,7 +739,7 @@ def _decode_init(
     num_decodes: int,
     max_decode_len: int,
     cache: NestedTensor,
-    prng_key: jax.random.KeyArray,
+    prng_key: Tensor,
     pad_id: int,
     token_scores: Optional[Tensor] = None,
 ) -> DecodingState:
@@ -902,7 +902,7 @@ def sample_decode(
     tokens_to_scores: Callable[[Tensor, NestedTensor], Tuple[Tensor, NestedTensor]],
     stop_decoding_condition: StopDecodingCondition,
     num_decodes: int,
-    prng_key: jax.random.KeyArray,
+    prng_key: Tensor,
     max_decode_len: Optional[int] = None,
     loop: Literal["lax", "python"] = "lax",
     pad_id: int = 0,

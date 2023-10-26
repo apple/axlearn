@@ -102,7 +102,7 @@ class ParameterScaler(ParameterNoise):
     class Config(ParameterNoise.Config):
         scale: float = 1.0
 
-    def apply(self, prng_key: jax.random.KeyArray, params: NestedTensor) -> NestedTensor:
+    def apply(self, prng_key: utils.Tensor, params: NestedTensor) -> NestedTensor:
         cfg = self.config
         return jax.tree_util.tree_map(lambda x: x * cfg.scale, params)
 

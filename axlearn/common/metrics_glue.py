@@ -77,7 +77,7 @@ class GLUEMetricCalculator(ModelSummaryAccumulator):
     def _forward_in_pjit(
         self,
         model_params: NestedTensor,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         input_batch: NestedTensor,
     ) -> Dict[str, NestedTensor]:
         """Calls `self._model` and returns summaries."""

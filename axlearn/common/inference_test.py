@@ -106,7 +106,7 @@ class RangeWeightInitializer(Initializer, Configurable):
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -238,7 +238,7 @@ class InferenceTest(test_utils.TestCase):
         root_dir: str,
         mesh_shape: Tuple[int, int],
         mesh_axis_names: Tuple[str, str],
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         use_ema: bool = False,
     ) -> Tuple[NestedTensor, str]:
         devices = mesh_utils.create_device_mesh(mesh_shape)

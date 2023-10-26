@@ -744,7 +744,7 @@ class BaseConverterFromPretrainedModelTest(TestCase):
 class DiffusersPretrainedBuilderTest(TestCase):
     """Tests FlaxPretrainedBuilder for a diffusers model."""
 
-    def _init_state(self, model, prng_key: jax.random.KeyArray):
+    def _init_state(self, model, prng_key: Tensor):
         prng_key, init_key = jax.random.split(prng_key)
         model_params = model.initialize_parameters_recursively(init_key)
         return _TrainerState(
@@ -855,7 +855,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
     """Tests HuggingFacePreTrainedBuilder."""
 
     # TODO(bwzhang@) add a HF builder test by setting a temporary path for downloading the models.
-    def _init_state(self, model, prng_key: jax.random.KeyArray):
+    def _init_state(self, model, prng_key: Tensor):
         prng_key, init_key = jax.random.split(prng_key)
         model_params = model.initialize_parameters_recursively(init_key)
         return _TrainerState(

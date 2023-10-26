@@ -19,7 +19,6 @@ https://github.com/tensorflow/lingvo/blob/d2f1e1b3cccdac8f73ae20f86afb03560b1c17
 
 from typing import Optional, Tuple, Union
 
-import jax
 from jax import numpy as jnp
 
 from axlearn.common.attention import (
@@ -328,7 +327,7 @@ class RepeatedConformerLayer(BaseLayer):
 
     def initialize_parameters_recursively(
         self,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         *,
         prebuilt: Optional[NestedTensor] = None,
     ) -> NestedTensor:

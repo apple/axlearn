@@ -157,7 +157,7 @@ class Pipeline(BaseLayer):
 
     def initialize_parameters_recursively(
         self,
-        prng_key: Union[jax.random.KeyArray, VDict],
+        prng_key: Union[Tensor, VDict],
         *,
         prebuilt: Optional[NestedTensor] = None,
     ) -> NestedTensor:

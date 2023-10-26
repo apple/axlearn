@@ -45,6 +45,7 @@ from axlearn.common.utils import (
     NestedPartitionSpec,
     NestedTensor,
     PartitionSpec,
+    Tensor,
     TensorSpec,
 )
 
@@ -56,12 +57,12 @@ class MethodRunner:
     def __init__(
         self,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         mesh: jax.sharding.Mesh,
         input_batch_partition_spec: DataPartitionType,
         jit_run_on_batch: Callable[
-            [jax.random.KeyArray, NestedTensor],
-            Tuple[jax.random.KeyArray, NestedTensor, NestedTensor],
+            [Tensor, NestedTensor],
+            Tuple[Tensor, NestedTensor, NestedTensor],
         ],
     ):
         """Initializes MethodRunner object.
@@ -141,7 +142,7 @@ class MethodRunner:
 class _InferenceRunnerState(NamedTuple):
     """Contains inference runner {state | state-partition-specs}."""
 
-    prng_key: Union[jax.random.KeyArray, NestedPartitionSpec]
+    prng_key: Union[Tensor, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
     learner: Optional[Union[NestedTensor, NestedPartitionSpec]] = None
 
@@ -255,7 +256,7 @@ class InferenceRunner(Module):
         input_batches: Iterable[NestedTensor],
         *,
         method: str,
-        prng_key: Optional[jax.random.KeyArray] = None,
+        prng_key: Optional[Tensor] = None,
         **kwargs,
     ) -> Generator[NestedTensor, None, None]:
         """Runs inference on the provided input batches.
@@ -296,7 +297,7 @@ class InferenceRunner(Module):
         self,
         *,
         method: str,
-        prng_key: Optional[jax.random.KeyArray] = None,
+        prng_key: Optional[Tensor] = None,
         **kwargs,
     ) -> MethodRunner:
         """Creates MethodRunner for the specified method and arguments.
@@ -361,13 +362,13 @@ class InferenceRunner(Module):
 
     def _inference_iter(
         self,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         model_params: NestedTensor,
         input_batch: Dict[str, Any],
         *,
         method,
         **kwargs,
-    ) -> Tuple[jax.random.KeyArray, NestedTensor, NestedTensor]:
+    ) -> Tuple[Tensor, NestedTensor, NestedTensor]:
         """Implements inference for a single input batch."""
         cfg = self.config
         new_prng_key, iter_key = jax.random.split(prng_key)

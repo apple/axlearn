@@ -1777,7 +1777,7 @@ class VariationalNoise(ParameterNoise):
 
         vn_std: Required[float] = REQUIRED
 
-    def apply(self, prng_key: jax.random.KeyArray, params: NestedTensor) -> NestedTensor:
+    def apply(self, prng_key: Tensor, params: NestedTensor) -> NestedTensor:
         cfg = self.config
         if cfg.vn_std <= 0:
             return params

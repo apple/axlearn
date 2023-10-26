@@ -42,6 +42,7 @@ from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import (
     NestedTensor,
     StackedKeyArray,
+    Tensor,
     VDict,
     as_numpy_array,
     as_tensor,
@@ -399,7 +400,7 @@ class TreeUtilsTest(TestCase):
     def test_split_prng_key(self):
         original_key = jax.random.PRNGKey(1234)
 
-        def fn(key: jax.random.KeyArray):
+        def fn(key: Tensor):
             return jax.random.normal(key, [3, 2])
 
         base_results = []
@@ -684,7 +685,7 @@ class ReadParamInitSpecsRecursivelyTest(TestCase):
     def test_delegates(self):
         class TestLayer(Linear):
             def initialize_parameters_recursively(
-                self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
+                self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
             ) -> NestedTensor:
                 params = super().initialize_parameters_recursively(prng_key, prebuilt=prebuilt)
                 params["dummy"] = {"test": 1}

@@ -152,7 +152,7 @@ class DummyMetricCalculator(ModelSummaryAccumulator):
         self,
         *,
         method: str,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         model_params: NestedTensor,
         input_batch: NestedTensor,
         **kwargs,
