@@ -244,20 +244,29 @@ class NDCGTest(TestCase):
         {
             "scores": [[1, 1, 1, 1, 1, 1, 1]],
             "relevance_labels": [[0, 0, 0, 0, 2, 2, 3]],
+            "top_ks_for_ndcg": list(range(1, 8)),
         },
         {
             "scores": [[1, 2, 1, 4, 1, 2, 3, 0, 1.5, 1.5]],
             "relevance_labels": [[4, 0, 2, 0, 5, 2, 1, 2, 2, 5]],
+            "top_ks_for_ndcg": list(range(1, 11)),
         },
         {
             "scores": [[1, 2, 3, 3, 3, 0, 4], [1, 1, 2, 2, 1, 1, 1]],
             "relevance_labels": [[1, 2, 2, 3, 7, 1, 1], [1, 1, 3, 5, 1, 1, 1]],
+            "top_ks_for_ndcg": list(range(1, 8)),
+        },
+        {
+            "scores": [[1, 2, 3, 3, 3, 0, 4], [1, 1, 2, 2, 1, 1, 1]],
+            "relevance_labels": [[1, 2, 2, 3, 7, 1, 1], [1, 1, 3, 5, 2, 3, 5]],
+            "top_ks_for_ndcg": list(range(1, 4)),
         },
     )
-    def test_ndcg_at_k_with_ties(self, scores: List[float], relevance_labels: List[float]):
+    def test_ndcg_at_k_with_ties(
+        self, scores: List[float], relevance_labels: List[float], top_ks_for_ndcg: List[int]
+    ):
         scores = jnp.array(scores)
         relevance_labels = jnp.array(relevance_labels)
-        top_ks_for_ndcg = list(range(1, len(scores) + 1))
         ndcgs = ndcg_at_k(
             scores=scores,
             relevance_labels=relevance_labels,
