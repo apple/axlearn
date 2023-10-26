@@ -285,17 +285,15 @@ def average_precision_at_k(
 def _tie_averaged_dcg(*, y_true: Tensor, y_score: Tensor, discount_factor: Tensor) -> Tensor:
     """Computes tie-aware DCG by averaging over possible permutations of ties.
 
-    DCG@k(gains) = sum_{i=1}^{m} [
-        (sum_{j=t_i + 1}^{t_{i+1}} gain(v_j) / n_i) * sum_{j=t_i + 1}^{min(t_{i+1}, k)} discount(j)
-    ]
+    DCG@K(gains) = sum_{i=1}^{max_k} gain(i) * discount_factor(i)
 
     where:
-        * V = <v_1, ..., v_n> are scores sorted in non-increasing order
-        * There are m equivalence classes (unique scores)
-        * t_i is an element of a tie-vector T = <t_1, ..., t_{m+1}> whose first element t_1=0
-            and the rest are ending indices of the m equivalence classes,
-            so V_i = <v_{t_i + 1}, ..., v_{t_{i+1}}> all have the same score
-        * n_i is the total number of elements in V_i
+        * y_score is divided into different equivalence classes,
+            with each equivalence class having a unique score,
+        * gain(i) is average gain for all items within the same equivalence class as item i,
+            so gain(i) = sum_{j ∈ I_c} gain(j) / n_c where item i belongs to group c and
+            I_c is the indices of all items that belongs to group c, with n_c items in the class.
+            gain(i) and gain(j) mean y_true_i or y_true_j.
 
     Ref (Sect. 2.6):
     https://www.microsoft.com/en-us/research/publication/computing-information-retrieval-performance-measures-efficiently-in-the-presence-of-tied-scores
