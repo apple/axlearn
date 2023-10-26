@@ -10,17 +10,17 @@ import pytest
 from absl.testing import parameterized
 from jax.experimental import checkify
 from sklearn.metrics import ndcg_score
-from sklearn.metrics._ranking import _tie_averaged_dcg
+from sklearn.metrics._ranking import _tie_averaged_dcg as sklearn_tie_averaged_dcg
 
 from axlearn.common.loss import contrastive_logits
 from axlearn.common.metrics_retrieval import (
+    _tie_averaged_dcg,
     average_precision_at_k,
     average_rank,
     calculate_accuracy_metrics,
     calculate_mean_average_precision_metrics,
     mean_reciprocal_rank,
     ndcg_at_k,
-    tie_averaged_dcg,
     top_k_accuracy,
 )
 from axlearn.common.test_utils import TestCase
@@ -180,10 +180,12 @@ class NDCGTest(TestCase):
         discount_cumsum = jnp.cumsum(discount)
         y_true = jnp.array(y_true)
         y_score = jnp.array(y_score)
-        jit_f = jax.jit(tie_averaged_dcg)
+        jit_f = jax.jit(_tie_averaged_dcg)
         checked_jit_f = checkify.checkify(jit_f, errors=checkify.user_checks)
         _, out = checked_jit_f(y_true=y_true, y_score=y_score, discount_factor=discount)
-        ref = _tie_averaged_dcg(y_true=y_true, y_score=y_score, discount_cumsum=discount_cumsum)
+        ref = sklearn_tie_averaged_dcg(
+            y_true=y_true, y_score=y_score, discount_cumsum=discount_cumsum
+        )
         self.assertAlmostEqual(out[-1].item(), ref, places=6)
 
     @parameterized.product(
