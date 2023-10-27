@@ -2874,6 +2874,76 @@ class ConfigHelperTest(TestCase):
                 (fsdp_axis_names, tp_axis_names, None),
             )
 
+    @parameterized.product(
+        self_attention_input_linear_cfg=(
+            QKVLinear.default_config(),
+            FusedQKVLinear.default_config(),
+        ),
+        cross_attention_cfg=(None, TransformerAttentionLayer.default_config()),
+        batch_axis_names=("data", ("replica", "data", "fsdp")),
+        fsdp_axis_names=("fsdp",),
+        tp_axis_names=("model",),
+    )
+    def test_set_double_shard_weights_config_for_list_of_configs(
+        self,
+        self_attention_input_linear_cfg,
+        cross_attention_cfg,
+        batch_axis_names,
+        fsdp_axis_names,
+        tp_axis_names,
+    ):
+        cfg_layer: TransformerLayer.Config = TransformerLayer.default_config().set(
+            cross_attention=cross_attention_cfg
+        )
+        cfg_layer.self_attention.attention.input_linear = self_attention_input_linear_cfg
+        cfg_layers = [cfg_layer, cfg_layer]
+        set_double_shard_weights_config(
+            cfg_layers,
+            batch_axis_names=batch_axis_names,
+            fsdp_axis_names=fsdp_axis_names,
+            tp_axis_names=tp_axis_names,
+        )
+
+        for cfg in cfg_layers:
+            ff_layer = cfg.feed_forward
+            self.assertSequenceEqual(
+                ff_layer.linear1.param_partition_spec, (fsdp_axis_names, tp_axis_names)
+            )
+            self.assertSequenceEqual(
+                ff_layer.linear2.param_partition_spec, (tp_axis_names, fsdp_axis_names)
+            )
+            self.assertSequenceEqual(
+                ff_layer.linear1.output_partition_spec, (batch_axis_names, None, tp_axis_names)
+            )
+            self.assertSequenceEqual(
+                ff_layer.linear2.output_partition_spec, (batch_axis_names, None, tp_axis_names)
+            )
+
+            self_atten = cfg.self_attention.attention
+            # Shard weights.
+            self.assertSequenceEqual(
+                self_atten.input_linear.layer.param_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
+            )
+            self.assertSequenceEqual(
+                self_atten.output_linear.param_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
+            )
+
+            if cross_attention_cfg is None:
+                self.assertIsNone(cfg.cross_attention)
+            else:
+                cross_atten = cfg.self_attention.attention
+                # Shard weights.
+                self.assertSequenceEqual(
+                    cross_atten.input_linear.layer.param_partition_spec,
+                    (fsdp_axis_names, tp_axis_names, None),
+                )
+                self.assertSequenceEqual(
+                    cross_atten.output_linear.param_partition_spec,
+                    (fsdp_axis_names, tp_axis_names, None),
+                )
+
 
 class PositionalEmbeddingTest(TestCase):
     """Tests PositionalEmbedding."""
