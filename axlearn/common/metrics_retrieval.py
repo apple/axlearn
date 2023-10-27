@@ -289,11 +289,12 @@ def _tie_averaged_dcg(*, y_true: Tensor, y_score: Tensor, discount_factor: Tenso
 
     where:
         * y_score is divided into different equivalence classes,
-            with each equivalence class having a unique score,
+            with each equivalence class having a unique score.
         * gain(i) is the average gain for all items within the same equivalence class as item i,
             so gain(i) = sum_{j ∈ I_c} gain(j) / n_c where item i belongs to group c and
             I_c is the indices of all items that belongs to group c, with n_c items in the class.
             gain(i) and gain(j) mean y_true_i or y_true_j.
+            Note in this context indices are 1-indexed.
 
     Ref (Sect. 2.6):
     https://www.microsoft.com/en-us/research/publication/computing-information-retrieval-performance-measures-efficiently-in-the-presence-of-tied-scores
@@ -322,7 +323,7 @@ def _tie_averaged_dcg(*, y_true: Tensor, y_score: Tensor, discount_factor: Tenso
     _, inv, counts = jnp.unique(-y_score, return_inverse=True, return_counts=True, size=max_k)
     # Get average gain for each equivalence class.
     # Average gain is calculated from all items that belongs to the same class
-    # even if when k < num_items.
+    # even if when max_k < num_items.
     # Shape: [max_k].
     group_gains = jnp.zeros(max_k)
     group_gains = group_gains.at[inv].add(y_true)
