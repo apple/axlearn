@@ -1,4 +1,10 @@
 # Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# scikit-learn/scikit-learn:
+# Copyright (c) 2007-2023 The scikit-learn developers. All rights reserved.
+# Licensed under BSD 3 clause.
 
 """Retrieval metrics."""
 from typing import Dict, List, Optional, Tuple
@@ -282,16 +288,72 @@ def average_precision_at_k(
     return ap_at_k
 
 
+def _tie_averaged_dcg(*, y_true: Tensor, y_score: Tensor, discount_factor: Tensor) -> Tensor:
+    """Computes tie-aware DCG by averaging over possible permutations of ties.
+
+    DCG@K(gains) = sum_{i=1}^{max_k} gain(i) * discount_factor(i)
+
+    where:
+        * y_score is divided into different equivalence classes,
+            with each equivalence class having a unique score.
+        * gain(i) is the average gain for all items within the same equivalence class as item i,
+            so gain(i) = sum_{j ∈ I_c} gain(j) / n_c where item i belongs to group c and
+            I_c is the indices of all items that belongs to group c, with n_c items in the class.
+            gain(i) and gain(j) mean y_true_i or y_true_j.
+            Note in this context indices are 1-indexed.
+
+    Ref (Sect. 2.6):
+    https://www.microsoft.com/en-us/research/publication/computing-information-retrieval-performance-measures-efficiently-in-the-presence-of-tied-scores
+    Implementation Ref:
+    https://github.com/scikit-learn/scikit-learn/blob/cb15a82e6439feda50b0605d70ce6d06c2eac7fd/sklearn/metrics/_ranking.py#L1462-L1507
+
+    Args:
+        y_true: Float tensor of shape [num_items] where i is the relevance score (gain) of the
+            i-th item, where all values must be >=0, and a 0 value can represent a padding item.
+        y_score: Predicted relevance scores with shape [num_items]. Users could mask y_score[i]
+            with NEG_INF such that the i-th item is masked.
+            The corresponding y_true[i] for a masked item must be 0.
+        discount_factor: Float tensor of shape [max_k] where element i
+            describes the discount factor the gain of item i is multiplied by.
+
+    Returns:
+        A tensor of shape [max_k] where the k-th value (1-indexed) represents the tie-aware DCG@k.
+    """
+    max_k = discount_factor.shape[0]
+    # Get counts of unique scores and indices to the unique scores to restore the
+    # original sorted scores.
+    # inv shape: [num_items].
+    # counts shape: [max_k].
+    # We care about the counts of up to and including the first max_k equivalence classes.
+    # If there are fewer than max_k classes, the counts of the extra classes are 0s.
+    _, inv, counts = jnp.unique(-y_score, return_inverse=True, return_counts=True, size=max_k)
+    # Get average gain for each equivalence class.
+    # Average gain is calculated from all items that belongs to the same class
+    # even if when max_k < num_items.
+    # Shape: [max_k].
+    group_gains = jnp.zeros(max_k)
+    group_gains = group_gains.at[inv].add(y_true)
+    group_gains = group_gains / jnp.maximum(counts, 1)
+    # Repeat each avg. gain by number of occurrences of the score in each equivalence class.
+    repeated_group_gains = jnp.repeat(group_gains, counts, total_repeat_length=max_k)
+    # Use cumsum to get the DCG@k for each cutoff k.
+    return jnp.cumsum(repeated_group_gains * discount_factor)
+
+
 def ndcg_at_k(
     scores: Tensor,
     relevance_labels: Tensor,
     top_ks: List[int],
+    ignore_ties: bool = True,
 ) -> Dict[int, Tensor]:
     """Computes Normalized Discounted Cumulative Gain@K (NDCG@K) metrics.
 
-    NDCG@K = DCG@K(relevance_labels_sorted_by_scores) / IDCG@K where
-    DCG@K(gains) = sum_{i=1}^{K} gains_i / log2(i+1) and
-    IDCG@K = DCG@K(sorted_relevance_labels).
+    When ignoring ties:
+        NDCG@K = DCG@K(relevance_labels_sorted_by_scores) / IDCG@K where
+        DCG@K(gains) = sum_{i=1}^{K} gains_i / log2(i+1) and
+        IDCG@K = DCG@K(sorted_relevance_labels).
+
+    For tie-aware NDCG, DCG is computed using _tie_averaged_dcg.
 
     Args:
         scores: Predicted relevance scores between queries and items with shape
@@ -303,6 +365,8 @@ def ndcg_at_k(
             values must be >=0, and a 0 value can represent a padding item.
         top_ks: List of Ks to compute NDCG@K with. -1 means NDCG@num_items, i.e., looking at all
             candidate items sorted by scores.
+        ignore_ties: If true, assume that there are no ties in scores for efficiency. If false,
+            compute tie-aware NDCG by averaging over possible permutations of ties.
 
     Returns:
         A dict having each of K in top_ks as keys and NDCG@K list with a length of num_queries
@@ -313,37 +377,45 @@ def ndcg_at_k(
     # that for the biggest K value.
     max_k = max(top_ks) if -1 not in top_ks else num_items
     assert 0 < max_k <= num_items
+    discount_factors = 1 / jnp.log2(jnp.arange(2, max_k + 2))
 
-    # Shape: [num_queries, max_k].
-    _, indices_of_sorted_scores = jax.lax.top_k(scores, max_k)
-    # Shape: [num_queries, max_k].
-    relevance_labels_sorted_by_scores = relevance_labels[
-        jnp.expand_dims(jnp.arange(num_queries), 1), indices_of_sorted_scores
-    ]
-
-    # Shape: [num_queries, max_k].
-    _, indices_of_sorted_relevance_labels = jax.lax.top_k(relevance_labels, max_k)
-    # Shape: [num_queries, max_k].
-    sorted_relevance_labels = relevance_labels[
-        jnp.expand_dims(jnp.arange(num_queries), 1), indices_of_sorted_relevance_labels
-    ]
-
-    def compute_dcg(gains: Tensor) -> Tensor:
-        discounts = jnp.log2(jnp.arange(2, max_k + 2))
+    if ignore_ties:
         # Shape: [num_queries, max_k].
-        dcg = jnp.cumsum(gains / discounts, axis=-1)
-        return dcg
+        _, indices_of_sorted_scores = jax.lax.top_k(scores, max_k)
+        # Shape: [num_queries, max_k].
+        relevance_labels_sorted_by_scores = relevance_labels[
+            jnp.expand_dims(jnp.arange(num_queries), 1), indices_of_sorted_scores
+        ]
 
-    dcg = compute_dcg(relevance_labels_sorted_by_scores)
-    idcg = compute_dcg(sorted_relevance_labels)
+        # Shape: [num_queries, max_k].
+        _, indices_of_sorted_relevance_labels = jax.lax.top_k(relevance_labels, max_k)
+        # Shape: [num_queries, max_k].
+        sorted_relevance_labels = relevance_labels[
+            jnp.expand_dims(jnp.arange(num_queries), 1), indices_of_sorted_relevance_labels
+        ]
+
+        # Shape: [num_queries, max_k].
+        dcg = jnp.cumsum(relevance_labels_sorted_by_scores * discount_factors, axis=-1)
+        # Shape: [num_queries, max_k].
+        idcg = jnp.cumsum(sorted_relevance_labels * discount_factors, axis=-1)
+    else:
+        auto_batch_tie_averaged_dcg = jax.vmap(_tie_averaged_dcg)
+        discount_factors = jnp.tile(discount_factors, reps=(num_queries, 1))
+        dcg = auto_batch_tie_averaged_dcg(
+            y_true=relevance_labels, y_score=scores, discount_factor=discount_factors
+        )
+        idcg = auto_batch_tie_averaged_dcg(
+            y_true=relevance_labels, y_score=relevance_labels, discount_factor=discount_factors
+        )
+
     ndcg = jnp.where(idcg == 0, 0.0, dcg / idcg)
-
     metrics = {}
     for k in top_ks:
         if k == -1:
             metrics[k] = ndcg[:, k]
         else:
             metrics[k] = ndcg[:, k - 1]
+
     return metrics
 
 

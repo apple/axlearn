@@ -1,15 +1,20 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests retrieval metrics."""
+from typing import List
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from absl.testing import parameterized
+from jax.experimental import checkify
 from sklearn.metrics import ndcg_score
+from sklearn.metrics._ranking import _tie_averaged_dcg as sklearn_tie_averaged_dcg
 
 from axlearn.common.loss import contrastive_logits
 from axlearn.common.metrics_retrieval import (
+    _tie_averaged_dcg,
     average_precision_at_k,
     average_rank,
     calculate_accuracy_metrics,
@@ -155,19 +160,127 @@ def test_average_precision_at_k():
         average_precision_at_k(sim, relevance_labels, top_ks_for_map)
 
 
-def test_ndcg_at_k():
-    sim = jnp.asarray([[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6], [1, 1, 1, 1, 1, 1, 1]])
-    relevance_labels = jnp.asarray(
-        [[2, 0, 1, 5, 0, 7, 8], [0, 4, 2, 0, 5, 3, 0], [0, 0, 0, 0, 0, 0, 0]]
+class NDCGTest(TestCase):
+    @parameterized.parameters(
+        {
+            "y_true": [1, 1, 2, 2, 3, 3],
+            "y_score": [1, 1, 1, 1, 1, 1],
+        },
+        {
+            "y_true": [2, 1, 3, 2, 4, 0, 5, 2],
+            "y_score": [2, 2, 1, 3, 2, 1, 3, 4],
+        },
+        {
+            "y_true": [4, 3, 2, 1],
+            "y_score": [1, 2, 3, 5],
+        },
     )
-    top_ks_for_ndcg = [1, 2, 3, -1]
-    ndcgs = ndcg_at_k(sim, relevance_labels, top_ks_for_ndcg)
+    def test_tie_averaged_dcg(self, y_true: List[float], y_score: List[float]):
+        discount = 1 / jnp.log2(jnp.arange(2, len(y_true) + 2))
+        discount_cumsum = jnp.cumsum(discount)
+        y_true = jnp.array(y_true)
+        y_score = jnp.array(y_score)
+        jit_f = jax.jit(_tie_averaged_dcg)
+        checked_jit_f = checkify.checkify(jit_f, errors=checkify.user_checks)
+        _, out = checked_jit_f(y_true=y_true, y_score=y_score, discount_factor=discount)
+        ref = sklearn_tie_averaged_dcg(
+            y_true=y_true, y_score=y_score, discount_cumsum=discount_cumsum
+        )
+        self.assertAlmostEqual(out[-1].item(), ref, places=6)
 
-    for k in top_ks_for_ndcg:
-        if k == -1:
-            assert jnp.allclose(ndcg_score(relevance_labels, sim, k=7), jnp.mean(ndcgs[k]))
-        else:
-            assert jnp.allclose(ndcg_score(relevance_labels, sim, k=k), jnp.mean(ndcgs[k]))
+    @parameterized.product(
+        [
+            {
+                "scores": [[1, 5, 6, 7, 2, 4, 3]],
+                "relevance_labels": [[2, 0, 1, 5, 0, 7, 8]],
+            },
+            {
+                "scores": [[4, 3, 2, 5, 1, 7, 6]],
+                "relevance_labels": [[0, 4, 2, 0, 5, 3, 0]],
+            },
+            {
+                "scores": [[1, 1, 1, 1, 1, 1, 1]],
+                "relevance_labels": [[0, 0, 0, 0, 0, 0, 0]],
+            },
+            {
+                "scores": [[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6]],
+                "relevance_labels": [[2, 0, 1, 5, 0, 7, 8], [0, 4, 2, 0, 5, 3, 0]],
+            },
+        ],
+        ignore_ties=(True, False),
+    )
+    def test_ndcg_at_k(self, scores: List[float], relevance_labels: List[float], ignore_ties: bool):
+        scores = jnp.array(scores)
+        relevance_labels = jnp.array(relevance_labels)
+        top_ks_for_ndcg = [1, 2, 3, 4, 5, 6, -1]
+        ndcgs = ndcg_at_k(
+            scores=scores,
+            relevance_labels=relevance_labels,
+            top_ks=top_ks_for_ndcg,
+            ignore_ties=ignore_ties,
+        )
+
+        for k in top_ks_for_ndcg:
+            if k == -1:
+                self.assertAlmostEqual(
+                    ndcg_score(
+                        y_true=relevance_labels, y_score=scores, k=7, ignore_ties=ignore_ties
+                    ),
+                    jnp.mean(ndcgs[k]).item(),
+                    places=6,
+                    msg=f"NDCG@{k} got unexpected value.",
+                )
+            else:
+                self.assertAlmostEqual(
+                    ndcg_score(
+                        y_true=relevance_labels, y_score=scores, k=k, ignore_ties=ignore_ties
+                    ),
+                    jnp.mean(ndcgs[k]).item(),
+                    places=6,
+                    msg=f"NDCG@{k} got unexpected value.",
+                )
+
+    @parameterized.parameters(
+        {
+            "scores": [[1, 1, 1, 1, 1, 1, 1]],
+            "relevance_labels": [[0, 0, 0, 0, 2, 2, 3]],
+            "top_ks_for_ndcg": list(range(1, 8)),
+        },
+        {
+            "scores": [[1, 2, 1, 4, 1, 2, 3, 0, 1.5, 1.5]],
+            "relevance_labels": [[4, 0, 2, 0, 5, 2, 1, 2, 2, 5]],
+            "top_ks_for_ndcg": list(range(1, 11)),
+        },
+        {
+            "scores": [[1, 2, 3, 3, 3, 0, 4], [1, 1, 2, 2, 1, 1, 1]],
+            "relevance_labels": [[1, 2, 2, 3, 7, 1, 1], [1, 1, 3, 5, 1, 1, 1]],
+            "top_ks_for_ndcg": list(range(1, 8)),
+        },
+        {
+            "scores": [[1, 2, 3, 3, 3, 0, 4], [1, 1, 2, 2, 1, 1, 1]],
+            "relevance_labels": [[1, 2, 2, 3, 7, 1, 1], [1, 1, 3, 5, 2, 3, 5]],
+            "top_ks_for_ndcg": list(range(1, 4)),
+        },
+    )
+    def test_ndcg_at_k_with_ties(
+        self, scores: List[float], relevance_labels: List[float], top_ks_for_ndcg: List[int]
+    ):
+        scores = jnp.array(scores)
+        relevance_labels = jnp.array(relevance_labels)
+        ndcgs = ndcg_at_k(
+            scores=scores,
+            relevance_labels=relevance_labels,
+            top_ks=top_ks_for_ndcg,
+            ignore_ties=False,
+        )
+
+        for k in top_ks_for_ndcg:
+            self.assertAlmostEqual(
+                ndcg_score(y_true=relevance_labels, y_score=scores, k=k, ignore_ties=False),
+                jnp.mean(ndcgs[k]).item(),
+                places=6,
+                msg=f"NDCG@{k} got unexpected value.",
+            )
 
 
 def test_average_rank():
