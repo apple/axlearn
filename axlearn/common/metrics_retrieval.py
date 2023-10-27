@@ -1,4 +1,10 @@
 # Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# scikit-learn/scikit-learn:
+# Copyright (c) 2007-2023 The scikit-learn developers. All rights reserved.
+# Licensed under BSD 3 clause.
 
 """Retrieval metrics."""
 from typing import Dict, List, Optional, Tuple
@@ -388,13 +394,10 @@ def ndcg_at_k(
             jnp.expand_dims(jnp.arange(num_queries), 1), indices_of_sorted_relevance_labels
         ]
 
-        def compute_dcg(gains: Tensor) -> Tensor:
-            # Shape: [num_queries, max_k].
-            dcg = jnp.cumsum(gains * discount_factors, axis=-1)
-            return dcg
-
-        dcg = compute_dcg(relevance_labels_sorted_by_scores)
-        idcg = compute_dcg(sorted_relevance_labels)
+        # Shape: [num_queries, max_k].
+        dcg = jnp.cumsum(relevance_labels_sorted_by_scores * discount_factors, axis=-1)
+        # Shape: [num_queries, max_k].
+        idcg = jnp.cumsum(sorted_relevance_labels * discount_factors, axis=-1)
     else:
         auto_batch_tie_averaged_dcg = jax.vmap(_tie_averaged_dcg)
         discount_factors = jnp.tile(discount_factors, reps=(num_queries, 1))
