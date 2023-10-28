@@ -2,13 +2,13 @@
 
 **This doc is still under construction.**
 
-This document describes the various components that power AXLearn training on public cloud.
+This document describes the various components that power AXLearn training on the public cloud.
 
 ## Bastion Orchestrator
 
-The bastion is a simple orchestrator which supports flexible job scheduling and quota management. It is general purpose (i.e., it supports scheduling jobs with arbitrary bash workloads), but also provides out-of-box functionality for provisioning, running, and monitoring large TPU slices.
+The Bastion is a simple orchestrator which supports flexible job scheduling and quota management. It is general purpose (i.e., it supports scheduling jobs with arbitrary bash workloads), but also provides out-of-box functionality for provisioning, running, and monitoring large TPU slices.
 
-While the bastion currently only supports Google Cloud Platform (GCP) jobs, the design of it is cloud agnostic, and in theory it can be extended to run on other cloud providers.
+While the bastion currently only supports Google Cloud Platform (GCP) jobs, its design is cloud agnostic, and in theory, it can be extended to run on other cloud providers.
 
 Its main dependencies are:
 - A cloud bucket for reading and writing job metadata and logs.
@@ -20,15 +20,15 @@ Its main dependencies are:
 - A docker repo to pull the bastion container image from.
 - A single VM to run on.
 
-Please see [below](#control-flow-of-job-submission) for a high level diagram of the bastion job submission.
+Please see [below](#control-flow-of-job-submission) for a high-level diagram of the bastion job submission.
 
-The following sections guide you through setting up and launching a job via bastion.
+The following sections guide you through setting up and launching a job via Bastion.
 
 ### Pre-requisites
 
 We assume you have:
 1. Followed the [getting started setup](01-start.md#launching-training).
-2. A docker repo that can be accessed from bastion. For the purposes of this doc, we assume this repo lives in [Artifact Registry](https://cloud.google.com/artifact-registry).
+2. A docker repo that can be accessed from Bastion. For the purposes of this doc, we assume this repo lives in [Artifact Registry](https://cloud.google.com/artifact-registry).
 
 We also assume you have "activated" a project config using `axlearn gcp config activate`. This is mainly a convenience so that you do not have to specify mundane flags like `--project` and `--zone` in every command. Please refer to the [CLI docs](03-cli.md) for more details.
 
@@ -44,7 +44,7 @@ axlearn gcp auth
 
 We first build a Docker image using the default `Dockerfile` in the repo:
 ```bash
-# Create and push a bastion image to Artifact Registry.
+# Create and push a bastion image to the Artifact Registry.
 axlearn gcp bundle --name=$USER-bastion --bundler_type=artifactregistry \
     --bundler_spec=image=base --bundler_spec=dockerfile=Dockerfile --bundler_spec=target=bastion
 ```
@@ -108,7 +108,7 @@ In most cases, you can use the `axlearn gcp launch` command which handles most o
 
 For example, to launch a Python command with `axlearn gcp launch`:
 ```bash
-# Launch a v4-32 job via bastion.
+# Launch a v4-32 job via Bastion.
 # Note: the "'...'" quotes are important.
 axlearn gcp launch --instance_type=tpu-v4-32 --bastion=$USER-bastion -- python3 -c "'import jax; print(jax.devices())'"
 ```
