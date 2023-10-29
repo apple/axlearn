@@ -2,11 +2,18 @@
 
 """Tests TPU utilities."""
 
+import contextlib
+from unittest import mock
+
 from absl.testing import parameterized
 
+from axlearn.cloud.gcp import tpu
+from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.cloud.gcp.tpu import (
     QueuedResourceInfo,
+    TPUCreationError,
     TpuInfo,
+    _create_multislice_tpu,
     format_queued_resource_info,
     format_tpu_info,
     infer_tpu_cores,
@@ -131,3 +138,89 @@ class TpuUtilsTest(parameterized.TestCase):
             format_queued_resource_info(tpus, metadata=["b"]),
         )
         # pylint: enable=line-too-long
+
+    @parameterized.parameters(
+        # A successful case.
+        dict(
+            # Repeat ACTIVE for boot check.
+            nodes=[
+                {"state": {"state": "ACCEPTED"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "WAITING_FOR_RESOURCES"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "PROVISIONING"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "CREATING"}, "tpu": mock.MagicMock()},
+                # List active a few times for boot.
+                {"state": {"state": "ACTIVE"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "ACTIVE"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "ACTIVE"}, "tpu": mock.MagicMock()},
+            ],
+            # Indicates how many workers are up each call.
+            list_blobs=[1, 2, 2],
+        ),
+        # Test unknown status that resolves itself.
+        dict(
+            nodes=[
+                {"state": {"state": "UNKNOWN"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "UNKNOWN"}, "tpu": mock.MagicMock()},
+                # List active a few times for boot.
+                {"state": {"state": "ACTIVE"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "ACTIVE"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "ACTIVE"}, "tpu": mock.MagicMock()},
+            ],
+            # Indicates how many workers are up each call.
+            list_blobs=[2, 2, 2],
+        ),
+        # Test unknown status failure.
+        dict(
+            nodes=[{"state": {"state": "UNKNOWN"}, "tpu": mock.MagicMock()}] * 11,
+            # Indicates how many workers are up each call.
+            list_blobs=[],
+            expected=TPUCreationError("unknown state"),
+        ),
+        # Test known to unknown.
+        dict(
+            nodes=[
+                {"state": {"state": "WAITING_FOR_RESOURCES"}, "tpu": mock.MagicMock()},
+            ]
+            + [{"state": {"state": "UNKNOWN"}, "tpu": mock.MagicMock()}] * 10
+            + [
+                # Unknown count should be reset.
+                {"state": {"state": "WAITING_FOR_RESOURCES"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "UNKNOWN"}, "tpu": mock.MagicMock()},
+                # List active a few times for boot.
+                {"state": {"state": "ACTIVE"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "ACTIVE"}, "tpu": mock.MagicMock()},
+                {"state": {"state": "ACTIVE"}, "tpu": mock.MagicMock()},
+            ],
+            # Indicates how many workers are up each call.
+            list_blobs=[2, 2, 2],
+        ),
+    )
+    def test_create_multislice_tpu(self, nodes, list_blobs, expected=None):
+        module = tpu.__name__
+        # Mock sleep to finish instantly.
+        mock_sleep = mock.patch(f"{module}.time.sleep")
+        mock_gcp = mock.patch.multiple(
+            module,
+            get_queued_tpu_node=mock.Mock(side_effect=nodes),
+            _execute_create_tpu_request=mock.Mock(),
+            _delete_multislice_tpu=mock.Mock(),
+            list_blobs=mock.Mock(side_effect=[list(range(x)) for x in list_blobs]),
+        )
+        mock_settings = mock_gcp_settings(
+            module,
+            settings={"project": "project", "zone": "zone", "ttl_bucket": "ttl_bucket"},
+        )
+        with mock_sleep, mock_settings, mock_gcp:
+            if isinstance(expected, Exception):
+                ctx = self.assertRaisesRegex(type(expected), str(expected))
+            else:
+                ctx = contextlib.nullcontext()
+
+            with ctx:
+                assert infer_tpu_workers("v4-16") == 2
+                _create_multislice_tpu(
+                    "test",
+                    tpu_type="v4-16",  # 2 workers.
+                    credentials=mock.Mock(),
+                    bundler_type="test-bundler",
+                )
