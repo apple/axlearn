@@ -706,8 +706,15 @@ def infer_tpu_version(tpu_type: str) -> str:
 
     Returns:
         Inferred TPU version string.
+
+    Raises:
+        ValueError: if the TPU version string is unknown.
     """
-    return tpu_type.rsplit("-", 1)[0]  # split from the last occurance of '-'
+    tpu_version = tpu_type.rsplit("-", 1)[0]  # split from the last occurance of '-'
+    KNOWN_TPU_VERSIONS = ("v3", "v4", "v5litepod")
+    if tpu_version not in KNOWN_TPU_VERSIONS:
+        raise ValueError(f"Unknown TPU version {tpu_version}. Expected one of {KNOWN_TPU_VERSIONS}")
+    return tpu_version
 
 
 def infer_tpu_cores(tpu_type: str) -> int:
