@@ -159,7 +159,7 @@ class SpmdTrainer(Module):
 
         # If > 0, run a watchdog thread to print the thread stack traces if step does not
         # increment within this interval.
-        watchdog_timeout_seconds: float = -1
+        watchdog_timeout_seconds: float = 3600
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -320,7 +320,7 @@ class SpmdTrainer(Module):
                     "Watchdog triggered! Threads:\n%s", "\n".join(_thread_stack_traces())
                 )
             else:
-                self.vlog(1, "Step incremented: %s > %s", current_step, last_step)
+                self.vlog(1, "Watchdog check passed: %s -> %s", last_step, current_step)
         logging.info("Watchdog loop done")
 
     # pylint: disable-next=too-many-statements,too-many-branches
