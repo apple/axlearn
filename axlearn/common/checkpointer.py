@@ -614,7 +614,9 @@ class Checkpointer(Module):
         if self._gc_thread is None and jax.process_index() == 0:
             self._gc_stopping = threading.Event()
             self._gc_thread = threading.Thread(
-                target=self._gc_loop, kwargs=dict(context_stack=clone_context_stack())
+                name=f"{self.path()}.gc_loop",
+                target=self._gc_loop,
+                kwargs=dict(context_stack=clone_context_stack()),
             )
             self._gc_thread.start()
 
