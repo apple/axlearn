@@ -159,7 +159,7 @@ class SpmdTrainer(Module):
 
         # If > 0, run a watchdog thread to print the thread stack traces if step does not
         # increment within this interval.
-        watchdog_timeout_seconds: float = 3600
+        watchdog_timeout_seconds: Optional[float] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -289,7 +289,7 @@ class SpmdTrainer(Module):
 
     def _start_watchdog(self):
         cfg = self.config
-        if self._watchdog_thread is None and cfg.watchdog_timeout_seconds >= 0:
+        if cfg.watchdog_timeout_seconds and self._watchdog_thread is None:
             self._watchdog_stopping = threading.Event()
             self._watchdog_thread = threading.Thread(
                 name=f"{self.path()}.watchdog",

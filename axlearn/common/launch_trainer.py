@@ -55,6 +55,8 @@ def get_trainer_config(trainer_config_fn: Optional[TrainerConfigFn] = None) -> S
     trainer_config.mesh_shape = trainer_config.mesh_shape or (len(jax.devices()), 1)
     trainer_config.mesh_shape = infer_mesh_shape(trainer_config.mesh_shape)
     trainer_config.start_trace_steps = [int(el) for el in FLAGS.trace_at_steps]
+    if trainer_config.watchdog_timeout_seconds is None:
+        trainer_config.watchdog_timeout_seconds = 3600
 
     for eval_cfg in trainer_config.evalers.values():
         eval_cfg.trace_at_iters = [int(el) for el in FLAGS.eval_trace_at_iters]
