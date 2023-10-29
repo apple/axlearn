@@ -73,6 +73,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_set_config,
 )
+from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
@@ -1601,6 +1602,7 @@ class MultiheadAttentionTest(TestCase):
             attention.GroupedQKVLinear.default_config().set(num_kv_heads=4),
             attention.FusedGroupedQKVLinear.default_config().set(num_kv_heads=4),
         ),
+        bias=(True, False),
     )
     def test_gqa_forward(
         self,
@@ -1608,6 +1610,7 @@ class MultiheadAttentionTest(TestCase):
         per_dim_scale: Optional[PerDimScale.Config],
         atten_logit_cap: float,
         input_linear: attention.BaseQKVLinear.Config,
+        bias: bool,
     ):
         """When num_kv_heads=num_heads, GQA should be equivalent to MHA."""
         model_dim = 16
@@ -1624,12 +1627,14 @@ class MultiheadAttentionTest(TestCase):
         init_key = jax.random.PRNGKey(123)
         # Initialize MultiheadAttention.
         base_cfg = attention.MultiheadAttention.default_config().set(**layer_kwargs)
+        set_bias_recursively(base_cfg, bias=bias)
         base_layer = base_cfg.set(name="base").instantiate(parent=None)
         base_state = base_layer.initialize_parameters_recursively(prng_key=init_key)
         # Initialize GroupedQueryAttenion.
         cfg = attention.GroupedQueryAttention.default_config().set(**layer_kwargs)
         if input_linear is not None:
             cfg.set(input_linear=input_linear)
+        set_bias_recursively(cfg, bias=bias)
         test_layer = cfg.set(name="test").instantiate(parent=None)
         test_state = test_layer.initialize_parameters_recursively(prng_key=init_key)
 
@@ -1679,6 +1684,7 @@ class MultiheadAttentionTest(TestCase):
         model_dim: int,
         num_heads: int,
         dtype: jnp.dtype,
+        bias: bool,
     ):
         cfg = attention_cfg.set(
             query_dim=model_dim,
@@ -1687,6 +1693,7 @@ class MultiheadAttentionTest(TestCase):
             num_heads=num_heads,
         )
         cfg.input_linear.set(dtype=dtype, cache_dtype=None)
+        set_bias_recursively(cfg, bias=bias)
         layer: attention.MultiheadAttention = cfg.set(name="test").instantiate(parent=None)
 
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
@@ -1755,12 +1762,14 @@ class MultiheadAttentionTest(TestCase):
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
+        bias=(True, False),
     )
     def test_extend_step(
         self,
         dtype: jnp.dtype,
         per_dim_scale: Optional[PerDimScale.Config],
         atten_logit_cap: float,
+        bias: bool,
     ):
         model_dim = 16
         num_heads = 4
@@ -1768,7 +1777,9 @@ class MultiheadAttentionTest(TestCase):
             per_dim_scale=per_dim_scale,
             atten_logit_cap=atten_logit_cap,
         )
-        self._test_extend_step(cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype)
+        self._test_extend_step(
+            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+        )
 
     @parameterized.product(
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
@@ -1776,6 +1787,7 @@ class MultiheadAttentionTest(TestCase):
         atten_logit_cap=(0.0, 20.0),
         num_kv_heads=(1, 2, 4),
         input_linear=(attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear),
+        bias=(True, False),
     )
     def test_gqa_extend_step(
         self,
@@ -1784,6 +1796,7 @@ class MultiheadAttentionTest(TestCase):
         atten_logit_cap: float,
         num_kv_heads: int,
         input_linear: Type[attention.BaseQKVLinear],
+        bias: bool,
     ):
         model_dim = 16
         num_heads = 4
@@ -1792,7 +1805,9 @@ class MultiheadAttentionTest(TestCase):
             atten_logit_cap=atten_logit_cap,
             input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
         )
-        self._test_extend_step(cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype)
+        self._test_extend_step(
+            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+        )
 
     def _test_prefill_states(
         self,
@@ -1801,6 +1816,7 @@ class MultiheadAttentionTest(TestCase):
         model_dim: int,
         num_heads: int,
         dtype: jnp.dtype,
+        bias: bool,
         num_kv_heads: Optional[int] = None,
     ):
         cfg = attention_cfg.set(
@@ -1810,6 +1826,7 @@ class MultiheadAttentionTest(TestCase):
             num_heads=num_heads,
         )
         cfg.input_linear.set(dtype=dtype, cache_dtype=None)
+        set_bias_recursively(cfg, bias=bias)
         layer: attention.MultiheadAttention = cfg.set(name="test").instantiate(parent=None)
 
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
@@ -1913,9 +1930,14 @@ class MultiheadAttentionTest(TestCase):
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
+        bias=(True, False),
     )
     def test_prefill_states(
-        self, dtype: jnp.dtype, per_dim_scale: Optional[PerDimScale.Config], atten_logit_cap: float
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        bias: bool,
     ):
         model_dim = 16
         num_heads = 4
@@ -1923,7 +1945,9 @@ class MultiheadAttentionTest(TestCase):
             per_dim_scale=per_dim_scale,
             atten_logit_cap=atten_logit_cap,
         )
-        self._test_prefill_states(cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype)
+        self._test_prefill_states(
+            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+        )
 
     @parameterized.product(
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
@@ -1931,6 +1955,7 @@ class MultiheadAttentionTest(TestCase):
         atten_logit_cap=(0.0, 20.0),
         num_kv_heads=(1, 2, 4),
         input_linear=(attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear),
+        bias=(True, False),
     )
     def test_gqa_prefill_states(
         self,
@@ -1939,6 +1964,7 @@ class MultiheadAttentionTest(TestCase):
         atten_logit_cap: float,
         num_kv_heads: int,
         input_linear: Type[attention.BaseQKVLinear],
+        bias: bool,
     ):
         model_dim = 16
         num_heads = 4
@@ -1948,7 +1974,12 @@ class MultiheadAttentionTest(TestCase):
             input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
         )
         self._test_prefill_states(
-            cfg, model_dim=model_dim, num_heads=num_heads, num_kv_heads=num_kv_heads, dtype=dtype
+            cfg,
+            model_dim=model_dim,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            dtype=dtype,
+            bias=bias,
         )
 
     def _scale_query_kwargs(
