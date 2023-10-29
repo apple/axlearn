@@ -698,6 +698,9 @@ def get_queued_tpu_node(name: str, resource: discovery.Resource) -> Optional[Dic
             continue
 
 
+_TPU_VERSIONS = ("v3", "v4", "v5litepod")
+
+
 def infer_tpu_version(tpu_type: str) -> str:
     """Infer TPU version from the TPU type.
 
@@ -711,9 +714,8 @@ def infer_tpu_version(tpu_type: str) -> str:
         ValueError: if the TPU version string is unknown.
     """
     tpu_version = tpu_type.rsplit("-", 1)[0]  # split from the last occurance of '-'
-    KNOWN_TPU_VERSIONS = ("v3", "v4", "v5litepod")
-    if tpu_version not in KNOWN_TPU_VERSIONS:
-        raise ValueError(f"Unknown TPU version {tpu_version}. Expected one of {KNOWN_TPU_VERSIONS}")
+    if tpu_version not in _TPU_VERSIONS:
+        raise ValueError(f"Unknown TPU version {tpu_version}. Expected one of {_TPU_VERSIONS}")
     return tpu_version
 
 
