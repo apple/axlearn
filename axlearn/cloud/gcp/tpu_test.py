@@ -35,6 +35,10 @@ class TpuUtilsTest(parameterized.TestCase):
         self.assertEqual(cores, infer_tpu_cores(tpu_type))
         self.assertEqual(workers, infer_tpu_workers(tpu_type))
 
+    def test_unknown_tpu_version(self):
+        with self.assertRaisesRegex(ValueError, "Unknown TPU version"):
+            infer_tpu_version("v5lite-16")
+
     def test_format_tpu_info(self):
         tpus = [
             TpuInfo(
