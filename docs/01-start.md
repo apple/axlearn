@@ -658,9 +658,15 @@ To setup the CLI, we'll need to first create a config file under **one of** the 
 - `.axlearn.config` in the current working directory, or
 - `~/.axlearn.config` in your home directory.
 
+To create the config, you can copy from [the template config](.axlearn/axlearn.default.config).
+```shell
+cp .axlearn/axlearn.default.config .axlearn.config
+```
+
 > Tip: You can always run `axlearn gcp config cleanup` to delete all AXLearn config files from your system.
 
-Here's a sample config file for launching `v4-tpu`s in `us-central2-b`, under the project `my-gcp-project`. You may recognize it as a [`toml`](https://toml.io/en/) file:
+Here's a sample config file for launching `v4-tpu`s in `us-central2-b`, under the project `my-gcp-project`.
+You may recognize it as a [`toml`](https://toml.io/en/) file:
 ```toml
 [gcp."my-gcp-project:us-central2-b"]
 # Basic project configs.
