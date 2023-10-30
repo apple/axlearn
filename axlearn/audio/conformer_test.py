@@ -9,13 +9,13 @@ from absl.testing import absltest, parameterized
 from fairseq.modules import conformer_layer as fairseq_conformer
 from jax import numpy as jnp
 
-from axlearn.common import utils
-from axlearn.common.attention import sinusoidal_positional_embeddings
-from axlearn.common.conformer import (
+from axlearn.audio.conformer import (
     ConformerLayer,
     RepeatedConformerLayer,
     compute_attention_logit_biases,
 )
+from axlearn.common import utils
+from axlearn.common.attention import sinusoidal_positional_embeddings
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.t5 import T5RelativePositionalEmbedding

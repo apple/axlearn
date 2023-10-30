@@ -109,8 +109,8 @@ class LConvLayer(BaseLayer):
         """Computes LConvLayer outputs.
 
         Args:
-            inputs: of shape [batch, seq_len, input_dim].
-            paddings: boolean tensor of shape [batch, seq_len]. True iff it's a padding position.
+            inputs: A Tensor of shape [batch, seq_len, input_dim].
+            paddings: A boolean Tensor of shape [batch, seq_len]. True iff it's a padding position.
 
         Returns:
             The output feature of shape [batch, seq_len, input_dim].
@@ -144,13 +144,13 @@ def compute_attention_logit_biases(
 
     Adapted from
     https://github.com/google/praxis/blob/097b862d883e15cf3eb9df83bf5194c9052c6576/praxis/layers/attentions.py#L52-L82.
-    Empirically we find that neg_inf of the logit biases effects self-supervised pre-training
+    Empirically we find that neg_inf of the logit biases affects self-supervised pre-training
     optimization behavior.
 
     Args:
-        paddings: 0/1 tensor of shape [batch_size, seq_len].
-        left_context: integer of history steps. If None, use all history steps.
-        right_context: integer of future steps. If None, use all future steps.
+        paddings: A 0/1 Tensor of shape [batch_size, seq_len].
+        left_context: An integer of history steps. If None, use all history steps.
+        right_context: An integer of future steps. If None, use all future steps.
         neg_inf: -inf for masked logits value.
 
     Returns:
@@ -258,8 +258,8 @@ class ConformerLayer(BaseLayer):
         """Computes ConformerLayer outputs.
 
         Args:
-            inputs: of shape [batch, seq_len, input_dim].
-            paddings: boolean tensor of shape [batch, seq_len]. True iff it's a padding position.
+            inputs: A Tensor of shape [batch, seq_len, input_dim].
+            paddings: A boolean Tensor of shape [batch, seq_len]. True iff it's a padding position.
 
         Returns:
             The output feature of shape [batch, seq_len, input_dim].
@@ -273,7 +273,7 @@ class ConformerLayer(BaseLayer):
             right_context=cfg.right_context,
             neg_inf=cfg.neg_inf,
         )
-        # ToDo(zhiyunlu): test limited context mask with rel_pos_emb.
+        # TODO(zhiyunlu): test limited context mask with rel_pos_emb.
         if self.config.rel_pos_emb:
             attention_logit_biases = self.rel_pos_emb(attention_logit_biases)
         x = self.self_attention(target=x, attention_logit_biases=attention_logit_biases).data
@@ -307,7 +307,8 @@ class RepeatedConformerLayer(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
-        input_dim: Required[int] = REQUIRED  # Input feature dim.
+        # Input feature dim.
+        input_dim: Required[int] = REQUIRED
         # The number of layers in the stack.
         num_layers: Required[int] = REQUIRED
         # Config for each layer in the stack.
@@ -315,7 +316,7 @@ class RepeatedConformerLayer(BaseLayer):
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
-        cfg = self.config  # type: RepeatedConformerLayer.Config
+        cfg = self.config
         if cfg.num_layers <= 0:
             raise ValueError(
                 f"num_layers must be greater than 0, get cfg.num_layers = {cfg.num_layers}."
