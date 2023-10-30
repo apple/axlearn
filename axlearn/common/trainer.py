@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Defines SpmdTrainer, a trainer that supports partitioning of computation and data with GSPMD."""
+import contextlib
 import math
 import os.path
 import sys
@@ -287,6 +288,12 @@ class SpmdTrainer(Module):
     def mesh(self):
         return jax.sharding.Mesh(self._mesh.devices, self._mesh.axis_names)
 
+    @contextlib.contextmanager
+    def _watchdog(self):
+        self._start_watchdog()
+        yield
+        self._stop_watchdog()
+
     def _start_watchdog(self):
         cfg = self.config
         if cfg.watchdog_timeout_seconds and self._watchdog_thread is None:
@@ -325,8 +332,7 @@ class SpmdTrainer(Module):
 
     # pylint: disable-next=too-many-statements,too-many-branches
     def run(self, prng_key: jax.random.KeyArray) -> Optional[NestedTensor]:
-        self._start_watchdog()
-        with self.mesh():
+        with self._watchdog(), self.mesh():
             cfg = self.config
             jax.config.update("jax_log_compiles", True)
             # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
@@ -427,7 +433,6 @@ class SpmdTrainer(Module):
                 if self.step < cfg.max_step:
                     self._step_log("Reached end of inputs. Stopping")
             self._step_log("Checkpointer flushed.")
-            self._stop_watchdog()
             return output
 
     def _opt_params(self, model_params: NestedTensor) -> NestedOptParam:
