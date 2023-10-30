@@ -48,6 +48,7 @@ def _thread_stack_traces() -> Sequence[str]:
     for thread in threading.enumerate():
         thread_id = thread.ident
         lines.append(f"Thread: {thread.name}({thread_id})")
+        # pylint: disable-next=protected-access
         for line in traceback.format_stack(sys._current_frames()[thread_id]):
             lines.append(f">>> {line.rstrip()}")
     return lines
