@@ -588,6 +588,10 @@ class BaseQKVLinear(BaseLayer):
         # [batch, source_length, num_heads, per_head_dim].
         value: Tensor
 
+    @property
+    def num_kv_heads(self):
+        return self.config.num_heads
+
     def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
         cfg = self.config
         # Default to base layer dtype for initialization if cache_dtype is None.
@@ -599,11 +603,11 @@ class BaseQKVLinear(BaseLayer):
         # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
         cache = dict(
             key=jnp.zeros(
-                shape=(target_batch_size, cfg.num_heads, cfg.per_head_dim, target_max_len),
+                shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
                 dtype=dtype,
             ),
             value=jnp.zeros(
-                shape=(target_batch_size, cfg.num_heads, cfg.per_head_dim, target_max_len),
+                shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
                 dtype=dtype,
             ),
             time_step=jnp.zeros(target_batch_size, dtype=jnp.int32),
@@ -760,17 +764,17 @@ class QKVLinear(BaseQKVLinear):
         # The layer used to project.
         layer: MultiheadInputLinear.Config = MultiheadInputLinear.default_config()
 
-    def __init__(self, cfg: BaseQKVLinear.Config, *, parent: Module):
+    def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        for name, dim in (
-            ("q", cfg.query_dim),
-            ("k", cfg.key_dim),
-            ("v", cfg.value_dim),
+        for name, dim, num_heads in (
+            ("q", cfg.query_dim, cfg.num_heads),
+            ("k", cfg.key_dim, self.num_kv_heads),
+            ("v", cfg.value_dim, self.num_kv_heads),
         ):
             proj_cfg = cfg.layer
             proj_cfg.model_dim = dim
-            proj_cfg.num_heads = cfg.num_heads
+            proj_cfg.num_heads = num_heads
             proj_cfg.per_head_dim = cfg.per_head_dim
             self._add_child(f"{name}_proj", proj_cfg)
 
@@ -791,9 +795,37 @@ class QKVLinear(BaseQKVLinear):
         return self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
+class GroupedQKVLinear(QKVLinear):
+    """A variant of QKVLinear that supports configuring a different number of key, value
+    projections.
+
+    Note that the number of key, value projections must evenly divide the number of query heads.
+    """
+
+    @config_class
+    class Config(QKVLinear.Config):
+        """Configures GroupedQKVLinear."""
+
+        # Number of heads for key, value projections.
+        # It is required that num_heads % num_kv_heads == 0.
+        num_kv_heads: Required[int] = REQUIRED
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        if cfg.num_heads % cfg.num_kv_heads != 0:
+            raise ValueError(
+                f"The number of query subgroups ({cfg.num_kv_heads}) should divide "
+                f"the number of query heads ({cfg.num_heads})."
+            )
+
+    @property
+    def num_kv_heads(self):
+        return self.config.num_kv_heads
+
+
 class FusedQKVLinear(BaseQKVLinear):
-    """Maps input query, key, and value to multi-headed query, key, and value
-    using a fused weight.
+    """Maps input query, key, and value to multi-headed query, key, and value using a fused weight.
 
     N.B. Only supports cases where query, key, and value all have the same shape.
     """
@@ -805,7 +837,7 @@ class FusedQKVLinear(BaseQKVLinear):
         # The layer used to project.
         layer: MultiheadInputLinear.Config = MultiheadInputLinear.default_config()
 
-    def __init__(self, cfg: BaseQKVLinear.Config, *, parent: Module):
+    def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         if not cfg.query_dim == cfg.key_dim == cfg.value_dim:
@@ -819,8 +851,6 @@ class FusedQKVLinear(BaseQKVLinear):
         proj_cfg.per_head_dim = cfg.per_head_dim
         self._add_child("qkv_proj", proj_cfg)
 
-    # Similar (but not identical) code in repeat.py.
-    # pylint: disable=duplicate-code
     def create_parameter_specs_recursively(self) -> NestedParameterSpec:
         specs = VDict(**super().create_parameter_specs_recursively())
 
@@ -854,8 +884,6 @@ class FusedQKVLinear(BaseQKVLinear):
             return VDict(qkv_proj=self.qkv_proj.initialize_parameters_recursively(prng_key_i))
 
         return jax.vmap(init)(split_prng_key(prng_key, 3).keys)
-
-    # pylint: enable=duplicate-code
 
     def forward(
         self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
@@ -896,6 +924,64 @@ class FusedQKVLinear(BaseQKVLinear):
                 )
                 proj = proj + bias
             q_proj, k_proj, v_proj = proj
+        return self.Output(query=q_proj, key=k_proj, value=v_proj)
+
+
+class FusedGroupedQKVLinear(BaseQKVLinear):
+    """Maps input query, key, and value to multi-headed query, key, and value using a fused weight.
+
+    The main difference from FusedQKVLinear is supporting a different number of key, value heads
+    than query heads. All of the projection weights are concatenated/fused along the `num_heads`
+    axis and then split after projection.
+    """
+
+    @config_class
+    class Config(BaseQKVLinear.Config):
+        """Configures FusedGroupedQKVLinear."""
+
+        # Number of heads for key, value projections.
+        # It is required that num_heads % num_kv_heads == 0.
+        num_kv_heads: Required[int] = REQUIRED
+        # The layer used to project.
+        layer: MultiheadInputLinear.Config = MultiheadInputLinear.default_config()
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        if not cfg.query_dim == cfg.key_dim == cfg.value_dim:
+            raise ValueError(
+                f"All projection dims must be equal for {type(self)}, saw: "
+                f"query:{cfg.query_dim}, key:{cfg.key_dim}, value:{cfg.value_dim}"
+            )
+        if cfg.num_heads % cfg.num_kv_heads != 0:
+            raise ValueError(
+                f"The number of query subgroups {cfg.num_kv_heads} should divide "
+                f"the number of query heads {cfg.num_heads}."
+            )
+        proj_cfg = cfg.layer
+        proj_cfg.model_dim = cfg.query_dim
+        proj_cfg.num_heads = cfg.num_heads + 2 * cfg.num_kv_heads
+        proj_cfg.per_head_dim = cfg.per_head_dim
+        self._add_child("qkv_proj", proj_cfg)
+
+    @property
+    def num_kv_heads(self):
+        return self.config.num_kv_heads
+
+    def forward(
+        self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
+    ) -> FusedQKVLinear.Output:
+        """See FusedQKVLinear for full docstring.
+
+        N.B. Only supports cases where key and value are both None.
+        """
+        if key is not None or value is not None:
+            raise ValueError("Key and value should be both None.")
+        cfg = self.config
+        proj = self.qkv_proj(query)
+        q_proj, k_proj, v_proj = jnp.split(
+            proj, [cfg.num_heads, cfg.num_heads + cfg.num_kv_heads], axis=-2
+        )
         return self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
@@ -1510,6 +1596,49 @@ class MultiheadAttention(BaseLayer):
         """The config for the default function used to compute the key scale."""
 
         return config_for_function(constant_scale_fn).set(value=1)
+
+
+class GroupedQueryAttention(MultiheadAttention):
+    """A Grouped-Query Attention (GQA) layer.
+
+    Query projections are divided into K groups along the `num_heads` dimension. Projections in the
+    same query subgroup share one common key/value head. This reduces the size of the KV-cache by a
+    factor of `num_heads/num_kv_heads`.
+
+    When `input_linear` is a `GroupedQKVLinear` layer with `num_kv_heads=1`, GQA reduces to
+    multi-query attention (MQA).
+    When `input_linear` is a `QKVLinear` layer (i.e. `num_kv_heads=num_heads`), GQA is equivalent to
+    multi-head attention (MHA).
+
+    Note that in some cases fused variants `FusedQKVLinear` or `FusedGroupedQKVLinear` can be used
+    as drop-in replacements for `QKVLinear` or `GroupedQKVLinear` respectively (see corresponding
+    layer docstrings for details).
+
+    Reference: https://arxiv.org/abs/2305.13245
+    """
+
+    @property
+    def num_kv_heads(self):
+        return self.i_proj.num_kv_heads
+
+    def _compute_attention(
+        self,
+        *,
+        q_proj: Tensor,
+        k_proj: Tensor,
+        v_proj: Tensor,
+        attention_logit_biases: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        """See `MultiheadAttention._compute_attention` for details."""
+        cfg = self.config
+        num_repeats = cfg.num_heads // self.num_kv_heads
+        # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
+        return super()._compute_attention(
+            q_proj=q_proj,
+            k_proj=jnp.repeat(k_proj, num_repeats, axis=2),
+            v_proj=jnp.repeat(v_proj, num_repeats, axis=2),
+            attention_logit_biases=attention_logit_biases,
+        )
 
 
 def rel_pos_to_abs_pos(x: Tensor) -> Tensor:

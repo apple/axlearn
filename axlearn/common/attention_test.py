@@ -13,10 +13,12 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
 """Tests attention layers."""
+import contextlib
+
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
 from itertools import combinations
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Type, Union
 
 import jax
 import numpy as np
@@ -64,7 +66,14 @@ from axlearn.common.attention import (
     xl_attention_logits,
 )
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec, RematSpec
-from axlearn.common.config import InstantiableConfig, config_class, config_for_function
+from axlearn.common.config import (
+    InstantiableConfig,
+    UnknownFieldError,
+    config_class,
+    config_for_function,
+    maybe_set_config,
+)
+from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
@@ -1184,9 +1193,13 @@ class MultiheadLinearInitTest(TestCase):
 
 
 class QKVLinearTest(TestCase):
-    """Tests QKVLinear."""
+    """Tests QKVLinear, FusedQKVLinear, and associated layers."""
 
-    def test_qkv_fused_equality(self):
+    @parameterized.parameters(
+        attention.FusedQKVLinear, attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear
+    )
+    def test_qkv_equality(self, test_cls: Type[attention.BaseQKVLinear]):
+        """Tests that the QKVLinear variants are equivalent when num_kv_heads=num_heads."""
         with utils.numeric_checks(True):
             model_dim = 12
             num_heads = 4
@@ -1198,45 +1211,49 @@ class QKVLinearTest(TestCase):
                 num_heads=num_heads,
                 per_head_dim=per_head_dim,
             )
-            qkv_linear = (
-                attention.QKVLinear.default_config()
-                .set(
-                    name="qkv_test",
-                    **layer_kwargs,
-                )
-                .instantiate(parent=None)
-            )
-            qkv_linear_state = qkv_linear.initialize_parameters_recursively(jax.random.PRNGKey(0))
-            fused_qkv_linear = (
-                attention.FusedQKVLinear.default_config()
-                .set(
-                    name="fused_qkv_test",
-                    **layer_kwargs,
-                )
-                .instantiate(parent=None)
-            )
+            base_cfg = QKVLinear.default_config().set(**layer_kwargs)
+            test_cfg = test_cls.default_config().set(**layer_kwargs)
+            maybe_set_config(test_cfg, num_kv_heads=num_heads)
+            base_layer = base_cfg.set(name="base").instantiate(parent=None)
+            test_layer = test_cfg.set(name="test").instantiate(parent=None)
 
-            def fused_state_from(state):
-                weight = jnp.array([state[el]["weight"] for el in ("q_proj", "k_proj", "v_proj")])
-                bias = jnp.array([state[el]["bias"] for el in ("q_proj", "k_proj", "v_proj")])
-                return {"qkv_proj": dict(weight=weight, bias=bias)}
+            # Construct base layer state.
+            base_state = base_layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
 
             # Map state to fused version.
-            fused_qkv_linear_state = fused_state_from(qkv_linear_state)
+            if test_cls == attention.FusedQKVLinear:
+                weight = jnp.array(
+                    [base_state[el]["weight"] for el in ("q_proj", "k_proj", "v_proj")]
+                )
+                bias = jnp.array([base_state[el]["bias"] for el in ("q_proj", "k_proj", "v_proj")])
+                test_state = {"qkv_proj": dict(weight=weight, bias=bias)}
+            elif test_cls == attention.FusedGroupedQKVLinear:
+                # Concatenate along the num_heads dim.
+                weight = jnp.concatenate(
+                    [base_state[el]["weight"] for el in ("q_proj", "k_proj", "v_proj")], axis=1
+                )
+                bias = jnp.concatenate(
+                    [base_state[el]["bias"] for el in ("q_proj", "k_proj", "v_proj")], axis=0
+                )
+                test_state = {"qkv_proj": dict(weight=weight, bias=bias)}
+            else:
+                test_state = base_state
 
+            # Construct test inputs.
             batch_size, src_len, tgt_len = 2, 6, 6
-            rng = np.random.default_rng(seed=123)
-            query = jnp.asarray(rng.random([batch_size, tgt_len, model_dim]))
-            key = jnp.asarray(rng.random([batch_size, src_len, model_dim]))
-            value = jnp.asarray(rng.random([batch_size, src_len, model_dim]))
-            inputs = dict(query=query, key=key, value=value)
+            query = jax.random.uniform(jax.random.PRNGKey(0), [batch_size, tgt_len, model_dim])
+            key = jax.random.uniform(jax.random.PRNGKey(1), [batch_size, src_len, model_dim])
+            value = jax.random.uniform(jax.random.PRNGKey(2), [batch_size, src_len, model_dim])
 
+            # In the fused GQA case, we assume query=key=value.
+            if test_cls == attention.FusedGroupedQKVLinear:
+                key = value = None
+
+            inputs = dict(query=query, key=key, value=value)
             outputs = {}
-            layer_names = ("qkv_linear", "fused_qkv_linear")
+            layer_names = ("base", "test")
             for name, layer, state in zip(
-                layer_names,
-                (qkv_linear, fused_qkv_linear),
-                (qkv_linear_state, fused_qkv_linear_state),
+                layer_names, (base_layer, test_layer), (base_state, test_state)
             ):
                 outputs[name], _ = F(
                     layer,
@@ -1248,6 +1265,57 @@ class QKVLinearTest(TestCase):
             for layer_a, layer_b in combinations(layer_names, 2):
                 # Check that the outputs are close for all pairs.
                 self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
+
+    @parameterized.parameters(
+        dict(layer_cls=attention.QKVLinear, expected=4),
+        dict(layer_cls=attention.FusedQKVLinear, expected=4),
+        dict(
+            layer_cls=attention.QKVLinear,
+            num_kv_heads=2,
+            expected=UnknownFieldError("num_kv_heads"),
+        ),
+        dict(
+            layer_cls=attention.FusedQKVLinear,
+            num_kv_heads=2,
+            expected=UnknownFieldError("num_kv_heads"),
+        ),
+        dict(
+            layer_cls=attention.GroupedQKVLinear,
+            num_kv_heads=3,
+            expected=ValueError("should divide"),
+        ),
+        dict(
+            layer_cls=attention.FusedGroupedQKVLinear,
+            num_kv_heads=3,
+            expected=ValueError("should divide"),
+        ),
+        dict(layer_cls=attention.GroupedQKVLinear, num_kv_heads=2, expected=2),
+        dict(layer_cls=attention.FusedGroupedQKVLinear, num_kv_heads=2, expected=2),
+    )
+    def test_num_kv_heads(
+        self,
+        layer_cls: Type[attention.BaseQKVLinear],
+        expected: Union[int, Exception],
+        num_kv_heads: Optional[int] = None,
+    ):
+        model_dim = 12
+        num_heads = 4
+        per_head_dim = model_dim // num_heads
+        common_kwargs = dict(
+            query_dim=model_dim, key_dim=model_dim, value_dim=model_dim, per_head_dim=per_head_dim
+        )
+        cfg = layer_cls.default_config().set(name="test", num_heads=num_heads, **common_kwargs)
+
+        if isinstance(expected, Exception):
+            ctx = self.assertRaisesRegex(type(expected), str(expected))
+        else:
+            ctx = contextlib.nullcontext()
+
+        with ctx:
+            if num_kv_heads is not None:
+                cfg.set(num_kv_heads=num_kv_heads)
+            layer = cfg.instantiate(parent=None)
+            self.assertEqual(expected, layer.num_kv_heads)
 
 
 class PerDimScaleTest(TestCase):
@@ -1283,7 +1351,7 @@ class PerDimScaleTest(TestCase):
 
 
 class MultiheadAttentionTest(TestCase):
-    """Tests MultiheadAttention."""
+    """Tests MultiheadAttention, GroupedQueryAttention, and associated layers."""
 
     def test_invalid_key_value_combinations_raise(self):
         model_dim = 12
@@ -1528,23 +1596,105 @@ class MultiheadAttentionTest(TestCase):
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
+        input_linear=(
+            None,  # Use the default linear.
+            attention.QKVLinear.default_config(),
+            attention.GroupedQKVLinear.default_config().set(num_kv_heads=4),
+            attention.FusedGroupedQKVLinear.default_config().set(num_kv_heads=4),
+        ),
+        bias=(True, False),
     )
-    def test_extend_step(
-        self, dtype: jnp.dtype, per_dim_scale: Optional[PerDimScale.Config], atten_logit_cap: float
+    def test_gqa_forward(
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        input_linear: attention.BaseQKVLinear.Config,
+        bias: bool,
     ):
+        """When num_kv_heads=num_heads, GQA should be equivalent to MHA."""
         model_dim = 16
         num_heads = 4
-        cfg = attention.MultiheadAttention.default_config().set(
-            name="test",
+        layer_kwargs = dict(
             query_dim=model_dim,
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=num_heads,
             per_dim_scale=per_dim_scale,
             atten_logit_cap=atten_logit_cap,
+            dtype=dtype,
+        )
+        init_key = jax.random.PRNGKey(123)
+        # Initialize MultiheadAttention.
+        base_cfg = attention.MultiheadAttention.default_config().set(**layer_kwargs)
+        set_bias_recursively(base_cfg, bias=bias)
+        base_layer = base_cfg.set(name="base").instantiate(parent=None)
+        base_state = base_layer.initialize_parameters_recursively(prng_key=init_key)
+        # Initialize GroupedQueryAttenion.
+        cfg = attention.GroupedQueryAttention.default_config().set(**layer_kwargs)
+        if input_linear is not None:
+            cfg.set(input_linear=input_linear)
+        set_bias_recursively(cfg, bias=bias)
+        test_layer = cfg.set(name="test").instantiate(parent=None)
+        test_state = test_layer.initialize_parameters_recursively(prng_key=init_key)
+
+        if input_linear and issubclass(input_linear.klass, attention.FusedGroupedQKVLinear):
+            test_state["i_proj"]["qkv_proj"]["weight"] = jnp.concatenate(
+                [
+                    utils.get_recursively(base_state, f"i_proj/{proj}/weight")
+                    for proj in ("q_proj", "k_proj", "v_proj")
+                ],
+                axis=-2,
+            )
+
+        # Dummy inputs.
+        batch_size, tgt_len = 2, 6
+        inputs = dict(
+            query=jax.random.normal(
+                jax.random.PRNGKey(124),
+                [batch_size, tgt_len, model_dim],
+                dtype=dtype,
+            ),
+            key=None,
+            value=None,
+            attention_logit_biases=attention.make_causal_mask(tgt_len),
+        )
+        # Get outputs.
+        forward_key = jax.random.PRNGKey(456)
+        base_outputs, _ = F(
+            base_layer,
+            state=base_state,
+            is_training=False,
+            prng_key=forward_key,
+            inputs=inputs,
+        )
+        test_outputs, _ = F(
+            test_layer,
+            state=test_state,
+            is_training=False,
+            prng_key=forward_key,
+            inputs=inputs,
+        )
+        self.assertNestedAllClose(base_outputs, test_outputs)
+
+    def _test_extend_step(
+        self,
+        attention_cfg: attention.MultiheadAttention.Config,
+        *,
+        model_dim: int,
+        num_heads: int,
+        dtype: jnp.dtype,
+        bias: bool,
+    ):
+        cfg = attention_cfg.set(
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
         )
         cfg.input_linear.set(dtype=dtype, cache_dtype=None)
-        layer = cfg.instantiate(parent=None)
+        set_bias_recursively(cfg, bias=bias)
+        layer: attention.MultiheadAttention = cfg.set(name="test").instantiate(parent=None)
 
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
@@ -1552,8 +1702,10 @@ class MultiheadAttentionTest(TestCase):
         query = jax.random.normal(
             jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
         )
-        key = query
-        value = query
+        if attention_cfg.klass == attention.GroupedQueryAttention:
+            key = value = None
+        else:
+            key = value = query
         attention_logit_biases = attention.make_causal_mask(tgt_len)
         inputs = dict(
             query=query, key=key, value=value, attention_logit_biases=attention_logit_biases
@@ -1610,23 +1762,72 @@ class MultiheadAttentionTest(TestCase):
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
+        bias=(True, False),
     )
-    def test_prefill_states(
-        self, dtype: jnp.dtype, per_dim_scale: Optional[PerDimScale.Config], atten_logit_cap: float
+    def test_extend_step(
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        bias: bool,
     ):
         model_dim = 16
         num_heads = 4
         cfg = attention.MultiheadAttention.default_config().set(
-            name="test",
+            per_dim_scale=per_dim_scale,
+            atten_logit_cap=atten_logit_cap,
+        )
+        self._test_extend_step(
+            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+        )
+
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
+        per_dim_scale=(None, PerDimScale.default_config()),
+        atten_logit_cap=(0.0, 20.0),
+        num_kv_heads=(1, 2, 4),
+        input_linear=(attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear),
+        bias=(True, False),
+    )
+    def test_gqa_extend_step(
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        num_kv_heads: int,
+        input_linear: Type[attention.BaseQKVLinear],
+        bias: bool,
+    ):
+        model_dim = 16
+        num_heads = 4
+        cfg = attention.GroupedQueryAttention.default_config().set(
+            per_dim_scale=per_dim_scale,
+            atten_logit_cap=atten_logit_cap,
+            input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
+        )
+        self._test_extend_step(
+            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+        )
+
+    def _test_prefill_states(
+        self,
+        attention_cfg: attention.MultiheadAttention.Config,
+        *,
+        model_dim: int,
+        num_heads: int,
+        dtype: jnp.dtype,
+        bias: bool,
+        num_kv_heads: Optional[int] = None,
+    ):
+        cfg = attention_cfg.set(
             query_dim=model_dim,
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=num_heads,
-            per_dim_scale=per_dim_scale,
-            atten_logit_cap=atten_logit_cap,
         )
         cfg.input_linear.set(dtype=dtype, cache_dtype=None)
-        layer = cfg.instantiate(parent=None)
+        set_bias_recursively(cfg, bias=bias)
+        layer: attention.MultiheadAttention = cfg.set(name="test").instantiate(parent=None)
 
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
@@ -1661,7 +1862,7 @@ class MultiheadAttentionTest(TestCase):
         self.assertTrue(jnp.all(time_step == initial_states["i_proj"]["time_step"]))
         for proj in ["key", "value"]:
             self.assertEqual(
-                (batch_size, num_heads, model_dim // num_heads, tgt_len),
+                (batch_size, num_kv_heads or num_heads, model_dim // num_heads, tgt_len),
                 initial_states["i_proj"][proj].shape,
             )
             self.assertEqual(
@@ -1724,6 +1925,62 @@ class MultiheadAttentionTest(TestCase):
 
         assert_allclose(decoder_output, forward_outputs.data)
         assert_allclose(decoder_probs, forward_outputs.probs)
+
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
+        per_dim_scale=(None, PerDimScale.default_config()),
+        atten_logit_cap=(0.0, 20.0),
+        bias=(True, False),
+    )
+    def test_prefill_states(
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        bias: bool,
+    ):
+        model_dim = 16
+        num_heads = 4
+        cfg = attention.MultiheadAttention.default_config().set(
+            per_dim_scale=per_dim_scale,
+            atten_logit_cap=atten_logit_cap,
+        )
+        self._test_prefill_states(
+            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+        )
+
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
+        per_dim_scale=(None, PerDimScale.default_config()),
+        atten_logit_cap=(0.0, 20.0),
+        num_kv_heads=(1, 2, 4),
+        input_linear=(attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear),
+        bias=(True, False),
+    )
+    def test_gqa_prefill_states(
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        num_kv_heads: int,
+        input_linear: Type[attention.BaseQKVLinear],
+        bias: bool,
+    ):
+        model_dim = 16
+        num_heads = 4
+        cfg = attention.GroupedQueryAttention.default_config().set(
+            per_dim_scale=per_dim_scale,
+            atten_logit_cap=atten_logit_cap,
+            input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
+        )
+        self._test_prefill_states(
+            cfg,
+            model_dim=model_dim,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            dtype=dtype,
+            bias=bias,
+        )
 
     def _scale_query_kwargs(
         self,
