@@ -249,6 +249,7 @@ def _parse_tensor_spec(spec_dict: Dict[str, str]) -> TensorSpec:
             jnp.int16,
             jnp.int32,
             jnp.int64,
+            jnp.uint32,
         )
     }
     if dtype_str not in dtype_dict:
