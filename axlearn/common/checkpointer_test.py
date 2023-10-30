@@ -532,7 +532,7 @@ class CheckpointerTest(test_utils.TestCase):
             state0 = dict(
                 **{
                     f"v_{str(dtype.dtype)}": jnp.zeros([], dtype=dtype)
-                    for dtype in (jnp.int32, jnp.int64)
+                    for dtype in (jnp.uint32, jnp.int32, jnp.int64)
                 },
                 **{
                     f"v_{str(dtype.dtype)}": jnp.zeros([4], dtype=dtype)
