@@ -416,6 +416,8 @@ class TrainerTest(test_utils.TestCase):
         cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(n=5)
         cfg.summary_writer.vlog = 5
         cfg.max_step = 12
+        cfg.watchdog_timeout_seconds = 0.1
+        cfg.vlog = 2
         trainer: SpmdTrainer = cfg.instantiate(parent=None)
         output_a = trainer.run(prng_key=jax.random.PRNGKey(123))
         if ema_decay is None:

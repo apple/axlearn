@@ -1,10 +1,14 @@
 # Copyright © 2023 Apple Inc.
 
 """Defines SpmdTrainer, a trainer that supports partitioning of computation and data with GSPMD."""
+import contextlib
 import math
 import os.path
+import sys
+import threading
 import time
-from typing import Any, Dict, Literal, NamedTuple, Optional, Sequence, Tuple, Union
+import traceback
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 import tensorflow as tf
@@ -19,8 +23,9 @@ from axlearn.common.checkpointer import Checkpointer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.learner import Learner, NestedOptParam
-from axlearn.common.module import Module
+from axlearn.common.module import InvocationContext, Module, clone_context_stack
 from axlearn.common.module import functional as F
+from axlearn.common.module import install_context_stack
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
@@ -36,6 +41,17 @@ from axlearn.common.utils import (
     match_regex_rules,
     prune_tree,
 )
+
+
+def _thread_stack_traces() -> Sequence[str]:
+    lines = []
+    for thread in threading.enumerate():
+        thread_id = thread.ident
+        lines.append(f"Thread: {thread.name}({thread_id})")
+        # pylint: disable-next=protected-access
+        for line in traceback.format_stack(sys._current_frames()[thread_id]):
+            lines.append(f">>> {line.rstrip()}")
+    return lines
 
 
 def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
@@ -143,6 +159,10 @@ class SpmdTrainer(Module):
         # If None, we do not cast.
         train_dtype: Optional[jnp.dtype] = None
 
+        # If > 0, run a watchdog thread to print the thread stack traces if step does not
+        # increment within this interval.
+        watchdog_timeout_seconds: Optional[float] = None
+
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -150,6 +170,8 @@ class SpmdTrainer(Module):
         self._step: int = None
         self._trainer_state: _TrainerState = None
         self._jit_train_step: jax.stages.Wrapped = None
+        self._watchdog_stopping = None
+        self._watchdog_thread = None
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
@@ -267,9 +289,51 @@ class SpmdTrainer(Module):
     def mesh(self):
         return jax.sharding.Mesh(self._mesh.devices, self._mesh.axis_names)
 
+    @contextlib.contextmanager
+    def _watchdog(self):
+        self._start_watchdog()
+        yield
+        self._stop_watchdog()
+
+    def _start_watchdog(self):
+        cfg = self.config
+        if cfg.watchdog_timeout_seconds and self._watchdog_thread is None:
+            self._watchdog_stopping = threading.Event()
+            self._watchdog_thread = threading.Thread(
+                name=f"{self.path()}.watchdog",
+                target=self._watchdog_loop,
+                kwargs=dict(context_stack=clone_context_stack()),
+            )
+            self._watchdog_thread.start()
+
+    def _stop_watchdog(self):
+        """Stops the checkpointer. Waits for async writes and garbage collection loop to finish."""
+        logging.info("Waiting for watchdog_thread to finish")
+        if self._watchdog_thread is not None:
+            self._watchdog_stopping.set()
+            self._watchdog_thread.join()
+            self._watchdog_thread = None
+            logging.info("watchdog_thread finished")
+
+    def _watchdog_loop(self, *, context_stack: List[InvocationContext]):
+        cfg = self.config
+        install_context_stack(context_stack)
+        while True:
+            last_step = self.step
+            if self._watchdog_stopping.wait(timeout=cfg.watchdog_timeout_seconds):
+                break
+            current_step = self.step
+            if current_step == last_step:
+                self._step_log(
+                    "Watchdog triggered! Threads:\n%s", "\n".join(_thread_stack_traces())
+                )
+            else:
+                self.vlog(1, "Watchdog check passed: %s -> %s", last_step, current_step)
+        logging.info("Watchdog loop done")
+
     # pylint: disable-next=too-many-statements,too-many-branches
     def run(self, prng_key: jax.random.KeyArray) -> Optional[NestedTensor]:
-        with self.mesh():
+        with self._watchdog(), self.mesh():
             cfg = self.config
             jax.config.update("jax_log_compiles", True)
             # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.

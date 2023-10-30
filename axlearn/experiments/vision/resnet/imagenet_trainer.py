@@ -10,6 +10,7 @@ Examples:
 
     ```
     # Run the training locally on CPU and fake inputs.
+    mkdir -p /tmp/resnet_test;
     python3 -m axlearn.common.launch_trainer_main \
         --module=vision.resnet.imagenet_trainer --config=ResNet-Test \
         --trainer_dir=/tmp/resnet_test --data_dir=FAKE
