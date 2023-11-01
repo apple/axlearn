@@ -57,6 +57,18 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
   (gsutil cp ${GS_BUNDLE_PATH} "${LOCAL_BUNDLE_PATH}/axlearn.tar.gz" && tar -xzf "axlearn.tar.gz") \
   >> ${SETUP_LOG_PATH} 2>&1
 
+  # Install + activate Python 3.10.
+  install_py310() {
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+    /bin/bash miniconda.sh -b -p /opt/conda
+    source /opt/conda/etc/profile.d/conda.sh
+    conda create -y -n py310 python=3.10
+    conda activate py310
+    conda info --envs
+  }
+  install_py310 >> ${SETUP_LOG_PATH} 2>&1
+  echo "Using python3: $(which python3)" >> ${SETUP_LOG_PATH} 2>&1
+
   # Install bundle.
   install_bundle() {
     # 'Until' seemingly necessary as of 08/06/23 to avoid background setup process damaging partial
