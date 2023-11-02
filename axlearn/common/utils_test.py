@@ -8,6 +8,7 @@ from typing import Any, Iterable, NamedTuple, Optional, Sequence, Type
 
 # pylint: disable=no-self-use
 import chex
+import flax.struct
 import jax
 import jaxlib
 import numpy as np
@@ -74,6 +75,11 @@ class Combo(NamedTuple):
     tail: Any
 
 
+# pylint: disable-next=abstract-method
+class StructContainer(flax.struct.PyTreeNode):
+    contents: Any
+
+
 class TreeUtilsTest(TestCase):
     def test_tree_paths(self):
         tree = {"a": 1, "b": [2, {"c": 3}]}
@@ -92,6 +98,12 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(
             WeightedScalar(mean="mean", weight="weight"),
             tree_paths(WeightedScalar(mean=2, weight=3)),
+        )
+
+        # Nested flax.struct.PyTreeNode.
+        self.assertEqual(
+            StructContainer(WeightedScalar(mean="contents/mean", weight="contents/weight")),
+            tree_paths(StructContainer(WeightedScalar(mean=2, weight=3))),
         )
 
         # With is_leaf set.
