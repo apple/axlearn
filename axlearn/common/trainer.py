@@ -333,19 +333,18 @@ class SpmdTrainer(Module):
 
     # pylint: disable-next=too-many-statements,too-many-branches
     def run(self, prng_key: jax.random.KeyArray) -> Optional[NestedTensor]:
-        with self._watchdog(), self.mesh():
+        with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
             cfg = self.config
-            jax.config.update("jax_log_compiles", True)
             # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
             self.restore_checkpoint(restore_step=None)
 
             if self.step is None:
-                # If we didn't restore from checkpoint, attempt to build initial state according to
-                # `cfg.init_state_builder` and initialize the remaining parameters.
+                # If we didn't restore from checkpoint, attempt to build initial state according
+                # to `cfg.init_state_builder` and initialize the remaining parameters.
                 self.init(prng_key)
                 self._step = 0
 
-                # Note, the default checkpointer and evaler do nothing at step 0 with min_step=1.
+                # Note the default checkpointer and evaler do nothing at step 0 with min_step=1.
                 self.save_checkpoint(self._run_eval())
 
                 # Log trainer state tree.
