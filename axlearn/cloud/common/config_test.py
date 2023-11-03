@@ -28,7 +28,7 @@ from axlearn.cloud.common.config import (
 )
 from axlearn.cloud.common.config import main as config_main
 from axlearn.cloud.common.config import update_configs, write_configs_with_header
-from axlearn.common.test_utils import TestWithTemporaryCWD
+from axlearn.common.test_utils import TestWithTemporaryCWD, temp_chdir
 
 
 def _setup_fake_repo(temp_dir: Union[pathlib.Path, str]):
@@ -53,11 +53,11 @@ class ConfigTest(TestWithTemporaryCWD):
     def test_repo_root_or_cwd(self):
         temp_root = os.path.realpath(self._temp_root.name)
         os.makedirs("temp_cwd")
-        os.chdir("temp_cwd")
-        self.assertNotEqual(temp_root, os.getcwd())
-        self.assertEqual(_repo_root_or_cwd(), os.getcwd())
-        _setup_fake_repo(temp_root)
-        self.assertEqual(_repo_root_or_cwd(), temp_root)
+        with temp_chdir("temp_cwd"):
+            self.assertNotEqual(temp_root, os.getcwd())
+            self.assertEqual(_repo_root_or_cwd(), os.getcwd())
+            _setup_fake_repo(temp_root)
+            self.assertEqual(_repo_root_or_cwd(), temp_root)
 
     def test_default_config_file(self):
         temp_root = os.path.realpath(self._temp_root.name)
@@ -77,29 +77,29 @@ class ConfigTest(TestWithTemporaryCWD):
         # If within a repo, relative to repo root.
         repo_root = pathlib.Path(temp_root) / "repo_root"
         repo_root.mkdir()
-        os.chdir(repo_root)
-        _setup_fake_repo(repo_root)
-        create_default_config(repo_root)
-        default_config_file = pathlib.Path(_default_config_file())
-        self.assertTrue(pathlib.Path(repo_root) in default_config_file.parents)
-        # Make sure default config is in the expected path.
-        self.assertEqual(
-            default_config_file.relative_to(repo_root),
-            pathlib.Path(CONFIG_DIR) / DEFAULT_CONFIG_FILE,
-        )
+        with temp_chdir(repo_root):
+            _setup_fake_repo(repo_root)
+            create_default_config(repo_root)
+            default_config_file = pathlib.Path(_default_config_file())
+            self.assertTrue(pathlib.Path(repo_root) in default_config_file.parents)
+            # Make sure default config is in the expected path.
+            self.assertEqual(
+                default_config_file.relative_to(repo_root),
+                pathlib.Path(CONFIG_DIR) / DEFAULT_CONFIG_FILE,
+            )
 
         # If within a package, relative to package root.
         package_root = pathlib.Path(temp_root) / ROOT_MODULE_NAME
         package_root.mkdir()
-        os.chdir(package_root)
-        create_default_config(package_root)
-        default_config_file = pathlib.Path(_default_config_file())
-        self.assertTrue(pathlib.Path(package_root) in default_config_file.parents)
-        # Make sure default config is in the expected path.
-        self.assertEqual(
-            default_config_file.relative_to(package_root),
-            pathlib.Path(CONFIG_DIR) / DEFAULT_CONFIG_FILE,
-        )
+        with temp_chdir(package_root):
+            create_default_config(package_root)
+            default_config_file = pathlib.Path(_default_config_file())
+            self.assertTrue(pathlib.Path(package_root) in default_config_file.parents)
+            # Make sure default config is in the expected path.
+            self.assertEqual(
+                default_config_file.relative_to(package_root),
+                pathlib.Path(CONFIG_DIR) / DEFAULT_CONFIG_FILE,
+            )
 
     def test_locate_user_config_file(self):
         temp_root = pathlib.Path(os.path.realpath(self._temp_root.name))

@@ -5,6 +5,7 @@ import contextlib
 import copy
 import dataclasses
 import os
+import pathlib
 import re
 import tempfile
 from collections import OrderedDict
@@ -300,12 +301,10 @@ class TestWithTemporaryCWD(TestCase):
 
     def run(self, result=None):
         temp_root = tempfile.TemporaryDirectory()
-        # Note that using "as" will only return the dir name.
-        with temp_root:
-            # pylint: disable-next=attribute-defined-outside-init
-            self._temp_root = temp_root
-            temp_root = os.path.realpath(self._temp_root.name)
-            os.chdir(temp_root)
+        # Note that using "with temp_root as ..." will only return the dir name.
+        # pylint: disable-next=attribute-defined-outside-init
+        self._temp_root = temp_root
+        with temp_root, temp_chdir(os.path.realpath(self._temp_root.name)):
             super().run(result)
 
 
@@ -694,3 +693,14 @@ def mock_trainer_config(
         )
     )
     return cfg
+
+
+@contextlib.contextmanager
+def temp_chdir(new_cwd: Union[pathlib.Path, str]):
+    """Changes into a temp CWD only within the context."""
+    old_cwd = os.getcwd()
+    os.chdir(new_cwd)
+    try:
+        yield
+    finally:
+        os.chdir(old_cwd)
