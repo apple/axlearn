@@ -165,7 +165,13 @@ def tree_paths(
                 for k, v in tree.items()
             )
         elif isinstance(tree, flax.struct.PyTreeNode):
-            return type(tree)(**visit(dataclasses.asdict(tree), prefix))
+            # dataclasses.asdict() cannot be used because it recursively converts children to dicts.
+            return type(tree)(
+                **visit(
+                    {field.name: getattr(tree, field.name) for field in dataclasses.fields(tree)},
+                    prefix,
+                )
+            )
         elif is_named_tuple(tree):
             return type(tree)(**visit(tree._asdict(), prefix))
         elif isinstance(tree, (list, tuple)):
