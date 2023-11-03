@@ -5,7 +5,9 @@
 
 ## Input Batch Sharding
 
-WWhen using `SpmdTrainer`, it is common to read and process inputs across all processes and hosts. For the most common use case where you want each process to have an equal portion of the input batch, this process is mostly transparent to the user. For more complex use cases, it can be helpful to have a general idea of the what is happening behind the scenes.
+When using `SpmdTrainer`, it is common to read and process inputs across all processes and hosts.
+For the most common use case where you want each process to have an equal portion of the input batch, this process is mostly transparent to the user.
+For more complex use cases, it can be helpful to have a general idea of the what is happening behind the scenes.
 
 When using AXLearn's support for TFDS inputs, the typical way input batch sharding works is:
 
