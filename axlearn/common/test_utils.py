@@ -215,7 +215,7 @@ class TestCase(parameterized.TestCase):
                 self.assertEqual(a_value.shape, b_value.shape, msg=f"{a_name}")
                 assert_allclose(a_value, b_value, atol=atol, rtol=rtol, err_msg=f"{a_name}")
             else:
-                self.assertAlmostEqual(a_value, b_value)
+                self.assertAlmostEqual(a_value, b_value, msg=f"{a_name}")
 
     def assertNestedEqual(self, a, b):
         a_kv = flatten_items(a)
