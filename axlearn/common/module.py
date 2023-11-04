@@ -149,7 +149,7 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
     # The state of the module.
     state: NestedTensor
     is_training: bool
-    prng_key: Optional[jax.random.KeyArray]
+    prng_key: Optional[Tensor]
     output_collection: OutputCollection
 
     def path(self):
@@ -670,7 +670,7 @@ class Module(Configurable):
         return self.get_invocation_context().is_training
 
     @property
-    def prng_key(self) -> jax.random.KeyArray:
+    def prng_key(self) -> Tensor:
         return self.get_invocation_context().prng_key
 
     @property
@@ -724,7 +724,7 @@ class Module(Configurable):
 
 def functional(
     module: Module,
-    prng_key: Optional[jax.random.KeyArray],
+    prng_key: Optional[Tensor],
     state: NestedTensor,
     inputs: Union[Sequence[Any], Dict[str, Any]],
     *,

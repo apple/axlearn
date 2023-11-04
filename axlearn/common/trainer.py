@@ -71,7 +71,7 @@ def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
 
 
 class _TrainerState(NamedTuple):
-    prng_key: Union[jax.random.KeyArray, NestedPartitionSpec]
+    prng_key: Union[Tensor, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
     learner: Union[NestedTensor, NestedPartitionSpec]
 
@@ -332,7 +332,7 @@ class SpmdTrainer(Module):
         logging.info("Watchdog loop done")
 
     # pylint: disable-next=too-many-statements,too-many-branches
-    def run(self, prng_key: jax.random.KeyArray) -> Optional[NestedTensor]:
+    def run(self, prng_key: Tensor) -> Optional[NestedTensor]:
         with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
             cfg = self.config
             # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
@@ -451,7 +451,7 @@ class SpmdTrainer(Module):
             specs,
         )
 
-    def init(self, prng_key: jax.random.KeyArray):
+    def init(self, prng_key: Tensor):
         """Initializes self._step and self._trainer_state.
 
         Args:
@@ -475,7 +475,7 @@ class SpmdTrainer(Module):
 
     def _init_with_prebuilt_state(
         self,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         *,
         prebuilt_state: Optional[TrainerStateBuilder.State],
     ):
@@ -531,7 +531,7 @@ class SpmdTrainer(Module):
             prebuilt_state.trainer_state.model,
         )
 
-        def _init_state(prng_key: jax.random.KeyArray, prebuilt_model_state: NestedTensor):
+        def _init_state(prng_key: Tensor, prebuilt_model_state: NestedTensor):
             prng_key, init_key = jax.random.split(prng_key)
             logging.info("prebuilt_model_state: %s", utils.shapes(prebuilt_model_state))
             model_params = self.model.initialize_parameters_recursively(

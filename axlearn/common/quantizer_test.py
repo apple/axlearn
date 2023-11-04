@@ -32,7 +32,7 @@ from axlearn.common.quantizer import (
     quantize_by_nearest_neighbor,
 )
 from axlearn.common.test_utils import TestCase, assert_allclose, prng_impl
-from axlearn.common.utils import shapes
+from axlearn.common.utils import Tensor, shapes
 
 _CODE_BOOK = jnp.array(
     [
@@ -44,7 +44,7 @@ _CODE_BOOK = jnp.array(
 )
 
 
-def _create_prngkeyarray(key_data: List[int]) -> jax.random.KeyArray:
+def _create_prngkeyarray(key_data: List[int]) -> Tensor:
     # pylint: disable-next=protected-access
     return jax._src.prng.PRNGKeyArrayImpl(  # pytype: disable=module-attr
         impl=jax.random.default_prng_impl(), key_data=jnp.array(key_data, dtype=jnp.uint32)

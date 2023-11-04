@@ -121,7 +121,7 @@ class RematSpec:
 class ParameterNoise(Configurable):
     """An interface for applying parameter noise."""
 
-    def apply(self, prng_key: jax.random.KeyArray, params: NestedTensor) -> NestedTensor:
+    def apply(self, prng_key: Tensor, params: NestedTensor) -> NestedTensor:
         """To be implemented by subclasses."""
         raise NotImplementedError(self)
 
@@ -275,7 +275,7 @@ class BaseLayer(Module):
         return specs
 
     def initialize_parameters_recursively(
-        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         params = {}
         param_specs = self._create_layer_parameter_specs()
@@ -318,7 +318,7 @@ class BaseLayer(Module):
         return True
 
     def _initialize_parameter(
-        self, name: str, *, prng_key: jax.random.KeyArray, parameter_spec: ParameterSpec
+        self, name: str, *, prng_key: Tensor, parameter_spec: ParameterSpec
     ) -> Tensor:
         """Adds a parameter with the given name and shape.
 
@@ -345,7 +345,7 @@ class BaseLayer(Module):
         return param
 
     def apply_parameter_noise_recursively(
-        self, prng_key: jax.random.KeyArray, params: NestedTensor
+        self, prng_key: Tensor, params: NestedTensor
     ) -> NestedTensor:
         """Applies parameter noise recursively on `params`.
 

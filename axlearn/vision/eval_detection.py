@@ -56,9 +56,7 @@ class COCOMetricCalculator(BaseMetricCalculator):
             need_rescale_bboxes=cfg.need_rescale_bboxes,
         )
 
-    def init_state(
-        self, *, prng_key: jax.random.KeyArray, model_params: NestedTensor
-    ) -> NestedTensor:
+    def init_state(self, *, prng_key: Tensor, model_params: NestedTensor) -> NestedTensor:
         self._coco_metric.reset_states()
         return dict(prng_key=prng_key)
 
@@ -106,7 +104,7 @@ class COCOMetricCalculator(BaseMetricCalculator):
     def _predict_in_pjit(
         self,
         model_params: NestedTensor,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         input_batch: NestedTensor,
     ) -> Dict[str, NestedTensor]:
         predict_key, next_key = jax.random.split(prng_key)

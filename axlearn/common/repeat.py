@@ -67,14 +67,15 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
-from axlearn.common.module import (
-    Module,
+from axlearn.common.module import Module, child_context, new_output_collection, scan_in_context
+from axlearn.common.utils import (
     NestedTensor,
-    child_context,
-    new_output_collection,
-    scan_in_context,
+    Tensor,
+    VDict,
+    get_or_none,
+    match_regex_rules,
+    split_prng_key,
 )
-from axlearn.common.utils import VDict, get_or_none, match_regex_rules, split_prng_key
 
 
 def _drop_by_regex(rules: Sequence[str]) -> Callable[[str], bool]:
@@ -135,7 +136,7 @@ class Repeat(BaseLayer):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         def init(prng_key_i, prebuilt_i):
             return VDict(

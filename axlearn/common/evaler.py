@@ -103,9 +103,7 @@ class BaseMetricCalculator(Module):
         if mesh.empty:
             raise RuntimeError("MetricCalculator should be created within the context of a mesh")
 
-    def init_state(
-        self, *, prng_key: jax.random.KeyArray, model_params: NestedTensor
-    ) -> NestedTensor:
+    def init_state(self, *, prng_key: Tensor, model_params: NestedTensor) -> NestedTensor:
         """Initializes the state.
 
         Will be called at the beginning of an evaluation step.
@@ -212,7 +210,7 @@ class BaseMetricCalculator(Module):
         self,
         *,
         method: str,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         model_params: NestedTensor,
         input_batch: NestedTensor,
         **kwargs,
@@ -285,9 +283,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         self._metric_accumulator = None
         self._jit_forward = self._pjit(self._forward_in_pjit)
 
-    def init_state(
-        self, *, prng_key: jax.random.KeyArray, model_params: NestedTensor
-    ) -> NestedTensor:
+    def init_state(self, *, prng_key: Tensor, model_params: NestedTensor) -> NestedTensor:
         cfg = self.config
         self._metric_accumulator = cfg.metric_accumulator.instantiate()
         return dict(prng_key=prng_key)
@@ -308,7 +304,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
     def _forward_in_pjit(
         self,
         model_params: NestedTensor,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         input_batch: NestedTensor,
     ) -> Dict[str, NestedTensor]:
         """Calls `self._model` and returns summaries."""
@@ -379,9 +375,7 @@ class CompositeMetricCalculator(BaseMetricCalculator):
                 model_param_partition_specs=model_param_partition_specs,
             )
 
-    def init_state(
-        self, *, prng_key: jax.random.KeyArray, model_params: NestedTensor
-    ) -> NestedTensor:
+    def init_state(self, *, prng_key: Tensor, model_params: NestedTensor) -> NestedTensor:
         states = {}
         for name, calculator in self.children.items():
             states[name] = calculator.init_state(prng_key=prng_key, model_params=model_params)
@@ -525,11 +519,11 @@ class SpmdEvaler(Module):
         self,
         step: int,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         model_params: NestedTensor,
         return_aux: bool = False,
         train_summaries: Optional[NestedTensor] = None,
-    ) -> Tuple[jax.random.KeyArray, Optional[Dict[str, Any]], Optional[List[NestedTensor]]]:
+    ) -> Tuple[Tensor, Optional[Dict[str, Any]], Optional[List[NestedTensor]]]:
         """Runs eval for the given step.
 
         Args:
@@ -682,7 +676,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         self._metric_accumulator: MetricAccumulator = None
 
     def init_state(  # pylint: disable=duplicate-code
-        self, *, prng_key: jax.random.KeyArray, model_params: NestedTensor
+        self, *, prng_key: Tensor, model_params: NestedTensor
     ) -> NestedTensor:
         self._metric_accumulator = MetricAccumulator.default_config().instantiate()
         return dict(prng_key=prng_key)
@@ -724,7 +718,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
     def _predict_in_pjit(
         self,
         model_params: NestedTensor,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         input_batch: NestedTensor,
     ) -> Dict[str, NestedTensor]:
         """Core function that calls model's predict() method for each batch and will be pjit-ed."""
@@ -759,7 +753,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
     def _compute_metrics_in_pjit(
         self,
         model_params: NestedTensor,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         outputs: List[PredictionOutputs],
     ) -> Dict[str, NestedTensor]:
         """Computes metrics and returns them in "replicated"."""

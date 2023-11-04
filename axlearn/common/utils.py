@@ -251,11 +251,11 @@ def vectorized_tree_map(fn, tree, *rest):
 
 
 class StackedKeyArray(NamedTuple):
-    keys: Union[jax.random.KeyArray, "StackedKeyArray"]
+    keys: Union[Tensor, "StackedKeyArray"]
 
 
 def split_prng_key(
-    prng_key: Union[StackedKeyArray, jax.random.KeyArray], num_keys: Union[int, Sequence[int]]
+    prng_key: Union[StackedKeyArray, Tensor], num_keys: Union[int, Sequence[int]]
 ) -> StackedKeyArray:
     """Splits prng_key to keys iteratively and return the stacked keys.
 

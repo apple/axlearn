@@ -10,6 +10,7 @@ from absl import logging
 from jax import numpy as jnp
 
 from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
+from axlearn.common.utils import Tensor
 
 Shape = Sequence[int]
 
@@ -156,7 +157,7 @@ class Initializer(Configurable):
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -183,7 +184,7 @@ class ConstantInitializer(Initializer):
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -214,7 +215,7 @@ class GaussianInitializer(Initializer):
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -294,7 +295,7 @@ class WeightInitializer(Initializer):
         self,
         name,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -393,7 +394,7 @@ class DefaultInitializer(Initializer):
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -463,7 +464,7 @@ class PerGroupInitializer(Initializer):
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -478,7 +479,7 @@ class PerGroupInitializer(Initializer):
             raise ValueError(f"{shape[-1]=} must be divisible by {cfg.num_groups=}.")
         shape_per_group = list(shape[:-1]) + [shape[-1] // cfg.num_groups]
 
-        def init(prng_key_i: jax.random.KeyArray) -> jnp.ndarray:
+        def init(prng_key_i: Tensor) -> jnp.ndarray:
             return self.initializer.initialize(
                 name, prng_key=prng_key_i, shape=shape_per_group, dtype=dtype, axes=axes
             )
