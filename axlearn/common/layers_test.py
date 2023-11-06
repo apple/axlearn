@@ -793,7 +793,6 @@ class LayerTest(TestCase, tf.test.TestCase):
         out_paddings = _compute_conv_output_1d_padding(
             jnp.array([input_paddings]), window=window, stride=stride, conv_padding_cfg=padding_cfg
         )
-
         assert_allclose(out_paddings[0], expected_paddings)
 
     @parameterized.parameters(
