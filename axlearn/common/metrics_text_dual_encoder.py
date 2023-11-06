@@ -23,7 +23,7 @@ from axlearn.common.text_dual_encoder import (
 from axlearn.common.utils import Tensor
 
 
-def _calculate_retrieval_metrics(
+def _calculate_retrieval_metrics_from_embeddings(
     *,
     top_ks_for_accuracy: List[int],
     query_embeddings: Tensor,
@@ -33,7 +33,8 @@ def _calculate_retrieval_metrics(
     text_negative_embeddings: Optional[Tensor] = None,
     text_negative_paddings: Optional[Tensor] = None,
 ) -> Dict[str, Tensor]:
-    """Main function to calculate all different retrieval metrics for text dual encoder model.
+    """Main function to calculate all different retrieval metrics given embeddings for text dual
+    encoder model.
 
     The retrieval is asymmetric meaning that relevant texts are retrieved given each valid query.
 
@@ -67,6 +68,42 @@ def _calculate_retrieval_metrics(
 
     # Shape: [num_queries, num_queries * (max_positive_texts + max_negative_texts)].
     sim = contrastive_logits(flattened_query_embeddings, flattened_text_embeddings)
+    return calculate_retrieval_metrics_from_similarity_matrix(
+        sim=sim,
+        text_positive_paddings=text_positive_paddings,
+        query_paddings=query_paddings,
+        text_paddings=text_paddings,
+        top_ks_for_accuracy=top_ks_for_accuracy,
+    )
+
+
+def calculate_retrieval_metrics_from_similarity_matrix(
+    *,
+    sim: Tensor,
+    text_positive_paddings: Tensor,
+    query_paddings: Tensor,
+    text_paddings: Tensor,
+    top_ks_for_accuracy: List[int],
+) -> Dict[str, Tensor]:
+    """Function to calculate all different retrieval metrics given similarity matrix.
+
+    The retrieval is asymmetric meaning that relevant texts are retrieved given each valid query.
+
+    Args:
+        sim: Similarity matrix with shape
+            [num_queries, num_queries * (max_positive_texts + max_negative_texts)].
+        text_positive_embeddings: Positive text embeddings with shape
+            [num_queries, max_positive_texts, dim].
+        query_paddings: Query paddings with shape [num_queries, 1]. 1 means paddings and 0
+            means valid queries.
+        text_paddings: Text paddings with shape
+            [num_queries * (max_positive_texts + max_negative_texts)]. 1 means paddings and 0 means
+            valid queries.
+        top_ks_for_accuracy: The values for k for which to compute accuracy.
+
+    Returns:
+        A dict containing all different metrics for text dual encoder model.
+    """
     num_queries, max_positive_texts = text_positive_paddings.shape
     total_num_positive_texts = num_queries * max_positive_texts
     # Shape: [num_queries, max_positive_texts].
@@ -137,7 +174,7 @@ class TextDualEncoderMetricCalculator(GlobalMetricCalculator):
         text_negative_embeddings = predict_outputs[cfg.right_encoder_name].get(
             NEGATIVE_EMBEDDINGS, None
         )
-        metrics = _calculate_retrieval_metrics(
+        metrics = _calculate_retrieval_metrics_from_embeddings(
             top_ks_for_accuracy=cfg.top_ks_for_accuracy,
             query_embeddings=predict_outputs[cfg.left_encoder_name][POSITIVE_EMBEDDINGS],
             query_paddings=input_batch[cfg.left_encoder_name][POSITIVE_PADDINGS],
