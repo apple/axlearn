@@ -19,7 +19,7 @@ When using AXLearn's support for TFDS inputs, the typical way input batch shardi
   `read_config` that sets per-process splits.
 https://github.com/apple/axlearn/blob/c00c632b99e6a2d87ee7ba94f295b39e0871a577/axlearn/common/input_tf_data.py#L87-L98
 2. In each step, each process reads in the data specified by its split, but it is only a local array
-   initially. 
+   initially.
 3. `SpmdTrainer` combines these local arrays into a globally sharded array using
    `utils.host_to_global_device_array()` before passing the global input batch to `_run_step()`.
 https://github.com/apple/axlearn/blob/c00c632b99e6a2d87ee7ba94f295b39e0871a577/axlearn/common/trainer.py#L420
