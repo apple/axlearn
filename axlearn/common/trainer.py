@@ -522,7 +522,7 @@ class SpmdTrainer(Module):
             trainer_state_structure, self._trainer_state_partition_specs
         )
 
-    def _prepare_training(self, cfg: Config, prng_key: Tensor) -> Tuple[bool, bool]:
+    def _prepare_training(self, cfg: Config, prng_key: Tensor) -> Tuple[bool, Dict[str, Any]]:
         """Prepares training.
 
         This function does the following to prepare the training procedure:
@@ -536,8 +536,9 @@ class SpmdTrainer(Module):
             prng_key: The PRNG key of the `run` method.
         
         Returns:
-            `should_return`: A boolean indicating whether the `run` method should return.
-            `is_restored`: Whether the trainer state is restored from a checkpoint.
+            `should_return`: A boolean indicating whether the `run` method should return,
+                instead of starting training.
+            `aux`: Any auxiliary output of the function.
         """
 
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
@@ -569,12 +570,12 @@ class SpmdTrainer(Module):
         if self.step >= cfg.max_step:
             self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
             should_return = True
-            return should_return, is_restored
+            return should_return, {"is_restored": is_restored}
 
         should_return = False
         with self.checkpointer:
             self._pjit_train_step()
-        return should_return, is_restored
+        return should_return, {"is_restored": is_restored}
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
         """Restores trainer state from checkpoint.
@@ -828,7 +829,7 @@ class SpmdTrainer(Module):
             aux=forward_aux,
         )
 
-    def _should_start_trace(self, stop_trace_step: Optional[int]) -> bool:
+    def _should_start_tracing(self, stop_trace_step: Optional[int]) -> bool:
         cfg = self.config
         if self.step not in cfg.start_trace_steps:
             return False
@@ -864,7 +865,7 @@ class SpmdTrainer(Module):
             jax.profiler.stop_trace()
             self._step_log("Stopped profiler tracing")
             updated_stop_trace_step = None
-        if self._should_start_trace(stop_trace_step):
+        if self._should_start_tracing(stop_trace_step):
             self._step_log("Start profiler tracing")
             jax.profiler.start_trace(self.summary_writer.config.dir)
             updated_stop_trace_step = self.step + 3
