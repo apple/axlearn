@@ -553,9 +553,7 @@ class SpmdTrainer(Module):
 
             # Log trainer state tree.
             if jax.process_index() == 0:
-                with tf.io.gfile.GFile(
-                    os.path.join(cfg.dir, "trainer_state_tree.txt"), "w"
-                ) as f:
+                with tf.io.gfile.GFile(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
                     f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
 
         self._log_trainer_state_stats()
@@ -822,8 +820,8 @@ class SpmdTrainer(Module):
         )
 
     def _maybe_stop_or_start_tracing(
-            self, stop_trace_step: Optional[int], output: Optional[Dict[str, Any]]
-        ) -> Optional[int]:
+        self, stop_trace_step: Optional[int], output: Optional[Dict[str, Any]]
+    ) -> Optional[int]:
         """Stops or starts jax profiler tracing if necessary.
 
         Args:
@@ -848,8 +846,7 @@ class SpmdTrainer(Module):
             should_start_tracing = False
         elif updated_stop_trace_step is not None:
             logging.warning(
-                "Skipping trace at step %s, "
-                "since it is too close to the previous one: %s",
+                "Skipping trace at step %s, since it is too close to the previous one: %s",
                 self.step,
                 cfg.start_trace_steps,
             )
