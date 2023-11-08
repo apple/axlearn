@@ -533,7 +533,7 @@ class SpmdTrainer(Module):
         Args:
             cfg: The trainer config.
             prng_key: The PRNG key of the `run` method.
-        
+
         Returns:
             A boolean indicating whether the model training should start. If not, return
                 None from the `run` function.
@@ -829,7 +829,7 @@ class SpmdTrainer(Module):
         Args:
             stop_trace_step: The step at which we should stop tracing.
             output: The output of run_step.
-        
+
         Returns:
             The updated value for `stop_trace_step`.
         """
