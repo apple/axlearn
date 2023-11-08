@@ -573,8 +573,7 @@ class SpmdTrainer(Module):
             return should_return, {"is_restored": is_restored}
 
         should_return = False
-        with self.checkpointer:
-            self._pjit_train_step()
+        self._pjit_train_step()
         return should_return, {"is_restored": is_restored}
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
