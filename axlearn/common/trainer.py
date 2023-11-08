@@ -335,23 +335,12 @@ class SpmdTrainer(Module):
     def run(self, prng_key: Tensor) -> Optional[NestedTensor]:
         with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
             cfg = self.config
-            # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
-            self.restore_checkpoint(restore_step=None)
-
-            if self.step is None:
-                # If we didn't restore from a checkpoint, build an initial state.
-                self._build_initial_state(prng_key)
-
-            self._log_trainer_state_stats()
-            # Log config.
-            self.summary_writer.log_config(cfg, step=self.step)
-
-            if self.step >= cfg.max_step:
-                self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
+            # Prepare training.
+            should_return, _ = self._prepare_training(cfg, prng_key)
+            if should_return:
                 return None
 
             with self.checkpointer:
-                self._pjit_train_step()
                 logging.info("Starting loop...")
                 start_time = time.perf_counter()
                 num_steps = 0
@@ -364,8 +353,7 @@ class SpmdTrainer(Module):
                     )
 
                     # Stop or start tracing if necessary.
-                    stop_trace_step = self._maybe_stop_tracing(stop_trace_step, output)
-                    stop_trace_step = self._maybe_start_tracing(stop_trace_step)
+                    stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
 
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
@@ -534,6 +522,53 @@ class SpmdTrainer(Module):
             trainer_state_structure, self._trainer_state_partition_specs
         )
 
+    def _prepare_training(self, cfg: Config, prng_key: Tensor) -> Tuple[bool, bool]:
+        """Prepare training.
+        
+        Args:
+            cfg: The trainer config.
+            prng_key: The PRNG key of the `run` method.
+        
+        Returns:
+            `should_return`: A boolean indicating whether the `run` method should return.
+            `is_restored`: Whether the trainer state is restored from a checkpoint.
+        """
+
+        # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
+        self.restore_checkpoint(restore_step=None)
+
+        if self.step is None:
+            # If we didn't restore from checkpoint, attempt to build initial state according
+            # to `cfg.init_state_builder` and initialize the remaining parameters.
+            self.init(prng_key)
+            self._step = 0
+
+            # Note the default checkpointer and evaler do nothing at step 0 with min_step=1.
+            self.save_checkpoint(self._run_eval())
+
+            # Log trainer state tree.
+            if jax.process_index() == 0:
+                with tf.io.gfile.GFile(
+                    os.path.join(cfg.dir, "trainer_state_tree.txt"), "w"
+                ) as f:
+                    f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
+            is_restored = False
+        else:
+            is_restored = True
+
+        self._log_trainer_state_stats()
+        # Log config.
+        self.summary_writer.log_config(cfg, step=self.step)
+
+        if self.step >= cfg.max_step:
+            self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
+            should_return = True
+        else:
+            should_return = False
+        
+        self._pjit_train_step()
+        return should_return, is_restored
+
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
         """Restores trainer state from checkpoint.
 
@@ -635,22 +670,6 @@ class SpmdTrainer(Module):
             built_state.built_keys,
         )
         return built_state
-    
-    def _build_initial_state(self, prng_key: Tensor):
-        """Builds the initial state."""
-        cfg = self.config
-        self.init(prng_key)
-        self._step = 0
-
-        # Note the default checkpointer and evaler do nothing at step 0 with min_step=1.
-        self.save_checkpoint(self._run_eval())
-
-        # Log trainer state tree.
-        if jax.process_index() == 0:
-            with tf.io.gfile.GFile(
-                os.path.join(cfg.dir, "trainer_state_tree.txt"), "w"
-            ) as f:
-                f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
 
     def _run_step(self, input_batch: NestedTensor) -> NestedTensor:
         """Runs a single training step.
@@ -819,11 +838,11 @@ class SpmdTrainer(Module):
             or jax.process_index() in cfg.start_trace_process_indices
         )
     
-    def _maybe_stop_tracing(
+    def _maybe_stop_or_start_tracing(
             self, stop_trace_step: Optional[int], output: Optional[Dict[str, Any]]
         ) -> Optional[int]:
-        """Stops jax profiler tracing if necessary.
-        
+        """Stop or start jax profiler tracing if necessary.
+
         Args:
             stop_trace_step: The step at which we should stop tracing.
             output: The output of run_step.
@@ -831,29 +850,18 @@ class SpmdTrainer(Module):
         Returns:
             The updated value for `stop_trace_step`.
         """
+        updated_stop_trace_step = stop_trace_step
         if self.step == stop_trace_step:
             assert output is not None
             jax.tree_util.tree_map(lambda x: x.block_until_ready(), output)
             jax.profiler.stop_trace()
             self._step_log("Stopped profiler tracing")
-            return None
-        return stop_trace_step
-    
-    def _maybe_start_tracing(self, stop_trace_step: Optional[int]) -> Optional[int]:
-        """Starts jax profiler tracing if necessary.
-
-        Args:
-            stop_trace_step: The step at which we should stop tracing. We may only
-                start tracing if `stop_trace_step` is None.
-
-        Returns:
-            The updated value for `stop_trace_step`.
-        """
+            updated_stop_trace_step = None
         if self._should_start_trace(stop_trace_step):
             self._step_log("Start profiler tracing")
             jax.profiler.start_trace(self.summary_writer.config.dir)
-            return self.step + 3
-        return stop_trace_step
+            updated_stop_trace_step = self.step + 3
+        return updated_stop_trace_step        
 
 
 def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str):
