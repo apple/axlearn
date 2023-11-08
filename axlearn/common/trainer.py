@@ -563,9 +563,9 @@ class SpmdTrainer(Module):
         if self.step >= cfg.max_step:
             self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
             should_return = True
-        else:
-            should_return = False
-        
+            return should_return, is_restored
+
+        should_return = False
         self._pjit_train_step()
         return should_return, is_restored
 
