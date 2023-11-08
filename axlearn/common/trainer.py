@@ -336,8 +336,8 @@ class SpmdTrainer(Module):
         with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
             cfg = self.config
             # Prepare training.
-            should_return, _ = self._prepare_training(cfg, prng_key)
-            if should_return:
+            should_start = self._prepare_training(cfg, prng_key)
+            if not should_start:
                 return None
 
             with self.checkpointer:
@@ -522,7 +522,7 @@ class SpmdTrainer(Module):
             trainer_state_structure, self._trainer_state_partition_specs
         )
 
-    def _prepare_training(self, cfg: Config, prng_key: Tensor) -> Tuple[bool, Dict[str, Any]]:
+    def _prepare_training(self, cfg: Config, prng_key: Tensor) -> bool:
         """Prepares training.
 
         This function does the following to prepare the training procedure:
@@ -536,9 +536,8 @@ class SpmdTrainer(Module):
             prng_key: The PRNG key of the `run` method.
         
         Returns:
-            `should_return`: A boolean indicating whether the `run` method should return,
-                instead of starting training.
-            `aux`: Any auxiliary output of the function.
+            A boolean indicating whether the model training should start. If not, return
+                None from the `run` function.
         """
 
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
@@ -559,9 +558,6 @@ class SpmdTrainer(Module):
                     os.path.join(cfg.dir, "trainer_state_tree.txt"), "w"
                 ) as f:
                     f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
-            is_restored = False
-        else:
-            is_restored = True
 
         self._log_trainer_state_stats()
         # Log config.
@@ -569,12 +565,10 @@ class SpmdTrainer(Module):
 
         if self.step >= cfg.max_step:
             self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
-            should_return = True
-            return should_return, {"is_restored": is_restored}
+            return False
 
-        should_return = False
         self._pjit_train_step()
-        return should_return, {"is_restored": is_restored}
+        return True
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
         """Restores trainer state from checkpoint.
