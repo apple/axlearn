@@ -336,8 +336,7 @@ class SpmdTrainer(Module):
         with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
             cfg = self.config
             # Prepare training.
-            should_start = self._prepare_training(cfg, prng_key)
-            if not should_start:
+            if not self._prepare_training(cfg, prng_key)
                 return None
 
             with self.checkpointer:
@@ -822,23 +821,6 @@ class SpmdTrainer(Module):
             aux=forward_aux,
         )
 
-    def _should_start_tracing(self, stop_trace_step: Optional[int]) -> bool:
-        cfg = self.config
-        if self.step not in cfg.start_trace_steps:
-            return False
-        if stop_trace_step is not None:
-            logging.warning(
-                "Skipping trace at step %s, "
-                "since it is too close to the previous one: %s",
-                self.step,
-                cfg.start_trace_steps,
-            )
-            return False
-        return (
-            cfg.start_trace_process_indices == "all"
-            or jax.process_index() in cfg.start_trace_process_indices
-        )
-    
     def _maybe_stop_or_start_tracing(
             self, stop_trace_step: Optional[int], output: Optional[Dict[str, Any]]
         ) -> Optional[int]:
@@ -852,17 +834,36 @@ class SpmdTrainer(Module):
             The updated value for `stop_trace_step`.
         """
         updated_stop_trace_step = stop_trace_step
+        # Check if we should stop tracing.
         if self.step == stop_trace_step:
             assert output is not None
             jax.tree_util.tree_map(lambda x: x.block_until_ready(), output)
             jax.profiler.stop_trace()
             self._step_log("Stopped profiler tracing")
             updated_stop_trace_step = None
-        if self._should_start_tracing(stop_trace_step):
+
+        # Check if we should start tracing.
+        cfg = self.config
+        if self.step not in cfg.start_trace_steps:
+            should_start_tracing = False
+        elif updated_stop_trace_step is not None:
+            logging.warning(
+                "Skipping trace at step %s, "
+                "since it is too close to the previous one: %s",
+                self.step,
+                cfg.start_trace_steps,
+            )
+            should_start_tracing = False
+        else:
+            should_start_tracing = (
+            cfg.start_trace_process_indices == "all"
+            or jax.process_index() in cfg.start_trace_process_indices
+        )
+        if should_start_tracing:
             self._step_log("Start profiler tracing")
             jax.profiler.start_trace(self.summary_writer.config.dir)
             updated_stop_trace_step = self.step + 3
-        return updated_stop_trace_step        
+        return updated_stop_trace_step
 
 
 def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str):
