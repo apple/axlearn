@@ -338,8 +338,9 @@ class SpmdTrainer(Module):
             # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
             self.restore_checkpoint(restore_step=None)
 
-            # If we didn't restore from a checkpoint, build an initial state.
-            self._maybe_build_initial_state(prng_key)
+            if self.step is None:
+                # If we didn't restore from a checkpoint, build an initial state.
+                self._build_initial_state(prng_key)
 
             self._log_trainer_state_stats()
             # Log config.
@@ -635,24 +636,21 @@ class SpmdTrainer(Module):
         )
         return built_state
     
-    def _maybe_build_initial_state(self, prng_key: Tensor):
-        """Builds the initial state if we didn't restore from a checkpoint."""
+    def _build_initial_state(self, prng_key: Tensor):
+        """Builds the initial state."""
         cfg = self.config
-        if self.step is None:
-            # If we didn't restore from checkpoint, attempt to build initial state according
-            # to `cfg.init_state_builder` and initialize the remaining parameters.
-            self.init(prng_key)
-            self._step = 0
+        self.init(prng_key)
+        self._step = 0
 
-            # Note the default checkpointer and evaler do nothing at step 0 with min_step=1.
-            self.save_checkpoint(self._run_eval())
+        # Note the default checkpointer and evaler do nothing at step 0 with min_step=1.
+        self.save_checkpoint(self._run_eval())
 
-            # Log trainer state tree.
-            if jax.process_index() == 0:
-                with tf.io.gfile.GFile(
-                    os.path.join(cfg.dir, "trainer_state_tree.txt"), "w"
-                ) as f:
-                    f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
+        # Log trainer state tree.
+        if jax.process_index() == 0:
+            with tf.io.gfile.GFile(
+                os.path.join(cfg.dir, "trainer_state_tree.txt"), "w"
+            ) as f:
+                f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
 
     def _run_step(self, input_batch: NestedTensor) -> NestedTensor:
         """Runs a single training step.
