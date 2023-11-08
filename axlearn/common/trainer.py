@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 import tensorflow as tf
@@ -338,21 +338,9 @@ class SpmdTrainer(Module):
             # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
             self.restore_checkpoint(restore_step=None)
 
-            if self.step is None:
-                # If we didn't restore from checkpoint, attempt to build initial state according
-                # to `cfg.init_state_builder` and initialize the remaining parameters.
-                self.init(prng_key)
-                self._step = 0
+            # If we didn't restore from a checkpoint, build an initial state.
+            self._maybe_build_initial_state(prng_key)
 
-                # Note the default checkpointer and evaler do nothing at step 0 with min_step=1.
-                self.save_checkpoint(self._run_eval())
-
-                # Log trainer state tree.
-                if jax.process_index() == 0:
-                    with tf.io.gfile.GFile(
-                        os.path.join(cfg.dir, "trainer_state_tree.txt"), "w"
-                    ) as f:
-                        f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
             self._log_trainer_state_stats()
             # Log config.
             self.summary_writer.log_config(cfg, step=self.step)
@@ -362,59 +350,22 @@ class SpmdTrainer(Module):
                 return None
 
             with self.checkpointer:
-                self._jit_train_step = pjit(
-                    self._train_step,
-                    in_shardings=(
-                        self._trainer_state_partition_specs,
-                        utils.input_partition_spec(),
-                    ),
-                    out_shardings=(
-                        self._trainer_state_partition_specs,
-                        dict(
-                            summaries=None,
-                            loss=None,
-                            aux=None,
-                        ),
-                    ),
-                    donate_argnums=(0,),  # donate the state
-                )
-
+                self._pjit_train_step()
                 logging.info("Starting loop...")
                 start_time = time.perf_counter()
                 num_steps = 0
                 output = None
                 stop_trace_step = None
 
-                def _should_start_trace():
-                    if self.step not in cfg.start_trace_steps:
-                        return False
-                    if stop_trace_step is not None:
-                        logging.warning(
-                            "Skipping trace at step %s, "
-                            "since it is too close to the previous one: %s",
-                            self.step,
-                            cfg.start_trace_steps,
-                        )
-                        return False
-                    return (
-                        cfg.start_trace_process_indices == "all"
-                        or jax.process_index() in cfg.start_trace_process_indices
-                    )
-
                 for input_batch in self._input_iter:
                     logging.log_first_n(
                         logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
                     )
-                    if self.step == stop_trace_step:
-                        assert output is not None
-                        jax.tree_util.tree_map(lambda x: x.block_until_ready(), output)
-                        jax.profiler.stop_trace()
-                        self._step_log("Stopped profiler tracing")
-                        stop_trace_step = None
-                    if _should_start_trace():
-                        self._step_log("Start profiler tracing")
-                        jax.profiler.start_trace(self.summary_writer.config.dir)
-                        stop_trace_step = self.step + 3
+
+                    # Stop or start tracing if necessary.
+                    stop_trace_step = self._maybe_stop_tracing(stop_trace_step, output)
+                    stop_trace_step = self._maybe_start_tracing(stop_trace_step)
+
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
                     output = self._run_step(utils.host_to_global_device_array(input_batch))
@@ -683,6 +634,25 @@ class SpmdTrainer(Module):
             built_state.built_keys,
         )
         return built_state
+    
+    def _maybe_build_initial_state(self, prng_key: Tensor):
+        """Builds the initial state if we didn't restore from a checkpoint."""
+        cfg = self.config
+        if self.step is None:
+            # If we didn't restore from checkpoint, attempt to build initial state according
+            # to `cfg.init_state_builder` and initialize the remaining parameters.
+            self.init(prng_key)
+            self._step = 0
+
+            # Note the default checkpointer and evaler do nothing at step 0 with min_step=1.
+            self.save_checkpoint(self._run_eval())
+
+            # Log trainer state tree.
+            if jax.process_index() == 0:
+                with tf.io.gfile.GFile(
+                    os.path.join(cfg.dir, "trainer_state_tree.txt"), "w"
+                ) as f:
+                    f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
 
     def _run_step(self, input_batch: NestedTensor) -> NestedTensor:
         """Runs a single training step.
@@ -732,6 +702,24 @@ class SpmdTrainer(Module):
             )
             evaler_summaries[evaler_name] = summaries
         return evaler_summaries
+
+    def _pjit_train_step(self):
+        self._jit_train_step = pjit(
+            self._train_step,
+            in_shardings=(
+                self._trainer_state_partition_specs,
+                utils.input_partition_spec(),
+            ),
+            out_shardings=(
+                self._trainer_state_partition_specs,
+                dict(
+                    summaries=None,
+                    loss=None,
+                    aux=None,
+                ),
+            ),
+            donate_argnums=(0,),  # donate the state
+        )
 
     def _train_step(
         self,
@@ -815,6 +803,59 @@ class SpmdTrainer(Module):
             loss=loss,
             aux=forward_aux,
         )
+
+    def _should_start_trace(self, stop_trace_step: Optional[int]) -> bool:
+        cfg = self.config
+        if self.step not in cfg.start_trace_steps:
+            return False
+        if stop_trace_step is not None:
+            logging.warning(
+                "Skipping trace at step %s, "
+                "since it is too close to the previous one: %s",
+                self.step,
+                cfg.start_trace_steps,
+            )
+            return False
+        return (
+            cfg.start_trace_process_indices == "all"
+            or jax.process_index() in cfg.start_trace_process_indices
+        )
+    
+    def _maybe_stop_tracing(
+            self, stop_trace_step: Optional[int], output: Optional[Dict[str, Any]]
+        ) -> Optional[int]:
+        """Stops jax profiler tracing if necessary.
+        
+        Args:
+            stop_trace_step: The step at which we should stop tracing.
+            output: The output of run_step.
+        
+        Returns:
+            The updated value for `stop_trace_step`.
+        """
+        if self.step == stop_trace_step:
+            assert output is not None
+            jax.tree_util.tree_map(lambda x: x.block_until_ready(), output)
+            jax.profiler.stop_trace()
+            self._step_log("Stopped profiler tracing")
+            return None
+        return stop_trace_step
+    
+    def _maybe_start_tracing(self, stop_trace_step: Optional[int]) -> Optional[int]:
+        """Starts jax profiler tracing if necessary.
+
+        Args:
+            stop_trace_step: The step at which we should stop tracing. We may only
+                start tracing if `stop_trace_step` is None.
+
+        Returns:
+            The updated value for `stop_trace_step`.
+        """
+        if self._should_start_trace(stop_trace_step):
+            self._step_log("Start profiler tracing")
+            jax.profiler.start_trace(self.summary_writer.config.dir)
+            return self.step + 3
+        return stop_trace_step
 
 
 def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str):
