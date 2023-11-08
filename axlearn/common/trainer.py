@@ -523,8 +523,14 @@ class SpmdTrainer(Module):
         )
 
     def _prepare_training(self, cfg: Config, prng_key: Tensor) -> Tuple[bool, bool]:
-        """Prepare training.
-        
+        """Prepares training.
+
+        This function does the following to prepare the training procedure:
+        1. Restores trainer state from checkpoint.
+        2. Initializes step to zero if it's not in the checkpoint.
+        3. Returns early if max_steps has been reached.
+        4. Otherwise Jits self._train_step.
+
         Args:
             cfg: The trainer config.
             prng_key: The PRNG key of the `run` method.
@@ -566,7 +572,8 @@ class SpmdTrainer(Module):
             return should_return, is_restored
 
         should_return = False
-        self._pjit_train_step()
+        with self.checkpointer:
+            self._pjit_train_step()
         return should_return, is_restored
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
@@ -841,7 +848,7 @@ class SpmdTrainer(Module):
     def _maybe_stop_or_start_tracing(
             self, stop_trace_step: Optional[int], output: Optional[Dict[str, Any]]
         ) -> Optional[int]:
-        """Stop or start jax profiler tracing if necessary.
+        """Stops or starts jax profiler tracing if necessary.
 
         Args:
             stop_trace_step: The step at which we should stop tracing.
