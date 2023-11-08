@@ -856,9 +856,9 @@ class SpmdTrainer(Module):
             should_start_tracing = False
         else:
             should_start_tracing = (
-            cfg.start_trace_process_indices == "all"
-            or jax.process_index() in cfg.start_trace_process_indices
-        )
+                cfg.start_trace_process_indices == "all"
+                or jax.process_index() in cfg.start_trace_process_indices
+            )
         if should_start_tracing:
             self._step_log("Start profiler tracing")
             jax.profiler.start_trace(self.summary_writer.config.dir)
