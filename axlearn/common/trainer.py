@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 import tensorflow as tf
