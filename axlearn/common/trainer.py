@@ -336,7 +336,7 @@ class SpmdTrainer(Module):
         with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
             cfg = self.config
             # Prepare training.
-            if not self._prepare_training(cfg, prng_key)
+            if not self._prepare_training(cfg, prng_key):
                 return None
 
             with self.checkpointer:
