@@ -6,16 +6,19 @@ from typing import Dict, Optional, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 
-from axlearn.common.base_layer import BaseLayer
-from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.base_layer import BaseLayer, ParameterSpec
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Linear
 from axlearn.common.loss import (
     asymmetric_contrastive_loss_from_logits,
     contrastive_logits,
+    flops_loss,
     ranking_pairwise_loss,
 )
 from axlearn.common.module import Module, child_context
 from axlearn.common.multi_stream_model import FusionNetwork, MultiStreamModel, StreamEncoder
+from axlearn.common.param_init import constant_initializer
+from axlearn.common.schedule import ScheduleFn, as_schedule_fn
 from axlearn.common.text_encoder import TEXT_EMBEDDINGS, TextEmbeddingEncoder
 from axlearn.common.utils import NestedTensor, Tensor, get_recursively
 
@@ -302,12 +305,12 @@ class TextEmbeddingAsymmetricContrastiveLossLayer(FusionNetwork):
                 cfg.right_encoder_name (can be a sequence path):
                     POSITIVE_EMBEDDINGS: A Tensor with shape [batch_size, 1, dim].
                     POSITIVE_PADDINGS: A 0/1 Tensor with shape [batch_size, 1] where 1 means padded
-                        docs and 0 means effective docs.
+                        inputs and 0 means effective inputs.
                     NEGATIVE_EMBEDDINGS: A Tensor with shape
                         [batch_size, num_negative_inputs_per_example, dim].
                     NEGATIVE_PADDINGS: A 0/1 Tensor with shape
-                        [batch_size, num_negative_inputs_per_example] where 1 means padded docs and
-                        0 means effective docs.
+                        [batch_size, num_negative_inputs_per_example] where 1 means padded inputs
+                        and 0 means effective inputs.
 
         Returns:
             loss: A Tensor representing the loss.
@@ -403,6 +406,103 @@ class RankingPairwiseLossLayer(FusionNetwork):
             logits=logits, ranks=ranks, loss_scale=jnp.ones(num_queries)
         )
         return loss, {NUM_VALID_RANKING_PAIRS: num_valid_pairs}
+
+
+class FLOPsLossLayer(FusionNetwork):
+    """A FusionNetwork to calculate the FLOPs loss."""
+
+    @config_class
+    class Config(BaseLayer.Config):
+        """Configures FLOPsLossLayer."""
+
+        # Name of left encoder. Could be a sequence path.
+        left_encoder_name: Required[Union[str, Sequence[str]]] = REQUIRED
+        # Name of right encoder. Could be a sequence path.
+        right_encoder_name: Required[Union[str, Sequence[str]]] = REQUIRED
+        # A schedule to dynamically adjust the weight of FLOPs loss.
+        flops_weight_schedule: Required[InstantiableConfig[ScheduleFn]] = REQUIRED
+        # Constant weight of left encoder's flops loss, on top of which the weight schedule will
+        # be applied.
+        left_encoder_flops_loss_weight: float = 1.0
+        # Constant weight of right encoder's flops loss, on top of which the weight schedule will
+        # be applied.
+        right_encoder_flops_loss_weight: float = 1.0
+        # Embedding elements that are no greater than this threshold will be count as sparse.
+        # The average number of sparse elements per query will be reported in summaries.
+        sparsity_threshold: float = 0.0
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._flops_weight_schedule = as_schedule_fn(cfg.flops_weight_schedule)
+
+    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+        param_specs = {
+            "step": ParameterSpec(
+                shape=[],
+                dtype=jnp.int32,
+                mesh_axes=None,
+                initializer=constant_initializer(0),
+                weight_decay_scale=0,
+            )
+        }
+        return param_specs
+
+    def forward(self, input_batch: NestedTensor) -> NestedTensor:
+        """Forward function.
+
+        Args:
+            input_batch: A dictionary containing:
+                cfg.left_encoder_name (can be a sequence path):
+                    POSITIVE_EMBEDDINGS: A Tensor with shape
+                        [batch_size, num_left_positive_inputs, dim].
+                cfg.right_encoder_name (can be a sequence path):
+                    POSITIVE_EMBEDDINGS: A Tensor with shape
+                        [batch_size, num_right_positive_inputs, dim].
+                    POSITIVE_PADDINGS: A 0/1 Tensor with shape
+                        [batch_size, num_left_positive_inputs] where 1 means padded inputs and 0
+                        means effective inputs.
+                    NEGATIVE_EMBEDDINGS: A Tensor with shape
+                        [batch_size, num_right_negative_inputs, dim].
+                    NEGATIVE_PADDINGS: A 0/1 Tensor with shape
+                        [batch_size, num_right_negative_inputs] where 1 means padded inputs and 0
+                        means effective inputs.
+
+        Returns:
+            loss: A Tensor representing the loss.
+        """
+        cfg = self.config
+
+        inputs = flatten_and_concat_embeddings_from_input_batch(
+            input_batch=input_batch,
+            left_encoder_name=cfg.left_encoder_name,
+            right_encoder_name=cfg.right_encoder_name,
+            assert_one_positive_from_right_encoder=False,
+        )
+        left_encoder_flops_loss, left_encoder_avg_sparsity_count = flops_loss(
+            embeddings=inputs[FLATTENED_LEFT_EMBEDDINGS],
+            sparsity_threshold=cfg.sparsity_threshold,
+        )
+        right_encoder_flops_loss, right_encoder_avg_sparsity_count = flops_loss(
+            embeddings=inputs[FLATTENED_RIGHT_EMBEDDINGS],
+            paddings=inputs[RIGHT_PADDINGS],
+            sparsity_threshold=cfg.sparsity_threshold,
+        )
+        self.add_summary(f"{cfg.left_encoder_name}_flops_loss", left_encoder_flops_loss)
+        self.add_summary(f"{cfg.right_encoder_name}_flops_loss", right_encoder_flops_loss)
+        self.add_summary(
+            f"{cfg.left_encoder_name}_avg_sparsity_count", left_encoder_avg_sparsity_count
+        )
+        self.add_summary(
+            f"{cfg.right_encoder_name}_avg_sparsity_count", right_encoder_avg_sparsity_count
+        )
+        scheduled_weight = self._flops_weight_schedule(self.parameters["step"])
+        loss = (
+            cfg.left_encoder_flops_loss_weight * left_encoder_flops_loss * scheduled_weight
+            + cfg.right_encoder_flops_loss_weight * right_encoder_flops_loss * scheduled_weight
+        )
+        self.add_state_update("step", self.parameters["step"] + 1)
+        return loss, {}
 
 
 class TextEmbeddingDualEncoder(MultiStreamModel):
