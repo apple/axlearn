@@ -20,9 +20,6 @@ class ConvSubSamplerTest(TestCase):
     """Tests ConvSubSampler."""
 
     @parameterized.parameters(
-        dict(output_dim=(5,), expected=ValueError("pair of integers")),
-        dict(output_dim=(5, 6, 7), expected=ValueError("pair of integers")),
-        dict(output_dim=5),  # Single value is broadcasted.
         dict(activation=("nn.tanh", "nn.relu", "nn.silu"), expected=ValueError("pair of string")),
         dict(activation=("nn.tanh",), expected=ValueError("pair of string")),
         dict(activation="nn.tanh"),  # Single value is broadcasted.
@@ -32,7 +29,6 @@ class ConvSubSamplerTest(TestCase):
     )
     def test_instantiate(
         self,
-        output_dim: Union[int, Tuple[int, int]] = 5,
         activation: Optional[Union[str, Tuple[str, str]]] = None,
         expected: Optional[Exception] = None,
     ):
@@ -44,7 +40,7 @@ class ConvSubSamplerTest(TestCase):
 
         with ctx:
             cfg = ConvSubSampler.default_config().set(
-                input_dim=1, output_dim=output_dim, activation=activation
+                input_dim=1, output_dim=1, activation=activation
             )
             cfg.set(name="test").instantiate(parent=None)
 
@@ -72,53 +68,62 @@ class ConvSubSamplerTest(TestCase):
             self.assertEqual(expected, tuple(output_shape))
 
     @parameterized.parameters(
-        dict(activation=None, expected_activation=[None, None], conv_dims=3),
+        dict(activation=None, expected_activation=[None, None], output_dim=3),
         dict(
-            activation=("nn.tanh", None), expected_activation=[jax.nn.tanh, None], conv_dims=(2, 3)
+            activation=("nn.tanh", None),
+            expected_activation=[jax.nn.tanh, None],
+            hidden_dim=2,
+            output_dim=3,
         ),
         dict(
-            activation="nn.relu", expected_activation=[jax.nn.relu, jax.nn.relu], conv_dims=(2, 3)
+            activation="nn.relu",
+            expected_activation=[jax.nn.relu, jax.nn.relu],
+            hidden_dim=2,
+            output_dim=3,
         ),
         dict(
             activation=("nn.silu", "nn.gelu"),
             expected_activation=[jax.nn.silu, jax.nn.gelu],
-            conv_dims=3,
+            output_dim=3,
         ),
     )
     def test_activations(
         self,
         activation: Optional[Union[str, Tuple]],
         expected_activation: Sequence,
-        conv_dims: Union[int, Tuple[int, int]],
+        output_dim: int,
+        hidden_dim: Optional[int] = None,
     ):
         """Tests that activations and intermediate output dims are read properly."""
-        cfg = ConvSubSampler.default_config().set(output_dim=conv_dims, activation=activation)
+        cfg = ConvSubSampler.default_config().set(
+            output_dim=output_dim, hidden_dim=hidden_dim, activation=activation
+        )
         layer = cfg.set(name="test").instantiate(parent=None)
-
-        if not isinstance(conv_dims, tuple):
-            conv_dims = (conv_dims, conv_dims)
 
         # pylint: disable-next=protected-access
         self.assertEqual(expected_activation, layer._activation)
-        self.assertEqual(layer.conv1.config.output_dim, conv_dims[0])
-        self.assertEqual(layer.conv2.config.output_dim, conv_dims[1])
+        self.assertEqual(layer.conv1.config.output_dim, hidden_dim or output_dim)
+        self.assertEqual(layer.conv2.config.output_dim, output_dim)
 
     @parameterized.parameters(
-        dict(window=3, stride=2, conv_padding=(1, 1), conv_dims=10),
-        dict(window=5, stride=2, conv_padding=(1, 1), conv_dims=(12, 8)),
-        dict(window=5, stride=2, conv_padding=(2, 2), conv_dims=(5, 3)),
-        dict(window=5, stride=3, conv_padding=(2, 2), conv_dims=6),
+        dict(window=3, stride=2, conv_padding=(1, 1), output_dim=10),
+        dict(window=5, stride=2, conv_padding=(1, 1), hidden_dim=12, output_dim=8),
+        dict(window=5, stride=2, conv_padding=(2, 2), hidden_dim=5, output_dim=3),
+        dict(window=5, stride=3, conv_padding=(2, 2), output_dim=6),
     )
     def test_paddings(
         self,
         window: int,
         stride: int,
         conv_padding: Tuple[int, int],
-        conv_dims: Union[int, Tuple[int, int]],
+        output_dim: int,
+        hidden_dim: Optional[int] = None,
     ):
         """Tests that padding inputs do not affect outputs."""
         input_dim, num_filters = 1, 80
-        cfg = ConvSubSampler.default_config().set(input_dim=input_dim, output_dim=conv_dims)
+        cfg = ConvSubSampler.default_config().set(
+            input_dim=input_dim, output_dim=output_dim, hidden_dim=hidden_dim
+        )
         cfg.conv.window = (window, window)
         cfg.conv.strides = (stride, stride)
         cfg.conv.padding = (conv_padding, conv_padding)
@@ -130,26 +135,22 @@ class ConvSubSamplerTest(TestCase):
         prng_key, init_key, data_key1, data_key2 = jax.random.split(prng_key, num=4)
         layer_params = layer.initialize_parameters_recursively(init_key)
 
-        if not isinstance(conv_dims, tuple):
-            conv_dims = (conv_dims, conv_dims)
-
+        hidden_dim = hidden_dim or output_dim
         self.assertEqual(
             {
-                "conv1": dict(weight=(window, window, input_dim, conv_dims[0]), bias=conv_dims[:1]),
+                "conv1": dict(weight=(window, window, input_dim, hidden_dim), bias=(hidden_dim,)),
                 "norm1": dict(
-                    bias=conv_dims[:1],
-                    moving_mean=conv_dims[:1],
-                    moving_variance=conv_dims[:1],
-                    scale=conv_dims[:1],
+                    bias=(hidden_dim,),
+                    moving_mean=(hidden_dim,),
+                    moving_variance=(hidden_dim,),
+                    scale=(hidden_dim,),
                 ),
-                "conv2": dict(
-                    weight=(window, window, conv_dims[0], conv_dims[1]), bias=conv_dims[1:]
-                ),
+                "conv2": dict(weight=(window, window, hidden_dim, output_dim), bias=(output_dim,)),
                 "norm2": dict(
-                    bias=conv_dims[1:],
-                    moving_mean=conv_dims[1:],
-                    moving_variance=conv_dims[1:],
-                    scale=conv_dims[1:],
+                    bias=(output_dim,),
+                    moving_mean=(output_dim,),
+                    moving_variance=(output_dim,),
+                    scale=(output_dim,),
                 ),
             },
             utils.shapes(layer_params),
@@ -187,12 +188,14 @@ class ConvSubSamplerTest(TestCase):
 
     def test_activation_summaries(self):
         """Tests that activation summaries behave as expected."""
-        input_dim, num_filters, conv_dims = 1, 80, (12, 8)
+        input_dim, num_filters, hidden_dim, output_dim = 1, 80, 12, 8
         prng_key = jax.random.PRNGKey(567)
         prng_key, init_key, data_key = jax.random.split(prng_key, num=3)
 
         # Initialize layer parameters.
-        cfg = ConvSubSampler.default_config().set(input_dim=input_dim, output_dim=conv_dims)
+        cfg = ConvSubSampler.default_config().set(
+            input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim
+        )
         layer = cfg.set(name="test").instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(init_key)
 
@@ -219,10 +222,10 @@ class ConvSubSamplerTest(TestCase):
 
         output_weights = jnp.sum(1 - outputs["paddings"])
         output_norms = jnp.sqrt(jnp.sum(outputs["outputs"] ** 2, axis=(2, 3))) / jnp.sqrt(
-            num_filters // 4 * conv_dims[1]
+            num_filters // 4 * output_dim
         )
         expected_outputs_mean = (
-            jnp.sum(outputs["outputs"]) / output_weights / (num_filters // 4 * conv_dims[1])
+            jnp.sum(outputs["outputs"]) / output_weights / (num_filters // 4 * output_dim)
         )
         expected_outputs_norm = jnp.sum(output_norms) / output_weights
 

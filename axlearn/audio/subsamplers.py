@@ -26,11 +26,12 @@ class ConvSubSampler(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures ConvSubSampler."""
 
-        # Input feature/channel dim. Typically 1 for spectrogram inputs.
+        # Input channel dim. Typically 1 for spectrogram inputs.
         input_dim: int = 1
-        # Output feature/channel dim. This can either be an integer (used for both convolutions) or
-        # a pair of integers (used for each convolution respectively).
-        output_dim: Required[Union[int, Tuple[int, int]]] = REQUIRED
+        # Output channel dim.
+        output_dim: Required[int] = REQUIRED
+        # Hidden dim of the conv layers. If None, defaults to output_dim.
+        hidden_dim: Optional[int] = None
         # Configures both of the convolutions.
         conv: Conv2DWith1DPadding.Config = Conv2DWith1DPadding.default_config().set(
             window=(3, 3), strides=(2, 2), padding=((1, 1), (1, 1))
@@ -47,15 +48,6 @@ class ConvSubSampler(BaseLayer):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
-        output_dim = cfg.output_dim
-        if not isinstance(output_dim, (list, tuple)):
-            output_dim = (output_dim, output_dim)
-        if len(output_dim) != 2 or not all(isinstance(x, int) for x in output_dim):
-            raise ValueError(
-                "Expected cfg.output_dim to be an integer or pair of integers, "
-                f"got: {cfg.output_dim}"
-            )
-
         activation = cfg.activation
         if not isinstance(activation, (list, tuple)):
             activation = (activation, activation)
@@ -66,12 +58,13 @@ class ConvSubSampler(BaseLayer):
             )
         self._activation = [None if act is None else get_activation_fn(act) for act in activation]
 
-        self._add_child("conv1", cfg.conv.set(input_dim=cfg.input_dim, output_dim=output_dim[0]))
-        self._add_child("conv2", cfg.conv.set(input_dim=output_dim[0], output_dim=output_dim[1]))
+        hidden_dim = cfg.hidden_dim or cfg.output_dim
+        self._add_child("conv1", cfg.conv.set(input_dim=cfg.input_dim, output_dim=hidden_dim))
+        self._add_child("conv2", cfg.conv.set(input_dim=hidden_dim, output_dim=cfg.output_dim))
 
         if cfg.norm:
-            self._add_child("norm1", cfg.norm.set(input_dim=output_dim[0]))
-            self._add_child("norm2", cfg.norm.set(input_dim=output_dim[1]))
+            self._add_child("norm1", cfg.norm.set(input_dim=hidden_dim))
+            self._add_child("norm2", cfg.norm.set(input_dim=cfg.output_dim))
 
     def output_shape(self, *, input_shape: Sequence[Optional[int]]):
         """Computes the output shape after subsampling.
