@@ -55,6 +55,8 @@ class LogMelFrontend(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures LogMelFrontend."""
 
+        # Number of output channels. Should always be 1.
+        output_dim: int = 1
         # Number of filters/bands in the output spectrogram.
         num_filters: Required[int] = REQUIRED
         # Number of input samples per second, e.g., 24000 for 24KHz inputs.
@@ -69,6 +71,10 @@ class LogMelFrontend(BaseLayer):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+        if cfg.output_dim != 1:
+            raise ValueError(
+                "output_dim should always be 1. Did you mean to configure num_filters instead?"
+            )
         frame_size = _ms_to_samples(cfg.frame_size_ms, sample_rate=cfg.sample_rate)
         hop_size = _ms_to_samples(cfg.hop_size_ms, sample_rate=cfg.sample_rate)
         if not frame_size.is_integer():
@@ -99,12 +105,12 @@ class LogMelFrontend(BaseLayer):
 
         Args:
             inputs: Tensor of dtype float32 and shape [batch, seq_len].
-            paddings: 0/1 tensor of shape [batch, seq_len]. 1's represent padded positions.
+            paddings: A 0/1 Tensor of shape [batch, seq_len]. 1's represent padded positions.
 
         Returns:
             A dict containing:
-            - outputs: of shape [batch, num_frames, num_filters, 1].
-            - paddings: 0/1 tensor of shape [batch, num_frames].
+            - outputs: A Tensor of shape [batch, num_frames, num_filters, 1].
+            - paddings: A 0/1 Tensor of shape [batch, num_frames].
         """
         # TODO(markblee): Make these configurable as needed.
         # Framer. Add 1 to frame size for pre-emphasis.
@@ -125,3 +131,26 @@ class LogMelFrontend(BaseLayer):
         paddings = jnp.max(paddings, axis=-1, keepdims=True)
         outputs = outputs * (1 - paddings)
         return dict(outputs=outputs[..., None], paddings=jnp.squeeze(paddings, axis=-1))
+
+    def output_shape(self, *, input_shape: Sequence[Optional[int]]):
+        """Computes the output shape given input shape.
+
+        Args:
+            input_shape: Values for the input dimensions [batch_size, seq_len]. Each value can be an
+                integer or None, where None can be used if the dimension is not known.
+
+        Returns:
+            The output shape. The dimensions are [batch_size, num_frames, num_filters, 1].
+
+        Raises:
+            ValueError: If `input_shape` is invalid.
+        """
+        cfg: LogMelFrontend.Config = self.config
+        if len(input_shape) != 2:
+            raise ValueError(f"We expect len(input_shape) = 2, but got {len(input_shape)}.")
+        batch_size, seq_len = input_shape
+        if seq_len is not None:
+            num_frames = max(seq_len - (self._frame_size + 1), 0) // self._hop_size + 1
+        else:
+            num_frames = None
+        return [batch_size, num_frames, cfg.num_filters, cfg.output_dim]
