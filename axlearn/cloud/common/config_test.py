@@ -409,6 +409,11 @@ class CLITest(TestWithTemporaryCWD):
             "[ ] project0 [a, b]\n"
             "[*] project1\n"
             "[ ] project2 [a]\n"
+            "\n"
+            "Settings of active project project1:\n"
+            "\n"
+            "test = 1\n"
+            "\n"
         ))
         # fmt: on
 
@@ -425,5 +430,11 @@ class CLITest(TestWithTemporaryCWD):
             "[*] project0 [a, b]\n"
             "[ ] project1\n"
             "[ ] project2 [a]\n"
+            "\n"
+            "Settings of active project project0:\n"
+            "\n"
+            "test = 0\n"
+            'labels = [ "a", "b",]\n'
+            "\n"
         ))
         # fmt: on
