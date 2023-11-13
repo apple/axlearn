@@ -3068,6 +3068,7 @@ class ConfigHelperTest(TestCase):
         self_attention_input_linear_cfg=(
             QKVLinear.default_config(),
             FusedQKVLinear.default_config(),
+            RoFormerQKVLinear.default_config().set(input_linear=FusedQKVLinear.default_config()),
         ),
         cross_attention_cfg=(None, TransformerAttentionLayer.default_config()),
         batch_axis_names=("data", ("replica", "data", "fsdp")),
@@ -3108,9 +3109,12 @@ class ConfigHelperTest(TestCase):
         )
 
         self_atten = cfg.self_attention.attention
+        input_linear = self_atten.input_linear
+        if isinstance(self_attention_input_linear_cfg, RoFormerQKVLinear.Config):
+            input_linear = input_linear.input_linear
         # Shard weights.
         self.assertSequenceEqual(
-            self_atten.input_linear.layer.param_partition_spec,
+            input_linear.layer.param_partition_spec,
             (fsdp_axis_names, tp_axis_names, None),
         )
         self.assertSequenceEqual(
@@ -3120,7 +3124,7 @@ class ConfigHelperTest(TestCase):
         if cross_attention_cfg is None:
             self.assertIsNone(cfg.cross_attention)
         else:
-            cross_atten = cfg.self_attention.attention
+            cross_atten = cfg.cross_attention.attention
             # Shard weights.
             self.assertSequenceEqual(
                 cross_atten.input_linear.layer.param_partition_spec,

@@ -2640,6 +2640,7 @@ def set_double_shard_weights_config(
     tp_axis_names: Union[str, Sequence[str]] = "model",
 ):
     """Sets `cfg` to shard FFN and attention weights over both fsdp and tp axes.
+
     Args:
         cfg: (A sequence of) Transformer layer config to apply sharding spec to.
         batch_axis_names: Axis name(s) over which we shard the batch dimension of output tensors.
@@ -2650,7 +2651,10 @@ def set_double_shard_weights_config(
     # pytype: disable=attribute-error
     def set_attn_partition_specs(attn_layer: MultiheadAttention.Config):
         # Shard weights.
-        attn_layer.input_linear.layer.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+        input_linear_cfg = attn_layer.input_linear
+        if hasattr(input_linear_cfg, "input_linear"):
+            input_linear_cfg = input_linear_cfg.input_linear
+        input_linear_cfg.layer.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
         attn_layer.output_linear.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
 
     def set_ffn_partition_specs(ff_layer: TransformerFeedForwardLayer.Config):

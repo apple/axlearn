@@ -6,18 +6,22 @@ import pytest
 from absl.testing import parameterized
 
 from axlearn.experiments import test_utils
+from axlearn.experiments.text import gpt
 from axlearn.experiments.vision import resnet
 
 _CONFIGS = [
     *test_utils.named_parameters(resnet.imagenet_trainer),
+    *test_utils.named_parameters(gpt.c4_trainer),
 ]
 
 _INITS = [
     *test_utils.named_parameters(resnet.imagenet_trainer),
+    *test_utils.named_parameters(gpt.c4_trainer),
 ]
 
 _REGULARIZERS = [
     *test_utils.named_parameters(resnet.imagenet_trainer),
+    *test_utils.named_parameters(gpt.c4_trainer),
 ]
 
 
