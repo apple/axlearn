@@ -144,7 +144,11 @@ class SummaryWriter(BaseWriter):
 
     def log_config(self, config: ConfigBase, step: int = 0):
         with self.as_default():
-            tf_summary.text("trainer_config", config.debug_string().split("\n"), step=step)
+            config_lines = config.debug_string().split("\n")
+            tf_summary.text("trainer_config", config_lines, step=step)
+            for line in config_lines:
+                k, v = line.split(": ", 1)
+                tf_summary.text(f"trainer_config/{k}", v, step=step)
 
     def __call__(self, step: int, values: Dict[str, Any]):
         cfg = self.config
