@@ -371,12 +371,14 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         argv, options=["create", "delete", "start", "stop", "submit", "cancel", "history"]
     )
 
-    quota_file = os.path.join(
-        "gs://",
-        gcp_settings("private_bucket"),
-        flag_values.name,
-        QUOTA_CONFIG_PATH,
-    )
+    def quota_file() -> str:
+        return os.path.join(
+            "gs://",
+            gcp_settings("private_bucket"),
+            flag_values.name,
+            QUOTA_CONFIG_PATH,
+        )
+
     if action == "create":
         # Creates and starts the bastion on a remote VM.
         # Since users share the same bastion, we use docker instead of tar'ing the local dir.
@@ -407,7 +409,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         bastion_cfg = Bastion.default_config().set(
             output_dir=output_dir(flag_values.name),
             scheduler=JobScheduler.default_config().set(
-                quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file),
+                quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file()),
                 dry_run=flag_values.dry_run,
             ),
             cleaner=TPUCleaner.default_config(),
@@ -455,7 +457,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             project_id = argv[2]
             history = _project_history(bastion_name=flag_values.name, project_id=project_id)
         else:
-            limits = get_resource_limits(quota_file)
+            limits = get_resource_limits(quota_file())
             raise app.UsageError(
                 "The history command should be used with either a --job_name=<job> flag "
                 "or a <project_id> arg, where <project_id> can be one of "
