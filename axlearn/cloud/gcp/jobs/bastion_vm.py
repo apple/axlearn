@@ -319,11 +319,11 @@ def _project_quotas_from_file(quota_file: str):
 
 def _job_history(*, bastion_name: str, job_name: str) -> str:
     result = ""
-    bastion_path = os.path.join("gs://", gcp_settings("permanent_bucket"), bastion_name)
+    bastion_path = output_dir(bastion_name)
     spec_path_pattern = os.path.join(bastion_path, "jobs", "*", job_name)
     spec_paths = tf_io.gfile.glob(spec_path_pattern)
     if not spec_paths:
-        raise ValueError(f"job spec not found in {spec_path_pattern}")
+        raise ValueError(f"Job spec not found in {spec_path_pattern}")
     for spec_path in spec_paths:
         with tf_io.gfile.GFile(spec_path, mode="r") as f:
             spec = "".join(f.readlines())
@@ -337,9 +337,7 @@ def _job_history(*, bastion_name: str, job_name: str) -> str:
 
 def _project_history(*, bastion_name: str, project_id: str) -> str:
     path_pattern = os.path.join(
-        "gs://",
-        gcp_settings("permanent_bucket"),
-        bastion_name,
+        output_dir(bastion_name),
         "history",
         "projects",
         project_id,
