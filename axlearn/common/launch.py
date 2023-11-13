@@ -34,7 +34,6 @@ if num_tpu_slices > 1:
     ]
 
 os.environ["LIBTPU_INIT_ARGS"] = " ".join(libtpu_init_args)
-os.environ["JAX_USE_PJRT_C_API_ON_TPU"] = "true"
 
 # Set TF_CPP_MIN_LOG_LEVEL to ignore msg like  "PNG warning: iCCP: known incorrect sRGB profile"
 # Reference: https://stackoverflow.com/questions/35869137/avoid-tensorflow-print-on-standard-error
@@ -46,9 +45,12 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import jax  # jax must be imported before tensorflow!
 
 print(
-    f"jax version={jax.__version__} tpu_type={tpu_type} num_tpu_slices={num_tpu_slices}",
+    f"jax version={jax.__version__} backend={jax.default_backend()} "
+    f"process={jax.process_index()}/{jax.process_count()}",
     file=sys.stderr,
 )
+if tpu_type != "none":
+    print(f"tpu_type={tpu_type} num_tpu_slices={num_tpu_slices}", file=sys.stderr)
 
 import logging as pylogging
 

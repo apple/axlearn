@@ -176,7 +176,6 @@ def _locate_user_config_file() -> Optional[str]:
     config_file = None
     for path in search_paths:
         if os.path.exists(path):
-            logging.log_first_n(logging.INFO, "Found user config at %s", 1, path)
             config_file = path
             break
     return config_file
@@ -325,12 +324,6 @@ def main(argv: Sequence[str], *, namespace: str, fv: flags.FlagValues):
             if labels := project_config.get("labels", None):
                 project_str += f" [{labels if isinstance(labels, str) else ', '.join(labels)}]"
             print(project_str)
-
-        if active_project is not None:
-            print()
-            print(f"Settings of active project {active_project}:")
-            print()
-            print(toml.dumps(project_configs[active_project]))
         return
 
     elif action == "activate":
