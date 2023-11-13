@@ -21,12 +21,12 @@ Examples:
     # * Training summaries and checkpoints will be emitted to --trainer_dir.
     # * The input dataset is expected to already exist in --data_dir.
     # * It's recommended to use the same dir for launch --output_dir and --trainer_dir.
-    #
-    OUTPUT_DIR=gs://path/to/$USER/experiments/resnet50-$(date +%F)
+    GS_ROOT=gs://my-bucket; \
+    OUTPUT_DIR=${GS_ROOT}/$USER/experiments/resnet50-$(date +%F) \
     axlearn gcp launch --instance_type=tpu-v4-8 --output_dir=$OUTPUT_DIR -- \
         python3 -m axlearn.common.launch_trainer_main \
         --module=vision.resnet.imagenet_trainer --config=ResNet-50 \
-        --trainer_dir=$OUTPUT_DIR --data_dir=gs://path/to/tensorflow_datasets
+        --trainer_dir=$OUTPUT_DIR --data_dir=${GS_ROOT}/tensorflow_datasets
     ```
 
 """

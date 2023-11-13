@@ -111,7 +111,7 @@ from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.uploader import Uploader, with_interval
-from axlearn.cloud.common.utils import configure_logging, parse_action
+from axlearn.cloud.common.utils import configure_logging, infer_cli_name, parse_action
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, docker_command
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
@@ -305,7 +305,9 @@ class SubmitBastionJob(BaseSubmitBastionJob):
             )
         print(
             "\nView bastion outputs with:\n"
-            f"gsutil cat {os.path.join(self.bastion_dir, 'logs', cfg.job_name)}",
+            f"gsutil cat {os.path.join(self.bastion_dir, 'logs', cfg.job_name)}\n"
+            "\nCheck job history with:\n"
+            f"{infer_cli_name()} gcp bastion history --name={cfg.name} --job_name={cfg.job_name}\n"
         )
         return super()._execute()
 
@@ -316,17 +318,21 @@ def _project_quotas_from_file(quota_file: str):
 
 
 def _job_history(*, bastion_name: str, job_name: str) -> str:
-    path = os.path.join(
-        "gs://",
-        gcp_settings("permanent_bucket"),
-        bastion_name,
-        "history",
-        "jobs",
-        job_name,
-    )
-    with tf_io.gfile.GFile(path, mode="r") as f:
-        lines = "".join(line for line in f)
-        return f"<history job={job_name}>\n{lines}</history job={job_name}>"
+    result = ""
+    bastion_path = os.path.join("gs://", gcp_settings("permanent_bucket"), bastion_name)
+    spec_path_pattern = os.path.join(bastion_path, "jobs", "*", job_name)
+    spec_paths = tf_io.gfile.glob(spec_path_pattern)
+    if not spec_paths:
+        raise ValueError(f"job spec not found in {spec_path_pattern}")
+    for spec_path in spec_paths:
+        with tf_io.gfile.GFile(spec_path, mode="r") as f:
+            spec = "".join(f.readlines())
+            result += f"<spec path={spec_path}>\n{spec}\n</spec>\n"
+    history_path = os.path.join(bastion_path, "history", "jobs", job_name)
+    with tf_io.gfile.GFile(history_path, mode="r") as f:
+        history = "".join(f.readlines())
+        result += f"<history path={history_path}>\n{history}</history>\n"
+    return result
 
 
 def _project_history(*, bastion_name: str, project_id: str) -> str:
