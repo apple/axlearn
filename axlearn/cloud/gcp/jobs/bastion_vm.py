@@ -4,7 +4,7 @@
 
 See `axlearn/cloud/common/bastion.py` for bastion details.
 
-Possible actions: [create|delete|start|stop|submit|cancel]
+Possible actions: [create|delete|start|stop|submit|cancel|history]
 
     Create: creates the bastion VM, and runs "start" on it.
     Delete: deletes the bastion VM.
@@ -12,6 +12,7 @@ Possible actions: [create|delete|start|stop|submit|cancel]
     Stop: soft-stops the bastion VM, without deleting it.
     Submit: submits a job spec to the bastion VM for scheduling and execution.
     Cancel: cancels a running job managed by the bastion VM.
+    History: prints history of a job or a project id.
 
 Examples:
 
@@ -27,6 +28,12 @@ Examples:
     # Submit a command to be run by bastion.
     # Use `serialize_jobspec` to write a jobspec.
     axlearn gcp bastion submit --spec=/path/to/spec --name=shared-bastion
+
+    # Check the job status/history.
+    axlearn gcp bastion history --name=shared-bastion --job_name=my-job
+
+    # If it is not running, check the project history to see the limit and the queue.
+    axlearn gcp bastion history --name=shared-bastion <project_id>
 
     # Cancel a running job.
     axlearn gcp bastion cancel --job_name=my-job --name=shared-bastion
@@ -95,6 +102,7 @@ import time
 from typing import Sequence
 
 from absl import app, flags, logging
+from tensorflow import io as tf_io
 
 from axlearn.cloud.common.bastion import _LOG_DIR, Bastion, StartBastionJob
 from axlearn.cloud.common.bastion import SubmitBastionJob as BaseSubmitBastionJob
@@ -103,7 +111,7 @@ from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.uploader import Uploader, with_interval
-from axlearn.cloud.common.utils import configure_logging, parse_action
+from axlearn.cloud.common.utils import configure_logging, infer_cli_name, parse_action
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, docker_command
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
@@ -297,7 +305,9 @@ class SubmitBastionJob(BaseSubmitBastionJob):
             )
         print(
             "\nView bastion outputs with:\n"
-            f"gsutil cat {os.path.join(self.bastion_dir, 'logs', cfg.job_name)}",
+            f"gsutil cat {os.path.join(self.bastion_dir, 'logs', cfg.job_name)}\n"
+            "\nCheck job history with:\n"
+            f"{infer_cli_name()} gcp bastion history --name={cfg.name} --job_name={cfg.job_name}\n"
         )
         return super()._execute()
 
@@ -307,9 +317,67 @@ def _project_quotas_from_file(quota_file: str):
     return functools.partial(get_resource_limits, path=quota_file)
 
 
+def _job_history(*, bastion_name: str, job_name: str) -> str:
+    result = ""
+    bastion_path = output_dir(bastion_name)
+    spec_path_pattern = os.path.join(bastion_path, "jobs", "*", job_name)
+    spec_paths = tf_io.gfile.glob(spec_path_pattern)
+    if not spec_paths:
+        raise ValueError(f"Job spec not found in {spec_path_pattern}")
+    for spec_path in spec_paths:
+        with tf_io.gfile.GFile(spec_path, mode="r") as f:
+            spec = "".join(f.readlines())
+            result += f"<spec path={spec_path}>\n{spec}\n</spec>\n"
+    history_path = os.path.join(bastion_path, "history", "jobs", job_name)
+    with tf_io.gfile.GFile(history_path, mode="r") as f:
+        history = "".join(f.readlines())
+        result += f"<history path={history_path}>\n{history}</history>\n"
+    return result
+
+
+def _project_history(*, bastion_name: str, project_id: str) -> str:
+    path_pattern = os.path.join(
+        output_dir(bastion_name),
+        "history",
+        "projects",
+        project_id,
+        "*",
+    )
+    paths = sorted(tf_io.gfile.glob(path_pattern))
+    entries = []
+    for path in paths[-2:]:
+        with tf_io.gfile.GFile(path, mode="r") as f:
+            entry = None
+            for line in f:
+                if re.search("^[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}", line):
+                    # Timestamp line.
+                    if entry:
+                        entries.append(entry)
+                    entry = line
+                else:
+                    entry += line
+            if entry:
+                entries.append(entry)
+    if len(entries) > 3:
+        # Only keep the last three entries.
+        entries = entries[-3:]
+    lines = "".join(entries)
+    return f"<history project_id={project_id}>\n{lines}</history project_id={project_id}>"
+
+
 @catch_auth
 def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
-    action = parse_action(argv, options=["create", "delete", "start", "stop", "submit", "cancel"])
+    action = parse_action(
+        argv, options=["create", "delete", "start", "stop", "submit", "cancel", "history"]
+    )
+
+    def quota_file() -> str:
+        return os.path.join(
+            "gs://",
+            gcp_settings("private_bucket"),
+            flag_values.name,
+            QUOTA_CONFIG_PATH,
+        )
 
     if action == "create":
         # Creates and starts the bastion on a remote VM.
@@ -337,17 +405,11 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         job = cfg.instantiate()
         job._delete()  # pylint: disable=protected-access
     elif action == "start":
-        quota_file = os.path.join(
-            "gs://",
-            gcp_settings("private_bucket"),
-            flag_values.name,
-            QUOTA_CONFIG_PATH,
-        )
         # Start the bastion. This should run on the bastion itself.
         bastion_cfg = Bastion.default_config().set(
             output_dir=output_dir(flag_values.name),
             scheduler=JobScheduler.default_config().set(
-                quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file),
+                quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file()),
                 dry_run=flag_values.dry_run,
             ),
             cleaner=TPUCleaner.default_config(),
@@ -386,6 +448,22 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         )
         job = cfg.instantiate()
         job._delete()  # pylint: disable=protected-access
+    elif action == "history":
+        if flag_values.job_name:
+            # Print job history.
+            history = _job_history(bastion_name=flag_values.name, job_name=flag_values.job_name)
+        elif len(argv) > 2:
+            # Print project history.
+            project_id = argv[2]
+            history = _project_history(bastion_name=flag_values.name, project_id=project_id)
+        else:
+            limits = get_resource_limits(quota_file())
+            raise app.UsageError(
+                "The history command should be used with either a --job_name=<job> flag "
+                "or a <project_id> arg, where <project_id> can be one of "
+                f"{list(limits.project_resources.keys()) + ['none']}"
+            )
+        print(history)
     else:
         raise ValueError(f"Unknown action {action}")
 
