@@ -13,11 +13,11 @@ from absl.testing import parameterized
 
 from axlearn.audio.frontend import LogMelFrontend, _ms_to_samples, normalize_by_mean_std
 from axlearn.audio.frontend_utils_test import (
-    _fake_audio,
     _ref_framer,
     _ref_log_mel_spectrogram,
     _ref_pre_emphasis,
 )
+from axlearn.audio.test_utils import fake_audio
 from axlearn.common.config import config_for_function
 from axlearn.common.module import functional as F
 
@@ -66,8 +66,11 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
         num_filters = 80
 
         # Construct fake inputs.
-        inputs, paddings = _fake_audio(
-            batch_size=batch_size, seq_len=max_seconds * sample_rate, dtype=jnp.float64
+        inputs, paddings = fake_audio(
+            prng_key=jax.random.PRNGKey(123),
+            batch_size=batch_size,
+            seq_len=max_seconds * sample_rate,
+            dtype=jnp.float64,
         )
 
         # Compute ref outputs.
@@ -91,13 +94,17 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             frame_size_ms=frame_size_ms,
             hop_size_ms=hop_size_ms,
         )
-        layer = cfg.set(name="test").instantiate(parent=None)
+        layer: LogMelFrontend = cfg.set(name="test").instantiate(parent=None)
         test_outputs = self._jit_forward(layer, inputs, paddings)
 
         # Only compare the non-padding outputs.
         ref_outputs = ref_outputs * (1 - tf.cast(ref_paddings, ref_outputs.dtype))[..., None]
         self.assertAllClose(ref_outputs[..., None], test_outputs["outputs"])
         self.assertAllClose(ref_paddings, test_outputs["paddings"])
+
+        # Check that output shape is consistent.
+        output_shape = layer.output_shape(input_shape=inputs.shape)
+        self.assertSequenceEqual(test_outputs["outputs"].shape, output_shape)
 
     @pytest.mark.fp64
     def test_normalization(self):
@@ -118,8 +125,11 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             mean_square = jnp.sum(outputs["outputs"] ** 2, axis=(0, 1, -1)) / non_padding
             return mean, jnp.sqrt(mean_square - mean**2)
 
-        inputs, paddings = _fake_audio(
-            batch_size=batch_size, seq_len=max_seconds * sample_rate, dtype=jnp.float64
+        inputs, paddings = fake_audio(
+            prng_key=jax.random.PRNGKey(123),
+            batch_size=batch_size,
+            seq_len=max_seconds * sample_rate,
+            dtype=jnp.float64,
         )
         test_outputs = self._jit_forward(layer, inputs, paddings)
 
@@ -135,6 +145,17 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
         mean, std = compute_mean_std(test_outputs)
         self.assertTrue(jnp.allclose(mean, 0, atol=1e-5))
         self.assertTrue(jnp.allclose(std, 1.0, atol=1e-5))
+
+    def test_output_dim(self):
+        cfg: LogMelFrontend.Config = LogMelFrontend.default_config().set(
+            num_filters=80,
+            sample_rate=16_000,
+            frame_size_ms=25,
+            hop_size_ms=10,
+            output_dim=2,
+        )
+        with self.assertRaisesRegex(ValueError, "output_dim"):
+            cfg.set(name="test").instantiate(parent=None)
 
 
 def _ref_frontend(

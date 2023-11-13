@@ -28,22 +28,8 @@ from axlearn.audio.frontend_utils import (
     sliding_window,
     windowing,
 )
+from axlearn.audio.test_utils import fake_audio
 from axlearn.common.utils import as_tensor
-
-
-def _fake_audio(*, batch_size: int, seq_len: int, scale: float = 32768.0, dtype=jnp.float32):
-    inputs = jax.random.uniform(
-        jax.random.PRNGKey(123),
-        shape=[batch_size, seq_len],
-        minval=-scale,
-        maxval=scale,
-        dtype=dtype,
-    )
-    lengths = jax.random.randint(
-        jax.random.PRNGKey(124), shape=[batch_size, 1], minval=0, maxval=seq_len
-    )
-    paddings = (jnp.arange(seq_len)[None, :] <= lengths).astype(jnp.int32)
-    return inputs, paddings
 
 
 class SlidingWindowTest(parameterized.TestCase, tf.test.TestCase):
@@ -57,7 +43,9 @@ class SlidingWindowTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_sliding_window(self, frame_size: int, frame_step: int, seq_len: int):
         batch_size = 5
-        inputs, paddings = _fake_audio(batch_size=batch_size, seq_len=seq_len)
+        inputs, paddings = fake_audio(
+            prng_key=jax.random.PRNGKey(123), batch_size=batch_size, seq_len=seq_len
+        )
         ref_output, ref_paddings = _ref_framer(
             inputs=inputs,
             paddings=paddings,
