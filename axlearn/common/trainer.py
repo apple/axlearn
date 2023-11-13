@@ -325,7 +325,12 @@ class SpmdTrainer(Module):
             current_step = self.step
             if current_step == last_step:
                 self._step_log(
-                    "Watchdog triggered! Threads:\n%s", "\n".join(_thread_stack_traces())
+                    "Watchdog triggered because step has not incremented in the last %s seconds.\n"
+                    "NOTE: this is not an error message, but meant to help debugging "
+                    "in case the trainer is stuck.\n"
+                    "Threads:\n%s",
+                    cfg.watchdog_timeout_seconds,
+                    "\n".join(_thread_stack_traces()),
                 )
             else:
                 self.vlog(1, "Watchdog check passed: %s -> %s", last_step, current_step)
