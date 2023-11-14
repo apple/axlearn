@@ -40,6 +40,7 @@ from axlearn.common.test_utils import (
 )
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import (
+    PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
     NestedTensor,
     StackedKeyArray,
     Tensor,
@@ -53,6 +54,7 @@ from axlearn.common.utils import (
     copy_recursively,
     count_model_params,
     create_device_mesh,
+    dispatch_input_batch,
     flatten_items,
     get_data_dir,
     get_recursively,
@@ -63,7 +65,6 @@ from axlearn.common.utils import (
     runtime_checks,
     set_data_dir,
     set_recursively,
-    shard_input_batch,
     split_prng_key,
     tree_paths,
     validate_float_dtype,
@@ -456,7 +457,7 @@ class TreeUtilsTest(TestCase):
         ((1, 4), ("data", "model"), "data"),
         ((1, 2, 2, 2), ("replica", "data", "fsdp", "model"), ("replica", "data", "fsdp")),
     )
-    def test_shard_input_batch(
+    def test_dispatch_shards_input_batch(
         self,
         mesh_shape: Sequence[int],
         mesh_axis_names: Sequence[str],
@@ -466,12 +467,30 @@ class TreeUtilsTest(TestCase):
             pytest.skip(reason=f"Unsupported mesh {mesh_shape}.")
         devices = mesh_utils.create_device_mesh(mesh_shape)
         with jax.sharding.Mesh(devices, mesh_axis_names):
-            sharded_batch = shard_input_batch(
+            sharded_batch = dispatch_input_batch(
                 jnp.ones(jnp.prod(jnp.asarray(mesh_shape))),
                 batch_axis_names=batch_axis_names,
             )
             # Check that the batch has been sharded.
             self.assertEqual(sharded_batch.sharding.spec, PartitionSpec(batch_axis_names))
+
+    def test_dispatch_subsets_input_batch(self):
+        default_input_batch = {
+            "value_a": jnp.arange(4),
+            "value_b": jnp.arange(16).reshape(4, 4),
+        }
+        # Default batch (without physical to logical dispatch tensor) is unchanged.
+        self.assertNestedEqual(dispatch_input_batch(default_input_batch), default_input_batch)
+        input_batch_with_key = default_input_batch
+        is_from_padded_feed = jnp.asarray([[1, 0], [0, 1], [0, 0], [0, 0]])
+        input_batch_with_key[PHYSICAL_TO_LOGICAL_DISPATCH_KEY] = is_from_padded_feed
+        expected_subset = {
+            k: v[:2, ...]
+            for k, v in input_batch_with_key.items()
+            if k != PHYSICAL_TO_LOGICAL_DISPATCH_KEY
+        }
+        # Calling with input batch with padded-input-feed key returns a strict subset.
+        self.assertNestedEqual(dispatch_input_batch(input_batch_with_key), expected_subset)
 
     def test_complete_partition_spec_tree(self):
         data = dict(

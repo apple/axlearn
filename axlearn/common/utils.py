@@ -459,21 +459,39 @@ def input_partition_spec() -> PartitionSpec:
     )
 
 
-def shard_input_batch(
+# Key associated with per-example dataset dispatch index tensor, indicating which logical
+# batch index the example maps to.
+PHYSICAL_TO_LOGICAL_DISPATCH_KEY = "__physical_to_logical_batch_dispatch"
+
+
+def dispatch_input_batch(
     input_batch: NestedTensor, *, batch_axis_names: Union[str, Sequence[str]] = "data"
 ) -> NestedTensor:
-    """Constrains all leaf values in the input batch to be partitioned over one axis.
+    """Constrains all leaf values in the input batch, then (optionally) dispatches examples
+    to a subset along the batch axis.
 
     Args:
-        input_batch: The inputs to be constrained.
+        input_batch: The input batch, where the first dimension of each leaf is the batch dim.
         batch_axis_names: The name(s) of the batch axes.
 
     Returns:
-        Inputs wrapped with sharding constraints.
+        A nested tensor like the input batch, where each leaf contains
+            a subset of the input batch, and has been wrapped with sharding annotations.
+            N.B. some internal key-value pairs (like PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
+            may be dropped after use if present.
     """
-    return jax.tree_util.tree_map(
+    # Constrain the input batch.
+    input_batch = jax.tree_util.tree_map(
         lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)), input_batch
     )
+
+    # Dispatch from physical batch dimensions to logical batch.
+    if PHYSICAL_TO_LOGICAL_DISPATCH_KEY in input_batch:
+        dispatch = input_batch.pop(PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
+        return jax.tree_util.tree_map(
+            lambda x: jnp.einsum("b...,bl->l...", x, dispatch), input_batch
+        )
+    return input_batch
 
 
 class DataPartitionType(Enum):

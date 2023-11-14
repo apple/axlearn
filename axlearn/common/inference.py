@@ -378,12 +378,13 @@ class InferenceRunner(Module):
                 return utils.cast_floats(in_tree, to_dtype=cfg.inference_dtype)
             return in_tree
 
-        input_batch = utils.shard_input_batch(inference_cast(input_batch))
+        # Shard and (possibly) dispatch the input batch.
+        input_batch = utils.dispatch_input_batch(input_batch)
         output_batch, output_collection = F(
             self.model,
             prng_key=iter_key,
             state=inference_cast(model_params),
-            inputs={"input_batch": input_batch, **kwargs},
+            inputs={"input_batch": inference_cast(input_batch), **kwargs},
             is_training=False,
             method=method,
         )
