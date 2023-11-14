@@ -2,6 +2,7 @@
 
 """Tests bundling utilities."""
 
+import contextlib
 import pathlib
 import tarfile
 import tempfile
@@ -9,6 +10,7 @@ from contextlib import contextmanager
 from unittest import mock
 
 import toml
+from absl.testing import parameterized
 
 from axlearn.cloud.common import bundler
 from axlearn.cloud.common.bundler import BaseTarBundler, Bundler, DockerBundler, get_bundler_config
@@ -25,6 +27,13 @@ def _fake_dockerfile():
         yield temp_dockerfile
 
 
+def _create_dummy_config(temp_dir: str):
+    # Create a dummy config.
+    config_file = pathlib.Path(temp_dir) / CONFIG_DIR / CONFIG_FILE
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.touch()
+
+
 class BundlerTest(TestWithTemporaryCWD):
     """Tests Bundler."""
 
@@ -38,9 +47,7 @@ class BundlerTest(TestWithTemporaryCWD):
                 pass
 
         # Create a dummy config.
-        config_file = pathlib.Path(self._temp_root.name) / CONFIG_DIR / CONFIG_FILE
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-        config_file.touch()
+        _create_dummy_config(self._temp_root.name)
 
         # Ensure the config file is copied to temp bundle.
         # pylint: disable-next=protected-access
@@ -152,24 +159,60 @@ class DockerBundlerTest(TestWithTemporaryCWD):
         cfg.set(image="test", repo="test", dockerfile="test")
         cfg.instantiate()
 
-    @mock.patch(f"{bundler.__name__}.running_from_source", return_value=True)
+    @mock.patch(f"{bundler.__name__}.running_from_source", return_value=False)
+    @mock.patch(f"{bundler.__name__}.get_git_status", return_value="")
+    def test_build_args(self, *mocks):
+        del mocks
+        _create_dummy_config(self._temp_root.name)
+
+        # Ensure that docker bundler works whether build args are specified as strings or lists.
+        build_args = dict(a="a,b", b=("a", "b"), c=["a", "b"])
+
+        def build_and_push(*, args, **kwargs):
+            del kwargs
+            self.assertTrue(all(isinstance(x, str) for x in args.values()))
+
+        with _fake_dockerfile() as dockerfile:
+            b = (
+                DockerBundler.default_config()
+                .set(
+                    image="test",
+                    repo="FAKE_REPO",
+                    dockerfile=str(dockerfile),
+                    build_args=build_args,
+                )
+                .instantiate()
+            )
+            with mock.patch.object(b, "_build_and_push", side_effect=build_and_push) as mock_push:
+                b.bundle("FAKE_TAG")
+                mock_push.assert_called()
+
+    @parameterized.parameters(dict(running_from_source=True), dict(running_from_source=False))
     @mock.patch(f"{bundler.__name__}.get_git_revision", return_value="FAKE_REVISION")
     @mock.patch(f"{bundler.__name__}.get_git_status", return_value=["FAKE_FILE"])
     def test_call_unclean(self, get_git_status, get_git_revision, running_from_source):
-        # Create a dummy config.
-        config_file = pathlib.Path(self._temp_root.name) / CONFIG_DIR / CONFIG_FILE
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-        config_file.touch()
+        _create_dummy_config(self._temp_root.name)
 
-        with _fake_dockerfile() as dockerfile:
+        mock_running_from_source = mock.patch(
+            f"{bundler.__name__}.running_from_source",
+            return_value=running_from_source,
+        )
+        with mock_running_from_source as mock_source, _fake_dockerfile() as dockerfile:
             b = (
                 DockerBundler.default_config()
                 .set(image="test", repo="FAKE_REPO", dockerfile=str(dockerfile))
                 .instantiate()
             )
-            with self.assertRaisesRegex(RuntimeError, "commit your changes"):
-                b.bundle("FAKE_TAG")
+            if running_from_source:
+                ctx = self.assertRaisesRegex(RuntimeError, "commit your changes")
+            else:
+                ctx = contextlib.nullcontext()
 
-        self.assertGreater(running_from_source.call_count, 0)
-        self.assertGreater(get_git_status.call_count, 0)
-        self.assertEqual(get_git_revision.call_count, 0)
+            mock_build_and_push = mock.patch.object(b, "_build_and_push", return_value=None)
+            with ctx, mock_build_and_push as mock_push:
+                b.bundle("FAKE_TAG")
+                self.assertEqual(not running_from_source, mock_push.called)
+
+            self.assertGreater(mock_source.call_count, 0)
+            self.assertEqual(running_from_source, get_git_status.called)
+            self.assertEqual(get_git_revision.call_count, 0)

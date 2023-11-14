@@ -166,3 +166,16 @@ class UtilsTest(TestWithTemporaryCWD):
                 self.assertTrue(copied_file_a.exists())
                 copied_file_b = write_dir_path / file_b.relative_to(read_dir_path)
                 self.assertTrue(copied_file_b.exists())
+
+    @parameterized.parameters(
+        dict(v_seq=[], v_str="", v_list=[], delimiter=","),
+        dict(
+            v_seq=["a", " b ", "c,d"], v_str="a,b,c,d", v_list=["a", "b", "c", "d"], delimiter=","
+        ),
+        dict(v_seq=["a", " b ", "c,d"], v_str="a.b.c,d", v_list=["a", "b", "c,d"], delimiter="."),
+    )
+    def test_canonicalize(self, v_seq: Sequence[str], v_str: str, v_list: str, delimiter: str):
+        self.assertEqual(v_str, utils.canonicalize_to_string(v_str, delimiter=delimiter))
+        self.assertEqual(v_str, utils.canonicalize_to_string(v_seq, delimiter=delimiter))
+        self.assertEqual(v_list, utils.canonicalize_to_list(v_str, delimiter=delimiter))
+        self.assertEqual(v_list, utils.canonicalize_to_list(v_list, delimiter=delimiter))

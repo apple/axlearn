@@ -34,6 +34,7 @@ from axlearn.cloud.common.docker import build as docker_build
 from axlearn.cloud.common.docker import push as docker_push
 from axlearn.cloud.common.utils import (
     canonicalize_to_list,
+    canonicalize_to_string,
     copy_blobs,
     get_git_branch,
     get_git_revision,
@@ -291,6 +292,8 @@ class BaseDockerBundler(Bundler):
             build_args = {**cfg.build_args}
             if cfg.extras:
                 build_args["extras"] = cfg.extras
+            # Ensure that build args are specified strings.
+            build_args = {k: canonicalize_to_string(v) for k, v in build_args.items()}
             bundle_path = self._build_and_push(
                 dockerfile=str(temp_dockerfile_path),
                 image=self.id(tag),
