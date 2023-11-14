@@ -209,15 +209,12 @@ def subprocess_run(argv: Union[str, Sequence[str]], *args, **kwargs) -> subproce
         return subprocess.run(argv, *args, **kwargs)
     except subprocess.CalledProcessError as e:
         # Emit the captured stdout/stderr.
+        error_msg = (
+            f"Command {e.cmd} failed: code={e.returncode}, stdout={e.stdout}, stderr={e.stderr}"
+        )
         if kwargs.get("capture_output"):
-            logging.error(
-                "Command %s failed: code=%s, stdout=%s, stderr=%s",
-                e.cmd,
-                e.returncode,
-                e.stdout,
-                e.stderr,
-            )
-        raise  # Re-raise.
+            logging.error(error_msg)
+        raise ValueError(error_msg) from e  # Re-raise.
 
 
 def canonicalize_to_list(v: Union[str, Sequence[str]], *, delimiter: str = ",") -> List[str]:
