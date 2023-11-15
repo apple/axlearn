@@ -179,3 +179,13 @@ class UtilsTest(TestWithTemporaryCWD):
         self.assertEqual(v_str, utils.canonicalize_to_string(v_seq, delimiter=delimiter))
         self.assertEqual(v_list, utils.canonicalize_to_list(v_str, delimiter=delimiter))
         self.assertEqual(v_list, utils.canonicalize_to_list(v_list, delimiter=delimiter))
+
+    @parameterized.parameters(
+        dict(
+            base={"a": {"d": None}, "c": [3, 4]},
+            overrides={"a": {"b": 123}, "c": [1, 2]},
+            expected={"a": {"b": 123, "d": None}, "c": [1, 2]},
+        ),
+    )
+    def test_merge(self, base, overrides, expected):
+        self.assertEqual(expected, utils.merge(base, overrides))

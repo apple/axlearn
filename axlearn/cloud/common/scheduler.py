@@ -325,8 +325,6 @@ class JobScheduler(Configurable):
         sorter: ProjectJobSorter.Config = ProjectJobSorter.default_config()
         # Scheduler that decides whether to resume/suspend jobs.
         scheduler: Scheduler.Config = Scheduler.default_config()
-        # Whether to dry-run, which only logs scheduling decisions.
-        dry_run: bool = False
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -336,17 +334,24 @@ class JobScheduler(Configurable):
         self._sorter = cfg.sorter.instantiate()
         self._scheduler = cfg.scheduler.instantiate()
 
-    def schedule(self, jobs: Dict[str, JobMetadata]) -> Scheduler.ScheduleResults:
+    def schedule(
+        self,
+        jobs: Dict[str, JobMetadata],
+        *,
+        dry_run: bool = False,
+        verbosity: int = 0,
+    ) -> Scheduler.ScheduleResults:
         """Schedules jobs according to quotas.
 
         Args:
             jobs: A mapping from {job_name: job_metadata}.
+            dry_run: Whether to enable dry-run mode, i.e. everything gets scheduled.
+                Typically used with higher verbosity to debug scheduling.
+            verbosity: Whether to log scheduling report.
 
         Returns:
             The scheduling results.
         """
-        cfg = self.config
-
         # Group jobs by project.
         project_jobs = defaultdict(dict)
         for job_name, job_metadata in jobs.items():
@@ -368,16 +373,14 @@ class JobScheduler(Configurable):
             project_jobs=project_jobs,
         )
 
+        # Log the job verdicts.
         # TODO(markblee): Move to util/reuse this block if we have multiple scheduler
         # implementations.
-        if cfg.dry_run:
+        if verbosity > 0:
             logging.info("")
-            logging.info("==Begin scheduling dry-run report")
+            logging.info("==Begin scheduling report")
             logging.info("Total resource limits: %s", total_resources)
-            # Log the job verdicts, but construct mock verdicts allowing everything to be scheduled.
-            mock_verdicts = {}
             for project_id, project_verdicts in schedule_results.job_verdicts.items():
-                mock_verdicts[project_id] = {}
                 logging.info(
                     "Verdicts for Project [%s] Quota [%s] Effective limits [%s]:",
                     project_id,
@@ -392,11 +395,16 @@ class JobScheduler(Configurable):
                         job_verdict.over_limits,
                         job_verdict.should_run(),
                     )
-                    mock_verdicts[project_id][job_name] = JobVerdict()
-            logging.info("==End of scheduling dry-run report")
+            logging.info("==End of scheduling report")
             logging.info("")
-            schedule_results = Scheduler.ScheduleResults(
-                project_limits=schedule_results.project_limits, job_verdicts=mock_verdicts
-            )
 
+        # Construct mock verdicts allowing everything to be scheduled.
+        if dry_run:
+            schedule_results = Scheduler.ScheduleResults(
+                project_limits=schedule_results.project_limits,
+                job_verdicts={
+                    project_id: {job_name: JobVerdict() for job_name in project_verdicts}
+                    for project_id, project_verdicts in schedule_results.job_verdicts.items()
+                },
+            )
         return schedule_results

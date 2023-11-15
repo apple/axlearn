@@ -52,13 +52,13 @@ def load_configs(
     # If a default config exists, read it.
     default_config_file = _default_config_file()
     if default_config_file is not None:
-        _merge(configs, toml.load(default_config_file))
+        utils.merge(configs, toml.load(default_config_file))
         config_file = default_config_file
 
     # If a user config file exists, use it to override the default.
     user_config_file = _locate_user_config_file()
     if user_config_file:
-        _merge(configs, toml.load(user_config_file))
+        utils.merge(configs, toml.load(user_config_file))
         config_file = user_config_file
 
     if required and config_file is None:
@@ -74,15 +74,6 @@ def load_configs(
     if namespace is not None:
         configs = configs.get(namespace, {})
     return config_file, configs
-
-
-def _merge(base: dict, overrides: dict):
-    """Recursively merge overrides into base."""
-    if not isinstance(base, dict):
-        return overrides
-    for k, v in overrides.items():
-        base[k] = _merge(base.get(k), v)
-    return base
 
 
 def write_configs_with_header(config_file: str, configs: Dict[str, Any]):
@@ -115,7 +106,7 @@ def update_configs(namespace: str, namespace_configs: Dict[str, Any]):
             pass
     configs = toml.load(config_file) or {}
     # Update namespace configs by merging.
-    configs[namespace] = _merge(configs.get(namespace, {}), namespace_configs)
+    configs[namespace] = utils.merge(configs.get(namespace, {}), namespace_configs)
     write_configs_with_header(config_file, configs)
     print(f"Configs written to {config_file}")
 
