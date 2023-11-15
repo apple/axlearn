@@ -107,6 +107,16 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
 
         return cfg.set(bastion=config_for_function(dummy_submit_job).set(name="test_bastion"))
 
+    @parameterized.parameters(
+        dict(output_dir="", instance_type="test", expected=ValueError("output_dir")),
+        dict(output_dir="test-output", instance_type="", expected=ValueError("instance_type")),
+    )
+    def test_empty(self, expected, **kwargs):
+        # Ensure that output_dir is provided.
+        cfg = self._mock_config().set(**kwargs)
+        with self.assertRaisesRegex(type(expected), str(expected)):
+            cfg.instantiate()
+
     def test_start(self):
         # Test with defaults.
         job = self._mock_config().instantiate()

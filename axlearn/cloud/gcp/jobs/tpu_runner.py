@@ -65,7 +65,12 @@ from typing import Dict, Optional, Sequence
 
 from absl import app, flags, logging
 
-from axlearn.cloud.common.bundler import Bundler, DockerBundler, bundler_flags, get_bundler_config
+from axlearn.cloud.common.bundler import (
+    BaseDockerBundler,
+    Bundler,
+    bundler_flags,
+    get_bundler_config,
+)
 from axlearn.cloud.common.utils import (
     canonicalize_to_list,
     configure_logging,
@@ -227,7 +232,7 @@ class TPURunnerJob(TPUJob):
     def _wrap(self, cmd: str, *, env: Optional[Dict[str, str]] = None):
         """Wraps the command with env vars, and docker run if using docker bundler."""
         cfg: TPURunnerJob.Config = self.config
-        if self._bundler.TYPE == DockerBundler.TYPE:
+        if isinstance(self._bundler, BaseDockerBundler):
             cmd = docker_command(
                 cmd,
                 image=self._bundler.id(cfg.name),

@@ -307,7 +307,7 @@ class SubmitBastionJob(BaseSubmitBastionJob):
             "\nView bastion outputs with:\n"
             f"gsutil cat {os.path.join(self.bastion_dir, 'logs', cfg.job_name)}\n"
             "\nCheck job history with:\n"
-            f"{infer_cli_name()} gcp bastion history --name={cfg.name} --job_name={cfg.job_name}\n"
+            f"{infer_cli_name()} gcp bastion history --name={cfg.name} --job_name={cfg.job_name}"
         )
         return super()._execute()
 
