@@ -229,6 +229,15 @@ def canonicalize_to_list(v: Union[str, Sequence[str]], *, delimiter: str = ",") 
     return list(v)
 
 
+def canonicalize_to_string(v: Union[str, Sequence[str]], *, delimiter: str = ",") -> str:
+    """Converts lists to delimited strings."""
+    if not v:
+        return ""
+    if not isinstance(v, str):
+        v = delimiter.join([elem.strip() for elem in v])
+    return v
+
+
 def parse_action(
     argv: Sequence[str], *, options: Sequence[str], default: Optional[str] = None
 ) -> str:
