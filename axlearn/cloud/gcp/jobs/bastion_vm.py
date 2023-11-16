@@ -46,8 +46,14 @@ Examples:
     #
     axlearn gcp bastion stop --name=shared-bastion
 
+    # Stop the bastion and any child jobs.
+    axlearn gcp bastion stop --name=shared-bastion --delete_child_jobs
+
     # Delete the bastion.
     axlearn gcp bastion delete --name=shared-bastion
+
+    # Delete the bastion and any child jobs.
+    axlearn gcp bastion delete --name=shared-bastion --delete_child_jobs
 
     # Build and push a bastion image.
     axlearn gcp bundle --bundler_type=artifactregistry \
@@ -98,6 +104,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import time
 from typing import Sequence
 
@@ -106,7 +113,7 @@ from tensorflow import io as tf_io
 
 from axlearn.cloud.common.bastion import _LOG_DIR, Bastion, StartBastionJob
 from axlearn.cloud.common.bastion import SubmitBastionJob as BaseSubmitBastionJob
-from axlearn.cloud.common.bastion import bastion_job_flags, deserialize_jobspec
+from axlearn.cloud.common.bastion import bastion_job_flags, deserialize_jobspec, download_job_batch
 from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
@@ -148,6 +155,12 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
         [],
         "Bundler spec provided as key=value. "
         "Refer to each bundler's `from_spec` method docstring for details.",
+        flag_values=flag_values,
+    )
+    flags.DEFINE_bool(
+        "delete_child_jobs",
+        False,
+        "Also delete jobs when stopping the bastion.",
         flag_values=flag_values,
     )
 
@@ -365,10 +378,62 @@ def _project_history(*, bastion_name: str, project_id: str) -> str:
     return f"<history project_id={project_id}>\n{lines}</history project_id={project_id}>"
 
 
+def _stop_bastion(flag_values: flags.FlagValues):
+    # Stop the bastion. This typically runs locally on the caller's machine; CPUJob will SSH into
+    # the bastion to issue the `docker stop` command.
+    logging.info("Stopping the bastion %s...", flag_values.name)
+    cfg = CPUJob.from_flags(flag_values).set(command=f"docker stop {flag_values.name}", max_tries=1)
+    job = cfg.instantiate()
+    try:
+        job.execute()
+    except ValueError as e:
+        # If we can determine that bastion is already stopped, no need to raise.
+        cause = f"No such container: {flag_values.name}"
+        curr_e = e
+        while curr_e:
+            if cause in str(curr_e):
+                logging.info("Bastion is already stopped.")
+                return
+            curr_e = curr_e.__cause__
+        raise e  # Else re-raise.
+
+
+def _maybe_delete_child_jobs(flag_values: flags.FlagValues):
+    if not flag_values.delete_child_jobs:
+        return
+    cleaner = TPUCleaner.default_config().instantiate()
+    bastion_dir = output_dir(flag_values.name)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        jobs, _ = download_job_batch(
+            spec_dir=f"{bastion_dir}/jobs/active",
+            state_dir=f"{bastion_dir}/jobs/states",
+            user_state_dir=f"{bastion_dir}/jobs/user_states",
+            local_spec_dir=tmpdir,
+        )
+        logging.info("Will terminate the following jobs:\n%s", "\n".join(jobs.keys()))
+        logging.info("Continue? [y/n]")
+        if input().lower() == "y":
+            jobs_to_terminate = {
+                job.spec.name: job.spec.metadata.resources for job in jobs.values()
+            }
+            # Delete all TPUs with an associated bastion job.
+            while jobs_to_terminate:
+                logging.info("Issuing a sweep...")
+                for job_name in cleaner.sweep(jobs_to_terminate):
+                    logging.info("%s is terminated.", job_name)
+                    jobs_to_terminate.pop(job_name, None)
+                if jobs_to_terminate:
+                    logging.info("Not all jobs are terminated yet: %s", jobs_to_terminate)
+                    time.sleep(60)
+        else:
+            logging.info("Cancelled by user.")
+
+
 @catch_auth
 def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     action = parse_action(
-        argv, options=["create", "delete", "start", "stop", "submit", "cancel", "history"]
+        argv,
+        options=["create", "delete", "start", "stop", "submit", "cancel", "history"],
     )
 
     def quota_file() -> str:
@@ -404,6 +469,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         cfg = CreateBastionJob.from_flags(flag_values)
         job = cfg.instantiate()
         job._delete()  # pylint: disable=protected-access
+        _maybe_delete_child_jobs(flag_values=flag_values)
     elif action == "start":
         # Start the bastion. This should run on the bastion itself.
         bastion_cfg = Bastion.default_config().set(
@@ -420,13 +486,10 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         cfg = StartBastionJob.from_flags(flag_values).set(max_tries=-1, bastion=bastion_cfg)
         job = cfg.instantiate()
         job.execute()
+    # TODO(markblee): Split out 'internal' commands from user-facing ones.
     elif action == "stop":
-        # Stop the bastion. This typically runs locally.
-        cfg = CPUJob.from_flags(flag_values).set(
-            command=f"docker stop {flag_values.name}", max_tries=1
-        )
-        job = cfg.instantiate()
-        job.execute()
+        _stop_bastion(flag_values=flag_values)
+        _maybe_delete_child_jobs(flag_values=flag_values)
     elif action == "submit":
         spec = deserialize_jobspec(flag_values.spec)
         # Construct a job for bastion to execute. This typically runs locally.
