@@ -655,12 +655,12 @@ We assume you have:
 ### Preparing the CLI
 
 To setup the CLI, we'll need to first create a config file under **one of** the following paths:
-- `.axlearn.config` in the current working directory, or
+- `.axlearn/.axlearn.config` in the current working directory, or
 - `~/.axlearn.config` in your home directory.
 
 To create the config, you can copy from [the template config](.axlearn/axlearn.default.config).
 ```shell
-cp .axlearn/axlearn.default.config .axlearn.config
+cp .axlearn/axlearn.default.config .axlearn/.axlearn.config
 ```
 
 > Tip: You can always run `axlearn gcp config cleanup` to delete all AXLearn config files from your system.
