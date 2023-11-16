@@ -147,8 +147,9 @@ class SummaryWriter(BaseWriter):
             config_lines = config.debug_string().split("\n")
             tf_summary.text("trainer_config", config_lines, step=step)
             for line in config_lines:
-                k, v = line.split(": ", 1)
-                tf_summary.text(f"trainer_config/{k}", v, step=step)
+                parts = line.split(": ", 1)
+                if len(parts) == 2:
+                    tf_summary.text(f"trainer_config/{parts[0]}", parts[1], step=step)
 
     def __call__(self, step: int, values: Dict[str, Any]):
         cfg = self.config
