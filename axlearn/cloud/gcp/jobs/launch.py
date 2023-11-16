@@ -209,6 +209,12 @@ class BaseBastionLaunchJob(Job):
         )
         return cfg
 
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        cfg = self.config
+        if not (cfg.instance_type and cfg.output_dir):
+            raise ValueError("instance_type, output_dir cannot be empty")
+
     def _delete(self):
         """Submits a delete request to bastion."""
         bastion: SubmitBastionJob = self.config.bastion.instantiate()
@@ -417,7 +423,6 @@ class LaunchTPUJob(BaseBastionLaunchJob):
         launch_flags = " ".join(filtered)
         # Note: command is only used for start.
         cfg.command = f"python3 -m {tpu_runner.__name__} start {launch_flags} -- {command}"
-
         return cfg
 
     @classmethod

@@ -158,6 +158,26 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
         job = cfg.set(command="", tpu_type=tpu_type, num_slices=num_slices).instantiate()
         self.assertEqual(num_workers, job._num_workers())
 
+    @parameterized.parameters(
+        bundler.DockerBundler.default_config(),
+        bundler.ArtifactRegistryBundler.default_config(),
+        bundler.CloudBuildBundler.default_config(),
+    )
+    def test_wrap(self, bundler_cfg: bundler.BaseDockerBundler.Config):
+        # Test compat with different docker bundler types.
+        cfg: tpu_runner.TPURunnerJob.Config = _mock_config().set(
+            bundler=bundler_cfg.set(
+                image="test-image",
+                repo="test-repo",
+                dockerfile="test-dockerfile",
+            ),
+        )
+        job: tpu_runner.TPURunnerJob = cfg.set(command="test-command").instantiate()
+        cmd = job._wrap(cfg.command, env={"TEST_ENV": "123"})
+        self.assertStartsWith(cmd, "TEST_ENV=123 docker run")
+        self.assertIn("-e TEST_ENV", cmd)
+        self.assertIn(cfg.command, cmd)
+
     @parameterized.parameters(True, False)
     def test_start(self, running_from_vm):
         cfg = _mock_config()

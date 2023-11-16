@@ -22,8 +22,22 @@ Examples:
     # * The input dataset is expected to already exist in --data_dir.
     # * It's recommended to use the same dir for launch --output_dir and --trainer_dir.
     GS_ROOT=gs://my-bucket; \
-    OUTPUT_DIR=${GS_ROOT}/$USER/experiments/resnet50-$(date +%F) \
+    OUTPUT_DIR=${GS_ROOT}/$USER/experiments/resnet50-$(date +%F); \
     axlearn gcp launch --instance_type=tpu-v4-8 --output_dir=$OUTPUT_DIR -- \
+        python3 -m axlearn.common.launch_trainer_main \
+        --module=vision.resnet.imagenet_trainer --config=ResNet-50 \
+        --trainer_dir=$OUTPUT_DIR --data_dir=${GS_ROOT}/tensorflow_datasets
+
+    # Sample docker launch.
+    GS_ROOT=gs://my-bucket; \
+    DOCKER_REPO=us-docker.pkg.dev/my-repo/my-image; \
+    OUTPUT_DIR=${GS_ROOT}/$USER/experiments/resnet50-$(date +%F); \
+    axlearn gcp launch --instance_type=tpu-v5litepod-16 --output_dir=$OUTPUT_DIR \
+        --bundler_type=docker \
+        --bundler_spec=repo=${DOCKER_REPO} \
+        --bundler_spec=dockerfile=Dockerfile \
+        --bundler_spec=image=tpu \
+        --bundler_spec=target=tpu -- \
         python3 -m axlearn.common.launch_trainer_main \
         --module=vision.resnet.imagenet_trainer --config=ResNet-50 \
         --trainer_dir=$OUTPUT_DIR --data_dir=${GS_ROOT}/tensorflow_datasets
