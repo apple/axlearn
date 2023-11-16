@@ -14,11 +14,11 @@ requires-python = ">=3.9"
 dependencies = [
     "attrs>=21.3.0",
     "absl-py",
-    "chex>=0.1.6",
+    "chex<0.1.81",  # chex 0.1.81 depends on numpy>=1.25.0.
     "flax==0.7.4",  # only for checkpoints.
     "importlab==0.7",  # breaks pytype on 0.8
-    "jax==0.4.18",
-    "jaxlib==0.4.18",
+    "jax==0.4.20",
+    "jaxlib==0.4.20",
     "nltk==3.7",  # for text preprocessing
     "numpy<1.24",  # needed to pin to < 1.24; tf ragged_tensor depends on deprecated np.object.
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -43,8 +43,8 @@ apple-silicon = [
     "absl-py",
     "chex>=0.1.7",
     "flax==0.7.4",  # only for checkpoints.
-    "jax==0.4.18",
-    "jaxlib==0.4.18",
+    "jax==0.4.20",
+    "jaxlib==0.4.20",
     "nltk==3.7",  # for text preprocessing
     "optax>=0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
@@ -94,7 +94,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.4.18",
+    "jax[tpu]==0.4.20",
 ]
 # Note: Currently tested on x86.
 t5x = [
@@ -102,9 +102,10 @@ t5x = [
     "t5x@git+https://github.com/google-research/t5x.git@caa500771af314e3cb877b5c158c1db4ae0427c2"
 ]
 # Jax-triton. Can only be installed on a GPU machine.
+# Note: Specify -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html during install.
 jax_triton = [
     "cmake",
-    # Compatible with jax 0.4.18.
+    # TODO(markblee): Find compatible version(s) for jax 0.4.20.
     "jax-triton@git+https://github.com/jax-ml/jax-triton.git@06d35175fbb65771243f607b1f098ec4a75556c9",
     "jaxlib==0.4.18+cuda12.cudnn89",
     "nvidia-cudnn-cu12==8.9.2.26",
