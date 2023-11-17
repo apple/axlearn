@@ -44,13 +44,13 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 # tpu_library_init_fns.inc:98] TpuEmbeddingEngine_ExecutePartitioner not available in this library.
 import jax  # jax must be imported before tensorflow!
 
+# NOTE: calling jax.default_backend() on GPU causes jax to only view one process' GPUs.
 print(
-    f"jax version={jax.__version__} backend={jax.default_backend()} "
-    f"process={jax.process_index()}/{jax.process_count()}",
+    f"jax version={jax.__version__} process={jax.process_index()}/{jax.process_count()}",
     file=sys.stderr,
 )
 if tpu_type != "none":
-    print(f"tpu_type={tpu_type} num_tpu_slices={num_tpu_slices}", file=sys.stderr)
+    print(f"instance_type={tpu_type} num_slices={num_tpu_slices}", file=sys.stderr)
 
 import logging as pylogging
 
