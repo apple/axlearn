@@ -62,6 +62,10 @@ Examples:
         --bundler_spec=dockerfile=Dockerfile \
         --bundler_spec=target=bastion
 
+    # Set runtime options. Will be read by the bastion on next update.
+    OPTIONS=$(echo '{"scheduler": {"dry_run": true, "verbosity": 1}}' | jq -R .)
+    axlearn gcp bastion set --name=shared-bastion --runtime_options=$OPTIONS
+
 To test changes to bastion:
 
     # 1. Build a custom image.
@@ -100,6 +104,7 @@ On "start" vs "create":
 """
 # pylint: disable=consider-using-with,too-many-branches,too-many-instance-attributes,too-many-lines
 import functools
+import json
 import os
 import re
 import shlex
@@ -113,7 +118,12 @@ from tensorflow import io as tf_io
 
 from axlearn.cloud.common.bastion import _LOG_DIR, Bastion, StartBastionJob
 from axlearn.cloud.common.bastion import SubmitBastionJob as BaseSubmitBastionJob
-from axlearn.cloud.common.bastion import bastion_job_flags, deserialize_jobspec, download_job_batch
+from axlearn.cloud.common.bastion import (
+    bastion_job_flags,
+    deserialize_jobspec,
+    download_job_batch,
+    set_runtime_options,
+)
 from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
@@ -137,9 +147,6 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
     flag_values.set_default("project", gcp_settings("project", required=False))
     flag_values.set_default("zone", gcp_settings("zone", required=False))
 
-    flags.DEFINE_bool(
-        "dry_run", False, "Whether to run with dry-run scheduling.", flag_values=flag_values
-    )
     flags.DEFINE_string(
         "vm_type", "n2-highmem-128", "Machine spec to boot for VM.", flag_values=flag_values
     )
@@ -161,6 +168,13 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
         "delete_child_jobs",
         False,
         "Also delete jobs when stopping the bastion.",
+        flag_values=flag_values,
+    )
+    flags.DEFINE_string(
+        "runtime_options",
+        None,
+        "Runtime options provided as a json-serialized string. Will be merged recursively with "
+        "existing runtime options.",
         flag_values=flag_values,
     )
 
@@ -243,8 +257,6 @@ class CreateBastionJob(CPUJob):
         vm_type: Required[str] = REQUIRED
         # Disk size in GB.
         disk_size: Required[int] = REQUIRED
-        # Whether to launch bastion in dry-run mode.
-        dry_run: bool = False
 
     @classmethod
     def default_config(cls) -> Config:
@@ -274,8 +286,7 @@ class CreateBastionJob(CPUJob):
         run_command = docker_command(
             f"set -o pipefail; mkdir -p {_LOG_DIR}; "
             f"python3 -m axlearn.cloud.gcp.jobs.bastion_vm --name={cfg.name} "
-            f"--project={cfg.project} --zone={cfg.zone} "
-            f"--dry_run={cfg.dry_run} start 2>&1 | tee -a {run_log}",
+            f"--project={cfg.project} --zone={cfg.zone} start 2>&1 | tee -a {run_log}",
             image=image,
             volumes={"/var/tmp": "/var/tmp"},
             detached_session=cfg.name,
@@ -432,8 +443,7 @@ def _maybe_delete_child_jobs(flag_values: flags.FlagValues):
 @catch_auth
 def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     action = parse_action(
-        argv,
-        options=["create", "delete", "start", "stop", "submit", "cancel", "history"],
+        argv, options=["create", "delete", "start", "stop", "submit", "cancel", "history", "set"]
     )
 
     def quota_file() -> str:
@@ -476,7 +486,6 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             output_dir=output_dir(flag_values.name),
             scheduler=JobScheduler.default_config().set(
                 quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file()),
-                dry_run=flag_values.dry_run,
             ),
             cleaner=TPUCleaner.default_config(),
             uploader=Uploader.default_config().set(
@@ -527,6 +536,12 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
                 f"{list(limits.project_resources.keys()) + ['none']}"
             )
         print(history)
+    elif action == "set":
+        try:
+            options = json.loads(flag_values.runtime_options)
+        except (TypeError, json.JSONDecodeError) as e:
+            raise app.UsageError(f"--runtime_options should be a valid json string: {e}")
+        set_runtime_options(output_dir(flag_values.name), **options)
     else:
         raise ValueError(f"Unknown action {action}")
 

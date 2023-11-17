@@ -4,13 +4,20 @@
 # pylint: disable=protected-access
 
 import contextlib
+import tempfile
 from datetime import datetime
 from unittest import mock
 
-from absl import flags
+from absl import app, flags
 from absl.testing import parameterized
 
-from axlearn.cloud.common.bastion import Job, JobState, new_jobspec
+from axlearn.cloud.common.bastion import (
+    Job,
+    JobState,
+    _load_runtime_options,
+    new_jobspec,
+    set_runtime_options,
+)
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.gcp.jobs import bastion_vm
 from axlearn.cloud.gcp.jobs.bastion_vm import CreateBastionJob
@@ -232,3 +239,41 @@ class MainTest(TestWithTemporaryCWD):
         with mock_sleep, mock_utils, mock_cleaner as (_, _, mock_cleaner_job):
             with mock.patch.object(mock_cleaner_job, "sweep", side_effect=mock_sweeps):
                 bastion_vm.main(["cli", "stop"], flag_values=fv)
+
+    @parameterized.parameters(
+        dict(
+            original=None,
+            options=None,
+            expected=app.UsageError("json"),
+        ),
+        dict(
+            original=None,
+            options=r'{"test": {"int": 123, "bool": true, "string": "test"}}',
+            expected={"test": {"int": 123, "bool": True, "string": "test"}},
+        ),
+        dict(
+            original={"test": {"int": 123, "bool": True, "string": "test"}},
+            options=r'{"test": {"bool": false}, "test1": 1}',
+            expected={"test": {"int": 123, "bool": False, "string": "test"}, "test1": 1},
+        ),
+    )
+    def test_set(self, options, expected, original=None):
+        fv = flags.FlagValues()
+        bastion_vm._private_flags(flag_values=fv)
+        fv.set_default("name", "test-bastion")
+        fv.set_default("runtime_options", options)
+        fv.mark_as_parsed()
+
+        def do_set():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                if original is not None:
+                    set_runtime_options(temp_dir, **original)
+                with mock.patch(f"{bastion_vm.__name__}.output_dir", return_value=temp_dir):
+                    bastion_vm.main(["cli", "set"], flag_values=fv)
+                return _load_runtime_options(temp_dir)
+
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                do_set()
+        else:
+            self.assertEqual(expected, do_set())

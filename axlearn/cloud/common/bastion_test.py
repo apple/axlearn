@@ -7,7 +7,7 @@ import os
 import subprocess
 import tempfile
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 from unittest import mock
 
 from absl.testing import parameterized
@@ -19,11 +19,13 @@ from axlearn.cloud.common.bastion import (
     Bastion,
     Job,
     JobState,
+    _load_runtime_options,
     _PipedProcess,
     deserialize_jobspec,
     download_job_batch,
     new_jobspec,
     serialize_jobspec,
+    set_runtime_options,
 )
 from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.scheduler import JobMetadata, JobScheduler
@@ -140,6 +142,23 @@ class TestJobSpec(parameterized.TestCase):
             for key in test_spec.__dataclass_fields__:
                 self.assertIn(key, deserialized_jobspec.__dict__)
                 self.assertEqual(deserialized_jobspec.__dict__[key], test_spec.__dict__[key])
+
+
+class TestRuntimeOptions(parameterized.TestCase):
+    """Tests runtime options."""
+
+    def test_load_and_set_runtime_options(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Initially empty.
+            self.assertEqual({}, _load_runtime_options(temp_dir))
+
+            # Set some values.
+            set_runtime_options(temp_dir, a="1", b={"c": "2"})
+            self.assertEqual({"a": "1", "b": {"c": "2"}}, _load_runtime_options(temp_dir))
+
+            # Update.
+            set_runtime_options(temp_dir, a="2", b={"c": "3"})
+            self.assertEqual({"a": "2", "b": {"c": "3"}}, _load_runtime_options(temp_dir))
 
 
 # Returns a new mock Popen for each subprocess.Popen call.
@@ -751,6 +770,80 @@ class BastionTest(parameterized.TestCase):
                     active_jobs[job_name].state == JobState.COMPLETED,
                     deleted_state and deleted_jobspec,
                 )
+
+    @parameterized.parameters(
+        dict(
+            initial_jobs={
+                "pending": JobState.PENDING,
+                "active": JobState.ACTIVE,
+                "cancelling": JobState.CANCELLING,
+                "completed": JobState.COMPLETED,
+            },
+            runtime_options={},
+            expect_schedulable=["pending", "active"],
+        ),
+        # Test runtime options.
+        dict(
+            initial_jobs={},
+            runtime_options={"scheduler": {"dry_run": True, "verbosity": 1}},
+            expect_schedulable=[],
+            expect_dry_run=True,
+            expect_verbosity=1,
+        ),
+        # Test invalid runtime options.
+        dict(
+            initial_jobs={},
+            runtime_options={"scheduler": {"dry_run": "hello", "verbosity": None}},
+            expect_schedulable=[],
+        ),
+        # Test invalid runtime options schema.
+        dict(
+            initial_jobs={},
+            runtime_options={"scheduler": {"verbosity": None}},
+            expect_schedulable=[],
+        ),
+        dict(
+            initial_jobs={},
+            runtime_options={"scheduler": {"unknown": 123}},
+            expect_schedulable=[],
+        ),
+        dict(
+            initial_jobs={},
+            runtime_options={"scheduler": [], "unknown": 123},
+            expect_schedulable=[],
+        ),
+        dict(
+            initial_jobs={},
+            runtime_options={"unknown": 123},
+            expect_schedulable=[],
+        ),
+    )
+    def test_update_scheduler(
+        self,
+        *,
+        initial_jobs: Dict[str, JobState],
+        runtime_options: Optional[Dict[str, Any]],
+        expect_schedulable: Sequence[str],
+        expect_dry_run: bool = False,
+        expect_verbosity: int = 0,
+    ):
+        with self._patch_bastion() as mock_bastion:
+            patch_update = mock.patch.object(mock_bastion, "_update_single_job")
+            patch_history = mock.patch.object(mock_bastion, "_append_to_project_history")
+            patch_scheduler = mock.patch.object(mock_bastion, "_scheduler")
+
+            with patch_update, patch_history, patch_scheduler as mock_scheduler:
+                mock_bastion._active_jobs = {
+                    job_name: Job(
+                        spec=mock.Mock(), state=state, command_proc=None, cleanup_proc=None
+                    )
+                    for job_name, state in initial_jobs.items()
+                }
+                mock_bastion._runtime_options = runtime_options
+                mock_bastion._update_jobs()
+                args, kwargs = mock_scheduler.schedule.call_args
+                self.assertSameElements(expect_schedulable, args[0].keys())
+                self.assertEqual({"dry_run": expect_dry_run, "verbosity": expect_verbosity}, kwargs)
 
 
 class StartBastionJobTest(parameterized.TestCase):

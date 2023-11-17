@@ -265,7 +265,6 @@ class TestJobScheduler(parameterized.TestCase):
     def test_init(self, dry_run: bool):
         cfg = JobScheduler.default_config().set(
             quota=config_for_function(mock_quota_config),
-            dry_run=dry_run,
         )
 
         # Test initialization.
@@ -319,7 +318,7 @@ class TestJobScheduler(parameterized.TestCase):
                 resources={"v3": 2},
             ),
         }
-        results = sched.schedule(jobs)
+        results = sched.schedule(jobs, dry_run=dry_run)
 
         # Get verdicts by job name.
         job_verdicts: Dict[str, JobVerdict] = {

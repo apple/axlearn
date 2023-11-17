@@ -20,7 +20,7 @@ The cloud storage directory has the following structure:
     Cleanup command logs: $ROOT/logs/<job_name>.cleanup
 
     Job scheduling history: $ROOT/history/jobs/<job_name>
-    Project scheduling history: $ROOT/history/projects/<date>
+    Project scheduling history: $ROOT/history/projects/<project_name>/<date>
 
 At a high level, the submit flow works as follows:
 1. User submits a job to the bastion by uploading a job spec to the 'active jobspecs' path above
@@ -65,6 +65,7 @@ from typing import IO, Any, Dict, List, Optional, Set, Tuple, Union
 from absl import flags, logging
 from tensorflow import errors as tf_errors
 from tensorflow import io as tf_io
+from tensorflow import nest as tf_nest
 
 # tensorflow_io import is necessary for tf_io to understand s3:// scheme.
 try:
@@ -77,8 +78,9 @@ from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.job import Job as CloudJob
 from axlearn.cloud.common.scheduler import JobMetadata, ResourceMap, Scheduler
 from axlearn.cloud.common.uploader import Uploader
-from axlearn.cloud.common.utils import send_signal
+from axlearn.cloud.common.utils import merge, send_signal
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
+from axlearn.common.utils import Nested
 
 _LATEST_BASTION_VERSION = 1  # Determines job schema (see JobSpec).
 _LOG_DIR = "/var/tmp/logs"  # Use /var/tmp/ since /tmp/ is cleared every 10 days.
@@ -388,6 +390,28 @@ def download_job_batch(
     return jobs, jobs_with_user_states
 
 
+def _load_runtime_options(bastion_dir: str) -> Dict[str, Any]:
+    """Loads runtime option(s) from file, or returns {} on failure."""
+    flag_file = os.path.join(bastion_dir, "runtime_options")
+    try:
+        with tf_io.gfile.GFile(flag_file, "r") as f:
+            return json.load(f)
+    except (tf_errors.NotFoundError, json.JSONDecodeError) as e:
+        logging.warning("Failed to load runtime options: %s", e)
+    return {}
+
+
+def set_runtime_options(bastion_dir: str, **kwargs) -> Nested[Any]:
+    """Writes key, value pairs into runtime options file. None values are removed."""
+    runtime_options = _load_runtime_options(bastion_dir)
+    runtime_options = merge(runtime_options, kwargs)
+    flag_file = os.path.join(bastion_dir, "runtime_options")
+    with tf_io.gfile.GFile(flag_file, "w") as f:
+        json.dump(runtime_options, f)
+    logging.info("Updated runtime options: %s", runtime_options)
+    return runtime_options
+
+
 class Bastion(Configurable):
     """An orchestrator that schedules and executes jobs."""
 
@@ -435,6 +459,8 @@ class Bastion(Configurable):
         self._active_jobs: Dict[str, Job] = {}
         # A set of job names which require cleanup of user states.
         self._jobs_with_user_states: Set[str] = set()
+        # Runtime options.
+        self._runtime_options = {}
 
         # Instantiate children.
         self._scheduler = cfg.scheduler.instantiate()
@@ -495,6 +521,28 @@ class Bastion(Configurable):
                 f.write("Queued jobs:\n")
                 for job_id in queued_jobs:
                     f.write(f"  {job_id}\n")
+
+    def _load_runtime_options(self):
+        """Loads (updated) runtime options from remote."""
+        self._runtime_options = _load_runtime_options(self._output_dir)
+
+    def _get_runtime_options(self, key: str, defaults: Dict[str, Any]) -> Dict[str, Any]:
+        """Reads runtime options with the given key.
+
+        The defaults will be used as a schema to validate the runtime options.
+        If validation fails, we return the defaults.
+        """
+        options = self._runtime_options.get(key, {})
+        try:
+            # By default tf_nest does not check types of atoms/leaves.
+            def check_leaves(x, y):
+                assert type(x) == type(y)  # pylint: disable=unidiomatic-typecheck
+
+            tf_nest.map_structure(check_leaves, options, defaults)
+        except (TypeError, ValueError, AssertionError) as e:
+            logging.warning("Ignoring invalid runtime options %s: %s, %s", key, options, e)
+            options = defaults
+        return options
 
     def _wait_and_close_proc(self, proc: _PipedProcess, kill: bool = False):
         """Cleans up the process/fds and upload logs to gs."""
@@ -693,7 +741,15 @@ class Bastion(Configurable):
                 schedulable_jobs[job_name] = job.spec.metadata
 
         # Decide which jobs to resume/pre-empt.
-        schedule_results: Scheduler.ScheduleResults = self._scheduler.schedule(schedulable_jobs)
+        schedule_options = self._get_runtime_options(
+            "scheduler",
+            defaults={"dry_run": False, "verbosity": 0},
+        )
+        schedule_results: Scheduler.ScheduleResults = self._scheduler.schedule(
+            schedulable_jobs,
+            dry_run=schedule_options["dry_run"],
+            verbosity=schedule_options["verbosity"],
+        )
         self._append_to_project_history(schedulable_jobs, schedule_results)
         for verdicts in schedule_results.job_verdicts.values():
             for job_name, verdict in verdicts.items():
@@ -770,6 +826,7 @@ class Bastion(Configurable):
         while True:
             start = time.time()
             self._uploader()
+            self._load_runtime_options()
             self._sync_jobs()
             self._update_jobs()
             self._gc_jobs()

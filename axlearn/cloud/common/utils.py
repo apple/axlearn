@@ -298,3 +298,12 @@ def copy_blobs(from_prefix: str, *, to_prefix: str):
             to_prefix = os.path.join(to_prefix, sub_directory)
             os.makedirs(to_prefix, exist_ok=True)
         copy_blobs(blob, to_prefix=to_prefix)
+
+
+def merge(base: dict, overrides: dict):
+    """Recursively merge overrides into base."""
+    if not isinstance(base, dict):
+        return overrides
+    for k, v in overrides.items():
+        base[k] = merge(base.get(k), v)
+    return base
