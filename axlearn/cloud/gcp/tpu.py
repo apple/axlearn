@@ -601,8 +601,11 @@ def _tpu_body(
         startup_script_contents = of.read()
     docker_repo = gcp_settings("docker_repo", required=False)
 
-    runtime_version = "tpu-ubuntu2204-base"
-    if not (tpu_type.startswith("v4") or tpu_type.startswith("v5lite")):
+    if tpu_type.startswith("v4") or tpu_type.startswith("v5lite"):
+        runtime_version = "tpu-ubuntu2204-base"
+    elif tpu_type.startswith("v5p"):
+        runtime_version = "v2-alpha-tpuv5"
+    else:
         raise ValueError(f"Unknown TPU-VM runtime version for {tpu_type}.")
 
     body = {
@@ -707,7 +710,7 @@ def get_queued_tpu_node(name: str, resource: discovery.Resource) -> Optional[Dic
             continue
 
 
-_TPU_VERSIONS = ("v3", "v4", "v5litepod")
+_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p")
 
 
 def infer_tpu_version(tpu_type: str) -> str:
@@ -754,7 +757,7 @@ def infer_tpu_workers(tpu_type: str) -> int:
     try:
         if match is not None:
             tpu_version, tpu_cores = match.groups()
-            if tpu_version in {"v3", "v4"}:
+            if tpu_version in {"v3", "v4", "v5p"}:
                 return int(tpu_cores) // 8
             if tpu_version in {"v5litepod"}:
                 return int(tpu_cores) // 4
