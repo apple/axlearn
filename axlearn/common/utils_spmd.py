@@ -46,7 +46,8 @@ def setup(
 
     global _jax_distributed_initialized  # pylint: disable=global-statement
     if not _jax_distributed_initialized:
-        # NOTE: calling jax.default_backend() on GPU causes jax to only view one process' GPUs.
+        # NOTE: calling JAX distributed APIs (e.g. jax.default_backend(), jax.process_index() or
+        # jax.process_count()) on GPU causes JAX to only view one process' GPUs.
         jax_backend = jax_backend or jax.default_backend()
         if jax_backend == "tpu":
             assert (
