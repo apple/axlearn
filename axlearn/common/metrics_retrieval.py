@@ -136,6 +136,9 @@ def top_k_recall(
     Raises:
         ValueError: if neither `gt_targets` nor `relevance_labels` were provided.
     """
+    if gt_targets is None and relevance_labels is None:
+        raise ValueError("Either `gt_targets` or `relevance_labels` is required.")
+
     total_num_relevant_items = None
     # Try to get relevance labels first to avoid double conversion in top_k_accuracy.
     if relevance_labels is None:
