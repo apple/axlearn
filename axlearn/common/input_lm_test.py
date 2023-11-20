@@ -262,28 +262,27 @@ class LmTrainingInputTest(BaseLmInputTest):
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_fake_text_lm_training_data_eval(self):
+        # N.B. we do not typically expect users to run the training data pipeline in eval mode.
+        # Instead we expect them to prefer `text_to_lm_eval_input`.
         expected_first_and_last_batch = [
             {
                 "input_ids": [
-                    [1712, 2, 29, 3155, 0, 0],
-                    [29, 3155, 1, 21820, 1712, 2],
-                    [29, 3155, 1, 21820, 1782, 2],
+                    [1, 21820, 296, 2, 29, 3155],
+                    [1, 21820, 8114, 2, 29, 3155],
+                    [1, 21820, 3, 17, 4424, 2],
                 ],
                 "target_labels": [
-                    [2, 29, 3155, 1, 0, 0],
-                    [3155, 1, 21820, 1712, 2, 29],
-                    [3155, 1, 21820, 1782, 2, 29],
+                    [21820, 296, 2, 29, 3155, 1],
+                    [21820, 8114, 2, 29, 3155, 1],
+                    [21820, 3, 17, 4424, 2, 29],
                 ],
-                "target_num_bytes": [8, 18, 18],
+                "target_num_bytes": [19, 18, 17],
             },
+            # Last batch should have some fully-padded examples.
             {
-                "input_ids": [[29, 3155, 1, 21820, 3, 17], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]],
-                "target_labels": [
-                    [3155, 1, 21820, 3, 17, 4424],
-                    [0, 0, 0, 0, 0, 0],
-                    [0, 0, 0, 0, 0, 0],
-                ],
-                "target_num_bytes": [14, 0, 0],
+                "input_ids": [[1712, 2, 29, 3155, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]],
+                "target_labels": [[2, 29, 3155, 1, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]],
+                "target_num_bytes": [8, 0, 0],
             },
         ]
 
@@ -307,7 +306,7 @@ class LmTrainingInputTest(BaseLmInputTest):
                 replace_newlines_with=self.newlines_replaced_with,
                 window_size=10,
                 max_padding_fraction=0.5,
-                shuffle_buffer_size=1024,
+                shuffle_buffer_size=0,
             ),
             batcher=config_for_function(input_tf_data.batch).set(
                 global_batch_size=batch_size,
