@@ -366,7 +366,7 @@ class T5EncoderDecoderModelTest(TestCase):
             layer: T5EncoderDecoderModel = cfg.instantiate(parent=None)
 
             def train_step(state, input_batch):
-                input_batch = utils.shard_input_batch(input_batch)
+                input_batch = utils.dispatch_input_batch(input_batch)
                 new_prng_key, prng_key = jax.random.split(state["prng_key"])
 
                 def _forward(model_parameters, forward_input_batch):

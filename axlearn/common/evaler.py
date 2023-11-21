@@ -230,8 +230,10 @@ class BaseMetricCalculator(Module):
             (outputs, output_collection), where `outputs` are the return value of
             self._model.method(...).
         """
+        # Shard and (possibly) dispatch the input batch.
+        input_batch = utils.dispatch_input_batch(input_batch)
         model_inputs = dict(
-            input_batch=self._eval_cast(utils.shard_input_batch(input_batch)),
+            input_batch=self._eval_cast(input_batch),
             **kwargs,
         )
         # Run model forward pass to compute outputs.

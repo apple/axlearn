@@ -746,9 +746,11 @@ class SpmdTrainer(Module):
         state: _TrainerState,
         input_batch: Dict[str, Any],
     ) -> Tuple[_TrainerState, NestedTensor]:
-        input_batch = utils.shard_input_batch(
+        # Shard and (possibly) dispatch the input batch.
+        input_batch = utils.dispatch_input_batch(
             input_batch, batch_axis_names=self.config.batch_axis_names
         )
+
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
             state.prng_key, 4
         )

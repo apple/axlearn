@@ -2,25 +2,34 @@
 
 """Tests tf.data inputs."""
 # pylint: disable=no-self-use,too-many-lines
-from typing import Dict, List, Optional, Sequence, Type, Union
+import os
+import tempfile
+from typing import Dict, Iterable, List, Optional, Sequence, Type, Union
+from unittest import mock
 
 import jax
+import numpy as np
 import pytest
 import seqio
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from absl.testing import absltest, parameterized
+from jax.sharding import Mesh
 
-from axlearn.common import test_utils
+from axlearn.common import test_utils, utils
+from axlearn.common.checkpointer import Checkpointer
 from axlearn.common.config import config_for_function
 from axlearn.common.input_fake import fake_serialized_json_source, fake_source, fake_text_source
 from axlearn.common.input_tf_data import (
     BuildDatasetFn,
     DatasetToDatasetFn,
     Input,
+    _infer_cardinality,
     _infer_num_examples,
     _infer_num_shards,
     _maybe_shard_examples,
+    _pad_for_evaluation,
+    _pad_logical_to_physical,
     add_static_fields,
     batch,
     chain,
@@ -364,9 +373,194 @@ def _text_ds(texts: List[str], *, repeat=1) -> tf.data.Dataset:
     # pylint: enable=duplicate-code
 
 
-class BatchTest(parameterized.TestCase):
+class PadTest(test_utils.TestCase):
+    @parameterized.parameters(None, 1, 5)
+    def test_infer_cardinality(self, num_repeats: Optional[int]):
+        text_examples = ["a", "b", "c"]
+        ds = _text_ds(text_examples).repeat(num_repeats)
+        cardinality = _infer_cardinality(ds)
+        if num_repeats is None:
+            self.assertEqual(cardinality, tf.data.INFINITE_CARDINALITY)
+        else:
+            self.assertEqual(cardinality, len(text_examples) * num_repeats)
+
+    def test_pad_for_evaluation(self):
+        text_examples = ["a", "b", "c"]
+        ds = _pad_for_evaluation(
+            _text_ds(["a", "b", "c"]),
+            per_feed_batch_size=2,
+            pad_example_fn=default_pad_example_fn,
+        )
+        example_ix = 0
+        for example in ds:
+            text = example["text"].numpy().decode()
+            index = example["index"].numpy()
+            is_valid = example["is_valid"].numpy()
+            if example_ix < len(text_examples):
+                self.assertEqual(text, text_examples[example_ix])
+                self.assertEqual(index, example_ix)
+                self.assertEqual(is_valid, True)
+            else:
+                self.assertEqual(text, "")
+                self.assertEqual(index, 0)
+                self.assertEqual(is_valid, False)
+            example_ix += 1
+        self.assertEqual(example_ix, 4)
+
+    @parameterized.product(
+        num_logical_feeds=(1, 2),
+        logical_batch_size=(1, 2, 4),
+        logical_feed_index=(0, 1),
+        physical_batch_size=(2, 4, 8),
+    )
+    def test_pad_logical_to_physical_for_logical_feed(
+        self,
+        num_logical_feeds: int,
+        logical_feed_index: int,
+        logical_batch_size: int,
+        physical_batch_size: int,
+    ):
+        # Skip unsupported combinations.
+        if logical_batch_size % num_logical_feeds != 0:
+            return
+        if logical_batch_size > physical_batch_size:
+            return
+        if logical_feed_index >= num_logical_feeds:
+            return
+        text_examples = ["a", "b", "c", "d"]
+        per_feed_physcal_batch_size = physical_batch_size // num_logical_feeds
+        with mock.patch("jax.process_count", return_value=num_logical_feeds):
+            ds = _pad_logical_to_physical(
+                _text_ds(text_examples),
+                global_batch_size=physical_batch_size,
+                global_logical_batch_size=logical_batch_size,
+                num_logical_feeds=num_logical_feeds,
+                logical_feed_index=logical_feed_index,
+                pad_example_fn=default_pad_example_fn,
+            ).batch(per_feed_physcal_batch_size)
+        per_feed_logical_batch_size = logical_batch_size // num_logical_feeds
+        num_batches = 0
+        input_iter = iter(ds)
+        for input_batch in input_iter:
+            text = [el.decode() for el in input_batch["text"].numpy()]
+            start_ix = per_feed_logical_batch_size * num_batches
+            end_ix = start_ix + per_feed_logical_batch_size
+            # Logical part of the batch.
+            self.assertSequenceEqual(
+                text[:per_feed_logical_batch_size],
+                text_examples[start_ix:end_ix],
+            )
+            index = input_batch["index"].numpy()
+            self.assertNestedEqual(
+                index[:per_feed_logical_batch_size],
+                np.arange(start_ix, end_ix, dtype=np.int32),
+            )
+            is_valid = input_batch["is_valid"].numpy()
+            self.assertNestedEqual(
+                is_valid[:per_feed_logical_batch_size],
+                np.array([True] * per_feed_logical_batch_size),
+            )
+            # Padded part of the batch.
+            per_feed_padded_batch_size = per_feed_physcal_batch_size - per_feed_logical_batch_size
+            if per_feed_padded_batch_size > 0:
+                self.assertSequenceEqual(
+                    text[per_feed_logical_batch_size:],
+                    [""] * per_feed_padded_batch_size,
+                )
+                self.assertNestedEqual(
+                    index[per_feed_logical_batch_size:],
+                    np.array([0] * per_feed_padded_batch_size, dtype=np.int32),
+                )
+                self.assertNestedEqual(
+                    is_valid[per_feed_logical_batch_size:],
+                    np.array([False] * per_feed_padded_batch_size),
+                )
+            # Physical to logical dispatch tensor.
+            dispatch = input_batch[utils.PHYSICAL_TO_LOGICAL_DISPATCH_KEY].numpy()
+            self.assertEqual(dispatch.shape, (per_feed_physcal_batch_size, logical_batch_size))
+            expected_dispatch = np.zeros(
+                (per_feed_physcal_batch_size, logical_batch_size), dtype=np.bool
+            )
+            logical_dispatch_start = logical_feed_index * per_feed_logical_batch_size
+            expected_dispatch[
+                np.arange(per_feed_logical_batch_size),
+                np.arange(
+                    logical_dispatch_start, logical_dispatch_start + per_feed_logical_batch_size
+                ),
+            ] = True
+            self.assertNestedEqual(dispatch, expected_dispatch)
+            num_batches += 1
+            if num_batches == 1:
+                self._check_iterator_saveable(input_iter)
+        self.assertEqual(num_batches, len(text_examples) // per_feed_logical_batch_size)
+
+    @parameterized.product(
+        num_physical_feeds=(2, 4),
+        physical_batch_size=(4, 8, 16),
+    )
+    def test_pad_logical_to_physical_for_physical_feed(
+        self,
+        num_physical_feeds: int,
+        physical_batch_size: int,
+    ):
+        # Test that non-logical feed returns appropriately padded data.
+        text_examples = ["a", "b", "c", "d"]
+        per_feed_physcal_batch_size = physical_batch_size // num_physical_feeds
+        logical_feed_logical_batch_size = 2
+        with mock.patch("jax.process_count", return_value=num_physical_feeds):
+            ds = _pad_logical_to_physical(
+                _text_ds(text_examples),
+                global_batch_size=physical_batch_size,
+                global_logical_batch_size=logical_feed_logical_batch_size,
+                num_logical_feeds=1,
+                logical_feed_index=None,
+                pad_example_fn=default_pad_example_fn,
+            ).batch(per_feed_physcal_batch_size)
+        input_iter = iter(ds)
+        num_batches = 0
+        for input_batch in input_iter:
+            self.assertSequenceEqual(
+                [el.decode() for el in input_batch["text"].numpy()],
+                [""] * per_feed_physcal_batch_size,
+            )
+            self.assertNestedEqual(
+                input_batch["index"].numpy(),
+                np.array([0] * per_feed_physcal_batch_size, dtype=np.int32),
+            )
+            self.assertNestedEqual(
+                input_batch["is_valid"].numpy(),
+                np.array([False] * per_feed_physcal_batch_size),
+            )
+            self.assertNestedEqual(
+                input_batch[utils.PHYSICAL_TO_LOGICAL_DISPATCH_KEY],
+                np.zeros(
+                    (per_feed_physcal_batch_size, logical_feed_logical_batch_size), dtype=np.bool
+                ),
+            )
+            num_batches += 1
+            if num_batches == 1:
+                self._check_iterator_saveable(input_iter)
+        self.assertEqual(num_batches, len(text_examples) // logical_feed_logical_batch_size)
+
+    def _check_iterator_saveable(self, iterator: Iterable):
+        # Check that we can save the data iterator.
+        with tempfile.TemporaryDirectory() as td:
+            save_dir = os.path.join(td, "ckpt")
+            step = 100
+            ckptr = (
+                Checkpointer.default_config()
+                .set(name="ckptr", dir=save_dir)
+                .instantiate(parent=None)
+            )
+            with Mesh(jax.devices(), "data"):
+                ckptr.save(step=step, state={"iterator": iterator}, evaler_summaries=None)
+                ckptr.wait_until_finished()
+            self.assertTrue(os.path.exists(os.path.join(save_dir, f"step_{step:08d}", "index")))
+
+
+class BatchTest(test_utils.TestCase):
     @parameterized.parameters(False, True)
-    def test_padding(self, is_training):
+    def test_eval_pad(self, is_training):
         ds = _text_ds(["a", "b", "c"])
         ds = batch(
             global_batch_size=2, is_training=is_training, pad_example_fn=default_pad_example_fn
@@ -385,6 +579,80 @@ class BatchTest(parameterized.TestCase):
             batch_index += 1
             if batch_index >= 10:
                 break
+
+    @parameterized.parameters(False, True)
+    def test_batch_for_logical_feed_index(self, is_training):
+        text_examples = ["a", "b", "c"]
+        ds = _text_ds(text_examples)
+        ds = batch(
+            global_batch_size=2,
+            is_training=is_training,
+            pad_example_fn=default_pad_example_fn,
+            global_logical_batch_size=1,
+            logical_feed_indices=[0],
+        )(ds)
+        batch_index = 0
+        for input_batch in ds:
+            text = input_batch["text"].numpy().tolist()
+            indices = input_batch["index"].numpy().tolist()
+            is_valid = input_batch["is_valid"].numpy().tolist()
+            dispatch = input_batch[utils.PHYSICAL_TO_LOGICAL_DISPATCH_KEY].numpy().tolist()
+            if is_training or batch_index < len(text_examples):
+                expected_index = batch_index % len(text_examples)
+                self.assertSequenceEqual(
+                    text,
+                    [text_examples[expected_index].encode(), b""],
+                )
+                self.assertSequenceEqual(indices, [expected_index, 0])
+                self.assertSequenceEqual(is_valid, [True, False])
+                self.assertNestedEqual(dispatch, [[1], [0]])
+            else:
+                self.assertSequenceEqual(
+                    text,
+                    [b"", b""],
+                )
+                self.assertSequenceEqual(indices, [0, 0])
+                self.assertSequenceEqual(is_valid, [False, False])
+                self.assertNestedEqual(dispatch, [[0], [0]])
+            batch_index += 1
+            if batch_index >= 10:
+                break
+        if is_training:
+            self.assertEqual(batch_index, 10)
+        else:
+            self.assertEqual(batch_index, len(text_examples))
+
+    @parameterized.parameters(False, True)
+    def test_batch_for_physical_feed_index(self, is_training):
+        text_examples = ["a", "b", "c"]
+        ds = _text_ds(text_examples)
+        with mock.patch("jax.process_index", return_value=1):
+            ds = batch(
+                global_batch_size=2,
+                is_training=is_training,
+                pad_example_fn=default_pad_example_fn,
+                global_logical_batch_size=1,
+                # jax.process_index will not be one of the logical feed indices.
+                logical_feed_indices=[0],
+            )(ds)
+        batch_index = 0
+        for input_batch in ds:
+            self.assertSequenceEqual(
+                input_batch["text"].numpy().tolist(),
+                [b"", b""],
+            )
+            self.assertSequenceEqual(input_batch["index"].numpy().tolist(), [0, 0])
+            self.assertSequenceEqual(input_batch["is_valid"].numpy().tolist(), [False, False])
+            self.assertNestedEqual(
+                input_batch[utils.PHYSICAL_TO_LOGICAL_DISPATCH_KEY].numpy().tolist(), [[0], [0]]
+            )
+            batch_index += 1
+            if batch_index >= 10:
+                break
+        if is_training:
+            self.assertEqual(batch_index, 10)
+        else:
+            self.assertEqual(batch_index, len(text_examples))
 
     @parameterized.product(
         is_training=(False, True),
@@ -781,7 +1049,7 @@ class AddStaticFieldsTest(parameterized.TestCase):
         self.assertSequenceEqual(expected, list(actual.as_numpy_iterator()))
 
 
-class PadTest(parameterized.TestCase, tf.test.TestCase):
+class PadToBatchTest(parameterized.TestCase, tf.test.TestCase):
     @parameterized.parameters(
         dict(
             examples=[
