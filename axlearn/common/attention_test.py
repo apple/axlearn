@@ -1592,6 +1592,31 @@ class MultiheadAttentionTest(TestCase):
         )
         self.assertEqual(layer_outputs.data.dtype, dtype)
 
+    def test_gqa_kv_heads(self):
+        """Checks that only the heads dim is repeated."""
+        batch = source_length = num_heads = 8
+        per_head_dim = 2
+        num_kv_heads = 4
+        dtype = jnp.float32
+        key_or_value = jnp.zeros((batch, source_length, num_kv_heads, per_head_dim), dtype=dtype)
+        model_dim = per_head_dim * num_heads
+        cfg = attention.GroupedQueryAttention.default_config().set(
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            input_linear=attention.FusedGroupedQKVLinear.default_config().set(
+                num_kv_heads=num_kv_heads
+            ),
+            dtype=dtype,
+        )
+        test_layer = cfg.set(name="test").instantiate(parent=None)
+        # pylint: disable-next=protected-access
+        repeated_key_or_value = test_layer._repeat_kv_heads(key_or_value)
+        self.assertEqual(
+            repeated_key_or_value.shape, (batch, source_length, num_heads, per_head_dim)
+        )
+
     @parameterized.product(
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
         per_dim_scale=(None, PerDimScale.default_config()),
@@ -1599,6 +1624,7 @@ class MultiheadAttentionTest(TestCase):
         input_linear=(
             None,  # Use the default linear.
             attention.QKVLinear.default_config(),
+            attention.FusedQKVLinear.default_config(),
             attention.GroupedQKVLinear.default_config().set(num_kv_heads=4),
             attention.FusedGroupedQKVLinear.default_config().set(num_kv_heads=4),
         ),

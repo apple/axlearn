@@ -1621,6 +1621,14 @@ class GroupedQueryAttention(MultiheadAttention):
     def num_kv_heads(self):
         return self.i_proj.num_kv_heads
 
+    def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
+        """Repeats key or value heads dim to match the query."""
+        num_head_repeats = self.config.num_heads // self.num_kv_heads
+        if num_head_repeats == 1:
+            return key_or_value
+        # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
+        return jnp.repeat(key_or_value, num_head_repeats, axis=2)
+
     def _compute_attention(
         self,
         *,
@@ -1630,13 +1638,12 @@ class GroupedQueryAttention(MultiheadAttention):
         attention_logit_biases: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
-        cfg = self.config
-        num_repeats = cfg.num_heads // self.num_kv_heads
-        # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
+        k_proj = self._repeat_kv_heads(k_proj)
+        v_proj = self._repeat_kv_heads(v_proj)
         return super()._compute_attention(
             q_proj=q_proj,
-            k_proj=jnp.repeat(k_proj, num_repeats, axis=2),
-            v_proj=jnp.repeat(v_proj, num_repeats, axis=2),
+            k_proj=k_proj,
+            v_proj=v_proj,
             attention_logit_biases=attention_logit_biases,
         )
 

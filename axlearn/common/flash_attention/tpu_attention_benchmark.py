@@ -73,7 +73,7 @@ _BENCHMARK_CONFIGS = {
 
 
 def _time_call(fn: Callable, *, num_iters: int = 5) -> float:
-    """Times average execution time for fn call after warmup over num_iters."""
+    """Times average execution time for fn call over num_iters after warmup."""
     fn().block_until_ready()
     tic = time.perf_counter()
     for _ in range(num_iters):

@@ -1,8 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests FlashAttention layers."""
-from contextlib import nullcontext
-
 import jax
 import jax.numpy as jnp
 import pytest
@@ -11,13 +9,17 @@ from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
 from axlearn.common.attention import (
-    MultiheadAttention,
+    GroupedQueryAttention,
     apply_attention_logit_biases,
     make_causal_mask,
 )
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
-from axlearn.common.flash_attention.layer import FlashAttention
+from axlearn.common.flash_attention.layer import (
+    FlashAttention,
+    default_mha_dim_to_partition_spec,
+    default_output_dim_to_partition_spec,
+)
 from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
@@ -98,7 +100,7 @@ class TestFlashAttention(TestCase):
             num_heads=4,
             per_head_dim=64,
             mesh=(1, 1, 8, 1),
-            mesh_axis_names=("replica", "data", "fsdp", "model"),
+            mesh_axis_names=("data", "expert", "fsdp", "model"),
         ),
         dict(
             batch=8,
@@ -106,7 +108,7 @@ class TestFlashAttention(TestCase):
             num_heads=4,
             per_head_dim=64,
             mesh=(1, 1, 4, 1),
-            mesh_axis_names=("replica", "data", "fsdp", "model"),
+            mesh_axis_names=("data", "expert", "fsdp", "model"),
         ),
         dict(
             batch=8,
@@ -114,7 +116,7 @@ class TestFlashAttention(TestCase):
             num_heads=4,
             per_head_dim=64,
             mesh=(1, 1, 8),
-            mesh_axis_names=("replica", "data", "fsdp"),
+            mesh_axis_names=("data", "expert", "fsdp"),
         ),
         dict(
             batch=8,
@@ -122,7 +124,7 @@ class TestFlashAttention(TestCase):
             num_heads=4,
             per_head_dim=64,
             mesh=(1, 1, 4),
-            mesh_axis_names=("replica", "data", "fsdp"),
+            mesh_axis_names=("data", "expert", "fsdp"),
         ),
         dict(
             batch=8,
@@ -130,7 +132,7 @@ class TestFlashAttention(TestCase):
             num_heads=4,
             per_head_dim=64,
             mesh=(1, 2, 4, 1),
-            mesh_axis_names=("replica", "data", "fsdp", "model"),
+            mesh_axis_names=("data", "expert", "fsdp", "model"),
         ),
         dict(
             batch=8,
@@ -138,7 +140,15 @@ class TestFlashAttention(TestCase):
             num_heads=4,
             per_head_dim=64,
             mesh=(1, 2, 2, 1),
-            mesh_axis_names=("replica", "data", "fsdp", "model"),
+            mesh_axis_names=("data", "expert", "fsdp", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(1, 2, 1, 2, 1),
+            mesh_axis_names=("data", "seq", "expert", "fsdp", "model"),
         ),
         dict(
             batch=8,
@@ -146,7 +156,15 @@ class TestFlashAttention(TestCase):
             num_heads=4,
             per_head_dim=64,
             mesh=(1, 2, 2, 2),
-            mesh_axis_names=("replica", "data", "fsdp", "model"),
+            mesh_axis_names=("data", "expert", "fsdp", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(1, 2, 1, 2, 2),
+            mesh_axis_names=("data", "seq", "expert", "fsdp", "model"),
         ),
     ]
 
@@ -164,8 +182,17 @@ class TestFlashAttention(TestCase):
                 num_heads=num_heads,
                 dtype=jnp.bfloat16,
             )
-            ref_cfg = MultiheadAttention.default_config().set(**kwargs)
-            test_cfg = FlashAttention.default_config().set(**kwargs)
+            ref_cfg = GroupedQueryAttention.default_config().set(**kwargs)
+            test_cfg = (
+                FlashAttention.default_config()
+                .set(**kwargs)
+                .set(
+                    mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(mesh_axis_names),
+                    output_dim_to_partition_spec=default_output_dim_to_partition_spec(
+                        mesh_axis_names
+                    ),
+                )
+            )
             test_cfg.set(causal=causal)
             set_bias_recursively(ref_cfg, False)
             set_bias_recursively(test_cfg, False)
@@ -195,19 +222,15 @@ class TestFlashAttention(TestCase):
                 inputs=ref_inputs,
                 is_training=True,
             )
-            tensor_parallel_axis_name = mesh_axis_names[-1]
-            with self.assertRaises(
-                NotImplementedError
-            ) if tensor_parallel_axis_name == "fsdp" else nullcontext():
-                test_out, _ = F(
-                    test_layer,
-                    prng_key=jax.random.PRNGKey(5),
-                    state=params,
-                    inputs=inputs,
-                    is_training=True,
-                )
-                # TODO(markblee): Test probs.
-                self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
+            test_out, _ = F(
+                test_layer,
+                prng_key=jax.random.PRNGKey(5),
+                state=params,
+                inputs=inputs,
+                is_training=True,
+            )
+            # TODO(markblee): Test probs.
+            self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
 
     @parameterized.product(
         _TEST_CONFIGS,
@@ -224,7 +247,7 @@ class TestFlashAttention(TestCase):
 
                 @config_class
                 class Config(BaseLayer.Config):
-                    layer: MultiheadAttention.Config = MultiheadAttention.default_config()
+                    layer: GroupedQueryAttention.Config = GroupedQueryAttention.default_config()
 
                 def __init__(self, cfg: Config, *, parent: Module):
                     super().__init__(cfg, parent=parent)
@@ -252,18 +275,23 @@ class TestFlashAttention(TestCase):
                 dtype=jnp.bfloat16,
             )
             ref_cfg = DummyModel.default_config().set(
-                layer=MultiheadAttention.default_config().set(**kwargs),
+                layer=GroupedQueryAttention.default_config().set(**kwargs),
             )
             test_cfg = DummyModel.default_config().set(
                 layer=FlashAttention.default_config()
                 .set(**kwargs, tpu_block_size=128)
-                .set(causal=causal),
+                .set(causal=causal)
+                .set(
+                    mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(mesh_axis_names),
+                    output_dim_to_partition_spec=default_output_dim_to_partition_spec(
+                        mesh_axis_names
+                    ),
+                )
             )
             set_bias_recursively(ref_cfg, False)
             set_bias_recursively(test_cfg, False)
             ref_layer = ref_cfg.set(name="ref").instantiate(parent=None)
             test_layer = test_cfg.set(name="test").instantiate(parent=None)
-
             # Use the same params for both. Only attention implementation differs.
             params = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
             inputs = _fake_inputs(
@@ -290,12 +318,8 @@ class TestFlashAttention(TestCase):
                 return loss
 
             ref_value, ref_grads = jax.value_and_grad(loss)(params, ref_inputs, ref_layer)
-            tensor_parallel_axis_name = mesh_axis_names[-1]
-            with self.assertRaises(
-                NotImplementedError
-            ) if tensor_parallel_axis_name == "fsdp" else nullcontext():
-                test_value, test_grads = jax.value_and_grad(loss)(params, inputs, test_layer)
-                # Can be 1e-5 on x86_64/GPU/TPU, needed to be slightly higher on ARM.
-                atol = 2e-5
-                self.assertNestedAllClose(ref_value, test_value, atol=atol)
-                self.assertNestedAllClose(ref_grads, test_grads, atol=atol)
+            test_value, test_grads = jax.value_and_grad(loss)(params, inputs, test_layer)
+            # Can be 1e-5 on x86_64/GPU/TPU, needed to be slightly higher on ARM.
+            atol = 2e-5
+            self.assertNestedAllClose(ref_value, test_value, atol=atol)
+            self.assertNestedAllClose(ref_grads, test_grads, atol=atol)

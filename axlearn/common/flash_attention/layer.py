@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """FlashAttention layers."""
-from typing import Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -9,7 +9,7 @@ from jax.experimental.maps import thread_resources
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 
-from axlearn.common.attention import MultiheadAttention
+from axlearn.common.attention import GroupedQueryAttention
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import ConfigBase, config_class
 from axlearn.common.flash_attention.utils import (
@@ -17,7 +17,7 @@ from axlearn.common.flash_attention.utils import (
     flash_attention_implementation,
 )
 from axlearn.common.module import Module
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, with_sharding_constraint
 
 
 def _check_bias_recursively(cfg: ConfigBase):
@@ -34,17 +34,20 @@ def _check_bias_recursively(cfg: ConfigBase):
     return cfg
 
 
-class FlashAttention(MultiheadAttention):
+class FlashAttention(GroupedQueryAttention):
     """FlashAttention layer.
 
-    Is a drop-in replacement of MultiheadAttention, with some limitations:
-        * Does not support dropout.
-        * Does not support gradients wrt. attention logit biases.
-        * Supports a subset of config fields and outputs.
+    Is a drop-in replacement of GroupedQueryAttention
+        (which itself supports MultiheadAttention as a special case), with some limitations:
+            * Does not support dropout.
+            * Does not support gradients wrt. attention logit biases.
+            * Supports a subset of config fields and outputs.
     """
 
     @config_class
-    class Config(MultiheadAttention.Config):
+    class Config(GroupedQueryAttention.Config):
+        """Configures FlashAttention."""
+
         # If True, applies additional optimizations in the FlashAttention kernels.
         # Causal attention can still be used when False, by passing logit biases.
         causal: bool = False
@@ -52,6 +55,17 @@ class FlashAttention(MultiheadAttention):
         # Should be less than the target sequence length and a multiple of 128 on TPU.
         # TODO(tom_gunter): Expose GPU block-size (currently always 128) & unify.
         tpu_block_size: int = 512
+
+        # SPMD partition specs:
+        # B - batch dim,
+        # T - target sequence length,
+        # S - source sequence length,
+        # N - number of attention (query) heads,
+        # H - per-head dimension.
+        # How to partition flash attention computation, keyed by dims.
+        mha_dim_to_partition_spec: Dict[str, Optional[PartitionSpec]] = {}
+        # How to partition output values, keyed by dims.
+        output_dim_to_partition_spec: Dict[str, Optional[PartitionSpec]] = {}
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -71,6 +85,15 @@ class FlashAttention(MultiheadAttention):
         cfg.dropout.rate = None
         cfg.per_dim_scale = None
         cfg.atten_logit_cap = None
+        cfg.mha_dim_to_partition_spec = {
+            "btnh": PartitionSpec(None),
+            "bsnh": PartitionSpec(None),
+            "bnts": PartitionSpec(None),
+        }
+        cfg.output_dim_to_partition_spec = {
+            "btnh": PartitionSpec(None),
+            "bnts": PartitionSpec(None),
+        }
         return cfg
 
     def _compute_attention(
@@ -82,6 +105,10 @@ class FlashAttention(MultiheadAttention):
         attention_logit_biases: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         cfg = self.config
+
+        # Repeats key/value heads dim if neccessary.
+        k_proj = self._repeat_kv_heads(k_proj)
+        v_proj = self._repeat_kv_heads(v_proj)
 
         if jax.default_backend() == "tpu":
             assert (
@@ -105,41 +132,97 @@ class FlashAttention(MultiheadAttention):
             block_size=cfg.tpu_block_size,
         )
 
-        mesh = thread_resources.env.physical_mesh
-        # We need to manually partition jax-triton calls.
+        # We need to manually partition pallas | jax-triton calls.
         # Note: shard_map doesn't support kwargs.
-        # We assume that the batch is partitioned over all but the last mesh axis name.
-        batch_axis_names = mesh.axis_names[:-1]
-        # We also assume that the last axis is for tensor-parallelism.
-        tensor_parallel_axis_name = mesh.axis_names[-1]
-        # TODO(tom_gunter,markblee): Better validation of axis names.
-        if tensor_parallel_axis_name != "model":
-            raise NotImplementedError("Running without tensor-parallel axis is not supported.")
         partitioned_mha = shard_map(
             jit_attn,
-            mesh=mesh,
+            mesh=thread_resources.env.physical_mesh,
             in_specs=(
                 # QKV [batch_size, seq_len, num_heads, per_head_dim].
-                PartitionSpec(batch_axis_names, None, tensor_parallel_axis_name, None),
-                PartitionSpec(batch_axis_names, None, tensor_parallel_axis_name, None),
-                PartitionSpec(batch_axis_names, None, tensor_parallel_axis_name, None),
+                cfg.mha_dim_to_partition_spec["btnh"],
+                cfg.mha_dim_to_partition_spec["bsnh"],
+                cfg.mha_dim_to_partition_spec["bsnh"],
                 # Bias [batch_size, num_heads, seq_len, seq_len].
-                PartitionSpec(batch_axis_names, tensor_parallel_axis_name, None, None),
+                cfg.mha_dim_to_partition_spec["bnts"],
             ),
             # O [batch_size, seq_len, num_heads, per_head_dim].
-            out_specs=PartitionSpec(batch_axis_names, None, tensor_parallel_axis_name, None),
+            out_specs=cfg.mha_dim_to_partition_spec["btnh"],
             # Disables a checking pass which jax can't apply when there's a triton | pallas
             # call in the body.
             check_rep=False,
         )
 
-        outputs = partitioned_mha(
-            q_proj,
-            k_proj,
-            v_proj,
-            attention_logit_biases,
+        # Constrain input to conform to partitioned MHA expectations.
+        q_proj = with_sharding_constraint(q_proj, cfg.mha_dim_to_partition_spec["btnh"])
+        k_proj = with_sharding_constraint(k_proj, cfg.mha_dim_to_partition_spec["bsnh"])
+        v_proj = with_sharding_constraint(v_proj, cfg.mha_dim_to_partition_spec["bsnh"])
+        if attention_logit_biases is not None:
+            attention_logit_biases = with_sharding_constraint(
+                attention_logit_biases, cfg.mha_dim_to_partition_spec["bnts"]
+            )
+
+        outputs = with_sharding_constraint(
+            partitioned_mha(
+                q_proj,
+                k_proj,
+                v_proj,
+                attention_logit_biases,
+            ),
+            cfg.output_dim_to_partition_spec["btnh"],
         )
+
+        # TODO(markblee): Add output probs and benchmark.
         batch, target_len, num_heads, _ = q_proj.shape
         _, source_len, _, _ = k_proj.shape
-        # TODO(markblee): Add output probs and benchmark.
-        return outputs, jnp.empty((batch, num_heads, target_len, source_len))
+        output_probs = with_sharding_constraint(
+            jnp.empty((batch, num_heads, target_len, source_len)),
+            cfg.output_dim_to_partition_spec["bnts"],
+        )
+        return outputs, output_probs
+
+
+def default_mha_dim_to_partition_spec(
+    mesh_axis_names: Sequence[str],
+) -> Dict[str, Optional[PartitionSpec]]:
+    """Builds a default FlashAttention mapping from tensor dims to partition specs for the MHA impl.
+
+    Maps attention heads over the default tensor-parallel axis name if present, and
+    shards the batch over the remainder of the axes.
+
+    Args:
+        mesh_axis_names: Mesh axis names.
+
+    Returns:
+        A dictionary keyed by MHA tensor dims with partition spec values.
+    """
+    batch_axis_names = tuple(el for el in mesh_axis_names if el != "model")
+    tp_axis_name = "model" if "model" in mesh_axis_names else None
+    return {
+        "btnh": PartitionSpec(batch_axis_names, None, tp_axis_name, None),
+        "bsnh": PartitionSpec(batch_axis_names, None, tp_axis_name, None),
+        "bnts": PartitionSpec(batch_axis_names, tp_axis_name, None, None),
+    }
+
+
+def default_output_dim_to_partition_spec(
+    mesh_axis_names: Sequence[str],
+) -> Dict[str, Optional[PartitionSpec]]:
+    """Builds a default mapping from tensor dims to partition specs for the FlashAttention outputs.
+
+    Maps attention heads over the default tensor-parallel axis name if present,
+    shards the target sequence length over the default sequence-parallel axis name if present,
+    and shards the batch over the remainder of the axes.
+
+    Args:
+        mesh_axis_names: Mesh axis names.
+
+    Returns:
+        A dictionary keyed by FlashAttention output tensor dims with partition spec values.
+    """
+    batch_axis_names = tuple(el for el in mesh_axis_names if el not in ["seq", "model"])
+    tp_axis_name = "model" if "model" in mesh_axis_names else None
+    sp_axis_name = "seq" if "seq" in mesh_axis_names else None
+    return {
+        "btnh": PartitionSpec(batch_axis_names, sp_axis_name, tp_axis_name, None),
+        "bnts": PartitionSpec(batch_axis_names, tp_axis_name, sp_axis_name, None),
+    }
