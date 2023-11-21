@@ -251,7 +251,7 @@ def cosine_with_linear_warmup(
         begin_value: The begin value of the linear warm-up.
         alpha: The minimum value of the multiplier used to adjust the cosine learning rate.
         decay_begin_step: The step to begin cosine decay. The learning rate is kept constant
-            after warmup and before decaying.
+            in [warmup_steps, decay_begin_step). Ignored if decay_begin_step <= warmup_steps.
 
     Returns:
         A composite schedule.
