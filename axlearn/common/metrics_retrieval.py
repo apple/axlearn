@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 import jax
 import jax.numpy as jnp
 
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, cast_floats
 
 
 def top_k_accuracy(
@@ -26,7 +26,7 @@ def top_k_accuracy(
     """Compute Top@K accuracy.
 
     Args:
-        sim: The similarity logits between each source and target. Shape: [M, N]. dtype: float32.
+        sim: The similarity logits between each source and target. Shape: [M, N]. dtype: float.
         gt_targets: The gt target for the source embeddings.
             Shape: [M, max_num_gt_target_per_instance]. dtype: int32.
             The max_num_gt_target_per_instance is the maximum number of groundtruth
@@ -46,13 +46,13 @@ def top_k_accuracy(
                     This means the first three text is aligned to the first image.
                     The last three text is aligned to the second image.
 
-        top_ks: A list of integer represent the number of top ranked targets.
+        top_ks: Compute accuracy @ k for each of the values of k provided in this list.
         similarity_bias: A Tensor with representing the bias to the similarity.
             If shape == [M, N],  similarity_bias[i,j] = NEG.INF means the j-th target is masked for
                 i-th source during the top_k selection.
             If Shape == [N], similarity_bias[j] = NEG.INF means the j-th target is masked for
                 any source during the top_k selection.
-        relevance_labels: Optional 0/1 tensor with the same shape as scores.
+        relevance_labels: Optional 0/1 tensor with the same shape as sim.
             relevance_labels[i, j] = 1 iff the j-th item is relevant for query i. Used
             instead of `gt_targets` if provided.
         return_counts: A boolean,
@@ -68,6 +68,7 @@ def top_k_accuracy(
     Raises:
         ValueError: if neither `gt_targets` nor `relevance_labels` were provided.
     """
+    sim = cast_floats(sim, jnp.float32)
     # The similarity between each source and target. Shape: [M, N].
     if similarity_bias is None:
         similarity_bias = jnp.zeros(sim.shape[1], dtype=sim.dtype)
@@ -115,7 +116,7 @@ def top_k_recall(
     sim: Tensor,
     gt_targets: Optional[Tensor],
     top_ks: List[int],
-    similarity_bias: Tensor = None,
+    similarity_bias: Optional[Tensor] = None,
     relevance_labels: Optional[Tensor] = None,
 ) -> Dict[str, Tensor]:
     """Compute Top@K recall.
@@ -123,12 +124,17 @@ def top_k_recall(
     Recall@K = {# of relevant docs in top k retrieved docs} / {min(K, # of total relevant docs)}
 
     Args:
-        sim: The similarity logits between each source and target. Shape: [M, N]. dtype: float32.
+        sim: The similarity logits between each source and target. Shape: [M, N]. dtype: float.
+            See `sim` in `top_k_accuracy` for more details.
         gt_targets: The gt target for the source embeddings.
             Shape: [M, max_num_gt_target_per_instance]. dtype: int32.
-        top_ks: A list of integer represent the number of top ranked targets.
-        similarity_bias: A Tensor with representing the bias to the similarity.
-        relevance_labels: Optional 0/1 tensor with the same shape as scores.
+            See `gt_targets` in `top_k_accuracy` for more details.
+        top_ks: Compute recall @ k for each of the values of k provided in this list.
+        similarity_bias: A Tensor representing the bias to the similarity.
+            See `similarity_bias` in `top_k_accuracy` for more details.
+        relevance_labels: Optional 0/1 tensor with the same shape as sim.
+            If None, infer from gt_targets.
+            See `relevance_labels` in `top_k_accuracy` for more details.
 
     Returns:
         top_ks_recall: A float32 Tensor indicating recall at k. Shape [len(top_k), M,].
@@ -142,10 +148,10 @@ def top_k_recall(
     total_num_relevant_items = None
     # Try to get relevance labels first to avoid double conversion in top_k_accuracy.
     if relevance_labels is None:
-        if gt_targets is not None and gt_targets.shape[1] == 1:
-            # Do not set relevance_labels here as this will enable express mode in
-            # `top_k_accuracy`.
-            total_num_relevant_items = (gt_targets > 0).astype(jnp.int32)
+        assert gt_targets is not None
+        if gt_targets.shape[1] == 1:
+            # Leave relevance_labels as None to enable express mode in `top_k_accuracy`.
+            total_num_relevant_items = jnp.where(gt_targets > 0, 1, 0)
             total_num_relevant_items = jnp.squeeze(total_num_relevant_items, 1)
         else:
             # Shape [M, N]. gt_targets[i, j] > 0 if target j is one of the groundtruth
@@ -154,6 +160,7 @@ def top_k_recall(
     if total_num_relevant_items is None:
         # Get total_num_relevant_items for non-express mode.
         # Shape: [num_queries].
+        assert relevance_labels is not None
         total_num_relevant_items = jnp.sum(relevance_labels, axis=-1)
     # Compute the number of correct items at k for each query.
     correct_at_k = top_k_accuracy(
@@ -452,7 +459,8 @@ def ndcg_at_k(
         _, indices_of_sorted_relevance_labels = jax.lax.top_k(relevance_labels, max_k)
         # Shape: [num_queries, max_k].
         sorted_relevance_labels = relevance_labels[
-            jnp.expand_dims(jnp.arange(num_queries), 1), indices_of_sorted_relevance_labels
+            jnp.expand_dims(jnp.arange(num_queries), 1),
+            indices_of_sorted_relevance_labels,
         ]
 
         # Shape: [num_queries, max_k].
@@ -466,7 +474,9 @@ def ndcg_at_k(
             y_true=relevance_labels, y_score=scores, discount_factor=discount_factors
         )
         idcg = auto_batch_tie_averaged_dcg(
-            y_true=relevance_labels, y_score=relevance_labels, discount_factor=discount_factors
+            y_true=relevance_labels,
+            y_score=relevance_labels,
+            discount_factor=discount_factors,
         )
 
     ndcg = jnp.where(idcg == 0, 0.0, dcg / idcg)

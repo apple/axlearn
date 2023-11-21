@@ -209,20 +209,24 @@ class CLIPRetrievalMetricCalculator(GlobalMetricCalculator):
 
 
 def _named_average_precision_at_k(
-    scores: Tensor, relevance_labels: Tensor, name: str, top_ks: List[int]
-):
+    scores: Tensor, *, relevance_labels: Tensor, name: str, top_ks: List[int]
+) -> Dict[str, str]:
     output = average_precision_at_k(scores=scores, relevance_labels=relevance_labels, top_ks=top_ks)
     return {metric_at_k_name(name, k): v for k, v in output.items()}
 
 
-def _named_top_k_accuracy(scores: Tensor, relevance_labels: Tensor, name: str, top_ks: List[int]):
+def _named_top_k_accuracy(
+    scores: Tensor, *, relevance_labels: Tensor, name: str, top_ks: List[int]
+) -> Dict[str, str]:
     output = top_k_accuracy(
         sim=scores, gt_targets=None, relevance_labels=relevance_labels, top_ks=top_ks
     )
     return {metric_at_k_name(name, k): v for k, v in zip(top_ks, output)}
 
 
-def _named_top_k_recall(scores: Tensor, relevance_labels: Tensor, name: str, top_ks: List[int]):
+def _named_top_k_recall(
+    scores: Tensor, *, relevance_labels: Tensor, name: str, top_ks: List[int]
+) -> Dict[str, str]:
     output = top_k_recall(
         sim=scores, gt_targets=None, relevance_labels=relevance_labels, top_ks=top_ks
     )
