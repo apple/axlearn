@@ -1,10 +1,15 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests autoregressive models."""
+from functools import partial
+
+import jax
 import jax.random
 import numpy as np
+import pytest
 from absl.testing import absltest
 from jax import numpy as jnp
+from jax.experimental.pjit import pjit
 from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
 
 from axlearn.common import causal_lm, utils
@@ -218,6 +223,70 @@ class ModelMetricsTest(TestCase):
             )
             self.assertAlmostEqual(loss, ref_outputs["loss"])
             self.assertTrue(jnp.allclose(aux["per_label_loss"], ref_outputs["per_token_loss"]))
+
+    @pytest.mark.skipif(
+        jax.device_count() != 4 or jax.process_count() != 1,
+        reason="Incorrect device & process count for mesh.",
+    )
+    def test_constrain_input_batch(self):
+        model = (
+            causal_lm.Model.default_config()
+            .set(
+                decoder=causal_lm.gpt_decoder_config(
+                    stack_cfg=StackedTransformerLayer.default_config(),
+                    num_layers=1,
+                    hidden_dim=10,
+                    num_heads=2,
+                    vocab_size=10,
+                    activation_function="nn.relu",
+                    max_position_embeddings=10,
+                    layer_norm_epsilon=0.1,
+                    dropout_rate=0.0,
+                ),
+                batch_axis_names=("data", "expert", "fsdp"),
+                seq_axis_names=("seq",),
+                name="metrics_test",
+            )
+            .instantiate(parent=None)
+        )
+        batch_size = 4
+        seq_len = 8
+        input_batch = {
+            "input_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "target_labels": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "token_type_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "prefix": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "target_num_bytes": jnp.ones((batch_size,), dtype=jnp.int32),
+            "extra_variable": jnp.ones((batch_size,), dtype=jnp.int32),
+        }
+
+        with jax.sharding.Mesh(
+            np.array(jax.devices()).reshape(2, 2)[:, :, None, None, None],
+            axis_names=("data", "seq", "expert", "fsdp", "model"),
+        ):
+            # Check that no values are dropped when applying the constraint.
+            constrained_input_batch = input_batch.copy()
+            # pylint: disable-next=protected-access
+            model._constrain_input_batch(constrained_input_batch)
+            self.assertNestedEqual(constrained_input_batch, input_batch)
+
+            @partial(pjit, in_shardings=None, out_shardings=None)
+            def fn(x):
+                # pylint: disable-next=protected-access
+                model._constrain_input_batch(x)
+                return x
+
+            # Get stable-hlo representation.
+            hlo_text = fn.lower(input_batch).compiler_ir(dialect="hlo").as_hlo_text()
+
+            # Five (out of six) tensors were sharded.
+            self.assertEqual(hlo_text.count('custom_call_target="Sharding"'), 5)
+            # For the [batch, seq_len] tensors.
+            self.assertEqual(hlo_text.count("sharding={devices=[2,2]<=[4]}"), 4)
+            # For the [batch,] tensor.
+            self.assertEqual(
+                hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 1
+            )
 
 
 if __name__ == "__main__":
