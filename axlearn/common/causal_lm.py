@@ -320,8 +320,9 @@ class Model(BaseModel):
                 assert v.ndim == 1
                 input_batch[k] = with_sharding_constraint(v, PartitionSpec(cfg.batch_axis_names))
             else:
+                # We warn as not-constraining may be an oversight.
                 logging.log_first_n(
-                    logging.INFO, "Not constraining input_batch[%s].", len(input_batch), k
+                    logging.WARNING, "Not constraining input_batch[%s].", len(input_batch), k
                 )
 
 
