@@ -26,10 +26,13 @@ Examples:
 
     # Simple launch for the wordcount example[1], which implicitly uses DataflowRunner.
     # Flags like project, region, and temp_location will be inferred from settings.
+    # Note that the python and apache version needs to match with local env setup.
+    PYTHON_VERSION=3.9
+    BEAM_VERSION=2.49.0
     axlearn gcp dataflow start \
         --name=$USER-dataflow \
         --bundler_spec=dockerfile=Dockerfile \
-        --bundler_spec=base_image=apache/beam_python3.8_sdk:2.38.0 \
+        --bundler_spec=base_image=apache/beam_python${PYTHON_VERSION}_sdk:${BEAM_VERSION} \
         --bundler_spec=target=dataflow \
         -- "'
         python3 -m apache_beam.examples.wordcount \
@@ -52,7 +55,7 @@ Examples:
             --name=$USER-dataflow \
             --dataflow_spec=runner=DirectRunner \
             --bundler_spec=dockerfile=Dockerfile \
-            --bundler_spec=base_image=apache/beam_python3.8_sdk:2.38.0 \
+            --bundler_spec=base_image=apache/beam_python3.10_sdk:2.49.0 \
             --bundler_spec=target=dataflow \
             -- "'
             rm -r /tmp/output_dir; \
