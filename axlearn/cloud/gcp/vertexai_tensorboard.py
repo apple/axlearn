@@ -11,6 +11,7 @@ try:
     from google.cloud.aiplatform import initializer
     from google.cloud.aiplatform.tensorboard import uploader, uploader_utils
     from google.cloud.aiplatform.utils import TensorboardClientWithOverride
+    from tensorboard.uploader import util
 
     _VERTEXAI_INSTALLED = True
 except (ImportError, ModuleNotFoundError):
@@ -73,6 +74,7 @@ def _start_vertexai_tensorboard(*, project_id: str, region: str, resource_name: 
         event_file_inactive_secs=None,
         verbosity=0,
         run_name_prefix=None,
+        logdir_poll_rate_limiter=util.RateLimiter(interval_secs=30),
     )
     tb_uploader.create_experiment()
     tb_uploader.start_uploading()

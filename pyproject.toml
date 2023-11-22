@@ -120,6 +120,7 @@ vertexai_tensorboard = [
     # [2] https://github.com/pypa/setuptools/issues/3772
     "setuptools==65.7.0",
     "google-cloud-aiplatform[tensorboard]",
+    "tensorboard",
 ]
 # Dataflow dependencies.
 dataflow = [
