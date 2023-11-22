@@ -112,6 +112,8 @@ mesh_shape[0]: 1
 mesh_shape[1]: 1
 mesh_shape[2]: 1
 mesh_shape[3]: 1
+model.batch_axis_names[0]: 'data'
+model.batch_axis_names[1]: 'fsdp'
 model.decoder.attention_mask.klass: 'axlearn.common.attention.CausalAttentionLogitBiasLayer'
 model.decoder.dim: 8
 model.decoder.dropout_rate: 0.0
