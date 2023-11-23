@@ -367,10 +367,10 @@ class ModelAuxLossTest(parameterized.TestCase):
                     self.assertEqual(aux["aux_loss"], num_layers * 1.0)
                 else:
                     self.assertEqual(aux["aux_loss"], 0.0)
-                self.assertEqual(ref["cross_entropy_loss"] + aux["aux_loss"], loss)
+                self.assertEqual(ref["cross_entropy"] + aux["aux_loss"], loss)
             else:
                 self.assertNotIn("aux_loss", aux)
-                self.assertEqual(ref["cross_entropy_loss"], loss)
+                self.assertEqual(ref["cross_entropy"], loss)
 
 
 if __name__ == "__main__":

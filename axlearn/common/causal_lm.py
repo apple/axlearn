@@ -300,7 +300,7 @@ class Model(BaseModel):
             bits_per_byte = per_token_loss.sum() / jnp.maximum(1, total_bytes) / jnp.log(2)
             self.add_summary("bits_per_byte", WeightedScalar(bits_per_byte, total_bytes))
         loss_collection = {
-            "cross_entropy_loss": loss,
+            "cross_entropy": loss,
             "per_token_loss": per_token_loss,
             "live_targets": live_targets,
             "num_targets": num_targets,
