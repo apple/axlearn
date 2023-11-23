@@ -59,7 +59,8 @@ class Model(BaseModel):
         # These will be used to constrain the sequence axis of relevant inputs.
         # If None, no batch sequence dim constraints are applied.
         seq_axis_names: Optional[Tuple[str]] = None
-        # The regex used to find the aux loss path in `module_outputs`. Must be fully matched.
+        # `aux_loss` can only be collected when `aux_loss_regex` is set and there exist paths in
+        # `module_outputs` that fully match the regex.
         aux_loss_regex: Optional[str] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
