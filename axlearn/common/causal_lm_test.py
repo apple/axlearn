@@ -355,7 +355,11 @@ class ModelAuxLossTest(parameterized.TestCase):
             prng_key=prng_key,
         )
         with set_current_context(ctx):
-            _, aux = model.forward(input_batch=input_batch, return_aux=True)
+            loss, aux = model.forward(input_batch=input_batch, return_aux=True)
+            # pylint: disable-next=protected-access
+            ref = model._metrics(
+                logits=aux["logits"], target_labels=target_labels, target_num_bytes=None
+            )
             # `aux_loss` is only collected when `aux_loss_regex` is set.
             if aux_loss_regex is not None:
                 self.assertIn("aux_loss", aux)
@@ -363,8 +367,10 @@ class ModelAuxLossTest(parameterized.TestCase):
                     self.assertEqual(aux["aux_loss"], num_layers * 1.0)
                 else:
                     self.assertEqual(aux["aux_loss"], 0.0)
+                self.assertEqual(ref["cross_entropy_loss"] + aux["aux_loss"], loss)
             else:
                 self.assertNotIn("aux_loss", aux)
+                self.assertEqual(ref["cross_entropy_loss"], loss)
 
 
 if __name__ == "__main__":
