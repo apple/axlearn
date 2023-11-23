@@ -125,7 +125,8 @@ class Model(BaseModel):
             loss = metrics["loss"]
             num_targets = metrics["num_targets"]
             aux_outputs["per_label_loss"] = metrics["per_token_loss"]
-            aux_outputs["aux_loss"] = metrics["aux_loss"]
+            if self.config.aux_loss_regex is not None:
+                aux_outputs["aux_loss"] = metrics["aux_loss"]
             self.add_summary(
                 "train_live_targets",
                 WeightedScalar(num_targets / target_labels.shape[0], target_labels.shape[0]),
@@ -287,15 +288,12 @@ class Model(BaseModel):
             mask=live_targets,
             z_loss_scale=self.config.z_loss_scale,
         )
-        aux_loss = self._aux_loss()  # `aux_loss` will be 0 if not computed in `module_outputs`.
-        loss = loss + aux_loss  # `aux_loss` should already be scaled during its computation.
         per_token_loss = loss_dict["pre_mask_loss"] * live_targets
 
         self.add_summary("accuracy", WeightedScalar(accuracy, num_targets))
         self.add_summary("loss", WeightedScalar(loss, num_targets))
         self.add_summary("z_loss", WeightedScalar(loss_dict["z_loss"], num_targets))
         self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
-        self.add_summary("aux_loss", WeightedScalar(aux_loss, num_targets))
         if target_num_bytes is not None:
             # N.B. we calculate bpb following Appendix D.2. of <https://arxiv.org/abs/2112.11446>,
             # (i.e. treat each token as an equal with the others in the batch).
@@ -303,13 +301,18 @@ class Model(BaseModel):
             total_bytes = target_num_bytes.sum()
             bits_per_byte = per_token_loss.sum() / jnp.maximum(1, total_bytes) / jnp.log(2)
             self.add_summary("bits_per_byte", WeightedScalar(bits_per_byte, total_bytes))
-        return dict(
+        loss_collection = dict(
             loss=loss,
-            aux_loss=aux_loss,
             per_token_loss=per_token_loss,
             live_targets=live_targets,
             num_targets=num_targets,
         )
+        if self.config.aux_loss_regex is not None:
+            aux_loss = self._aux_loss()  # `aux_loss` will be 0 if not computed in `module_outputs`.
+            loss = loss + aux_loss  # `aux_loss` should already be scaled during its computation.
+            self.add_summary("aux_loss", WeightedScalar(aux_loss, num_targets))
+            loss_collection["aux_loss"] = aux_loss
+        return loss_collection
 
     def _constrain_input_batch(self, input_batch: NestedTensor):
         """Applies sharding constraints in-place for relevant named tensors in the input batch."""
@@ -335,8 +338,6 @@ class Model(BaseModel):
 
     def _aux_loss(self) -> Tensor:
         regex = self.config.aux_loss_regex
-        if regex is None:
-            return 0
         # Collect aux_loss from all leaves.
         module_outputs = self.get_module_outputs()
         return sum(v.sum() for k, v in flatten_items(module_outputs) if re.fullmatch(regex, k))

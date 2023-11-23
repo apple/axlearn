@@ -356,11 +356,15 @@ class ModelAuxLossTest(parameterized.TestCase):
         )
         with set_current_context(ctx):
             _, aux = model.forward(input_batch=input_batch, return_aux=True)
-            self.assertIn("aux_loss", aux)
-            if aux_loss_regex == ".*/aux_loss" and use_aux_layer:
-                self.assertEqual(aux["aux_loss"], num_layers * 1.0)
+            # `aux_loss` is only collected when `aux_loss_regex` is set.
+            if aux_loss_regex is not None:
+                self.assertIn("aux_loss", aux)
+                if aux_loss_regex == ".*/aux_loss" and use_aux_layer:
+                    self.assertEqual(aux["aux_loss"], num_layers * 1.0)
+                else:
+                    self.assertEqual(aux["aux_loss"], 0.0)
             else:
-                self.assertEqual(aux["aux_loss"], 0.0)
+                self.assertNotIn("aux_loss", aux)
 
 
 if __name__ == "__main__":
