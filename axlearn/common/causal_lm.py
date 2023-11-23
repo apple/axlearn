@@ -5,7 +5,10 @@ import math
 import re
 from typing import Callable, Dict, Optional, Tuple, Union
 
+from absl import logging
 from jax import numpy as jnp
+from jax.experimental.maps import thread_resources
+from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import (
     LearnedPositionalEmbedding,
@@ -31,7 +34,7 @@ from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, NestedTensor, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
-from axlearn.common.utils import flatten_items
+from axlearn.common.utils import flatten_items, with_sharding_constraint
 
 
 def layer_norm_config(eps=1e-5):
@@ -43,10 +46,19 @@ class Model(BaseModel):
 
     @config_class
     class Config(BaseModel.Config):
+        """Configuration for a causal-lm."""
+
         # Decoder.
         decoder: Decoder.Config = Decoder.default_config()
         # An auxiliary z-loss scale. If >0 encourages the softmax normalizer to be well behaved.
         z_loss_scale: float = 0.0
+        # Batch mesh axis name(s).
+        # These will be used to constrain the batch (first) axis of relevant inputs.
+        batch_axis_names: Tuple[str] = ("data",)
+        # Sequence-parallel mesh axis name(s).
+        # These will be used to constrain the sequence axis of relevant inputs.
+        # If None, no batch sequence dim constraints are applied.
+        seq_axis_names: Optional[Tuple[str]] = None
         # The regex used to find the aux loss path in `module_outputs`. Must be fully matched.
         aux_loss_regex: Optional[str] = None
 
@@ -96,6 +108,7 @@ class Model(BaseModel):
                 hidden_states: a float Tensor of shape [batch_size, seq_len, hidden_dim].
                 per_label_loss: a float Tensor of shape [batch_size, seq_len].
         """
+        self._constrain_input_batch(input_batch)
         predictions = self.predict(input_batch)
         aux_outputs = {**predictions}
         # [batch source_length, vocab_size]
@@ -144,6 +157,7 @@ class Model(BaseModel):
         Returns:
             Beam search outputs.
         """
+        self._constrain_input_batch(input_batch)
         with child_context("beam_search_decode", module=self.decoder):
             prefix = input_batch["prefix"]
             return self.decoder.beam_search_decode(
@@ -176,6 +190,7 @@ class Model(BaseModel):
         Returns:
             Sample outputs.
         """
+        self._constrain_input_batch(input_batch)
         with child_context("sample_decode", module=self.decoder):
             prefix = input_batch["prefix"]
             return self.decoder.sample_decode(
@@ -199,6 +214,7 @@ class Model(BaseModel):
         Returns:
            A float Tensor of shape [batch_size, target_len, hidden_dim].
         """
+        self._constrain_input_batch(input_batch)
         predictions = self.predict(input_batch)
         return predictions["logits"]
 
@@ -220,6 +236,7 @@ class Model(BaseModel):
                 - "per_token_loss": a float Tensor of shape [batch_size, seq_len]
                 - "live_targets": a float Tensor of shape [batch_size, seq_len]
         """
+        self._constrain_input_batch(input_batch)
         predictions = self.predict(input_batch)
         results = self._metrics(
             predictions["logits"],
@@ -242,6 +259,7 @@ class Model(BaseModel):
                 logits: a float Tensor of shape [batch_size, seq_len, vocab_size]
                 hidden_states: a float Tensor of shape [batch_size, seq_len, hidden_dim]
         """
+        self._constrain_input_batch(input_batch)
         input_ids: Tensor = input_batch["input_ids"]
         token_type_ids: Tensor = input_batch.get("token_type_ids")
         # Decoder hidden states: [batch_size, target_len, hidden_dim].
@@ -269,9 +287,10 @@ class Model(BaseModel):
             mask=live_targets,
             z_loss_scale=self.config.z_loss_scale,
         )
-        per_token_loss = loss_dict["pre_mask_loss"] * live_targets
         aux_loss = self._aux_loss()  # `aux_loss` will be 0 if not computed in `module_outputs`.
         loss = loss + aux_loss  # `aux_loss` should already be scaled during its computation.
+        per_token_loss = loss_dict["pre_mask_loss"] * live_targets
+
         self.add_summary("accuracy", WeightedScalar(accuracy, num_targets))
         self.add_summary("loss", WeightedScalar(loss, num_targets))
         self.add_summary("z_loss", WeightedScalar(loss_dict["z_loss"], num_targets))
@@ -291,6 +310,28 @@ class Model(BaseModel):
             live_targets=live_targets,
             num_targets=num_targets,
         )
+
+    def _constrain_input_batch(self, input_batch: NestedTensor):
+        """Applies sharding constraints in-place for relevant named tensors in the input batch."""
+        mesh = thread_resources.env.physical_mesh  # type: ignore
+        if mesh.empty or mesh.size == 1:
+            return
+
+        cfg = self.config
+        for k, v in input_batch.items():
+            if k in ["input_ids", "target_labels", "token_type_ids", "prefix"]:
+                assert v.ndim == 2
+                input_batch[k] = with_sharding_constraint(
+                    v, PartitionSpec(cfg.batch_axis_names, cfg.seq_axis_namess)
+                )
+            elif k == "target_num_bytes":
+                assert v.ndim == 1
+                input_batch[k] = with_sharding_constraint(v, PartitionSpec(cfg.batch_axis_names))
+            else:
+                # We warn as not-constraining may be an oversight.
+                logging.log_first_n(
+                    logging.WARNING, "Not constraining input_batch[%s].", len(input_batch), k
+                )
 
     def _aux_loss(self) -> Tensor:
         regex = self.config.aux_loss_regex
