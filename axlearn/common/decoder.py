@@ -97,7 +97,9 @@ def _segment_ids_from_causal_input_ids(input_ids: Tensor, *, pad_token_id: int) 
     return jnp.arange(input_ids.shape[-1]) < non_pad_count[:, None]
 
 
-def _scores_from_logits(logits: Tensor, logits_modifier: Optional[LogitsToLogitsFn]) -> Tensor:
+def _scores_from_logits(
+    logits: Tensor, logits_modifier: Optional[LogitsToLogitsFn] = None
+) -> Tensor:
     """Produces decoding scores from logits and optional logit modifier."""
     if logits.dtype in (jnp.bfloat16, jnp.float16):
         # Cast for log softmax.
