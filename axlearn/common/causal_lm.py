@@ -314,7 +314,7 @@ class Model(BaseModel):
             if k in ["input_ids", "target_labels", "token_type_ids", "prefix"]:
                 assert v.ndim == 2
                 input_batch[k] = with_sharding_constraint(
-                    v, PartitionSpec(cfg.batch_axis_names, cfg.seq_axis_namess)
+                    v, PartitionSpec(cfg.batch_axis_names, cfg.seq_axis_names)
                 )
             elif k == "target_num_bytes":
                 assert v.ndim == 1
