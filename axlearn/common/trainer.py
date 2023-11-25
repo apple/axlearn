@@ -263,6 +263,10 @@ class SpmdTrainer(Module):
     def trainer_state_partition_specs(self):
         return self._trainer_state_partition_specs
 
+    def _train_step_input_partition_specs(self):
+        # By default, each input tensor is fully partitioned along the batch axis.
+        return utils.input_partition_spec()
+
     def model_params_for_eval(self):
         state = self.trainer_state
         if self.config.learner.ema.decay is not None:
@@ -728,7 +732,7 @@ class SpmdTrainer(Module):
             self._train_step,
             in_shardings=(
                 self._trainer_state_partition_specs,
-                utils.input_partition_spec(),
+                self._train_step_input_partition_specs(),
             ),
             out_shardings=(
                 self._trainer_state_partition_specs,
