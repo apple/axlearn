@@ -59,8 +59,12 @@ class Model(BaseModel):
         # These will be used to constrain the sequence axis of relevant inputs.
         # If None, no batch sequence dim constraints are applied.
         seq_axis_names: Optional[Tuple[str]] = None
-        # `aux_loss` can only be collected when `aux_loss_regex` is set and there exist paths in
-        # `module_outputs` that fully match the regex.
+        # If not None, collect Tensors from `module_outputs` whose paths fully match the regular
+        # expression and compute the sum as the auxiliary loss, which will be added to the overall
+        # model loss and reported in the summary as `aux_loss`.
+        #
+        # This can be used to support regularization losses such as the load balancing loss in MoE
+        # routing.
         aux_loss_regex: Optional[str] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
