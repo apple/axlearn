@@ -527,7 +527,7 @@ class Decoder(DecodingMixin, BaseLayer):
             input_segment_ids: An optional Tensor of same shape as `input_ids` with values in
                 [0, num_segments). Tokens are only allowed to attend to other tokens within the same
                 segment. input_segment_ids == 0 represents paddings. If None, inferred from
-                input_segment_ids != pad_token_id.
+                input_ids != pad_token_id.
             token_type_ids: An optional int Tensor of shape [batch_size, target_len].
                 Values should be in the range [0, type_vocab_size).
             cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
@@ -647,7 +647,6 @@ class Decoder(DecodingMixin, BaseLayer):
         )
         return updated_states, outputs
 
-    # TODO(bwzhang): check the T5 checkpoint to see whether this func is necessary.
     def compute_attention_logit_biases(
         self,
         input_ids: Tensor,

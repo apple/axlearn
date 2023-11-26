@@ -550,6 +550,7 @@ def read_per_param_settings(
     return all_param_settings
 
 
+# TODO(markblee): Update to take prng_key explicitly.
 def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     """Builds a dummy attention mask where non-padding tokens are followed by padding tokens.
 
@@ -572,9 +573,10 @@ def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     input_len = jax.random.randint(
         jax.random.PRNGKey(123), shape=(batch_size,), minval=0, maxval=max_seq_len
     )
-    return lower_diag[input_len]
+    return lower_diag[input_len].astype(jnp.int32)
 
 
+# TODO(markblee): Update to take prng_key explicitly.
 def dummy_segments_positions(
     batch: int, seq_len: int, *, num_segments: int
 ) -> Tuple[Tensor, Tensor]:
@@ -585,7 +587,7 @@ def dummy_segments_positions(
         seq_len: 4
         num_segments: 3
         output: (
-            [[0, 1, 1, 1], [1, 1, 2, 2]],  # segment_ids
+            [[1, 2, 2, 2], [1, 1, 2, 2]],  # segment_ids
             [[0, 0, 1, 2], [0, 1, 0, 1]],  # positions
         )
 

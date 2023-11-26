@@ -579,7 +579,11 @@ class T5ModelConverterTest(TestCase):
             source_vocab_size=self.hf_cfg.vocab_size,
             target_vocab_size=self.hf_cfg.vocab_size,
         )
-        hf_inputs = prepare_hf_t5_inputs(**t5_inputs)
+        hf_inputs = prepare_hf_t5_inputs(
+            source_ids=t5_inputs["source"]["input_ids"],
+            target_ids=t5_inputs["target"]["input_ids"],
+            target_labels=t5_inputs["target_labels"],
+        )
         expected, actual = jax.tree_util.tree_map(
             as_tensor,
             (
@@ -1174,6 +1178,8 @@ class T5XModelConverterTest(TestCase):
             allow_pickle=True,
         ).item()
 
+        print(testcase.keys())
+
         with jax.default_matmul_precision("float32"):
             stack_cfg = stack_cls.default_config()
             stack_cfg.layer.self_attention.attention.input_linear = proj_cls.default_config()
@@ -1187,7 +1193,17 @@ class T5XModelConverterTest(TestCase):
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
                 state=parameters_from_t5x_encoder_decoder(testcase["params"], test_model),
-                inputs=dict(input_batch=testcase["inputs"]),
+                inputs=dict(
+                    input_batch=dict(
+                        source=dict(
+                            input_ids=testcase["inputs"]["source_ids"],
+                        ),
+                        target=dict(
+                            input_ids=testcase["inputs"]["target_ids"],
+                        ),
+                        target_labels=testcase["inputs"]["target_labels"],
+                    ),
+                ),
                 method="predict",
             )
 

@@ -55,8 +55,10 @@ def random_inputs_for_t5(
 
     Returns:
         A dict containing:
-            source_ids: An int Tensor of shape [batch_size, source_length].
-            target_ids: An int Tensor of shape [batch_size, target_length].
+            source: A dict containing:
+                input_ids: An int Tensor of shape [batch_size, source_length].
+            target: A dict containing:
+                input_ids: An int Tensor of shape [batch_size, target_length].
             target_labels: An int Tensor of shape [batch_size, target_length].
     """
     source_ids = jax.random.randint(
@@ -93,8 +95,8 @@ def random_inputs_for_t5(
     # Set target_labels to -1 for padding.
     target_labels = target_labels * (1 - target_paddings) - target_paddings
     return dict(
-        source_ids=source_ids,
-        target_ids=target_ids,
+        source=dict(input_ids=source_ids),
+        target=dict(input_ids=target_ids),
         target_labels=target_labels,
     )
 
@@ -308,7 +310,11 @@ class T5EncoderDecoderModelTest(TestCase):
             source_vocab_size=vocab_size,
             target_vocab_size=vocab_size,
         )
-        ref_inputs = prepare_hf_t5_inputs(**test_inputs)
+        ref_inputs = prepare_hf_t5_inputs(
+            source_ids=test_inputs["source"]["input_ids"],
+            target_ids=test_inputs["target"]["input_ids"],
+            target_labels=test_inputs["target_labels"],
+        )
         (test_loss, test_aux), ref_outputs = self._compute_layer_outputs(
             test_layer=layer,
             ref_layer=ref,
@@ -323,7 +329,8 @@ class T5EncoderDecoderModelTest(TestCase):
         self.assertEqual(cfg.encoder.pad_token_id, 0)
         self.assertEqual(cfg.decoder.pad_token_id, 0)
         target_label_mask = jnp.logical_and(
-            0 < test_inputs["target_labels"], test_inputs["target_labels"] < vocab_size
+            0 < test_inputs["target_labels"],
+            test_inputs["target_labels"] < vocab_size,
         )
         self.assertNestedAllClose(
             test_aux["logits"] * target_label_mask[:, :, None],
