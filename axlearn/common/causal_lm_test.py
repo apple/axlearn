@@ -7,13 +7,17 @@ import jax
 import jax.random
 import numpy as np
 import pytest
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
 
 from axlearn.common import causal_lm, utils
-from axlearn.common.attention import StackedTransformerLayer
+from axlearn.common.attention import (
+    RepeatedTransformerLayer,
+    StackedTransformerLayer,
+    TransformerFeedForwardLayer,
+)
 from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import MetricAccumulator
 from axlearn.common.module import (
@@ -26,6 +30,7 @@ from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
+from axlearn.common.utils import Tensor
 
 
 class Gpt2TransformerTest(TestCase):
@@ -287,6 +292,85 @@ class ModelMetricsTest(TestCase):
             self.assertEqual(
                 hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 1
             )
+
+
+class DummyFeedForwardWithAuxLoss(TransformerFeedForwardLayer):
+    """A dummy FFN with aux loss."""
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        self.add_module_output("aux_loss", jnp.array(1.0))
+        return inputs
+
+
+class ModelAuxLossTest(parameterized.TestCase):
+    @parameterized.product(
+        aux_loss_regex=(None, ".*/aux_loss", ".*/apple"),
+        stack_cfg=(
+            RepeatedTransformerLayer.default_config(),
+            StackedTransformerLayer.default_config(),
+        ),
+        use_aux_layer=(False, True),
+    )
+    def test_aux_loss(self, aux_loss_regex, stack_cfg, use_aux_layer):
+        batch_size, seq_len, vocab_size = 3, 10, 10
+        hidden_dim = 8
+        num_layers = 6
+        decoder_cfg = causal_lm.gpt_decoder_config(
+            stack_cfg=stack_cfg,
+            num_layers=num_layers,
+            hidden_dim=hidden_dim,
+            num_heads=4,
+            vocab_size=vocab_size,
+            max_position_embeddings=seq_len,
+        )
+        if isinstance(decoder_cfg.transformer, RepeatedTransformerLayer.Config):
+            decoder_cfg.transformer.repeat.drop_output = None
+        if use_aux_layer:
+            decoder_cfg.transformer.layer.feed_forward = (
+                DummyFeedForwardWithAuxLoss.default_config().set(hidden_dim=4 * hidden_dim)
+            )
+        model_cfg = causal_lm.Model.default_config().set(
+            decoder=decoder_cfg, name="metrics_test", aux_loss_regex=aux_loss_regex
+        )
+        model = model_cfg.instantiate(parent=None)
+        prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
+        model_params = model.initialize_parameters_recursively(init_key)
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
+        )
+        target_labels = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
+
+        # Ensure that forward outputs are consistent with metrics output.
+        ctx = InvocationContext(
+            name="root",
+            parent=None,
+            module=model,
+            state=model_params,
+            output_collection=new_output_collection(),
+            is_training=True,
+            prng_key=prng_key,
+        )
+        with set_current_context(ctx):
+            loss, aux = model.forward(input_batch=input_batch, return_aux=True)
+            # pylint: disable-next=protected-access
+            ref = model._metrics(
+                logits=aux["logits"], target_labels=target_labels, target_num_bytes=None
+            )
+            # `aux_loss` is only collected when `aux_loss_regex` is set.
+            if aux_loss_regex is not None:
+                self.assertIn("aux_loss", aux)
+                if aux_loss_regex == ".*/aux_loss" and use_aux_layer:
+                    self.assertEqual(aux["aux_loss"], num_layers * 1.0)
+                else:
+                    self.assertEqual(aux["aux_loss"], 0.0)
+                self.assertEqual(ref["cross_entropy"] + aux["aux_loss"], loss)
+            else:
+                self.assertNotIn("aux_loss", aux)
+                self.assertEqual(ref["cross_entropy"], loss)
 
 
 if __name__ == "__main__":

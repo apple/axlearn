@@ -2,6 +2,7 @@
 
 """Autoregressive decoder model, e.g. as seen in the GPT family."""
 import math
+import re
 from typing import Callable, Dict, Optional, Tuple, Union
 
 from absl import logging
@@ -33,7 +34,7 @@ from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, NestedTensor, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
-from axlearn.common.utils import with_sharding_constraint
+from axlearn.common.utils import flatten_items, with_sharding_constraint
 
 
 def layer_norm_config(eps=1e-5):
@@ -58,6 +59,13 @@ class Model(BaseModel):
         # These will be used to constrain the sequence axis of relevant inputs.
         # If None, no batch sequence dim constraints are applied.
         seq_axis_names: Optional[Tuple[str]] = None
+        # If not None, collect Tensors from `module_outputs` whose paths fully match the regular
+        # expression and compute the sum as the auxiliary loss, which will be added to the overall
+        # model loss and reported in the summary as `aux_loss`.
+        #
+        # This can be used to support regularization losses such as the load balancing loss in MoE
+        # routing.
+        aux_loss_regex: Optional[str] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -122,6 +130,8 @@ class Model(BaseModel):
             loss = metrics["loss"]
             num_targets = metrics["num_targets"]
             aux_outputs["per_label_loss"] = metrics["per_token_loss"]
+            if self.config.aux_loss_regex is not None:
+                aux_outputs["aux_loss"] = metrics["aux_loss"]
             self.add_summary(
                 "train_live_targets",
                 WeightedScalar(num_targets / target_labels.shape[0], target_labels.shape[0]),
@@ -284,11 +294,8 @@ class Model(BaseModel):
             z_loss_scale=self.config.z_loss_scale,
         )
         per_token_loss = loss_dict["pre_mask_loss"] * live_targets
-
         self.add_summary("accuracy", WeightedScalar(accuracy, num_targets))
-        self.add_summary("loss", WeightedScalar(loss, num_targets))
         self.add_summary("z_loss", WeightedScalar(loss_dict["z_loss"], num_targets))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
         if target_num_bytes is not None:
             # N.B. we calculate bpb following Appendix D.2. of <https://arxiv.org/abs/2112.11446>,
             # (i.e. treat each token as an equal with the others in the batch).
@@ -296,12 +303,21 @@ class Model(BaseModel):
             total_bytes = target_num_bytes.sum()
             bits_per_byte = per_token_loss.sum() / jnp.maximum(1, total_bytes) / jnp.log(2)
             self.add_summary("bits_per_byte", WeightedScalar(bits_per_byte, total_bytes))
-        return dict(
-            loss=loss,
-            per_token_loss=per_token_loss,
-            live_targets=live_targets,
-            num_targets=num_targets,
-        )
+        loss_collection = {
+            "cross_entropy": loss,
+            "per_token_loss": per_token_loss,
+            "live_targets": live_targets,
+            "num_targets": num_targets,
+        }
+        if self.config.aux_loss_regex is not None:
+            aux_loss = self._aux_loss()  # `aux_loss` will be 0 if not computed in `module_outputs`.
+            loss = loss + aux_loss  # `aux_loss` should already be scaled during its computation.
+            self.add_summary("aux_loss", WeightedScalar(aux_loss, num_targets))
+            loss_collection["aux_loss"] = aux_loss
+        loss_collection["loss"] = loss
+        self.add_summary("loss", WeightedScalar(loss, num_targets))
+        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
+        return loss_collection
 
     def _constrain_input_batch(self, input_batch: NestedTensor):
         """Applies sharding constraints in-place for relevant named tensors in the input batch."""
@@ -324,6 +340,12 @@ class Model(BaseModel):
                 logging.log_first_n(
                     logging.WARNING, "Not constraining input_batch[%s].", len(input_batch), k
                 )
+
+    def _aux_loss(self) -> Tensor:
+        regex = self.config.aux_loss_regex
+        # Collect aux_loss from all leaves.
+        module_outputs = self.get_module_outputs()
+        return sum(v.sum() for k, v in flatten_items(module_outputs) if re.fullmatch(regex, k))
 
 
 TransformerStackConfig = Union[
