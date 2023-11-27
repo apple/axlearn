@@ -103,7 +103,9 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
             **kwargs,
         )
     # Make a variant of fuji-7B that can run on a single machine with 8 80G GPUs.
+    # pytype: disable=annotation-type-mismatch
     cfg: SpmdTrainer.Config = config_map["fuji-7B"]().clone()
+    # pytype: enable=annotation-type-mismatch
     cfg.input.batcher.global_batch_size = 32
     for evaler in cfg.evalers.values():
         evaler.input.batcher.global_batch_size = 32
