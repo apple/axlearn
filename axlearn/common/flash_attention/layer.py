@@ -71,9 +71,8 @@ class FlashAttention(GroupedQueryAttention):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         _check_bias_recursively(cfg)  # Bias not supported.
-        for key in ["per_dim_scale", "atten_logit_cap"]:
-            if getattr(cfg, key, None) is not None:
-                raise NotImplementedError(f"cfg.{key} is not supported.")
+        if getattr(cfg, "atten_logit_cap", None) is not None:
+            raise NotImplementedError("cfg.atten_logit_cap is not supported.")
         if cfg.dropout.rate:
             raise NotImplementedError("cfg.dropout.rate is not supported.")
         if cfg.tpu_block_size % 128 != 0:
@@ -83,7 +82,6 @@ class FlashAttention(GroupedQueryAttention):
     def default_config(cls) -> Config:
         cfg: FlashAttention.Config = super().default_config()
         cfg.dropout.rate = None
-        cfg.per_dim_scale = None
         cfg.atten_logit_cap = None
         cfg.mha_dim_to_partition_spec = {
             "btnh": PartitionSpec(None),
@@ -128,7 +126,7 @@ class FlashAttention(GroupedQueryAttention):
         jit_attn: MultiHeadAttentionImpl = flash_attention_implementation(
             backend=jax.default_backend(),
             causal=cfg.causal,
-            softmax_scale=self._scale_query(1),
+            softmax_scale=1.0,
             block_size=cfg.tpu_block_size,
         )
 
@@ -151,6 +149,10 @@ class FlashAttention(GroupedQueryAttention):
             # call in the body.
             check_rep=False,
         )
+
+        # Scale query and key.
+        q_proj = self.scale_query(q_proj)
+        k_proj = self.scale_key(k_proj)
 
         # Constrain input to conform to partitioned MHA expectations.
         q_proj = with_sharding_constraint(q_proj, cfg.mha_dim_to_partition_spec["btnh"])
