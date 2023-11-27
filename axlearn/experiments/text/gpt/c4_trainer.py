@@ -27,8 +27,6 @@ conda create -n axlearn python=3.10; \
 conda activate axlearn; \
 git clone https://github.com/apple/axlearn.git; \
 cd axlearn; \
-git fetch origin pull/203/head:debug_gpu; \
-git switch debug_gpu; \
 pip install -e .
 XLA_FLAGS=--xla_dump_to=/tmp/xla_dump; \
 mkdir -p /tmp/test_trainer; \
