@@ -22,13 +22,14 @@
 
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh; \
 bash Miniconda3-latest-Linux-x86_64.sh; \
-bash; \
+bash
 conda create -n axlearn python=3.10; \
 conda activate axlearn; \
 git clone https://github.com/apple/axlearn.git; \
 cd axlearn; \
+git fetch origin pull/203/head:debug_gpu; \
+git switch debug_gpu; \
 pip install -e .
-mkdir -p /tmp/test_trainer; python3 -m axlearn.common.launch_trainer_main --module=text.gpt.c4_trainer --config=fuji-7B --trainer_dir=/tmp/test_trainer --data_dir=gs://axlearn-public/tensorflow_datasets
 XLA_FLAGS=--xla_dump_to=/tmp/xla_dump; mkdir -p /tmp/test_trainer; python3 -m axlearn.common.launch_trainer_main --module=text.gpt.c4_trainer --config=fuji-7B-single --trainer_dir=/tmp/test_trainer --data_dir=gs://axlearn-public/tensorflow_datasets
 """
 
