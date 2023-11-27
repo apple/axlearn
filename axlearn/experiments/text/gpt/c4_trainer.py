@@ -39,6 +39,7 @@ from typing import Dict
 
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
+from axlearn.common.trainer import SpmdTrainer
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
 from axlearn.experiments.text.gpt import fuji
 from axlearn.experiments.text.gpt.common import (
@@ -102,7 +103,7 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
             **kwargs,
         )
     # Make a variant of fuji-7B that can run on a single machine with 8 80G GPUs.
-    cfg = config_map["fuji-7B"]().clone()
+    cfg: SpmdTrainer.Config = config_map["fuji-7B"]().clone()
     cfg.input.batcher.global_batch_size = 32
     for evaler in cfg.evalers.values():
         evaler.input.batcher.global_batch_size = 32
