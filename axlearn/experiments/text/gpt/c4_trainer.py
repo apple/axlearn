@@ -30,7 +30,11 @@ cd axlearn; \
 git fetch origin pull/203/head:debug_gpu; \
 git switch debug_gpu; \
 pip install -e .
-XLA_FLAGS=--xla_dump_to=/tmp/xla_dump; mkdir -p /tmp/test_trainer; python3 -m axlearn.common.launch_trainer_main --module=text.gpt.c4_trainer --config=fuji-7B-single --trainer_dir=/tmp/test_trainer --data_dir=gs://axlearn-public/tensorflow_datasets
+XLA_FLAGS=--xla_dump_to=/tmp/xla_dump; \
+mkdir -p /tmp/test_trainer; \
+python3 -m axlearn.common.launch_trainer_main \
+  --module=text.gpt.c4_trainer --config=fuji-7B-single \
+  --trainer_dir=/tmp/test_trainer --data_dir=gs://axlearn-public/tensorflow_datasets
 """
 
 from typing import Dict
