@@ -19,12 +19,27 @@
         --trainer_dir=$OUTPUT_DIR \
         --data_dir=$GS_ROOT/tensorflow_datasets \
         --mesh_selector=$INSTANCE_TYPE
+
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh; \
+bash Miniconda3-latest-Linux-x86_64.sh; \
+bash
+conda create -n axlearn python=3.10; \
+conda activate axlearn; \
+git clone https://github.com/apple/axlearn.git; \
+cd axlearn; \
+pip install -e .
+XLA_FLAGS=--xla_dump_to=/tmp/xla_dump; \
+mkdir -p /tmp/test_trainer; \
+python3 -m axlearn.common.launch_trainer_main \
+  --module=text.gpt.c4_trainer --config=fuji-7B-single \
+  --trainer_dir=/tmp/test_trainer --data_dir=gs://axlearn-public/tensorflow_datasets
 """
 
 from typing import Dict
 
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
+from axlearn.common.trainer import SpmdTrainer
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
 from axlearn.experiments.text.gpt import fuji
 from axlearn.experiments.text.gpt.common import (
@@ -87,4 +102,12 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
             evalers=evaler_config_dict(_eval_input_sources()),
             **kwargs,
         )
+    # Make a variant of fuji-7B that can run on a single machine with 8 80G GPUs.
+    # pytype: disable=annotation-type-mismatch
+    cfg: SpmdTrainer.Config = config_map["fuji-7B"]().clone()
+    # pytype: enable=annotation-type-mismatch
+    cfg.input.batcher.global_batch_size = 32
+    for evaler in cfg.evalers.values():
+        evaler.input.batcher.global_batch_size = 32
+    config_map["fuji-7B-single"] = lambda: cfg
     return config_map
