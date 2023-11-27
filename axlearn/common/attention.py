@@ -1971,8 +1971,8 @@ class MultiheadAttentionXL(MultiheadAttention):
             # In the original XL-Net code, it applies scale on AC + BD:
             #
             # https://github.com/zihangdai/xlnet/blob/bbaa3a6fa0b3a2ee694e8cf66167434f9eca9660/modeling.py#L148
-            # with child_context("apply_scale_factor_logits", module=self):
-            logits = self.scale_query.apply_scale_factor(logits)
+            with child_context("apply_scale_factor_logits", module=self):
+                logits = self.scale_query.apply_scale_factor(logits)
         return logits
 
     def extend_step(
