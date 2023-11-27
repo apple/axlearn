@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 import jax
 import jax.numpy as jnp
 
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, cast_floats
 
 
 def top_k_accuracy(
@@ -26,7 +26,7 @@ def top_k_accuracy(
     """Compute Top@K accuracy.
 
     Args:
-        sim: The similarity logits between each source and target. Shape: [M, N]. dtype: float32.
+        sim: The similarity logits between each source and target. Shape: [M, N]. dtype: float.
         gt_targets: The gt target for the source embeddings.
             Shape: [M, max_num_gt_target_per_instance]. dtype: int32.
             The max_num_gt_target_per_instance is the maximum number of groundtruth
@@ -46,13 +46,13 @@ def top_k_accuracy(
                     This means the first three text is aligned to the first image.
                     The last three text is aligned to the second image.
 
-        top_ks: A list of integer represent the number of top ranked targets.
+        top_ks: Compute accuracy @ k for each of the values of k provided in this list.
         similarity_bias: A Tensor with representing the bias to the similarity.
             If shape == [M, N],  similarity_bias[i,j] = NEG.INF means the j-th target is masked for
                 i-th source during the top_k selection.
             If Shape == [N], similarity_bias[j] = NEG.INF means the j-th target is masked for
                 any source during the top_k selection.
-        relevance_labels: Optional 0/1 tensor with the same shape as scores.
+        relevance_labels: Optional 0/1 tensor with the same shape as sim.
             relevance_labels[i, j] = 1 iff the j-th item is relevant for query i. Used
             instead of `gt_targets` if provided.
         return_counts: A boolean,
@@ -68,6 +68,7 @@ def top_k_accuracy(
     Raises:
         ValueError: if neither `gt_targets` nor `relevance_labels` were provided.
     """
+    sim = cast_floats(sim, jnp.float32)
     # The similarity between each source and target. Shape: [M, N].
     if similarity_bias is None:
         similarity_bias = jnp.zeros(sim.shape[1], dtype=sim.dtype)
@@ -109,6 +110,73 @@ def top_k_accuracy(
     if not return_counts:
         top_ks_correct = (top_ks_correct > 0).astype(jnp.float32)
     return top_ks_correct
+
+
+def top_k_recall(
+    sim: Tensor,
+    gt_targets: Optional[Tensor],
+    top_ks: List[int],
+    similarity_bias: Optional[Tensor] = None,
+    relevance_labels: Optional[Tensor] = None,
+) -> Dict[str, Tensor]:
+    """Compute Top@K recall.
+
+    Recall@K = {# of relevant docs in top k retrieved docs} / {min(K, # of total relevant docs)}
+
+    Args:
+        sim: The similarity logits between each source and target. Shape: [M, N]. dtype: float.
+            See `sim` in `top_k_accuracy` for more details.
+        gt_targets: The gt target for the source embeddings.
+            Shape: [M, max_num_gt_target_per_instance]. dtype: int32.
+            See `gt_targets` in `top_k_accuracy` for more details.
+        top_ks: Compute recall @ k for each of the values of k provided in this list.
+        similarity_bias: A Tensor representing the bias to the similarity.
+            See `similarity_bias` in `top_k_accuracy` for more details.
+        relevance_labels: Optional 0/1 tensor with the same shape as sim.
+            If None, infer from gt_targets.
+            See `relevance_labels` in `top_k_accuracy` for more details.
+
+    Returns:
+        top_ks_recall: A float32 Tensor indicating recall at k. Shape [len(top_k), M,].
+
+    Raises:
+        ValueError: if neither `gt_targets` nor `relevance_labels` were provided.
+    """
+    if gt_targets is None and relevance_labels is None:
+        raise ValueError("Either `gt_targets` or `relevance_labels` is required.")
+
+    total_num_relevant_items = None
+    # Try to get relevance labels first to avoid double conversion in top_k_accuracy.
+    if relevance_labels is None:
+        assert gt_targets is not None
+        if gt_targets.shape[1] == 1:
+            # Leave relevance_labels as None to enable express mode in `top_k_accuracy`.
+            total_num_relevant_items = jnp.where(gt_targets > 0, 1, 0)
+            total_num_relevant_items = jnp.squeeze(total_num_relevant_items, 1)
+        else:
+            # Shape [M, N]. gt_targets[i, j] > 0 if target j is one of the groundtruth
+            # targets for source i.
+            relevance_labels = jnp.sum(jax.nn.one_hot(gt_targets, sim.shape[1]), 1)
+    if total_num_relevant_items is None:
+        # Get total_num_relevant_items for non-express mode.
+        # Shape: [num_queries].
+        assert relevance_labels is not None
+        total_num_relevant_items = jnp.sum(relevance_labels, axis=-1)
+    # Compute the number of correct items at k for each query.
+    correct_at_k = top_k_accuracy(
+        sim=sim,
+        relevance_labels=relevance_labels,
+        top_ks=top_ks,
+        similarity_bias=similarity_bias,
+        gt_targets=gt_targets,
+        return_counts=True,
+    )
+    top_ks_recall = []
+    for k, correct_metrics in zip(top_ks, correct_at_k):
+        denorm = jnp.maximum(jnp.minimum(total_num_relevant_items, k), 1.0)
+        top_ks_recall.append(correct_metrics / denorm)
+    top_ks_recall = jnp.stack(top_ks_recall)
+    return top_ks_recall
 
 
 def _reciprocal_rank(
@@ -391,7 +459,8 @@ def ndcg_at_k(
         _, indices_of_sorted_relevance_labels = jax.lax.top_k(relevance_labels, max_k)
         # Shape: [num_queries, max_k].
         sorted_relevance_labels = relevance_labels[
-            jnp.expand_dims(jnp.arange(num_queries), 1), indices_of_sorted_relevance_labels
+            jnp.expand_dims(jnp.arange(num_queries), 1),
+            indices_of_sorted_relevance_labels,
         ]
 
         # Shape: [num_queries, max_k].
@@ -405,7 +474,9 @@ def ndcg_at_k(
             y_true=relevance_labels, y_score=scores, discount_factor=discount_factors
         )
         idcg = auto_batch_tie_averaged_dcg(
-            y_true=relevance_labels, y_score=relevance_labels, discount_factor=discount_factors
+            y_true=relevance_labels,
+            y_score=relevance_labels,
+            discount_factor=discount_factors,
         )
 
     ndcg = jnp.where(idcg == 0, 0.0, dcg / idcg)
@@ -514,6 +585,60 @@ def calculate_accuracy_metrics(
         metrics.update(
             calculate_mean_metrics(
                 metric_name=metric_at_k_name("accuracy", k),
+                query_metrics=query_metrics,
+                query_padding=query_padding,
+                query_categories=categories,
+                categories_names=categories_names,
+            )
+        )
+    return metrics
+
+
+def calculate_recall_metrics(
+    *,
+    top_ks: List[int],
+    scores: Tensor,
+    relevance_labels: Tensor,
+    query_padding: Tensor,
+    categories: Optional[Tensor] = None,
+    categories_names: Optional[Tuple[str, ...]] = None,
+) -> Dict[str, Tensor]:
+    """Calculates recall at k (accuracy@k) metrics.
+
+    Recall@k equals to average of recall over queries.
+
+    For each query, recall@K =
+        {# of relevant docs in top k retrieved docs} / {min(K, # of total relevant docs)}
+
+    Args:
+        top_ks: A list of K's for top-k stats.
+        scores: Predicted relevance scores between queries and items with shape
+            [num_queries, num_items]. Users could mask scores[i, j] with NEG_INF such that the j-th
+            item is masked for i-th query.
+        relevance_labels: 0/1 Tensor with the same shape as scores. relevance_labels[i, j] = 1
+            iff the j-th item is relevant for query i.
+        query_padding: Bool tensor [num_queries] with True values representing padding.
+        categories: Optional [num_queries] int tensor with examples category ids. Used for
+            breaking down metrics by queries category.
+        categories_names: Optional tuple of cateogory names - category `i` gets name
+            `categories_names[i]`.
+
+    Returns:
+        A dict containing "recall@{k}" - retrieval recall at top-k and
+        "recall@{k}_{category_name}" for per-category values if categories were provided.
+
+    Raises:
+        ValueError: if categories_names weren't provided, but categories were.
+    """
+    # Compute per-query metrics.
+    recall_at_k = top_k_recall(
+        sim=scores, relevance_labels=relevance_labels, top_ks=top_ks, gt_targets=None
+    )
+    metrics = {}
+    for k, query_metrics in zip(top_ks, recall_at_k):
+        metrics.update(
+            calculate_mean_metrics(
+                metric_name=metric_at_k_name("recall", k),
                 query_metrics=query_metrics,
                 query_padding=query_padding,
                 query_categories=categories,

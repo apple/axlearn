@@ -19,9 +19,11 @@ from axlearn.common.metrics_retrieval import (
     average_rank,
     calculate_accuracy_metrics,
     calculate_mean_average_precision_metrics,
+    calculate_recall_metrics,
     mean_reciprocal_rank,
     ndcg_at_k,
     top_k_accuracy,
+    top_k_recall,
 )
 from axlearn.common.test_utils import TestCase
 
@@ -127,6 +129,48 @@ class TopKAccuracyTest(TestCase):
             return_counts=True,
         )
         np.testing.assert_equal(np.asarray(out), [[1, 0, 0], [1, 1, 0], [1, 2, 0]])
+
+
+class TopKRecallTest(TestCase):
+    def setUp(self):
+        super().setUp()
+        # Similar code in evaler_zero_shot_classification_test.
+        # pylint: disable=duplicate-code
+        x = [
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+        ]
+        targets = [
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [0.5, 0, 0],
+            [0, 0.5, 0],
+            [0, 0.5, 1],
+        ]
+        # pylint: enable=duplicate-code
+
+        self.x = jnp.asarray(x)
+        self.targets = jnp.asarray(targets)
+        self.sim = contrastive_logits(self.x, self.targets)
+
+    @parameterized.parameters(
+        [
+            ([[0], [3], [2]], [1], [[1, 0, 1]]),
+            ([[3], [4], [5]], [1], [[0, 0, 0]]),
+            ([[0, 2], [1, 4], [0, 1]], [2], [[0.5, 1, 0]]),
+        ]
+    )
+    def test_output_value(self, gt_targets, top_ks, expected):
+        out = top_k_recall(self.sim, gt_targets=jnp.asarray(gt_targets), top_ks=top_ks)
+        np.testing.assert_equal(np.asarray(out), expected)
+
+        relevance_labels = jnp.sum(jax.nn.one_hot(gt_targets, self.sim.shape[1]), 1)
+        out = top_k_recall(
+            self.sim, gt_targets=None, relevance_labels=relevance_labels, top_ks=top_ks
+        )
+        np.testing.assert_equal(np.asarray(out), expected)
 
 
 def test_average_precision_at_k():
@@ -379,6 +423,27 @@ class CalculateMeanMetricTest(TestCase):
             "accuracy@2_cat": (1.0 + 1.0) / 2,
             "accuracy@2_dog": 1.0,
             "accuracy@2_avg_category": ((1.0 + 1.0) / 2 + 1.0) / 2,
+        }
+        self.assertNestedAllClose(expected_metrics, metrics)
+
+    def test_calculate_recall(self):
+        metrics = calculate_recall_metrics(
+            top_ks=[1, 2],
+            scores=jnp.array([[0.5, 1.0, 0.0], [0.5, 0.0, 1.0], [0.5, 0.0, 1.0], [0.5, 0.0, 1.0]]),
+            relevance_labels=jnp.array([[0, 1, 1], [1, 0, 0], [1, 0, 0], [1, 0, 0]]),
+            query_padding=jnp.array([False, False, False, True]),
+            categories=jnp.array([0, 1, 0, 0]),
+            categories_names=("cat", "dog"),
+        )
+        expected_metrics = {
+            "recall@1": (1.0 + 0.0 + 0.0) / 3,
+            "recall@1_cat": (1.0 + 0.0) / 2,
+            "recall@1_dog": 0.0,
+            "recall@1_avg_category": ((1.0 + 0.0) / 2 + 0.0) / 2,
+            "recall@2": (1.0 / 2.0 + 1.0 + 1.0) / 3,
+            "recall@2_cat": (1.0 / 2.0 + 1.0) / 2,
+            "recall@2_dog": 1.0,
+            "recall@2_avg_category": ((1.0 / 2.0 + 1.0) / 2 + 1.0) / 2,
         }
         self.assertNestedAllClose(expected_metrics, metrics)
 
