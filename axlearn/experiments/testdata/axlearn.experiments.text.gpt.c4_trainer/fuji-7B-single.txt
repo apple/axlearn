@@ -203,6 +203,7 @@ model.decoder.transformer.layer.self_attention.attention.input_linear.max_seq_le
 model.decoder.transformer.layer.self_attention.attention.input_linear.rope_pos_emb_layer.klass: 'axlearn.common.attention.RoFormerSinusoidalPositionalEmbedding'
 model.decoder.transformer.layer.self_attention.attention.input_linear.rope_pos_emb_layer.theta: 10000.0
 model.decoder.transformer.layer.self_attention.attention.input_linear.rotary_value: False
+model.decoder.transformer.layer.self_attention.attention.key_scale.klass: 'axlearn.common.attention.ScaleKey'
 model.decoder.transformer.layer.self_attention.attention.klass: 'axlearn.common.attention.MultiheadAttention'
 model.decoder.transformer.layer.self_attention.attention.num_heads: 32
 model.decoder.transformer.layer.self_attention.attention.output_linear.bias: False
@@ -211,6 +212,7 @@ model.decoder.transformer.layer.self_attention.attention.output_linear.param_par
 model.decoder.transformer.layer.self_attention.attention.output_linear.param_partition_spec[0][1]: 'fsdp'
 model.decoder.transformer.layer.self_attention.attention.output_linear.param_partition_spec[1]: 'model'
 model.decoder.transformer.layer.self_attention.attention.output_linear.param_partition_spec[2]: None
+model.decoder.transformer.layer.self_attention.attention.query_scale.klass: 'axlearn.common.attention.ScaleQuery'
 model.decoder.transformer.layer.self_attention.dropout.klass: 'axlearn.common.layers.Dropout'
 model.decoder.transformer.layer.self_attention.klass: 'axlearn.common.attention.TransformerAttentionLayer'
 model.decoder.transformer.layer.self_attention.norm.eps: 1e-05

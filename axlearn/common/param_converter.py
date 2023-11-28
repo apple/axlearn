@@ -1150,7 +1150,7 @@ def _parameters_from_attention_dense(
         weight=o_proj["weight"].transpose().reshape(-1, num_heads, per_head_dim),
         bias=o_proj["bias"],
     )
-    return dict(i_proj=i_proj, o_proj=o_proj, dropout={})
+    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_query={}, scale_key={})
 
 
 def _parameters_from_roberta_attention(src: hf_roberta.RobertaAttention):
@@ -1301,7 +1301,8 @@ def _parameters_from_gpt2_attention(
 ):
     # GPT2 attention weights are concat into one array, break out head and q/k/v dims.
     num_heads = src.num_heads
-    attention = {}
+    # Add empty state for the key/query scaling.
+    attention = {"scale_key": {}, "scale_query": {}}
     # Head projection.
     c_attn_w = src.c_attn.weight
     c_attn_b = src.c_attn.bias
@@ -1534,7 +1535,7 @@ def _parameters_from_t5_attention(src: hf_t5.T5Attention, *, dst_layer: Transfor
                 )
             ),
         )
-    return dict(i_proj=i_proj, dropout={}, **o_proj)
+    return dict(i_proj=i_proj, dropout={}, **o_proj, scale_query={}, scale_key={})
 
 
 def _parameters_from_t5_self_attention(
@@ -1715,6 +1716,8 @@ def _parameters_from_xlnet_attention(src: hf_xlnet.XLNetRelativeAttention):
             v_bias=src.r_r_bias,
             dropout={},
             relative_pos_emb={},
+            scale_query={},
+            scale_key={},
         ),
         norm=torch_to_axlearn(src.layer_norm),
         dropout={},
@@ -1772,7 +1775,7 @@ def _parameters_from_distilbert_attention_dense(
         weight=output_dense.weight.view(-1, num_heads, per_head_dim),
         bias=output_dense.bias,
     )
-    return dict(i_proj=i_proj, o_proj=o_proj, dropout={})
+    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_query={}, scale_key={})
 
 
 def _parameters_from_distilbert_attention(src: hf_distilbert.Transformer):

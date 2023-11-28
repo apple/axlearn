@@ -44,7 +44,7 @@ import enum
 import functools
 import math
 from enum import Enum, unique
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 from jax import numpy as jnp
@@ -1235,6 +1235,137 @@ def pow_scale_fn(exp: float) -> ScaleFn:
     return functools.partial(pow, exp=exp)
 
 
+class BaseScaleQK(BaseLayer):
+    """Defines the common interface for scaling projected attention queries or keys.
+
+    * All subclasses must have `per_head_dim` in their config.
+    """
+
+    @config_class
+    class Config(BaseLayer.Config):
+        """Configures BaseScaleQKV."""
+
+        # The per-head dimension.
+        per_head_dim: Required[int] = REQUIRED
+
+    def forward(self, proj: Tensor) -> Tensor:
+        """Scales the projected queries or keys.
+
+        Args:
+            proj: The projected queries/keys.
+                Shape: [batch, seq_length, num_heads, per_head_dim].
+
+        Returns:
+            A tensor with the same shape as the input.
+        """
+        raise NotImplementedError(type(self))
+
+
+class ScaleQuery(BaseScaleQK):
+    """Default implementation for scaling projected queries."""
+
+    @config_class
+    class Config(BaseScaleQK.Config):
+        """Configures ScaleQuery."""
+
+        # The config for a normalization layer applied along the per-head dim.
+        # If None, no normalization is applied.
+        norm: Optional[InstantiableConfig] = None
+        # The config for a function to compute a query scale muliplier factor.
+        # If None, then self.default_scale_fn_config.
+        scale_factor: Optional[InstantiableConfig[ScaleFn]] = None
+        # A vector to apply per dimension scale to the query projection.
+        per_dim_scale: Optional[PerDimScale.Config] = None
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._scale_factor = self.default_scale_factor_config()
+        if cfg.scale_factor is not None:
+            self._scale_factor = cfg.scale_factor
+        self._scale_factor = self._scale_factor.instantiate()
+        if cfg.norm is not None:
+            self._add_child("norm", cfg.norm.set(input_dim=cfg.per_head_dim))
+        if cfg.per_dim_scale:
+            self._add_child("per_dim_scale", cfg.per_dim_scale.set(dim=cfg.per_head_dim))
+
+    def apply_norm(self, proj: Tensor) -> Tensor:
+        """Applies the norm to projected queries if configured."""
+        if "norm" in self.children:
+            proj = self.norm(proj)
+        return proj
+
+    def apply_per_dim_scale(self, proj: Tensor) -> Tensor:
+        """Applies the per-dim scale to projected queries if configured."""
+        if "per_dim_scale" in self.children:
+            # The Lingvo MultiheadAttention applies a per_dim_scale:
+            # https://github.com/tensorflow/lingvo/blob/41212226eac7a26491790c2bd476b78493f93ff6/lingvo/core/batch_major_attention.py#L790
+            proj = self.per_dim_scale(proj)
+        return proj
+
+    def apply_scale_factor(self, proj: Tensor) -> Tensor:
+        """Applies the scale-factor to projected queries."""
+        scale = self._scale_factor(self.config.per_head_dim)
+        return proj * scale
+
+    def forward(self, proj: Tensor) -> Tensor:
+        """Scales the projected queries."""
+        proj = self.apply_norm(proj)
+        proj = self.apply_per_dim_scale(proj)
+        proj = self.apply_scale_factor(proj)
+        # Stop scale constant from being folded with others.
+        # May increase numerical stability.
+        return ops.forward_optimization_barrier(proj)
+
+    @staticmethod
+    def default_scale_factor_config() -> InstantiableConfig[ScaleFn]:
+        """The config for the default function used to compute the query scale."""
+
+        return config_for_function(pow_scale_fn).set(exp=-0.5)
+
+
+class ScaleKey(BaseScaleQK):
+    """Default implementation for scaling projected keys."""
+
+    @config_class
+    class Config(BaseScaleQK.Config):
+        """Configures ScaleQuery."""
+
+        # The config for a normalization layer applied along the per-head dim.
+        # If None, no normalization is applied.
+        norm: Optional[InstantiableConfig] = None
+        # The config for a function to compute a key scale muliplier factor.
+        # If None, then self.default_scale_factor_config.
+        scale_factor: Optional[InstantiableConfig[ScaleFn]] = None
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._scale_factor = self.default_scale_factor_config()
+        if cfg.scale_factor is not None:
+            self._scale_factor = cfg.scale_factor
+        self._scale_factor = self._scale_factor.instantiate()
+        if cfg.norm is not None:
+            self._add_child("norm", cfg.norm.set(input_dim=cfg.per_head_dim))
+
+    def forward(self, proj: Tensor) -> Tensor:
+        """Scales the projected keys."""
+        cfg = self.config
+        if cfg.norm is not None:
+            proj = self.norm(proj)
+        scale = self._scale_factor(cfg.per_head_dim)
+        proj = proj * scale
+        # Stop scale constant from being folded with others.
+        # May increase numerical stability.
+        return ops.forward_optimization_barrier(proj)
+
+    @staticmethod
+    def default_scale_factor_config() -> InstantiableConfig[ScaleFn]:
+        """The config for the default function used to compute the key scale."""
+
+        return config_for_function(constant_scale_fn).set(value=1)
+
+
 class MultiheadAttention(BaseLayer):
     """A basic multi-head attention layer.
 
@@ -1261,14 +1392,10 @@ class MultiheadAttention(BaseLayer):
         output_linear: MultiheadOutputLinear.Config = MultiheadOutputLinear.default_config()
         # The dropout layer.
         dropout: Dropout.Config = Dropout.default_config()
-        # The config for a function to compute a scale factor for the query matrix.
-        # If None, then self.head_dim() ** -0.5.
-        query_scale: Optional[InstantiableConfig[ScaleFn]] = None
-        # The config for a function to compute a scale factor for the key matrix.
-        # If None, then 1.
-        key_scale: Optional[InstantiableConfig[ScaleFn]] = None
-        # A vector to apply per dimension scale to the query projection.
-        per_dim_scale: Optional[PerDimScale.Config] = None
+        # Config used to scale projected queries prior to computing logits.
+        query_scale: BaseScaleQK.Config = ScaleQuery.default_config()
+        # Config used to scale projected keys prior to computing logits.
+        key_scale: BaseScaleQK.Config = ScaleKey.default_config()
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = None
 
@@ -1291,16 +1418,10 @@ class MultiheadAttention(BaseLayer):
         self._add_child("o_proj", o_proj_cfg)
         # Add dropout layer.
         self._add_child("dropout", cfg.dropout)
-        if cfg.per_dim_scale:
-            self._add_child("per_dim_scale", cfg.per_dim_scale.set(dim=self.per_head_dim()))
-        self._query_scale = self.default_query_scale_config()
-        if cfg.query_scale is not None:
-            self._query_scale = cfg.query_scale
-        self._query_scale = self._query_scale.instantiate()
-        self._key_scale = self.default_key_scale_config()
-        if cfg.key_scale is not None:
-            self._key_scale = cfg.key_scale
-        self._key_scale = self._key_scale.instantiate()
+        # Add query scaling layer.
+        self._add_child("scale_query", cfg.query_scale.set(per_head_dim=self.per_head_dim()))
+        # Add key scaling layer.
+        self._add_child("scale_key", cfg.key_scale.set(per_head_dim=self.per_head_dim()))
 
     def output_dim(self):
         cfg = self.config
@@ -1460,35 +1581,6 @@ class MultiheadAttention(BaseLayer):
         )
         return output
 
-    T = TypeVar("T", bound=Union[float, Tensor])
-
-    def _scale_query(self, q_proj: T) -> T:
-        cfg = self.config
-        if cfg.per_dim_scale is not None:
-            # The Lingvo MultiheadAttention applies a per_dim_scale on q_proj:
-            # https://github.com/tensorflow/lingvo/blob/41212226eac7a26491790c2bd476b78493f93ff6/lingvo/core/batch_major_attention.py#L790
-            q_proj = self.per_dim_scale(q_proj)
-        scale = self._query_scale(self.per_head_dim())
-        q_proj = q_proj * scale
-        if isinstance(q_proj, float):
-            return q_proj
-        # Force multiplying q_proj by scale before multiplying it by k_proj.
-        # This prevents constant folding of the scale factors for q_proj
-        # and k_proj, allowing increased numerical stability if the user
-        # splits the scale factor between them.
-        return ops.forward_optimization_barrier(q_proj)
-
-    def _scale_key(self, k_proj: T) -> T:
-        scale = self._key_scale(self.per_head_dim())
-        k_proj = k_proj * scale
-        if isinstance(k_proj, float):
-            return k_proj
-        # Force multiplying k_proj by scale before multiplying it by q_proj.
-        # This prevents constant folding of the scale factors for q_proj
-        # and k_proj, allowing increased numerical stability if the user
-        # splits the scale factor between them.
-        return ops.forward_optimization_barrier(k_proj)
-
     def _cap_logits(self, logits: Tensor) -> Tensor:
         """Caps the logits with tanh."""
         cfg = self.config
@@ -1498,8 +1590,8 @@ class MultiheadAttention(BaseLayer):
         return cap * jnp.tanh(logits / cap)
 
     def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
-        q_proj = self._scale_query(q_proj)
-        k_proj = self._scale_key(k_proj)
+        q_proj = self.scale_query(q_proj)
+        k_proj = self.scale_key(k_proj)
         return jnp.einsum("btnh,bsnh->bnts", q_proj, k_proj)
 
     def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
@@ -1776,9 +1868,9 @@ class MultiheadAttentionXL(MultiheadAttention):
 
     @unique
     class ScalePosition(Enum):
-        # Applies 1/sqrt(dim) scaling on the logits.
+        # Applies query scale-factor to the logits.
         LOGIT = 0
-        # Applies 1/sqrt(dim) scaling on the queries.
+        # Applies query scale-factor to the queries.
         QUERY = 1
 
     @config_class
@@ -1847,13 +1939,16 @@ class MultiheadAttentionXL(MultiheadAttention):
 
     def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
         cfg = self.config
-        if cfg.per_dim_scale is not None:
-            # Applies a per dim scale on q_proj.
-            q_proj = self.per_dim_scale(q_proj)
+        with child_context("apply_query_norm", module=self):
+            # We apply the query norm (if configured) to the projection (not the logits).
+            q_proj = self.scale_query.apply_norm(q_proj)
+
+        with child_context("apply_per_dim_scale", module=self):
+            q_proj = self.scale_query.apply_per_dim_scale(q_proj)
 
         if cfg.scale_position == MultiheadAttentionXL.ScalePosition.QUERY:
-            scale = self.per_head_dim() ** -0.5
-            q_proj = q_proj * scale
+            with child_context("apply_scale_factor_queries", module=self):
+                q_proj = self.scale_query.apply_scale_factor(q_proj)
 
         seq_len = q_proj.shape[1]
         # [2*seq_len - 1, pos_emb_dim].
@@ -1866,6 +1961,9 @@ class MultiheadAttentionXL(MultiheadAttention):
         # [2*seq_len - 1, num_heads, per_head_dim].
         r_proj = self.r_proj(pos_emb)
 
+        # Apply key scaling.
+        k_proj = self.scale_key(k_proj)
+
         logits = xl_attention_logits(
             q_proj=q_proj,
             k_proj=k_proj,
@@ -1877,8 +1975,8 @@ class MultiheadAttentionXL(MultiheadAttention):
             # In the original XL-Net code, it applies scale on AC + BD:
             #
             # https://github.com/zihangdai/xlnet/blob/bbaa3a6fa0b3a2ee694e8cf66167434f9eca9660/modeling.py#L148
-            scale = self.per_head_dim() ** -0.5
-            logits = logits * scale
+            with child_context("apply_scale_factor_logits", module=self):
+                logits = self.scale_query.apply_scale_factor(logits)
         return logits
 
     def extend_step(

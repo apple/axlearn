@@ -73,7 +73,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_set_config,
 )
-from axlearn.common.layers import set_bias_recursively
+from axlearn.common.layers import RMSNorm, set_bias_recursively
 from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
@@ -1350,6 +1350,170 @@ class PerDimScaleTest(TestCase):
         self.assertEqual(outputs.dtype, query.dtype)
 
 
+class ScaleQueryTest(TestCase):
+    """Tests ScaleQuery."""
+
+    @parameterized.product(
+        scale_factor=[None, 7],
+        norm=[None, RMSNorm.default_config()],
+        per_dim_scale=[
+            None,
+            PerDimScale.default_config(),
+        ],
+    )
+    def test_scale_query(
+        self,
+        *,
+        scale_factor: Optional[float],
+        norm: Optional[RMSNorm.Config],
+        per_dim_scale: Optional[PerDimScale.Config],
+    ):
+        kwargs = self._scale_kwargs(
+            scale_factor=scale_factor, norm=norm, per_dim_scale=per_dim_scale
+        )
+        forward_outputs, _ = F(**kwargs)
+
+        self.assertEqual(forward_outputs.shape, kwargs["inputs"]["proj"].shape)
+        q_proj_scaled = kwargs["inputs"]["proj"]
+        if norm is not None:
+            assert isinstance(norm, RMSNorm.Config)
+            moment2 = (q_proj_scaled * q_proj_scaled).mean(axis=-1, keepdims=True)
+            q_proj_scaled = q_proj_scaled * jax.lax.rsqrt(moment2 + norm.eps)
+        if per_dim_scale is not None:
+            assert isinstance(per_dim_scale, PerDimScale.Config)
+            # We overrode the initializer for PerDimScale so we can measure the effect.
+            q_proj_scaled = q_proj_scaled * jax.nn.softplus(1.0) * 1.442695041
+
+        if scale_factor is None:
+            scale_factor = kwargs["module"].config.per_head_dim ** -0.5
+        scale_factor = float(scale_factor)
+        q_proj_scaled = q_proj_scaled * scale_factor
+
+        self.assertNestedAllClose(forward_outputs, q_proj_scaled)
+
+    def _scale_kwargs(
+        self,
+        *,
+        scale_factor: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+        norm: Optional[InstantiableConfig],
+        per_dim_scale: Optional[PerDimScale.Config],
+    ):
+        model_dim = 16
+        if isinstance(scale_factor, (int, float)):
+            scale_factor = config_for_function(attention.constant_scale_fn).set(value=scale_factor)
+
+        num_heads = 2
+        per_head_dim = model_dim // num_heads
+        if per_dim_scale is not None:
+            per_dim_scale = per_dim_scale.set(dim=per_head_dim)
+
+        cfg = attention.ScaleQuery.default_config().set(
+            name="test",
+            per_head_dim=per_head_dim,
+            norm=norm,
+            scale_factor=scale_factor,
+            per_dim_scale=per_dim_scale,
+        )
+        layer = cfg.instantiate(parent=None)
+
+        param_specs = layer.create_parameter_specs_recursively()
+        layer_params = jax.tree_util.tree_map(
+            lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
+        )
+
+        batch_size = 3
+        tgt_len = 10
+        q_proj = jnp.concatenate(
+            (
+                jnp.ones([batch_size, tgt_len // 2, num_heads, per_head_dim]),
+                jnp.zeros([batch_size, tgt_len // 2, num_heads, per_head_dim]),
+            ),
+            axis=1,
+        )
+        kwargs = dict(
+            module=layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=dict(proj=q_proj),
+        )
+        return kwargs
+
+
+class ScaleKeyTest(TestCase):
+    """Tests ScaleKey."""
+
+    @parameterized.product(
+        scale_factor=[None, 7],
+        norm=[None, RMSNorm.default_config()],
+    )
+    def test_scale_key(
+        self,
+        *,
+        scale_factor: Optional[float],
+        norm: Optional[RMSNorm.Config],
+    ):
+        kwargs = self._scale_kwargs(scale_factor=scale_factor, norm=norm)
+        forward_outputs, _ = F(**kwargs)
+
+        self.assertEqual(forward_outputs.shape, kwargs["inputs"]["proj"].shape)
+        q_proj_scaled = kwargs["inputs"]["proj"]
+        if norm is not None:
+            assert isinstance(norm, RMSNorm.Config)
+            moment2 = (q_proj_scaled * q_proj_scaled).mean(axis=-1, keepdims=True)
+            q_proj_scaled = q_proj_scaled * jax.lax.rsqrt(moment2 + norm.eps)
+
+        if scale_factor is None:
+            scale_factor = 1.0
+        scale_factor = float(scale_factor)
+        q_proj_scaled = q_proj_scaled * scale_factor
+        self.assertNestedAllClose(forward_outputs, q_proj_scaled)
+
+    def _scale_kwargs(
+        self,
+        *,
+        scale_factor: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+        norm: Optional[InstantiableConfig],
+    ):
+        model_dim = 16
+        if isinstance(scale_factor, (int, float)):
+            scale_factor = config_for_function(attention.constant_scale_fn).set(value=scale_factor)
+
+        num_heads = 2
+        per_head_dim = model_dim // num_heads
+
+        cfg = attention.ScaleKey.default_config().set(
+            name="test",
+            per_head_dim=per_head_dim,
+            norm=norm,
+            scale_factor=scale_factor,
+        )
+        layer = cfg.instantiate(parent=None)
+
+        param_specs = layer.create_parameter_specs_recursively()
+        layer_params = jax.tree_util.tree_map(
+            lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
+        )
+
+        batch_size = 4
+        tgt_len = 12
+        k_proj = jnp.concatenate(
+            (
+                jnp.ones([batch_size, tgt_len // 2, num_heads, per_head_dim]),
+                jnp.zeros([batch_size, tgt_len // 2, num_heads, per_head_dim]),
+            ),
+            axis=1,
+        )
+        kwargs = dict(
+            module=layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            inputs=dict(proj=k_proj),
+        )
+        return kwargs
+
+
 class MultiheadAttentionTest(TestCase):
     """Tests MultiheadAttention, GroupedQueryAttention, and associated layers."""
 
@@ -1395,7 +1559,7 @@ class MultiheadAttentionTest(TestCase):
                 key_dim=model_dim,
                 value_dim=model_dim,
                 num_heads=num_heads,
-                per_dim_scale=per_dim_scale,
+                query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             )
             multihead_attention = (
                 attention.MultiheadAttention.default_config()
@@ -1474,7 +1638,7 @@ class MultiheadAttentionTest(TestCase):
                 key_dim=model_dim,
                 value_dim=model_dim,
                 num_heads=num_heads,
-                per_dim_scale=per_dim_scale,
+                query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             )
             layer: attention.MultiheadAttention = cfg.instantiate(parent=None)
             self.assertContainsSubset(
@@ -1523,13 +1687,16 @@ class MultiheadAttentionTest(TestCase):
             qkv_shapes = dict(
                 weight=(model_dim, num_heads, per_head_dim), bias=(num_heads, per_head_dim)
             )
+            expected_scale_query_params = {}
+            if per_dim_scale:
+                expected_scale_query_params["per_dim_scale"] = dict(param=(per_head_dim,))
             expected_params = {
                 "i_proj": {f"{x}_proj": qkv_shapes for x in ("q", "k", "v")},
                 "o_proj": dict(weight=(model_dim, num_heads, per_head_dim), bias=(model_dim,)),
                 "dropout": {},
+                "scale_key": {},
+                "scale_query": expected_scale_query_params,
             }
-            if per_dim_scale:
-                expected_params["per_dim_scale"] = dict(param=(per_head_dim,))
             self.assertEqual(
                 expected_params,
                 shapes(layer_params),
@@ -1569,7 +1736,7 @@ class MultiheadAttentionTest(TestCase):
             value_dim=model_dim,
             num_heads=num_heads,
             dtype=dtype,
-            per_dim_scale=per_dim_scale,
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
         )
         layer = cfg.instantiate(parent=None)
 
@@ -1646,7 +1813,7 @@ class MultiheadAttentionTest(TestCase):
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=num_heads,
-            per_dim_scale=per_dim_scale,
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             atten_logit_cap=atten_logit_cap,
             dtype=dtype,
         )
@@ -1800,7 +1967,7 @@ class MultiheadAttentionTest(TestCase):
         model_dim = 16
         num_heads = 4
         cfg = attention.MultiheadAttention.default_config().set(
-            per_dim_scale=per_dim_scale,
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             atten_logit_cap=atten_logit_cap,
         )
         self._test_extend_step(
@@ -1827,7 +1994,7 @@ class MultiheadAttentionTest(TestCase):
         model_dim = 16
         num_heads = 4
         cfg = attention.GroupedQueryAttention.default_config().set(
-            per_dim_scale=per_dim_scale,
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             atten_logit_cap=atten_logit_cap,
             input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
         )
@@ -1968,7 +2135,7 @@ class MultiheadAttentionTest(TestCase):
         model_dim = 16
         num_heads = 4
         cfg = attention.MultiheadAttention.default_config().set(
-            per_dim_scale=per_dim_scale,
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             atten_logit_cap=atten_logit_cap,
         )
         self._test_prefill_states(
@@ -1995,7 +2162,7 @@ class MultiheadAttentionTest(TestCase):
         model_dim = 16
         num_heads = 4
         cfg = attention.GroupedQueryAttention.default_config().set(
-            per_dim_scale=per_dim_scale,
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             atten_logit_cap=atten_logit_cap,
             input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
         )
@@ -2011,14 +2178,18 @@ class MultiheadAttentionTest(TestCase):
     def _scale_query_kwargs(
         self,
         *,
-        query_scale: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
-        key_scale: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+        query_scale_factor: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+        key_scale_factor: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
     ):
         model_dim = 16
-        if isinstance(query_scale, (int, float)):
-            query_scale = config_for_function(attention.constant_scale_fn).set(value=query_scale)
-        if isinstance(key_scale, (int, float)):
-            key_scale = config_for_function(attention.constant_scale_fn).set(value=key_scale)
+        if isinstance(query_scale_factor, (int, float)):
+            query_scale_factor = config_for_function(attention.constant_scale_fn).set(
+                value=query_scale_factor
+            )
+        if isinstance(key_scale_factor, (int, float)):
+            key_scale_factor = config_for_function(attention.constant_scale_fn).set(
+                value=key_scale_factor
+            )
 
         cfg = attention.MultiheadAttention.default_config().set(
             name="test",
@@ -2026,8 +2197,8 @@ class MultiheadAttentionTest(TestCase):
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=2,
-            query_scale=query_scale,
-            key_scale=key_scale,
+            query_scale=attention.ScaleQuery.default_config().set(scale_factor=query_scale_factor),
+            key_scale=attention.ScaleKey.default_config().set(scale_factor=key_scale_factor),
         )
         cfg.input_linear.layer.bias = False
         cfg.output_linear.bias = False
@@ -2056,30 +2227,36 @@ class MultiheadAttentionTest(TestCase):
         )
         return kwargs
 
-    @parameterized.product(query_scale=[None, 7], key_scale=[None, 11])
-    def test_scale_query_key(self, *, query_scale: Optional[float], key_scale: Optional[float]):
-        kwargs = self._scale_query_kwargs(query_scale=query_scale, key_scale=key_scale)
+    @parameterized.product(query_scale_factor=[None, 7], key_scale_factor=[None, 11])
+    def test_scale_query_key(
+        self, *, query_scale_factor: Optional[float], key_scale_factor: Optional[float]
+    ):
+        kwargs = self._scale_query_kwargs(
+            query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
+        )
         forward_outputs, _ = F(**kwargs)
-        if query_scale is None:
-            query_scale = kwargs["module"].per_head_dim() ** -0.5
-        if key_scale is None:
-            key_scale = 1
-        query_scale = float(query_scale)
-        key_scale = float(key_scale)
+        if query_scale_factor is None:
+            query_scale_factor = kwargs["module"].per_head_dim() ** -0.5
+        if key_scale_factor is None:
+            key_scale_factor = 1
+        query_scale_factor = float(query_scale_factor)
+        key_scale_factor = float(key_scale_factor)
         self.assertNestedAllClose(
             forward_outputs.probs[0, 0, 0, 0],
             # All ones matrix times all ones vector has l2 norm dim ** 1.5.
             # Half of input tokens are all ones, half are all zeros.
             jax.nn.sigmoid(
-                kwargs["inputs"]["query"].shape[-1] ** 3 * query_scale * key_scale,
+                kwargs["inputs"]["query"].shape[-1] ** 3 * query_scale_factor * key_scale_factor,
             )
             / (kwargs["inputs"]["query"].shape[1] // 2),
         )
 
     def test_scale_query_key_dim_dependence(self):
-        query_scale = config_for_function(attention.pow_scale_fn).set(exp=1)
-        key_scale = config_for_function(attention.pow_scale_fn).set(exp=-1)
-        kwargs = self._scale_query_kwargs(query_scale=query_scale, key_scale=key_scale)
+        query_scale_factor = config_for_function(attention.pow_scale_fn).set(exp=1)
+        key_scale_factor = config_for_function(attention.pow_scale_fn).set(exp=-1)
+        kwargs = self._scale_query_kwargs(
+            query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
+        )
         forward_outputs, _ = F(**kwargs)
         self.assertNestedAllClose(
             forward_outputs.probs[0, 0, 0, 0],
@@ -2095,11 +2272,13 @@ class MultiheadAttentionTest(TestCase):
         Note that even without the barrier, it's not clear that they would be combined.
         (They aren't on CPU even without the barrier.)
         """
-        query_scale = 7
-        key_scale = 11
-        kwargs = self._scale_query_kwargs(query_scale=query_scale, key_scale=key_scale)
+        query_scale_factor = 7
+        key_scale_factor = 11
+        kwargs = self._scale_query_kwargs(
+            query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
+        )
 
-        # Check optimized HLO scales by query_scale and key_scale as separate
+        # Check optimized HLO scales by query_scale_factor and key_scale_factor as separate
         # multiplications. This only checks the default backend, so it doesn't check
         # what happens on gpu/tpu unless jax is configured to use them.
         f = jax.jit(F, static_argnames=("module", "is_training"))
@@ -2112,9 +2291,9 @@ class MultiheadAttentionTest(TestCase):
         )
         hlo = f.lower(**kwargs).compile(compile_options).as_text()
         hlo = test_utils.clean_hlo(hlo)
-        self.assertIn(str(query_scale), hlo)
-        self.assertIn(str(key_scale), hlo)
-        self.assertNotIn(str(query_scale * key_scale), hlo)
+        self.assertIn(str(query_scale_factor), hlo)
+        self.assertIn(str(key_scale_factor), hlo)
+        self.assertNotIn(str(query_scale_factor * key_scale_factor), hlo)
 
 
 def oracle_xl_attention_logits(
@@ -2207,7 +2386,9 @@ class TransformerXLTest(TestCase):
             source_dim=model_dim,
             structure="postnorm",
             attention=MultiheadAttentionXL.default_config().set(
-                num_heads=num_heads, per_dim_scale=per_dim_scale, scale_position=scale_position
+                num_heads=num_heads,
+                query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
+                scale_position=scale_position,
             ),
         )
         cfg.attention.output_linear.bias = False
@@ -2227,7 +2408,7 @@ class TransformerXLTest(TestCase):
             jax.random.PRNGKey(1), [num_heads, model_dim // num_heads]
         )
         if per_dim_scale:
-            layer_params["attention"]["per_dim_scale"]["param"] = jax.random.normal(
+            layer_params["attention"]["scale_query"]["per_dim_scale"]["param"] = jax.random.normal(
                 jax.random.PRNGKey(2), [model_dim // num_heads]
             )
         layer_outputs, _ = F(
@@ -2239,12 +2420,12 @@ class TransformerXLTest(TestCase):
         )
         expected_vals = {
             str(None): {
-                MultiheadAttentionXL.ScalePosition.LOGIT.value: 48.55191,
-                MultiheadAttentionXL.ScalePosition.QUERY.value: 48.91095,
+                MultiheadAttentionXL.ScalePosition.LOGIT.value: 48.06005,
+                MultiheadAttentionXL.ScalePosition.QUERY.value: 48.08012,
             },
             str(PerDimScale.default_config()): {
-                MultiheadAttentionXL.ScalePosition.LOGIT.value: 46.327015,
-                MultiheadAttentionXL.ScalePosition.QUERY.value: 46.608315,
+                MultiheadAttentionXL.ScalePosition.LOGIT.value: 47.321579,
+                MultiheadAttentionXL.ScalePosition.QUERY.value: 47.870319,
             },
         }
         assert_allclose(
