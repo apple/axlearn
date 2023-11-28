@@ -1,0 +1,63 @@
+schemaVersion: 2.0
+timeout: 240
+
+# Configures the number of pipelines that can run in parallel. Max 16.
+# https://docs.aci.apple.com/rio/guide-to-rio/schema.html?highlight=concurrentbuild#guide-to-rio-schema-pipelines-jenkins-2-0
+jenkins:
+  concurrentBuild: true
+  maxConcurrentTotal: 16
+
+pipelines:
+
+# This pipeline will add all of our internal apple build decorators to the other branches. The most
+# important piece is committing rio.yaml files to each branch we are interested in because Rio is
+# designed to only build when it sees configuration on a given branch. There is no elegant method to
+# configure builds on one branch and trigger them on another.
+#
+# We will take the upstream branches such as main, prefix them as apple-main, and after adding our
+# build information and optional downstream forking patches, commit back to the repo.
+- name: 01-generate-rio-pipelines
+  branchName: apple-rio
+  machine:
+    baseImage: docker.apple.com/base-images/ubi9-minimal/ubi-minimal
+  trigger:
+    # Run once an hour, at a random but consistent offset.
+    timer: '@hourly'
+    # ... but also run if the build has changed
+    gitPush: true
+  build:
+    template: freestyle:v4:build
+    steps:
+      # This doesn't work when set in machine:env: anymore, but still seems to work here
+      # https://docs.aci.apple.com/rio/guide-to-rio/build-and-test/ssh-keys.html#rio-deploy-ssh-key
+      # We can expect to need to migrate to a different approach sometime soon
+      - export SSH_AUTH_SOCK=${SSH_AUTH_SOCK_DEPLOY_KEY}
+
+      # This provides git
+      - microdnf install -y git
+
+      # Set up variables for the helper script
+      - export GIT_COMMIT
+      - export GIT_PREVIOUS_SUCCESSFUL_COMMIT
+
+      - ./generate.sh main latest
+
+# Build and test (but don't publish) for every PR to master.
+- name: main-prb
+  branchName: apple-main
+  machine:
+    baseImage: docker.apple.com/base-images/ubi8/python3.8-builder
+    env:
+      DOCKER_BUILDKIT: "1"
+  build:
+    template: freestyle:v4:prb
+    steps: ["true"]
+  package:
+    dockerfile:
+    - dockerfilePath: Dockerfile
+      perApplication: false
+      target: ci
+      env:
+        TARGET: ci
+      context: .
+      version: ci-${GIT_BRANCH}-${GIT_HASH}
