@@ -309,6 +309,8 @@ class Model(BaseModel):
             "live_targets": live_targets,
             "num_targets": num_targets,
         }
+        self.add_summary("cross_entropy_loss", WeightedScalar(loss, num_targets))
+        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
         if self.config.aux_loss_regex is not None:
             aux_loss = self._aux_loss()  # `aux_loss` will be 0 if not computed in `module_outputs`.
             loss = loss + aux_loss  # `aux_loss` should already be scaled during its computation.
@@ -316,7 +318,6 @@ class Model(BaseModel):
             loss_collection["aux_loss"] = aux_loss
         loss_collection["loss"] = loss
         self.add_summary("loss", WeightedScalar(loss, num_targets))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
         return loss_collection
 
     def _constrain_input_batch(self, input_batch: NestedTensor):
