@@ -268,6 +268,8 @@ class DummyStateBuilder(TrainerStateBuilder):
 
 
 class TrainerTest(test_utils.TestCase):
+    """Tests SpmdTrainer."""
+
     def test_prune_empty_state(self):
         state = {
             "state": {
@@ -297,13 +299,11 @@ class TrainerTest(test_utils.TestCase):
         actual = _prune_empty(state)
         self.assertNestedAllClose(expected, actual)
 
-    def test_prune_backwards_compat(self):
-        """Test that pruning is backwards compatible with no pruning."""
-        # Construct a base trainer config.
-        cfg = SpmdTrainer.default_config().set(
+    def _trainer_config(self):
+        return SpmdTrainer.default_config().set(
             name="base_trainer",
             vlog=3,
-            dir=tempfile.mkdtemp(),
+            dir=tempfile.mkdtemp(),  # TODO(markblee): Use a context.
             mesh_axis_names=("data", "model"),
             mesh_shape=(1, 1),
             model=DummyModel.default_config().set(
@@ -328,6 +328,13 @@ class TrainerTest(test_utils.TestCase):
                 ),
             ),
         )
+
+    def test_prune_backwards_compat(self):
+        """Test that pruning is backwards compatible with no pruning."""
+        if not test_utils.is_supported_platform("cpu"):
+            return
+        # Construct a base trainer config.
+        cfg = self._trainer_config().set(mesh_shape=(1, 1))
         # Instantiate without pruning. We need to explicitly init dummy state in this case for
         # trainer to run.
         base_cfg = cfg.set(prune_empty_state_updates=False)
@@ -465,6 +472,34 @@ class TrainerTest(test_utils.TestCase):
         )
         # The prng_key per step is deterministic.
         np.testing.assert_array_equal(output_a["aux"]["prng_key"], output_b["aux"]["prng_key"])
+
+    def test_stop_on_exception(self):
+        """Test that trainer exits cleanly if there's an exception in the main loop."""
+        if not test_utils.is_supported_platform("cpu"):
+            return
+
+        class RaiseInput(DummyInput):
+            """A dummy input that raises an exception after N batches."""
+
+            @config_class
+            class Config(DummyInput.Config):
+                raise_on_batch: Required[int] = REQUIRED
+
+            def dataset(self):
+                cfg = self.config
+                for input_batch in super().dataset().take(cfg.raise_on_batch - 1):
+                    yield input_batch
+                raise ValueError(f"Raising on batch {cfg.raise_on_batch}")
+
+        cfg = self._trainer_config().set(max_step=3, watchdog_timeout_seconds=10)
+        cfg.input = RaiseInput.default_config().set(raise_on_batch=cfg.max_step - 1)
+        trainer: SpmdTrainer = cfg.instantiate(parent=None)
+        with self.assertRaisesRegex(ValueError, f"Raising on batch {cfg.input.raise_on_batch}"):
+            trainer.run(prng_key=jax.random.PRNGKey(123))
+        # pylint: disable=protected-access
+        self.assertTrue(trainer._watchdog_stopping.is_set())
+        self.assertIsNone(trainer._watchdog_thread)
+        # pylint: enable=protected-access
 
     def test_non_partitioned_model(self):
         if jax.default_backend() != "cpu":

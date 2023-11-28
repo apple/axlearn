@@ -296,8 +296,10 @@ class SpmdTrainer(Module):
     @contextlib.contextmanager
     def _watchdog(self):
         self._start_watchdog()
-        yield
-        self._stop_watchdog()
+        try:
+            yield
+        finally:
+            self._stop_watchdog()
 
     def _start_watchdog(self):
         cfg = self.config
