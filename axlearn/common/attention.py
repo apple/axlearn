@@ -1939,6 +1939,10 @@ class MultiheadAttentionXL(MultiheadAttention):
 
     def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
         cfg = self.config
+        with child_context("apply_query_norm", module=self):
+            # We apply the query norm (if configured) to the projection (not the logits).
+            q_proj = self.scale_query.apply_norm(q_proj)
+
         with child_context("apply_per_dim_scale", module=self):
             q_proj = self.scale_query.apply_per_dim_scale(q_proj)
 
