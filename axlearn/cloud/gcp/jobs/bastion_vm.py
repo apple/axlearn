@@ -347,7 +347,7 @@ def _job_history(*, bastion_name: str, job_name: str) -> str:
     spec_path_pattern = os.path.join(bastion_path, "jobs", "*", job_name)
     spec_paths = tf_io.gfile.glob(spec_path_pattern)
     if not spec_paths:
-        raise ValueError(f"Job spec not found in {spec_path_pattern}")
+        raise FileNotFoundError(f"Job spec not found in {spec_path_pattern}")
     for spec_path in spec_paths:
         with tf_io.gfile.GFile(spec_path, mode="r") as f:
             spec = "".join(f.readlines())
@@ -360,14 +360,15 @@ def _job_history(*, bastion_name: str, job_name: str) -> str:
 
 
 def _project_history(*, bastion_name: str, project_id: str) -> str:
-    path_pattern = os.path.join(
+    project_dir = os.path.join(
         output_dir(bastion_name),
         "history",
         "projects",
         project_id,
-        "*",
     )
-    paths = sorted(tf_io.gfile.glob(path_pattern))
+    if not tf_io.gfile.exists(project_dir):
+        raise FileNotFoundError(f"Project {project_id} not found at {project_dir}")
+    paths = sorted(tf_io.gfile.glob(os.path.join(project_dir, "*")))
     entries = []
     for path in paths[-2:]:
         with tf_io.gfile.GFile(path, mode="r") as f:
@@ -524,17 +525,19 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         if flag_values.job_name:
             # Print job history.
             history = _job_history(bastion_name=flag_values.name, job_name=flag_values.job_name)
-        elif len(argv) > 2:
-            # Print project history.
-            project_id = argv[2]
-            history = _project_history(bastion_name=flag_values.name, project_id=project_id)
         else:
-            limits = get_resource_limits(quota_file())
-            raise app.UsageError(
-                "The history command should be used with either a --job_name=<job> flag "
-                "or a <project_id> arg, where <project_id> can be one of "
-                f"{list(limits.project_resources.keys()) + ['none']}"
-            )
+            # Print project history.
+            if len(argv) > 2:
+                project_id = argv[2]
+            else:
+                project_id = "none"
+            try:
+                history = _project_history(bastion_name=flag_values.name, project_id=project_id)
+            except FileNotFoundError as e:
+                limits = get_resource_limits(quota_file())
+                raise FileNotFoundError(
+                    f"Available projects are {list(limits.project_resources.keys()) + ['none']}"
+                ) from e
         print(history)
     elif action == "set":
         try:
