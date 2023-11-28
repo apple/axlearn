@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import jax.random
 from absl import logging
+from absl.testing import absltest
 from jax.experimental.topologies import get_topology_desc
 
 from axlearn.common import test_utils
@@ -110,3 +111,7 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
             c4_trainer.named_trainer_configs()["fuji-test"](),
             compile_topology="v4-8",
         )
+
+
+if __name__ == "__main__":
+    absltest.main()
