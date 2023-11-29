@@ -13,7 +13,13 @@ import toml
 from absl.testing import parameterized
 
 from axlearn.cloud.common import bundler
-from axlearn.cloud.common.bundler import BaseTarBundler, Bundler, DockerBundler, get_bundler_config
+from axlearn.cloud.common.bundler import (
+    DEFAULT_DOCKER_PLATFORM,
+    BaseTarBundler,
+    Bundler,
+    DockerBundler,
+    get_bundler_config,
+)
 from axlearn.cloud.common.config import CONFIG_DIR, CONFIG_FILE, DEFAULT_CONFIG_FILE
 from axlearn.cloud.common.config_test import create_default_config
 from axlearn.common.test_utils import TestCase, TestWithTemporaryCWD
@@ -169,8 +175,8 @@ class DockerBundlerTest(TestWithTemporaryCWD):
         build_args = dict(a="a,b", b=("a", "b"), c=["a", "b"])
 
         def build_and_push(*, args, **kwargs):
-            del kwargs
             self.assertTrue(all(isinstance(x, str) for x in args.values()))
+            self.assertEqual(kwargs["platform"], DEFAULT_DOCKER_PLATFORM)
 
         with _fake_dockerfile() as dockerfile:
             b = (

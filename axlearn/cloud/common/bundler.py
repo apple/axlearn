@@ -47,6 +47,7 @@ from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 
 BUNDLE_EXCLUDE = ["venv", ".git", ".idea", ".cache", ".pytest_cache", ".pytype", "__pycache__"]
 FLAGS = flags.FLAGS
+DEFAULT_DOCKER_PLATFORM = "linux/amd64"
 
 
 class Bundler(Configurable):
@@ -197,6 +198,10 @@ class BaseDockerBundler(Bundler):
         build_args: Dict[str, str] = {}
         # Build target.
         target: Optional[str] = None
+        # Build target platform.
+        # Usually the image is to be run on the cloud on x86 machines, so
+        # "linux/amd64" is the default even on arm64 machines like Apple Silicon.
+        platform: str = DEFAULT_DOCKER_PLATFORM
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -225,6 +230,7 @@ class BaseDockerBundler(Bundler):
         - dockerfile: The Dockerfile path relative to project root.
         - image: The image name.
         - repo: The docker repo.
+        - platform: The image target platform.
 
         All other specs are treated as build args.
         """
@@ -300,6 +306,7 @@ class BaseDockerBundler(Bundler):
                 args=build_args,
                 context=str(temp_root),
                 labels=labels,
+                platform=cfg.platform,
             )
         return bundle_path
 
@@ -323,6 +330,7 @@ class BaseDockerBundler(Bundler):
         args: Dict[str, str],
         context: str,
         labels: Dict[str, str],
+        platform: str,
     ) -> str:
         """Builds and pushes the docker image.
 
@@ -332,6 +340,7 @@ class BaseDockerBundler(Bundler):
             args: Docker build args, e.g. as supplied via `--bundler_spec`.
             context: The full path to the temporary build context.
             labels: Docker labels.
+            platform: Docker image target platform.
 
         Returns:
             The full image tag of the built image. Will be returned from `bundle` as the bundle ID.
@@ -354,6 +363,7 @@ class DockerBundler(BaseDockerBundler):
         args: Dict[str, str],
         context: str,
         labels: Dict[str, str],
+        platform: str,
     ) -> str:
         return docker_push(
             docker_build(
@@ -363,6 +373,7 @@ class DockerBundler(BaseDockerBundler):
                 context=context,
                 target=self.config.target,
                 labels=labels,
+                platform=platform,
             )
         )
 

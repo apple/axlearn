@@ -21,6 +21,7 @@ def build(
     args: Optional[Dict[str, str]] = None,
     target: Optional[str] = None,
     labels: Optional[Dict[str, str]] = None,
+    platform: Optional[str] = None,
 ) -> str:
     """Builds a Dockerfile.
 
@@ -32,6 +33,8 @@ def build(
         target: Optional build target.
             https://docs.docker.com/engine/reference/commandline/build/#specifying-target-build-stage---target
         labels: Optional image labels. Can be viewed with `docker inspect`.
+        platform: Optional target platform for the build output.
+            https://docs.docker.com/build/building/multi-platform/
 
     Returns:
         The image name.
@@ -47,6 +50,8 @@ def build(
         cli_args.extend(["--label", f"{k.strip()}={v.strip()}"])
     if target:
         cli_args.extend(["--target", target])
+    if platform:
+        cli_args.extend(["--platform", platform])
     cli_args.append(context)
 
     # Execute command.
