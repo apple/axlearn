@@ -992,27 +992,46 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
     @parameterized.product(
         dtype=(jnp.float32, jnp.bfloat16),
         max_seq_len=(100, 6),
+        input_linear=(
+            None,
+            attention.QKVLinear.default_config(),
+            attention.GroupedQKVLinear.default_config(),
+        ),
     )
-    def test_roformer_qkv_linear(self, dtype: jnp.dtype, max_seq_len: int):
+    def test_roformer_qkv_linear(
+        self, dtype: jnp.dtype, max_seq_len: int, input_linear: attention.BaseQKVLinear.Config
+    ):
         seq_len = 6
         batch_size = 2
         model_dim = 16
         num_heads = 4
         per_head_dim = model_dim // num_heads
+        roformer_qkv_linear_kwargs = {
+            "name": "roformer_qkv_linear",
+            "max_seq_length": max_seq_len,
+            "query_dim": model_dim,
+            "key_dim": model_dim,
+            "value_dim": model_dim,
+            "num_heads": num_heads,
+            "per_head_dim": per_head_dim,
+            "rotary_value": False,
+        }
+        num_kv_heads = num_heads
+        if input_linear is not None:
+            if isinstance(input_linear, attention.GroupedQKVLinear.Config):
+                num_kv_heads = num_heads // 2
+                input_linear = input_linear.set(num_kv_heads=num_kv_heads)
+            roformer_qkv_linear_kwargs["input_linear"] = input_linear
+
         roformer_qkv_linear = (
             RoFormerQKVLinear.default_config()
-            .set(
-                name="roformer_qkv_linear",
-                max_seq_length=max_seq_len,
-                query_dim=model_dim,
-                key_dim=model_dim,
-                value_dim=model_dim,
-                num_heads=num_heads,
-                per_head_dim=per_head_dim,
-                rotary_value=False,
-            )
+            .set(**roformer_qkv_linear_kwargs)
             .instantiate(parent=None)
         )
+
+        # Check that we see the num kv heads is propagated from child input linear.
+        self.assertEqual(roformer_qkv_linear.num_kv_heads, num_kv_heads)
+
         query = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, model_dim))
         key = jax.random.uniform(jax.random.PRNGKey(2), shape=(batch_size, seq_len, model_dim))
         value = jax.random.uniform(jax.random.PRNGKey(3), shape=(batch_size, seq_len, model_dim))

@@ -590,7 +590,7 @@ class BaseQKVLinear(BaseLayer):
 
     @property
     def num_kv_heads(self):
-        return self.config.num_heads
+        raise NotImplementedError(type(self))
 
     def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
         cfg = self.config
@@ -778,6 +778,10 @@ class QKVLinear(BaseQKVLinear):
             proj_cfg.per_head_dim = cfg.per_head_dim
             self._add_child(f"{name}_proj", proj_cfg)
 
+    @property
+    def num_kv_heads(self):
+        return self.config.num_heads
+
     def forward(
         self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
     ) -> BaseQKVLinear.Output:
@@ -850,6 +854,10 @@ class FusedQKVLinear(BaseQKVLinear):
         proj_cfg.num_heads = cfg.num_heads
         proj_cfg.per_head_dim = cfg.per_head_dim
         self._add_child("qkv_proj", proj_cfg)
+
+    @property
+    def num_kv_heads(self):
+        return self.config.num_heads
 
     def create_parameter_specs_recursively(self) -> NestedParameterSpec:
         specs = VDict(**super().create_parameter_specs_recursively())
@@ -1140,6 +1148,11 @@ class RoFormerQKVLinear(BaseQKVLinear):
                 per_head_dim=cfg.per_head_dim,
             ),
         )
+
+    @property
+    def num_kv_heads(self):
+        """Propagate num KV heads from input linear."""
+        return self.i_proj.num_kv_heads
 
     def forward(
         self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
