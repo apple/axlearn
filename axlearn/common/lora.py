@@ -508,6 +508,10 @@ class LoraFusedQKVLinear(BaseQKVLinear):
             ),
         )
 
+    @property
+    def num_kv_heads(self):
+        return self.layer.num_kv_heads
+
     def forward(
         self,
         query: Tensor,
