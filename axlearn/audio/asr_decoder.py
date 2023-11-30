@@ -29,37 +29,36 @@ from axlearn.common.utils import Nested, Tensor
 
 
 def is_valid_ctc_seq(logitpaddings, labels, labelpaddings):
-  """Returns for per example sequence if it passes validity check.
+    """Returns for per example sequence if it passes validity check.
 
-  Note that the above `ctc_loss_with_alignments` returns logeps
-  (usually a very large number) if the input length is smaller than
-  the label length plus number of consectutive duplications.
-  However, in that case, we should ignore the loss.
+    Note that the above `ctc_loss_with_alignments` returns logeps
+    (usually a very large number) if the input length is smaller than
+    the label length plus number of consectutive duplications.
+    However, in that case, we should ignore the loss.
 
-  A validity check is passed if for an example when :
-    input.length >= labels.length + num(consecutive dup label tokens)
+    A validity check is passed if for an example when :
+      input.length >= labels.length + num(consecutive dup label tokens)
 
-  Args:
-    logitpaddings:  [b, t], 0/1 JTensor.
-    labels:         [b, t], int32 JTensor.
-    labelpaddings:  [b, t], 0/1 JTensor.
-  Returns:
-    A shape [b] float tensor indicating if each (input, label) pair is valid,
-      with a value of 1.0 indicating valid and 0.0 otherwise.
-  """
-  # [b]
-  label_lengths = jnp.sum(1.0 - labelpaddings, axis=-1)
-  # [b]
-  input_lengths = jnp.sum(1.0 - logitpaddings, axis=-1)
-  # [b, t-1]
-  dups = (1.0 - labelpaddings[:, 1:]) * (labels[:, :-1] == labels[:, 1:])
-  # [b]
-  num_consecutive_dups = jnp.sum(dups, axis=-1)
-  # [b]
-  is_valid = (label_lengths + num_consecutive_dups) <= input_lengths
-  is_valid = is_valid.astype(jnp.float32)
-  return is_valid
-
+    Args:
+      logitpaddings:  [b, t], 0/1 JTensor.
+      labels:         [b, t], int32 JTensor.
+      labelpaddings:  [b, t], 0/1 JTensor.
+    Returns:
+      A shape [b] float tensor indicating if each (input, label) pair is valid,
+        with a value of 1.0 indicating valid and 0.0 otherwise.
+    """
+    # [b]
+    label_lengths = jnp.sum(1.0 - labelpaddings, axis=-1)
+    # [b]
+    input_lengths = jnp.sum(1.0 - logitpaddings, axis=-1)
+    # [b, t-1]
+    dups = (1.0 - labelpaddings[:, 1:]) * (labels[:, :-1] == labels[:, 1:])
+    # [b]
+    num_consecutive_dups = jnp.sum(dups, axis=-1)
+    # [b]
+    is_valid = (label_lengths + num_consecutive_dups) <= input_lengths
+    is_valid = is_valid.astype(jnp.float32)
+    return is_valid
 
 
 class CTCPrefixMerger(PrefixMerger):

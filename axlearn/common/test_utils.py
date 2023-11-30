@@ -56,7 +56,7 @@ from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 _default_prng_impl = "rbg"
 _PYTEST_OPT_REGISTERED = {}
 
-_dtype = lambda x: getattr(x, 'dtype', None) or np.asarray(x).dtype
+_dtype = lambda x: getattr(x, "dtype", None) or np.asarray(x).dtype
 
 
 def assert_allclose(actual, desired, atol=1e-6, rtol=1e-3, err_msg=""):
@@ -198,11 +198,12 @@ class TestCase(parameterized.TestCase):
             ref_layer(**ref_inputs) if isinstance(ref_inputs, dict) else ref_layer(ref_inputs)
         )
         return test_outputs, ref_outputs
-    
+
     def assertDtypesMatch(self, x, y):
         self.assertEqual(
             jax.dtypes.canonicalize_dtype(_dtype(x)),
-            jax.dtypes.canonicalize_dtype(_dtype(y)),)
+            jax.dtypes.canonicalize_dtype(_dtype(y)),
+        )
 
     def assertNestedAllClose(self, a, b, atol=1e-6, rtol=1e-3):
         a_items = sorted(flatten_items(a), key=lambda x: x[0])
@@ -237,8 +238,7 @@ class TestCase(parameterized.TestCase):
             if hasattr(a_value, "dtype"):
                 self.assertEqual(a_value.dtype, b_value.dtype)
 
-    def assertAllClose(
-      self, x, y, check_dtypes=True, rtol=1e-5, atol=1e-5, **kwargs):
+    def assertAllClose(self, x, y, check_dtypes=True, rtol=1e-5, atol=1e-5, **kwargs):
         """Wrapper for np.testing.assert_allclose()."""
         x = np.asarray(x)
         y = np.asarray(y)
