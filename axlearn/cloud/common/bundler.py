@@ -47,7 +47,7 @@ from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 
 BUNDLE_EXCLUDE = ["venv", ".git", ".idea", ".cache", ".pytest_cache", ".pytype", "__pycache__"]
 FLAGS = flags.FLAGS
-DEFAULT_DOCKER_PLATFORM = "linux/amd64"
+_DEFAULT_DOCKER_PLATFORM = "linux/amd64"
 
 
 class Bundler(Configurable):
@@ -201,7 +201,7 @@ class BaseDockerBundler(Bundler):
         # Build target platform.
         # Usually the image is to be run on the cloud on x86 machines, so
         # "linux/amd64" is the default even on arm64 machines like Apple Silicon.
-        platform: str = DEFAULT_DOCKER_PLATFORM
+        platform: str = _DEFAULT_DOCKER_PLATFORM
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)

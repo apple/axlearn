@@ -14,7 +14,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud.common import bundler
 from axlearn.cloud.common.bundler import (
-    DEFAULT_DOCKER_PLATFORM,
+    _DEFAULT_DOCKER_PLATFORM,
     BaseTarBundler,
     Bundler,
     DockerBundler,
@@ -176,7 +176,7 @@ class DockerBundlerTest(TestWithTemporaryCWD):
 
         def build_and_push(*, args, **kwargs):
             self.assertTrue(all(isinstance(x, str) for x in args.values()))
-            self.assertEqual(kwargs["platform"], DEFAULT_DOCKER_PLATFORM)
+            self.assertEqual(kwargs["platform"], _DEFAULT_DOCKER_PLATFORM)
 
         with _fake_dockerfile() as dockerfile:
             b = (
