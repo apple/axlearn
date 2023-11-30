@@ -28,31 +28,35 @@ from axlearn.common.module import Module
 from axlearn.common.utils import Nested, Tensor
 
 
-def is_valid_ctc_seq(logitpaddings, labels, labelpaddings):
+def _is_valid_ctc_seq(
+        paddings: Tensor,
+        target_labels: Tensor,
+        target_paddings: Tensor) -> Tensor:
     """Returns for per example sequence if it passes validity check.
 
-    Note that the above `ctc_loss_with_alignments` returns logeps
-    (usually a very large number) if the input length is smaller than
-    the label length plus number of consectutive duplications.
-    However, in that case, we should ignore the loss.
+    Note that `optax.ctc_loss` returns logeps (default to 1e5) if the
+    input length is smaller than the label length plus number of 
+    consectutive duplications. However, in that case, we should 
+    ignore the loss.
 
     A validity check is passed if for an example when :
       input.length >= labels.length + num(consecutive dup label tokens)
 
     Args:
-      logitpaddings:  [b, t], 0/1 JTensor.
-      labels:         [b, t], int32 JTensor.
-      labelpaddings:  [b, t], 0/1 JTensor.
+      paddings:              [b, t], 0/1 Tensor.
+      target_labels:         [b, t], int32 Tensor.
+      target_paddings:       [b, t], 0/1 Tensor.
+
     Returns:
       A shape [b] float tensor indicating if each (input, label) pair is valid,
-        with a value of 1.0 indicating valid and 0.0 otherwise.
+      with a value of 1.0 indicating valid and 0.0 otherwise.
     """
     # [b]
-    label_lengths = jnp.sum(1.0 - labelpaddings, axis=-1)
+    label_lengths = jnp.sum(1.0 - target_paddings, axis=-1)
     # [b]
-    input_lengths = jnp.sum(1.0 - logitpaddings, axis=-1)
+    input_lengths = jnp.sum(1.0 - paddings, axis=-1)
     # [b, t-1]
-    dups = (1.0 - labelpaddings[:, 1:]) * (labels[:, :-1] == labels[:, 1:])
+    dups = (1.0 - target_paddings[:, 1:]) * (target_labels[:, :-1] == target_labels[:, 1:])
     # [b]
     num_consecutive_dups = jnp.sum(dups, axis=-1)
     # [b]
@@ -218,7 +222,7 @@ class CTCDecoderModel(BaseModel):
         )
 
         # Drop examples with targets longer than inputs.
-        per_example_weight = is_valid_ctc_seq(paddings, target_labels, target_paddings)
+        per_example_weight = _is_valid_ctc_seq(paddings, target_labels, target_paddings)
         per_example_weight = per_example_weight.astype(per_example_loss.dtype)
 
         # Compute weighted loss.
