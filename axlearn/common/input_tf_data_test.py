@@ -743,13 +743,20 @@ class RekeyTest(test_utils.TestCase):
     def _ds_fn(self) -> tf.data.Dataset:
         def data_gen():
             for value in self.DEFAULT_VALUES:
-                yield {"key1": value, "key2": value}
+                yield {
+                    "key1": value,
+                    "key2": value,
+                    "key3/key4": value,
+                    "key5": {"key6": value},
+                }
 
         return tf.data.Dataset.from_generator(
             data_gen,
             output_signature={
                 "key1": tf.TensorSpec(shape=(), dtype=tf.string),
                 "key2": tf.TensorSpec(shape=(), dtype=tf.string),
+                "key3/key4": tf.TensorSpec(shape=(), dtype=tf.string),
+                "key5": {"key6": tf.TensorSpec(shape=(), dtype=tf.string)},
             },
         )
 
@@ -759,17 +766,42 @@ class RekeyTest(test_utils.TestCase):
         for ix, el in enumerate(ds):
             self.assertEqual(el["key1"], self.DEFAULT_VALUES[ix])
             self.assertEqual(el["key2"], self.DEFAULT_VALUES[ix])
+            self.assertEqual(el["key3/key4"], self.DEFAULT_VALUES[ix])
+            self.assertEqual(el["key5"]["key6"], self.DEFAULT_VALUES[ix])
 
-    def test_rekey_maps_new_keys(self):
+    @parameterized.parameters(
+        dict(
+            key_map={"new_key1": "key1", "new_key2": "key2", "new_key3": "key3"},
+            default_value="no",
+            expected=[
+                {"new_key1": "hello", "new_key2": "hello", "new_key3": "no"},
+                {"new_key1": "world", "new_key2": "world", "new_key3": "no"},
+            ],
+        ),
+        # Test rekey paths.
+        dict(
+            key_map={
+                # Maps the literal "key3/key4" to "key3": {"key4": ...}.
+                "key3.key4": "key3/key4",
+                # Maps "key5": {"key6": ...} to the literal "key5/key6".
+                "key5/key6": "key5.key6",
+                # Injects a new "key7": {"key8": ...}.
+                "key7.key8": "unknown",
+            },
+            separator=".",
+            default_value="no",
+            expected=[
+                {"key3": {"key4": "hello"}, "key5/key6": "hello", "key7": {"key8": "no"}},
+                {"key3": {"key4": "world"}, "key5/key6": "world", "key7": {"key8": "no"}},
+            ],
+        ),
+    )
+    def test_rekey_maps_new_keys(self, expected: Sequence[dict], **kwargs):
         ds = self._ds_fn()
-        ds = rekey(
-            {"new_key1": "key1", "new_key2": "key2", "new_key3": "key3"}, default_value="no"
-        )(ds)
-        for ix, el in enumerate(ds):
-            self.assertEqual(set(el.keys()), {"new_key1", "new_key2", "new_key3"})
-            self.assertEqual(el["new_key1"], self.DEFAULT_VALUES[ix])
-            self.assertEqual(el["new_key2"], self.DEFAULT_VALUES[ix])
-            self.assertEqual(el["new_key3"], "no")
+        ds = rekey(**kwargs)(ds)
+        actual = list(ds)
+        expected = tf.nest.map_structure(tf.constant, expected)
+        self.assertNestedEqual(expected, actual)
 
     def test_rekey_changes_element_spec(self):
         ds = self._ds_fn()
@@ -797,9 +829,13 @@ class RekeyTest(test_utils.TestCase):
             {"new_key1": "key1", "new_key2": None}, default_value="no", retain_original_inputs=True
         )(ds)
         for ix, el in enumerate(ds):
-            self.assertEqual(set(el.keys()), {"key1", "key2", "new_key1", "new_key2"})
+            self.assertEqual(
+                set(el.keys()), {"key1", "key2", "new_key1", "new_key2", "key3/key4", "key5"}
+            )
             self.assertEqual(el["key1"], self.DEFAULT_VALUES[ix])
             self.assertEqual(el["key2"], self.DEFAULT_VALUES[ix])
+            self.assertEqual(el["key3/key4"], self.DEFAULT_VALUES[ix])
+            self.assertEqual(el["key5"]["key6"], self.DEFAULT_VALUES[ix])
             self.assertEqual(el["new_key1"], self.DEFAULT_VALUES[ix])
             self.assertEqual(el["new_key2"], "no")
 
