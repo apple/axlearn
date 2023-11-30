@@ -10,12 +10,15 @@ import numpy as np
 import torch
 from absl.testing import parameterized
 from jax import numpy as jnp
+import optax
+
 
 from axlearn.audio.asr_decoder import (
     CTCDecoderModel,
     CTCPrefixMerger,
     DecodeOutputs,
     _map_label_sequences,
+    is_valid_ctc_seq
 )
 from axlearn.common.config import config_for_function
 from axlearn.common.decoder import _scores_from_logits
@@ -87,6 +90,80 @@ class UtilsTest(TestCase):
             expected,
             jit_fn(inputs, blank_id=blank_id, pad_id=pad_id),
         )
+
+class ValidCtcSeqTest(TestCase):
+
+  def get_logits_and_labels(self, batchsize, timesteps, labelsteps, nclasses):
+    logits = np.random.randn(batchsize, timesteps, nclasses)
+    logitpaddings = np.zeros((batchsize, timesteps), dtype=np.int32)
+    labels = np.random.randint(
+        1, nclasses, size=(batchsize, labelsteps)
+    ).astype(np.int32)
+    labelpaddings = np.zeros((batchsize, labelsteps), dtype=np.int32)
+    return logits, logitpaddings, labels, labelpaddings
+
+  def test_label_longer_than_input(self):
+    batchsize = 4
+    timesteps = 10
+    labelsteps = 11
+    nclasses = 400
+    # generate logits and labels, which has logits shorter than labels
+    logits, logitpaddings, labels, labelpaddings = self.get_logits_and_labels(
+        batchsize, timesteps, labelsteps, nclasses
+    )
+    per_seq_loss = optax.ctc_loss(
+        logits, logitpaddings, labels, labelpaddings, blank_id=0)
+    print(per_seq_loss)
+    # they are very close to `logepsilon` (default in optax is -1e5)
+    per_seq_validality = is_valid_ctc_seq(logitpaddings, labels, labelpaddings)
+    self.assertAllClose(per_seq_validality, [0.0] * batchsize)
+
+  def test_label_shorter_than_input(self):
+    batchsize = 4
+    timesteps = 15
+    labelsteps = 10
+    nclasses = 400
+    logits, logitpaddings, _, labelpaddings = self.get_logits_and_labels(
+        batchsize, timesteps, labelsteps, nclasses
+    )
+    # to make sure there is no duplicate in the labels
+    labels = np.tile(np.arange(labelsteps)[np.newaxis, :], [batchsize, 1])
+
+    per_seq_loss = optax.ctc_loss(
+        logits, logitpaddings, labels, labelpaddings)
+    # per_seq_loss in this case looks normal, it should be around log(400)*15
+    print(per_seq_loss)
+    per_seq_validality = is_valid_ctc_seq(logitpaddings, labels, labelpaddings)
+    self.assertAllClose(per_seq_validality, [1.0] * batchsize)
+
+  def test_label_with_duplicates(self):
+    batchsize = 4
+    timesteps = 12
+    labelsteps = 10
+    nclasses = 400
+    logits, logitpaddings, _, labelpaddings = self.get_logits_and_labels(
+        batchsize, timesteps, labelsteps, nclasses
+    )
+    # there are 12 timesteps, and 10 labels. If the consecutive duplicates in
+    # one sequence is larger than 2, then the pair become non-valid
+    labels = np.array(
+        [
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],  # no duplicates
+            [0, 0, 1, 1, 2, 3, 4, 5, 6, 7],  # 2 duplicates
+            [0, 0, 0, 1, 1, 2, 3, 4, 5, 6],  # 3 duplicates -> invalid seq
+            [0, 0, 1, 1, 2, 3, 4, 5, 6, 6],
+            # 2 duplicates, since the last 6 is a padding
+        ],
+        dtype=np.int32,
+    )
+    labelpaddings[3, 9:] = 1
+    per_seq_loss = optax.ctc_loss(
+        logits, logitpaddings, labels, labelpaddings)
+    # per_seq_loss[0:1] and per_seq_loss[3] should near log(400) * 15, while
+    # per_seq_loss[2] should be around logepsilon
+    print(per_seq_loss)
+    per_seq_validality = is_valid_ctc_seq(logitpaddings, labels, labelpaddings)
+    self.assertAllClose(per_seq_validality, [1.0, 1.0, 0.0, 1.0])
 
 
 class CTCPrefixMergerTest(TestCase):
