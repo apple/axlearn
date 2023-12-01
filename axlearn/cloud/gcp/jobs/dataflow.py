@@ -29,7 +29,7 @@ Examples:
     axlearn gcp dataflow start \
         --name=$USER-dataflow \
         --bundler_spec=dockerfile=Dockerfile \
-        --bundler_spec=base_image=apache/beam_python3.8_sdk:2.38.0 \
+        --bundler_spec=base_image=apache/beam_python3.10_sdk:2.52.0 \
         --bundler_spec=target=dataflow \
         -- "'
         python3 -m apache_beam.examples.wordcount \
@@ -52,7 +52,7 @@ Examples:
             --name=$USER-dataflow \
             --dataflow_spec=runner=DirectRunner \
             --bundler_spec=dockerfile=Dockerfile \
-            --bundler_spec=base_image=apache/beam_python3.8_sdk:2.38.0 \
+            --bundler_spec=base_image=apache/beam_python3.10_sdk:2.52.0 \
             --bundler_spec=target=dataflow \
             -- "'
             rm -r /tmp/output_dir; \
@@ -131,6 +131,11 @@ class DataflowJob(GCPJob):
     class Config(GCPJob.Config):
         # Worker VM type.
         vm_type: Required[str] = REQUIRED
+        # Setup command. This is used to prepare the local machine for running `cfg.command`,
+        # including installing docker (if not already present) and building the worker image.
+        # `cfg.command` will then be run within the worker image, to ensure a consistent build +
+        # execute environment.
+        setup_command: Required[str] = REQUIRED
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
@@ -168,9 +173,8 @@ class DataflowJob(GCPJob):
         dataflow_flags = " ".join(
             sorted(flags.flag_dict_to_args(dataflow_spec, multi_flags=multi_flags))
         )
-        dataflow_cmd = f"{cfg.command} {dataflow_flags}"
-
-        cfg.command = f"{docker_setup_cmd} && {docker_auth_cmd} && {bundle_cmd} && {dataflow_cmd}"
+        cfg.setup_command = f"{docker_setup_cmd} && {docker_auth_cmd} && {bundle_cmd}"
+        cfg.command = f"{cfg.command} {dataflow_flags}"
         return cfg
 
     @classmethod
@@ -225,7 +229,15 @@ class DataflowJob(GCPJob):
 
     def _execute(self):
         cfg: DataflowJob.Config = self.config
-        cmd = f"bash -c {shlex.quote(cfg.command)}"
+
+        # Run the setup command locally, but the launch command via docker.
+        # This is to ensure that the launch environment matches the worker environment.
+        cmd = (
+            "docker run --rm --entrypoint /bin/bash "
+            f"{self._bundler.id(cfg.name)} -c '{cfg.command}'"
+        )
+        cmd = f"{cfg.setup_command} && {cmd}"
+        cmd = f"bash -c {shlex.quote(cmd)}"
         logging.info("Executing in subprocess: %s", cmd)
         with subprocess.Popen(cmd, shell=True, text=True) as proc:
             # Attempt to cleanup the process when exiting.
@@ -241,12 +253,17 @@ class DataflowJob(GCPJob):
 
 def _docker_bundler_to_flags(cfg: DockerBundler.Config) -> List[str]:
     """Converts docker bundler config to a string of flags."""
+    # TODO(markblee): Add a config to_spec() method to mirror from_spec().
     spec_flags = [
         f"--bundler_type={cfg.klass.TYPE}",
         f"--bundler_spec=dockerfile={cfg.dockerfile}",
         f"--bundler_spec=image={cfg.image}",
         f"--bundler_spec=repo={cfg.repo}",
     ]
+    if cfg.target:
+        spec_flags.append(f"--bundler_spec=target={cfg.target}")
+    if cfg.platform:
+        spec_flags.append(f"--bundler_spec=platform={cfg.platform}")
     spec_flags += [f"--bundler_spec={k}={v}" for k, v in cfg.build_args.items()]
     return spec_flags
 

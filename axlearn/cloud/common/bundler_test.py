@@ -13,13 +13,7 @@ import toml
 from absl.testing import parameterized
 
 from axlearn.cloud.common import bundler
-from axlearn.cloud.common.bundler import (
-    _DEFAULT_DOCKER_PLATFORM,
-    BaseTarBundler,
-    Bundler,
-    DockerBundler,
-    get_bundler_config,
-)
+from axlearn.cloud.common.bundler import BaseTarBundler, Bundler, DockerBundler, get_bundler_config
 from axlearn.cloud.common.config import CONFIG_DIR, CONFIG_FILE, DEFAULT_CONFIG_FILE
 from axlearn.cloud.common.config_test import create_default_config
 from axlearn.common.test_utils import TestCase, TestWithTemporaryCWD
@@ -165,33 +159,43 @@ class DockerBundlerTest(TestWithTemporaryCWD):
         cfg.set(image="test", repo="test", dockerfile="test")
         cfg.instantiate()
 
-    @mock.patch(f"{bundler.__name__}.running_from_source", return_value=False)
-    @mock.patch(f"{bundler.__name__}.get_git_status", return_value="")
-    def test_build_args(self, *mocks):
-        del mocks
-        _create_dummy_config(self._temp_root.name)
+    @parameterized.product(
+        platform=[None, "test-platform"],
+        target=[None, "test-target"],
+    )
+    def test_build_and_push(self, platform, target):
+        def mock_build(**kwargs):
+            # All build args should be strings.
+            self.assertTrue(all(isinstance(x, str) for x in kwargs["args"].values()))
+            self.assertEqual(kwargs["target"], target)
+            self.assertEqual(kwargs["platform"], platform)
 
-        # Ensure that docker bundler works whether build args are specified as strings or lists.
-        build_args = dict(a="a,b", b=("a", "b"), c=["a", "b"])
+        with mock.patch.multiple(
+            bundler.__name__,
+            running_from_source=mock.Mock(return_value=False),
+            get_git_status=mock.Mock(return_value=""),
+            docker_push=mock.Mock(return_value=123),
+            docker_build=mock.Mock(side_effect=mock_build),
+        ):
+            _create_dummy_config(self._temp_root.name)
 
-        def build_and_push(*, args, **kwargs):
-            self.assertTrue(all(isinstance(x, str) for x in args.values()))
-            self.assertEqual(kwargs["platform"], _DEFAULT_DOCKER_PLATFORM)
+            # Ensure that docker bundler works whether build args are specified as strings or lists.
+            build_args = dict(a="a,b", b=("a", "b"), c=["a", "b"])
 
-        with _fake_dockerfile() as dockerfile:
-            b = (
-                DockerBundler.default_config()
-                .set(
-                    image="test",
-                    repo="FAKE_REPO",
-                    dockerfile=str(dockerfile),
-                    build_args=build_args,
+            with _fake_dockerfile() as dockerfile:
+                b = (
+                    DockerBundler.default_config()
+                    .set(
+                        image="test",
+                        repo="FAKE_REPO",
+                        dockerfile=str(dockerfile),
+                        build_args=build_args,
+                        platform=platform,
+                        target=target,
+                    )
+                    .instantiate()
                 )
-                .instantiate()
-            )
-            with mock.patch.object(b, "_build_and_push", side_effect=build_and_push) as mock_push:
-                b.bundle("FAKE_TAG")
-                mock_push.assert_called()
+                self.assertEqual(b.bundle("FAKE_TAG"), 123)
 
     @parameterized.parameters(dict(running_from_source=True), dict(running_from_source=False))
     @mock.patch(f"{bundler.__name__}.get_git_revision", return_value="FAKE_REVISION")

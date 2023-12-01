@@ -199,9 +199,9 @@ class BaseDockerBundler(Bundler):
         # Build target.
         target: Optional[str] = None
         # Build target platform.
-        # Usually the image is to be run on the cloud on x86 machines, so
-        # "linux/amd64" is the default even on arm64 machines like Apple Silicon.
-        platform: str = _DEFAULT_DOCKER_PLATFORM
+        # Usually the image is to be run on the cloud on x86 machines, so "linux/amd64" is the
+        # default even on arm64 machines like Apple Silicon. If None, let docker pick the platform.
+        platform: Optional[str] = _DEFAULT_DOCKER_PLATFORM
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -306,7 +306,6 @@ class BaseDockerBundler(Bundler):
                 args=build_args,
                 context=str(temp_root),
                 labels=labels,
-                platform=cfg.platform,
             )
         return bundle_path
 
@@ -330,7 +329,6 @@ class BaseDockerBundler(Bundler):
         args: Dict[str, str],
         context: str,
         labels: Dict[str, str],
-        platform: str,
     ) -> str:
         """Builds and pushes the docker image.
 
@@ -340,7 +338,6 @@ class BaseDockerBundler(Bundler):
             args: Docker build args, e.g. as supplied via `--bundler_spec`.
             context: The full path to the temporary build context.
             labels: Docker labels.
-            platform: Docker image target platform.
 
         Returns:
             The full image tag of the built image. Will be returned from `bundle` as the bundle ID.
@@ -363,17 +360,17 @@ class DockerBundler(BaseDockerBundler):
         args: Dict[str, str],
         context: str,
         labels: Dict[str, str],
-        platform: str,
     ) -> str:
+        cfg = self.config
         return docker_push(
             docker_build(
                 dockerfile=dockerfile,
                 image=image,
                 args=args,
                 context=context,
-                target=self.config.target,
+                target=cfg.target,
                 labels=labels,
-                platform=platform,
+                platform=cfg.platform,
             )
         )
 
