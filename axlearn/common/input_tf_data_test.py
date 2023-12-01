@@ -355,22 +355,18 @@ class TfdsTest(parameterized.TestCase):
 
 
 def _text_ds(texts: List[str], *, repeat=1) -> tf.data.Dataset:
-    # TODO(markblee): consider de-duping these ds_fns.
-    # pylint: disable=duplicate-code
-    def data_gen():
-        for _ in range(repeat):
-            for index, text in enumerate(texts):
-                yield {"text": text, "index": index, "is_valid": True}
+    dataset = {
+        "text": [],
+        "index": [],
+        "is_valid": [],
+    }
 
-    return tf.data.Dataset.from_generator(
-        data_gen,
-        output_signature={
-            "text": tf.TensorSpec(shape=(), dtype=tf.string),
-            "index": tf.TensorSpec(shape=(), dtype=tf.int32),
-            "is_valid": tf.TensorSpec(shape=(), dtype=tf.bool),
-        },
-    )
-    # pylint: enable=duplicate-code
+    for index, text in enumerate(texts):
+        dataset["index"].append(tf.constant(index, dtype=tf.int32))
+        dataset["text"].append(tf.constant(text, dtype=tf.string))
+        dataset["is_valid"].append(tf.constant(True, dtype=tf.bool))
+
+    return tf.data.Dataset.from_tensor_slices(dataset).repeat(repeat)
 
 
 class PadTest(test_utils.TestCase):
