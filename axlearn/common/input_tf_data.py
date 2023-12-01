@@ -45,6 +45,8 @@ from axlearn.common.utils import (
     Tensor,
     as_numpy_array,
     get_data_dir,
+    get_recursively,
+    set_recursively,
 )
 
 
@@ -907,39 +909,55 @@ def rekey(
     key_map: Dict[str, str],
     default_value: Optional[Any] = "",
     retain_original_inputs: bool = False,
+    separator: Optional[str] = None,
 ) -> DatasetToDatasetFn:
     """Replace the feature keys according to mapping in `key_map`.
 
     Like seqio's rekey, except:
         1. We allow for a configurable default value
             (used if the reference key is falsey--e.g. None--or if missing in the input example).
-        2. We optionally allow retain keys not explicitly mentioned in the key-map.
+        2. We optionally allow retaining keys not explicitly mentioned in the key-map.
+        3. We optionally allow keys to be paths (if separator is provided).
 
     Ref: <https://github.com/google/seqio/blob/9748501b/seqio/preprocessors.py#L30-L52>
 
     Args:
-        key_map: dictionary mapping new keys to original keys.
+        key_map: A dictionary mapping new keys to original keys.
             If falsey, return input (to match seqio behavior).
-        default_value: value to set new key to if old key-value doesn't exist.
+        default_value: Value to set new key to if old key-value doesn't exist.
             If None, then we do not write the new key-value pair when missing an old key-value
                 or when the provided reference key is falsey (to match seqio).
-        retain_original_inputs: whether to retain all the keys provided in the original input
+        retain_original_inputs: Whether to retain all the keys provided in the original input
             example (if False, only keys specified in the key map will be in the output).
+        separator: An optional separator. If provided, all keys and values of `key_map` will be
+            treated as paths and split by the separator.
 
     Returns:
         A DatasetToDatasetFn, where each input example should be a dict.
     """
+
+    def has_path(x, path: str) -> bool:
+        try:
+            get_recursively(x, path, separator=separator)
+            return True
+        except KeyError:
+            return False
 
     def fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         if not key_map:
             return example
         output = example if retain_original_inputs else {}
         for new_key, old_key in key_map.items():
-            if not old_key or old_key not in example:
+            if not old_key or not has_path(example, old_key):
                 if default_value is not None:
-                    output[new_key] = default_value
+                    set_recursively(output, value=default_value, path=new_key, separator=separator)
                 continue
-            output[new_key] = example[old_key]
+            set_recursively(
+                output,
+                value=get_recursively(example, old_key, separator=separator),
+                path=new_key,
+                separator=separator,
+            )
         return output
 
     return seqio.map_over_dataset(fn)
