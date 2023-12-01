@@ -123,6 +123,9 @@ class JobSpec:
     command: str
     # Command to run when job completes (either normally or cancelled).
     cleanup_command: Optional[str]
+    # Environment Variables. Will be merged into os.envrion and applied for both
+    # command and cleanup_command.
+    env_vars: Optional[Dict[str, str]]
     # Metadata related to a bastion job.
     metadata: JobMetadata
 
@@ -133,12 +136,14 @@ def new_jobspec(
     command: str,
     metadata: JobMetadata,
     cleanup_command: Optional[str] = None,
+    env_vars: Optional[Dict[str, str]] = None,
 ) -> JobSpec:
     return JobSpec(
         version=_LATEST_BASTION_VERSION,
         name=name,
         command=command,
         cleanup_command=cleanup_command,
+        env_vars=env_vars,
         metadata=metadata,
     )
 
@@ -170,6 +175,7 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
             name=data["name"],
             command=data["command"],
             cleanup_command=data.get("cleanup_command", None),
+            env_vars=data.get("env_vars", None),
             metadata=JobMetadata(**data["metadata"]),
         )
     raise ValueError(f"Unsupported version: {data['version']}")
@@ -199,11 +205,19 @@ class _PipedProcess:
     fd: IO
 
 
-def _piped_popen(cmd: str, f: str) -> _PipedProcess:
+def _piped_popen(cmd: str, f: str, *, env_vars: Optional[Dict[str, str]] = None) -> _PipedProcess:
     """Runs cmd in the background, piping stdout+stderr to a file."""
     # Open with "a" to append to an existing logfile, if any.
     fd = open(f, "a", encoding="utf-8")
-    popen = subprocess.Popen(shlex.split(cmd), stdout=fd, stderr=subprocess.STDOUT)
+    # Make a copy of system env.
+    env_vars_copy = os.environ.copy()
+    if env_vars:
+        # Inject supplied env.
+        env_vars_copy.update(env_vars)
+
+    popen = subprocess.Popen(
+        shlex.split(cmd), stdout=fd, stderr=subprocess.STDOUT, env=env_vars_copy
+    )
     return _PipedProcess(popen=popen, fd=fd)
 
 
@@ -269,7 +283,7 @@ def _start_command(job: Job, *, remote_log_dir: str):
     except tf_errors.NotFoundError:
         pass
     # Pipe all outputs to the local _LOG_DIR.
-    job.command_proc = _piped_popen(job.spec.command, local_log)
+    job.command_proc = _piped_popen(job.spec.command, local_log, env_vars=job.spec.env_vars)
     logging.info("Started command for the job %s: %s", job.spec.name, job.spec.command)
 
 
@@ -280,7 +294,9 @@ def _start_cleanup_command(job: Job):
     elif job.cleanup_proc is None:
         # Pipe all outputs to a local _LOG_DIR.
         job.cleanup_proc = _piped_popen(
-            job.spec.cleanup_command, f"{os.path.join(_LOG_DIR, job.spec.name)}.cleanup"
+            job.spec.cleanup_command,
+            f"{os.path.join(_LOG_DIR, job.spec.name)}.cleanup",
+            env_vars=job.spec.env_vars,
         )
         logging.info(
             "Started cleanup command for the job %s: %s",

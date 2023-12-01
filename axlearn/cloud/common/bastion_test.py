@@ -124,10 +124,17 @@ class TestDownloadJobBatch(parameterized.TestCase):
 class TestJobSpec(parameterized.TestCase):
     """Tests job specs."""
 
-    def test_serialization_job_spec(self):
+    @parameterized.parameters(
+        [
+            {"env_vars": None},
+            {"env_vars": {"TEST_ENV": "TEST_VAL", "TEST_ENV2": 'VAL_WITH_SPECIAL_:,"-{}'}},
+        ],
+    )
+    def test_serialization_job_spec(self, env_vars):
         test_spec = new_jobspec(
             name="test_job",
             command="test command",
+            env_vars=env_vars,
             metadata=JobMetadata(
                 user_id="test_id",
                 project_id="test_project",
@@ -189,7 +196,8 @@ def _mock_piped_popen_fn(mock_spec: Dict[str, Dict]):
     """See `_mock_popen_fn`."""
     mock_popen_fn = _mock_popen_fn(mock_spec)
 
-    def piped_popen(cmd, f):
+    def piped_popen(cmd, f, env_vars=None):
+        del env_vars
         mock_fd = mock.MagicMock()
         mock_fd.name = f
         return _PipedProcess(popen=mock_popen_fn(cmd), fd=mock_fd)
