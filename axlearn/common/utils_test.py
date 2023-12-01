@@ -339,19 +339,28 @@ class TreeUtilsTest(TestCase):
         self.assertLen(values, 1)
 
     def test_get_and_set_recursively(self):
-        tree = {"a": {"b": 2, "c": {"d": 3, "e": 4}}}
-        self.assertEqual({"a": {"b": 2, "c": {"d": 3, "e": 4}}}, get_recursively(tree, ""))
-        self.assertEqual({"a": {"b": 2, "c": {"d": 3, "e": 4}}}, get_recursively(tree, []))
+        tree = {"a": {"b": 2, "c": {"d": 3, "e": 4}}, "f.g": 5}
+        self.assertEqual(
+            {"a": {"b": 2, "c": {"d": 3, "e": 4}}, "f.g": 5}, get_recursively(tree, "")
+        )
+        self.assertEqual(
+            {"a": {"b": 2, "c": {"d": 3, "e": 4}}, "f.g": 5}, get_recursively(tree, [])
+        )
         self.assertEqual({"b": 2, "c": {"d": 3, "e": 4}}, get_recursively(tree, "a"))
         self.assertEqual(2, get_recursively(tree, "a/b"))
         self.assertEqual(2, get_recursively(tree, ["a", "b"]))
         self.assertEqual({"d": 3, "e": 4}, get_recursively(tree, "a/c"))
         self.assertEqual(3, get_recursively(tree, "a.c.d", separator="."))
+        self.assertEqual(5, get_recursively(tree, "f.g", separator=None))
 
         with self.assertRaises(KeyError):
             get_recursively(tree, "a/foo")
         with self.assertRaises(KeyError):
             get_recursively(tree, ["a", "foo"])
+        with self.assertRaisesRegex(KeyError, "f"):
+            get_recursively(tree, "f", separator=".")
+        with self.assertRaisesRegex(KeyError, "g.h"):
+            get_recursively(tree, "g.h", separator=None)
 
         set_recursively(tree, value="bar", path="a/foo/b")
         self.assertEqual("bar", get_recursively(tree, "a/foo/b"))
@@ -361,6 +370,10 @@ class TreeUtilsTest(TestCase):
         self.assertEqual("bar", get_recursively(tree, "a/foo/b"))
         with self.assertRaises(ValueError):
             set_recursively(tree, value="bar", path="")
+        set_recursively(tree, value=6, path="f.g", separator=None)
+        with self.assertRaisesRegex(KeyError, "f"):
+            get_recursively(tree, "f.g", separator=".")
+        self.assertEqual(6, get_recursively(tree, "f.g", separator=None))
 
     def test_copy_recursively(self):
         source = {"a": {"b": 2, "c": {"d": 3, "e": 4}}}

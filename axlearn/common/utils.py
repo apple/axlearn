@@ -643,7 +643,7 @@ def global_to_host_array(
 
 
 def get_recursively(
-    x: NestedTensor, path: Union[str, Sequence[str]], separator: str = "/"
+    x: NestedTensor, path: Union[str, Sequence[str]], separator: Optional[str] = "/"
 ) -> NestedTensor:
     """Recursively indexes through the nested tensor.
 
@@ -652,7 +652,7 @@ def get_recursively(
         path: The sequence of keys used to recursively
             index the nested tensor. If `isinstance(path, str)`, it will be split
             into sequence of strings based on the `separator`.
-        separator: The delimiter to split ``path`` by if `isinstance(path, str)`.
+        separator: If not None, the delimiter to split ``path`` by if `isinstance(path, str)`.
 
     Returns:
         NestedTensor
@@ -664,11 +664,11 @@ def get_recursively(
         return x
     is_str = isinstance(path, str)
     if is_str:
-        path = path.split(separator)
+        path = path.split(separator) if separator else [path]
 
     for idx, key in enumerate(path):
         if key not in x:
-            prefix = separator.join(path[: idx + 1]) if is_str else path[: idx + 1]
+            prefix = separator.join(path[: idx + 1]) if separator and is_str else path[: idx + 1]
             raise KeyError(f"No entries found at path '{prefix}'")
         x = x[key]
 
@@ -676,7 +676,11 @@ def get_recursively(
 
 
 def set_recursively(
-    x: NestedTensor, *, value: Tensor, path: Union[str, Sequence[str]], separator: str = "/"
+    x: NestedTensor,
+    *,
+    value: Tensor,
+    path: Union[str, Sequence[str]],
+    separator: Optional[str] = "/",
 ):
     """Sets x[path...] = value, where path can be a multi-part index.
 
@@ -692,7 +696,7 @@ def set_recursively(
         path: The sequence of keys used to recursively
             index the nested tensor. If `isinstance(path, str)`, it will be split
             into sequence of strings based on the `separator`.
-        separator: The delimiter to split ``path`` by if `isinstance(path, str)`.
+        separator: If not None, the delimiter to split ``path`` by if `isinstance(path, str)`.
 
     Raises:
         ValueError: If the input path is empty.
@@ -700,7 +704,7 @@ def set_recursively(
     if not path:
         raise ValueError("path must not be empty")
     if isinstance(path, str):
-        path = path.split(separator)
+        path = path.split(separator) if separator else [path]
 
     for key in path[:-1]:
         if key not in x:
