@@ -154,7 +154,7 @@ def scale(step_size: float) -> PartitionedGradientTransformation:
 
 def scale_by_schedule(step_size_fn: schedule.Schedule) -> PartitionedGradientTransformation:
     return with_partition_fn(
-        optax.scale_by_schedule(step_size_fn),
+        optax.scale_by_schedule(schedule.as_schedule_fn(step_size_fn)),
         lambda _: optax.ScaleByScheduleState(
             count=OptStateSpec(shape=[], dtype=jnp.int32, mesh_axes=PartitionSpec())
         ),
@@ -573,6 +573,11 @@ def adamw_optimizer(
 ) -> PartitionedGradientTransformation:
     """AdamW optimizer with parameter scaling.
 
+    N.B. The default weight-decay implementation is consistent with
+        those in e.g. PyTorch & Optax, but inconsistent with the "decoupled"
+        adamw weight decay formulation in <https://arxiv.org/abs/1711.05101> Algorithm 2.
+        To faithfully replicate Algorithm 2, use `adamw_decoupled_optimizer`.
+
     Args:
         learning_rate: the learning rate schedule.
         b1: the exponential decay rate for the 1st moment estimates.
@@ -591,7 +596,7 @@ def adamw_optimizer(
             Usually this should be left as False.
 
     Returns:
-        A PartitionedGradientTransformation representing an AdamW optimizer with parameter scalin.
+        A PartitionedGradientTransformation representing an AdamW optimizer with parameter scaling.
     """
     tx = [adam_partition(optax.scale_by_adam(b1=b1, b2=b2, eps=eps, mu_dtype=mu_dtype))]
     # Add the per-parameter scaling (PPS) according to the adafactor optimizer.
@@ -606,6 +611,71 @@ def adamw_optimizer(
                 per_param_scale=weight_decay_per_param_scale,
             ),
             scale_by_schedule(scale_from_learning_rate(learning_rate)),
+        ]
+    )
+
+    return chain(*tx)
+
+
+def adamw_decoupled_optimizer(
+    learning_rate: float,
+    *,
+    b1: float,
+    b2: float,
+    eps: float,
+    update_schedule: schedule.Schedule,
+    weight_decay: float = 0,
+    weight_decay_per_param_scale: Optional[Callable[[NestedOptParam], Any]] = None,
+    mu_dtype: Optional[jnp.dtype] = None,
+    multiply_by_parameter_scale: bool = False,
+) -> PartitionedGradientTransformation:
+    """A "decoupled" version of the AdamW optimizer, with optional parameter scaling.
+
+    Farthfully replicates Adam with "decoupled" weight decay from
+    <https://arxiv.org/abs/1711.05101> Algorithm 2.
+    Specifically, `learning_rate`, `weight_decay`, and `update_schedule` correspond to
+    `alpha`, `lambda`, and `eta` in Algorithm 2, respectively.
+
+    Args:
+        learning_rate: the learning rate (will be scaled by the update_schedule).
+        b1: the exponential decay rate for the 1st moment estimates.
+        b2: the exponential decay rate for the 2nd moment estimates.
+        eps: a small constant for numerical stability.
+        update_schedule: an update schedule, which is applied to scale both the learning rate
+            and the weight decay.
+        weight_decay: optional rate at which to decay weights (will be scaled by update_schedule).
+        weight_decay_per_param_scale: a Callable that returns a tree with same structure
+            as the params PyTree, where each leaf is a float representing the per-param decay scale.
+            The scale will be applied on top of the global decay rate:
+            effective_decay_rate = global_decay_rate * per_param_scale.
+            If None, all leaves will have a scale of 1.
+        mu_dtype: optional `dtype` to be used for the first order accumulator;
+            if `None` then the dtype is inferred from params and updates.
+        multiply_by_parameter_scale: if `True`, then scale learning_rate by
+            parameter RMS. if `False`, provided learning_rate is absolute step size.
+            Usually this should be left as False.
+
+    Returns:
+        A PartitionedGradientTransformation representing a decoupled AdamW optimizer with
+            parameter scaling.
+    """
+    tx = [adam_partition(optax.scale_by_adam(b1=b1, b2=b2, eps=eps, mu_dtype=mu_dtype))]
+    # Add the per-parameter scaling (PPS) according to the adafactor optimizer.
+    if multiply_by_parameter_scale:
+        tx.append(scale_by_param_block_rms())
+    tx.extend(
+        [
+            # Scale the update by the fixed learning rate.
+            scale_by_schedule(scale_from_learning_rate(learning_rate, flip_sign=False)),
+            add_decayed_weights(
+                weight_decay=weight_decay,
+                learning_rate_exponent=None,
+                per_param_scale=weight_decay_per_param_scale,
+            ),
+            # Scale the overall update by the update schedule.
+            scale_by_schedule(update_schedule),
+            # Invert the sign.
+            scale(-1.0),
         ]
     )
 

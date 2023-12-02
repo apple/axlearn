@@ -20,6 +20,7 @@ from axlearn.common.optimizers import (
     ParamEmaState,
     adafactor_optimizer,
     adam_optimizer,
+    adamw_decoupled_optimizer,
     adamw_optimizer,
     add_decayed_weights,
     chain,
@@ -224,6 +225,22 @@ class OptimizerTest(TestCase):
                 b1=0.9,
                 b2=0.99,
                 eps=1e-5,
+                weight_decay=weight_decay,
+                multiply_by_parameter_scale=multiply_by_parameter_scale,
+            )
+        )
+
+    @parameterized.parameters((0.1, 0, 0.5, False), (0.1, 0.01, 0.2, True), (0.1, 0.0, 0.3, True))
+    def test_adamw_decoupled_optimizer(
+        self, learning_rate, weight_decay, update_schedule, multiply_by_parameter_scale
+    ):
+        self._test_optimizer(
+            adamw_decoupled_optimizer(
+                learning_rate=learning_rate,
+                b1=0.9,
+                b2=0.99,
+                eps=1e-5,
+                update_schedule=update_schedule,
                 weight_decay=weight_decay,
                 multiply_by_parameter_scale=multiply_by_parameter_scale,
             )
@@ -501,6 +518,46 @@ class OptimizerTest(TestCase):
             assert_allclose(update_pps, update_no_pps * param_rms)
 
         jax.tree_util.tree_map(check_pps, updates_pps, updates_no_pps, params_rms)
+
+    @parameterized.product(weight_decay=(0.1, 0.2), update_schedule=(1.0, 0.2, 0.3))
+    def test_adamw_decoupled_update_schedule(self, weight_decay: float, update_schedule: float):
+        learning_rate = 0.01
+        shared_optimizer_kwargs = {
+            "b1": 0.9,
+            "b2": 0.999,
+            "eps": 1e-8,
+        }
+        optimizer_adam = adam_optimizer(
+            learning_rate=learning_rate * update_schedule, **shared_optimizer_kwargs
+        )
+        optimizer_adamw_decoupled = adamw_decoupled_optimizer(
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            update_schedule=update_schedule,
+            **shared_optimizer_kwargs,
+        )
+
+        params = OptParam(
+            value=jnp.asarray([2, 3, 4, 5], dtype=jnp.float32),
+            factorization_spec=None,
+            weight_decay_scale=None,
+        )
+
+        def compute_loss(x):
+            return -jax.nn.log_softmax(x)[1]
+
+        state_adam = optimizer_adam.init(params)
+        state_adamw_decoupled = optimizer_adamw_decoupled.init(params)
+
+        _, grads_adam = jax.value_and_grad(compute_loss)(params.value)
+        updates_adam, _ = optimizer_adam.update(grads_adam, state=state_adam, params=params)
+        _, grads_adam_decoupled = jax.value_and_grad(compute_loss)(params.value)
+        updates_adam_decoupled, _ = optimizer_adamw_decoupled.update(
+            grads_adam_decoupled, state=state_adamw_decoupled, params=params
+        )
+
+        expected_updates_wdr = updates_adam - params.value * weight_decay * update_schedule
+        self.assertNestedAllClose(updates_adam_decoupled, expected_updates_wdr)
 
     @parameterized.product(
         optimizer_cfg=[config_for_function(sgd_optimizer).set(decouple_weight_decay=True)],

@@ -267,8 +267,8 @@ def learner_config(
     eps: float = 1e-8,
 ) -> learner.Learner.Config:
     """Build learner using the AdamW optimizer and a cosine lr schedule with linear warmup."""
-    learning_rate_schedule = config_for_function(schedule.cosine_with_linear_warmup).set(
-        peak_lr=peak_lr,
+    update_schedule = config_for_function(schedule.cosine_with_linear_warmup).set(
+        peak_lr=1.0,
         max_step=max_step,
         warmup_steps=lr_warmup_steps,
         begin_value=0.0,
@@ -278,11 +278,12 @@ def learner_config(
     optimizer_cfg = config_for_function(optimizers.chain).set(
         args=[
             config_for_function(optimizers.clip_by_global_norm).set(max_norm=1),
-            config_for_function(optimizers.adamw_optimizer).set(
-                learning_rate=learning_rate_schedule,
+            config_for_function(optimizers.adamw_decoupled_optimizer).set(
+                learning_rate=peak_lr,
                 b1=b1,
                 b2=b2,
                 eps=eps,
+                update_schedule=update_schedule,
                 weight_decay=weight_decay,
                 weight_decay_per_param_scale=None,
                 multiply_by_parameter_scale=False,
