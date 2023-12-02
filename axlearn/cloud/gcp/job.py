@@ -214,7 +214,8 @@ class CPUJob(GCPJob):
         cfg = self.config
         logging.debug("Executing remote command: '%s'", cmd)
         cmd = _prepare_cmd_for_gcloud_ssh(f"pushd /root && {cmd}")
-        cmd = f"sudo bash -c {cmd}"
+        # Use login shell. Note `-i` is not interactive.
+        cmd = f"sudo -i bash -c {cmd}"
         if detached_session:
             cmd = f"sudo screen -dmS {detached_session} {cmd}"
         # Run via screen to persist command after SSH.

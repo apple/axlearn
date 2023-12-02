@@ -65,6 +65,8 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
     conda create -y -n py310 python=3.10
     conda activate py310
     conda info --envs
+    # Add conda to .profile file, and use login shell to source.
+    echo 'source /opt/conda/etc/profile.d/conda.sh && conda activate py310' >> ~/.profile
   }
   install_py310 >> ${SETUP_LOG_PATH} 2>&1
   echo "Using python3: $(which python3)" >> ${SETUP_LOG_PATH} 2>&1
