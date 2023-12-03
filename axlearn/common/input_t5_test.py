@@ -1,10 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests T5 inputs."""
-import functools
 import logging
 import os
-from functools import partial
 from typing import Dict, List, Tuple
 
 import pytest
@@ -28,14 +26,6 @@ from axlearn.common.input_t5 import (
     split_tokens,
 )
 from axlearn.common.input_text_test import tokenizers_dir
-from axlearn.common.input_tf_data import rekey
-
-try:
-    import t5.data  # pytype: disable=import-error
-
-    _T5X_INSTALLED = True
-except ImportError:
-    _T5X_INSTALLED = False
 
 t5_sentence_piece_vocab_file = os.path.join(tokenizers_dir, "sentencepiece/t5-base")
 
@@ -141,22 +131,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         processor = select_random_chunk(chunk_size=chunk_size)
         _check(processor(source()))
 
-        # Check that T5 also matches what we expect.
-        if _T5X_INSTALLED:
-            ds = t5.data.preprocessors.select_random_chunk(
-                source(),
-                feature_key="source_ids",
-                output_features={
-                    "source_ids": seqio.Feature(
-                        vocabulary=_t5_vocab(),
-                        add_eos=True,
-                        required=False,
-                    ),
-                },
-                max_length=chunk_size,
-            )
-            _check(ds)
-
     @parameterized.parameters(
         # Test a basic case with num_examples % batch_size == 0.
         dict(
@@ -230,15 +204,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         processor = reduce_concat_tokens(batch_size=batch_size)
         _check(processor(source()))
 
-        # Check that T5 also matches what we expect.
-        if _T5X_INSTALLED:
-            ds = t5.data.preprocessors.reduce_concat_tokens(
-                source(),
-                feature_key="source_ids",
-                batch_size=batch_size,
-            )
-            _check(ds)
-
     @parameterized.parameters(
         dict(
             desired_source_length=10, noise_density=0.0, mean_noise_span_length=3.0, expected=[9, 1]
@@ -278,19 +243,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
                 mean_noise_span_length=mean_noise_span_length,
             ),
         )
-
-        # Check that T5 also matches what we expect.
-        if _T5X_INSTALLED:
-            self.assertAllEqual(
-                expected,
-                t5.data.preprocessors.random_spans_helper(
-                    inputs_length=desired_source_length,
-                    noise_density=noise_density,
-                    mean_noise_span_length=mean_noise_span_length,
-                    extra_tokens_per_span_inputs=1,
-                    extra_tokens_per_span_targets=1,
-                ),
-            )
 
     @parameterized.parameters(
         # Test when length % max_tokens_per_segment == 0.
@@ -334,15 +286,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         )
         processor = split_tokens(max_tokens_per_segment=max_tokens_per_segment)
         _check(processor(source()))
-
-        if _T5X_INSTALLED:
-            actual = t5.data.preprocessors.split_tokens(
-                source(),
-                feature_key="source_ids",
-                min_tokens_per_segment=None,
-                max_tokens_per_segment=max_tokens_per_segment,
-            )
-            _check(actual)
 
     @parameterized.parameters(
         dict(seq_len=10, num_segments=3),
@@ -416,16 +359,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         self.assertEqual(_count_tokens(actual), expected_noise_tokens)
         self.assertEqual(_count_spans(actual), expected_noise_spans)
 
-        if _T5X_INSTALLED:
-            actual = t5.data.preprocessors.random_spans_noise_mask(
-                length=seq_len,
-                noise_density=noise_density,
-                mean_noise_span_length=mean_noise_span_length,
-                seeds=tf.constant([[123, 124], [125, 126]], tf.int32),
-            )
-            self.assertEqual(_count_tokens(actual), expected_noise_tokens)
-            self.assertEqual(_count_spans(actual), expected_noise_spans)
-
     @parameterized.parameters(
         # Test an empty input.
         dict(
@@ -473,14 +406,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         )
         self.assertAllEqual(expected, actual)
 
-        if _T5X_INSTALLED:
-            self.assertAllEqual(
-                expected,
-                t5.data.preprocessors.noise_span_to_unique_sentinel(
-                    input_ids, noise_mask, vocab, None
-                ),
-            )
-
     @parameterized.parameters(
         # Test an empty input.
         dict(
@@ -527,14 +452,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             input_ids=input_ids, noise_mask=noise_mask, vocab=vocab
         )
         self.assertAllEqual(actual, expected)
-
-        if _T5X_INSTALLED:
-            self.assertAllEqual(
-                expected,
-                t5.data.preprocessors.nonnoise_span_to_unique_sentinel(
-                    input_ids, noise_mask, vocab, None
-                ),
-            )
 
     @parameterized.parameters(
         # Test an empty input.
@@ -629,51 +546,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             mean_noise_span_length=mean_noise_span_length,
             vocab_cfg=vocab_cfg,
         )
-        ds = processor(source())
-        actual = _check(vocab, ds)
-
-        if _T5X_INSTALLED:
-
-            def _seeded(fn, custom_seeds):
-                # Ignore the seeds that t5 provides.
-                @functools.wraps(fn)
-                def wrapped(*args, seeds, **kwargs):
-                    del seeds
-                    return fn(*args, seeds=custom_seeds, **kwargs)
-
-                return wrapped
-
-            ds = t5.data.preprocessors.denoise(
-                rekey({"targets": "source_ids"})(source()),
-                output_features={
-                    "targets": seqio.Feature(
-                        vocabulary=_t5_vocab(),
-                        add_eos=True,
-                        required=False,
-                    ),
-                },
-                # Note: seed is unused for the *_to_unique_sentinel.
-                inputs_fn=t5.data.preprocessors.noise_span_to_unique_sentinel,
-                targets_fn=t5.data.preprocessors.nonnoise_span_to_unique_sentinel,
-                noise_density=noise_density,
-                noise_mask_fn=_seeded(
-                    partial(
-                        t5.data.preprocessors.random_spans_noise_mask,
-                        mean_noise_span_length=mean_noise_span_length,
-                    ),
-                    tf.constant([[125, 126], [127, 128]], tf.int32),
-                ),
-            )
-            expected = _check(vocab, ds, source_key="inputs", target_key="targets")
-            # Check same number of sentinels.
-            self.assertEqual(
-                _count_sentinels(vocab, expected["inputs"]),
-                _count_sentinels(vocab, actual["source_ids"]),
-            )
-            self.assertEqual(
-                _count_sentinels(vocab, expected["targets"]),
-                _count_sentinels(vocab, actual["target_labels"]),
-            )
+        _check(vocab, processor(source()))
 
     @parameterized.parameters(
         # Test a basic input.

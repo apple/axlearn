@@ -1,12 +1,14 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests EncoderDecoder layers."""
+
+import os
 from typing import Optional
 
 import jax
 import numpy as np
-import pytest
 import torch
+from absl.testing import parameterized
 from jax import numpy as jnp
 from transformers import BertConfig, BertModel, EncoderDecoderConfig
 from transformers import EncoderDecoderModel as HFEncoderDecoderModel
@@ -23,23 +25,10 @@ from axlearn.common.layers import set_layer_norm_eps_recursively
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor, parameters_from_t5x_encoder_decoder
 from axlearn.common.t5 import t5_encoder_decoder_config
-from axlearn.common.test_utils import (
-    TestCase,
-    assert_allclose,
-    dummy_padding_mask,
-    dummy_segments_positions,
-)
+from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
 
-try:
-    # pytype: disable=import-error
-    from t5x.examples.t5 import network as t5x_network
-
-    # pytype: enable=import-error
-
-    _T5X_INSTALLED = True
-except ImportError:
-    _T5X_INSTALLED = False
+testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
 
 
 def set_decoder_cross_attention_config(
@@ -327,116 +316,44 @@ class TestAgainstHF(TestCase):
         assert_allclose(loss, utils.as_tensor(ref_outputs.loss))
 
 
-@pytest.mark.skipif(not _T5X_INSTALLED, reason="T5 is not installed.")
 class TestAgainstT5X(TestCase):
     """Tests EncoderDecoder layer against T5X."""
 
-    def setUp(self):
-        super().setUp()
-
-        # Setup dummy T5X model.
-        self.t5x_config = t5x_network.T5Config(
-            vocab_size=48,
-            dtype="float32",  # Note: T5X uses "bfloat16" by default.
-            emb_dim=16,
-            num_heads=4,
-            num_encoder_layers=4,
-            num_decoder_layers=4,
-            head_dim=4,
-            mlp_dim=64,
-            mlp_activations=("gelu", "linear"),
-            dropout_rate=0.0,
-            logits_via_embedding=False,
-        )
-        self.t5x_encoder_decoder = t5x_network.Transformer(config=self.t5x_config)
+    @parameterized.parameters(False, True)
+    def test_against_t5x(self, packing: bool):
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, f"test_against_t5x_{packing}.npy"),
+            allow_pickle=True,
+        ).item()
 
         # Setup dummy axlearn model.
         cfg = t5_encoder_decoder_config(
-            vocab_size=self.t5x_config.vocab_size,
-            dim=self.t5x_config.emb_dim,
-            num_attention_heads=self.t5x_config.num_heads,
-            num_encoder_layers=self.t5x_config.num_encoder_layers,
-            num_decoder_layers=self.t5x_config.num_decoder_layers,
+            vocab_size=48,
+            dim=16,
+            num_attention_heads=4,
+            num_encoder_layers=4,
+            num_decoder_layers=4,
             dropout_rate=0,
             z_loss_scale=0,
         )
-        self.axlearn_encoder_decoder = cfg.set(name="test").instantiate(parent=None)
+        test_encoder_decoder = cfg.set(name="test").instantiate(parent=None)
 
-    def test_segment_ids(self):
-        # HF does not seem to support packing:
-        # https://github.com/huggingface/transformers/issues/17726
-        # Instead, we test against T5X.
-        batch_size = 3
-        num_segments = 4
-        vocab_size = self.t5x_config.vocab_size
-        # {source,target}_len should be <= vocab_size:
-        # https://github.com/google-research/t5x/blob/f9bba7f6aedaea96b4a78d6d3ea1d262289890f7/t5x/examples/t5/network.py#L285
-        source_len = 32
-        target_len = 15
-
-        # Generate dummy inputs.
-        source_ids = jax.random.randint(
-            jax.random.PRNGKey(101),
-            (batch_size, source_len),
-            minval=2,
-            maxval=vocab_size,
-            dtype=jnp.int32,
-        )
-        target_tokens = jax.random.randint(
-            jax.random.PRNGKey(102),
-            (batch_size, target_len + 1),
-            minval=2,
-            maxval=vocab_size,
-            dtype=jnp.int32,
-        )
-        target_ids = target_tokens[:, :-1]
-        target_labels = target_tokens[:, 1:]
-        source_segment_ids, source_positions = dummy_segments_positions(
-            batch_size, source_len, num_segments=num_segments
-        )
-        target_segment_ids, target_positions = dummy_segments_positions(
-            batch_size, target_len, num_segments=num_segments
-        )
-        # Allow targets to have trailing padding. When packing, no padding tokens are introduced
-        # between segments.
-        padding_mask = dummy_padding_mask(batch_size=batch_size, max_seq_len=target_len)
-        target_ids *= padding_mask
-        target_labels = jnp.where(padding_mask, target_labels, -1)
-        target_segment_ids = jnp.where(padding_mask, target_segment_ids, 0)
-        target_positions = jnp.where(padding_mask, target_positions, target_len)
-
-        # Compute outputs.
-        ref_outputs, variables = self.t5x_encoder_decoder.init_with_output(
-            jax.random.PRNGKey(104),
-            source_ids,
-            target_ids,
-            target_labels,
-            encoder_segment_ids=source_segment_ids,
-            decoder_segment_ids=target_segment_ids,
-            # Note: it seems that T5 does not use encoder/decoder positions.
-            # https://github.com/google-research/t5x/blob/f9bba7f6aedaea96b4a78d6d3ea1d262289890f7/t5x/examples/t5/network.py#L386
-            # https://github.com/google-research/t5x/blob/f9bba7f6aedaea96b4a78d6d3ea1d262289890f7/t5x/examples/t5/network.py#L221
-            encoder_positions=source_positions,
-            decoder_positions=target_positions,
-            enable_dropout=False,
-        )
         test_outputs, _ = F(
-            self.axlearn_encoder_decoder,
+            test_encoder_decoder,
             is_training=False,
             prng_key=jax.random.PRNGKey(123),
             state=parameters_from_t5x_encoder_decoder(
-                variables["params"],
-                self.axlearn_encoder_decoder,
+                testcase["params"],
+                test_encoder_decoder,
             ),
             inputs=dict(
                 input_batch=dict(
-                    source_ids=source_ids,
-                    target_ids=target_ids,
-                    target_labels=target_labels,
-                    source_segment_ids=source_segment_ids,
-                    target_segment_ids=target_segment_ids,
-                    source_positions=source_positions,
-                    target_positions=target_positions,
+                    source_ids=testcase["source_ids"],
+                    source_segment_ids=testcase["source_segment_ids"],
+                    source_positions=testcase["source_positions"],
+                    target_ids=testcase["target_ids"],
+                    target_segment_ids=testcase["target_segment_ids"],
+                    target_positions=testcase["target_positions"],
                 ),
             ),
             method="predict",
@@ -444,6 +361,6 @@ class TestAgainstT5X(TestCase):
 
         # Compare.
         test_outputs = test_outputs["logits"]
-        ref_outputs = utils.as_tensor(ref_outputs)
-        mask = padding_mask[..., None]
+        ref_outputs = utils.as_tensor(testcase["outputs"])
+        mask = testcase["padding_mask"][..., None]
         self.assertNestedAllClose(test_outputs * mask, ref_outputs * mask)
