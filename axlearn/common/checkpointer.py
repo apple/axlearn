@@ -311,6 +311,9 @@ class TensorStoreStateStorage(StateStorage):
         gda_values: List[Tensor]
         tf_ckpt_map: Dict[str, Any]
 
+    def _spec_from_path(self, ckpt_path: str):
+        return array_serialization.get_tensorstore_spec(ckpt_path)
+
     def _get_spec(self, step: int, state: NestedTensor, ckpt_dir: str) -> CheckpointSpec:
         spec = self.CheckpointSpec(
             index=[],
@@ -338,7 +341,7 @@ class TensorStoreStateStorage(StateStorage):
                 spec.index.append((path, {"dtype": str(dtype), "shape": str(tuple(value.shape))}))
                 gda_path = os.path.join(ckpt_dir, "gda", path)
                 spec.storage_paths.append(gda_path)
-                spec.tensorstore_specs.append(array_serialization.get_tensorstore_spec(gda_path))
+                spec.tensorstore_specs.append(self._spec_from_path(gda_path))
                 spec.shapes.append(value.shape)
                 spec.dtypes.append(dtype)
                 if isinstance(value, Tensor):
