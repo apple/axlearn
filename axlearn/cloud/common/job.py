@@ -14,7 +14,17 @@ from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 
 
 class Job(Configurable):
-    """Base Job definition."""
+    """Base Job definition.
+
+    Job's main API method is `execute`, which sets up the environment according to `bundler`,
+    runs the specified `command`, and retries if necessary.
+
+    Subclasses of `Job` further specify the platform (e.g., TPUs on GCP) on which the job
+    should run.
+
+    The implementation of `execute` should be idempotent---invoking `execute` multiple times
+    should be equivalent to invoking it once.
+    """
 
     @config_class
     class Config(Configurable.Config):
@@ -38,7 +48,7 @@ class Job(Configurable):
             self._bundler: Bundler = cfg.bundler.instantiate()
 
     @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs):
+    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> "Job.Config":
         """Populate config partially using parsed absl flags."""
         flag_values = {**fv.flag_values_dict(), **kwargs}
         cfg = cls.default_config()
@@ -47,7 +57,11 @@ class Job(Configurable):
         )
 
     def _delete(self):
-        """Cleans up the job. Called on termination."""
+        """Cleans up the job. Called on termination when all retries are exhausted.
+
+        Note that `_delete` is not called when `_execute` finishes successfully. It is up
+        to the implementation of `_execute` to clean up properly.
+        """
 
     def _execute(self) -> Any:
         """Performs some computation. The return value can be implementation dependent."""
