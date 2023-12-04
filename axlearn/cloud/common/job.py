@@ -48,7 +48,7 @@ class Job(Configurable):
             self._bundler: Bundler = cfg.bundler.instantiate()
 
     @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> "Job.Config":
+    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
         """Populate config partially using parsed absl flags."""
         flag_values = {**fv.flag_values_dict(), **kwargs}
         cfg = cls.default_config()
