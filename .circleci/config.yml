@@ -35,4 +35,8 @@ jobs:
 workflows:
   build-and-test-workflow:
     jobs:
-      - build-and-test-job
+      - hold:
+          type: approval
+      - build-and-test-job:
+          requires:
+            - hold
