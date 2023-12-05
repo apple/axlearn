@@ -67,6 +67,9 @@ RUN pip install .[gcp,vertexai_tensorboard]
 
 FROM base AS dataflow
 
+# Beam workers default to creating a new virtual environment on startup. Instead, we want them to
+# pickup the venv setup above. An alternative is to install into the global environment.
+ENV RUN_PYTHON_SDK_IN_DEFAULT_ENVIRONMENT=1
 RUN pip install .[gcp,dataflow]
 COPY . .
 

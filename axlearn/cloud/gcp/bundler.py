@@ -132,7 +132,8 @@ class CloudBuildBundler(BaseDockerBundler):
             [f'    "--build-arg", "{key}={value}",' for key, value in args.items()]
         )
         labels = "\n".join([f'    "--label", "{key}={value}",' for key, value in labels.items()])
-        build_target = f'    "--build-target", "{cfg.target}",' if cfg.target else ""
+        build_target = f'    "--target", "{cfg.target}",' if cfg.target else ""
+        build_platform = f'    "--platform", "{cfg.platform}",' if cfg.platform else ""
         cloudbuild_yaml = f"""
 steps:
 - name: "gcr.io/cloud-builders/docker"
@@ -142,6 +143,7 @@ steps:
     "-t", "{image}",
     "--cache-from", "{image}",
     {build_target}
+    {build_platform}
     {build_args}
     {labels}
     "."

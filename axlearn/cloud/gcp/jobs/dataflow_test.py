@@ -138,6 +138,7 @@ class UtilsTest(TestWithTemporaryCWD):
                 "--bundler_spec=b=123",
                 "--bundler_spec=dockerfile=test_dockerfile",
                 "--bundler_spec=image=test_image",
+                "--bundler_spec=platform=linux/amd64",
                 "--bundler_spec=repo=test_repo",
                 "--bundler_type=docker",
             ],
