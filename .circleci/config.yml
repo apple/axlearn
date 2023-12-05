@@ -35,8 +35,8 @@ jobs:
 workflows:
   build-and-test-workflow:
     jobs:
-      - hold:
+      - renamed:
           type: approval
       - build-and-test-job:
           requires:
-            - hold
+            - renamed
