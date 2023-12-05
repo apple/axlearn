@@ -3,13 +3,10 @@
 """SPMD related utils."""
 
 import logging
-import socket
 from typing import Optional
 
 import jax
-import jax.numpy as jnp
 import portpicker
-from jax.experimental import multihost_utils
 
 _jax_distributed_initialized = False
 
@@ -56,11 +53,7 @@ def setup(
                     "distributed_coordinator, num_processes, and process_id "
                     "should all be None for tpu backend."
                 )
-            jax.distributed.initialize(
-                coordinator_address=_infer_tpu_coordinator_address(),
-                num_processes=jax.process_count(),
-                process_id=jax.process_index(),
-            )
+            jax.distributed.initialize()
         else:
             if distributed_coordinator is None and num_processes is None and process_id is None:
                 logging.info(
@@ -89,27 +82,3 @@ def setup(
                 process_id=process_id,
             )
         _jax_distributed_initialized = True
-
-
-def _infer_tpu_coordinator_address() -> str:
-    """Infers a viable JAX coordination address on TPU (including over multiple TPU slices).
-
-    TODO(markblee,tom_gunter): Delete this when multi-slice init is fully supported by JAX.
-
-    Returns:
-        A coordinator address string as "ip:port".
-    """
-    slice_local_coordinator_ip = socket.gethostbyname(socket.gethostname())
-    # E.g. "172.31.4.83".
-    slice_local_coordinator_ip_as_nums = [int(num) for num in slice_local_coordinator_ip.split(".")]
-    # E.g. [172, 31, 4, 83].
-    global_coordinator_ip_as_nums = multihost_utils.broadcast_one_to_all(
-        jnp.asarray(slice_local_coordinator_ip_as_nums)
-    )
-    global_coordinator_ip = ".".join([str(num) for num in global_coordinator_ip_as_nums])
-    # E.g. "172.31.4.83" on all hosts on all slices.
-    global_coordinator_port = multihost_utils.broadcast_one_to_all(
-        jnp.asarray(portpicker.pick_unused_port())
-    )
-    global_coordinator_address = f"{global_coordinator_ip}:{global_coordinator_port}"
-    return global_coordinator_address
