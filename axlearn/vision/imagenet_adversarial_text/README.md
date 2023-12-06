@@ -5,7 +5,7 @@ To generate the dataset by your own: see [add_attack_tfrecord.py](add_attack_tfr
 The dataset is available on GCP as a Tensorflow Dataset: `gs://axlearn-public/tensorflow_datasets/imagenet2012_ocr_attack/`.
 
 
-## Recongition results of different CLIP models
+## Recognition results of different CLIP models
 
 | Model            | Num. Training | ImageNet2012 Top-1 Acc | ImageNet_Atr  Top-1 Acc|
 | ---------------- | -----------   |----------------------- |------------- |

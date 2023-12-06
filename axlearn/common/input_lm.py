@@ -91,7 +91,7 @@ def text_to_lm_training_input(
         logging.warning("is_training was %s, did you mean to use this processor?", is_training)
     vocab = vocab_cfg.instantiate()
     if token_adjuster_cfg is not None:
-        token_adjuster = maybe_set_config(token_adjuster_cfg, "vocab_cfg", vocab_cfg).instantiate()
+        token_adjuster = maybe_set_config(token_adjuster_cfg, vocab_cfg=vocab_cfg).instantiate()
     else:
         token_adjuster = None
 
@@ -761,9 +761,12 @@ def text2text_lm_input(
 
     # Instantiate main processor.
     processor_cfg = processor_cfg or config_for_function(make_autoregressive_inputs)
-    processor_cfg = maybe_set_config(processor_cfg, "model_type", model_type)
-    processor_cfg = maybe_set_config(processor_cfg, "max_source_length", max_source_length)
-    processor_cfg = maybe_set_config(processor_cfg, "max_target_length", max_target_length)
+    processor_cfg = maybe_set_config(
+        processor_cfg,
+        model_type=model_type,
+        max_source_length=max_source_length,
+        max_target_length=max_target_length,
+    )
     process_inputs_fn = processor_cfg.instantiate()
 
     # Instantiate post-processor. Padding can be used e.g. for eval.
@@ -828,6 +831,7 @@ def lm_text_preprocessor(
     window_size: int = 128,
     additional_preprocessors: Optional[Sequence[InstantiableConfig]] = None,
     token_adjuster_cfg: Optional[InstantiableConfig] = None,
+    is_training: Optional[bool] = None,
 ) -> input_tf_data.DatasetToDatasetFn:
     """Produces processors for lm data for LM training."""
 
@@ -855,6 +859,7 @@ def lm_text_preprocessor(
                 window_size=window_size,
                 shuffle_buffer_size=shuffle_buffer_size,
                 token_adjuster_cfg=token_adjuster_cfg,
+                is_training=is_training if is_training is not None else True,
             )
         )
         return processors

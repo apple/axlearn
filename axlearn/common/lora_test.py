@@ -72,6 +72,52 @@ class LoraLinearTest(TestCase):
 
         assert_allclose(outputs, ref_outputs)
 
+    def test_alpha_is_zero(self):
+        input_dim = 2
+        output_dim = 4
+        batch_size = 2
+        rank = 2
+        alpha = 0
+
+        inputs = jax.random.normal(jax.random.PRNGKey(456), (batch_size, input_dim))
+
+        ref_layer_cfg = Linear.default_config().set(
+            name="ref_layer", input_dim=input_dim, output_dim=output_dim
+        )
+        ref_layer = ref_layer_cfg.instantiate(parent=None)
+        ref_state = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        ref_outputs, _ = F(
+            ref_layer,
+            state=ref_state,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=(inputs,),
+        )
+        layer_cfg = LoraLinear.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+        )
+        layer_cfg.adapter.set(rank=rank, alpha=alpha)
+        layer = layer_cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(123), prebuilt=None
+        )
+        state["layer"]["weight"] = ref_state["weight"]
+        state["layer"]["bias"] = ref_state["bias"]
+        state["adapter"]["lora_up"]["weight"] = jax.random.normal(
+            jax.random.PRNGKey(1), (rank, output_dim)
+        )
+        outputs, _ = F(
+            layer,
+            state=state,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=(inputs,),
+        )
+
+        self.assertNestedEqual(outputs, ref_outputs)
+
 
 class LoraFusedQKVLinearTest(TestCase):
     def test_forward(self):

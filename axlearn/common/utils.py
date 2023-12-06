@@ -11,6 +11,7 @@ import contextlib
 import copy
 import dataclasses
 import functools
+import math
 import numbers
 import os
 import re
@@ -30,25 +31,30 @@ from typing import (
     Union,
 )
 
+import flax.struct
 import jax
 import numpy as np
 from absl import logging
 from flax import serialization
-from flax.core import FrozenDict
 from jax import numpy as jnp
-from jax.experimental import maps, multihost_utils, pjit
+from jax.experimental import maps, mesh_utils, multihost_utils, pjit
 from jax.sharding import PartitionSpec
 from jax.tree_util import register_pytree_node_class
 
 from axlearn.common.config import is_named_tuple
 
+# New code should use Nested[XX] instead of NestedXX.
+# Old definitions are provided for backwards compatibility.
+_NestedT = TypeVar("_NestedT")
+Nested = Union[_NestedT, Dict[str, "Nested[_NestedT]"]]
+
 Tensor = jax.Array
-# Recursive type annotations not supported by pytype yet.
-NestedTree = Union[Any, Dict[str, Any]]  # Union[Any, Dict[str, "NestedTree"]]
-# Union[..., Dict[str, "NestedTensor"]]
-NestedTensor = Union[Tensor, Dict[str, Any], FrozenDict[str, Any]]
-# NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, "NestedPartitionSpec"]]]
+NestedTree = Union[Any, Dict[str, Any]]
+NestedTensor = Union[Tensor, Dict[str, Any]]
 NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, Any]]]
+
+# The device mesh shape in the form of a tuple of ints.
+MeshShape = Sequence[int]
 
 _enable_numeric_checks = False
 _enable_xla_runtime_errors = False
@@ -74,7 +80,6 @@ class TensorSpec:
         return jax.sharding.NamedSharding(mesh, self.mesh_axes)
 
 
-# NestedTensorSpec = Optional[Union[TensorSpec, Dict[str, "NestedTensorSpec"]]]
 NestedTensorSpec = Optional[Union[TensorSpec, Dict[str, Any]]]
 
 
@@ -120,7 +125,13 @@ def shapes(nested_tensor: NestedTensor) -> NestedTree:
     return jax.tree_util.tree_map(lambda x: getattr(x, "shape", x), nested_tensor)
 
 
-def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
+def _concat(*, prefix: str, suffix: str, separator: str):
+    return f"{prefix}{separator}{suffix}" if prefix else f"{suffix}"
+
+
+def tree_paths(
+    tree: NestedTree, separator: str = "/", is_leaf: Optional[Callable] = None
+) -> NestedTree:
     """Returns a tree of the same structure as `nested_tensor` but with corresponding paths instead
     of values.
 
@@ -130,6 +141,8 @@ def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
     Args:
         tree: A nested structure.
         separator: The separator between parts of a path.
+        is_leaf: A Callable to evaluate whether the given node should be considered a leaf when
+                 it otherwise would not, similarly to the is_leaf in jax.tree_util.tree_map.
 
     Returns:
         A nested structure with the same structure as `tree`, but each leaf will be a string path.
@@ -137,19 +150,37 @@ def tree_paths(tree: NestedTree, separator: str = "/") -> NestedTree:
         tree_paths.
     """
 
-    def _concat(prefix, suffix):
-        return f"{prefix}{separator}{suffix}" if prefix else f"{suffix}"
+    if is_leaf is None:
+        is_leaf = lambda x: False
 
     def visit(tree, prefix):
-        if tree is None:
+        if is_leaf(tree):
+            return prefix
+        elif tree is None:
             # None is considered part of the tree structure, not a tree leaf.
             return tree
-        elif isinstance(tree, (dict, FrozenDict)):
-            return type(tree)((k, visit(v, _concat(prefix, k))) for k, v in tree.items())
+        elif hasattr(tree, "items"):
+            return type(tree)(
+                (k, visit(v, _concat(prefix=prefix, suffix=k, separator=separator)))
+                for k, v in tree.items()
+            )
+        elif isinstance(tree, flax.struct.PyTreeNode):
+            # dataclasses.asdict() cannot be used because it recursively converts children to dicts.
+            return type(tree)(
+                **visit(
+                    {field.name: getattr(tree, field.name) for field in dataclasses.fields(tree)},
+                    prefix,
+                )
+            )
         elif is_named_tuple(tree):
             return type(tree)(**visit(tree._asdict(), prefix))
         elif isinstance(tree, (list, tuple)):
-            return type(tree)([visit(v, _concat(prefix, k)) for k, v in enumerate(tree)])
+            return type(tree)(
+                [
+                    visit(v, _concat(prefix=prefix, suffix=k, separator=separator))
+                    for k, v in enumerate(tree)
+                ]
+            )
         else:
             return prefix
 
@@ -220,11 +251,11 @@ def vectorized_tree_map(fn, tree, *rest):
 
 
 class StackedKeyArray(NamedTuple):
-    keys: Union[jax.random.KeyArray, "StackedKeyArray"]
+    keys: Union[Tensor, "StackedKeyArray"]
 
 
 def split_prng_key(
-    prng_key: Union[StackedKeyArray, jax.random.KeyArray], num_keys: Union[int, Sequence[int]]
+    prng_key: Union[StackedKeyArray, Tensor], num_keys: Union[int, Sequence[int]]
 ) -> StackedKeyArray:
     """Splits prng_key to keys iteratively and return the stacked keys.
 
@@ -374,7 +405,7 @@ def complete_partition_spec_tree(
             return type(tree)(*[replace_none_with_proxy(x) for x in tree])
         if isinstance(tree, (tuple, list)):
             return type(tree)([replace_none_with_proxy(x) for x in tree])
-        if isinstance(tree, (dict, FrozenDict)):
+        if isinstance(tree, dict):
             return type(tree)([(k, replace_none_with_proxy(v)) for k, v in tree.items()])
         raise ValueError(f"{type(tree)}: {tree}")
 
@@ -428,18 +459,39 @@ def input_partition_spec() -> PartitionSpec:
     )
 
 
-def shard_input_batch(input_batch: NestedTensor) -> NestedTensor:
-    """Constrains all leaf values in the input batch to be partitioned over one axis.
+# Key associated with per-example dataset dispatch index tensor, indicating which logical
+# batch index the example maps to.
+PHYSICAL_TO_LOGICAL_DISPATCH_KEY = "__physical_to_logical_batch_dispatch"
+
+
+def dispatch_input_batch(
+    input_batch: NestedTensor, *, batch_axis_names: Union[str, Sequence[str]] = "data"
+) -> NestedTensor:
+    """Constrains all leaf values in the input batch, then (optionally) dispatches examples
+    to a subset along the batch axis.
 
     Args:
-        input_batch: The inputs to be constrained.
+        input_batch: The input batch, where the first dimension of each leaf is the batch dim.
+        batch_axis_names: The name(s) of the batch axes.
 
     Returns:
-        Inputs wrapped with sharding constraints.
+        A nested tensor like the input batch, where each leaf contains
+            a subset of the input batch, and has been wrapped with sharding annotations.
+            N.B. some internal key-value pairs (like PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
+            may be dropped after use if present.
     """
-    return jax.tree_util.tree_map(
-        lambda x: with_sharding_constraint(x, PartitionSpec("data")), input_batch
+    # Constrain the input batch.
+    input_batch = jax.tree_util.tree_map(
+        lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)), input_batch
     )
+
+    # Dispatch from physical batch dimensions to logical batch.
+    if PHYSICAL_TO_LOGICAL_DISPATCH_KEY in input_batch:
+        dispatch = input_batch.pop(PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
+        return jax.tree_util.tree_map(
+            lambda x: jnp.einsum("b...,bl->l...", x, dispatch), input_batch
+        )
+    return input_batch
 
 
 class DataPartitionType(Enum):
@@ -591,7 +643,7 @@ def global_to_host_array(
 
 
 def get_recursively(
-    x: NestedTensor, path: Union[str, Sequence[str]], separator: str = "/"
+    x: NestedTensor, path: Union[str, Sequence[str]], separator: Optional[str] = "/"
 ) -> NestedTensor:
     """Recursively indexes through the nested tensor.
 
@@ -599,8 +651,8 @@ def get_recursively(
         x: The tensor to index.
         path: The sequence of keys used to recursively
             index the nested tensor. If `isinstance(path, str)`, it will be split
-            into sequence of strings based on the `delimiter`
-        separator: The delimiter to split ``path`` by if `isinstance(path, str)`.
+            into sequence of strings based on the `separator`.
+        separator: If not None, the delimiter to split ``path`` by if `isinstance(path, str)`.
 
     Returns:
         NestedTensor
@@ -612,15 +664,53 @@ def get_recursively(
         return x
     is_str = isinstance(path, str)
     if is_str:
-        path = path.split(separator)
+        path = path.split(separator) if separator else [path]
 
     for idx, key in enumerate(path):
         if key not in x:
-            prefix = separator.join(path[: idx + 1]) if is_str else path[: idx + 1]
+            prefix = separator.join(path[: idx + 1]) if separator and is_str else path[: idx + 1]
             raise KeyError(f"No entries found at path '{prefix}'")
         x = x[key]
 
     return x
+
+
+def set_recursively(
+    x: NestedTensor,
+    *,
+    value: Tensor,
+    path: Union[str, Sequence[str]],
+    separator: Optional[str] = "/",
+):
+    """Sets x[path...] = value, where path can be a multi-part index.
+
+    If any part of the path does not exist in `x`, new sub dicts will be created, e.g.,
+
+    x = {}
+    set_recursive(x, value=1, path="a/b/c")
+    # x = {"a": {"b": {"c": 1}}}
+
+    Args:
+        x: The tensor to index.
+        value: The value to set at x[path].
+        path: The sequence of keys used to recursively
+            index the nested tensor. If `isinstance(path, str)`, it will be split
+            into sequence of strings based on the `separator`.
+        separator: If not None, the delimiter to split ``path`` by if `isinstance(path, str)`.
+
+    Raises:
+        ValueError: If the input path is empty.
+    """
+    if not path:
+        raise ValueError("path must not be empty")
+    if isinstance(path, str):
+        path = path.split(separator) if separator else [path]
+
+    for key in path[:-1]:
+        if key not in x:
+            x[key] = {}
+        x = x[key]
+    x[path[-1]] = value
 
 
 def copy_recursively(
@@ -733,6 +823,43 @@ def check_param_shape_alignment(
         return "\n".join(output_str)
 
 
+def check_jax_type(
+    *,
+    args: Optional[Sequence] = None,
+    kwargs: Optional[dict] = None,
+    pretty_named_args: Optional[dict] = None,
+    msg: Optional[str] = None,
+):
+    """Checks that the supplied arguments are valid JAX types and raise ValueError if not.
+
+    Args:
+        args: Positional arguments of a function call to check.
+        kwargs: Keyword arguments of a function call to check.
+        pretty_named_args: Arguments that already have a human readable name to check.
+        msg: A prefix to print with a line break before the error message produced by this function.
+
+    Raises:
+        ValueError: If the supplied arguments are not valid jax types.
+    """
+    if pretty_named_args is None:
+        pretty_named_args = {}
+    if args is not None:
+        pretty_named_args.update({f"args[{i}]": args[i] for i in range(len(args))})
+    if kwargs is not None:
+        pretty_named_args.update({f"kwargs[{key}]": kwargs[key] for key in kwargs})
+
+    for name, arg in pretty_named_args.items():
+        values, _ = jax.tree_util.tree_flatten(arg)
+        for value in values:
+            if not isinstance(value, (type(None), jax.Array, int, float)):
+                if msg is None:
+                    msg = ""
+                else:
+                    msg += "\n"
+                msg += f"Argument {name} has leaf with non-JAX type {type(value)}"
+                raise ValueError(msg)
+
+
 def validate_float_dtype(dtype: jnp.dtype):
     """Validates if the provided dtype is both a float and amongst the set supported.
 
@@ -752,15 +879,24 @@ def partial_with_fn_metadata(fn, *args, **kwargs):
     return functools.update_wrapper(partial_fn, fn)
 
 
-def prune_tree(in_tree: NestedTensor, should_prune: Callable[[str, NestedTensor], bool]):
+def prune_tree(
+    in_tree: NestedTensor,
+    should_prune: Callable[[str, NestedTensor], bool],
+    *,
+    prefix: str = "",
+    separator: str = "/",
+):
     """Returns a shallow copy of the input tree with subtrees pruned based on `should_prune`.
 
     This is a shallow copy because leaf nodes (non-dict values) are not deep-copied.
 
     Args:
         in_tree: The input tree to be pruned.
-        should_prune: A callable which takes (key, subtree) as input and returns a boolean. If the
-            callable returns True, the subtree itself will be pruned.
+        should_prune: A callable which takes (path, subtree) as input and returns a boolean. The
+            subtree provided will have already been pruned. If the callable returns True, the
+            subtree itself will be dropped.
+        prefix: Path prefix.
+        separator: Separator used to join path parts.
 
     Returns:
         The pruned copy of the input tree.
@@ -768,8 +904,9 @@ def prune_tree(in_tree: NestedTensor, should_prune: Callable[[str, NestedTensor]
     if isinstance(in_tree, dict):
         out_tree = {}
         for k, v in in_tree.items():
-            v = prune_tree(v, should_prune)
-            if not should_prune(k, v):
+            path = _concat(prefix=prefix, suffix=k, separator=separator)
+            v = prune_tree(v, should_prune, prefix=path, separator=separator)
+            if not should_prune(path, v):
                 out_tree[k] = v
         in_tree = out_tree
     return in_tree
@@ -867,3 +1004,126 @@ def register_per_param_settings(settings: NestedTree, *, description: str):
         for path, setting in flatten_items(settings):
             logging.info("Per-param setting %s: %s=%s", description, path, setting)
     return settings
+
+
+def create_device_mesh(
+    mesh_shape: Sequence[int], *, devices: Optional[Sequence[Any]] = None
+) -> np.ndarray:
+    """Constructs a device mesh.
+
+    We first determine whether we are running in a TPU or GPU environment.
+        - If running in a TPU environment:
+            - If multi-slice/granule, we split the first axis of the configured
+                mesh shape across the slices.
+        - If running in a GPU environment:
+            - If the first axis divides the number of processes (GPU-nodes/granules), we
+                split the first axis across the processes.
+
+    In all other cases we construct a standard mesh according to the configured mesh_shape.
+
+    TODO(tom_gunter): Allow for more inter/intra granule mesh config flexibility.
+
+    Args:
+        mesh_shape: The desired logical mesh shape.
+        devices: The devices that will be used to construct the mesh.
+            If None, defaults to jax.devices().
+
+    Returns:
+        A numpy array containing the JAX devices with shape determined by the config mesh_shape.
+
+    Raises:
+        NotImplementedError: If not all devices have the same platform.
+    """
+    if devices is None:
+        devices = jax.devices()
+    devices = np.asarray(devices)
+
+    def build_standard_mesh():
+        logging.info("Building device mesh.")
+        try:
+            return mesh_utils.create_device_mesh(mesh_shape, devices=devices)
+        except NotImplementedError as e:
+            logging.warning(
+                "mesh_utils.create_device_mesh cannot handle shape %s: %s. "
+                "Falling back to the naive mesh. Performance may be reduced.",
+                mesh_shape,
+                e,
+            )
+            return devices.reshape(mesh_shape)
+
+    # Check if the devices are part of a multi-granule configuration.
+    # <https://github.com/google/jax/blob/b81b79c1b0d2ec/jax/experimental/mesh_utils.py#L313>
+    device_platform = devices[0].platform
+    attr = "process_index" if device_platform != "tpu" else "slice_index"
+    is_multi_granule_env = hasattr(devices[0], attr)
+    if not all(el.platform == device_platform for el in devices):
+        raise NotImplementedError(f"Not all devices had platform: {device_platform}.")
+
+    # Return standard mesh if not a multi-slice/granule env.
+    if not is_multi_granule_env:
+        return build_standard_mesh()
+
+    ici_mesh_shape = mesh_shape
+    num_granules = max([getattr(el, attr) for el in devices.flatten()]) + 1
+
+    # Return standard mesh if on GPU with incompatible multi-slice/granule mesh.
+    if device_platform == "gpu" and ici_mesh_shape[0] % num_granules != 0:
+        logging.warning("Falling back to ICI-only mesh on GPU, performance may be reduced.")
+        return build_standard_mesh()
+
+    # We only break the first device axis (the least communication intensive) across granules.
+    assert (
+        ici_mesh_shape[0] % num_granules == 0
+    ), "First mesh shape axis must divide num slices/granules."
+    logging.info("Building multi-slice/granule device mesh.")
+    # Truncate intra-slice/granule mesh.
+    ici_mesh_shape = (ici_mesh_shape[0] // num_granules, *ici_mesh_shape[1:])
+    logging.info("Inferred intra-slice/granule mesh shape: %s", ici_mesh_shape)
+    # Configure data center (inter-slice/granule) mesh.
+    dcn_mesh_shape = (num_granules,) + (1,) * len(ici_mesh_shape[1:])
+    logging.info("Inferred inter-slice/granule mesh shape: %s", dcn_mesh_shape)
+    # Check we have the right number of devices.
+    total_parallelism = np.product(dcn_mesh_shape) * np.product(ici_mesh_shape)
+    assert total_parallelism == len(devices), (
+        f"Num devices {len(devices)} does not match the product of "
+        f"inter and intra slice/granule parallelism {total_parallelism}."
+    )
+    return mesh_utils.create_hybrid_device_mesh(
+        ici_mesh_shape,
+        dcn_mesh_shape=dcn_mesh_shape,
+        devices=devices,
+        process_is_granule=attr == "process_index",
+    )
+
+
+def infer_mesh_shape(mesh_shape: MeshShape, *, num_devices: Optional[int] = None) -> MeshShape:
+    """Infer the value for -1 from len(jax.devices()) and other dims if there is -1 in mesh shape.
+
+    Args:
+        mesh_shape: The original MeshShape, which might have -1 in one axis.
+        num_devices: The devices that will be used to construct the mesh.
+            If None, defaults to len(jax.devices()).
+
+    Returns
+        A new MeshShape with inferred value for -1.
+    """
+    if -1 not in mesh_shape:
+        return mesh_shape
+
+    if mesh_shape.count(-1) > 1:
+        raise ValueError(f"only one axis can be -1 in mesh shape, but get {mesh_shape}")
+
+    # Handle the case with one -1.
+    prod = math.prod(mesh_shape, start=-1)
+    if num_devices is None:
+        num_devices = len(jax.devices())
+    if num_devices % prod != 0:
+        raise ValueError(
+            f"Unable to infer -1 in mesh shape {mesh_shape} as num_devices {num_devices} "
+            f"is not a multiple of the product {prod} of mesh axes."
+        )
+
+    new_mesh_shape = tuple(x if x != -1 else num_devices // prod for x in mesh_shape)
+    logging.info("Infer mesh shape from %s to %s", mesh_shape, new_mesh_shape)
+
+    return new_mesh_shape

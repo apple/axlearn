@@ -752,24 +752,34 @@ def test_huber_loss(reduce_axis, sample_weight_dim, reduction):
         assert jnp.allclose(loss, ref_loss.numpy() / denominator)
 
 
-def reference_flops_loss_calculation(embeddings):
+def reference_flops_loss_calculation(embeddings, sparsity_threshold=0.0):
     # Ref: https://github.com/biswajitsc/sparse-embed/blob/master/model.py#L134
     abs_embeddings = tf.abs(embeddings)
+    average_sparsity_count = (
+        tf.reduce_sum(tf.cast(abs_embeddings <= sparsity_threshold, tf.float32))
+        / embeddings.shape[0]
+    )
     l1_norm_col = tf.reduce_mean(abs_embeddings, axis=0)
     mean_flops_sur = tf.reduce_sum(l1_norm_col * l1_norm_col)
-    return mean_flops_sur
+    return mean_flops_sur, average_sparsity_count
 
 
 @pytest.mark.parametrize("embedding_shape", [(8, 1, 1024), (8, 1024), (8, 2, 1024)])
 def test_flops_loss(embedding_shape):
+    sparsity_threshold = 0.2
     embeddings = np.random.uniform(-1, 1, size=embedding_shape).astype(np.float32)
-    ref_loss = reference_flops_loss_calculation(embeddings)
+    ref_loss, ref_average_sparsity_count = reference_flops_loss_calculation(
+        embeddings, sparsity_threshold=sparsity_threshold
+    )
     if embedding_shape == (8, 2, 1024):
         with pytest.raises(AssertionError, match=re.escape("Invalid embeddings shape!")):
             flops_loss(embeddings=embeddings)
     else:
-        axlearn_loss = flops_loss(embeddings=embeddings)
+        axlearn_loss, axlearn_average_sparsity_count = flops_loss(
+            embeddings=embeddings, sparsity_threshold=sparsity_threshold
+        )
         assert jnp.allclose(axlearn_loss, np.array(ref_loss))
+        assert jnp.allclose(axlearn_average_sparsity_count, np.array(ref_average_sparsity_count))
 
 
 def test_flops_loss_with_paddings():
@@ -778,11 +788,19 @@ def test_flops_loss_with_paddings():
     # Shape: [2, 1, 2].
     logits_3d = jnp.asarray([[[-1, 2]], [[-2, 2]]])
     paddings = jnp.asarray([0, 1])
-    loss_2d = flops_loss(embeddings=logits_2d, paddings=paddings)
-    loss_3d = flops_loss(embeddings=logits_3d, paddings=paddings)
+    sparsity_threshold = 1
+    loss_2d, average_sparsity_count_2d = flops_loss(
+        embeddings=logits_2d, paddings=paddings, sparsity_threshold=sparsity_threshold
+    )
+    loss_3d, average_sparsity_count_3d = flops_loss(
+        embeddings=logits_3d, paddings=paddings, sparsity_threshold=sparsity_threshold
+    )
     expected_loss = (1 / 1) ** 2 + (2 / 1) ** 2
+    expected_average_sparsity_count = 1 / 1
     assert loss_2d == expected_loss
     assert loss_3d == expected_loss
+    assert average_sparsity_count_2d == expected_average_sparsity_count
+    assert average_sparsity_count_3d == expected_average_sparsity_count
 
 
 def test_large_margin_loss_1_0_equals_cross_entropy():

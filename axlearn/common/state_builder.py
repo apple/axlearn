@@ -27,10 +27,12 @@ from axlearn.common.checkpointer import (
 )
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     InstantiableConfig,
     Required,
     config_class,
     config_for_function,
+    maybe_instantiate,
 )
 from axlearn.common.module import Module
 from axlearn.common.optimizer_base import OptStateSpec
@@ -43,6 +45,7 @@ from axlearn.common.utils import (
     check_param_shape_alignment,
     flatten_items,
     get_data_dir,
+    infer_mesh_shape,
     set_data_dir,
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
@@ -311,7 +314,7 @@ class RestoreAndConvertBuilder(Builder):
     @classmethod
     def spec_to_config(cls, spec: str) -> Config:
         cfg = cls.default_config()
-        cfg.builder = cfg.builder.cls.spec_to_config(spec)
+        cfg.builder = cfg.builder.klass.spec_to_config(spec)
         return cfg
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
@@ -415,7 +418,7 @@ class BaseConverterFromPretrainedModel(Converter):
     @config_class
     class Config(Converter.Config):
         # A config that instantiates to a TrainerConfigFn that defines the source pretrained model.
-        source_trainer_config: Required[InstantiableConfig] = REQUIRED
+        source_trainer_config: Required[InstantiableConfig[TrainerConfigFn]] = REQUIRED
         source_data_dir: Optional[str] = None
         mesh_axis_names: Optional[Sequence[str]] = None
         mesh_shape: Optional[Sequence[int]] = None
@@ -432,7 +435,7 @@ class BaseConverterFromPretrainedModel(Converter):
             trainer_cfg.mesh_axis_names = (
                 cfg.mesh_axis_names or trainer_cfg.mesh_axis_names or ("data", "model")
             )
-            trainer_cfg.mesh_shape = (
+            trainer_cfg.mesh_shape = infer_mesh_shape(
                 cfg.mesh_shape or trainer_cfg.mesh_shape or (len(jax.devices()), 1)
             )
             trainer = trainer_cfg.instantiate(parent=None)
@@ -570,9 +573,6 @@ class FlaxPretrainedBuilder(Builder):
         return Builder.StateType.TENSORS
 
     def __call__(self, state: Builder.State) -> Builder.State:
-        # pylint: disable-next=import-outside-toplevel
-        from flax.core.frozen_dict import FrozenDict, unfreeze
-
         cfg = self.config
         source_params = cfg.flax_state_supplier_config.instantiate()
 
@@ -588,9 +588,6 @@ class FlaxPretrainedBuilder(Builder):
                 parent_state = parent_state[scope]
             target_flax_state = parent_state[cfg.target_scope[-1]]["params"]
 
-        if isinstance(target_flax_state, FrozenDict):
-            target_flax_state = unfreeze(target_flax_state)
-
         restored_target_state = traverse_and_set_target_state_parameters(
             target_state=target_flax_state,
             target_scope=[],
@@ -605,10 +602,10 @@ class FlaxPretrainedBuilder(Builder):
 
         if len(cfg.target_scope) == 0:
             new_trainer_state = state.trainer_state._replace(
-                model=FrozenDict({"params": restored_target_state})
+                model={"params": restored_target_state}
             )
         else:
-            parent_state[cfg.target_scope[-1]] = FrozenDict({"params": restored_target_state})
+            parent_state[cfg.target_scope[-1]] = {"params": restored_target_state}
             new_trainer_state = state.trainer_state
 
         built_keys = state.built_keys.union(set(key for key, _ in flatten_items(new_trainer_state)))
@@ -617,14 +614,14 @@ class FlaxPretrainedBuilder(Builder):
 
 def torch_to_axlearn_converter(
     module: str = "axlearn.common.param_converter",
-    dst_layer: Optional[Union[BaseLayer, Type]] = None,
+    dst_layer: Optional[ConfigOr[Union[BaseLayer, Type]]] = None,
 ):
     """See HuggingFacePreTrainedBuilder.converter."""
     # Lazily import to avoid introducing a dependency otherwise.
     # TODO(bwzhang@): The fairseq layer is not supported in TPU.
     # pylint: disable-next=import-outside-toplevel
     torch_to_axlearn = import_module(module).torch_to_axlearn
-    return functools.partial(torch_to_axlearn, dst_layer=dst_layer)
+    return functools.partial(torch_to_axlearn, dst_layer=maybe_instantiate(dst_layer))
 
 
 class HuggingFacePreTrainedBuilder(Builder):

@@ -2,24 +2,36 @@
 
 """Utilities to decide whether to schedule jobs according to resource constraints.
 
-The main API is `Scheduler`, which takes run-or-not verdicts for each job, based on available
-resources, demands of each job, per-project quotas, and the priorities of jobs within each
-project.
+The main API is `JobScheduler`, which makes scheduling decisions based on a quota file (see
+`quota.py`) and has `Scheduler` and `ProjectJobSorter` as children.
 
-`Scheduler` calls `ResourceLimitCalculator` to compute per-project resource limits based on the
-total limit, per-project quotas, and demands.
+`Scheduler` takes run-or-not verdicts for each job, based on available resources, demands of each
+job, per-project quotas, and the priorities of jobs within each project. It uses
+`ResourceLimitCalculator` to compute per-project resource limits based on the total limit,
+per-project quotas, and demands.
 
 Job priorities with a project can be determined with `ProjectJobSorter`, which sorts the jobs
 based on the user id, creation time, and resource demands.
 """
+
 import collections
 import dataclasses
 import datetime
 import queue
+from collections import defaultdict
 from typing import Dict, Mapping, NamedTuple, Optional, Set
 
-from axlearn.common.config import Configurable
-from axlearn.quota.types import JobQueue, ProjectJobs, ProjectResourceMap, ResourceMap, ResourceType
+from absl import logging
+
+from axlearn.cloud.common.quota import QuotaFn
+from axlearn.cloud.common.types import (
+    JobQueue,
+    ProjectJobs,
+    ProjectResourceMap,
+    ResourceMap,
+    ResourceType,
+)
+from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
 
 _EPSILON = 1e-3
 
@@ -222,6 +234,7 @@ class JobVerdict:
 class Scheduler(Configurable):
     """A job scheduler."""
 
+    @config_class
     class Config(Configurable.Config):
         """Configures Scheduler."""
 
@@ -296,3 +309,102 @@ class Scheduler(Configurable):
                 job_verdicts[project_id][job_id] = verdict
 
         return Scheduler.ScheduleResults(project_limits=project_limits, job_verdicts=job_verdicts)
+
+
+# TODO(markblee): Consider merging with sorter and scheduler.
+class JobScheduler(Configurable):
+    """Schedules jobs."""
+
+    @config_class
+    class Config(Configurable.Config):
+        """Configures JobScheduler."""
+
+        # A config that instantiates to a QuotaFn.
+        quota: Required[InstantiableConfig[QuotaFn]] = REQUIRED
+        # Sorter that decides ordering of jobs-to-schedule.
+        sorter: ProjectJobSorter.Config = ProjectJobSorter.default_config()
+        # Scheduler that decides whether to resume/suspend jobs.
+        scheduler: Scheduler.Config = Scheduler.default_config()
+
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        cfg = self.config
+        # Instantiate children.
+        self._quota = cfg.quota.instantiate()
+        self._sorter = cfg.sorter.instantiate()
+        self._scheduler = cfg.scheduler.instantiate()
+
+    def schedule(
+        self,
+        jobs: Dict[str, JobMetadata],
+        *,
+        dry_run: bool = False,
+        verbosity: int = 0,
+    ) -> Scheduler.ScheduleResults:
+        """Schedules jobs according to quotas.
+
+        Args:
+            jobs: A mapping from {job_name: job_metadata}.
+            dry_run: Whether to enable dry-run mode, i.e. everything gets scheduled.
+                Typically used with higher verbosity to debug scheduling.
+            verbosity: Whether to log scheduling report.
+
+        Returns:
+            The scheduling results.
+        """
+        # Group jobs by project.
+        project_jobs = defaultdict(dict)
+        for job_name, job_metadata in jobs.items():
+            project_jobs[job_metadata.project_id][job_name] = job_metadata
+
+        # Sort jobs according to priority.
+        for project_id, jobs_to_sort in project_jobs.items():
+            project_jobs[project_id] = self._sorter.sort(jobs_to_sort)
+
+        # Fetch quotas each time.
+        quota_info = self._quota()
+        total_resources = quota_info.total_resources
+        project_resources = quota_info.project_resources
+
+        # Decide whether each job should run.
+        schedule_results: Scheduler.ScheduleResults = self._scheduler.schedule(
+            resource_limits=total_resources,
+            project_quotas=project_resources,
+            project_jobs=project_jobs,
+        )
+
+        # Log the job verdicts.
+        # TODO(markblee): Move to util/reuse this block if we have multiple scheduler
+        # implementations.
+        if verbosity > 0:
+            logging.info("")
+            logging.info("==Begin scheduling report")
+            logging.info("Total resource limits: %s", total_resources)
+            for project_id, project_verdicts in schedule_results.job_verdicts.items():
+                logging.info(
+                    "Verdicts for Project [%s] Quota [%s] Effective limits [%s]:",
+                    project_id,
+                    project_resources.get(project_id, {}),
+                    schedule_results.project_limits.get(project_id, {}),
+                )
+                for job_name, job_verdict in project_verdicts.items():
+                    logging.info(
+                        "Job %s: Resources [%s] Over limits [%s] Should Run? [%s]",
+                        job_name,
+                        jobs[job_name].resources,
+                        job_verdict.over_limits,
+                        job_verdict.should_run(),
+                    )
+            logging.info("==End of scheduling report")
+            logging.info("")
+
+        # Construct mock verdicts allowing everything to be scheduled.
+        if dry_run:
+            schedule_results = Scheduler.ScheduleResults(
+                project_limits=schedule_results.project_limits,
+                job_verdicts={
+                    project_id: {job_name: JobVerdict() for job_name in project_verdicts}
+                    for project_id, project_verdicts in schedule_results.job_verdicts.items()
+                },
+            )
+        return schedule_results

@@ -5,6 +5,7 @@
 import collections
 import copy
 import dataclasses
+import math
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional
 
@@ -12,7 +13,7 @@ import attr
 import numpy as np
 import tensorflow_datasets as tfds
 import wrapt
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
 from axlearn.common import config
@@ -23,12 +24,13 @@ from axlearn.common.config import (
     Configurable,
     InstantiableConfig,
     Required,
+    RequiredFieldMissingError,
     config_class,
     maybe_set_config,
 )
 
 
-class ConfigTest(absltest.TestCase):
+class ConfigTest(parameterized.TestCase):
     def test_missing_decorator(self):
         """Tests config class without the @config_class decorator."""
         with self.assertRaisesRegex(config.MissingConfigClassDecoratorError, "@config_class"):
@@ -79,7 +81,7 @@ class ConfigTest(absltest.TestCase):
         self.assertEmpty(cfg.items())
         self.assertNotIn("num_layers", cfg)
         self.assertEqual(
-            "<class 'axlearn.common.config.config_class("
+            "<class 'axlearn.common.config_test.config_class("
             f"{ConfigTest.__module__}.ConfigTest.test_definition.<locals>.EmptyConfig"
             ")'>",
             str(type(cfg)),
@@ -95,6 +97,9 @@ class ConfigTest(absltest.TestCase):
         self.assertEqual([("num_layers", 10)], cfg.items())
         self.assertIn("num_layers", cfg)
         self.assertEqual(10, cfg.num_layers)
+        cfg.num_layers = 12
+        self.assertEqual(12, cfg.num_layers)
+        self.assertEqual(10, attr.fields(type(cfg)).num_layers.default)
 
     def test_mutable_values(self):
         @config_class
@@ -226,7 +231,7 @@ class ConfigTest(absltest.TestCase):
     def test_value_types(self):
         @config_class
         class TestConfig(ConfigBase):
-            sub: Optional[List] = None
+            sub: Optional[Any] = None
 
         cfg = TestConfig()
         # Config field values can be a list.
@@ -350,6 +355,12 @@ class ConfigTest(absltest.TestCase):
         self.assertEqual(8, model_cfg.decoder.num_layers)
 
     def test_required_values(self):
+        self.assertEqual("REQUIRED", str(REQUIRED))
+        self.assertEqual("REQUIRED", repr(REQUIRED))
+        self.assertFalse(REQUIRED)
+        self.assertIs(REQUIRED, REQUIRED)
+        self.assertEqual(REQUIRED, REQUIRED)
+
         class Layer(Configurable):
             @config_class
             class Config(Configurable.Config):
@@ -393,8 +404,8 @@ class ConfigTest(absltest.TestCase):
             f"config_for_class({Layer.__module__}.{Layer.__qualname__})", type(cfg).__name__
         )
         self.assertIsInstance(cfg, config.InstantiableConfig)
-        self.assertContainsSubset({"cls", "in_features", "out_features", "bias"}, cfg.keys())
-        self.assertEqual(cfg.cls, Layer)
+        self.assertContainsSubset({"klass", "in_features", "out_features", "bias"}, cfg.keys())
+        self.assertEqual(cfg.klass, Layer)
         self.assertIsInstance(cfg.in_features, config.RequiredFieldValue)
         self.assertIsInstance(cfg.out_features, config.RequiredFieldValue)
         self.assertTrue(
@@ -448,7 +459,41 @@ class ConfigTest(absltest.TestCase):
         with self.assertRaisesRegex(ValueError, "already specified"):
             self.assertEqual(cfg.var_kwargs, cfg.instantiate(a=3))
 
-    def test_to_dict(self):
+    @parameterized.parameters(
+        # Test some basic cases.
+        dict(kwargs=dict(x="x", y="y", z="z"), expected=("x", "y", "z")),
+        # Test configuring a builtin function.
+        dict(fn=pow, kwargs=dict(base=2, exp=3), expected=8),
+        # Test raising when attempting to configure positional-only args. They currently can't be
+        # reliably configured, as ordering may be lost.
+        # TODO(markblee): Add support for positional args.
+        dict(
+            fn=math.pow,
+            kwargs=dict(x=2, y=3),
+            expected=NotImplementedError("param kind POSITIONAL_ONLY"),
+        ),
+        # Not enough args, will fail when instantiating the config.
+        dict(kwargs=dict(x="x", y="y"), expected=RequiredFieldMissingError("required field .* z")),
+        # Test configuring a function with `fn` as an arg.
+        dict(fn=lambda fn: fn + 1, kwargs=dict(fn=1), expected=ValueError("'fn' parameter")),
+        # Test configuring a function with `_` as an arg.
+        dict(fn=lambda _: 1, kwargs=dict(x=2), expected=ValueError("'_' parameter")),
+    )
+    def test_config_for_function(self, kwargs, fn=None, expected=None):
+        if fn is None:
+            fn = lambda x, y, z: (x, y, z)
+
+        def build_and_invoke():
+            cfg = config.config_for_function(fn)
+            return cfg.set(**kwargs).instantiate()
+
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                build_and_invoke()
+        else:
+            self.assertEqual(build_and_invoke(), expected)
+
+    def test_to_dict_and_debug_string(self):
         def fn_with_args(*args):
             return list(args)
 
@@ -465,6 +510,7 @@ class ConfigTest(absltest.TestCase):
             fn: InstantiableConfig = config.config_for_function(fn_with_args).set(args=[1, 2, 3])
             person: Person = Person("Johnny Appleseed", 30)  # pytype: disable=invalid-annotation
             person_cls: type = Person
+            notes: Optional[str] = None
 
         @config_class
         class TestConfigB(ConfigBase):
@@ -475,8 +521,8 @@ class ConfigTest(absltest.TestCase):
             foo: str = "hello world"
             bar: List[str] = ["a", "b", "c"]
             my_config: TestConfigA = TestConfigA()  # pytype: disable=invalid-annotation
-            config_dict: Dict[str, InstantiableConfig] = {"config_b": TestConfigB()}
-            config_list: List[InstantiableConfig] = [TestConfigB(), TestConfigB().set(count=1)]
+            config_dict: Dict[str, ConfigBase] = {"config_b": TestConfigB()}
+            config_list: List[ConfigBase] = [TestConfigB(), TestConfigB().set(count=1)]
             config_type: type = ConfigTest
             config_func: Callable = config.similar_names
 
@@ -500,6 +546,111 @@ class ConfigTest(absltest.TestCase):
                 "config_type": "axlearn.common.config_test.ConfigTest",
                 "config_func": "axlearn.common.utils.similar_names",
             },
+        )
+        self.assertCountEqual(
+            cfg.to_flat_dict(omit_default_values=set()),
+            {
+                "bar[0]": "a",
+                "bar[1]": "b",
+                "bar[2]": "c",
+                "config_dict['config_b'].count": 5,
+                "config_func": config.similar_names,
+                "config_list[0].count": 5,
+                "config_list[1].count": 1,
+                "config_type": ConfigTest,
+                "foo": "hello world",
+                "my_config.extra['alpha']": 1,
+                "my_config.extra['beta']": 2,
+                "my_config.fn.args[0]": 1,
+                "my_config.fn.args[1]": 2,
+                "my_config.fn.args[2]": 3,
+                "my_config.fn.fn": fn_with_args,
+                "my_config.num_layers": 10,
+                "my_config.person['name']": "Johnny Appleseed",
+                "my_config.person['age']": 30,
+                "my_config.person_cls": Person,
+                "my_config.required_int": REQUIRED,
+                "my_config.notes": None,
+            },
+        )
+        self.assertCountEqual(
+            cfg.to_flat_dict(omit_default_values={None, REQUIRED}),
+            {
+                "bar[0]": "a",
+                "bar[1]": "b",
+                "bar[2]": "c",
+                "config_dict['config_b'].count": 5,
+                "config_func": config.similar_names,
+                "config_list[0].count": 5,
+                "config_list[1].count": 1,
+                "config_type": ConfigTest,
+                "foo": "hello world",
+                "my_config.extra['alpha']": 1,
+                "my_config.extra['beta']": 2,
+                "my_config.fn.args[0]": 1,
+                "my_config.fn.args[1]": 2,
+                "my_config.fn.args[2]": 3,
+                "my_config.fn.fn": fn_with_args,
+                "my_config.num_layers": 10,
+                "my_config.person['name']": "Johnny Appleseed",
+                "my_config.person['age']": 30,
+                "my_config.person_cls": Person,
+                # REQUIRED/None are trivial default values and so are omitted.
+                # "my_config.required_int": REQUIRED,
+                # "my_config.notes": None,
+            },
+        )
+        self.assertEqual(
+            (
+                "bar[0]: 'a'\n"
+                "bar[1]: 'b'\n"
+                "bar[2]: 'c'\n"
+                "config_dict['config_b'].count: 5\n"
+                "config_func: 'axlearn.common.config.similar_names'\n"
+                "config_list[0].count: 5\n"
+                "config_list[1].count: 1\n"
+                "config_type: 'axlearn.common.config_test.ConfigTest'\n"
+                "foo: 'hello world'\n"
+                "my_config.extra['alpha']: 1\n"
+                "my_config.extra['beta']: 2\n"
+                "my_config.fn.args[0]: 1\n"
+                "my_config.fn.args[1]: 2\n"
+                "my_config.fn.args[2]: 3\n"
+                "my_config.fn.fn: 'axlearn.common.config_test.fn_with_args'\n"
+                "my_config.num_layers: 10\n"
+                "my_config.person['name']: 'Johnny Appleseed'\n"
+                "my_config.person['age']: 30\n"
+                "my_config.person_cls: 'axlearn.common.config_test.Person'"
+            ),
+            cfg.debug_string(),
+        )
+
+    @parameterized.product(
+        omit_default_values=({None, REQUIRED}, {}),
+        default_value=(REQUIRED, None, False, 0, 0.0, ""),
+        set_value=(REQUIRED, None, False, 0, 0.0, ""),
+    )
+    def test_to_flat_dict_omit_default_values(
+        self, *, omit_default_values, default_value, set_value
+    ):
+        """Tests ConfigBase.to_flat_dict with omit_trivial_default_values=True."""
+
+        @config_class
+        class TestConfig(ConfigBase):
+            value: Any = default_value
+
+        cfg = TestConfig().set(value=set_value)
+        omit = default_value is set_value and default_value in omit_default_values
+        self.assertCountEqual(
+            cfg.to_flat_dict(omit_default_values=omit_default_values),
+            {} if omit else {"value": set_value},
+            msg=f"{default_value} vs. {set_value}",
+        )
+        # debug_string() omits trivial default values.
+        self.assertEqual(
+            cfg.debug_string(omit_default_values=omit_default_values),
+            "" if omit else f"value: {repr(set_value)}",
+            msg=f"{default_value} vs. {set_value}",
         )
 
     def test_to_dict_with_defaultdict(self):
@@ -535,14 +686,20 @@ class ConfigTest(absltest.TestCase):
         cfg = BaseLayer.default_config()
 
         # Set the value if the key exists.
-        self.assertEqual(cfg.vlog, 0)
-        maybe_set_config(cfg, "vlog", 1)
+        self.assertIsNone(cfg.vlog)
+        maybe_set_config(cfg, vlog=1)
         self.assertEqual(cfg.vlog, 1)
 
         # Do nothing if the key does not exist.
         not_exist_key = "not_exist_field"
         self.assertFalse(hasattr(cfg, not_exist_key))
-        maybe_set_config(cfg, not_exist_key, 3)
+        maybe_set_config(cfg, **{not_exist_key: 3})
+        self.assertFalse(hasattr(cfg, not_exist_key))
+
+        # Set multiple keys.
+        maybe_set_config(cfg, vlog=2, dtype=jnp.float32, not_exist_field=4)
+        self.assertEqual(cfg.vlog, 2)
+        self.assertEqual(cfg.dtype, jnp.float32)
         self.assertFalse(hasattr(cfg, not_exist_key))
 
 

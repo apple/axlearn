@@ -30,7 +30,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
-from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
@@ -46,6 +45,7 @@ from axlearn.common.utils import (
     NestedPartitionSpec,
     NestedTensor,
     PartitionSpec,
+    Tensor,
     TensorSpec,
 )
 
@@ -57,12 +57,12 @@ class MethodRunner:
     def __init__(
         self,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         mesh: jax.sharding.Mesh,
         input_batch_partition_spec: DataPartitionType,
         jit_run_on_batch: Callable[
-            [jax.random.KeyArray, NestedTensor],
-            Tuple[jax.random.KeyArray, NestedTensor, NestedTensor],
+            [Tensor, NestedTensor],
+            Tuple[Tensor, NestedTensor, NestedTensor],
         ],
     ):
         """Initializes MethodRunner object.
@@ -142,7 +142,7 @@ class MethodRunner:
 class _InferenceRunnerState(NamedTuple):
     """Contains inference runner {state | state-partition-specs}."""
 
-    prng_key: Union[jax.random.KeyArray, NestedPartitionSpec]
+    prng_key: Union[Tensor, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
     learner: Optional[Union[NestedTensor, NestedPartitionSpec]] = None
 
@@ -203,8 +203,6 @@ class InferenceRunner(Module):
             utils.validate_float_dtype(cfg.inference_dtype)
 
         # Create device mesh.
-        if not jax.config.jax_array:  # pylint: disable=no-member
-            raise NotImplementedError(f"{self.__class__.__name__} requires jax_array=True")
         logging.info(
             "Devices: global=%s local=%s %s",
             jax.device_count(),
@@ -212,7 +210,7 @@ class InferenceRunner(Module):
             [device.platform for device in jax.local_devices()],
         )
         logging.info("Mesh shape: %s", cfg.mesh_shape)
-        devices = mesh_utils.create_device_mesh(cfg.mesh_shape)
+        devices = utils.create_device_mesh(cfg.mesh_shape)
         mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
         logging.info("Global mesh: %s", mesh)
         self._mesh = mesh
@@ -228,7 +226,7 @@ class InferenceRunner(Module):
             self._inference_runner_state_partition_specs = jax.tree_util.tree_map(
                 lambda spec: spec.mesh_axes, self._inference_runner_state_specs
             )
-            logging.info("Building ckpt state from %s", cfg.init_state_builder.cls.__name__)
+            logging.info("Building ckpt state from %s", cfg.init_state_builder.klass.__name__)
             builder = cfg.init_state_builder.set(
                 name="init_state_builder",
             ).instantiate(parent=None)
@@ -238,7 +236,7 @@ class InferenceRunner(Module):
                 logging.warning(
                     "init_state_builder %s expects input_state_type StateType.TENSOR "
                     "but inference runner gives StateType.TENSOR_SPECS.",
-                    cfg.init_state_builder.cls.__name__,
+                    cfg.init_state_builder.klass.__name__,
                 )
 
             # See "On compatible trainer checkpoints for `InferenceRunner`" in the file docstring.
@@ -258,7 +256,7 @@ class InferenceRunner(Module):
         input_batches: Iterable[NestedTensor],
         *,
         method: str,
-        prng_key: Optional[jax.random.KeyArray] = None,
+        prng_key: Optional[Tensor] = None,
         **kwargs,
     ) -> Generator[NestedTensor, None, None]:
         """Runs inference on the provided input batches.
@@ -299,7 +297,7 @@ class InferenceRunner(Module):
         self,
         *,
         method: str,
-        prng_key: Optional[jax.random.KeyArray] = None,
+        prng_key: Optional[Tensor] = None,
         **kwargs,
     ) -> MethodRunner:
         """Creates MethodRunner for the specified method and arguments.
@@ -346,7 +344,7 @@ class InferenceRunner(Module):
                     self._inference_runner_state_partition_specs.prng_key,
                     data_partition_spec,  # Input batch.
                 ),
-                out_axis_resources=(
+                out_shardings=(
                     self._inference_runner_state_partition_specs.prng_key,
                     data_partition_spec,  # Output batch.
                     None,  # Summaries.
@@ -364,13 +362,13 @@ class InferenceRunner(Module):
 
     def _inference_iter(
         self,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         model_params: NestedTensor,
         input_batch: Dict[str, Any],
         *,
         method,
         **kwargs,
-    ) -> Tuple[jax.random.KeyArray, NestedTensor, NestedTensor]:
+    ) -> Tuple[Tensor, NestedTensor, NestedTensor]:
         """Implements inference for a single input batch."""
         cfg = self.config
         new_prng_key, iter_key = jax.random.split(prng_key)
@@ -380,12 +378,13 @@ class InferenceRunner(Module):
                 return utils.cast_floats(in_tree, to_dtype=cfg.inference_dtype)
             return in_tree
 
-        input_batch = utils.shard_input_batch(inference_cast(input_batch))
+        # Shard and (possibly) dispatch the input batch.
+        input_batch = utils.dispatch_input_batch(input_batch)
         output_batch, output_collection = F(
             self.model,
             prng_key=iter_key,
             state=inference_cast(model_params),
-            inputs={"input_batch": input_batch, **kwargs},
+            inputs={"input_batch": inference_cast(input_batch), **kwargs},
             is_training=False,
             method=method,
         )

@@ -37,7 +37,7 @@ class BaseImagenetInputTest(parameterized.TestCase):
         cfg.source.set(
             dataset_name="imagenet2012",
             split="train",
-            shuffle_buffer_size=100 if is_training else 0,
+            train_shuffle_buffer_size=100,
         )
         cfg.batcher.set(global_batch_size=8)
         return cfg

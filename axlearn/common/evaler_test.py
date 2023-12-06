@@ -5,10 +5,11 @@
 Some tests are intended to be run on TPU.
 """
 # pylint: disable=no-self-use
+import graphlib
 import json
 import os
 import tempfile
-from typing import List, Optional, Sequence, Tuple, Type
+from typing import List, Optional, Sequence, Tuple, Type, Union
 
 import jax
 import jax.numpy as jnp
@@ -25,8 +26,9 @@ from tensorflow.python.summary.summary_iterator import (  # pylint: disable=no-n
 from axlearn.common import param_init, test_utils
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
-from axlearn.common.config import config_class, config_for_class, config_for_function
+from axlearn.common.config import config_class, config_for_function
 from axlearn.common.evaler import (
+    BaseMetricCalculator,
     CompositeMetricCalculator,
     GlobalMetricCalculator,
     ModelSummaryAccumulator,
@@ -45,6 +47,7 @@ from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.test_utils import DummyForwardModel, TestCase
 from axlearn.common.utils import (
     DataPartitionType,
+    Nested,
     NestedTensor,
     Tensor,
     get_data_dir,
@@ -81,10 +84,7 @@ class DummyInput(Module):
         shape = [cfg.batch_size, *cfg.shape]
         while cfg.total_num_batches is None or num_batches < cfg.total_num_batches:
             num_batches += 1
-            inputs = jnp.ones(
-                shape=shape,
-                dtype=np.float32,
-            )
+            inputs = jnp.ones(shape=shape, dtype=jnp.float32)
             yield dict(inputs=inputs)
 
 
@@ -108,7 +108,7 @@ class DummyModel(BaseModel):
             param_partition_spec=("model", None),
         )
         cfg.name = cls.__name__
-        cfg.param_init = config_for_class(param_init.ConstantInitializer).set(value=1.0)
+        cfg.param_init = param_init.ConstantInitializer.default_config().set(value=1.0)
         return cfg
 
     def __init__(self, cfg: BaseModel.Config, *, parent: Optional[Module]):
@@ -152,7 +152,7 @@ class DummyMetricCalculator(ModelSummaryAccumulator):
         self,
         *,
         method: str,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         model_params: NestedTensor,
         input_batch: NestedTensor,
         **kwargs,
@@ -521,7 +521,8 @@ class ModelSummaryAccumulatorTest(absltest.TestCase):
 
 class CompositeMetricCalculatorTest(TestCase):
     def setup_model_and_calculator_inputs(
-        self, calculator_cfg: CompositeMetricCalculator.Config
+        self,
+        calculator_cfg: CompositeMetricCalculator.Config,
     ) -> Tuple[CompositeMetricCalculator, NestedTensor, NestedTensor, List[NestedTensor]]:
         with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
             model: DummyModel = (
@@ -537,7 +538,6 @@ class CompositeMetricCalculatorTest(TestCase):
             )
 
             state = calculator.init_state(prng_key=jax.random.PRNGKey(1), model_params=model_params)
-
             inputs = (
                 DummyInput.default_config()
                 .set(name="input", is_training=False, batch_size=4, total_num_batches=3)
@@ -608,6 +608,177 @@ class CompositeMetricCalculatorTest(TestCase):
                 summaries["calculator1/mean_prediction"].weight,
                 summaries["calculator2/mean_prediction"].weight,
             )
+
+    @parameterized.parameters(
+        # dependencies defines a mapping (src, dst, dst_key). If a calculator is listed as a src, we
+        # expect its outputs to appear in the input batch for dst, under the provided dst_key.
+        dict(
+            # Each calculator reads from calculator1.
+            dependencies=[
+                # dst regex expands to calculator2 and calculator3.
+                CompositeMetricCalculator.Dependency(
+                    src="calculator1",
+                    dst="calculator[2-3]",
+                    dst_key="forward_outputs",
+                ),
+                # The edge to calculator4 can be named differently.
+                CompositeMetricCalculator.Dependency(
+                    src="calculator1",
+                    dst="calculator4",
+                    dst_key="forward_outputs2",
+                ),
+            ],
+            # Define the expected input structure (excluding original inputs).
+            expected=dict(
+                calculator1={},
+                calculator2=dict(forward_outputs="calculator1_outputs"),
+                calculator3=dict(forward_outputs="calculator1_outputs"),
+                calculator4=dict(forward_outputs2="calculator1_outputs"),
+            ),
+        ),
+        dict(
+            # Omit dst_key to use src calculator name.
+            dependencies=[
+                CompositeMetricCalculator.Dependency(src="calculator1", dst="calculator[2-4]"),
+            ],
+            # Define the expected input structure (excluding original inputs).
+            expected=dict(
+                calculator1={},
+                calculator2=dict(calculator1="calculator1_outputs"),
+                calculator3=dict(calculator1="calculator1_outputs"),
+                calculator4=dict(calculator1="calculator1_outputs"),
+            ),
+        ),
+        dict(
+            # calculator1 reads from calculator2;
+            # calculator2 reads from calculator3 and 4.
+            dependencies=[
+                CompositeMetricCalculator.Dependency(
+                    src="calculator2", dst="calculator1", dst_key="calculator2_outputs"
+                ),
+                CompositeMetricCalculator.Dependency(
+                    src="calculator3", dst="calculator2", dst_key="calculator3_outputs"
+                ),
+                CompositeMetricCalculator.Dependency(
+                    src="calculator4", dst="calculator2", dst_key="calculator4_outputs"
+                ),
+            ],
+            # Define the expected input structure:
+            # calculator1's input should contain calculator2's outputs.
+            # calculator2's input should contain calculator3/4's outputs.
+            expected=dict(
+                calculator1=dict(
+                    calculator2_outputs="calculator2_outputs",
+                ),
+                calculator2=dict(
+                    calculator3_outputs="calculator3_outputs",
+                    calculator4_outputs="calculator4_outputs",
+                ),
+                calculator3={},
+                calculator4={},
+            ),
+        ),
+        dict(
+            # Edges form a cycle, should fail.
+            dependencies=[
+                CompositeMetricCalculator.Dependency(
+                    src="calculator1",
+                    dst="calculator2",
+                ),
+                CompositeMetricCalculator.Dependency(
+                    src="calculator2",
+                    dst="calculator3",
+                ),
+                CompositeMetricCalculator.Dependency(
+                    src="calculator3",
+                    dst="calculator1",
+                ),
+            ],
+            expected=graphlib.CycleError("cycle"),
+        ),
+        dict(
+            # Duplicate edges, should fail.
+            dependencies=[
+                CompositeMetricCalculator.Dependency(
+                    src="calculator1",
+                    dst="calculator2",
+                    dst_key="forward_outputs",
+                ),
+                CompositeMetricCalculator.Dependency(
+                    src="calculator1",
+                    dst="calculator2",
+                    dst_key="forward_outputs",
+                ),
+            ],
+            expected=ValueError(r"duplicate edge \(calculator1, calculator2\)"),
+        ),
+        dict(
+            # Multiple sources produce the same key, should fail.
+            dependencies=[
+                CompositeMetricCalculator.Dependency(
+                    src="calculator1",
+                    dst="calculator2",
+                    dst_key="forward_outputs",
+                ),
+                CompositeMetricCalculator.Dependency(
+                    src="calculator3",
+                    dst="calculator4",
+                    dst_key="forward_outputs",
+                ),
+            ],
+            expected=ValueError("calculator1 and calculator3 produce key forward_outputs"),
+        ),
+        dict(
+            # Source produces a key that `calculator2` already has, should fail.
+            dependencies=[
+                CompositeMetricCalculator.Dependency(
+                    src="calculator1",
+                    dst="calculator2",
+                    dst_key="inputs",
+                ),
+            ],
+            expected=ValueError("calculator2 already has key inputs"),
+        ),
+    )
+    def test_dependencies(self, dependencies, expected: Union[Nested[Tensor], Exception]):
+        def check_input_batch(name: str, input_batch: Nested[Tensor]):
+            if not isinstance(expected, Exception):
+                expected_outputs = expected.get(name, {})
+                for k, v in expected_outputs.items():
+                    self.assertNestedEqual(v, input_batch[k])
+
+        class OutputRuleCalculator(BaseMetricCalculator):
+            """A dummy calculator that checks the input batch and returns a fixed output."""
+
+            def init_state(self, *, prng_key, model_params):
+                del prng_key, model_params
+                return {}
+
+            def forward(self, input_batch, *, model_params, state):
+                del model_params, state
+                check_input_batch(self.name, input_batch)
+                return dict(output=f"{self.name}_outputs", state={})
+
+            def get_summaries(self, *, model_params, state, all_forward_outputs):
+                del model_params, state, all_forward_outputs
+                return {}
+
+        with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
+            calculator_cfg = CompositeMetricCalculator.default_config().set(
+                name="calc",
+                metric_calculators=dict(
+                    calculator1=OutputRuleCalculator.default_config(),
+                    calculator2=OutputRuleCalculator.default_config(),
+                    calculator3=OutputRuleCalculator.default_config(),
+                    calculator4=OutputRuleCalculator.default_config(),
+                ),
+                dependencies=dependencies,
+            )
+            if isinstance(expected, Exception):
+                with self.assertRaisesRegex(type(expected), str(expected)):
+                    self.setup_model_and_calculator_inputs(calculator_cfg)
+            else:
+                self.setup_model_and_calculator_inputs(calculator_cfg)
 
 
 class GlobalEvalerTest(TestCase):

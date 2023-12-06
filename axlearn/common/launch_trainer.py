@@ -8,7 +8,8 @@ import jax
 import tensorflow as tf
 from absl import flags, logging
 
-from axlearn.common.trainer import SpmdTrainer
+from axlearn.common.trainer import SpmdTrainer, select_mesh_config
+from axlearn.common.utils import infer_mesh_shape
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
 
 # Trainer-specific flags.
@@ -34,6 +35,13 @@ flags.DEFINE_list(
     "Each trace covers one eval batch. "
     "Traces will run for at most 3 unique steps.",
 )
+flags.DEFINE_integer(
+    "trainer_watchdog_timeout_seconds",
+    3600,
+    "Timeout for the trainer watchdog in seconds. "
+    "If the trainer.step does not increment within this interval, "
+    "the watchdog will log the stack traces of all threads.",
+)
 
 FLAGS = flags.FLAGS
 
@@ -48,9 +56,14 @@ def get_trainer_config(trainer_config_fn: Optional[TrainerConfigFn] = None) -> S
         )
     trainer_config: SpmdTrainer.Config = trainer_config_fn()
     trainer_config.dir = trainer_config.dir or FLAGS.trainer_dir
+    if FLAGS.mesh_selector is not None:
+        select_mesh_config(trainer_config, mesh_selector=FLAGS.mesh_selector)
     trainer_config.mesh_axis_names = trainer_config.mesh_axis_names or ("data", "model")
     trainer_config.mesh_shape = trainer_config.mesh_shape or (len(jax.devices()), 1)
+    trainer_config.mesh_shape = infer_mesh_shape(trainer_config.mesh_shape)
     trainer_config.start_trace_steps = [int(el) for el in FLAGS.trace_at_steps]
+    if trainer_config.watchdog_timeout_seconds is None:
+        trainer_config.watchdog_timeout_seconds = FLAGS.trainer_watchdog_timeout_seconds
 
     for eval_cfg in trainer_config.evalers.values():
         eval_cfg.trace_at_iters = [int(el) for el in FLAGS.eval_trace_at_iters]

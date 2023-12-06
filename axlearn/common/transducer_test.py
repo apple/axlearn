@@ -15,6 +15,7 @@ from jax.experimental import checkify
 
 from axlearn.common.config import config_for_function
 from axlearn.common.module import functional as F
+from axlearn.common.test_utils import TestWithTemporaryCWD
 from axlearn.common.transducer import (
     _NEG_INF,
     Transducer,
@@ -103,7 +104,7 @@ def assert_all_close(x, y, atol=1e-5, rtol=1e-5, err_msg=None):
 
 
 # pylint: disable=no-self-use
-class AlignmentTest(parameterized.TestCase, tf.test.TestCase):
+class AlignmentTest(TestWithTemporaryCWD, tf.test.TestCase):
     def test_single_route(self):
         U = T = 4
         self._test_prefix_probs(
@@ -318,8 +319,7 @@ class AlignmentTest(parameterized.TestCase, tf.test.TestCase):
             am_paddings=am_paddings,
             lm_paddings=lm_paddings,
         )
-        # pylint: disable-next=protected-access
-        with self.assertRaises(jax._src.checkify.JaxRuntimeError):
+        with self.assertRaises(checkify.JaxRuntimeError):
             err.throw()
 
     @parameterized.product(

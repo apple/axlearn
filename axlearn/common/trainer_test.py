@@ -19,14 +19,19 @@ from jax import numpy as jnp
 from axlearn.common import layers, learner, optimizers, param_init, test_utils, utils
 from axlearn.common.base_layer import NestedParameterSpec
 from axlearn.common.base_model import BaseModel
-from axlearn.common.checkpointer import Checkpointer, CheckpointPolicy, every_n_steps_policy
+from axlearn.common.checkpointer import (
+    Checkpointer,
+    CheckpointPolicy,
+    every_n_steps_and_last_policy,
+    every_n_steps_policy,
+)
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
-from axlearn.common.trainer import SpmdTrainer, _prune_empty, _TrainerState
+from axlearn.common.trainer import SpmdTrainer, _prune_empty, _TrainerState, select_mesh_config
 from axlearn.common.utils import NestedTensor, Tensor, as_tensor, flatten_items, match_regex_rules
 
 FLAGS = flags.FLAGS
@@ -118,7 +123,11 @@ class DummyInput(Module):
         return ds
 
     def __iter__(self):
-        return iter(self.dataset())
+        # Use a different __iter__ than iter(self.dataset()), to test that input iter can be
+        # checkpointed properly even with a custom __iter__ (note that a custom __iter__ is not
+        # guaranteed to be savable).
+        for input_batch in self.dataset():
+            yield input_batch
 
 
 class DummyModel(BaseModel):
@@ -152,7 +161,7 @@ class DummyModel(BaseModel):
         return dict(sorted(specs.items()))  # type: ignore
 
     def initialize_parameters_recursively(
-        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor]
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor]
     ) -> NestedTensor:
         params = super().initialize_parameters_recursively(prng_key, prebuilt=prebuilt)
         if self.config.init_dummy_state:
@@ -259,6 +268,8 @@ class DummyStateBuilder(TrainerStateBuilder):
 
 
 class TrainerTest(test_utils.TestCase):
+    """Tests SpmdTrainer."""
+
     def test_prune_empty_state(self):
         state = {
             "state": {
@@ -288,13 +299,11 @@ class TrainerTest(test_utils.TestCase):
         actual = _prune_empty(state)
         self.assertNestedAllClose(expected, actual)
 
-    def test_prune_backwards_compat(self):
-        """Test that pruning is backwards compatible with no pruning."""
-        # Construct a base trainer config.
-        cfg = SpmdTrainer.default_config().set(
+    def _trainer_config(self):
+        return SpmdTrainer.default_config().set(
             name="base_trainer",
             vlog=3,
-            dir=tempfile.mkdtemp(),
+            dir=tempfile.mkdtemp(),  # TODO(markblee): Use a context.
             mesh_axis_names=("data", "model"),
             mesh_shape=(1, 1),
             model=DummyModel.default_config().set(
@@ -319,6 +328,13 @@ class TrainerTest(test_utils.TestCase):
                 ),
             ),
         )
+
+    def test_prune_backwards_compat(self):
+        """Test that pruning is backwards compatible with no pruning."""
+        if not test_utils.is_supported_platform("cpu"):
+            return
+        # Construct a base trainer config.
+        cfg = self._trainer_config().set(mesh_shape=(1, 1))
         # Instantiate without pruning. We need to explicitly init dummy state in this case for
         # trainer to run.
         base_cfg = cfg.set(prune_empty_state_updates=False)
@@ -407,6 +423,8 @@ class TrainerTest(test_utils.TestCase):
         cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(n=5)
         cfg.summary_writer.vlog = 5
         cfg.max_step = 12
+        cfg.watchdog_timeout_seconds = 0.1
+        cfg.vlog = 2
         trainer: SpmdTrainer = cfg.instantiate(parent=None)
         output_a = trainer.run(prng_key=jax.random.PRNGKey(123))
         if ema_decay is None:
@@ -454,6 +472,34 @@ class TrainerTest(test_utils.TestCase):
         )
         # The prng_key per step is deterministic.
         np.testing.assert_array_equal(output_a["aux"]["prng_key"], output_b["aux"]["prng_key"])
+
+    def test_stop_on_exception(self):
+        """Test that trainer exits cleanly if there's an exception in the main loop."""
+        if not test_utils.is_supported_platform("cpu"):
+            return
+
+        class RaiseInput(DummyInput):
+            """A dummy input that raises an exception after N batches."""
+
+            @config_class
+            class Config(DummyInput.Config):
+                raise_on_batch: Required[int] = REQUIRED
+
+            def dataset(self):
+                cfg = self.config
+                for input_batch in super().dataset().take(cfg.raise_on_batch - 1):
+                    yield input_batch
+                raise ValueError(f"Raising on batch {cfg.raise_on_batch}")
+
+        cfg = self._trainer_config().set(max_step=3, watchdog_timeout_seconds=10)
+        cfg.input = RaiseInput.default_config().set(raise_on_batch=cfg.max_step - 1)
+        trainer: SpmdTrainer = cfg.instantiate(parent=None)
+        with self.assertRaisesRegex(ValueError, f"Raising on batch {cfg.input.raise_on_batch}"):
+            trainer.run(prng_key=jax.random.PRNGKey(123))
+        # pylint: disable=protected-access
+        self.assertTrue(trainer._watchdog_stopping.is_set())
+        self.assertIsNone(trainer._watchdog_thread)
+        # pylint: enable=protected-access
 
     def test_non_partitioned_model(self):
         if jax.default_backend() != "cpu":
@@ -722,6 +768,41 @@ class TrainerTest(test_utils.TestCase):
             # `save_input_iterator` for models without breaking backwards compatibility.
             self.assertEqual(6, trainer2.restore_checkpoint())
 
+    def test_last_step_checkpoint_policy(self):
+        """Test checkpoint policy saving at the last step."""
+        model_cfg = DummyModel.default_config().set(dtype=jnp.float32)
+
+        cfg = SpmdTrainer.default_config().set(
+            name="test_trainer",
+            dir=tempfile.mkdtemp(),
+            mesh_axis_names=("data", "model"),
+            mesh_shape=(1, 1),
+            model=model_cfg,
+            input=DummyInput.default_config(),
+            learner=learner.Learner.default_config().set(
+                optimizer=config_for_function(optimizers.sgd_optimizer).set(
+                    learning_rate=0.1, decouple_weight_decay=True
+                ),
+            ),
+            max_step=8,
+            checkpointer=Checkpointer.default_config().set(
+                save_policy=config_for_function(every_n_steps_and_last_policy).set(
+                    n=3,
+                    max_step=8,
+                ),
+            ),
+        )
+
+        # Run trainer.
+        trainer: SpmdTrainer = cfg.instantiate(parent=None)
+        trainer.run(prng_key=jax.random.PRNGKey(123))
+
+        assert os.path.exists(os.path.join(cfg.dir, "trainer_state_tree.txt"))
+        trainer2: SpmdTrainer = cfg.instantiate(parent=None)
+        with trainer2.mesh():
+            # We should have checkpointed at the last step.
+            self.assertEqual(8, trainer2.restore_checkpoint())
+
     def test_composite_learner(self):
         """Tests composite learner with two sub learners for weight/bias respectively."""
         cfg = SpmdTrainer.default_config().set(name="test_trainer")
@@ -766,6 +847,39 @@ class TrainerTest(test_utils.TestCase):
                 flatten_items(init_params), flatten_items(updated_params)
             ):
                 self.assertGreater(np.max(np.abs(updated_p - init_p)), 1e-3, msg=path)
+
+
+class SelectMeshConfigTest(test_utils.TestCase):
+    def test_select_mesh_config(self):
+        cfg = SpmdTrainer.default_config()
+        self.assertIs(cfg.mesh_shape, REQUIRED)
+
+        # When mesh_rules=None.
+        self.assertIsNone(cfg.mesh_rules)
+        select_mesh_config(cfg, mesh_selector="tpu-v4-128")
+        # cfg.mesh_shape remains unchanged.
+        self.assertIs(cfg.mesh_shape, REQUIRED)
+
+        # When no mesh rule matches the selector.
+        cfg.mesh_rules = (("tpu-v4-64", (4, 1, 8, 1)),)
+        select_mesh_config(cfg, mesh_selector="tpu-v4-128")
+        # cfg.mesh_shape still remains unchanged.
+        self.assertIs(cfg.mesh_shape, REQUIRED)
+
+        # When there is a match.
+        select_mesh_config(cfg, mesh_selector="tpu-v4-64")
+        # cfg.mesh_shape is overridden.
+        self.assertEqual(cfg.mesh_shape, (4, 1, 8, 1))
+
+        # When there is a match.
+        cfg.mesh_rules = (
+            ("gpu-(p5.48xlarge|p4de.24xlarge)-32", (4, 1, 8, 1)),
+            ("gpu.*", None),
+        )
+        select_mesh_config(cfg, mesh_selector="gpu-p5.48xlarge-32")
+        self.assertEqual(cfg.mesh_shape, (4, 1, 8, 1))
+        select_mesh_config(cfg, mesh_selector="gpu-p4d.24xlarge-128")
+        self.assertIsNone(cfg.mesh_shape)
 
 
 if __name__ == "__main__":

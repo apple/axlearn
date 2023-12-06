@@ -4,7 +4,6 @@
 import jax.random
 from absl.testing import absltest
 from flax import linen as nn
-from flax.core import FrozenDict
 from jax import numpy as jnp
 
 from axlearn.common import utils
@@ -123,34 +122,28 @@ class FlaxLayerTest(TestCase):
 
         self.assertEqual(
             {
-                "linear1": FrozenDict(
-                    {
-                        "params": {
-                            "bias": (hidden_dim,),
-                            "kernel": (input_dim, hidden_dim),
-                        },
-                    }
-                ),
-                "linear2": FrozenDict(
-                    {
-                        "params": {
-                            "bias": (output_dim,),
-                            "kernel": (hidden_dim, output_dim),
-                        },
-                    }
-                ),
-                "norm": FrozenDict(
-                    {
-                        "batch_stats": {
-                            "mean": (hidden_dim,),
-                            "var": (hidden_dim,),
-                        },
-                        "params": {
-                            "bias": (hidden_dim,),
-                            "scale": (hidden_dim,),
-                        },
-                    }
-                ),
+                "linear1": {
+                    "params": {
+                        "bias": (hidden_dim,),
+                        "kernel": (input_dim, hidden_dim),
+                    },
+                },
+                "linear2": {
+                    "params": {
+                        "bias": (output_dim,),
+                        "kernel": (hidden_dim, output_dim),
+                    },
+                },
+                "norm": {
+                    "batch_stats": {
+                        "mean": (hidden_dim,),
+                        "var": (hidden_dim,),
+                    },
+                    "params": {
+                        "bias": (hidden_dim,),
+                        "scale": (hidden_dim,),
+                    },
+                },
             },
             utils.shapes(layer_params),
         )
@@ -196,13 +189,11 @@ class FlaxLayerTest(TestCase):
 
         self.assertEqual(
             {
-                "embed": FrozenDict(
-                    {
-                        "params": {
-                            "embedding": (num_embeddings, feature_dims),
-                        },
-                    }
-                ),
+                "embed": {
+                    "params": {
+                        "embedding": (num_embeddings, feature_dims),
+                    },
+                }
             },
             utils.shapes(layer_params),
         )

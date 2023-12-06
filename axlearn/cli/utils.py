@@ -3,6 +3,7 @@
 """Helper utilities."""
 
 import functools
+import os
 import re
 import shlex
 import signal
@@ -49,9 +50,15 @@ def absl_main(args: argparse_flags.argparse.Namespace, **kwargs) -> int:
 
     returncode = 0
     try:
+        # In some cases, e.g. invoking a MODULE type command, argv[0] can potentially change. In
+        # these cases, we make it available via env variable.
+        env = kwargs.get("env", os.environ.copy())
+        env["AXLEARN_CLI_NAME"] = args.argv[0]
+        kwargs["env"] = env
+
         # Invoke a module.
         if args.command_type == CommandType.MODULE:
-            proc = subprocess_run(
+            proc = _subprocess_popen(
                 [f"python3 -m {args.module}"] + args.argv[1:],
                 start_new_session=True,
                 **kwargs,
@@ -61,14 +68,14 @@ def absl_main(args: argparse_flags.argparse.Namespace, **kwargs) -> int:
 
         # Invoke a subprocess.
         elif args.command_type == CommandType.SHELL:
-            proc = subprocess_run([args.command] + args.argv[1:], shell=True, **kwargs)
+            proc = _subprocess_popen([args.command] + args.argv[1:], shell=True, **kwargs)
             procs.append(proc)
             returncode = proc.wait()
 
         # Invoke original command with --help (flag can be specified multiple times).
         # TODO(markblee): See if we can get the invoked subparser here and print_help.
         else:  # args.command_type == CommandType.HELP
-            proc = subprocess_run(_insert_flags(args.argv, ["--help"]), **kwargs)
+            proc = _subprocess_popen(_insert_flags(args.argv, ["--help"]), **kwargs)
             procs.append(proc)
             returncode = proc.wait()
     except KeyboardInterrupt as _:
@@ -274,13 +281,13 @@ def get_path(d: Dict[str, Any], k: str, default: Optional[Any] = None) -> Option
     return d.get(parts[-1], default)
 
 
-def subprocess_run(argv: Union[str, Sequence[str]], *args, **overrides) -> subprocess.Popen:
+def _subprocess_popen(argv: Union[str, Sequence[str]], *args, **overrides) -> subprocess.Popen:
     """Runs a command in a subprocess.
 
     Args:
         argv: A string command or list of command + args.
-        args: Forwarded to `subprocess.run`.
-        **overrides: Forwarded to `subprocess.run`.
+        args: Forwarded to `subprocess.Popen`.
+        **overrides: Forwarded to `subprocess.Popen`.
 
     Returns:
         A subprocess.Popen.

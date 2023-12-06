@@ -59,7 +59,7 @@ class GDATest(TestCase):
             pjit_fn = pjit.pjit(
                 lambda x: x,
                 in_shardings=(partition_spec,),
-                out_axis_resources=partition_spec,
+                out_shardings=partition_spec,
             )
             output = pjit_fn(global_input_batch)
             self.assertIsInstance(output["x"], Tensor)

@@ -1,19 +1,22 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests common utils."""
-# pylint: disable=no-self-use
+import dataclasses
 import sys
 from collections import OrderedDict
-from typing import Any, Iterable, NamedTuple, Optional
+from typing import Any, Iterable, NamedTuple, Optional, Sequence, Type
 
+# pylint: disable=no-self-use
+import chex
+import flax.struct
 import jax
 import jaxlib
 import numpy as np
+import pytest
 import tensorflow as tf
 import torch
 from absl.testing import absltest, parameterized
 from flax import serialization
-from flax.core import FrozenDict
 from jax import numpy as jnp
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
@@ -22,6 +25,7 @@ from axlearn.common import learner, optimizers
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import config_class, config_for_function, similar_names
 from axlearn.common.layers import BatchNorm, LayerNorm, Linear
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
 from axlearn.common.repeat import Repeat
 from axlearn.common.test_utils import (
@@ -29,29 +33,38 @@ from axlearn.common.test_utils import (
     TestCase,
     TestWithTemporaryCWD,
     ThirdPartyInitializer,
+    is_supported_mesh_shape,
     prng_impl,
     read_param_init_specs_recursively,
     read_per_param_settings,
 )
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import (
+    PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
     NestedTensor,
     StackedKeyArray,
+    Tensor,
     VDict,
     as_numpy_array,
     as_tensor,
     cast_floats,
+    check_jax_type,
     check_param_shape_alignment,
     complete_partition_spec_tree,
     copy_recursively,
     count_model_params,
+    create_device_mesh,
+    dispatch_input_batch,
     flatten_items,
     get_data_dir,
     get_recursively,
+    infer_mesh_shape,
     input_partition_spec,
     match_regex_rules,
+    prune_tree,
     runtime_checks,
     set_data_dir,
+    set_recursively,
     split_prng_key,
     tree_paths,
     validate_float_dtype,
@@ -62,6 +75,11 @@ from axlearn.common.utils import (
 class Combo(NamedTuple):
     head: Any
     tail: Any
+
+
+# pylint: disable-next=abstract-method
+class StructContainer(flax.struct.PyTreeNode):
+    contents: Any
 
 
 class TreeUtilsTest(TestCase):
@@ -76,6 +94,68 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(
             Combo(head="head", tail=Combo(head="tail/head", tail="tail/tail")),
             tree_paths(Combo(head=1, tail=Combo(head=2, tail=3))),
+        )
+
+        # flax.struct.PyTreeNode.
+        self.assertEqual(
+            WeightedScalar(mean="mean", weight="weight"),
+            tree_paths(WeightedScalar(mean=2, weight=3)),
+        )
+
+        # Nested flax.struct.PyTreeNode.
+        self.assertEqual(
+            StructContainer(WeightedScalar(mean="contents/mean", weight="contents/weight")),
+            tree_paths(StructContainer(WeightedScalar(mean=2, weight=3))),
+        )
+
+        # With is_leaf set.
+        self.assertEqual(
+            ["0", {"a": "1/a", "b": "1/b"}],
+            tree_paths(
+                [Combo(head=1, tail=2), {"a": Combo(head=3, tail=4), "b": 5}],
+                is_leaf=lambda x: isinstance(x, Combo),
+            ),
+        )
+
+        @chex.dataclass
+        class DataclassCombo:
+            scalar: int
+            dataclass_combo: Any
+            none: Type[None]
+            nested_tensor: NestedTensor
+
+        # Dataclass.
+        self.assertEqual(
+            DataclassCombo(
+                scalar="scalar",
+                dataclass_combo=DataclassCombo(
+                    scalar="dataclass_combo/scalar",
+                    dataclass_combo=Combo(
+                        head="dataclass_combo/dataclass_combo/head",
+                        tail="dataclass_combo/dataclass_combo/tail",
+                    ),
+                    none=None,
+                    nested_tensor={},
+                ),
+                none=None,
+                nested_tensor={
+                    "a": ["nested_tensor/a/0", "nested_tensor/a/1"],
+                    "c": None,
+                },
+            ),
+            tree_paths(
+                DataclassCombo(
+                    scalar=1,
+                    dataclass_combo=DataclassCombo(
+                        scalar="hello",
+                        dataclass_combo=Combo(head="head", tail="tail"),
+                        none=None,
+                        nested_tensor={},
+                    ),
+                    none=None,
+                    nested_tensor={"a": [1, 2], "c": None},
+                )
+            ),
         )
 
         # None is preserved, similar to an empty list.
@@ -94,8 +174,6 @@ class TreeUtilsTest(TestCase):
         d2 = OrderedDict(reversed(kv))
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d1)))
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d2)))
-        frozen_dict = {"a": FrozenDict({"b": {"c": 1}})}
-        self.assertEqual([("a/b/c", 1)], flatten_items(frozen_dict))
 
     def assertTensorEqual(self, a, b):
         self.assertIsInstance(a, jnp.ndarray)
@@ -260,20 +338,42 @@ class TreeUtilsTest(TestCase):
         self.assertSequenceEqual(["x"], keys)
         self.assertLen(values, 1)
 
-    def test_get_recursively(self):
-        tree = {"a": {"b": 2, "c": {"d": 3, "e": 4}}}
-        self.assertEqual({"a": {"b": 2, "c": {"d": 3, "e": 4}}}, get_recursively(tree, ""))
-        self.assertEqual({"a": {"b": 2, "c": {"d": 3, "e": 4}}}, get_recursively(tree, []))
+    def test_get_and_set_recursively(self):
+        tree = {"a": {"b": 2, "c": {"d": 3, "e": 4}}, "f.g": 5}
+        self.assertEqual(
+            {"a": {"b": 2, "c": {"d": 3, "e": 4}}, "f.g": 5}, get_recursively(tree, "")
+        )
+        self.assertEqual(
+            {"a": {"b": 2, "c": {"d": 3, "e": 4}}, "f.g": 5}, get_recursively(tree, [])
+        )
         self.assertEqual({"b": 2, "c": {"d": 3, "e": 4}}, get_recursively(tree, "a"))
         self.assertEqual(2, get_recursively(tree, "a/b"))
         self.assertEqual(2, get_recursively(tree, ["a", "b"]))
         self.assertEqual({"d": 3, "e": 4}, get_recursively(tree, "a/c"))
         self.assertEqual(3, get_recursively(tree, "a.c.d", separator="."))
+        self.assertEqual(5, get_recursively(tree, "f.g", separator=None))
 
         with self.assertRaises(KeyError):
-            get_recursively(tree, "a.foo")
+            get_recursively(tree, "a/foo")
         with self.assertRaises(KeyError):
             get_recursively(tree, ["a", "foo"])
+        with self.assertRaisesRegex(KeyError, "f"):
+            get_recursively(tree, "f", separator=".")
+        with self.assertRaisesRegex(KeyError, "g.h"):
+            get_recursively(tree, "g.h", separator=None)
+
+        set_recursively(tree, value="bar", path="a/foo/b")
+        self.assertEqual("bar", get_recursively(tree, "a/foo/b"))
+        set_recursively(tree, value="boo", path="a.foo.b", separator=".")
+        self.assertEqual("boo", get_recursively(tree, "a/foo/b"))
+        set_recursively(tree, value="bar", path=["a", "foo", "b"])
+        self.assertEqual("bar", get_recursively(tree, "a/foo/b"))
+        with self.assertRaises(ValueError):
+            set_recursively(tree, value="bar", path="")
+        set_recursively(tree, value=6, path="f.g", separator=None)
+        with self.assertRaisesRegex(KeyError, "f"):
+            get_recursively(tree, "f.g", separator=".")
+        self.assertEqual(6, get_recursively(tree, "f.g", separator=None))
 
     def test_copy_recursively(self):
         source = {"a": {"b": 2, "c": {"d": 3, "e": 4}}}
@@ -314,7 +414,7 @@ class TreeUtilsTest(TestCase):
     def test_split_prng_key(self):
         original_key = jax.random.PRNGKey(1234)
 
-        def fn(key: jax.random.KeyArray):
+        def fn(key: Tensor):
             return jax.random.normal(key, [3, 2])
 
         base_results = []
@@ -355,8 +455,8 @@ class TreeUtilsTest(TestCase):
         ((1, 1, 1), ("pipeline", "data", "model")),
     )
     def test_input_partition_spec(self, mesh_shape, mesh_axis_names):
-        if jax.device_count() != np.prod(mesh_shape):
-            return
+        if not is_supported_mesh_shape(mesh_shape):
+            pytest.skip(reason=f"Unsupported mesh {mesh_shape}.")
         devices = mesh_utils.create_device_mesh(mesh_shape)
         with jax.sharding.Mesh(devices, mesh_axis_names):
             self.assertSequenceEqual(
@@ -365,6 +465,45 @@ class TreeUtilsTest(TestCase):
                     mesh_axis_names,
                 ),
             )
+
+    @parameterized.parameters(
+        ((1, 4), ("data", "model"), "data"),
+        ((1, 2, 2, 2), ("replica", "data", "fsdp", "model"), ("replica", "data", "fsdp")),
+    )
+    def test_dispatch_shards_input_batch(
+        self,
+        mesh_shape: Sequence[int],
+        mesh_axis_names: Sequence[str],
+        batch_axis_names: Sequence[str],
+    ):
+        if not is_supported_mesh_shape(mesh_shape):
+            pytest.skip(reason=f"Unsupported mesh {mesh_shape}.")
+        devices = mesh_utils.create_device_mesh(mesh_shape)
+        with jax.sharding.Mesh(devices, mesh_axis_names):
+            sharded_batch = dispatch_input_batch(
+                jnp.ones(jnp.prod(jnp.asarray(mesh_shape))),
+                batch_axis_names=batch_axis_names,
+            )
+            # Check that the batch has been sharded.
+            self.assertEqual(sharded_batch.sharding.spec, PartitionSpec(batch_axis_names))
+
+    def test_dispatch_subsets_input_batch(self):
+        default_input_batch = {
+            "value_a": jnp.arange(4),
+            "value_b": jnp.arange(16).reshape(4, 4),
+        }
+        # Default batch (without physical to logical dispatch tensor) is unchanged.
+        self.assertNestedEqual(dispatch_input_batch(default_input_batch), default_input_batch)
+        input_batch_with_key = default_input_batch
+        is_from_padded_feed = jnp.asarray([[1, 0], [0, 1], [0, 0], [0, 0]])
+        input_batch_with_key[PHYSICAL_TO_LOGICAL_DISPATCH_KEY] = is_from_padded_feed
+        expected_subset = {
+            k: v[:2, ...]
+            for k, v in input_batch_with_key.items()
+            if k != PHYSICAL_TO_LOGICAL_DISPATCH_KEY
+        }
+        # Calling with input batch with padded-input-feed key returns a strict subset.
+        self.assertNestedEqual(dispatch_input_batch(input_batch_with_key), expected_subset)
 
     def test_complete_partition_spec_tree(self):
         data = dict(
@@ -454,6 +593,15 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(None, check_param_shape_alignment(target_tree, align_target_tree))
         error_msg = "(linear1/weight/0) shape is different: source: (32), target: (15)."
         self.assertEqual(error_msg, check_param_shape_alignment(target_tree, misalign_target_tree))
+
+    def test_check_jax_type(self):
+        check_jax_type(args=(1, 1.0, jax.numpy.ones(1), None, [{"key": 1}]))
+        with self.assertRaisesRegex(ValueError, "non-JAX type"):
+            check_jax_type(args=([{"key": "1"}],))
+        with self.assertRaisesRegex(ValueError, "non-JAX type"):
+            check_jax_type(kwargs={"key": "1"})
+        with self.assertRaisesRegex(ValueError, "^Argument key has leaf with non-JAX type"):
+            check_jax_type(pretty_named_args={"key": "1"})
 
 
 class SimilarNamesTest(TestCase):
@@ -569,7 +717,7 @@ class ReadParamInitSpecsRecursivelyTest(TestCase):
     def test_delegates(self):
         class TestLayer(Linear):
             def initialize_parameters_recursively(
-                self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
+                self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
             ) -> NestedTensor:
                 params = super().initialize_parameters_recursively(prng_key, prebuilt=prebuilt)
                 params["dummy"] = {"test": 1}
@@ -582,7 +730,11 @@ class ReadParamInitSpecsRecursivelyTest(TestCase):
         )
         delegates = {
             "dummy": ParamInitSpec(
-                shape=None, initializer=ThirdPartyInitializer("dummy_delegate"), fan_axes=None
+                shape=None,
+                initializer=ThirdPartyInitializer.default_config()
+                .set(library="dummy_delegate")
+                .instantiate(),
+                fan_axes=None,
             ),
         }
         param_init_specs = read_param_init_specs_recursively(layer, delegates=delegates)
@@ -864,6 +1016,165 @@ class MatchRegexRulesTest(TestCase):
         self.assertEqual("w", match_regex_rules("not_special/weight", rules=rules))
         # Custom default value.
         self.assertEqual("d", match_regex_rules("layer/scale", rules=rules, default_value="d"))
+
+
+class PruneTreeTest(TestCase):
+    """Tests prune_tree."""
+
+    def test(self):
+        in_tree = {
+            "a": {
+                "b": {"d": "test"},
+                "c": {
+                    "b": None,
+                    "e": 123,
+                },
+            },
+            "f": 345,
+        }
+        # Prune by path.
+        self.assertEqual(
+            {"a": {"c": {"e": 123}}, "f": 345}, prune_tree(in_tree, lambda k, _: "b" in k)
+        )
+        # Prune by path with prefix/separator.
+        self.assertEqual(
+            {"a": {"c": {"b": None, "e": 123}}, "f": 345},
+            prune_tree(in_tree, lambda k, _: k == "prefix:a:b", prefix="prefix", separator=":"),
+        )
+        # Prune by value.
+        self.assertEqual(
+            {"a": {"b": {"d": "test"}, "c": {"b": None}}},
+            prune_tree(in_tree, lambda _, v: isinstance(v, int)),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class DummyDevice:
+    """Mock device for testing."""
+
+    platform: str
+    device_kind: str
+    process_index: int
+
+
+@dataclasses.dataclass(frozen=True)
+class DummyTpuDevice(DummyDevice):
+    """Mock TPU device for testing."""
+
+    coords: Sequence[int]
+    core_on_chip: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class DummyMultiSliceTpuDevice(DummyTpuDevice):
+    """Mock multi-slice TPU device for testing."""
+
+    slice_index: int = 0
+
+
+class DeviceMeshTest(TestCase):
+    @parameterized.parameters(
+        {"logical_mesh": (2, 8)},
+        {"logical_mesh": (4, 4)},
+        {"logical_mesh": (1, 2, 8)},
+    )
+    def test_create_device_mesh_tpuv4(self, logical_mesh: Sequence[int]):
+        physical_mesh = (4, 4, 1)
+        coords = [
+            (x, y, z)
+            for x in range(physical_mesh[0])
+            for y in range(physical_mesh[1])
+            for z in range(physical_mesh[2])
+        ]
+        devices = [
+            DummyTpuDevice(
+                platform="tpu",
+                device_kind="TPU v4",
+                process_index=ix // 4,
+                coords=coord,
+            )
+            for ix, coord in enumerate(coords)
+        ]
+        # Check that the constructed mesh has the expected shape.
+        self.assertEqual(
+            create_device_mesh(mesh_shape=logical_mesh, devices=devices).shape, logical_mesh
+        )
+
+    @parameterized.parameters(
+        {"logical_mesh": (2, 16)},
+        {"logical_mesh": (2, 4, 4)},
+    )
+    def test_create_device_mesh_multi_slice_tpuv4(self, logical_mesh: Sequence[int]):
+        slice_physical_mesh = (4, 4, 1)
+        num_slices = 2
+        coords = [
+            (x, y, z)
+            for x in range(slice_physical_mesh[0])
+            for y in range(slice_physical_mesh[1])
+            for z in range(slice_physical_mesh[2])
+        ]
+        devices = [
+            DummyMultiSliceTpuDevice(
+                platform="tpu",
+                device_kind="TPU v4",
+                process_index=(len(coords) * slice_index + ix) // 4,
+                coords=coord,
+                slice_index=slice_index,
+            )
+            for ix, coord in enumerate(coords)
+            for slice_index in range(num_slices)
+        ]
+        # Check that the constructed mesh has the expected shape.
+        device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+        self.assertEqual(device_mesh.shape, logical_mesh)
+        # Check that the sub_mesh along the first axis only contains devices from one of the slices.
+        for ix, sub_mesh in enumerate(device_mesh):
+            self.assertTrue(all(el.slice_index == ix for el in sub_mesh.flatten()))
+
+    @parameterized.parameters(
+        {"logical_mesh": (8, 2, 4)},
+        {"logical_mesh": (16, 4)},
+        {"logical_mesh": (2, 32)},
+    )
+    def test_create_device_mesh_gpu(self, logical_mesh: Sequence[int] = (8, 2, 4)):
+        num_gpus_per_process = 8
+        num_granules = 8
+        devices = [
+            DummyDevice(
+                platform="gpu",
+                device_kind="gpu",
+                process_index=(num_gpus_per_process * granule_index + ix) // num_gpus_per_process,
+            )
+            for ix in range(num_gpus_per_process)
+            for granule_index in range(num_granules)
+        ]
+        # Check that the constructed mesh has the expected shape.
+        device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+        self.assertEqual(device_mesh.shape, logical_mesh)
+
+
+class InferMeshShapeTest(TestCase):
+    """Tests infer_mesh_shape."""
+
+    def test_infer_mesh_shape_config(self):
+        # When mesh sinfer_mesh_shape
+        mesh_shape = infer_mesh_shape((4, 1, 8, 1))
+        self.assertEqual(mesh_shape, (4, 1, 8, 1))
+
+        # When there is mutiple -1
+        with self.assertRaises(ValueError):
+            infer_mesh_shape((-1, 1, -1, 8))
+
+        # When num_devices is not a mutiple of products of mesh_shape
+        with self.assertRaises(ValueError):
+            infer_mesh_shape((-1, 1, 8, 1), num_devices=4)
+
+        # When one -1 for a valid mesh shape
+        mesh_shape = infer_mesh_shape((-1, 1, 8, 1), num_devices=32)
+        self.assertEqual(mesh_shape, (4, 1, 8, 1))
+
+        mesh_shape = infer_mesh_shape((4, 1, 8, -1), num_devices=32)
+        self.assertEqual(mesh_shape, (4, 1, 8, 1))
 
 
 if __name__ == "__main__":

@@ -2,29 +2,40 @@
 
 """Tests tf.data inputs."""
 # pylint: disable=no-self-use,too-many-lines
-from typing import Dict, List, Optional, Sequence, Type, Union
+import os
+import tempfile
+from typing import Dict, Iterable, List, Optional, Sequence, Type, Union
+from unittest import mock
 
 import jax
+import numpy as np
 import pytest
 import seqio
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from absl.testing import absltest, parameterized
+from jax.sharding import Mesh
 
-from axlearn.common import test_utils
+from axlearn.common import test_utils, utils
+from axlearn.common.checkpointer import Checkpointer
 from axlearn.common.config import config_for_function
 from axlearn.common.input_fake import fake_serialized_json_source, fake_source, fake_text_source
 from axlearn.common.input_tf_data import (
     BuildDatasetFn,
     DatasetToDatasetFn,
+    Input,
+    _infer_cardinality,
     _infer_num_examples,
     _infer_num_shards,
     _maybe_shard_examples,
+    _pad_for_evaluation,
+    _pad_logical_to_physical,
     add_static_fields,
     batch,
     chain,
     concatenate_datasets,
     default_pad_example_fn,
+    disable_shuffle_recursively,
     extract_from_sequence,
     identity,
     pack_to_batch,
@@ -313,7 +324,7 @@ class TfdsTest(parameterized.TestCase):
             dataset_name=dataset_name,
             split=split,
             is_training=is_training,
-            shuffle_buffer_size=8 if is_training else 0,
+            train_shuffle_buffer_size=8,
             decoders=decoders,
         )
         ds = source.instantiate()
@@ -344,27 +355,208 @@ class TfdsTest(parameterized.TestCase):
 
 
 def _text_ds(texts: List[str], *, repeat=1) -> tf.data.Dataset:
-    # TODO(markblee): consider de-duping these ds_fns.
-    # pylint: disable=duplicate-code
-    def data_gen():
-        for _ in range(repeat):
-            for index, text in enumerate(texts):
-                yield {"text": text, "index": index, "is_valid": True}
+    dataset = {
+        "text": [],
+        "index": [],
+        "is_valid": [],
+    }
 
-    return tf.data.Dataset.from_generator(
-        data_gen,
-        output_signature={
-            "text": tf.TensorSpec(shape=(), dtype=tf.string),
-            "index": tf.TensorSpec(shape=(), dtype=tf.int32),
-            "is_valid": tf.TensorSpec(shape=(), dtype=tf.bool),
-        },
+    for index, text in enumerate(texts):
+        dataset["index"].append(tf.constant(index, dtype=tf.int32))
+        dataset["text"].append(tf.constant(text, dtype=tf.string))
+        dataset["is_valid"].append(tf.constant(True, dtype=tf.bool))
+
+    return tf.data.Dataset.from_tensor_slices(dataset).repeat(repeat)
+
+
+class PadTest(test_utils.TestCase):
+    @parameterized.parameters(None, 1, 5)
+    def test_infer_cardinality(self, num_repeats: Optional[int]):
+        text_examples = ["a", "b", "c"]
+        ds = _text_ds(text_examples).repeat(num_repeats)
+        cardinality = _infer_cardinality(ds)
+        if num_repeats is None:
+            self.assertEqual(cardinality, tf.data.INFINITE_CARDINALITY)
+        else:
+            self.assertEqual(cardinality, len(text_examples) * num_repeats)
+
+    def test_pad_for_evaluation(self):
+        text_examples = ["a", "b", "c"]
+        ds = _pad_for_evaluation(
+            _text_ds(["a", "b", "c"]),
+            per_feed_batch_size=2,
+            pad_example_fn=default_pad_example_fn,
+        )
+        example_ix = 0
+        for example in ds:
+            text = example["text"].numpy().decode()
+            index = example["index"].numpy()
+            is_valid = example["is_valid"].numpy()
+            if example_ix < len(text_examples):
+                self.assertEqual(text, text_examples[example_ix])
+                self.assertEqual(index, example_ix)
+                self.assertEqual(is_valid, True)
+            else:
+                self.assertEqual(text, "")
+                self.assertEqual(index, 0)
+                self.assertEqual(is_valid, False)
+            example_ix += 1
+        self.assertEqual(example_ix, 4)
+
+    @parameterized.product(
+        num_logical_feeds=(1, 2),
+        logical_batch_size=(1, 2, 4),
+        logical_feed_index=(0, 1),
+        physical_batch_size=(2, 4, 8),
     )
-    # pylint: enable=duplicate-code
+    def test_pad_logical_to_physical_for_logical_feed(
+        self,
+        num_logical_feeds: int,
+        logical_feed_index: int,
+        logical_batch_size: int,
+        physical_batch_size: int,
+    ):
+        # Skip unsupported combinations.
+        if logical_batch_size % num_logical_feeds != 0:
+            return
+        if logical_batch_size > physical_batch_size:
+            return
+        if logical_feed_index >= num_logical_feeds:
+            return
+        text_examples = ["a", "b", "c", "d"]
+        per_feed_physcal_batch_size = physical_batch_size // num_logical_feeds
+        with mock.patch("jax.process_count", return_value=num_logical_feeds):
+            ds = _pad_logical_to_physical(
+                _text_ds(text_examples),
+                global_batch_size=physical_batch_size,
+                global_logical_batch_size=logical_batch_size,
+                num_logical_feeds=num_logical_feeds,
+                logical_feed_index=logical_feed_index,
+                pad_example_fn=default_pad_example_fn,
+            ).batch(per_feed_physcal_batch_size)
+        per_feed_logical_batch_size = logical_batch_size // num_logical_feeds
+        num_batches = 0
+        input_iter = iter(ds)
+        for input_batch in input_iter:
+            text = [el.decode() for el in input_batch["text"].numpy()]
+            start_ix = per_feed_logical_batch_size * num_batches
+            end_ix = start_ix + per_feed_logical_batch_size
+            # Logical part of the batch.
+            self.assertSequenceEqual(
+                text[:per_feed_logical_batch_size],
+                text_examples[start_ix:end_ix],
+            )
+            index = input_batch["index"].numpy()
+            self.assertNestedEqual(
+                index[:per_feed_logical_batch_size],
+                np.arange(start_ix, end_ix, dtype=np.int32),
+            )
+            is_valid = input_batch["is_valid"].numpy()
+            self.assertNestedEqual(
+                is_valid[:per_feed_logical_batch_size],
+                np.array([True] * per_feed_logical_batch_size),
+            )
+            # Padded part of the batch.
+            per_feed_padded_batch_size = per_feed_physcal_batch_size - per_feed_logical_batch_size
+            if per_feed_padded_batch_size > 0:
+                self.assertSequenceEqual(
+                    text[per_feed_logical_batch_size:],
+                    [""] * per_feed_padded_batch_size,
+                )
+                self.assertNestedEqual(
+                    index[per_feed_logical_batch_size:],
+                    np.array([0] * per_feed_padded_batch_size, dtype=np.int32),
+                )
+                self.assertNestedEqual(
+                    is_valid[per_feed_logical_batch_size:],
+                    np.array([False] * per_feed_padded_batch_size),
+                )
+            # Physical to logical dispatch tensor.
+            dispatch = input_batch[utils.PHYSICAL_TO_LOGICAL_DISPATCH_KEY].numpy()
+            self.assertEqual(dispatch.shape, (per_feed_physcal_batch_size, logical_batch_size))
+            expected_dispatch = np.zeros(
+                (per_feed_physcal_batch_size, logical_batch_size), dtype=np.bool
+            )
+            logical_dispatch_start = logical_feed_index * per_feed_logical_batch_size
+            expected_dispatch[
+                np.arange(per_feed_logical_batch_size),
+                np.arange(
+                    logical_dispatch_start, logical_dispatch_start + per_feed_logical_batch_size
+                ),
+            ] = True
+            self.assertNestedEqual(dispatch, expected_dispatch)
+            num_batches += 1
+            if num_batches == 1:
+                self._check_iterator_saveable(input_iter)
+        self.assertEqual(num_batches, len(text_examples) // per_feed_logical_batch_size)
+
+    @parameterized.product(
+        num_physical_feeds=(2, 4),
+        physical_batch_size=(4, 8, 16),
+    )
+    def test_pad_logical_to_physical_for_physical_feed(
+        self,
+        num_physical_feeds: int,
+        physical_batch_size: int,
+    ):
+        # Test that non-logical feed returns appropriately padded data.
+        text_examples = ["a", "b", "c", "d"]
+        per_feed_physcal_batch_size = physical_batch_size // num_physical_feeds
+        logical_feed_logical_batch_size = 2
+        with mock.patch("jax.process_count", return_value=num_physical_feeds):
+            ds = _pad_logical_to_physical(
+                _text_ds(text_examples),
+                global_batch_size=physical_batch_size,
+                global_logical_batch_size=logical_feed_logical_batch_size,
+                num_logical_feeds=1,
+                logical_feed_index=None,
+                pad_example_fn=default_pad_example_fn,
+            ).batch(per_feed_physcal_batch_size)
+        input_iter = iter(ds)
+        num_batches = 0
+        for input_batch in input_iter:
+            self.assertSequenceEqual(
+                [el.decode() for el in input_batch["text"].numpy()],
+                [""] * per_feed_physcal_batch_size,
+            )
+            self.assertNestedEqual(
+                input_batch["index"].numpy(),
+                np.array([0] * per_feed_physcal_batch_size, dtype=np.int32),
+            )
+            self.assertNestedEqual(
+                input_batch["is_valid"].numpy(),
+                np.array([False] * per_feed_physcal_batch_size),
+            )
+            self.assertNestedEqual(
+                input_batch[utils.PHYSICAL_TO_LOGICAL_DISPATCH_KEY],
+                np.zeros(
+                    (per_feed_physcal_batch_size, logical_feed_logical_batch_size), dtype=np.bool
+                ),
+            )
+            num_batches += 1
+            if num_batches == 1:
+                self._check_iterator_saveable(input_iter)
+        self.assertEqual(num_batches, len(text_examples) // logical_feed_logical_batch_size)
+
+    def _check_iterator_saveable(self, iterator: Iterable):
+        # Check that we can save the data iterator.
+        with tempfile.TemporaryDirectory() as td:
+            save_dir = os.path.join(td, "ckpt")
+            step = 100
+            ckptr = (
+                Checkpointer.default_config()
+                .set(name="ckptr", dir=save_dir)
+                .instantiate(parent=None)
+            )
+            with Mesh(jax.devices(), "data"):
+                ckptr.save(step=step, state={"iterator": iterator}, evaler_summaries=None)
+                ckptr.wait_until_finished()
+            self.assertTrue(os.path.exists(os.path.join(save_dir, f"step_{step:08d}", "index")))
 
 
-class BatchTest(parameterized.TestCase):
+class BatchTest(test_utils.TestCase):
     @parameterized.parameters(False, True)
-    def test_padding(self, is_training):
+    def test_eval_pad(self, is_training):
         ds = _text_ds(["a", "b", "c"])
         ds = batch(
             global_batch_size=2, is_training=is_training, pad_example_fn=default_pad_example_fn
@@ -383,6 +575,80 @@ class BatchTest(parameterized.TestCase):
             batch_index += 1
             if batch_index >= 10:
                 break
+
+    @parameterized.parameters(False, True)
+    def test_batch_for_logical_feed_index(self, is_training):
+        text_examples = ["a", "b", "c"]
+        ds = _text_ds(text_examples)
+        ds = batch(
+            global_batch_size=2,
+            is_training=is_training,
+            pad_example_fn=default_pad_example_fn,
+            global_logical_batch_size=1,
+            logical_feed_indices=[0],
+        )(ds)
+        batch_index = 0
+        for input_batch in ds:
+            text = input_batch["text"].numpy().tolist()
+            indices = input_batch["index"].numpy().tolist()
+            is_valid = input_batch["is_valid"].numpy().tolist()
+            dispatch = input_batch[utils.PHYSICAL_TO_LOGICAL_DISPATCH_KEY].numpy().tolist()
+            if is_training or batch_index < len(text_examples):
+                expected_index = batch_index % len(text_examples)
+                self.assertSequenceEqual(
+                    text,
+                    [text_examples[expected_index].encode(), b""],
+                )
+                self.assertSequenceEqual(indices, [expected_index, 0])
+                self.assertSequenceEqual(is_valid, [True, False])
+                self.assertNestedEqual(dispatch, [[1], [0]])
+            else:
+                self.assertSequenceEqual(
+                    text,
+                    [b"", b""],
+                )
+                self.assertSequenceEqual(indices, [0, 0])
+                self.assertSequenceEqual(is_valid, [False, False])
+                self.assertNestedEqual(dispatch, [[0], [0]])
+            batch_index += 1
+            if batch_index >= 10:
+                break
+        if is_training:
+            self.assertEqual(batch_index, 10)
+        else:
+            self.assertEqual(batch_index, len(text_examples))
+
+    @parameterized.parameters(False, True)
+    def test_batch_for_physical_feed_index(self, is_training):
+        text_examples = ["a", "b", "c"]
+        ds = _text_ds(text_examples)
+        with mock.patch("jax.process_index", return_value=1):
+            ds = batch(
+                global_batch_size=2,
+                is_training=is_training,
+                pad_example_fn=default_pad_example_fn,
+                global_logical_batch_size=1,
+                # jax.process_index will not be one of the logical feed indices.
+                logical_feed_indices=[0],
+            )(ds)
+        batch_index = 0
+        for input_batch in ds:
+            self.assertSequenceEqual(
+                input_batch["text"].numpy().tolist(),
+                [b"", b""],
+            )
+            self.assertSequenceEqual(input_batch["index"].numpy().tolist(), [0, 0])
+            self.assertSequenceEqual(input_batch["is_valid"].numpy().tolist(), [False, False])
+            self.assertNestedEqual(
+                input_batch[utils.PHYSICAL_TO_LOGICAL_DISPATCH_KEY].numpy().tolist(), [[0], [0]]
+            )
+            batch_index += 1
+            if batch_index >= 10:
+                break
+        if is_training:
+            self.assertEqual(batch_index, 10)
+        else:
+            self.assertEqual(batch_index, len(text_examples))
 
     @parameterized.product(
         is_training=(False, True),
@@ -473,13 +739,20 @@ class RekeyTest(test_utils.TestCase):
     def _ds_fn(self) -> tf.data.Dataset:
         def data_gen():
             for value in self.DEFAULT_VALUES:
-                yield {"key1": value, "key2": value}
+                yield {
+                    "key1": value,
+                    "key2": value,
+                    "key3/key4": value,
+                    "key5": {"key6": value},
+                }
 
         return tf.data.Dataset.from_generator(
             data_gen,
             output_signature={
                 "key1": tf.TensorSpec(shape=(), dtype=tf.string),
                 "key2": tf.TensorSpec(shape=(), dtype=tf.string),
+                "key3/key4": tf.TensorSpec(shape=(), dtype=tf.string),
+                "key5": {"key6": tf.TensorSpec(shape=(), dtype=tf.string)},
             },
         )
 
@@ -489,17 +762,42 @@ class RekeyTest(test_utils.TestCase):
         for ix, el in enumerate(ds):
             self.assertEqual(el["key1"], self.DEFAULT_VALUES[ix])
             self.assertEqual(el["key2"], self.DEFAULT_VALUES[ix])
+            self.assertEqual(el["key3/key4"], self.DEFAULT_VALUES[ix])
+            self.assertEqual(el["key5"]["key6"], self.DEFAULT_VALUES[ix])
 
-    def test_rekey_maps_new_keys(self):
+    @parameterized.parameters(
+        dict(
+            key_map={"new_key1": "key1", "new_key2": "key2", "new_key3": "key3"},
+            default_value="no",
+            expected=[
+                {"new_key1": "hello", "new_key2": "hello", "new_key3": "no"},
+                {"new_key1": "world", "new_key2": "world", "new_key3": "no"},
+            ],
+        ),
+        # Test rekey paths.
+        dict(
+            key_map={
+                # Maps the literal "key3/key4" to "key3": {"key4": ...}.
+                "key3.key4": "key3/key4",
+                # Maps "key5": {"key6": ...} to the literal "key5/key6".
+                "key5/key6": "key5.key6",
+                # Injects a new "key7": {"key8": ...}.
+                "key7.key8": "unknown",
+            },
+            separator=".",
+            default_value="no",
+            expected=[
+                {"key3": {"key4": "hello"}, "key5/key6": "hello", "key7": {"key8": "no"}},
+                {"key3": {"key4": "world"}, "key5/key6": "world", "key7": {"key8": "no"}},
+            ],
+        ),
+    )
+    def test_rekey_maps_new_keys(self, expected: Sequence[dict], **kwargs):
         ds = self._ds_fn()
-        ds = rekey(
-            {"new_key1": "key1", "new_key2": "key2", "new_key3": "key3"}, default_value="no"
-        )(ds)
-        for ix, el in enumerate(ds):
-            self.assertEqual(set(el.keys()), {"new_key1", "new_key2", "new_key3"})
-            self.assertEqual(el["new_key1"], self.DEFAULT_VALUES[ix])
-            self.assertEqual(el["new_key2"], self.DEFAULT_VALUES[ix])
-            self.assertEqual(el["new_key3"], "no")
+        ds = rekey(**kwargs)(ds)
+        actual = list(ds)
+        expected = tf.nest.map_structure(tf.constant, expected)
+        self.assertNestedEqual(expected, actual)
 
     def test_rekey_changes_element_spec(self):
         ds = self._ds_fn()
@@ -527,9 +825,13 @@ class RekeyTest(test_utils.TestCase):
             {"new_key1": "key1", "new_key2": None}, default_value="no", retain_original_inputs=True
         )(ds)
         for ix, el in enumerate(ds):
-            self.assertEqual(set(el.keys()), {"key1", "key2", "new_key1", "new_key2"})
+            self.assertEqual(
+                set(el.keys()), {"key1", "key2", "new_key1", "new_key2", "key3/key4", "key5"}
+            )
             self.assertEqual(el["key1"], self.DEFAULT_VALUES[ix])
             self.assertEqual(el["key2"], self.DEFAULT_VALUES[ix])
+            self.assertEqual(el["key3/key4"], self.DEFAULT_VALUES[ix])
+            self.assertEqual(el["key5"]["key6"], self.DEFAULT_VALUES[ix])
             self.assertEqual(el["new_key1"], self.DEFAULT_VALUES[ix])
             self.assertEqual(el["new_key2"], "no")
 
@@ -779,7 +1081,7 @@ class AddStaticFieldsTest(parameterized.TestCase):
         self.assertSequenceEqual(expected, list(actual.as_numpy_iterator()))
 
 
-class PadTest(parameterized.TestCase, tf.test.TestCase):
+class PadToBatchTest(parameterized.TestCase, tf.test.TestCase):
     @parameterized.parameters(
         dict(
             examples=[
@@ -1103,6 +1405,23 @@ class TrimAndPadTest(parameterized.TestCase):
     ):
         t = trim_and_pad_tensor(input_tensor, max_len=max_len, pad_id=pad_id)
         tf.debugging.assert_equal(expected_tensor, t)
+
+
+class DisableShuffleRecursivelyTest(parameterized.TestCase):
+    """Tests disable_shuffle_recursively."""
+
+    def test_disable_shuffle_recursively(self):
+        cfg = Input.default_config().set(
+            source=config_for_function(with_processor).set(
+                source=config_for_function(tfds_dataset).set(
+                    train_shuffle_buffer_size=10, train_shuffle_files=True
+                ),
+                processor=config_for_function(identity),
+            )
+        )
+        disable_shuffle_recursively(cfg)
+        self.assertEqual(cfg.source.source.train_shuffle_buffer_size, 0)
+        self.assertEqual(cfg.source.source.train_shuffle_files, False)
 
 
 if __name__ == "__main__":

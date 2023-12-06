@@ -29,15 +29,25 @@ from typing_extensions import Protocol
 
 from axlearn.common.config import (
     REQUIRED,
+    ConfigBase,
     ConfigOr,
     InstantiableConfig,
     Required,
     config_class,
     config_for_function,
     maybe_instantiate,
+    maybe_set_config,
 )
 from axlearn.common.module import Module
-from axlearn.common.utils import NestedTensor, Tensor, as_numpy_array, get_data_dir
+from axlearn.common.utils import (
+    PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
+    NestedTensor,
+    Tensor,
+    as_numpy_array,
+    get_data_dir,
+    get_recursively,
+    set_recursively,
+)
 
 
 class BuildDatasetFn(Protocol):
@@ -52,13 +62,6 @@ class DatasetToDatasetFn(Protocol):
 
     def __call__(self, ds: Optional[tf.data.Dataset], **kwargs) -> tf.data.Dataset:
         ...
-
-
-def maybe_set_is_training(cfg: ConfigOr[Any], *, is_training: Optional[bool]) -> ConfigOr[Any]:
-    if is_training is not None and hasattr(cfg, "is_training"):
-        return cfg.set(is_training=is_training)
-    else:
-        return cfg
 
 
 def tfds_read_config(
@@ -212,8 +215,8 @@ def tfds_dataset(
     *,
     split: str,
     is_training: bool,
-    shuffle_buffer_size: int,
-    shuffle_files: Optional[bool] = None,
+    train_shuffle_buffer_size: Optional[int] = None,
+    train_shuffle_files: Optional[bool] = None,
     data_dir: Optional[str] = None,
     download: bool = False,
     read_config: Optional[InstantiableConfig] = None,
@@ -227,10 +230,11 @@ def tfds_dataset(
         is_training: Whether the examples are used for training.
             If True, examples will be read in parallel and shuffled.
             Otherwise examples will be read sequentially to ensure a deterministic order.
-        shuffle_buffer_size: The shuffle buffer size.
-            If shuffle_buffer_size <= 0, no shuffling is done.
-            If is_training=False, shuffle_buffer_size is always expected to be <= 0.
-        shuffle_files: Whether to shuffle files. If None, infer from shuffle_buffer_size > 0.
+        train_shuffle_buffer_size: The shuffle buffer size (required) when is_training=True.
+            If is_training=False or shuffle_buffer_size <= 0, no shuffling is done.
+        train_shuffle_files: Whether to shuffle files when is_training=True.
+            If is_training=False, no shuffling is done.
+            If is_training=True and train_shuffle_files is None, infer from shuffle_buffer_size > 0.
         data_dir: Used for tfds.load. If None, use the value of the environment variable
             DATA_DIR, TFDS_DATA_DIR, or "~/tensorflow_datasets" (in that order).
         download: Whether to download the examples. If false, use the data under data_dir.
@@ -243,12 +247,22 @@ def tfds_dataset(
         A BuildDatasetFn, which returns a tf.data.Dataset for the specified TFDS.
 
     Raises:
-        ValueError: If shuffle_buffer_size > 0 when is_training is False.
+        ValueError: if train_shuffle_buffer_size is None when is_training=True.
     """
-    if not is_training and shuffle_buffer_size > 0:
-        # Note that it's OK for is_training=True and shuffle_buffer_size=0 so that the inputs are
-        # deterministic.
-        raise ValueError("Shuffling should be disabled if is_training=False")
+    if is_training:
+        if train_shuffle_buffer_size is None:
+            raise ValueError("train_shuffle_buffer_size is required when is_training=True")
+        shuffle_files = (
+            train_shuffle_buffer_size > 0 if train_shuffle_files is None else train_shuffle_files
+        )
+        shuffle_buffer_size = train_shuffle_buffer_size
+    else:
+        # Disable shuffling.
+        #
+        # Note that it's OK for is_training=True and train_shuffle_buffer_size=0 so that the inputs
+        # are deterministic.
+        shuffle_buffer_size = 0
+        shuffle_files = False
 
     if data_dir is None:
         data_dir = get_data_dir()
@@ -257,9 +271,6 @@ def tfds_dataset(
         read_config = config_for_function(tfds_read_config).set(is_training=is_training)
     else:
         read_config = read_config.set(is_training=is_training)
-
-    if shuffle_files is None:
-        shuffle_files = shuffle_buffer_size > 0
 
     def fn() -> tf.data.Dataset:
         local_read_config = read_config.clone()
@@ -400,7 +411,7 @@ def sample_from_datasets(
         raise ValueError(f"Length of sources {sources} is not equal to length of weights {weights}")
 
     source_fns = [
-        maybe_set_is_training(source, is_training=is_training).instantiate() for source in sources
+        maybe_set_config(source, is_training=is_training).instantiate() for source in sources
     ]
 
     def fn() -> tf.data.Dataset:
@@ -443,7 +454,7 @@ def concatenate_datasets(
         raise ValueError("Expected at least one source")
 
     source_fns = [
-        maybe_set_is_training(source, is_training=is_training).instantiate() for source in sources
+        maybe_set_config(source, is_training=is_training).instantiate() for source in sources
     ]
 
     def fn() -> tf.data.Dataset:
@@ -532,8 +543,8 @@ def with_processor(
     Returns:
         A BuildDatasetFn that applies `processor` on `source`.
     """
-    source = maybe_set_is_training(source, is_training=is_training).instantiate()
-    processor = maybe_set_is_training(processor, is_training=is_training).instantiate()
+    source = maybe_set_config(source, is_training=is_training).instantiate()
+    processor = maybe_set_config(processor, is_training=is_training).instantiate()
 
     def fn() -> tf.data.Dataset:
         ds = source()
@@ -544,7 +555,7 @@ def with_processor(
 
 def chain(*args, is_training: Optional[bool] = None) -> DatasetToDatasetFn:
     if is_training is not None:
-        args = [maybe_set_is_training(processor, is_training=is_training) for processor in args]
+        args = [maybe_set_config(processor, is_training=is_training) for processor in args]
 
     def fn(ds: tf.data.Dataset) -> tf.data.Dataset:
         for processor in args:
@@ -570,11 +581,169 @@ def default_pad_example_fn(element_spec: Any) -> Any:
     return example
 
 
+def _infer_cardinality(dataset: tf.data.Dataset) -> int:
+    """Returns the size of the dataset, by counting examples if neccessary."""
+    num_examples = dataset.cardinality()
+    if num_examples != tf.data.UNKNOWN_CARDINALITY:
+        return num_examples
+    num_examples = (
+        dataset.map(lambda *x: 1, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        .reduce(0, lambda x, _: x + 1)
+        .numpy()
+    )
+    logging.warning("Manually counted dataset size: %s", num_examples)
+    return num_examples
+
+
+def _pad_for_evaluation(
+    dataset: tf.data.Dataset,
+    *,
+    per_feed_batch_size: int,
+    pad_example_fn: PadExampleFn,
+) -> tf.data.Dataset:
+    """Pad evaluation dataset.
+
+    Args:
+        dataset: The dataset to pad.
+        per_feed_batch_size: The number of examples provided by the dataset per batch
+            within a single data feed.
+        pad_example_fn: Create padded examples with the given function.
+
+    Returns:
+        A possibly padded dataset, which will have the same cardinality across all JAX processes.
+
+    Raises:
+        ValueError: If the input dataset has infinite cardinality.
+    """
+    num_examples = _infer_cardinality(dataset)
+    if num_examples == tf.data.INFINITE_CARDINALITY:
+        raise ValueError(f"Evaluation dataset cannot have infinite cardinality: {dataset}")
+
+    target_num_examples = num_examples
+    if num_examples % per_feed_batch_size != 0:
+        target_num_examples += per_feed_batch_size - num_examples % per_feed_batch_size
+    if jax.process_count() > 1:
+        # Ensure that we do not run into the "last batch" problem.
+        # See: https://jax.readthedocs.io/en/latest/multi_process.html
+        target_num_examples = int(
+            jnp.max(
+                multihost_utils.process_allgather(jnp.array([target_num_examples]), tiled=False)
+            )
+        )
+
+    if num_examples < target_num_examples:
+        # Pad dataset to target count.
+        element_spec = dataset.element_spec
+        supplementary_pad_dataset = tf.data.Dataset.from_tensors(
+            pad_example_fn(element_spec)
+        ).repeat(target_num_examples - num_examples)
+        logging.info("Padding evaluation dataset from %s to %s.", num_examples, target_num_examples)
+        # Add padded examples to make up the target number.
+        dataset = dataset.concatenate(supplementary_pad_dataset)
+    return dataset
+
+
+def _pad_logical_to_physical(
+    dataset: tf.data.Dataset,
+    *,
+    global_batch_size: int,
+    global_logical_batch_size: int,
+    num_logical_feeds: int,
+    logical_feed_index: Optional[int],
+    pad_example_fn: PadExampleFn,
+) -> tf.data.Dataset:
+    """Pad logical dataset in preparation for batching.
+
+    Args:
+        dataset: The dataset to pad.
+        global_batch_size: The size of the global physical batch.
+        global_logical_batch_size: The size of the global logical batch.
+        num_logical_feeds: The number of feeds loading logical data.
+            Every JAX process is a physical feed, but a subset are logical feeds.
+        logical_feed_index: The index of this feed in the set of logical feeds.
+            If None, indicates that this feed does not load logical data, (i.e. it is padding-only).
+        pad_example_fn: Create padded examples with the given function.
+
+    Returns:
+        A padded dataset, with an additional one-hot physical-to-logical dispatch tensor field.
+    """
+    assert global_batch_size % jax.process_count() == 0
+    feed_physical_batch_size = global_batch_size // jax.process_count()
+
+    assert global_logical_batch_size % num_logical_feeds == 0
+    feed_logical_batch_size = global_logical_batch_size // num_logical_feeds
+
+    # Impute size of pad dataset.
+    num_examples = _infer_cardinality(dataset)
+    if num_examples == tf.data.INFINITE_CARDINALITY:
+        # The dataset repeats forever.
+        num_batches = num_examples = num_pad_examples = None
+    else:
+        assert num_examples % feed_logical_batch_size == 0
+        num_batches = num_examples // feed_logical_batch_size
+        num_pad_examples = num_batches * (
+            feed_physical_batch_size
+            if logical_feed_index is None
+            else (feed_physical_batch_size - feed_logical_batch_size)
+        )
+    pad_dataset = (
+        tf.data.Dataset.from_tensors(pad_example_fn(dataset.element_spec))
+        .map(
+            lambda eg: {
+                **eg,
+                PHYSICAL_TO_LOGICAL_DISPATCH_KEY: tf.zeros(
+                    global_logical_batch_size, dtype=tf.bool
+                ),
+            }
+        )
+        .repeat(num_pad_examples)
+    )
+
+    # If this is not a logical feed, return the pad dataset.
+    if logical_feed_index is None:
+        return pad_dataset
+
+    # Add physical-to-logical dispatch tensor to the real dataset.
+    dispatch_start_ix = logical_feed_index * feed_logical_batch_size
+    dispatch_dataset = (
+        tf.data.Dataset.range(dispatch_start_ix, dispatch_start_ix + feed_logical_batch_size)
+        .map(
+            lambda x: tf.one_hot(
+                x, global_logical_batch_size, on_value=True, off_value=False, dtype=tf.bool
+            )
+        )
+        .repeat(num_batches)
+    )
+    dataset = tf.data.Dataset.zip((dataset, dispatch_dataset)).map(
+        # TODO(tom_gunter,rpang): Pass only an index instead of one-hot array.
+        lambda eg, dispatch: {**eg, PHYSICAL_TO_LOGICAL_DISPATCH_KEY: dispatch}
+    )
+
+    # If no padding, return dataset.
+    if num_pad_examples == 0:
+        return dataset
+
+    # Interleave the logical examples with padding.
+    interleaved_dataset = tf.data.Dataset.zip(
+        (
+            dataset.batch(feed_logical_batch_size),
+            pad_dataset.batch(feed_physical_batch_size - feed_logical_batch_size),
+        )
+    ).flat_map(
+        lambda x, y: tf.data.Dataset.from_tensor_slices(x).concatenate(
+            tf.data.Dataset.from_tensor_slices(y)
+        )
+    )
+    return interleaved_dataset
+
+
 def batch(
     global_batch_size: int,
     *,
     is_training: bool,
     pad_example_fn: PadExampleFn,
+    global_logical_batch_size: Optional[int] = None,
+    logical_feed_indices: Optional[Sequence[int]] = None,
     prefetch_buffer_size: Optional[int] = None,
     post_batch_processor: Optional[ConfigOr[DatasetToDatasetFn]] = None,
     repeat: Optional[int] = None,
@@ -586,10 +755,18 @@ def batch(
     before your batch.
 
     Args:
-        global_batch_size: The global batch size across all replicas.
+        global_batch_size: The global physical batch size across all replicas.
+            Must be divisible by the number of JAX processes and devices.
         is_training: Whether the examples are used for training.
             This parameter will be passed through to all input sources.
-        pad_example_fn: Pad examples with the given function. Only used if is_training=False.
+        pad_example_fn: Create padded examples with the given function.
+        global_logical_batch_size: The global size of the logical batch, i.e. the physical batch
+            subset corresponding to elements drawn from the input dataset.
+                If None, assumed to be equal to the global physical batch size.
+        logical_feed_indices: The JAX process indices corresponding to feeds that provide logical
+            data after batching. Process indices that are not in this set will produce
+            physical-only (padded) batches, with no elements drawn from the input dataset.
+            If None, assumed to be the set of all JAX training processes.
         prefetch_buffer_size: Size of prefetch buffer. This allows later
             elements to be prepared while the current element is being
             processed. If not set, `tf.data.experimental.AUTOTUNE` is used.
@@ -604,73 +781,71 @@ def batch(
 
     Raises:
         ValueError: If
-            - global_batch_size is not divisible by num_feeds,
-            - Eval dataset has infinite cardinality, or
-            - Repeat is not a positive integer.
+            - global_batch_size is not divisible by the number of JAX processes, or
+            - repeat is not a positive integer, or
+            - global_logical_batch_size and logical_feed_indices are not both set or both unset, or
+            - global_logical_batch_size is not divisible by the number of logical_feed_indices.
     """
-    num_feeds = jax.process_count()
-    feed_index = jax.process_index()
-    if global_batch_size % num_feeds != 0:
+    num_data_feeds = jax.process_count()
+    if global_batch_size % num_data_feeds != 0:
         raise ValueError(
-            f"global_batch_size ({global_batch_size} must be divisible by "
-            f"num_feeds ({num_feeds})"
+            f"global_batch_size ({global_batch_size}) must be divisible by "
+            f"number of JAX processes (data feeds) ({num_data_feeds})."
         )
-    per_feed_batch_size = global_batch_size // num_feeds
+    per_feed_batch_size = global_batch_size // num_data_feeds
 
-    # pylint: disable-next=too-many-branches
+    if repeat is not None and (not isinstance(repeat, int) or repeat <= 0):
+        raise ValueError(f"Invalid repeat (must be a positive integer): {repeat}")
+
+    if not (global_logical_batch_size is None) == (logical_feed_indices is None):
+        raise ValueError(
+            f"Must provide both | neither global_logical_batch_size ({global_logical_batch_size}) "
+            f"and logical_feed_indices ({logical_feed_indices})."
+        )
+    elif (global_logical_batch_size is None) and (logical_feed_indices is None):
+        global_logical_batch_size = global_batch_size
+        logical_feed_indices = range(jax.process_count())
+
+    num_logical_feeds = len(logical_feed_indices)
+    if global_logical_batch_size % num_logical_feeds != 0:
+        raise ValueError(
+            f"global_logical_batch_size ({global_logical_batch_size}) must be divisible by "
+            f"the number of logical data feeds ({num_logical_feeds})."
+        )
+
     def fn(ds: tf.data.Dataset) -> tf.data.Dataset:
         if not is_training:
-            ds = ds.cache()
-            num_examples = ds.cardinality()
-            if num_examples == tf.data.INFINITE_CARDINALITY:
-                raise ValueError(f"Eval dataset should not have infinite cardinality: {ds}")
-            if num_examples == tf.data.UNKNOWN_CARDINALITY:
-                num_examples = (
-                    ds.map(lambda *x: 1, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-                    .reduce(0, lambda x, _: x + 1)
-                    .numpy()
-                )
-                logging.warning("Manually counted evaluation dataset size: %s", num_examples)
-            target_num_examples = num_examples
-            if num_examples % per_feed_batch_size != 0:
-                target_num_examples += per_feed_batch_size - num_examples % per_feed_batch_size
-            if num_feeds > 1:
-                # Ensure that we do not run into the "last batch" problem.
-                # See: https://jax.readthedocs.io/en/latest/multi_process.html
-                target_num_examples = int(
-                    jnp.max(
-                        multihost_utils.process_allgather(
-                            jnp.array([target_num_examples]), tiled=False
-                        )
-                    )
-                )
-            if num_examples < target_num_examples:
-                logging.info(
-                    "Padding evaluation dataset from %s to %s.", num_examples, target_num_examples
-                )
-                # Save the element_spec before batching.
-                element_spec = ds.element_spec
+            # Pad for evaluation.
+            ds = _pad_for_evaluation(
+                ds,
+                per_feed_batch_size=global_logical_batch_size // num_logical_feeds,
+                pad_example_fn=pad_example_fn,
+            )
 
-                def ds_fn():
-                    yield pad_example_fn(element_spec)
+        if global_logical_batch_size != global_batch_size:
+            # Pad for physical to logical dispatch.
+            logical_feed_index = None
+            if jax.process_index() in logical_feed_indices:
+                logical_feed_index = logical_feed_indices.index(jax.process_index())
+            ds = _pad_logical_to_physical(
+                ds,
+                global_batch_size=global_batch_size,
+                global_logical_batch_size=global_logical_batch_size,
+                num_logical_feeds=num_logical_feeds,
+                logical_feed_index=logical_feed_index,
+                pad_example_fn=pad_example_fn,
+            )
 
-                pad_ds = tf.data.Dataset.from_generator(
-                    ds_fn, output_signature=element_spec
-                ).repeat(target_num_examples - num_examples)
-                ds = ds.concatenate(pad_ds)
-
+        # Batch.
         ds = ds.batch(per_feed_batch_size, drop_remainder=True)
 
         # Post batch processing methods at batch-level.
         if post_batch_processor:
             ds = maybe_instantiate(post_batch_processor)(ds)
 
-        if not is_training and num_feeds > 1:
-            num_eval_batches = ds.cardinality()
-            if num_eval_batches == tf.data.UNKNOWN_CARDINALITY:
-                # Compute the cardinality. Number of eval batches is typically small.
-                num_eval_batches = ds.reduce(0, lambda x, _: x + 1).numpy()
-            logging.info("Feed %s has %s eval batches.", feed_index, num_eval_batches)
+        if not is_training and num_data_feeds > 1:
+            num_eval_batches = _infer_cardinality(ds)
+            logging.info("Feed has %s eval batches.", num_eval_batches)
             multihost_utils.assert_equal(
                 num_eval_batches,
                 f"Number of eval batches are not all equal ({num_eval_batches})",
@@ -680,8 +855,6 @@ def batch(
             if is_training:
                 ds = ds.repeat()
         else:
-            if not isinstance(repeat, int) or repeat <= 0:
-                raise ValueError(f"Invalid repeat (must be a positive integer): {repeat}")
             ds = ds.repeat(repeat)
         # If `prefetch_buffer_size` is not set, use autotune.
         ds = ds.prefetch(prefetch_buffer_size or tf.data.experimental.AUTOTUNE)
@@ -736,39 +909,55 @@ def rekey(
     key_map: Dict[str, str],
     default_value: Optional[Any] = "",
     retain_original_inputs: bool = False,
+    separator: Optional[str] = None,
 ) -> DatasetToDatasetFn:
     """Replace the feature keys according to mapping in `key_map`.
 
     Like seqio's rekey, except:
         1. We allow for a configurable default value
             (used if the reference key is falsey--e.g. None--or if missing in the input example).
-        2. We optionally allow retain keys not explicitly mentioned in the key-map.
+        2. We optionally allow retaining keys not explicitly mentioned in the key-map.
+        3. We optionally allow keys to be paths (if separator is provided).
 
     Ref: <https://github.com/google/seqio/blob/9748501b/seqio/preprocessors.py#L30-L52>
 
     Args:
-        key_map: dictionary mapping new keys to original keys.
+        key_map: A dictionary mapping new keys to original keys.
             If falsey, return input (to match seqio behavior).
-        default_value: value to set new key to if old key-value doesn't exist.
+        default_value: Value to set new key to if old key-value doesn't exist.
             If None, then we do not write the new key-value pair when missing an old key-value
                 or when the provided reference key is falsey (to match seqio).
-        retain_original_inputs: whether to retain all the keys provided in the original input
+        retain_original_inputs: Whether to retain all the keys provided in the original input
             example (if False, only keys specified in the key map will be in the output).
+        separator: An optional separator. If provided, all keys and values of `key_map` will be
+            treated as paths and split by the separator.
 
     Returns:
         A DatasetToDatasetFn, where each input example should be a dict.
     """
+
+    def has_path(x, path: str) -> bool:
+        try:
+            get_recursively(x, path, separator=separator)
+            return True
+        except KeyError:
+            return False
 
     def fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         if not key_map:
             return example
         output = example if retain_original_inputs else {}
         for new_key, old_key in key_map.items():
-            if not old_key or old_key not in example:
+            if not old_key or not has_path(example, old_key):
                 if default_value is not None:
-                    output[new_key] = default_value
+                    set_recursively(output, value=default_value, path=new_key, separator=separator)
                 continue
-            output[new_key] = example[old_key]
+            set_recursively(
+                output,
+                value=get_recursively(example, old_key, separator=separator),
+                path=new_key,
+                separator=separator,
+            )
         return output
 
     return seqio.map_over_dataset(fn)
@@ -868,7 +1057,7 @@ class Input(Module):
         source: Required[InstantiableConfig] = REQUIRED
 
         # A config that instantiates to a DatasetToDatasetFn, which processes examples from
-        # the source dataset and generates the example dataset to be batched, potentially
+        # the source dataset and generates the example dataset to be padded and batched, potentially
         # splitting and merging examples.
         processor: Required[InstantiableConfig] = REQUIRED
 
@@ -878,13 +1067,9 @@ class Input(Module):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        self._source = maybe_set_is_training(cfg.source, is_training=cfg.is_training).instantiate()
-        self._processor = maybe_set_is_training(
-            cfg.processor, is_training=cfg.is_training
-        ).instantiate()
-        self._batcher = maybe_set_is_training(
-            cfg.batcher, is_training=cfg.is_training
-        ).instantiate()
+        self._source = maybe_set_config(cfg.source, is_training=cfg.is_training).instantiate()
+        self._processor = maybe_set_config(cfg.processor, is_training=cfg.is_training).instantiate()
+        self._batcher = maybe_set_config(cfg.batcher, is_training=cfg.is_training).instantiate()
 
     @property
     def source(self) -> BuildDatasetFn:
@@ -900,6 +1085,28 @@ class Input(Module):
     def __iter__(self) -> Iterable[NestedTensor]:
         for input_batch in self.dataset():
             yield as_numpy_array(input_batch)
+
+
+def disable_shuffle_recursively(cfg: Input.Config):
+    """Disables all shuffling on the input config.
+
+    This is useful for disabling shuffle during eval, or for deterministic input pipelines.
+    """
+
+    def enter_fn(_, child, default_kv):
+        if isinstance(child, ConfigBase):
+            for k in child.keys():
+                if k.endswith("train_shuffle_buffer_size"):
+                    setattr(child, k, 0)
+                elif k == "train_shuffle_files":
+                    setattr(child, k, False)
+                elif "shuffle" in k:
+                    logging.warning(
+                        "Encountered an unrecognized key %s with 'shuffle' in the name.", k
+                    )
+        return default_kv
+
+    cfg.visit(visit_fn=lambda k, v: None, enter_fn=enter_fn)
 
 
 def preserve_element_spec(

@@ -1,21 +1,29 @@
 # Copyright © 2023 Apple Inc.
 
-"""Unittests for scheduler.py."""
+"""Tests job scheduler."""
+# pylint: disable=unused-argument
+
 from datetime import datetime, timedelta
+from typing import Dict
 
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 
-from axlearn.quota.scheduler import (
+from axlearn.cloud.common.quota import QuotaInfo
+from axlearn.cloud.common.scheduler import (
     JobMetadata,
     JobQueue,
+    JobScheduler,
     JobVerdict,
     ProjectJobSorter,
     ResourceLimitCalculator,
     Scheduler,
 )
+from axlearn.common.config import config_for_function
 
 
 class ProjectJobSorterTest(absltest.TestCase):
+    """Tests ProjectJobSorter."""
+
     def test_basic(self):
         sorter: ProjectJobSorter = ProjectJobSorter.default_config().instantiate()
         yesterday = datetime.now() - timedelta(days=1)
@@ -78,6 +86,8 @@ class ProjectJobSorterTest(absltest.TestCase):
 
 
 class ResourceLimitCalculatorTest(absltest.TestCase):
+    """Tests ResourceLimitCalculator."""
+
     def test_extreme_cases(self):
         calculator: ResourceLimitCalculator = ResourceLimitCalculator.default_config().instantiate()
         # Empty demands.
@@ -137,12 +147,14 @@ class ResourceLimitCalculatorTest(absltest.TestCase):
 
 
 class SchedulerTest(absltest.TestCase):
+    """Tests Scheduler."""
+
     def test_basics(self):
-        scheduler: Scheduler = Scheduler.default_config().instantiate()
+        sched: Scheduler = Scheduler.default_config().instantiate()
         resource_limits = {"tpu": 12}
         project_quotas = {"a": {"tpu": 6}, "b": {"tpu": 3}, "c": {"tpu": 1}}
         # With demands only from project "a".
-        results = scheduler.schedule(
+        results = sched.schedule(
             resource_limits=resource_limits,
             project_quotas=project_quotas,
             project_jobs={"a": (("a1", {"tpu": 8}), ("a2", {"tpu": 2}), ("a3", {"tpu": 5}))},
@@ -162,7 +174,7 @@ class SchedulerTest(absltest.TestCase):
             results.job_verdicts,
         )
         # With demands from both "a" and "b".
-        results = scheduler.schedule(
+        results = sched.schedule(
             resource_limits=resource_limits,
             project_quotas=project_quotas,
             project_jobs={
@@ -192,7 +204,7 @@ class SchedulerTest(absltest.TestCase):
         )
 
     def test_multiple_resource_types(self):
-        scheduler: Scheduler = Scheduler.default_config().instantiate()
+        sched: Scheduler = Scheduler.default_config().instantiate()
         resource_limits = {"tpu": 12, "gpu": 9}
         project_quotas = {
             "a": {"tpu": 6, "gpu": 4},
@@ -200,7 +212,7 @@ class SchedulerTest(absltest.TestCase):
             "c": {"tpu": 1, "gpu": 2},
         }
         # With demands from both "a" and "b".
-        results = scheduler.schedule(
+        results = sched.schedule(
             resource_limits=resource_limits,
             project_quotas=project_quotas,
             project_jobs={
@@ -230,5 +242,97 @@ class SchedulerTest(absltest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    absltest.main()
+def _mock_get_resource_limits(*args):
+    del args
+    return QuotaInfo(
+        total_resources={"v4": 15, "v3": 8, "v5": 5},
+        project_resources={
+            "project1": {"v4": 10, "v5": 5},
+            "project2": {"v4": 5, "v3": 5},
+            "project3": {"v3": 3},
+        },
+    )
+
+
+def mock_quota_config():
+    return _mock_get_resource_limits
+
+
+class TestJobScheduler(parameterized.TestCase):
+    """Tests JobScheduler."""
+
+    @parameterized.parameters([False, True])
+    def test_init(self, dry_run: bool):
+        cfg = JobScheduler.default_config().set(
+            quota=config_for_function(mock_quota_config),
+        )
+
+        # Test initialization.
+        sched: JobScheduler = cfg.instantiate()
+        # pylint: disable-next=protected-access
+        self.assertEqual(sched._quota(), _mock_get_resource_limits())
+
+        # Test scheduling.
+        yesterday = datetime.now() - timedelta(days=1)
+        jobs = {
+            # Should be deprioritized in favor of b, since it's using part of p2's v4 quota.
+            "a": JobMetadata(
+                user_id="a",
+                project_id="project1",
+                creation_time=yesterday + timedelta(seconds=1),
+                resources={"v4": 12},
+            ),
+            # Should run since there's v4 capacity in p2 after a is pre-empted.
+            "b": JobMetadata(
+                user_id="b",
+                project_id="project2",
+                creation_time=yesterday + timedelta(seconds=2),
+                resources={"v4": 5},
+            ),
+            # Should run, due to available v3 quota in p2 and p3.
+            "c": JobMetadata(
+                user_id="c",
+                project_id="project2",
+                creation_time=yesterday + timedelta(seconds=3),
+                resources={"v3": 6},
+            ),
+            # Should not run -- the excess v5 quota allocated is only 2.5.
+            "d": JobMetadata(
+                user_id="d",
+                project_id="project2",
+                creation_time=yesterday + timedelta(seconds=4),
+                resources={"v5": 3},
+            ),
+            # Should run -- within the 2.5 excess v5 quota.
+            "e": JobMetadata(
+                user_id="e",
+                project_id="project3",
+                creation_time=yesterday + timedelta(seconds=5),
+                resources={"v5": 2.5},
+            ),
+            # Should run. Even though it has no project, there is excess v3 quota.
+            "f": JobMetadata(
+                user_id="f",
+                project_id="",
+                creation_time=yesterday + timedelta(seconds=1),
+                resources={"v3": 2},
+            ),
+        }
+        results = sched.schedule(jobs, dry_run=dry_run)
+
+        # Get verdicts by job name.
+        job_verdicts: Dict[str, JobVerdict] = {
+            job_name: verdict
+            for project_verdicts in results.job_verdicts.values()
+            for job_name, verdict in project_verdicts.items()
+        }
+        if dry_run:
+            # All of the jobs should be scheduled, regardless.
+            expected = {"a": True, "b": True, "c": True, "d": True, "e": True, "f": True}
+        else:
+            expected = {"a": False, "b": True, "c": True, "d": False, "e": True, "f": True}
+
+        self.assertEqual(
+            expected,
+            {job_name: job_verdict.should_run() for job_name, job_verdict in job_verdicts.items()},
+        )

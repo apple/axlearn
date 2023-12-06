@@ -2,13 +2,15 @@
 
 """Modules for configurable parameter initialization."""
 import re
+from enum import Enum
 from typing import Any, Dict, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 from absl import logging
 from jax import numpy as jnp
 
-from axlearn.common.config import Configurable, InstantiableConfig, config_class, config_for_class
+from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
+from axlearn.common.utils import Tensor
 
 Shape = Sequence[int]
 
@@ -27,6 +29,12 @@ class FanAxes(NamedTuple):
     https://jax.readthedocs.io/en/latest/_autosummary/jax.nn.initializers.variance_scaling.html.
     """
 
+    class AxisType(Enum):
+        IN_AXIS = "in_axis"
+        OUT_AXIS = "out_axis"
+        BATCH_AXIS = "batch_axis"
+        NONE = None
+
     # Input axis or sequence of axes of the fan "input" dimension.
     in_axis: Union[Tuple[int, ...], int]
     # Output axis or sequence of axes of the fan "output" dimension.
@@ -34,15 +42,122 @@ class FanAxes(NamedTuple):
     # Batch axis or sequence of axes that should be ignored when computing fan.
     batch_axis: Union[Tuple[int, ...], int] = ()
 
+    def canonicalize(self) -> "FanAxes":
+        """Returns a FanAxes equivalent to this one where all fields are tuples."""
 
-class Initializer:
+        def canonicalize(maybe_tuple: Union[None, int, Sequence[Union[int]]]) -> Tuple[int, ...]:
+            if maybe_tuple is None:
+                return tuple()
+            if isinstance(maybe_tuple, int):
+                return (maybe_tuple,)
+            if isinstance(maybe_tuple, Tuple):
+                return tuple(sorted(maybe_tuple))
+            raise TypeError(f"Invalid type {type(maybe_tuple)} for data {maybe_tuple}.")
+
+        axes = {}
+        for typ in self._fields:
+            axes[typ] = canonicalize(getattr(self, typ))
+        return FanAxes(**axes)
+
+    def __eq__(self, other):
+        if not isinstance(other, FanAxes):
+            return False
+        return self.canonicalize()._asdict() == other.canonicalize()._asdict()
+
+    # We can't insert into other locations besides the start and end
+    # because FanAxes doesn't know the number of dimensions of the parameter shape.
+    def _insert_axis(self, axis: int, *, axis_type: "FanAxes.AxisType") -> "FanAxes":
+        """Returns a copy of this where a new axis of the given type has been inserted
+        at the given index, moving the other axes accordingly.
+
+        Only 0 and -1 are supported for locations.
+
+        Args:
+            axis: The index of the new axis.
+            axis_type: The type of axis to insert.
+
+        Returns:
+            A copy of this where a new axis of the given type has been prepended
+            to the beginning of the shape.
+
+        Raises:
+            ValueError: If axis is not 0 or -1.
+        """
+        if axis not in (0, -1):
+            raise ValueError("Location must be either 0 or -1.")
+
+        def move_axis(index: int):
+            if index >= 0 and axis == 0:
+                index += 1
+            elif index < 0 and axis == -1:
+                index -= 1
+            return index
+
+        fan_axes = self.canonicalize()
+        fan_axes = fan_axes._asdict()
+
+        # Dictionary with moved axis indices.
+        fan_axes = {
+            key: tuple(move_axis(index) for index in value) for key, value in fan_axes.items()
+        }
+        if axis_type != FanAxes.AxisType.NONE:
+            tmp = list(fan_axes[axis_type.value])
+            tmp.insert(axis, axis)
+            fan_axes[axis_type.value] = tuple(tmp)
+        return FanAxes(**fan_axes)
+
+    def prepend_axis(self, *, axis_type: "FanAxes.AxisType") -> "FanAxes":
+        """Returns a copy of this where a new axis of the given type has been prepended
+        to the beginning of the shape.
+
+        Args:
+            axis_type: The type of axis to insert.
+
+        Returns:
+            A copy of this where a new axis of the given type has been prepended
+            to the beginning of the shape.
+        """
+        return self._insert_axis(0, axis_type=axis_type)
+
+    def append_axis(self, *, axis_type: "FanAxes.AxisType") -> "FanAxes":
+        """Returns a copy of this where a new axis of the given type has been appended
+        to the end of the shape.
+
+        Args:
+            axis_type: The type of axis to insert.
+
+        Returns:
+            A copy of this where a new axis of the given type has been appended
+            to the end of the shape.
+        """
+        return self._insert_axis(-1, axis_type=axis_type)
+
+
+def maybe_prepend_axis(fan_axes: Optional[FanAxes], *, axis_type: FanAxes.AxisType):
+    """Returns `fan_axes.prepend_axis(axis_type=axis_type)` if `fan_axes` is not None.
+    Otherwise returns None.
+
+    Args:
+        fan_axes: The `FanAxes` object.
+        axis_type: The argument supplied to `fan_axes.prepend_axis()`.
+
+    Returns:
+        `fan_axes.prepend_axis(axis_type=axis_type)` if `fan_axes` is not None.
+        Otherwise returns None.
+    """
+    if fan_axes is None:
+        return None
+    return fan_axes.prepend_axis(axis_type=axis_type)
+
+
+class Initializer(Configurable):
     """Base class for initializers."""
 
     def initialize(
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -61,19 +176,20 @@ class Initializer:
 class ConstantInitializer(Initializer):
     """Constant initializer."""
 
-    def __init__(self, value: Any):
-        self._value = value
+    @config_class
+    class Config(Initializer.Config):
+        value: Required[Any] = REQUIRED
 
     def initialize(
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
     ) -> jnp.ndarray:
-        return jnp.full(shape=shape, fill_value=self._value, dtype=dtype)
+        return jnp.full(shape=shape, fill_value=self.config.value, dtype=dtype)
 
     def debug_string(
         self,
@@ -81,25 +197,30 @@ class ConstantInitializer(Initializer):
         shape: Optional[Shape] = None,
         axes: Optional[FanAxes] = None,
     ) -> str:
-        return f"constant({self._value})"
+        return f"constant({self.config.value})"
+
+
+def constant_initializer(value: Any) -> ConstantInitializer:
+    return ConstantInitializer.default_config().set(value=value).instantiate()
 
 
 class GaussianInitializer(Initializer):
     """Gaussian initializer."""
 
-    def __init__(self, std: float):
-        self._std = std
+    @config_class
+    class Config(Initializer.Config):
+        std: Required[float] = REQUIRED
 
     def initialize(
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
     ) -> jnp.ndarray:
-        return jax.random.normal(prng_key, shape=shape, dtype=dtype) * self._std
+        return jax.random.normal(prng_key, shape=shape, dtype=dtype) * self.config.std
 
     def debug_string(
         self,
@@ -107,7 +228,11 @@ class GaussianInitializer(Initializer):
         shape: Optional[Shape] = None,
         axes: Optional[FanAxes] = None,
     ) -> str:
-        return f"normal(0, {self._std}^2)"
+        return f"normal(0, {self.config.std}^2)"
+
+
+def gaussian_initializer(std: float) -> ConstantInitializer:
+    return GaussianInitializer.default_config().set(std=std).instantiate()
 
 
 def truncated_normal(stddev: float = 1e-2, dtype: jnp.dtype = jnp.float_):
@@ -148,7 +273,7 @@ def uniform(scale: float = 1.0, dtype: jnp.dtype = jnp.float_):
     return init
 
 
-class WeightInitializer(Configurable, Initializer):
+class WeightInitializer(Initializer):
     """Default weight initializer.
 
     The default config is Xavier initializer, i.e.
@@ -170,7 +295,7 @@ class WeightInitializer(Configurable, Initializer):
         self,
         name,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -240,11 +365,11 @@ class WeightInitializer(Configurable, Initializer):
             )
 
 
-class DefaultInitializer(Configurable, Initializer):
+class DefaultInitializer(Initializer):
     """The default initializer."""
 
     @config_class
-    class Config(Configurable.Config):
+    class Config(Initializer.Config):
         # Initializer rules dictionary.
         # Each entry is a (regexp, config) pair. The first match (the insertion order) "wins".
         # Note that `DefaultInitializer.__init__` populates the dict with some default values,
@@ -255,11 +380,11 @@ class DefaultInitializer(Configurable, Initializer):
         """Default initializers for common param names if not specified by the user."""
         # The default bias initializer is constant(0.).
         cfg.init_by_param_name.setdefault(
-            PARAM_REGEXP_BIAS, config_for_class(ConstantInitializer).set(value=0.0)
+            PARAM_REGEXP_BIAS, ConstantInitializer.default_config().set(value=0.0)
         )
         # The default scale initializer is constant(1.).
         cfg.init_by_param_name.setdefault(
-            PARAM_REGEXP_SCALE, config_for_class(ConstantInitializer).set(value=1.0)
+            PARAM_REGEXP_SCALE, ConstantInitializer.default_config().set(value=1.0)
         )
         # The default weight initializer is WeightInitializer.
         cfg.init_by_param_name.setdefault(PARAM_REGEXP_WEIGHT, WeightInitializer.default_config())
@@ -269,7 +394,7 @@ class DefaultInitializer(Configurable, Initializer):
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -307,7 +432,7 @@ class DefaultInitializer(Configurable, Initializer):
         raise NotImplementedError(f"Unsupported parameter name ({name})")
 
 
-class PerGroupInitializer(Configurable, Initializer):
+class PerGroupInitializer(Initializer):
     """The per-group initializer.
 
     This initializer splits the last axis into a number of groups and initializes each group
@@ -321,7 +446,7 @@ class PerGroupInitializer(Configurable, Initializer):
     """
 
     @config_class
-    class Config(Configurable.Config):
+    class Config(Initializer.Config):
         # The initializer used to initialize weights for each group.
         initializer: Optional[InstantiableConfig] = DefaultInitializer.default_config()
         # The number of groups.
@@ -339,7 +464,7 @@ class PerGroupInitializer(Configurable, Initializer):
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -354,7 +479,7 @@ class PerGroupInitializer(Configurable, Initializer):
             raise ValueError(f"{shape[-1]=} must be divisible by {cfg.num_groups=}.")
         shape_per_group = list(shape[:-1]) + [shape[-1] // cfg.num_groups]
 
-        def init(prng_key_i: jax.random.KeyArray) -> jnp.ndarray:
+        def init(prng_key_i: Tensor) -> jnp.ndarray:
             return self.initializer.initialize(
                 name, prng_key=prng_key_i, shape=shape_per_group, dtype=dtype, axes=axes
             )

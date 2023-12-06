@@ -27,12 +27,13 @@ if num_tpu_slices > 1:
     libtpu_init_args += [
         # For collectives across multiple slices.
         "--xla_tpu_enable_megascale_barrier=true",
-        # Prefer async all-gather to all-reduce implementations where async-all-gather is possible.
-        "--xla_tpu_prefer_async_allgather_to_allreduce=true",
+        # Per rwitten@google.com the following two flags allow gradient all-reduce to happen
+        # concurrently with gradient computation for the following layer.
+        "--xla_tpu_enable_data_parallel_all_reduce_opt=true",
+        "--xla_tpu_data_parallel_opt_different_sized_ops=true",
     ]
 
 os.environ["LIBTPU_INIT_ARGS"] = " ".join(libtpu_init_args)
-os.environ["JAX_USE_PJRT_C_API_ON_TPU"] = "true"
 
 # Set TF_CPP_MIN_LOG_LEVEL to ignore msg like  "PNG warning: iCCP: known incorrect sRGB profile"
 # Reference: https://stackoverflow.com/questions/35869137/avoid-tensorflow-print-on-standard-error
@@ -43,10 +44,11 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 # tpu_library_init_fns.inc:98] TpuEmbeddingEngine_ExecutePartitioner not available in this library.
 import jax  # jax must be imported before tensorflow!
 
-print(
-    f"jax version={jax.__version__} tpu_type={tpu_type} num_tpu_slices={num_tpu_slices}",
-    file=sys.stderr,
-)
+# NOTE: calling JAX distributed APIs (e.g. jax.default_backend(), jax.process_index() or
+# jax.process_count()) on GPU causes JAX to only view one process' GPUs.
+print(f"jax version={jax.__version__}", file=sys.stderr)
+if tpu_type != "none":
+    print(f"instance_type={tpu_type} num_slices={num_tpu_slices}", file=sys.stderr)
 
 import logging as pylogging
 
@@ -58,12 +60,13 @@ from axlearn.common.utils_spmd import setup as setup_spmd
 # pylint: enable=wrong-import-position
 
 flags.DEFINE_string(
-    "config_module",
+    "module",
     None,
     "The trainer config module. "
     "Only configs from the module will be loaded to avoid dependency on other modules.",
     required=True,
 )
+flags.DEFINE_alias("config_module", "module")
 flags.DEFINE_string("config", None, "The trainer config name.", required=True)
 flags.DEFINE_string(
     "data_dir",
@@ -85,6 +88,12 @@ flags.DEFINE_integer(
     "num_processes", None, "Total number of hosts (nodes). Set this None for tpu backend."
 )
 flags.DEFINE_integer("process_id", None, "Host process id. Set this None for tpu backend.")
+flags.DEFINE_string(
+    "mesh_selector",
+    None,
+    "The mesh selector string. See `SpmdTrainer.Config.mesh_rules` for details.",
+)
+# TODO(markblee): Remove this flag.
 flags.DEFINE_boolean(
     "filter_info_logs",
     None,

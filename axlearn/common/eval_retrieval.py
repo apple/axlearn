@@ -24,6 +24,7 @@ from axlearn.common.metrics_retrieval import (
     calculate_mean_metrics,
     metric_at_k_name,
     top_k_accuracy,
+    top_k_recall,
 )
 from axlearn.common.module import Module
 from axlearn.common.utils import NestedPartitionSpec, NestedTensor, Tensor, with_sharding_constraint
@@ -208,14 +209,25 @@ class CLIPRetrievalMetricCalculator(GlobalMetricCalculator):
 
 
 def _named_average_precision_at_k(
-    scores: Tensor, relevance_labels: Tensor, name: str, top_ks: List[int]
-):
+    scores: Tensor, *, relevance_labels: Tensor, name: str, top_ks: List[int]
+) -> Dict[str, str]:
     output = average_precision_at_k(scores=scores, relevance_labels=relevance_labels, top_ks=top_ks)
     return {metric_at_k_name(name, k): v for k, v in output.items()}
 
 
-def _named_top_k_accuracy(scores: Tensor, relevance_labels: Tensor, name: str, top_ks: List[int]):
+def _named_top_k_accuracy(
+    scores: Tensor, *, relevance_labels: Tensor, name: str, top_ks: List[int]
+) -> Dict[str, str]:
     output = top_k_accuracy(
+        sim=scores, gt_targets=None, relevance_labels=relevance_labels, top_ks=top_ks
+    )
+    return {metric_at_k_name(name, k): v for k, v in zip(top_ks, output)}
+
+
+def _named_top_k_recall(
+    scores: Tensor, *, relevance_labels: Tensor, name: str, top_ks: List[int]
+) -> Dict[str, str]:
+    output = top_k_recall(
         sim=scores, gt_targets=None, relevance_labels=relevance_labels, top_ks=top_ks
     )
     return {metric_at_k_name(name, k): v for k, v in zip(top_ks, output)}
@@ -235,6 +247,8 @@ def _get_ranking_metrics_fns(metrics: Sequence[str]) -> List[Callable]:
             metrics_fns.append(partial(_named_average_precision_at_k, top_ks=ks, name=name))
         elif name == "accuracy":
             metrics_fns.append(partial(_named_top_k_accuracy, top_ks=ks, name=name))
+        elif name == "recall":
+            metrics_fns.append(partial(_named_top_k_recall, top_ks=ks, name=name))
         else:
             raise ValueError(f"Unknown metric: {name}")
     return metrics_fns

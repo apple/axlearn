@@ -1,10 +1,12 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests T5 layers."""
+
+import os
+
 # pylint: disable=no-self-use
 from typing import Dict
 
-import flax.linen as nn
 import jax
 import numpy as np
 import pytest
@@ -31,67 +33,62 @@ from axlearn.common.test_utils import TestCase
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import Tensor, as_tensor
 
-try:
-    # pytype: disable=import-error
-    from t5x.examples.t5 import layers
-
-    # pytype: enable=import-error
-
-    _T5X_INSTALLED = True
-except ImportError:
-    _T5X_INSTALLED = False
+testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
 
 
 def random_inputs_for_t5(
-    encoder_input_length: int,
-    decoder_input_length: int,
-    encoder_vocab_size: int,
-    decoder_vocab_size: int,
+    *,
+    source_length: int,
+    target_length: int,
+    source_vocab_size: int,
+    target_vocab_size: int,
     batch_size: int = 2,
 ) -> Dict[str, jax.Array]:
     """Generate random inputs for AXLearn T5.
 
     Args:
-        encoder_input_length: an int for encoder input length.
-        decoder_input_length: an int for decoder input length.
-        encoder_vocab_size: an int for encoder vocab size.
-        decoder_vocab_size: an int for decoder vocab size.
-        batch_size: an int for batch size. By default, it is 2.
+        source_length: Encoder input length.
+        target_length: Decoder input length.
+        source_vocab_size: Encoder vocab size.
+        target_vocab_size: Decoder vocab size.
+        batch_size: Batch size.
 
     Returns:
         A dict containing:
-            source_ids: a int Tensor of shape [batch_size, source_len]
+            source_ids: An int Tensor of shape [batch_size, source_length].
+            target_ids: An int Tensor of shape [batch_size, target_length].
+            target_labels: An int Tensor of shape [batch_size, target_length].
     """
     source_ids = jax.random.randint(
         jax.random.PRNGKey(123),
-        [batch_size, encoder_input_length],
+        [batch_size, source_length],
         minval=2,
-        maxval=encoder_vocab_size,
+        maxval=source_vocab_size,
     )
     source_lengths = jax.random.randint(
         jax.random.PRNGKey(100),
         [batch_size],
         minval=1,
-        maxval=encoder_input_length,
+        maxval=source_length,
     )
     # Set source_ids[i, j] = 0 if j >= source_lengths[i].
-    source_paddings = jnp.arange(encoder_input_length)[None, :] >= source_lengths[:, None]
+    source_paddings = jnp.arange(source_length)[None, :] >= source_lengths[:, None]
     source_ids *= 1 - source_paddings
     target_labels = jax.random.randint(
         jax.random.PRNGKey(456),
-        [batch_size, decoder_input_length + 1],
+        [batch_size, target_length + 1],
         minval=2,
-        maxval=decoder_vocab_size,
+        maxval=target_vocab_size,
     )
     target_ids = target_labels[:, :-1]
     target_labels = target_labels[:, 1:]
     target_lengths = jax.random.randint(
         jax.random.PRNGKey(200),
         [batch_size],
-        minval=decoder_input_length // 2,
-        maxval=decoder_input_length,
+        minval=target_length // 2,
+        maxval=target_length,
     )
-    target_paddings = jnp.arange(decoder_input_length)[None, :] >= target_lengths[:, None]
+    target_paddings = jnp.arange(target_length)[None, :] >= target_lengths[:, None]
     target_ids *= 1 - target_paddings
     # Set target_labels to -1 for padding.
     target_labels = target_labels * (1 - target_paddings) - target_paddings
@@ -187,28 +184,16 @@ class RelativePositionTest(TestCase):
         )
         # fmt: on
 
-    @parameterized.product(bidirectional=[True, False], seq_len=[20, 100, 500, 1000])
-    @pytest.mark.skipif(not _T5X_INSTALLED, reason="T5X is not installed.")
+    @parameterized.product(bidirectional=[True, False], seq_len=[20, 100, 256])
     def test_buckets_against_t5x(self, bidirectional, seq_len):
-        t5x_relpos = layers.RelativePositionBiases(
-            num_buckets=32,
-            max_distance=128,
-            num_heads=12,
-            dtype=jnp.float32,
-            embedding_init=nn.initializers.variance_scaling(1.0, "fan_avg", "uniform"),
-            name="relpos_bias",
-        )
-
-        q_pos = jnp.expand_dims(jnp.arange(seq_len), -1)
-        k_pos = jnp.expand_dims(jnp.arange(seq_len), 0)
-
-        rel_pos = k_pos - q_pos
-
-        # pylint: disable-next=protected-access
-        expected = t5x_relpos._relative_position_bucket(rel_pos, bidirectional=bidirectional)
-        actual = t5.t5_relative_position_bucket(rel_pos, bidirectional=bidirectional)
-
-        self.assertNestedAllClose(expected, actual)
+        testcase = jnp.load(
+            os.path.join(
+                testdata_dir, __name__, f"test_buckets_against_t5x_{bidirectional}_{seq_len}.npy"
+            ),
+            allow_pickle=True,
+        ).item()
+        actual = t5.t5_relative_position_bucket(testcase["inputs"], bidirectional=bidirectional)
+        self.assertNestedAllClose(testcase["outputs"], actual)
 
 
 class T5EncoderTest(TestCase):
@@ -269,7 +254,7 @@ class T5EncoderTest(TestCase):
 
 
 class T5EncoderDecoderModelTest(TestCase):
-    @parameterized.parameters(["t5-v1-1", "t5-v1"])
+    @parameterized.parameters(["t5-v1-1", "t5-v1", "t5-ul2"])
     def test_against_t5_encoder_decoder_model(self, arch):
         vocab_size = 128
         model_dim = 12
@@ -298,6 +283,10 @@ class T5EncoderDecoderModelTest(TestCase):
         elif arch == "t5-v1-1":
             d_ff = model_dim * 8 // 3
             feed_forward_proj = "gated-gelu"
+        elif arch == "t5-ul2":
+            d_ff = model_dim * 8 // 3
+            # Ref: https://huggingface.co/google/ul2/blob/main/config.json#L13.
+            feed_forward_proj = "gated-silu"
         else:
             raise ValueError(f"unsupported t5 arch {arch}")
         t5_config = hf_t5.T5Config(
@@ -314,10 +303,10 @@ class T5EncoderDecoderModelTest(TestCase):
         )
         ref = hf_t5.T5ForConditionalGeneration(t5_config)
         test_inputs = random_inputs_for_t5(
-            encoder_input_length=64,
-            decoder_input_length=64,
-            encoder_vocab_size=vocab_size,
-            decoder_vocab_size=vocab_size,
+            source_length=64,
+            target_length=64,
+            source_vocab_size=vocab_size,
+            target_vocab_size=vocab_size,
         )
         ref_inputs = prepare_hf_t5_inputs(**test_inputs)
         (test_loss, test_aux), ref_outputs = self._compute_layer_outputs(
@@ -362,7 +351,7 @@ class T5EncoderDecoderModelTest(TestCase):
             layer: T5EncoderDecoderModel = cfg.instantiate(parent=None)
 
             def train_step(state, input_batch):
-                input_batch = utils.shard_input_batch(input_batch)
+                input_batch = utils.dispatch_input_batch(input_batch)
                 new_prng_key, prng_key = jax.random.split(state["prng_key"])
 
                 def _forward(model_parameters, forward_input_batch):
@@ -405,10 +394,10 @@ class T5EncoderDecoderModelTest(TestCase):
             logging.info("init_state=%s", state["model"]["shared_token_emb"])
             for _ in range(3):
                 input_batch = random_inputs_for_t5(
-                    encoder_input_length=4,
-                    decoder_input_length=4,
-                    encoder_vocab_size=vocab_size,
-                    decoder_vocab_size=vocab_size,
+                    source_length=4,
+                    target_length=4,
+                    source_vocab_size=vocab_size,
+                    target_vocab_size=vocab_size,
                 )
                 state = jit_train_step(state, input_batch)
             logging.info("final_state=%s", state["model"]["shared_token_emb"])

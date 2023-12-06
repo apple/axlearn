@@ -11,13 +11,7 @@ from typing import Dict, Iterable, Optional
 import numpy as np
 
 from axlearn.common.base_layer import BaseLayer
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import BatchNorm, Conv2D, get_activation_fn, set_norm_recursively
 from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.param_init import (
@@ -264,6 +258,7 @@ class BoxClassHead(BaseLayer):
 def set_efficientdet_config(
     *,
     backbone_variant: str = "b0",
+    backbone_version: str = "V1",
     num_head_layers: int = 3,
     min_level: int = 3,
     max_level: int = 7,
@@ -274,6 +269,8 @@ def set_efficientdet_config(
 
     Args:
         backbone_variant: The EfficientNet backbone variant, e.g., "b0", "lite0".
+        backbone_version: The EfficientNet backbone version, i.e.,
+            "V1" (https://arxiv.org/abs/1905.11946) or "V2" (https://arxiv.org/abs/2104.00298).
         num_head_layers: The number of layers in the box and class head.
         min_level: The minimum feature level in the BiFPN and prediction heads.
         max_level: The maximum feature level in the BiFPN and prediction heads.
@@ -285,7 +282,11 @@ def set_efficientdet_config(
     """
     base_cfg = RetinaNetModel.default_config()
 
-    backbone_cfg = named_model_configs(ModelNames.EFFICIENTNET, backbone_variant)
+    backbone_cfg = named_model_configs(
+        ModelNames.EFFICIENTNET,
+        backbone_variant,
+        efficientnet_version=backbone_version,
+    )
     backbone_cfg = backbone_cfg.set(
         embedding_layer=None,
         endpoints_mode=EndpointsMode.LASTBLOCKS,
@@ -379,7 +380,7 @@ def efficientdet_boxclasshead_config(
 
     class_head_param_init = DefaultInitializer.default_config().set(
         init_by_param_name={
-            PARAM_REGEXP_BIAS: config_for_class(ConstantInitializer).set(
+            PARAM_REGEXP_BIAS: ConstantInitializer.default_config().set(
                 value=-np.log((1 - 0.01) / 0.01),
             ),
             PARAM_REGEXP_WEIGHT: WeightInitializer.default_config().set(

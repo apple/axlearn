@@ -186,7 +186,7 @@ class CausalEncoder(Encoder):
             param_specs["cls_token"] = ParameterSpec(
                 shape=(1, cfg.num_cls_tokens, cfg.dim),
                 mesh_axes=(None, None, "model"),
-                initializer=param_init.GaussianInitializer(1.0 / math.sqrt(cfg.dim)),
+                initializer=param_init.gaussian_initializer(std=1.0 / math.sqrt(cfg.dim)),
             )
         return param_specs
 

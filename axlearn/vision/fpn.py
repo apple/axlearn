@@ -28,13 +28,7 @@ import numpy as np
 from jax import numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import (
     BatchNorm,
     Conv2D,
@@ -461,7 +455,7 @@ class WeightedFeatureFusion(BaseLayer):
         # Activation function to apply after the fusion.
         activation: str = "linear"
         # Default initializer is set to 1.0
-        param_init: InstantiableConfig = config_for_class(ConstantInitializer).set(value=1.0)
+        param_init: InstantiableConfig = ConstantInitializer.default_config().set(value=1.0)
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)

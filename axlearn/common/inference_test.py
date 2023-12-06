@@ -8,6 +8,7 @@ import itertools
 import os
 import tempfile
 from typing import Callable, Generator, List, Optional, Tuple, Union
+from unittest import mock
 
 import jax
 import jax.numpy as jnp
@@ -105,7 +106,7 @@ class RangeWeightInitializer(Initializer, Configurable):
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -190,6 +191,7 @@ class InferenceTest(test_utils.TestCase):
         (tf.constant([1]), [1]),
         (jnp.array(1), 1),
         (jnp.array([1, 2, 3]), [1, 2, 3]),
+        (tf.constant(["豆豆"]), ["豆豆"]),
     )
     def test_jsonl_feature(
         self,
@@ -236,7 +238,7 @@ class InferenceTest(test_utils.TestCase):
         root_dir: str,
         mesh_shape: Tuple[int, int],
         mesh_axis_names: Tuple[str, str],
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         use_ema: bool = False,
     ) -> Tuple[NestedTensor, str]:
         devices = mesh_utils.create_device_mesh(mesh_shape)
@@ -651,6 +653,83 @@ class InferenceTest(test_utils.TestCase):
                     self.assertEqual(
                         global_batch_size * NUM_BATCHES * jax.process_count(), num_examples
                     )
+
+    @parameterized.parameters(
+        filter(
+            lambda params: is_supported(*params),
+            itertools.product(
+                ("cpu",),  # platform,
+                (
+                    (1, 1),
+                    (4, 1),
+                    (8, 1),
+                ),  # mesh_shape
+                (jnp.float32,),  # param_dtype
+                (jnp.float32,),  # inference_dtype
+                (16,),  # global_batch_size
+                (DataPartitionType.FULL,),  # data_partition
+            ),
+        )
+    )
+    def test_pipeline_summary_writer(
+        self,
+        platform: str,
+        mesh_shape: Tuple[int, int],
+        param_dtype: jnp.dtype,
+        inference_dtype: Optional[jnp.dtype],
+        global_batch_size: int,
+        data_partition: DataPartitionType,
+    ):
+        del platform  # only used by is_supported_platform().
+        local_run = jax.process_count() == 1
+        mesh_axis_names = ("data", "model")
+
+        mock_summary_writer = mock.Mock(return_value=None)
+
+        with mock.patch(
+            "axlearn.common.summary_writer.SummaryWriter.Config.instantiate",
+            mock.MagicMock(return_value=mock_summary_writer),
+        ), tempfile.TemporaryDirectory() as local_tmp_dir:
+            root_dir = local_tmp_dir if local_run else "gs://axlearn-public/testdata/inference_test"
+            with set_data_dir(root_dir):
+                prng_key = jax.random.PRNGKey(11)
+                # Save ckpt.
+                _, ckpt_dir = self._build_ckpt(
+                    prng_key=prng_key,
+                    root_dir=root_dir,
+                    mesh_shape=mesh_shape,
+                    mesh_axis_names=mesh_axis_names,
+                )
+
+                cfg = InferencePipeline.default_config().set(name="pipeline")
+                cfg.model_method = "predict_batch"
+                cfg.input.set(
+                    is_training=False,
+                    source=config_for_function(_build_input).set(
+                        global_batch_size=global_batch_size, data_partition=DataPartitionType.FULL
+                    ),
+                    processor=config_for_function(identity),
+                    batcher=config_for_function(identity),
+                )
+                cfg.runner = self._runner_config(
+                    mesh_shape=mesh_shape,
+                    mesh_axis_names=mesh_axis_names,
+                    param_dtype=param_dtype,
+                    inference_dtype=inference_dtype,
+                    ckpt_dir=ckpt_dir,
+                    data_partition=data_partition,
+                )
+                output_path = (
+                    "{data_dir}/outputs/examples-{process_index:05d}-of-{process_count:05d}"
+                )
+                cfg.output_writer.sink.output_path = output_path
+                cfg.summary_writer.dir = os.path.join(local_tmp_dir, "summaries")
+                pipeline = cfg.instantiate(parent=None)
+                pipeline.run()
+
+                mock_summary_writer.assert_any_call(step=0, values=mock.ANY)
+                mock_summary_writer.assert_any_call(step=1, values=mock.ANY)
+                mock_summary_writer.assert_any_call(step=2, values=mock.ANY)
 
 
 if __name__ == "__main__":

@@ -1,14 +1,23 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests autoregressive models."""
+from functools import partial
+
+import jax
 import jax.random
 import numpy as np
-from absl.testing import absltest
+import pytest
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
+from jax.experimental.pjit import pjit
 from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
 
 from axlearn.common import causal_lm, utils
-from axlearn.common.attention import StackedTransformerLayer
+from axlearn.common.attention import (
+    RepeatedTransformerLayer,
+    StackedTransformerLayer,
+    TransformerFeedForwardLayer,
+)
 from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import MetricAccumulator
 from axlearn.common.module import (
@@ -21,6 +30,7 @@ from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
+from axlearn.common.utils import Tensor
 
 
 class Gpt2TransformerTest(TestCase):
@@ -218,6 +228,149 @@ class ModelMetricsTest(TestCase):
             )
             self.assertAlmostEqual(loss, ref_outputs["loss"])
             self.assertTrue(jnp.allclose(aux["per_label_loss"], ref_outputs["per_token_loss"]))
+
+    @pytest.mark.skipif(
+        jax.device_count() != 4 or jax.process_count() != 1,
+        reason="Incorrect device & process count for mesh.",
+    )
+    def test_constrain_input_batch(self):
+        model = (
+            causal_lm.Model.default_config()
+            .set(
+                decoder=causal_lm.gpt_decoder_config(
+                    stack_cfg=StackedTransformerLayer.default_config(),
+                    num_layers=1,
+                    hidden_dim=10,
+                    num_heads=2,
+                    vocab_size=10,
+                    activation_function="nn.relu",
+                    max_position_embeddings=10,
+                    layer_norm_epsilon=0.1,
+                    dropout_rate=0.0,
+                ),
+                batch_axis_names=("data", "expert", "fsdp"),
+                seq_axis_names=("seq",),
+                name="metrics_test",
+            )
+            .instantiate(parent=None)
+        )
+        batch_size = 4
+        seq_len = 8
+        input_batch = {
+            "input_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "target_labels": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "token_type_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "prefix": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "target_num_bytes": jnp.ones((batch_size,), dtype=jnp.int32),
+            "extra_variable": jnp.ones((batch_size,), dtype=jnp.int32),
+        }
+
+        with jax.sharding.Mesh(
+            np.array(jax.devices()).reshape(2, 2)[:, :, None, None, None],
+            axis_names=("data", "seq", "expert", "fsdp", "model"),
+        ):
+            # Check that no values are dropped when applying the constraint.
+            constrained_input_batch = input_batch.copy()
+            # pylint: disable-next=protected-access
+            model._constrain_input_batch(constrained_input_batch)
+            self.assertNestedEqual(constrained_input_batch, input_batch)
+
+            @partial(pjit, in_shardings=None, out_shardings=None)
+            def fn(x):
+                # pylint: disable-next=protected-access
+                model._constrain_input_batch(x)
+                return x
+
+            # Get stable-hlo representation.
+            hlo_text = fn.lower(input_batch).compiler_ir(dialect="hlo").as_hlo_text()
+
+            # Five (out of six) tensors were sharded.
+            self.assertEqual(hlo_text.count('custom_call_target="Sharding"'), 5)
+            # For the [batch, seq_len] tensors.
+            self.assertEqual(hlo_text.count("sharding={devices=[2,2]<=[4]}"), 4)
+            # For the [batch,] tensor.
+            self.assertEqual(
+                hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 1
+            )
+
+
+class DummyFeedForwardWithAuxLoss(TransformerFeedForwardLayer):
+    """A dummy FFN with aux loss."""
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        self.add_module_output("aux_loss", jnp.array(1.0))
+        return inputs
+
+
+class ModelAuxLossTest(parameterized.TestCase):
+    @parameterized.product(
+        aux_loss_regex=(None, ".*/aux_loss", ".*/apple"),
+        stack_cfg=(
+            RepeatedTransformerLayer.default_config(),
+            StackedTransformerLayer.default_config(),
+        ),
+        use_aux_layer=(False, True),
+    )
+    def test_aux_loss(self, aux_loss_regex, stack_cfg, use_aux_layer):
+        batch_size, seq_len, vocab_size = 3, 10, 10
+        hidden_dim = 8
+        num_layers = 6
+        decoder_cfg = causal_lm.gpt_decoder_config(
+            stack_cfg=stack_cfg,
+            num_layers=num_layers,
+            hidden_dim=hidden_dim,
+            num_heads=4,
+            vocab_size=vocab_size,
+            max_position_embeddings=seq_len,
+        )
+        if isinstance(decoder_cfg.transformer, RepeatedTransformerLayer.Config):
+            decoder_cfg.transformer.repeat.drop_output = None
+        if use_aux_layer:
+            decoder_cfg.transformer.layer.feed_forward = (
+                DummyFeedForwardWithAuxLoss.default_config().set(hidden_dim=4 * hidden_dim)
+            )
+        model_cfg = causal_lm.Model.default_config().set(
+            decoder=decoder_cfg, name="metrics_test", aux_loss_regex=aux_loss_regex
+        )
+        model = model_cfg.instantiate(parent=None)
+        prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
+        model_params = model.initialize_parameters_recursively(init_key)
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
+        )
+        target_labels = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
+
+        # Ensure that forward outputs are consistent with metrics output.
+        ctx = InvocationContext(
+            name="root",
+            parent=None,
+            module=model,
+            state=model_params,
+            output_collection=new_output_collection(),
+            is_training=True,
+            prng_key=prng_key,
+        )
+        with set_current_context(ctx):
+            loss, aux = model.forward(input_batch=input_batch, return_aux=True)
+            # pylint: disable-next=protected-access
+            ref = model._metrics(
+                logits=aux["logits"], target_labels=target_labels, target_num_bytes=None
+            )
+            # `aux_loss` is only collected when `aux_loss_regex` is set.
+            if aux_loss_regex is not None:
+                self.assertIn("aux_loss", aux)
+                if aux_loss_regex == ".*/aux_loss" and use_aux_layer:
+                    self.assertEqual(aux["aux_loss"], num_layers * 1.0)
+                else:
+                    self.assertEqual(aux["aux_loss"], 0.0)
+                self.assertEqual(ref["cross_entropy"] + aux["aux_loss"], loss)
+            else:
+                self.assertNotIn("aux_loss", aux)
+                self.assertEqual(ref["cross_entropy"], loss)
 
 
 if __name__ == "__main__":

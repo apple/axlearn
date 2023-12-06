@@ -1,17 +1,19 @@
 # Copyright © 2023 Apple Inc.
 
 """Defines SpmdTrainer, a trainer that supports partitioning of computation and data with GSPMD."""
+import contextlib
 import math
 import os.path
+import sys
+import threading
 import time
-from typing import Any, Dict, Literal, NamedTuple, Optional, Sequence, Tuple, Union
+import traceback
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
-import numpy as np
 import tensorflow as tf
 from absl import logging
 from jax import numpy as jnp
-from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
@@ -21,21 +23,35 @@ from axlearn.common.checkpointer import Checkpointer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.learner import Learner, NestedOptParam
-from axlearn.common.module import Module
+from axlearn.common.module import InvocationContext, Module, clone_context_stack
 from axlearn.common.module import functional as F
+from axlearn.common.module import install_context_stack
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.utils import (
+    MeshShape,
     NestedPartitionSpec,
     NestedTensor,
     PartitionSpec,
     Tensor,
     count_model_params,
     flatten_items,
+    match_regex_rules,
     prune_tree,
 )
+
+
+def _thread_stack_traces() -> Sequence[str]:
+    lines = []
+    for thread in threading.enumerate():
+        thread_id = thread.ident
+        lines.append(f"Thread: {thread.name}({thread_id})")
+        # pylint: disable-next=protected-access
+        for line in traceback.format_stack(sys._current_frames()[thread_id]):
+            lines.append(f">>> {line.rstrip()}")
+    return lines
 
 
 def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
@@ -55,7 +71,7 @@ def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
 
 
 class _TrainerState(NamedTuple):
-    prng_key: Union[jax.random.KeyArray, NestedPartitionSpec]
+    prng_key: Union[Tensor, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
     learner: Union[NestedTensor, NestedPartitionSpec]
 
@@ -87,11 +103,27 @@ class SpmdTrainer(Module):
         # The maximum number of steps.
         max_step: Union[int, float] = math.inf
 
-        # The device mesh shape in the form of a tuple of ints.
-        # Must have the same length as mesh_axis_names.
-        mesh_shape: Required[Sequence[int]] = REQUIRED
+        # The default mesh configuration.
+        #
+        # The mesh shape, if specified, must have the same length as mesh_axis_names.
+        # Use `mesh_rules` to set different mesh shapes depending on the hardware platform.
+        mesh_shape: Required[MeshShape] = REQUIRED
         # The mesh axis names. The names can be referenced in ParameterSpec.mesh_axes.
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
+        # Subset of mesh axis names over which the leaves of the input batch are sharded.
+        batch_axis_names: Union[str, Sequence[str]] = "data"
+
+        # An optional list of (regex, MeshShape) pairs to override the default mesh configuration.
+        #
+        # This is useful when we want to use different mesh shapes depending on the
+        # device types (e.g., 'tpu-v4-128' vs. 'gpu-p4de.24xlarge-32').
+        #
+        # Given a `mesh_selector` string (usually representing the device type and set by user's
+        # launch script), the first rule that with a regex that matches the selector will determine
+        # the mesh shape.
+        #
+        # If no rule matches, the default mesh configuration will be used.
+        mesh_rules: Optional[Sequence[Tuple[str, Optional[MeshShape]]]] = None
 
         # The model config.
         model: Required[BaseModel.Config] = REQUIRED
@@ -127,6 +159,10 @@ class SpmdTrainer(Module):
         # If None, we do not cast.
         train_dtype: Optional[jnp.dtype] = None
 
+        # If > 0, run a watchdog thread to print the thread stack traces if step does not
+        # increment within this interval.
+        watchdog_timeout_seconds: Optional[float] = None
+
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -134,6 +170,8 @@ class SpmdTrainer(Module):
         self._step: int = None
         self._trainer_state: _TrainerState = None
         self._jit_train_step: jax.stages.Wrapped = None
+        self._watchdog_stopping = None
+        self._watchdog_thread = None
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
@@ -148,8 +186,6 @@ class SpmdTrainer(Module):
             utils.validate_float_dtype(cfg.train_dtype)
 
         # Create the device mesh.
-        if not jax.config.jax_array:  # pylint: disable=no-member
-            raise NotImplementedError(f"{self.__class__.__name__} requires jax_array=True")
         self._step_log(
             "Devices: global=%s local=%s %s",
             jax.device_count(),
@@ -157,7 +193,7 @@ class SpmdTrainer(Module):
             [device.platform for device in jax.local_devices()],
         )
         self._step_log("Mesh shape: %s", cfg.mesh_shape)
-        devices = self._create_device_mesh()
+        devices = utils.create_device_mesh(mesh_shape=cfg.mesh_shape)
         mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
         self._step_log("Global mesh: %s", mesh)
         self._mesh = mesh
@@ -189,7 +225,7 @@ class SpmdTrainer(Module):
                 self._model_param_specs
             )
             for name, spec in utils.flatten_items(self._learner_state_partition_specs):
-                self._step_log("Learner state mesh_axes: %s=%s", name, spec)
+                self._step_log("Learner state spec: %s=%s", name, spec)
             self._trainer_state_specs = _TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=self._model_param_specs,
@@ -227,6 +263,10 @@ class SpmdTrainer(Module):
     def trainer_state_partition_specs(self):
         return self._trainer_state_partition_specs
 
+    def _train_step_input_partition_specs(self):
+        # By default, each input tensor is fully partitioned along the batch axis.
+        return utils.input_partition_spec()
+
     def model_params_for_eval(self):
         state = self.trainer_state
         if self.config.learner.ema.decay is not None:
@@ -253,99 +293,81 @@ class SpmdTrainer(Module):
     def mesh(self):
         return jax.sharding.Mesh(self._mesh.devices, self._mesh.axis_names)
 
+    @contextlib.contextmanager
+    def _watchdog(self):
+        self._start_watchdog()
+        try:
+            yield
+        finally:
+            self._stop_watchdog()
+
+    def _start_watchdog(self):
+        cfg = self.config
+        if cfg.watchdog_timeout_seconds and self._watchdog_thread is None:
+            self._watchdog_stopping = threading.Event()
+            self._watchdog_thread = threading.Thread(
+                name=f"{self.path()}.watchdog",
+                target=self._watchdog_loop,
+                kwargs=dict(context_stack=clone_context_stack()),
+            )
+            self._watchdog_thread.start()
+
+    def _stop_watchdog(self):
+        """Stops the checkpointer. Waits for async writes and garbage collection loop to finish."""
+        logging.info("Waiting for watchdog_thread to finish")
+        if self._watchdog_thread is not None:
+            self._watchdog_stopping.set()
+            self._watchdog_thread.join()
+            self._watchdog_thread = None
+            logging.info("watchdog_thread finished")
+
+    def _watchdog_loop(self, *, context_stack: List[InvocationContext]):
+        cfg = self.config
+        install_context_stack(context_stack)
+        while True:
+            last_step = self.step
+            if self._watchdog_stopping.wait(timeout=cfg.watchdog_timeout_seconds):
+                break
+            current_step = self.step
+            if current_step == last_step:
+                self._step_log(
+                    "Watchdog triggered because step has not incremented in the last %s seconds.\n"
+                    "NOTE: this is not an error message, but meant to help debugging "
+                    "in case the trainer is stuck.\n"
+                    "Threads:\n%s",
+                    cfg.watchdog_timeout_seconds,
+                    "\n".join(_thread_stack_traces()),
+                )
+            else:
+                self.vlog(1, "Watchdog check passed: %s -> %s", last_step, current_step)
+        logging.info("Watchdog loop done")
+
     # pylint: disable-next=too-many-statements,too-many-branches
-    def run(self, prng_key: jax.random.KeyArray) -> Optional[NestedTensor]:
-        with self.mesh():
+    def run(self, prng_key: Tensor) -> Optional[NestedTensor]:
+        with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
             cfg = self.config
-            jax.config.update("jax_log_compiles", True)
-            # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
-            self.restore_checkpoint(restore_step=None)
-
-            if self.step is None:
-                # If we didn't restore from checkpoint, attempt to build initial state according to
-                # `cfg.init_state_builder` and initialize the remaining parameters.
-                self.init(prng_key)
-                self._step = 0
-
-                # Note, the default checkpointer and evaler do nothing at step 0 with min_step=1.
-                self.save_checkpoint(self._run_eval())
-
-                # Log trainer state tree.
-                if jax.process_index() == 0:
-                    with tf.io.gfile.GFile(
-                        os.path.join(cfg.dir, "trainer_state_tree.txt"), "w"
-                    ) as f:
-                        f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
-            self._log_trainer_state_stats()
-            # Log config.
-            self.summary_writer.log_config(cfg, step=self.step)
-
-            if self.step >= cfg.max_step:
-                self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
+            # Prepare training.
+            if not self._prepare_training(cfg, prng_key):
                 return None
 
             with self.checkpointer:
-                can_donate_buffers = all(
-                    device.platform in ("gpu", "tpu") for device in self._mesh.local_devices
-                )
-                if can_donate_buffers:
-                    logging.info("Donating buffers for jit")
-                self._jit_train_step = pjit(
-                    self._train_step,
-                    in_shardings=(
-                        self._trainer_state_partition_specs,
-                        utils.input_partition_spec(),
-                    ),
-                    out_shardings=(
-                        self._trainer_state_partition_specs,
-                        dict(
-                            summaries=None,
-                            loss=None,
-                            aux=None,
-                        ),
-                    ),
-                    donate_argnums=(0,) if can_donate_buffers else (),  # donate the state
-                )
-
                 logging.info("Starting loop...")
                 start_time = time.perf_counter()
                 num_steps = 0
                 output = None
                 stop_trace_step = None
 
-                def _should_start_trace():
-                    if self.step not in cfg.start_trace_steps:
-                        return False
-                    if stop_trace_step is not None:
-                        logging.warning(
-                            "Skipping trace at step %s, "
-                            "since it is too close to the previous one: %s",
-                            self.step,
-                            cfg.start_trace_steps,
-                        )
-                        return False
-                    return (
-                        cfg.start_trace_process_indices == "all"
-                        or jax.process_index() in cfg.start_trace_process_indices
-                    )
-
                 for input_batch in self._input_iter:
                     logging.log_first_n(
                         logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
                     )
-                    if self.step == stop_trace_step:
-                        assert output is not None
-                        jax.tree_util.tree_map(lambda x: x.block_until_ready(), output)
-                        jax.profiler.stop_trace()
-                        self._step_log("Stopped profiler tracing")
-                        stop_trace_step = None
-                    if _should_start_trace():
-                        self._step_log("Start profiler tracing")
-                        jax.profiler.start_trace(self.summary_writer.config.dir)
-                        stop_trace_step = self.step + 3
+
+                    # Stop or start tracing if necessary.
+                    stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
+
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
-                    output = self._run_step(input_batch)
+                    output = self._run_step(utils.host_to_global_device_array(input_batch))
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
                     if num_steps % 100 == 0:
@@ -379,7 +401,7 @@ class SpmdTrainer(Module):
             specs,
         )
 
-    def init(self, prng_key: jax.random.KeyArray):
+    def init(self, prng_key: Tensor):
         """Initializes self._step and self._trainer_state.
 
         Args:
@@ -403,7 +425,7 @@ class SpmdTrainer(Module):
 
     def _init_with_prebuilt_state(
         self,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         *,
         prebuilt_state: Optional[TrainerStateBuilder.State],
     ):
@@ -437,7 +459,7 @@ class SpmdTrainer(Module):
         )
         if prebuilt_state.built_keys == all_trainer_state_keys:
             logging.info(
-                "Prebuilt state has the complete trainer state: %s", prebuilt_state.trainer_state
+                "Prebuilt state has the complete trainer state.",
             )
             for key, value in utils.flatten_items(prebuilt_state.trainer_state):
                 if not isinstance(value, Tensor):
@@ -459,7 +481,7 @@ class SpmdTrainer(Module):
             prebuilt_state.trainer_state.model,
         )
 
-        def _init_state(prng_key: jax.random.KeyArray, prebuilt_model_state: NestedTensor):
+        def _init_state(prng_key: Tensor, prebuilt_model_state: NestedTensor):
             prng_key, init_key = jax.random.split(prng_key)
             logging.info("prebuilt_model_state: %s", utils.shapes(prebuilt_model_state))
             model_params = self.model.initialize_parameters_recursively(
@@ -510,6 +532,52 @@ class SpmdTrainer(Module):
             trainer_state_structure, self._trainer_state_partition_specs
         )
 
+    def _prepare_training(self, cfg: Config, prng_key: Tensor) -> bool:
+        """Prepares training.
+
+        This function does the following to prepare the training procedure:
+        1. Restores trainer state from checkpoint.
+        2. Initializes step to zero if it's not in the checkpoint.
+        3. Returns early if max_steps has been reached.
+        4. Otherwise Jits self._train_step.
+
+        Args:
+            cfg: The trainer config.
+            prng_key: The PRNG key of the `run` method.
+
+        Returns:
+            A boolean indicating whether the model training should start. If not, return
+                None from the `run` function.
+        """
+
+        # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
+        self.restore_checkpoint(restore_step=None)
+
+        if self.step is None:
+            # If we didn't restore from checkpoint, attempt to build initial state according
+            # to `cfg.init_state_builder` and initialize the remaining parameters.
+            self.init(prng_key)
+            self._step = 0
+
+            # Note the default checkpointer and evaler do nothing at step 0 with min_step=1.
+            self.save_checkpoint(self._run_eval())
+
+            # Log trainer state tree.
+            if jax.process_index() == 0:
+                with tf.io.gfile.GFile(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
+                    f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
+
+        self._log_trainer_state_stats()
+        # Log config.
+        self.summary_writer.log_config(cfg, step=self.step)
+
+        if self.step >= cfg.max_step:
+            self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
+            return False
+
+        self._pjit_train_step()
+        return True
+
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
         """Restores trainer state from checkpoint.
 
@@ -530,7 +598,9 @@ class SpmdTrainer(Module):
             for path, spec in utils.flatten_items(self._trainer_state_specs):
                 self.vlog(1, "restore spec: %s=%s", path, spec)
             ckpt_state_spec = self._trainer_state_specs._asdict()
-            ckpt_state_spec_with_input_iter = dict(**ckpt_state_spec, input_iter=iter(self.input))
+            ckpt_state_spec_with_input_iter = dict(
+                **ckpt_state_spec, input_iter=iter(self.input.dataset())
+            )
             restore_input_iter = cfg.save_input_iterator
             try:
                 # Try to restore with `input_iter`.
@@ -614,19 +684,17 @@ class SpmdTrainer(Module):
         """Runs a single training step.
 
         Args:
-            input_batch: a NestedTensor.
+            input_batch: a NestedTensor containing global arrays.
 
         Returns:
             A dict containing 'loss' and 'aux' outputs.
         """
-        input_batch = utils.host_to_global_device_array(input_batch)
-
         with jax.profiler.StepTraceAnnotation("train", step_num=self.step):
             # Note(Jan 2022):
             # pjit currently requires all parameters to be specified as positional args.
             self._trainer_state, outputs = self._jit_train_step(self._trainer_state, input_batch)
 
-        if self.step % 100 == 0:
+        if self.step % 100 == 0 or 0 <= self.step <= 5:
             self._step_log(
                 "loss=%s aux=%s",
                 outputs["loss"],
@@ -661,12 +729,34 @@ class SpmdTrainer(Module):
             evaler_summaries[evaler_name] = summaries
         return evaler_summaries
 
+    def _pjit_train_step(self):
+        self._jit_train_step = pjit(
+            self._train_step,
+            in_shardings=(
+                self._trainer_state_partition_specs,
+                self._train_step_input_partition_specs(),
+            ),
+            out_shardings=(
+                self._trainer_state_partition_specs,
+                dict(
+                    summaries=None,
+                    loss=None,
+                    aux=None,
+                ),
+            ),
+            donate_argnums=(0,),  # donate the state
+        )
+
     def _train_step(
         self,
         state: _TrainerState,
         input_batch: Dict[str, Any],
     ) -> Tuple[_TrainerState, NestedTensor]:
-        input_batch = utils.shard_input_batch(input_batch)
+        # Shard and (possibly) dispatch the input batch.
+        input_batch = utils.dispatch_input_batch(
+            input_batch, batch_axis_names=self.config.batch_axis_names
+        )
+
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
             state.prng_key, 4
         )
@@ -742,52 +832,64 @@ class SpmdTrainer(Module):
             aux=forward_aux,
         )
 
-    def _create_device_mesh(self) -> np.ndarray:
-        """Constructs a device mesh.
+    def _maybe_stop_or_start_tracing(
+        self, stop_trace_step: Optional[int], output: Optional[Dict[str, Any]]
+    ) -> Optional[int]:
+        """Stops or starts jax profiler tracing if necessary.
 
-        We first determine if we are running in a multislice environment or not.
-            * If not, we construct a mesh according to the configured mesh_shape.
-            * If we are, we split the first axis of the configured mesh shape across the slices.
-                The first axis is expected to be the least communication intensive.
+        Args:
+            stop_trace_step: The step at which we should stop tracing.
+            output: The output of run_step.
 
         Returns:
-            A numpy array containing the JAX devices with shape determined by config mesh_shape.
+            The updated value for `stop_trace_step`.
         """
-        devices = np.asarray(jax.devices())
-        # Check if the devices are part of a multi-slice TPU configuration.
-        # <https://github.com/google/jax/blob/b81b79c1b0d2ec/jax/experimental/mesh_utils.py#L313>
-        is_multi_slice_tpu_env = hasattr(devices[0], "slice_index")
+        updated_stop_trace_step = stop_trace_step
+        # Check if we should stop tracing.
+        if self.step == stop_trace_step:
+            assert output is not None
+            jax.tree_util.tree_map(lambda x: x.block_until_ready(), output)
+            jax.profiler.stop_trace()
+            self._step_log("Stopped profiler tracing")
+            updated_stop_trace_step = None
+
+        # Check if we should start tracing.
         cfg = self.config
-        if not is_multi_slice_tpu_env:
-            try:
-                return mesh_utils.create_device_mesh(cfg.mesh_shape)
-            except NotImplementedError as e:
-                logging.warning(
-                    "mesh_utils.create_device_mesh cannot handle shape %s: %s. "
-                    "Falling back to the naive mesh.",
-                    cfg.mesh_shape,
-                    e,
-                )
-                return devices.reshape(cfg.mesh_shape)
-        self._step_log("Building multislice device mesh.")
-        # At the moment we only break the first device axis (the least communication intensive)
-        # across slices.
-        ici_mesh_shape = cfg.mesh_shape
-        max_slice_index = 0
-        for device in devices.flatten():
-            max_slice_index = max(max_slice_index, device.slice_index)
-        num_slices = max_slice_index + 1
-        assert ici_mesh_shape[0] % num_slices == 0, "First mesh shape axis must divide num slices."
-        # Truncate intra-slice mesh.
-        ici_mesh_shape = (ici_mesh_shape[0] // num_slices, *ici_mesh_shape[1:])
-        self._step_log("Inferred intra-slice mesh shape: %s", ici_mesh_shape)
-        # Configure data center (inter-slice) mesh.
-        dcn_mesh_shape = (num_slices,) + (1,) * len(ici_mesh_shape[1:])
-        self._step_log("Inferred inter-slice mesh shape: %s", dcn_mesh_shape)
-        # Check we have the right number of devices.
-        total_parallelism = np.product(dcn_mesh_shape) * np.product(ici_mesh_shape)
-        assert total_parallelism == len(devices), (
-            f"Num devices {len(devices)} does not match the product of "
-            f"inter and intra slice parallelism {total_parallelism}."
+        if self.step not in cfg.start_trace_steps:
+            should_start_tracing = False
+        elif updated_stop_trace_step is not None:
+            logging.warning(
+                "Skipping trace at step %s, since it is too close to the previous one: %s",
+                self.step,
+                cfg.start_trace_steps,
+            )
+            should_start_tracing = False
+        else:
+            should_start_tracing = (
+                cfg.start_trace_process_indices == "all"
+                or jax.process_index() in cfg.start_trace_process_indices
+            )
+        if should_start_tracing:
+            self._step_log("Start profiler tracing")
+            jax.profiler.start_trace(self.summary_writer.config.dir)
+            updated_stop_trace_step = self.step + 3
+        return updated_stop_trace_step
+
+
+def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str):
+    """Selects a mesh rule (if one matches `mesh_selector` to override mesh config.
+
+    If any of `trainer_config.mesh_rules` matches `mesh_selector`, modifies
+    `trainer_config.mesh_shape` according to the rule.
+
+    Args:
+        trainer_config: The trainer config. Will be modified if any mesh rule matches.
+        mesh_selector: A string used to select the mesh rule to apply.
+    """
+    if trainer_config.mesh_rules:
+        mesh = match_regex_rules(
+            mesh_selector, rules=trainer_config.mesh_rules, default_value=REQUIRED
         )
-        return mesh_utils.create_hybrid_device_mesh(ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape)
+        logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh)
+        if mesh is not REQUIRED:
+            trainer_config.mesh_shape = mesh

@@ -37,10 +37,10 @@ from axlearn.common.module import Module, child_context
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,
-    ConstantInitializer,
     DefaultInitializer,
     FanAxes,
     WeightInitializer,
+    constant_initializer,
 )
 from axlearn.common.utils import (
     NestedTensor,
@@ -210,6 +210,28 @@ def set_dropout_rate_recursively(
 
     def enter_fn(_, value, default_kv):
         return None if is_dropout_config(value) else default_kv
+
+    cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+
+
+def set_layer_norm_eps_recursively(cfg: ConfigBase, eps: float, set_only_if_none: bool = False):
+    """Sets LayerNorm.Config.eps recursively.
+
+    Args:
+        cfg: The root config under which to look for LayerNorm.Config.
+        eps: The target value.
+        set_only_if_none: Override LayerNorm.Config.eps to `eps` only if the original is None.
+    """
+
+    def is_layer_norm_config(cfg):
+        return isinstance(cfg, LayerNorm.Config)
+
+    def visit_fn(_, value):
+        if is_layer_norm_config(value) and (not set_only_if_none or value.eps is None):
+            value.eps = eps
+
+    def enter_fn(_, value, default_kv):
+        return None if is_layer_norm_config(value) else default_kv
 
     cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
 
@@ -454,14 +476,14 @@ class BatchNorm(BaseNormalizationLayer):
                 shape=[cfg.input_dim],
                 dtype=jnp.float32,
                 mesh_axes=(None,),
-                initializer=ConstantInitializer(0.0),
+                initializer=constant_initializer(0.0),
                 weight_decay_scale=0,
             ),
             "moving_variance": ParameterSpec(
                 shape=[cfg.input_dim],
                 dtype=jnp.float32,
                 mesh_axes=(None,),
-                initializer=ConstantInitializer(1.0),
+                initializer=constant_initializer(1.0),
                 weight_decay_scale=0,
             ),
         }
@@ -698,7 +720,7 @@ class Conv2D(BaseLayer):
         if input_shape[-1] != cfg.input_dim:
             raise ValueError(
                 f"input_shape[-1] = {input_shape[-1]} does not match "
-                "cfg.input_dim = {cfg.input_dim}."
+                f"cfg.input_dim = {cfg.input_dim}."
             )
         input_height, input_width = input_shape[1:3]
         if cfg.padding == "SAME":
@@ -754,6 +776,7 @@ def _compute_conv_output_1d_padding(
         in_paddings = jnp.pad(in_paddings, ((0, 0), (conv_padding_cfg[0], 0)), constant_values=0)
         # Back paddings are invalid frames.
         in_paddings = jnp.pad(in_paddings, ((0, 0), (0, conv_padding_cfg[1])), constant_values=1)
+
     # Apply max pooling with "VALID" padding along the time axis.
     out_paddings = jax.lax.reduce_window(
         in_paddings,
@@ -856,9 +879,14 @@ class Conv2DTranspose(BaseLayer):
 class Conv2DWith1DPadding(Conv2D):
     """The 2-D convolution with 1-D padding on the time axis.
 
-    We assume the data is in the format of [batch, time, frequency, input_dim]. This layer
-    computes paddings along the time axis. In the conv_padding_cfg, front paddings
-    are treated as valid frames and back paddings as invalid frames.
+    Kernel weights have the HWIO layout and in the shape of (window[0], window[1], input_dim,
+    output_dim). Both inputs and outputs will be in the NHWC layout.
+
+    For audio inputs/outputs, we assume dims correspond to [batch_size, time, frequency, input_dim].
+    This layer also returns paddings along the time axis. If specifying `cfg.padding` as a tuple of
+    (leading, trailing) paddings, leading padding frames are treated as valid (i.e. not masked by
+    the output paddings) while trailing padding frames are invalid (i.e. masked by the output
+    paddings).
     """
 
     Config = Conv2D.Config
@@ -866,16 +894,15 @@ class Conv2DWith1DPadding(Conv2D):
     # We add a kwargs "paddings" to the forward method.
     # pylint: disable-next=arguments-differ
     def forward(self, x: Tensor, *, paddings: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        Computes convolution outputs and paddings.
+        """Computes convolution outputs and paddings.
 
         Args:
             x: A Tensor of shape [batch_size, seq_len, frequency, input_dim].
-            paddings: A Tensor of shape [batch_size, seq_len].
+            paddings: 0/1 Tensor of shape [batch_size, seq_len].
 
         Returns:
             output: A Tensor of shape [batch_size, seq_len, frequency, output_dim].
-            paddings: A Tensor of shape [batch_size, seq_len].
+            paddings: 0/1 Tensor of shape [batch_size, seq_len].
         """
         cfg = self.config
         # Apply padding to the input.
@@ -976,7 +1003,7 @@ class Conv3D(BaseLayer):
         if input_shape[-1] != cfg.input_dim:
             raise ValueError(
                 f"input_shape[-1] = {input_shape[-1]} does not match "
-                "cfg.input_dim = {cfg.input_dim}."
+                f"cfg.input_dim = {cfg.input_dim}."
             )
 
         if cfg.padding == "SAME":
@@ -1755,7 +1782,7 @@ class VariationalNoise(ParameterNoise):
 
         vn_std: Required[float] = REQUIRED
 
-    def apply(self, prng_key: jax.random.KeyArray, params: NestedTensor) -> NestedTensor:
+    def apply(self, prng_key: Tensor, params: NestedTensor) -> NestedTensor:
         cfg = self.config
         if cfg.vn_std <= 0:
             return params

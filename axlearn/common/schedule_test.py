@@ -7,14 +7,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 
 from axlearn.common import schedule
 from axlearn.common.schedule import adafactor_decay_rate, as_schedule_fn
 
 
 # pylint: disable=no-self-use
-class ScheduleTest(absltest.TestCase):
+class ScheduleTest(parameterized.TestCase):
     """Tests schedules."""
 
     def test_constant(self):
@@ -109,7 +109,10 @@ class ScheduleTest(absltest.TestCase):
             else:
                 self.assertAlmostEqual(1 / math.sqrt(step), value)
 
-    def test_cosine_with_linear_warmup(self):
+    @parameterized.product(
+        decay_begin_step=(None, 50, 200),
+    )
+    def test_cosine_with_linear_warmup(self, decay_begin_step):
         peak_lr = 0.1
         max_step = 300
         warmup_steps = 100
@@ -118,19 +121,29 @@ class ScheduleTest(absltest.TestCase):
                 peak_lr=peak_lr,
                 max_step=max_step,
                 warmup_steps=warmup_steps,
+                decay_begin_step=decay_begin_step,
             )
         )
+        decay_begin_step = max(warmup_steps, decay_begin_step or 0)
         for step in range(0, 301, 50):
             value = s(step)
             if step < 100:
                 # Test linear warmup.
                 self.assertEqual(peak_lr * step / warmup_steps, value)
+            elif 100 <= step <= decay_begin_step:
+                # Test constant
+                self.assertEqual(peak_lr, value)
             else:
                 # Test cosine decay schedule.
                 cosine_rate = (
                     peak_lr
                     * 0.5
-                    * (1 + jnp.cos(jnp.pi * (step - warmup_steps) / (max_step - warmup_steps)))
+                    * (
+                        1
+                        + jnp.cos(
+                            jnp.pi * (step - decay_begin_step) / (max_step - decay_begin_step)
+                        )
+                    )
                 )
                 self.assertEqual(cosine_rate, value)
 

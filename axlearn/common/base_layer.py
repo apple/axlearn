@@ -6,6 +6,7 @@ import math
 from typing import Any, Callable, Dict, Optional, Sequence, Union
 
 import jax
+import jax.ad_checkpoint
 from absl import logging
 from jax import numpy as jnp
 
@@ -19,6 +20,7 @@ from axlearn.common.utils import (
     PartitionSpec,
     Tensor,
     TensorSpec,
+    check_jax_type,
     flatten_items,
     get_or_none,
 )
@@ -61,6 +63,8 @@ class ParameterSpec(TensorSpec):
     initializer: Optional[param_init.Initializer] = None
     # Factorization spec for the parameter.
     factorization: Optional[FactorizationSpec] = None
+    # Fan axes information for the parameter.
+    fan_axes: Optional[FanAxes] = None
 
     # Per-parameter weight decay / l2 regularization scale.
     #
@@ -77,9 +81,29 @@ class ParameterSpec(TensorSpec):
     # Note that ParameterSpec.weight_decay_scale takes precedence over `per_param_scale`.
     weight_decay_scale: Optional[float] = None
 
+    def fans(self) -> Dict[str, float]:
+        """Returns a dictionary with keys 'fan_in', 'fan_out', and 'fan_avg' containing
+        the fan values for this parameter.
 
-# When pytype supports recursive types, switch to:
-# Optional[Union[ParameterSpec, Dict[str, "NestedParameterSpec"]]]
+        The calculation is consistent with jax's initializers: Indices without
+        an explicit axis type specified are treated as both in and out axes.
+        Batch axes are ignored.
+        """
+        sizes = {}
+        for axis_type in self.fan_axes._fields:  # pylint: disable=protected-access
+            axes = getattr(self.fan_axes, axis_type)
+            if isinstance(axes, int):
+                axes = [axes]
+            sizes[axis_type] = math.prod(self.shape[axis] for axis in axes)
+        unbatched_size = math.prod(self.shape) / sizes["batch_axis"]
+        result = dict(
+            fan_in=unbatched_size / sizes["out_axis"], fan_out=unbatched_size / sizes["in_axis"]
+        )
+        result["fan_avg"] = (result["fan_in"] + result["fan_out"]) / 2
+        return result
+
+
+# For new code, use Nested[ParameterSpec].
 NestedParameterSpec = Optional[Union[ParameterSpec, Dict[str, Any]]]
 
 
@@ -97,7 +121,7 @@ class RematSpec:
 class ParameterNoise(Configurable):
     """An interface for applying parameter noise."""
 
-    def apply(self, prng_key: jax.random.KeyArray, params: NestedTensor) -> NestedTensor:
+    def apply(self, prng_key: Tensor, params: NestedTensor) -> NestedTensor:
         """To be implemented by subclasses."""
         raise NotImplementedError(self)
 
@@ -185,8 +209,23 @@ class BaseLayer(Module):
         )
 
         nullary = super()._call_thunk(*args, method_fn=method_fn, **kwargs)
-        if current_context() is None or cfg.remat_spec is None or not self.is_training:
+        if (
+            current_context() is None
+            or cfg.remat_spec is None
+            or not self.is_training
+            or getattr(method_fn, "_no_remat", False)
+        ):
             return nullary
+
+        # Remat always uses abstract tracers even if concrete information is available.
+        # This means that all inputs and outputs to a remat function need to be JAX types.
+        # We print a nice error if the inputs are not.
+        check_jax_type(
+            args=args,
+            kwargs=kwargs,
+            msg=f"Attempt to use remat on {self}.{method_fn} "
+            "failed. Consider decorating with @no_remat.",
+        )
 
         def nullary_with_remat():
             def fn(*args, **kwargs):
@@ -222,7 +261,11 @@ class BaseLayer(Module):
                     f"partition_spec {partition_spec} must have the same length as "
                     f"shape {param_spec.shape})"
                 )
-            param_spec = dataclasses.replace(param_spec, mesh_axes=PartitionSpec(*partition_spec))
+            param_spec = dataclasses.replace(
+                param_spec,
+                mesh_axes=PartitionSpec(*partition_spec),
+                fan_axes=self._compute_fan_axes(name=name, parameter_spec=param_spec),
+            )
             if param_spec.dtype is None:
                 param_spec = dataclasses.replace(param_spec, dtype=self.dtype())
             specs[name] = param_spec
@@ -232,10 +275,7 @@ class BaseLayer(Module):
         return specs
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         params = {}
         param_specs = self._create_layer_parameter_specs()
@@ -278,7 +318,7 @@ class BaseLayer(Module):
         return True
 
     def _initialize_parameter(
-        self, name: str, *, prng_key: jax.random.KeyArray, parameter_spec: ParameterSpec
+        self, name: str, *, prng_key: Tensor, parameter_spec: ParameterSpec
     ) -> Tensor:
         """Adds a parameter with the given name and shape.
 
@@ -305,7 +345,7 @@ class BaseLayer(Module):
         return param
 
     def apply_parameter_noise_recursively(
-        self, prng_key: jax.random.KeyArray, params: NestedTensor
+        self, prng_key: Tensor, params: NestedTensor
     ) -> NestedTensor:
         """Applies parameter noise recursively on `params`.
 
@@ -396,3 +436,27 @@ class BaseLayer(Module):
         self.add_summary(f"activations/{name}_mean", WeightedScalar(activations_mean, weights))
         # Average of per hidden unit norm.
         self.add_summary(f"activations/{name}_norm", WeightedScalar(activations_norm_mean, weights))
+
+
+def no_remat(fn: Callable) -> Callable:
+    """Annotates fn so that remat will not be applied to it.
+
+    This can be used to prevent tracers from leaking into helper methods that depend
+    only on data available at compile time when using `remat_spec`. For example, the following
+    method cannot be used in a class that uses remat_spec without using @no_remat:
+
+    ```
+    def fn(self, st: str):
+        if st=='three':
+            return 3
+    ```
+
+    Args:
+        fn: The method to annotate.
+
+    Returns:
+        The input `fn` after having been annotated.
+    """
+    # pylint: disable=protected-access
+    fn._no_remat = True
+    return fn

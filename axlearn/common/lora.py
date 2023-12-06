@@ -22,13 +22,7 @@ from axlearn.common.attention import (
     MultiheadOutputLinear,
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Dropout, Linear
 from axlearn.common.module import Module
 from axlearn.common.param_init import (
@@ -58,8 +52,7 @@ class _BaseLoraAdapter(BaseLayer):
         # It is required that rank > 0.
         rank: Required[int] = REQUIRED
 
-        # Value alpha/rank is used to scale the output of LoRA Adapter. When alpha is zero,
-        # the scaling is set to 1 (i.e., no output scaling).
+        # Value alpha/rank is used to scale the output of LoRA Adapter.
         alpha: Required[float] = REQUIRED
 
         # Drop out input for LoRA layer. This dropout rate can be set differently from
@@ -80,7 +73,7 @@ class _BaseLoraAdapter(BaseLayer):
     @property
     def scaling(self):
         cfg = self.config
-        if cfg.rank > 0 and cfg.alpha != 0:
+        if cfg.rank > 0:
             return cfg.alpha / cfg.rank
         else:
             return 1
@@ -140,7 +133,7 @@ class LoraLinearAdapter(_BaseLoraAdapter):
                 param_partition_spec=["model", None],
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        PARAM_REGEXP_WEIGHT: config_for_class(ConstantInitializer).set(value=0.0)
+                        PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
                     }
                 ),
                 bias=False,
@@ -312,7 +305,7 @@ class LoraMultiheadOutputAdapter(_BaseLoraAdapter):
                 bias=False,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        PARAM_REGEXP_WEIGHT: config_for_class(ConstantInitializer).set(value=0.0)
+                        PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
                     }
                 ),
             ),
@@ -394,7 +387,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
                 num_enabled=self._num_enbaled,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        PARAM_REGEXP_WEIGHT: config_for_class(ConstantInitializer).set(value=0.0)
+                        PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
                     }
                 ),
             ),
@@ -514,6 +507,10 @@ class LoraFusedQKVLinear(BaseQKVLinear):
                 num_heads=cfg.num_heads,
             ),
         )
+
+    @property
+    def num_kv_heads(self):
+        return self.layer.num_kv_heads
 
     def forward(
         self,

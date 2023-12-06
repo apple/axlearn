@@ -2,9 +2,13 @@
 
 """Autoregressive decoder model, e.g. as seen in the GPT family."""
 import math
+import re
 from typing import Callable, Dict, Optional, Tuple, Union
 
+from absl import logging
 from jax import numpy as jnp
+from jax.experimental.maps import thread_resources
+from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import (
     LearnedPositionalEmbedding,
@@ -30,6 +34,7 @@ from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, NestedTensor, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
+from axlearn.common.utils import flatten_items, with_sharding_constraint
 
 
 def layer_norm_config(eps=1e-5):
@@ -41,10 +46,26 @@ class Model(BaseModel):
 
     @config_class
     class Config(BaseModel.Config):
+        """Configuration for a causal-lm."""
+
         # Decoder.
         decoder: Decoder.Config = Decoder.default_config()
         # An auxiliary z-loss scale. If >0 encourages the softmax normalizer to be well behaved.
         z_loss_scale: float = 0.0
+        # Batch mesh axis name(s).
+        # These will be used to constrain the batch (first) axis of relevant inputs.
+        batch_axis_names: Tuple[str] = ("data",)
+        # Sequence-parallel mesh axis name(s).
+        # These will be used to constrain the sequence axis of relevant inputs.
+        # If None, no batch sequence dim constraints are applied.
+        seq_axis_names: Optional[Tuple[str]] = None
+        # If not None, collect Tensors from `module_outputs` whose paths fully match the regular
+        # expression and compute the sum as the auxiliary loss, which will be added to the overall
+        # model loss and reported in the summary as `aux_loss`.
+        #
+        # This can be used to support regularization losses such as the load balancing loss in MoE
+        # routing.
+        aux_loss_regex: Optional[str] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -92,6 +113,7 @@ class Model(BaseModel):
                 hidden_states: a float Tensor of shape [batch_size, seq_len, hidden_dim].
                 per_label_loss: a float Tensor of shape [batch_size, seq_len].
         """
+        self._constrain_input_batch(input_batch)
         predictions = self.predict(input_batch)
         aux_outputs = {**predictions}
         # [batch source_length, vocab_size]
@@ -108,6 +130,8 @@ class Model(BaseModel):
             loss = metrics["loss"]
             num_targets = metrics["num_targets"]
             aux_outputs["per_label_loss"] = metrics["per_token_loss"]
+            if self.config.aux_loss_regex is not None:
+                aux_outputs["aux_loss"] = metrics["aux_loss"]
             self.add_summary(
                 "train_live_targets",
                 WeightedScalar(num_targets / target_labels.shape[0], target_labels.shape[0]),
@@ -139,6 +163,7 @@ class Model(BaseModel):
         Returns:
             Beam search outputs.
         """
+        self._constrain_input_batch(input_batch)
         with child_context("beam_search_decode", module=self.decoder):
             prefix = input_batch["prefix"]
             return self.decoder.beam_search_decode(
@@ -171,6 +196,7 @@ class Model(BaseModel):
         Returns:
             Sample outputs.
         """
+        self._constrain_input_batch(input_batch)
         with child_context("sample_decode", module=self.decoder):
             prefix = input_batch["prefix"]
             return self.decoder.sample_decode(
@@ -194,6 +220,7 @@ class Model(BaseModel):
         Returns:
            A float Tensor of shape [batch_size, target_len, hidden_dim].
         """
+        self._constrain_input_batch(input_batch)
         predictions = self.predict(input_batch)
         return predictions["logits"]
 
@@ -215,6 +242,7 @@ class Model(BaseModel):
                 - "per_token_loss": a float Tensor of shape [batch_size, seq_len]
                 - "live_targets": a float Tensor of shape [batch_size, seq_len]
         """
+        self._constrain_input_batch(input_batch)
         predictions = self.predict(input_batch)
         results = self._metrics(
             predictions["logits"],
@@ -237,6 +265,7 @@ class Model(BaseModel):
                 logits: a float Tensor of shape [batch_size, seq_len, vocab_size]
                 hidden_states: a float Tensor of shape [batch_size, seq_len, hidden_dim]
         """
+        self._constrain_input_batch(input_batch)
         input_ids: Tensor = input_batch["input_ids"]
         token_type_ids: Tensor = input_batch.get("token_type_ids")
         # Decoder hidden states: [batch_size, target_len, hidden_dim].
@@ -265,11 +294,8 @@ class Model(BaseModel):
             z_loss_scale=self.config.z_loss_scale,
         )
         per_token_loss = loss_dict["pre_mask_loss"] * live_targets
-
         self.add_summary("accuracy", WeightedScalar(accuracy, num_targets))
-        self.add_summary("loss", WeightedScalar(loss, num_targets))
         self.add_summary("z_loss", WeightedScalar(loss_dict["z_loss"], num_targets))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
         if target_num_bytes is not None:
             # N.B. we calculate bpb following Appendix D.2. of <https://arxiv.org/abs/2112.11446>,
             # (i.e. treat each token as an equal with the others in the batch).
@@ -277,12 +303,50 @@ class Model(BaseModel):
             total_bytes = target_num_bytes.sum()
             bits_per_byte = per_token_loss.sum() / jnp.maximum(1, total_bytes) / jnp.log(2)
             self.add_summary("bits_per_byte", WeightedScalar(bits_per_byte, total_bytes))
-        return dict(
-            loss=loss,
-            per_token_loss=per_token_loss,
-            live_targets=live_targets,
-            num_targets=num_targets,
-        )
+        loss_collection = {
+            "cross_entropy": loss,
+            "per_token_loss": per_token_loss,
+            "live_targets": live_targets,
+            "num_targets": num_targets,
+        }
+        self.add_summary("cross_entropy_loss", WeightedScalar(loss, num_targets))
+        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
+        if self.config.aux_loss_regex is not None:
+            aux_loss = self._aux_loss()  # `aux_loss` will be 0 if not computed in `module_outputs`.
+            loss = loss + aux_loss  # `aux_loss` should already be scaled during its computation.
+            self.add_summary("aux_loss", WeightedScalar(aux_loss, num_targets))
+            loss_collection["aux_loss"] = aux_loss
+        loss_collection["loss"] = loss
+        self.add_summary("loss", WeightedScalar(loss, num_targets))
+        return loss_collection
+
+    def _constrain_input_batch(self, input_batch: NestedTensor):
+        """Applies sharding constraints in-place for relevant named tensors in the input batch."""
+        mesh = thread_resources.env.physical_mesh  # type: ignore
+        if mesh.empty or mesh.size == 1:
+            return
+
+        cfg = self.config
+        for k, v in input_batch.items():
+            if k in ["input_ids", "target_labels", "token_type_ids", "prefix"]:
+                assert v.ndim == 2
+                input_batch[k] = with_sharding_constraint(
+                    v, PartitionSpec(cfg.batch_axis_names, cfg.seq_axis_names)
+                )
+            elif k == "target_num_bytes":
+                assert v.ndim == 1
+                input_batch[k] = with_sharding_constraint(v, PartitionSpec(cfg.batch_axis_names))
+            else:
+                # We warn as not-constraining may be an oversight.
+                logging.log_first_n(
+                    logging.WARNING, "Not constraining input_batch[%s].", len(input_batch), k
+                )
+
+    def _aux_loss(self) -> Tensor:
+        regex = self.config.aux_loss_regex
+        # Collect aux_loss from all leaves.
+        module_outputs = self.get_module_outputs()
+        return sum(v.sum() for k, v in flatten_items(module_outputs) if re.fullmatch(regex, k))
 
 
 TransformerStackConfig = Union[
@@ -339,7 +403,7 @@ def gpt_decoder_config(
     """
     stack_cfg = stack_cfg.clone()
 
-    assert stack_cfg.cls in [
+    assert stack_cfg.klass in [
         StackedTransformerLayer,
         RepeatedTransformerLayer,
         PipelinedTransformerLayer,

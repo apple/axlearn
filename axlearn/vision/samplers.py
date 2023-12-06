@@ -10,7 +10,7 @@ import numpy as np
 from axlearn.common.module import Tensor
 
 
-def sample(*, is_candidate: Tensor, size: Tensor, prng_key: jax.random.KeyArray) -> Tensor:
+def sample(*, is_candidate: Tensor, size: Tensor, prng_key: Tensor) -> Tensor:
     """Samples candidate elements.
 
     Samples `size` elements along the last axis and returns a boolean tensor indicating their
@@ -74,9 +74,7 @@ class LabelSampler:
         self.background_label = background_label
         self.ignore_label = ignore_label
 
-    def __call__(
-        self, *, labels: Tensor, paddings: Tensor, prng_key: jax.random.KeyArray
-    ) -> LabelSamples:
+    def __call__(self, *, labels: Tensor, paddings: Tensor, prng_key: Tensor) -> LabelSamples:
         """Samples foreground and background labels at the specified rate.
 
         Avoids sampling `ignore` labels and padding.

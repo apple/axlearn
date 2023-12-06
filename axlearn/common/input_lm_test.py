@@ -258,6 +258,73 @@ class LmTrainingInputTest(BaseLmInputTest):
             print(batch)
             self.assertNestedAllClose(expected_batches[ix], batch)
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_fake_text_lm_training_data_eval(self):
+        # N.B. we do not typically expect users to run the training data pipeline in eval mode.
+        # Instead we expect them to prefer `text_to_lm_eval_input`.
+        expected_first_and_last_batch = [
+            {
+                "input_ids": [
+                    [1, 21820, 296, 2, 29, 3155],
+                    [1, 21820, 8114, 2, 29, 3155],
+                    [1, 21820, 3, 17, 4424, 2],
+                ],
+                "target_labels": [
+                    [21820, 296, 2, 29, 3155, 1],
+                    [21820, 8114, 2, 29, 3155, 1],
+                    [21820, 3, 17, 4424, 2, 29],
+                ],
+                "target_num_bytes": [19, 18, 17],
+            },
+            # Last batch should have some fully-padded examples.
+            {
+                "input_ids": [[1712, 2, 29, 3155, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]],
+                "target_labels": [[2, 29, 3155, 1, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]],
+                "target_num_bytes": [8, 0, 0],
+            },
+        ]
+
+        # Test lm_text_preprocessor. Expect same results.
+        batch_size, max_len = 3, 6
+        cfg = input_tf_data.Input.default_config().set(
+            name="test_input",
+            is_training=False,
+            source=config_for_function(make_ds_fn).set(
+                texts=[
+                    "hello world\n",
+                    "hello moon\n",
+                    "hello tiger\n",
+                    "hello dog\n",
+                    "hello cat\n",
+                ],
+            ),
+            processor=config_for_function(lm_text_preprocessor).set(
+                vocab_cfg=self.vocab_cfg,
+                max_sequence_length=max_len,
+                replace_newlines_with=self.newlines_replaced_with,
+                window_size=10,
+                max_padding_fraction=0.5,
+                shuffle_buffer_size=0,
+            ),
+            batcher=config_for_function(input_tf_data.batch).set(
+                global_batch_size=batch_size,
+                prefetch_buffer_size=2,
+                pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+        )
+        # Set TensorFlow seed.
+        tf.random.set_seed(123)
+        dataset = cfg.instantiate(parent=None)
+        for ix, batch in enumerate(dataset):
+            batch = {k: v.tolist() for k, v in batch.items()}
+            # Compare the first and last batch.
+            if ix == 0:
+                self.assertNestedAllClose(expected_first_and_last_batch[0], batch)
+        # pylint: disable=undefined-loop-variable
+        self.assertNestedAllClose(expected_first_and_last_batch[1], batch)
+
     @parameterized.parameters(
         {
             "input_data_type": InputDataType.SEQ2SEQ_MASK,
