@@ -13,7 +13,6 @@ from typing import Dict, List, Optional, Sequence, Union
 import pkg_resources
 import psutil
 from absl import app, logging
-from tensorflow import io as tf_io
 
 from axlearn.cloud import ROOT_MODULE_NAME
 
@@ -284,6 +283,11 @@ def send_signal(popen: subprocess.Popen, sig: int = signal.SIGKILL):
 
 def copy_blobs(from_prefix: str, *, to_prefix: str):
     """Uses tf.io.gfile to replicate blobs with the from_prefix to the to_prefix."""
+
+    # tf.io import increases import time significantly, which hurts CLI experience.
+    # pylint: disable-next=import-outside-toplevel
+    from tensorflow import io as tf_io
+
     # As tf_io.gfile.copy requires a path to a file when reading from cloud storage,
     # we traverse the `from_prefix` to find and copy all suffixes.
     if not tf_io.gfile.isdir(from_prefix):
