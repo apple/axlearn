@@ -363,7 +363,7 @@ def pad_with_negative_labels(element_spec: Any) -> Any:
     # For multilabel classification usecases, we support the plural version of label.
     for key in ("label", "labels", "text"):
         if key in example:
-            example[key] = -tf.ones_like(example[key])
+            example[key] = tf.negative(tf.ones_like(example[key]))
     return example
 
 

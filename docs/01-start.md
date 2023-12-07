@@ -23,7 +23,7 @@ Simply do an editable install with:
 
 ```shell
 # Note: This also installs dependencies required for launching jobs to GCP.
-pip install -e .[gcp]
+pip install -e '.[gcp]'
 ```
 
 Feel free to continue to the [next section](#optional-additional-setup-for-developers).
@@ -47,22 +47,18 @@ conda create -n axlearn python=3.9
 conda activate axlearn
 
 # Install tensorflow following https://developer.apple.com/metal/tensorflow-plugin.
-conda install -c apple tensorflow-deps==2.8.0
-pip install tensorflow-macos==2.8.0
-pip install tensorflow-metal==0.4.0
-pip install protobuf==3.20.3
+conda install -c apple tensorflow-deps
 
-# Install tensorflow-io (https://github.com/tensorflow/io/issues/1298).
-mkdir ~/builds && git clone https://github.com/tensorflow/io.git ~/builds/io
-cd ~/builds/io && git checkout v0.25.0
-python setup.py -q bdist_wheel --project tensorflow_io_gcs_filesystem
-pip install dist/tensorflow_io_gcs_filesystem-0.25.0-cp39-cp39-macosx_11_0_arm64.whl
+# Manually build tensorflow-text until a collaborator build is available.
+# This was tested using clang version 15 - you may get non-working wheels with earlier versions of clang.
+mkdir ~/builds && git clone https://github.com/tensorflow/text.git ~/builds/text
+cd ~/builds/text && git checkout 6064f1bf8fd078777b6c8690986b908c28764a94
+./oss_scripts/run_build.sh
+pip install ./tensorflow_text-2.14.0-cp39-cp39-macosx_*_arm64.whl
 
-# Install tensorflow_text (https://github.com/tensorflow/text/pull/756).
-pip install https://github.com/sun1638650145/Libraries-and-Extensions-for-TensorFlow-for-Apple-Silicon/releases/download/v2.8/tensorflow_text-2.8.2-cp39-cp39-macosx_11_0_arm64.whl
-
-# Finally, install AXLearn.
-pip install -e .[apple-silicon,gcp]
+# Finally, install AXLearn after changing back to the AXLearn directory.
+cd -
+pip install -e '.[apple-silicon,gcp]'
 ```
 
 </details>
@@ -76,7 +72,7 @@ This section is for users who intend to develop AXLearn. If you do not plan to s
 
 In order to run tests locally, consider installing the `dev` dependencies:
 ```shell
-pip install -e .[dev]
+pip install -e '.[dev]'
 ```
 
 We also recommend setting up pre-commit hooks to run some CI checks locally:
