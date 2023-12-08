@@ -3,6 +3,7 @@
 """Tests speech encoder layers."""
 
 import jax.random
+import pytest
 from absl.testing import parameterized
 from jax import numpy as jnp
 
@@ -28,6 +29,7 @@ class SpeechFeatureLayerTest(TestCase):
     """Tests SpeechFeatureLayer."""
 
     @parameterized.parameters([True, False])
+    @pytest.mark.fp64
     def test_speech_feature_layer(self, is_training: bool):
         num_filters, sample_rate, frame_size_ms, hop_size_ms = 80, 16000, 25, 10
         hidden_dim, output_dim = 32, 16
@@ -67,6 +69,10 @@ class SpeechFeatureLayerTest(TestCase):
         inputs, paddings = _fake_audio_pairs(
             prng_key=input_key, batch_size=batch_size, seq_len=seq_len
         )
+
+        # Slightly higher diff without fp64 from conv subsampler on jax 0.4.21.
+        inputs = inputs.astype(jnp.float64)
+        layer_params = jax.tree_map(lambda x: x.astype(jnp.float64), layer_params)
 
         output_batch, output_collections = F(
             layer,
@@ -172,6 +178,7 @@ class ASREncoderTest(TestCase):
     """Tests ASREncoder."""
 
     @parameterized.parameters([True, False])
+    @pytest.mark.fp64
     def test_asr_encoder(self, is_training: bool):
         conv_dim, output_dim = 12, 36
         num_filters, sample_rate, frame_size_ms, hop_size_ms = 80, 16000, 25, 10
@@ -211,6 +218,10 @@ class ASREncoderTest(TestCase):
         inputs, paddings = _fake_audio_pairs(
             prng_key=input_key, batch_size=batch_size, seq_len=seq_len
         )
+
+        # Slightly higher diff without fp64 from conv subsampler on jax 0.4.21.
+        inputs = inputs.astype(jnp.float64)
+        layer_params = jax.tree_map(lambda x: x.astype(jnp.float64), layer_params)
 
         output_batch, _ = F(
             layer,
