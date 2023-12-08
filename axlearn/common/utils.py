@@ -1034,7 +1034,7 @@ def create_hybrid_device_mesh(
 
     Args:
         mesh_shape: shape of the logical mesh for the faster/inner network, ordered
-            by increasing network intensity, e.g. [replica, data, mdl] where mdl has
+            by increasing network intensity, e.g. [data, fsdp, model] where model has
             the most network communication requirements.
         dcn_mesh_shape: shape of the logical mesh for the slower/outer network, in
             the same order as mesh_shape.
