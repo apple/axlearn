@@ -52,8 +52,6 @@ from axlearn.common.utils import (
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-# See utils_spmd.py for where we set "jax_default_prng_impl".
-_default_prng_impl = "rbg"
 _PYTEST_OPT_REGISTERED = {}
 
 
@@ -131,8 +129,9 @@ class TestCase(parameterized.TestCase):
         return "FAKE"
 
     def setUp(self):
-        utils_spmd.setup()
         push_data_dir(self.data_dir)
+        # Setup without distributed initialization.
+        utils_spmd.setup(jax_backend="cpu")
 
     def tearDown(self) -> None:
         self.assertEqual(pop_data_dir(), self.data_dir)
@@ -310,11 +309,9 @@ class TestWithTemporaryCWD(TestCase):
 
 @contextlib.contextmanager
 def prng_impl(new_prng_impl: str):
-    old_prng_impl = _default_prng_impl
+    old_prng_impl = jax.config.jax_default_prng_impl
 
     def switch(value):
-        global _default_prng_impl  # pylint: disable=global-statement
-        _default_prng_impl = value
         jax.config.update("jax_default_prng_impl", value)
 
     switch(new_prng_impl)

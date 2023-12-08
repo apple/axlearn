@@ -740,7 +740,7 @@ DATA_DIR=gs://path/to/tensorflow_datasets
 axlearn gcp tpu start --tpu_type=v4-8 --output_dir=$OUTPUT_DIR -- \
     python3 -m axlearn.common.launch_trainer_main \
     --module=vision.resnet.imagenet_trainer --config=ResNet-50 \
-    --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR
+    --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR --jax_backend=tpu
 ```
 
 If you have been following along with the code, assuming you have a file `axlearn/experiments/tutorial.py`, you can also launch your own experiment with:
@@ -752,7 +752,7 @@ axlearn gcp tpu start --tpu_type=v4-8 --output_dir=$OUTPUT_DIR -- \
     python3 -m axlearn.common.launch_trainer_main \
 -   --module=vision.resnet.imagenet_trainer --config=ResNet-50 \
 +   --module=tutorial --config=ResNet-50 \
-    --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR
+    --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR --jax_backend=tpu
 ```
 
 Both commands are similar to the one from the previous section except we run the trainer defined by `--module` and `--config` instead of simply printing `jax.devices()`.

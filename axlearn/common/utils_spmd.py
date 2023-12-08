@@ -2,6 +2,7 @@
 
 """SPMD related utils."""
 
+import logging
 import socket
 from typing import Optional
 
@@ -15,29 +16,30 @@ _jax_distributed_initialized = False
 
 def setup(
     *,
+    jax_backend: str,
     distributed_coordinator: Optional[str] = None,
     num_processes: Optional[int] = None,
     process_id: Optional[int] = None,
-    jax_backend: Optional[str] = None,
 ):
-    """Sets up the Jax environment for SPMD/pjit.
+    """Sets up the JAX environment for SPMD.
 
     Args:
-        distributed_coordinator: The distributed coordinator address (in the form of <host>:<port>).
-            Needed only if not running on TPU *and* jax.process_count() > 1. Otherwise the
-            coordinator will be configured automatically.
-        num_processes: The number of processes (GPU backend: total number of gpus). Needed only
-            if not running on TPU *and* jax.process_count() > 1. Otherwise the coordinator will
-            be configured automatically.
-        process_id: The process id (GPU backend: the GPU rank). Needed only if not running
-            on TPU *and* jax.process_count() > 1. Otherwise the coordinator will be
-            configured automatically.
         jax_backend: The distributed backend, which can be "cpu", "gpu", or "tpu".
-            By default, it would be configured automatically.
+        distributed_coordinator: The distributed coordinator address (in the form of <host>:<port>).
+            Needed only for `jax_backend != "tpu"` and `num_processes > 1`. Otherwise, the
+            coordinator will be configured automatically when `num_processes` and `process_id` are
+            provided.
+        num_processes: The number of processes. Needed only if distributed initialization is desired
+            for `jax_backend != "tpu"`.
+        process_id: The process ID (the process rank). Needed only if distributed initialization is
+            desired for `jax_backend != "tpu"`.
 
     Raises:
-        ValueError: If distributed_coordinator, num_processes, or process_id are not None when
-            jax_backend is "tpu", or if distributed_coordinator is unsupported.
+        ValueError: If any of the following conditions are met:
+            * distributed_coordinator, num_processes, or process_id are not None when
+                jax_backend is "tpu";
+            * one of num_processes or process_id is None when jax_backend is not "tpu";
+            * distributed_coordinator is None when jax_backend is not "tpu" and num_processes > 1.
     """
     # Use a GSPMD-friendly PRNG implementation.
     jax.config.update("jax_default_prng_impl", "rbg")
@@ -46,29 +48,41 @@ def setup(
 
     global _jax_distributed_initialized  # pylint: disable=global-statement
     if not _jax_distributed_initialized:
-        # NOTE: calling JAX distributed APIs (e.g. jax.default_backend(), jax.process_index() or
-        # jax.process_count()) on GPU causes JAX to only view one process' GPUs.
-        jax_backend = jax_backend or jax.default_backend()
         if jax_backend == "tpu":
-            assert (
+            if not (
                 distributed_coordinator is None and num_processes is None and process_id is None
-            ), ValueError(
-                "distributed_coordinator, num_processes, process_id "
-                "should all be None for tpu backend"
-            )
+            ):
+                raise ValueError(
+                    "distributed_coordinator, num_processes, and process_id "
+                    "should all be None for tpu backend."
+                )
             jax.distributed.initialize(
                 coordinator_address=_infer_tpu_coordinator_address(),
                 num_processes=jax.process_count(),
                 process_id=jax.process_index(),
             )
         else:
-            num_processes = num_processes if num_processes is not None else jax.process_count()
-            process_id = process_id if process_id is not None else jax.process_index()
+            if distributed_coordinator is None and num_processes is None and process_id is None:
+                logging.info(
+                    "Skipping distributed initialization for %s backend, "
+                    "since distributed_coordinator, num_processes, and process_id are all None.",
+                    jax_backend,
+                )
+                return
+
+            if num_processes is None or process_id is None:
+                raise ValueError(
+                    "num_processes and process_id should be provided together "
+                    f"if distributed initialization is desired for backend {jax_backend}. "
+                    f"Instead, got num_processes={num_processes}, process_id={process_id}."
+                )
+
             if not distributed_coordinator:
                 if num_processes == 1:
                     distributed_coordinator = f"localhost:{portpicker.pick_unused_port()}"
                 else:
                     raise ValueError(f"Unknown distributed_coordinator: {distributed_coordinator}")
+
             jax.distributed.initialize(
                 distributed_coordinator,
                 num_processes=num_processes,
