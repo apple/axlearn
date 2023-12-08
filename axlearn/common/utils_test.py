@@ -1132,6 +1132,37 @@ class DeviceMeshTest(TestCase):
             self.assertTrue(all(el.slice_index == ix for el in sub_mesh.flatten()))
 
     @parameterized.parameters(
+        {"logical_mesh": (2, 128, 2)},
+        {"logical_mesh": (2, 16, 16)},
+    )
+    def test_create_device_mesh_multi_slice_tpuv5e(self, logical_mesh: Sequence[int]):
+        slice_physical_mesh = (16, 16, 1)
+        num_slices = 2
+        coords = [
+            (x, y, z)
+            for x in range(slice_physical_mesh[0])
+            for y in range(slice_physical_mesh[1])
+            for z in range(slice_physical_mesh[2])
+        ]
+        devices = [
+            DummyMultiSliceTpuDevice(
+                platform="tpu",
+                device_kind="TPU v5litepod",
+                process_index=(len(coords) * slice_index + ix) // 4,
+                coords=coord,
+                slice_index=slice_index,
+            )
+            for ix, coord in enumerate(coords)
+            for slice_index in range(num_slices)
+        ]
+        # Check that the constructed mesh has the expected shape.
+        device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+        self.assertEqual(device_mesh.shape, logical_mesh)
+        # Check that the sub_mesh along the first axis only contains devices from one of the slices.
+        for ix, sub_mesh in enumerate(device_mesh):
+            self.assertTrue(all(el.slice_index == ix for el in sub_mesh.flatten()))
+
+    @parameterized.parameters(
         {"logical_mesh": (8, 2, 4)},
         {"logical_mesh": (16, 4)},
         {"logical_mesh": (2, 32)},
