@@ -3300,6 +3300,7 @@ class ConfigHelperTest(TestCase):
         batch_axis_names=("data", ("replica", "data", "fsdp")),
         fsdp_axis_names=("fsdp",),
         tp_axis_names=("model",),
+        seq_axis_names=("seq",),
     )
     def test_set_double_shard_weights_config(
         self,
@@ -3308,6 +3309,7 @@ class ConfigHelperTest(TestCase):
         batch_axis_names,
         fsdp_axis_names,
         tp_axis_names,
+        seq_axis_names,
     ):
         cfg: TransformerLayer.Config = TransformerLayer.default_config().set(
             cross_attention=cross_attention_cfg
@@ -3318,6 +3320,7 @@ class ConfigHelperTest(TestCase):
             batch_axis_names=batch_axis_names,
             fsdp_axis_names=fsdp_axis_names,
             tp_axis_names=tp_axis_names,
+            seq_axis_names=seq_axis_names,
         )
 
         ff_layer = cfg.feed_forward
@@ -3328,10 +3331,12 @@ class ConfigHelperTest(TestCase):
             ff_layer.linear2.param_partition_spec, (tp_axis_names, fsdp_axis_names)
         )
         self.assertSequenceEqual(
-            ff_layer.linear1.output_partition_spec, (batch_axis_names, None, tp_axis_names)
+            ff_layer.linear1.output_partition_spec,
+            (batch_axis_names, seq_axis_names, tp_axis_names),
         )
         self.assertSequenceEqual(
-            ff_layer.linear2.output_partition_spec, (batch_axis_names, None, tp_axis_names)
+            ff_layer.linear2.output_partition_spec,
+            (batch_axis_names, seq_axis_names, tp_axis_names),
         )
 
         self_atten = cfg.self_attention.attention
@@ -3370,6 +3375,7 @@ class ConfigHelperTest(TestCase):
         batch_axis_names=("data", ("replica", "data", "fsdp")),
         fsdp_axis_names=("fsdp",),
         tp_axis_names=("model",),
+        seq_axis_names=("seq",),
     )
     def test_set_double_shard_weights_config_for_list_of_configs(
         self,
@@ -3378,6 +3384,7 @@ class ConfigHelperTest(TestCase):
         batch_axis_names,
         fsdp_axis_names,
         tp_axis_names,
+        seq_axis_names,
     ):
         cfg_layer: TransformerLayer.Config = TransformerLayer.default_config().set(
             cross_attention=cross_attention_cfg
@@ -3389,6 +3396,7 @@ class ConfigHelperTest(TestCase):
             batch_axis_names=batch_axis_names,
             fsdp_axis_names=fsdp_axis_names,
             tp_axis_names=tp_axis_names,
+            seq_axis_names=seq_axis_names,
         )
 
         for cfg in cfg_layers:
@@ -3400,10 +3408,12 @@ class ConfigHelperTest(TestCase):
                 ff_layer.linear2.param_partition_spec, (tp_axis_names, fsdp_axis_names)
             )
             self.assertSequenceEqual(
-                ff_layer.linear1.output_partition_spec, (batch_axis_names, None, tp_axis_names)
+                ff_layer.linear1.output_partition_spec,
+                (batch_axis_names, seq_axis_names, tp_axis_names),
             )
             self.assertSequenceEqual(
-                ff_layer.linear2.output_partition_spec, (batch_axis_names, None, tp_axis_names)
+                ff_layer.linear2.output_partition_spec,
+                (batch_axis_names, seq_axis_names, tp_axis_names),
             )
 
             self_atten = cfg.self_attention.attention
