@@ -1007,7 +1007,7 @@ def register_per_param_settings(settings: NestedTree, *, description: str):
     return settings
 
 
-def build_standard_mesh(mesh_shape: Sequence[int], *, devices: Sequence[Any]) -> np.ndarray:
+def build_standard_mesh(mesh_shape: Sequence[int], *, devices: np.ndarray) -> np.ndarray:
     logging.info("Building device mesh.")
     try:
         return mesh_utils.create_device_mesh(mesh_shape, devices=devices)
