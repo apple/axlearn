@@ -17,8 +17,8 @@ dependencies = [
     "chex<0.1.81",  # chex 0.1.81 depends on numpy>=1.25.0.
     "flax==0.7.4",  # only for checkpoints.
     "importlab==0.7",  # breaks pytype on 0.8
-    "jax>=0.4.18,<=0.4.20",  # jax 0.4.20 runs into issues on GPU.
-    "jaxlib>=0.4.18,<=0.4.20",
+    "jax==0.4.21",
+    "jaxlib==0.4.21",
     "nltk==3.7",  # for text preprocessing
     "numpy<1.24",  # needed to pin to < 1.24; tf ragged_tensor depends on deprecated np.object.
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -86,18 +86,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.4.20",  # must be >=0.4.19 for compat with v5p.
-]
-# Jax-triton. Can only be installed on a GPU machine.
-# Note: Specify -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html during install.
-jax_triton = [
-    "cmake",
-    # TODO(markblee): Find compatible version(s) for jax 0.4.20.
-    "jax-triton@git+https://github.com/jax-ml/jax-triton.git@06d35175fbb65771243f607b1f098ec4a75556c9",
-    "jaxlib==0.4.18+cuda12.cudnn89",
-    "nvidia-cudnn-cu12==8.9.2.26",
-    # To avoid conflicting with jax.
-    "tensorflow-cpu==2.8.0",
+    "jax[tpu]==0.4.21",  # must be >=0.4.19 for compat with v5p.
 ]
 # Vertex AI tensorboard.
 vertexai_tensorboard = [

@@ -13,7 +13,7 @@ Examples:
     mkdir -p /tmp/resnet_test;
     python3 -m axlearn.common.launch_trainer_main \
         --module=vision.resnet.imagenet_trainer --config=ResNet-Test \
-        --trainer_dir=/tmp/resnet_test --data_dir=FAKE
+        --trainer_dir=/tmp/resnet_test --data_dir=FAKE --jax_backend=cpu
 
     # Launch training on a v4-8 TPU, reading and writing from GCS.
     #
@@ -26,7 +26,7 @@ Examples:
     axlearn gcp launch --instance_type=tpu-v4-8 --output_dir=$OUTPUT_DIR -- \
         python3 -m axlearn.common.launch_trainer_main \
         --module=vision.resnet.imagenet_trainer --config=ResNet-50 \
-        --trainer_dir=$OUTPUT_DIR --data_dir=${GS_ROOT}/tensorflow_datasets
+        --trainer_dir=$OUTPUT_DIR --data_dir=${GS_ROOT}/tensorflow_datasets --jax_backend=tpu
 
     # Sample docker launch.
     GS_ROOT=gs://my-bucket; \
@@ -40,7 +40,7 @@ Examples:
         --bundler_spec=target=tpu -- \
         python3 -m axlearn.common.launch_trainer_main \
         --module=vision.resnet.imagenet_trainer --config=ResNet-50 \
-        --trainer_dir=$OUTPUT_DIR --data_dir=${GS_ROOT}/tensorflow_datasets
+        --trainer_dir=$OUTPUT_DIR --data_dir=${GS_ROOT}/tensorflow_datasets --jax_backend=tpu
     ```
 
 """

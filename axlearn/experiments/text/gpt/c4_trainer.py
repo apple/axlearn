@@ -5,7 +5,7 @@
     mkdir -p /tmp/gpt_c4_test;
     python3 -m axlearn.common.launch_trainer_main \
         --module=text.gpt.c4_trainer --config=fuji-test \
-        --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE
+        --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE --jax_backend=cpu
 
     GS_ROOT=gs://my-bucket; \
     CONFIG=fuji-7B; \
@@ -18,7 +18,7 @@
         --module=text.gpt.c4_trainer --config=$CONFIG \
         --trainer_dir=$OUTPUT_DIR \
         --data_dir=$GS_ROOT/tensorflow_datasets \
-        --mesh_selector=$INSTANCE_TYPE
+        --mesh_selector=$INSTANCE_TYPE --jax_backend=tpu
 
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh; \
 bash Miniconda3-latest-Linux-x86_64.sh; \
@@ -32,7 +32,8 @@ XLA_FLAGS=--xla_dump_to=/tmp/xla_dump; \
 mkdir -p /tmp/test_trainer; \
 python3 -m axlearn.common.launch_trainer_main \
   --module=text.gpt.c4_trainer --config=fuji-7B-single \
-  --trainer_dir=/tmp/test_trainer --data_dir=gs://axlearn-public/tensorflow_datasets
+  --trainer_dir=/tmp/test_trainer --data_dir=gs://axlearn-public/tensorflow_datasets \
+  --jax_backend=gpu
 """
 
 from typing import Dict
