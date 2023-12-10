@@ -17,8 +17,8 @@ dependencies = [
     "chex<0.1.81",  # chex 0.1.81 depends on numpy>=1.25.0.
     "flax==0.7.4",  # only for checkpoints.
     "importlab==0.7",  # breaks pytype on 0.8
-    "jax>=0.4.18,<=0.4.20",  # jax 0.4.20 runs into issues on GPU.
-    "jaxlib>=0.4.18,<=0.4.20",
+    "jax==0.4.21",
+    "jaxlib==0.4.21",
     "nltk==3.7",  # for text preprocessing
     "numpy<1.24",  # needed to pin to < 1.24; tf ragged_tensor depends on deprecated np.object.
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -43,8 +43,8 @@ apple-silicon = [
     "absl-py",
     "chex>=0.1.7",
     "flax==0.7.4",  # only for checkpoints.
-    "jax>=0.4.18,<=0.4.20",
-    "jaxlib>=0.4.18,<=0.4.20",
+    "jax==0.4.21",
+    "jaxlib==0.4.21",
     "nltk==3.7",  # for text preprocessing
     "optax>=0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
@@ -94,7 +94,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.4.20",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.4.21",  # must be >=0.4.19 for compat with v5p.
 ]
 # Vertex AI tensorboard.
 vertexai_tensorboard = [
