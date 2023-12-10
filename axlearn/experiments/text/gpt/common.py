@@ -68,7 +68,7 @@ STEP_DTYPE = jnp.bfloat16
 
 # The default mesh-axis names for LM training, from least to most communication intensive.
 # See mesh_shape_from_axes() docstring for more details.
-MESH_AXIS_NAMES = ("data", "expert", "fsdp", "model")
+MESH_AXIS_NAMES = ("data", "seq", "expert", "fsdp", "model")
 
 
 def scaled_hidden_dim(scale: float, *, round_up_to_multiples_of: int = 256) -> FunctionConfigBase:
@@ -131,13 +131,15 @@ def tfds_input(
 
 
 def mesh_shape_from_axes(
-    *, data: int = 1, expert: int = 1, fsdp: int = 1, model: int = 1
+    *, data: int = 1, seq: int = 1, expert: int = 1, fsdp: int = 1, model: int = 1
 ) -> Tuple[int, int, int, int]:
-    """Builds a 4D logical mesh from the provided spec.
+    """Builds a 5D logical mesh from the provided spec.
 
     Args:
         data: For data-paralellism. Expect model state to be fully replicated over this axis.
             Useful for e.g. multi-slice/granule partitioning with slow networking between granules.
+        seq: Used for sequence-parallelism. Typically this means sharding the activation sequence
+            dimension, and possibly a subset of the weights.
         expert: Designed to be used for partitioning "experts" in mixture-of-expert models.
             E.g. <https://arxiv.org/abs/2006.16668>.
         fsdp: Fully-sharded-data-parallelism a.k.a. async-with-compute model-parallelism.
@@ -148,9 +150,9 @@ def mesh_shape_from_axes(
     Returns:
         A tuple describing the logical mesh shape (from least to most communication intensive).
     """
-    assert MESH_AXIS_NAMES == ("data", "expert", "fsdp", "model")
+    assert MESH_AXIS_NAMES == ("data", "seq", "expert", "fsdp", "model")
     # We set the minimum size for a mesh axis to 1 as anything lower is degenerate, except -1.
-    return tuple((max(x, 1) if x != -1 else -1 for x in [data, expert, fsdp, model]))
+    return tuple((max(x, 1) if x != -1 else -1 for x in [data, seq, expert, fsdp, model]))
 
 
 def model_config(
@@ -233,22 +235,23 @@ def model_config(
             )
         }
     )
-    batch_axis_names = ("data", "fsdp")
+    batch_axis_names = ("data", "expert", "fsdp")
     cfg = causal_lm.Model.default_config().set(
         decoder=decoder_cfg,
         param_init=model_param_init,
         batch_axis_names=batch_axis_names,
-        seq_axis_names=None,
+        seq_axis_names="seq",
     )
     cfg.dtype = jnp.float32
-    # Shard some FFN and attention weights over both FSDP and model axes.
+    # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(
         cfg.decoder.transformer.layer,
         batch_axis_names=batch_axis_names,
-        fsdp_axis_names=("expert", "fsdp"),
+        fsdp_axis_names=("seq", "expert", "fsdp"),
         tp_axis_names="model",
+        seq_axis_names=("seq",),
     )
-    cfg.decoder.logits_partition_spec = (batch_axis_names, None, "model")
+    cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
     set_bias_recursively(cfg, False)
     set_norm_recursively(cfg, normalization)
     cfg.z_loss_scale = z_loss_scale
@@ -536,9 +539,8 @@ def get_trainer_config_fn(
             ), f"Len mismatch: {mesh_axis_names} vs. {mesh_shape}"
             cfg.mesh_axis_names = mesh_axis_names
             cfg.mesh_shape = mesh_shape
-            # Set batch sharding spec to be all but the last axis (assumed for tensor-parallelism).
-            assert mesh_axis_names[-1] == "model"
-            cfg.batch_axis_names = mesh_axis_names[:-1]
+            # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism).
+            cfg.batch_axis_names = tuple(el for el in mesh_axis_names if el != "model")
         cfg.mesh_rules = mesh_rules
         # Maybe load state.
         if init_state_builder:
