@@ -13,6 +13,7 @@ import atexit
 import contextlib
 import os
 import subprocess
+import sys
 from typing import Union
 from unittest import mock
 
@@ -147,18 +148,31 @@ class UtilTest(TestCase):
     """Tests util functions."""
 
     def test_ssh_agent(self):
-        self.assertIsNone(os.getenv("SSH_AGENT_PID"))
-        self.assertIsNone(os.getenv("SSH_AUTH_SOCK"))
-        _start_ssh_agent()
-        self.assertRegex(
-            os.getenv("SSH_AUTH_SOCK", ""),
-            r"/tmp/ssh-.+/agent.(\d+)",
-        )
-        self.assertTrue(os.path.exists(os.getenv("SSH_AUTH_SOCK")))
-        self.assertRegex(os.getenv("SSH_AGENT_PID", ""), r"\d+")
-        _kill_ssh_agent()
-        self.assertIsNone(os.getenv("SSH_AGENT_PID"))
-        self.assertIsNone(os.getenv("SSH_AUTH_SOCK"))
+        old_environ = os.environ.copy()
+        try:
+            os.environ.pop("SSH_AGENT_PID", None)
+            os.environ.pop("SSH_AUTH_SOCK", None)
+            self.assertIsNone(os.getenv("SSH_AGENT_PID"))
+            self.assertIsNone(os.getenv("SSH_AUTH_SOCK"))
+            _start_ssh_agent()
+            if sys.platform == "linux":
+                self.assertRegex(
+                    os.getenv("SSH_AUTH_SOCK", ""),
+                    r"/tmp/ssh-.+/agent.(\d+)",
+                )
+            elif sys.platform == "darwin":
+                self.assertRegex(
+                    os.getenv("SSH_AUTH_SOCK", ""),
+                    r"/var/folders/[\w/]+//ssh-.+/agent.(\d+)",
+                )
+            self.assertTrue(os.path.exists(os.getenv("SSH_AUTH_SOCK")))
+            self.assertRegex(os.getenv("SSH_AGENT_PID", ""), r"\d+")
+            _kill_ssh_agent()
+            self.assertIsNone(os.getenv("SSH_AGENT_PID"))
+            self.assertIsNone(os.getenv("SSH_AUTH_SOCK"))
+        finally:
+            os.environ.clear()
+            os.environ.update(old_environ)
 
 
 if __name__ == "__main__":

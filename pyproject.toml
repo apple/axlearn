@@ -23,13 +23,14 @@ dependencies = [
     "numpy<1.24",  # needed to pin to < 1.24; tf ragged_tensor depends on deprecated np.object.
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
-    "protobuf==3.20.3",  # needed to pin to 3.20.x or lower for tensorflow 2.8.0.
-    "tensorboard-plugin-profile==2.8.0",  # needed to pin to 2.8.0 for tensorflow 2.8.0.
-    "tensorflow==2.8.0; platform_machine == 'x86_64'",  # needed for tfds to work
-    "tensorflow-datasets==4.7.0",
-    "tensorflow-io[tensorflow]; platform_machine == 'x86_64'",
-    "tensorflow-io-gcs-filesystem[tensorflow]; platform_machine == 'x86_64'",
-    "tensorflow_text==2.8.2",  # implied by seqio, but also used directly for text processing
+    "protobuf>=3.20.3",
+    "tensorboard-plugin-profile==2.14.0",
+    # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
+    "tensorflow==2.14.0",
+    "tensorflow-datasets>=4.9.2",
+    # tensorflow-io 0.34.0 enabled macOS arm64 builds.
+    "tensorflow-io>=0.34.0",
+    "tensorflow_text==2.14.0; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.21",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions>=4.2.0",  # needed for typing.Protocol
@@ -38,22 +39,13 @@ dependencies = [
 
 [project.optional-dependencies]
 # Apple Silicon dependencies.
+# Need to run `conda install -c apple tensorflow-deps` separately.
 apple-silicon = [
-    "attrs>=21.3.0",
-    "absl-py",
-    "chex>=0.1.7",
-    "flax==0.7.4",  # only for checkpoints.
-    "jax==0.4.21",
-    "jaxlib==0.4.21",
-    "nltk==3.7",  # for text preprocessing
-    "optax>=0.1.7",  # optimizers (0.1.0 has known bugs).
-    "portpicker",
-    "tensorboard-plugin-profile==2.8.0",  # needed to pin to 2.8.0 for tensorflow 2.8.0.
-    "tensorflow-datasets==4.7.0",
-    "tensorstore>=0.1.21",  # used for supporting GDA checkpoints
-    "typing-extensions>=4.2.0",  # needed for typing.Protocol
-    "seqio@git+https://github.com/google/seqio.git@8efd5dc016bb626509bdf656e2bbcdfa8a7cf2d8",  # used for inputs
+    "tensorflow-metal==1.1.0; platform_machine == 'arm64'",
+    # As of Nov 15, 2023, tensorflow_text has no arm64 build.
+    # We need to manually build the wheel and install it, following instructions at https://github.com/tensorflow/text/tree/2.14#build-from-source-steps.
 ]
+
 # Requirements for testing and development.
 dev = [
     "black==23.1a1",  # formatting

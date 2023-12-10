@@ -47,9 +47,9 @@ class SummaryWriterTest(absltest.TestCase):
             event_acc.Reload()
             summaries = {}
             for summary in event_acc.Tags()["tensors"]:
-                for _, step, tensor in event_acc.Tensors(summary):
-                    self.assertEqual(step, 100)
-                    summaries[summary] = tf.make_ndarray(tensor)
+                for tensor_event in event_acc.Tensors(summary):
+                    self.assertEqual(tensor_event.step, 100)
+                    summaries[summary] = tf.make_ndarray(tensor_event.tensor_proto)
 
             expected = {
                 "loss": tf.constant(3.0),
@@ -67,11 +67,11 @@ class SummaryWriterTest(absltest.TestCase):
             event_acc.Reload()
             summaries = {}
             for summary in event_acc.Tags()["tensors"]:
-                for _, step, tensor in event_acc.Tensors(summary):
-                    self.assertEqual(step, 0)
+                for tensor_event in event_acc.Tensors(summary):
+                    self.assertEqual(tensor_event.step, 0)
                     if summary != "trainer_config":
                         # skip the trainer config one, as it is too long.
-                        summaries[summary] = tf.make_ndarray(tensor)
+                        summaries[summary] = tf.make_ndarray(tensor_event.tensor_proto)
 
             expected = {
                 "trainer_config/dtype": tf.constant(b"'jax.numpy.float32'"),
