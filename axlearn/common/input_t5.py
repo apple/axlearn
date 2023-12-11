@@ -522,14 +522,16 @@ def map_prefix_to_value(is_training: bool, value: int = 0) -> input_tf_data.Data
     @seqio.map_over_dataset
     def process_train_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         # Handle packed inputs by replacing at segment starts.
-        if "target_positions" in example:
-            target_ids = example["target_ids"]
-            target_positions = example["target_positions"]
-            example["target_ids"] = tf.where(target_positions == 0, value, target_ids)
+        if "positions" in example["target"]:
+            target_ids = example["target"]["input_ids"]
+            target_positions = example["target"]["positions"]
+            example["target"]["input_ids"] = tf.where(target_positions == 0, value, target_ids)
 
         # Handle padded inputs by replacing at index 0.
         else:
-            example["target_ids"] = tf.concat([[value], example["target_ids"][1:]], 0)
+            example["target"]["input_ids"] = tf.concat(
+                [[value], example["target"]["input_ids"][1:]], 0
+            )
         return example
 
     return process_train_fn if is_training else process_eval_fn

@@ -5,7 +5,6 @@
 import os
 from typing import Any, Dict, List, Literal, Optional
 
-import numpy as np
 import pytest
 import seqio
 import tensorflow as tf
@@ -839,22 +838,44 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.ENCODER_DECODER,
             "max_len": 6,
             "expected_inputs": dict(
-                source_ids=[
-                    [21820, 1, 0, 0, 0, 0],
-                    [21820, 1, 0, 0, 0, 0],
-                    [21820, 1, 0, 0, 0, 0],
-                ],
-                target_ids=[
-                    [1, 21820, 296, 0, 0, 0],
-                    [1, 21820, 8114, 0, 0, 0],
-                    [1, 21820, 3, 17, 4424, 0],
-                ],
-                target_labels=[
-                    [21820, 296, 1, -1, -1, -1],
-                    [21820, 8114, 1, -1, -1, -1],
-                    [21820, 3, 17, 4424, 1, -1],
-                ],
-                prefix=[[1], [1], [1]],
+                source=dict(
+                    input_ids=tf.constant(
+                        [
+                            [21820, 1, 0, 0, 0, 0],
+                            [21820, 1, 0, 0, 0, 0],
+                            [21820, 1, 0, 0, 0, 0],
+                        ]
+                    ),
+                    positions=tf.constant(
+                        [[0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]]
+                    ),
+                    input_segment_ids=tf.constant(
+                        [[1, 1, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0]]
+                    ),
+                ),
+                target=dict(
+                    input_ids=tf.constant(
+                        [
+                            [1, 21820, 296, 0, 0, 0],
+                            [1, 21820, 8114, 0, 0, 0],
+                            [1, 21820, 3, 17, 4424, 0],
+                        ]
+                    ),
+                    positions=tf.constant(
+                        [[0, 1, 2, 0, 0, 0], [0, 1, 2, 0, 0, 0], [0, 1, 2, 3, 4, 0]]
+                    ),
+                    input_segment_ids=tf.constant(
+                        [[1, 1, 1, 0, 0, 0], [1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 0]]
+                    ),
+                ),
+                target_labels=tf.constant(
+                    [
+                        [21820, 296, 1, -1, -1, -1],
+                        [21820, 8114, 1, -1, -1, -1],
+                        [21820, 3, 17, 4424, 1, -1],
+                    ]
+                ),
+                prefix=tf.constant([[1], [1], [1]]),
             ),
             "source_key": "source_ids",
             "target_key": "target_labels",
@@ -865,22 +886,36 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.ENCODER_DECODER,
             "max_len": 4,
             "expected_inputs": dict(
-                source_ids=[
-                    [21820, 1, 0, 0],
-                    [21820, 1, 0, 0],
-                    [21820, 1, 0, 0],
-                ],
-                target_ids=[
-                    [1, 21820, 296, 0],
-                    [1, 21820, 8114, 0],
-                    [1, 21820, 3, 17],
-                ],
-                target_labels=[
-                    [21820, 296, 1, -1],
-                    [21820, 8114, 1, -1],
-                    [21820, 3, 17, 4424],
-                ],
-                prefix=[[1], [1], [1]],
+                source=dict(
+                    input_ids=tf.constant(
+                        [
+                            [21820, 1, 0, 0],
+                            [21820, 1, 0, 0],
+                            [21820, 1, 0, 0],
+                        ]
+                    ),
+                    positions=tf.constant([[0, 1, 0, 0], [0, 1, 0, 0], [0, 1, 0, 0]]),
+                    input_segment_ids=tf.constant([[1, 1, 0, 0], [1, 1, 0, 0], [1, 1, 0, 0]]),
+                ),
+                target=dict(
+                    input_ids=tf.constant(
+                        [
+                            [1, 21820, 296, 0],
+                            [1, 21820, 8114, 0],
+                            [1, 21820, 3, 17],
+                        ]
+                    ),
+                    positions=tf.constant([[0, 1, 2, 0], [0, 1, 2, 0], [0, 1, 2, 3]]),
+                    input_segment_ids=tf.constant([[1, 1, 1, 0], [1, 1, 1, 0], [1, 1, 1, 1]]),
+                ),
+                target_labels=tf.constant(
+                    [
+                        [21820, 296, 1, -1],
+                        [21820, 8114, 1, -1],
+                        [21820, 3, 17, 4424],
+                    ]
+                ),
+                prefix=tf.constant([[1], [1], [1]]),
             ),
         },
         # Source truncation test. Note that truncated sources do not end in EOS.
@@ -889,10 +924,18 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.ENCODER_DECODER,
             "max_len": 1,
             "expected_inputs": dict(
-                source_ids=[[21820], [21820], [21820]],
-                target_ids=[[1], [1], [1]],
-                target_labels=[[21820], [21820], [21820]],
-                prefix=[[1], [1], [1]],
+                source=dict(
+                    input_ids=tf.constant([[21820], [21820], [21820]]),
+                    positions=tf.constant([[0], [0], [0]]),
+                    input_segment_ids=tf.constant([[1], [1], [1]]),
+                ),
+                target=dict(
+                    input_ids=tf.constant([[1], [1], [1]]),
+                    positions=tf.constant([[0], [0], [0]]),
+                    input_segment_ids=tf.constant([[1], [1], [1]]),
+                ),
+                target_labels=tf.constant([[21820], [21820], [21820]]),
+                prefix=tf.constant([[1], [1], [1]]),
             ),
         },
         # Prefix test.
@@ -901,22 +944,44 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.ENCODER_DECODER,
             "max_len": 6,
             "expected_inputs": dict(
-                source_ids=[
-                    [21820, 1, 0, 0, 0, 0],
-                    [21820, 1, 0, 0, 0, 0],
-                    [21820, 1, 0, 0, 0, 0],
-                ],
-                target_ids=[
-                    [1, 1, 1, 21820, 296, 0],
-                    [1, 1, 1, 21820, 8114, 0],
-                    [1, 1, 1, 21820, 3, 17],
-                ],
-                target_labels=[
-                    [-1, -1, 21820, 296, 1, -1],
-                    [-1, -1, 21820, 8114, 1, -1],
-                    [-1, -1, 21820, 3, 17, 4424],
-                ],
-                prefix=[[1, 1, 1], [1, 1, 1], [1, 1, 1]],
+                source=dict(
+                    input_ids=tf.constant(
+                        [
+                            [21820, 1, 0, 0, 0, 0],
+                            [21820, 1, 0, 0, 0, 0],
+                            [21820, 1, 0, 0, 0, 0],
+                        ]
+                    ),
+                    positions=tf.constant(
+                        [[0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]]
+                    ),
+                    input_segment_ids=tf.constant(
+                        [[1, 1, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0]]
+                    ),
+                ),
+                target=dict(
+                    input_ids=tf.constant(
+                        [
+                            [1, 1, 1, 21820, 296, 0],
+                            [1, 1, 1, 21820, 8114, 0],
+                            [1, 1, 1, 21820, 3, 17],
+                        ]
+                    ),
+                    positions=tf.constant(
+                        [[0, 1, 2, 3, 4, 0], [0, 1, 2, 3, 4, 0], [0, 1, 2, 3, 4, 5]]
+                    ),
+                    input_segment_ids=tf.constant(
+                        [[1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 1, 1]]
+                    ),
+                ),
+                target_labels=tf.constant(
+                    [
+                        [-1, -1, 21820, 296, 1, -1],
+                        [-1, -1, 21820, 8114, 1, -1],
+                        [-1, -1, 21820, 3, 17, 4424],
+                    ]
+                ),
+                prefix=tf.constant([[1, 1, 1], [1, 1, 1], [1, 1, 1]]),
             ),
         },
         # Decoder-only.
@@ -925,17 +990,35 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.DECODER_ONLY,
             "max_len": 7,
             "expected_inputs": dict(
-                input_ids=[
-                    [1, 21820, 21820, 296, 0, 0, 0],
-                    [1, 21820, 21820, 8114, 0, 0, 0],
-                    [1, 21820, 21820, 3, 17, 4424, 0],
-                ],
-                target_labels=[
-                    [-1, 21820, 296, 1, -1, -1, -1],
-                    [-1, 21820, 8114, 1, -1, -1, -1],
-                    [-1, 21820, 3, 17, 4424, 1, -1],
-                ],
-                prefix=[[1], [1], [1]],
+                input_ids=tf.constant(
+                    [
+                        [1, 21820, 21820, 296, 0, 0, 0],
+                        [1, 21820, 21820, 8114, 0, 0, 0],
+                        [1, 21820, 21820, 3, 17, 4424, 0],
+                    ]
+                ),
+                input_segment_ids=tf.constant(
+                    [
+                        [1, 1, 1, 1, 0, 0, 0],
+                        [1, 1, 1, 1, 0, 0, 0],
+                        [1, 1, 1, 1, 1, 1, 0],
+                    ]
+                ),
+                input_positions=tf.constant(
+                    [
+                        [0, 1, 2, 3, 0, 0, 0],
+                        [0, 1, 2, 3, 0, 0, 0],
+                        [0, 1, 2, 3, 4, 5, 0],
+                    ]
+                ),
+                target_labels=tf.constant(
+                    [
+                        [-1, 21820, 296, 1, -1, -1, -1],
+                        [-1, 21820, 8114, 1, -1, -1, -1],
+                        [-1, 21820, 3, 17, 4424, 1, -1],
+                    ]
+                ),
+                prefix=tf.constant([[1], [1], [1]]),
             ),
         },
         # is_training as True
@@ -944,17 +1027,35 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.DECODER_ONLY,
             "max_len": 6,
             "expected_inputs": dict(
-                input_ids=[
-                    [1, 21820, 21820, 296, 0, 0],
-                    [1, 21820, 21820, 8114, 0, 0],
-                    [1, 21820, 21820, 3, 17, 4424],
-                ],
-                target_labels=[
-                    [-1, 21820, 296, 1, -1, -1],
-                    [-1, 21820, 8114, 1, -1, -1],
-                    [-1, 21820, 3, 17, 4424, 1],
-                ],
-                prefix=[[1], [1], [1]],
+                input_ids=tf.constant(
+                    [
+                        [1, 21820, 21820, 296, 0, 0],
+                        [1, 21820, 21820, 8114, 0, 0],
+                        [1, 21820, 21820, 3, 17, 4424],
+                    ]
+                ),
+                input_segment_ids=tf.constant(
+                    [
+                        [1, 1, 1, 1, 0, 0],
+                        [1, 1, 1, 1, 0, 0],
+                        [1, 1, 1, 1, 1, 1],
+                    ]
+                ),
+                input_positions=tf.constant(
+                    [
+                        [0, 1, 2, 3, 0, 0],
+                        [0, 1, 2, 3, 0, 0],
+                        [0, 1, 2, 3, 4, 5],
+                    ]
+                ),
+                target_labels=tf.constant(
+                    [
+                        [-1, 21820, 296, 1, -1, -1],
+                        [-1, 21820, 8114, 1, -1, -1],
+                        [-1, 21820, 3, 17, 4424, 1],
+                    ]
+                ),
+                prefix=tf.constant([[1], [1], [1]]),
             ),
         },
         # Prefix test.
@@ -963,17 +1064,35 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.DECODER_ONLY,
             "max_len": 7,
             "expected_inputs": dict(
-                input_ids=[
-                    [1, 1, 21820, 21820, 296, 0, 0],
-                    [1, 1, 21820, 21820, 8114, 0, 0],
-                    [1, 1, 21820, 21820, 3, 17, 4424],
-                ],
-                target_labels=[
-                    [-1, -1, 21820, 296, 1, -1, -1],
-                    [-1, -1, 21820, 8114, 1, -1, -1],
-                    [-1, -1, 21820, 3, 17, 4424, 1],
-                ],
-                prefix=[[1, 1], [1, 1], [1, 1]],
+                input_ids=tf.constant(
+                    [
+                        [1, 1, 21820, 21820, 296, 0, 0],
+                        [1, 1, 21820, 21820, 8114, 0, 0],
+                        [1, 1, 21820, 21820, 3, 17, 4424],
+                    ]
+                ),
+                input_segment_ids=tf.constant(
+                    [
+                        [1, 1, 1, 1, 1, 0, 0],
+                        [1, 1, 1, 1, 1, 0, 0],
+                        [1, 1, 1, 1, 1, 1, 1],
+                    ]
+                ),
+                input_positions=tf.constant(
+                    [
+                        [0, 1, 2, 3, 4, 0, 0],
+                        [0, 1, 2, 3, 4, 0, 0],
+                        [0, 1, 2, 3, 4, 5, 6],
+                    ]
+                ),
+                target_labels=tf.constant(
+                    [
+                        [-1, -1, 21820, 296, 1, -1, -1],
+                        [-1, -1, 21820, 8114, 1, -1, -1],
+                        [-1, -1, 21820, 3, 17, 4424, 1],
+                    ]
+                ),
+                prefix=tf.constant([[1, 1], [1, 1], [1, 1]]),
             ),
         },
     )
@@ -1033,11 +1152,7 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
 
         dataset = cfg.instantiate(parent=None)
         for batch in dataset:
-            for key, value in expected_inputs.items():
-                np.testing.assert_array_equal(
-                    value,
-                    batch[key],
-                )
+            tf.nest.map_structure(self.assertAllEqual, expected_inputs, batch)
             break
 
     @pytest.mark.skipif(
@@ -1062,14 +1177,18 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             next(iter(ds)),
             {
                 "prefix": tf.constant([123]),
-                "source_ids": tf.constant([1391, 1, 0]),
-                "source_segment_ids": tf.constant([1, 1, 0]),
-                "source_positions": tf.constant([0, 1, 0]),
+                "source": {
+                    "input_ids": tf.constant([1391, 1, 0]),
+                    "input_segment_ids": tf.constant([1, 1, 0]),
+                    "positions": tf.constant([0, 1, 0]),
+                },
+                "target": {
+                    # The 123 prefix from above is prepended.
+                    "input_ids": tf.constant([123, 2387, 0]),
+                    "input_segment_ids": tf.constant([1, 1, 0]),
+                    "positions": tf.constant([0, 1, 0]),
+                },
                 "target_labels": tf.constant([2387, 1, -1]),
-                # The 123 prefix from above is prepended.
-                "target_ids": tf.constant([123, 2387, 0]),
-                "target_segment_ids": tf.constant([1, 1, 0]),
-                "target_positions": tf.constant([0, 1, 0]),
             },
         )
 
@@ -1095,13 +1214,17 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             ],
             "expected": [
                 {
-                    "source_ids": ["▁short", "▁source", "</s>", "▁short", "▁source", "</s>"],
-                    "source_positions": [0, 1, 2, 0, 1, 2],
-                    "source_segment_ids": [1, 1, 1, 2, 2, 2],
+                    "source": {
+                        "input_ids": ["▁short", "▁source", "</s>", "▁short", "▁source", "</s>"],
+                        "positions": [0, 1, 2, 0, 1, 2],
+                        "input_segment_ids": [1, 1, 1, 2, 2, 2],
+                    },
+                    "target": {
+                        "input_ids": ["</s>", "▁short", "▁target", "</s>", "▁short", "▁target"],
+                        "positions": [0, 1, 2, 0, 1, 2],
+                        "input_segment_ids": [1, 1, 1, 2, 2, 2],
+                    },
                     "target_labels": ["▁short", "▁target", "</s>", "▁short", "▁target", "</s>"],
-                    "target_ids": ["</s>", "▁short", "▁target", "</s>", "▁short", "▁target"],
-                    "target_positions": [0, 1, 2, 0, 1, 2],
-                    "target_segment_ids": [1, 1, 1, 2, 2, 2],
                 }
             ],
         },
@@ -1123,18 +1246,34 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             ],
             "expected": [
                 {
-                    "source_ids": [
-                        "▁short",
-                        "▁source",
-                        "</s>",
-                        "▁source",
-                        "</s>",
-                        "<pad>",
-                        "<pad>",
-                        "<pad>",
-                    ],
-                    "source_positions": [0, 1, 2, 0, 1, 0, 0, 0],
-                    "source_segment_ids": [1, 1, 1, 2, 2, 0, 0, 0],
+                    "source": {
+                        "input_ids": [
+                            "▁short",
+                            "▁source",
+                            "</s>",
+                            "▁source",
+                            "</s>",
+                            "<pad>",
+                            "<pad>",
+                            "<pad>",
+                        ],
+                        "positions": [0, 1, 2, 0, 1, 0, 0, 0],
+                        "input_segment_ids": [1, 1, 1, 2, 2, 0, 0, 0],
+                    },
+                    "target": {
+                        "input_ids": [
+                            "</s>",
+                            "▁some",
+                            "▁longer",
+                            "▁target",
+                            "</s>",
+                            "▁short",
+                            "▁target",
+                            "<pad>",
+                        ],
+                        "positions": [0, 1, 2, 3, 0, 1, 2, 0],
+                        "input_segment_ids": [1, 1, 1, 1, 2, 2, 2, 0],
+                    },
                     "target_labels": [
                         "▁some",
                         "▁longer",
@@ -1145,18 +1284,6 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
                         "</s>",
                         -1,
                     ],
-                    "target_ids": [
-                        "</s>",
-                        "▁some",
-                        "▁longer",
-                        "▁target",
-                        "</s>",
-                        "▁short",
-                        "▁target",
-                        "<pad>",
-                    ],
-                    "target_positions": [0, 1, 2, 3, 0, 1, 2, 0],
-                    "target_segment_ids": [1, 1, 1, 1, 2, 2, 2, 0],
                 }
             ],
         },
@@ -1179,24 +1306,32 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "expected": [
                 # First example. Note: "target_*" are truncated, and have no EOS.
                 {
-                    "source_ids": ["▁short", "</s>"],
-                    "source_positions": [0, 1],
-                    "source_segment_ids": [1, 1],
+                    "source": {
+                        "input_ids": ["▁short", "</s>"],
+                        "positions": [0, 1],
+                        "input_segment_ids": [1, 1],
+                    },
+                    "target": {
+                        "input_ids": ["</s>", "▁some"],
+                        "positions": [0, 1],
+                        "input_segment_ids": [1, 1],
+                    },
                     "target_labels": ["▁some", "▁longer"],
-                    "target_ids": ["</s>", "▁some"],
-                    "target_positions": [0, 1],
-                    "target_segment_ids": [1, 1],
                 },
                 # Second example. Note: "target_*" are truncated, and have no EOS.
                 {
-                    "source_ids": ["▁source", "</s>"],
-                    "source_positions": [0, 1],
-                    "source_segment_ids": [1, 1],
-                    # Note: "target_*" are truncated.
+                    "source": {
+                        "input_ids": ["▁source", "</s>"],
+                        "positions": [0, 1],
+                        "input_segment_ids": [1, 1],
+                    },
+                    "target": {
+                        # Note: "target_*" are truncated.
+                        "input_ids": ["</s>", "▁short"],
+                        "positions": [0, 1],
+                        "input_segment_ids": [1, 1],
+                    },
                     "target_labels": ["▁short", "▁target"],
-                    "target_ids": ["</s>", "▁short"],
-                    "target_positions": [0, 1],
-                    "target_segment_ids": [1, 1],
                 },
             ],
         },
@@ -1218,17 +1353,32 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             ],
             "expected": [
                 {
-                    "source_ids": [
-                        "▁short",
-                        "▁source",
-                        "</s>",
-                        "▁source",
-                        "</s>",
-                        "<pad>",
-                        "<pad>",
-                    ],
-                    "source_positions": [0, 1, 2, 0, 1, 0, 0],
-                    "source_segment_ids": [1, 1, 1, 2, 2, 0, 0],
+                    "source": {
+                        "input_ids": [
+                            "▁short",
+                            "▁source",
+                            "</s>",
+                            "▁source",
+                            "</s>",
+                            "<pad>",
+                            "<pad>",
+                        ],
+                        "positions": [0, 1, 2, 0, 1, 0, 0],
+                        "input_segment_ids": [1, 1, 1, 2, 2, 0, 0],
+                    },
+                    "target": {
+                        "input_ids": [
+                            "</s>",
+                            "</s>",
+                            "▁target",
+                            "</s>",
+                            "</s>",
+                            "▁target",
+                            "<pad>",
+                        ],
+                        "positions": [0, 1, 2, 0, 1, 2, 0],
+                        "input_segment_ids": [1, 1, 1, 2, 2, 2, 0],
+                    },
                     "target_labels": [
                         -1,
                         "▁target",
@@ -1238,9 +1388,6 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
                         "</s>",
                         -1,
                     ],
-                    "target_ids": ["</s>", "</s>", "▁target", "</s>", "</s>", "▁target", "<pad>"],
-                    "target_positions": [0, 1, 2, 0, 1, 2, 0],
-                    "target_segment_ids": [1, 1, 1, 2, 2, 2, 0],
                 },
             ],
         },
@@ -1263,13 +1410,17 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             ],
             "expected": [
                 {
-                    "source_ids": ["▁some", "▁short", "▁source", "</s>", "▁source", "</s>"],
-                    "source_positions": [0, 1, 2, 3, 0, 1],
-                    "source_segment_ids": [1, 1, 1, 1, 2, 2],
+                    "source": {
+                        "input_ids": ["▁some", "▁short", "▁source", "</s>", "▁source", "</s>"],
+                        "positions": [0, 1, 2, 3, 0, 1],
+                        "input_segment_ids": [1, 1, 1, 1, 2, 2],
+                    },
+                    "target": {
+                        "input_ids": ["</s>", "▁target", "</s>", "▁target"],
+                        "positions": [0, 1, 0, 1],
+                        "input_segment_ids": [1, 1, 2, 2],
+                    },
                     "target_labels": ["▁target", "</s>", "▁target", "</s>"],
-                    "target_ids": ["</s>", "▁target", "</s>", "▁target"],
-                    "target_positions": [0, 1, 0, 1],
-                    "target_segment_ids": [1, 1, 2, 2],
                 },
             ],
         },
@@ -1293,23 +1444,31 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "expected": [
                 {
                     "prefix": tf.constant([1]),
-                    "source_ids": ["▁some", "▁short", "▁source", "</s>", "<pad>", "<pad>"],
-                    "source_positions": [0, 1, 2, 3, 0, 0],
-                    "source_segment_ids": [1, 1, 1, 1, 0, 0],
+                    "source": {
+                        "input_ids": ["▁some", "▁short", "▁source", "</s>", "<pad>", "<pad>"],
+                        "positions": [0, 1, 2, 3, 0, 0],
+                        "input_segment_ids": [1, 1, 1, 1, 0, 0],
+                    },
+                    "target": {
+                        "input_ids": ["</s>", "▁target", "<pad>", "<pad>"],
+                        "positions": [0, 1, 0, 0],
+                        "input_segment_ids": [1, 1, 0, 0],
+                    },
                     "target_labels": ["▁target", "</s>", -1, -1],
-                    "target_ids": ["</s>", "▁target", "<pad>", "<pad>"],
-                    "target_positions": [0, 1, 0, 0],
-                    "target_segment_ids": [1, 1, 0, 0],
                 },
                 {
                     "prefix": tf.constant([1]),
-                    "source_ids": ["▁source", "</s>", "<pad>", "<pad>", "<pad>", "<pad>"],
-                    "source_positions": [0, 1, 0, 0, 0, 0],
-                    "source_segment_ids": [1, 1, 0, 0, 0, 0],
+                    "source": {
+                        "input_ids": ["▁source", "</s>", "<pad>", "<pad>", "<pad>", "<pad>"],
+                        "positions": [0, 1, 0, 0, 0, 0],
+                        "input_segment_ids": [1, 1, 0, 0, 0, 0],
+                    },
+                    "target": {
+                        "input_ids": ["</s>", "▁target", "<pad>", "<pad>"],
+                        "positions": [0, 1, 0, 0],
+                        "input_segment_ids": [1, 1, 0, 0],
+                    },
                     "target_labels": ["▁target", "</s>", -1, -1],
-                    "target_ids": ["</s>", "▁target", "<pad>", "<pad>"],
-                    "target_positions": [0, 1, 0, 0],
-                    "target_segment_ids": [1, 1, 0, 0],
                 },
             ],
             "packing_mode": "pad",
@@ -1417,20 +1576,20 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
         )
         ds = processor(source())
         self.assertEqual(len(expected), len(list(ds)))
+
+        def to_tensor(val: dict):
+            for k, v in val.items():
+                if isinstance(v, dict):
+                    to_tensor(v)
+                    continue
+                if v and isinstance(v, list) and any(isinstance(x, str) for x in v):
+                    # Detokenize.
+                    v = [vocab.tokenizer.piece_to_id(x) if isinstance(x, str) else x for x in v]
+                val[k] = tf.constant(v)
+
         for expect, actual in zip(expected, ds):
             # Convert pieces back to tf.Tensor of IDs.
-            for k, v in expect.items():
-                if k in ["input_ids", "source_ids", "target_ids", "target_labels"]:
-                    v = [vocab.tokenizer.piece_to_id(x) if isinstance(x, str) else x for x in v]
-                expect[k] = tf.constant(v)
-
-            for k, v in actual.items():
-                if k in ["input_ids", "source_ids", "target_ids", "target_labels"]:
-                    print(
-                        f"{k}: {[vocab.tokenizer.id_to_piece(int(x)) if x >= 0 else x for x in v]}"
-                    )
-                else:
-                    print(f"{k}: {v}")
+            to_tensor(expect)
             tf.nest.map_structure(self.assertAllEqual, expect, actual)
 
     @parameterized.parameters(
