@@ -34,7 +34,7 @@ dependencies = [
     "tensorstore>=0.1.21",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions>=4.2.0",  # needed for typing.Protocol
-    "seqio@git+https://github.com/google/seqio.git@8efd5dc016bb626509bdf656e2bbcdfa8a7cf2d8",  # used for inputs
+    "seqio==0.0.18",  # used for inputs
 ]
 
 [project.optional-dependencies]
