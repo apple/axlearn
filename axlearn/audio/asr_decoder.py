@@ -28,15 +28,12 @@ from axlearn.common.module import Module
 from axlearn.common.utils import Nested, Tensor
 
 
-def _is_valid_ctc_seq(
-        paddings: Tensor,
-        target_labels: Tensor,
-        target_paddings: Tensor) -> Tensor:
+def _is_valid_ctc_seq(paddings: Tensor, target_labels: Tensor, target_paddings: Tensor) -> Tensor:
     """Returns for per example sequence if it passes validity check.
 
-    Note that `optax.ctc_loss` returns logeps (default to 1e5) if the
-    input length is smaller than the label length plus number of 
-    consectutive duplications. However, in that case, we should 
+    Note that `optax.ctc_loss` returns -logeps (default to 1e5) if the
+    input length is smaller than the label length plus number of
+    consectutive duplications. However, in that case, we should
     ignore the loss.
 
     A validity check is passed if for an example when :
@@ -61,7 +58,6 @@ def _is_valid_ctc_seq(
     num_consecutive_dups = jnp.sum(dups, axis=-1)
     # [b]
     is_valid = (label_lengths + num_consecutive_dups) <= input_lengths
-    is_valid = is_valid.astype(jnp.float32)
     return is_valid
 
 

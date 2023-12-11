@@ -16,8 +16,8 @@ from axlearn.audio.asr_decoder import (
     CTCDecoderModel,
     CTCPrefixMerger,
     DecodeOutputs,
-    _map_label_sequences,
     _is_valid_ctc_seq,
+    _map_label_sequences,
 )
 from axlearn.common.config import config_for_function
 from axlearn.common.decoder import _scores_from_logits
@@ -93,23 +93,19 @@ class UtilsTest(TestCase):
 
 class ValidCtcSeqTest(TestCase):
     def get_logits_and_labels(
-            self,
-            batch_size:int,
-            time_steps:int,
-            target_steps:int,
-            nclasses:int) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        self, batch_size: int, time_steps: int, target_steps: int, nclasses: int
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         prng_key = jax.random.PRNGKey(1234)
         logits = jax.random.normal(prng_key, (batch_size, time_steps, nclasses), dtype=jnp.float32)
         paddings = jnp.zeros((batch_size, time_steps), dtype=np.int32)
         target_labels = jax.random.randint(
             prng_key,
             shape=(batch_size, target_steps),
-            minval=1, maxval=nclasses - 1,
-            dtype=jnp.int32)
-        target_paddings = jnp.zeros(
-            shape=(batch_size, target_steps),
-            dtype=jnp.int32
+            minval=1,
+            maxval=nclasses - 1,
+            dtype=jnp.int32,
         )
+        target_paddings = jnp.zeros(shape=(batch_size, target_steps), dtype=jnp.int32)
         return logits, paddings, target_labels, target_paddings
 
     def test_label_longer_than_input(self):
@@ -122,9 +118,13 @@ class ValidCtcSeqTest(TestCase):
             batchsize, timesteps, labelsteps, nclasses
         )
         per_seq_loss = optax.ctc_loss(logits, paddings, target_labels, target_paddings, blank_id=0)
-        print(per_seq_loss)
-        # they are very close to `logepsilon` (default in optax is -1e5)
-        per_seq_validality = _is_valid_ctc_seq(paddings, target_labels, target_paddings)
+        for x in per_seq_loss:
+            # because these are invalid sequence loss, the optax.ctc_loss will return
+            # -logeps for these sequences (but theoretically, this is not the correct)
+            self.assertGreater(x, 1e5)
+        per_seq_validality = _is_valid_ctc_seq(paddings, target_labels, target_paddings).astype(
+            jnp.float32
+        )
         self.assertAllClose(per_seq_validality, [0.0] * batchsize)
 
     def test_label_shorter_than_input(self):
@@ -139,9 +139,13 @@ class ValidCtcSeqTest(TestCase):
         labels = jnp.tile(jnp.arange(labelsteps)[jnp.newaxis, :], [batchsize, 1])
 
         per_seq_loss = optax.ctc_loss(logits, paddings, labels, target_paddings)
-        # per_seq_loss in this case looks normal, it should be around log(400)*15
-        print(per_seq_loss)
-        per_seq_validality = _is_valid_ctc_seq(paddings, labels, target_paddings)
+        # per_seq_loss in this case looks normal, it should be around log(400)*15, so
+        # significantly smaller than 1e5
+        for x in per_seq_loss:
+            self.assertLess(x, 1e5)
+        per_seq_validality = _is_valid_ctc_seq(paddings, labels, target_paddings).astype(
+            jnp.float32
+        )
         self.assertAllClose(per_seq_validality, [1.0] * batchsize)
 
     def test_label_with_duplicates(self):
@@ -168,8 +172,13 @@ class ValidCtcSeqTest(TestCase):
         per_seq_loss = optax.ctc_loss(logits, paddings, target_labels, target_paddings)
         # per_seq_loss[0:1] and per_seq_loss[3] should near log(400) * 15, while
         # per_seq_loss[2] should be around logepsilon
-        print(per_seq_loss)
-        per_seq_validality = _is_valid_ctc_seq(paddings, target_labels, target_paddings)
+        self.assertLess(per_seq_loss[0], 1e5)
+        self.assertLess(per_seq_loss[1], 1e5)
+        self.assertLess(per_seq_loss[3], 1e5)
+        self.assertGreater(per_seq_loss[2], 1e5)
+        per_seq_validality = _is_valid_ctc_seq(paddings, target_labels, target_paddings).astype(
+            jnp.float32
+        )
         self.assertAllClose(per_seq_validality, [1.0, 1.0, 0.0, 1.0])
 
 

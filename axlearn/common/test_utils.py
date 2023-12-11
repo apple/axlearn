@@ -238,8 +238,8 @@ class TestCase(parameterized.TestCase):
             if hasattr(a_value, "dtype"):
                 self.assertEqual(a_value.dtype, b_value.dtype)
 
-    def assertAllClose(self, x, y, check_dtypes=True, rtol=1e-5, atol=1e-5, **kwargs):
-        """Wrapper for np.testing.assert_allclose()."""
+    def assertAllClose(self, x, y, rtol=1e-5, atol=1e-5, check_dtypes=True, **kwargs):
+        """Wrapper for assertNestedAllClose."""
         x = np.asarray(x)
         y = np.asarray(y)
         if check_dtypes:
