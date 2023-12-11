@@ -1,5 +1,14 @@
 # Getting Started
 
+## Table of Contents
+
+| Section | Description |
+| - | - |
+| [Installing Dependencies](#installing-dependencies) | Setup instructions. |
+| [A Short Tutorial](#a-short-tutorial) | Writing an experiment from scratch. |
+| [Launching Training](#launching-training) | Launching training with cloud TPUs. |
+| [Next Steps](#next-steps) | Where to go next. |
+
 ## Installing Dependencies
 
 First, clone the repo. If you intend to develop AXLearn, please fork the repo first, and then clone the fork.
