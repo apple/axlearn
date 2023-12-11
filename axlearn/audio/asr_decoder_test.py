@@ -179,7 +179,6 @@ class ValidCtcSeqTest(TestCase):
         per_seq_validality = _is_valid_ctc_seq(paddings, target_labels, target_paddings).astype(
             jnp.float32
         )
-        import pdb; pdb.set_trace()
         self.assertTensorAllClose(per_seq_validality, [1.0, 1.0, 0.0, 1.0])
 
 
