@@ -125,7 +125,7 @@ class ValidCtcSeqTest(TestCase):
         per_seq_validality = _is_valid_ctc_seq(paddings, target_labels, target_paddings).astype(
             jnp.float32
         )
-        self.assertAllClose(per_seq_validality, [0.0] * batchsize)
+        self.assertTensorAllClose(per_seq_validality, [0.0] * batchsize)
 
     def test_label_shorter_than_input(self):
         batchsize = 4
@@ -146,7 +146,7 @@ class ValidCtcSeqTest(TestCase):
         per_seq_validality = _is_valid_ctc_seq(paddings, labels, target_paddings).astype(
             jnp.float32
         )
-        self.assertAllClose(per_seq_validality, [1.0] * batchsize)
+        self.assertTensorAllClose(per_seq_validality, [1.0] * batchsize)
 
     def test_label_with_duplicates(self):
         batchsize = 4
@@ -179,7 +179,8 @@ class ValidCtcSeqTest(TestCase):
         per_seq_validality = _is_valid_ctc_seq(paddings, target_labels, target_paddings).astype(
             jnp.float32
         )
-        self.assertAllClose(per_seq_validality, [1.0, 1.0, 0.0, 1.0])
+        import pdb; pdb.set_trace()
+        self.assertTensorAllClose(per_seq_validality, [1.0, 1.0, 0.0, 1.0])
 
 
 class CTCPrefixMergerTest(TestCase):
