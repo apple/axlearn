@@ -33,30 +33,31 @@ def _is_valid_ctc_seq(paddings: Tensor, target_labels: Tensor, target_paddings: 
 
     Note that `optax.ctc_loss` returns -logeps (default to 1e5) if the
     input length is smaller than the label length plus number of
-    consectutive duplications. However, in that case, we should
-    ignore the loss.
+    consectutive duplications, because we need an blank to token to transit
+    between the same tokens. When this condition is not met, it should be
+    considered as an invalid sequence and the loss should be ignored.
 
     A validity check is passed if for an example when :
       input.length >= labels.length + num(consecutive dup label tokens)
 
     Args:
-      paddings:              [b, t], 0/1 Tensor.
-      target_labels:         [b, t], int32 Tensor.
-      target_paddings:       [b, t], 0/1 Tensor.
+      paddings:              [batch_size, num_frames], 0/1 Tensor, paddings of input frames.
+      target_labels:         [batch_size, num_frames], int32 Tensor.
+      target_paddings:       [batch_size, num_frames], 0/1 Tensor.
 
     Returns:
       A shape [b] float tensor indicating if each (input, label) pair is valid,
       with a value of 1.0 indicating valid and 0.0 otherwise.
     """
-    # [b]
+    # [batch_size, ]
     label_lengths = jnp.sum(1.0 - target_paddings, axis=-1)
-    # [b]
+    # [batch_size, ]
     input_lengths = jnp.sum(1.0 - paddings, axis=-1)
-    # [b, t-1]
+    # [batch_size, num_frames - 1]
     dups = (1.0 - target_paddings[:, 1:]) * (target_labels[:, :-1] == target_labels[:, 1:])
-    # [b]
+    # [batch_size, ]
     num_consecutive_dups = jnp.sum(dups, axis=-1)
-    # [b]
+    # [batch_size, ]
     is_valid = (label_lengths + num_consecutive_dups) <= input_lengths
     return is_valid
 
