@@ -462,7 +462,7 @@ class Decoder(DecodingMixin, BaseLayer):
         *,
         mode: ForwardMode,
         input_ids: Tensor,
-        self_attention_logit_biases: Tensor,
+        self_attention_logit_biases: Optional[Tensor],
         token_type_ids: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,

@@ -1628,7 +1628,7 @@ class MultiheadAttention(BaseLayer):
         *,
         time_step: Tensor,
         query: Tensor,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -1660,7 +1660,7 @@ class MultiheadAttention(BaseLayer):
         cached_states: NestedTensor,
         query: Tensor,
         *,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -1997,7 +1997,7 @@ class MultiheadAttentionXL(MultiheadAttention):
         cached_states: NestedTensor,
         query: Tensor,
         *,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, MultiheadAttention.Output]:
         raise NotImplementedError(type(self))
 
@@ -2191,7 +2191,7 @@ class TransformerAttentionLayer(BaseLayer):
         *,
         time_step: NestedTensor,
         target: Tensor,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -2223,7 +2223,7 @@ class TransformerAttentionLayer(BaseLayer):
         cached_states: NestedTensor,
         target: Tensor,
         *,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.

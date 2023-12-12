@@ -140,7 +140,7 @@ class T5RelativePositionalEmbedding(BaseLayer):
             "emb", Embedding.default_config().set(num_embeddings=cfg.num_buckets, dim=cfg.dim)
         )
 
-    def forward(self, attention_logit_biases: Tensor) -> Tensor:
+    def forward(self, attention_logit_biases: Optional[Tensor]) -> Tensor:
         """Applies relative positional biases to 'attention_logit_biases'.
 
         Args:
