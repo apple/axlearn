@@ -96,7 +96,9 @@ class ValidCtcSeqTest(TestCase):
         self, batch_size: int, input_lengths: int, target_lengths: int, vocab_size: int
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         prng_key = jax.random.PRNGKey(1234)
-        logits = jax.random.normal(prng_key, (batch_size, input_lengths, vocab_size), dtype=jnp.float32)
+        logits = jax.random.normal(
+            prng_key, (batch_size, input_lengths, vocab_size), dtype=jnp.float32
+        )
         paddings = jnp.zeros((batch_size, input_lengths), dtype=np.int32)
         target_labels = jax.random.randint(
             prng_key,
