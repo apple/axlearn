@@ -409,7 +409,9 @@ class Decoder(DecodingMixin, BaseLayer):
     class Config(BaseLayer.Config):
         """Configures Decoder."""
 
-        attention_mask: AttentionLogitBiasLayer.Config = (
+        # attention_mask can be None if the attention layer supports the causal mode, e.g.,
+        # FlashAttention with `causal=True`.
+        attention_mask: Optional[AttentionLogitBiasLayer.Config] = (
             CausalAttentionLogitBiasLayer.default_config()
         )
         vocab_size: Required[int] = REQUIRED  # Size of vocabulary.
@@ -443,7 +445,8 @@ class Decoder(DecodingMixin, BaseLayer):
         cfg = self.config
         set_dropout_rate_recursively(cfg, dropout_rate=cfg.dropout_rate, set_only_if_none=True)
 
-        self._add_child("attention_mask", cfg.attention_mask)
+        if cfg.attention_mask is not None:
+            self._add_child("attention_mask", cfg.attention_mask)
         self._add_child("emb", cfg.emb.set(dim=cfg.dim, vocab_size=cfg.vocab_size))
         self._add_child("transformer", cfg.transformer.set(input_dim=cfg.dim))
         if cfg.output_norm is not None:
@@ -653,7 +656,7 @@ class Decoder(DecodingMixin, BaseLayer):
         *,
         segment_ids: Optional[Tensor] = None,
         positions: Optional[Tensor] = None,
-    ) -> Tensor:
+    ) -> Optional[Tensor]:
         """Produces self-attention logit biases.
 
         Args:
@@ -668,11 +671,14 @@ class Decoder(DecodingMixin, BaseLayer):
                 provided.
 
         Returns:
-            Attention logit biases of shape [batch_size, num_heads, seq_len, seq_len].
+            Attention logit biases of shape [batch_size, num_heads, seq_len, seq_len],
+            or None if cfg.attention_mask is None.
 
         Raises:
             ValueError: If segment_ids and positions are not both provided, or both omitted.
         """
+        if "attention_mask" not in self.children:
+            return None
         if (segment_ids is None) != (positions is None):
             raise ValueError("segment_ids and positions must be provided together")
         cfg = self.config
