@@ -132,56 +132,56 @@ class TestDecoder(TestCase):
         check_grads(tied_head_state, untied_head_state)
 
     def test_causal_flash_attention(self):
-      """Tests that FlashAttention with causal=True and attention_mask=None
+        """Tests that FlashAttention with causal=True and attention_mask=None
 
-      ... is equivalent to a regular attention with CausalAttentionLogitBiasLayer.
-      """
-      mesh = [1, 1, 1]
-      mesh_axis_names = ["data", "fsdp", "model"]
-      with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
-        hidden_dim = 12
-        num_heads = 4
-        vocab_size = 24
-        source_length = 11
+        ... is equivalent to a regular attention with CausalAttentionLogitBiasLayer.
+        """
+        mesh = [1, 1, 1]
+        mesh_axis_names = ["data", "fsdp", "model"]
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            hidden_dim = 12
+            num_heads = 4
+            vocab_size = 24
+            source_length = 11
 
-        # Similarities with encoder_decoder_test.
-        # pylint: disable=duplicate-code
-        decoder_cfg = gpt_decoder_config(
-            stack_cfg=StackedTransformerLayer.default_config(),
-            num_layers=2,
-            hidden_dim=hidden_dim,
-            num_heads=num_heads,
-            vocab_size=vocab_size,
-            activation_function="nn.relu",
-            max_position_embeddings=source_length,
-        ).set(name="decoder")
-        # Flash attention does not support bias.
-        set_bias_recursively(decoder_cfg, bias=False)
-        decoder = decoder_cfg.instantiate(parent=None)
-        # pylint: enable=duplicate-code
-        decoder_state = decoder.initialize_parameters_recursively(jax.random.PRNGKey(0))
+            # Similarities with encoder_decoder_test.
+            # pylint: disable=duplicate-code
+            decoder_cfg = gpt_decoder_config(
+                stack_cfg=StackedTransformerLayer.default_config(),
+                num_layers=2,
+                hidden_dim=hidden_dim,
+                num_heads=num_heads,
+                vocab_size=vocab_size,
+                activation_function="nn.relu",
+                max_position_embeddings=source_length,
+            ).set(name="decoder")
+            # Flash attention does not support bias.
+            set_bias_recursively(decoder_cfg, bias=False)
+            decoder = decoder_cfg.instantiate(parent=None)
+            # pylint: enable=duplicate-code
+            decoder_state = decoder.initialize_parameters_recursively(jax.random.PRNGKey(0))
 
-        flash_decoder_cfg = _enable_flash_attention(decoder_cfg.clone())
-        flash_decoder = flash_decoder_cfg.instantiate(parent=None)
-        flash_decoder_state = decoder_state
+            flash_decoder_cfg = _enable_flash_attention(decoder_cfg.clone())
+            flash_decoder = flash_decoder_cfg.instantiate(parent=None)
+            flash_decoder_state = decoder_state
 
-        inputs = jax.random.randint(
-            jax.random.PRNGKey(1), minval=1, maxval=vocab_size, shape=(3, source_length)
-        )
+            inputs = jax.random.randint(
+                jax.random.PRNGKey(1), minval=1, maxval=vocab_size, shape=(3, source_length)
+            )
 
-        # Test values.
-        def layer_output(state, layer):
-            return functional(
-                layer,
-                inputs=dict(input_ids=inputs),
-                state=state,
-                is_training=False,
-                prng_key=jax.random.PRNGKey(2),
-            )[0]["logits"]
+            # Test values.
+            def layer_output(state, layer):
+                return functional(
+                    layer,
+                    inputs=dict(input_ids=inputs),
+                    state=state,
+                    is_training=False,
+                    prng_key=jax.random.PRNGKey(2),
+                )[0]["logits"]
 
-        decoder_logits = layer_output(decoder_state, decoder)
-        flash_decoder_logits = layer_output(flash_decoder_state, flash_decoder)
-        np.testing.assert_allclose(decoder_logits, flash_decoder_logits)
+            decoder_logits = layer_output(decoder_state, decoder)
+            flash_decoder_logits = layer_output(flash_decoder_state, flash_decoder)
+            np.testing.assert_allclose(decoder_logits, flash_decoder_logits)
 
     @parameterized.parameters(None, 0.0, 0.2)
     def test_dropout_rate(self, output_dropout_rate):
