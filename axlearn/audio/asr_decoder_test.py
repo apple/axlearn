@@ -93,50 +93,50 @@ class UtilsTest(TestCase):
 
 class ValidCtcSeqTest(TestCase):
     def get_logits_and_labels(
-        self, batch_size: int, time_steps: int, target_steps: int, nclasses: int
+        self, batch_size: int, input_lengths: int, target_lengths: int, vocab_size: int
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         prng_key = jax.random.PRNGKey(1234)
-        logits = jax.random.normal(prng_key, (batch_size, time_steps, nclasses), dtype=jnp.float32)
-        paddings = jnp.zeros((batch_size, time_steps), dtype=np.int32)
+        logits = jax.random.normal(prng_key, (batch_size, input_lengths, vocab_size), dtype=jnp.float32)
+        paddings = jnp.zeros((batch_size, input_lengths), dtype=np.int32)
         target_labels = jax.random.randint(
             prng_key,
-            shape=(batch_size, target_steps),
+            shape=(batch_size, target_lengths),
             minval=1,
-            maxval=nclasses - 1,
+            maxval=vocab_size - 1,
             dtype=jnp.int32,
         )
-        target_paddings = jnp.zeros(shape=(batch_size, target_steps), dtype=jnp.int32)
+        target_paddings = jnp.zeros(shape=(batch_size, target_lengths), dtype=jnp.int32)
         return logits, paddings, target_labels, target_paddings
 
     def test_label_longer_than_input(self):
-        batchsize = 4
-        timesteps = 10
-        labelsteps = 11
-        nclasses = 400
-        # generate logits and labels, which has logits shorter than labels
+        batch_size = 4
+        input_lengths = 10
+        target_lengths = 11
+        vocab_size = 400
+        # Generate logits and labels, which has logits shorter than labels.
         logits, paddings, target_labels, target_paddings = self.get_logits_and_labels(
-            batchsize, timesteps, labelsteps, nclasses
+            batch_size, input_lengths, target_lengths, vocab_size
         )
         per_seq_loss = optax.ctc_loss(logits, paddings, target_labels, target_paddings, blank_id=0)
         for x in per_seq_loss:
-            # because these are invalid sequence loss, the optax.ctc_loss will return
-            # -logeps for these sequences (but theoretically, this is not the correct)
+            # Because these are invalid sequence loss, the optax.ctc_loss will return
+            # -logeps for these sequences (but theoretically, this is not correct).
             self.assertGreater(x, 1e5)
         per_seq_validality = _is_valid_ctc_seq(paddings, target_labels, target_paddings).astype(
             jnp.float32
         )
-        self.assertTensorAllClose(per_seq_validality, [0.0] * batchsize)
+        self.assertTensorAllClose(per_seq_validality, [0.0] * batch_size)
 
     def test_label_shorter_than_input(self):
-        batchsize = 4
-        timesteps = 15
-        labelsteps = 10
-        nclasses = 400
+        batch_size = 4
+        input_lengths = 15
+        target_lengths = 10
+        vocab_size = 400
         logits, paddings, _, target_paddings = self.get_logits_and_labels(
-            batchsize, timesteps, labelsteps, nclasses
+            batch_size, input_lengths, target_lengths, vocab_size
         )
         # to make sure there is no duplicate in the labels
-        labels = jnp.tile(jnp.arange(labelsteps)[jnp.newaxis, :], [batchsize, 1])
+        labels = jnp.tile(jnp.arange(target_lengths)[jnp.newaxis, :], [batch_size, 1])
 
         per_seq_loss = optax.ctc_loss(logits, paddings, labels, target_paddings)
         # per_seq_loss in this case looks normal, it should be around log(400)*15, so
@@ -146,15 +146,15 @@ class ValidCtcSeqTest(TestCase):
         per_seq_validality = _is_valid_ctc_seq(paddings, labels, target_paddings).astype(
             jnp.float32
         )
-        self.assertTensorAllClose(per_seq_validality, [1.0] * batchsize)
+        self.assertTensorAllClose(per_seq_validality, [1.0] * batch_size)
 
     def test_label_with_duplicates(self):
-        batchsize = 4
-        timesteps = 12
-        labelsteps = 10
-        nclasses = 400
+        batch_size = 4
+        input_lengths = 12
+        target_lengths = 10
+        vocab_size = 400
         logits, paddings, _, target_paddings = self.get_logits_and_labels(
-            batchsize, timesteps, labelsteps, nclasses
+            batch_size, input_lengths, target_lengths, vocab_size
         )
         # there are 12 timesteps, and 10 labels. If the consecutive duplicates in
         # one sequence is larger than 2, then the pair become non-valid
