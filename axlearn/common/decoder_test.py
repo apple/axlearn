@@ -35,7 +35,9 @@ from axlearn.common.test_utils import TestCase, assert_allclose
 
 
 def _enable_flash_attention(cfg: Decoder.Config) -> Decoder.Config:
+    # Since FlashAttention supports the causal mode natively, we don't need attention_mask.
     cfg.attention_mask = None
+    # Replace layer_cfg.self_attention.attention with a FlashAttention.Config.
     layer_cfg: TransformerLayer.Config = cfg.transformer.layer
     orig_atten: MultiheadAttention.Config = layer_cfg.self_attention.attention
     kvs = {k: v for k, v in orig_atten.items() if k != "klass"}
