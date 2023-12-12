@@ -18,17 +18,17 @@ from axlearn.common import decoding, utils
 from axlearn.common.attention import (
     NEG_INF,
     ALiBiAttentionLogitBiasLayer,
+    MultiheadAttention,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
     TransformerAttentionLayer,
     TransformerLayer,
-    MultiheadAttention,
 )
-from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.causal_lm import gpt_decoder_config
 from axlearn.common.config import InstantiableConfig
 from axlearn.common.decoder import Decoder, LmHead, _segment_ids_from_causal_input_ids
+from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import functional
 from axlearn.common.test_utils import TestCase, assert_allclose
