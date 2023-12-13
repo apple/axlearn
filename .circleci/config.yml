@@ -15,6 +15,7 @@ jobs:
       - run:
           no_output_timeout: 1h
           command: |
+            echo "retest"
             circleci tests glob "axlearn/**/*_test.py" > pytest_files.txt
 
             # TODO(ya5ut,markblee): assess --split-by=timing
@@ -35,8 +36,4 @@ jobs:
 workflows:
   build-and-test-workflow:
     jobs:
-      - hold:
-          type: approval
-      - build-and-test-job:
-          requires:
-            - hold
+      - build-and-test-job
