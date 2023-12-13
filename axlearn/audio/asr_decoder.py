@@ -28,25 +28,29 @@ from axlearn.common.module import Module
 from axlearn.common.utils import Nested, Tensor
 
 
-def _is_valid_ctc_seq(paddings: Tensor, target_labels: Tensor, target_paddings: Tensor) -> Tensor:
+def _is_valid_ctc_seq(
+    *, paddings: Tensor, target_labels: Tensor, target_paddings: Tensor
+) -> Tensor:
     """Returns for per example sequence if it passes validity check.
 
     Note that `optax.ctc_loss` returns -logeps (default to 1e5) if the
     input length is smaller than the label length plus number of
-    consectutive duplications, because we need an blank to token to transit
-    between the same tokens. When this condition is not met, it should be
+    consecutive duplications, because we need a blank label to transition
+    between the same labels. When this condition is not met, it should be
     considered as an invalid sequence and the loss should be ignored.
 
-    A validity check is passed if for an example when :
+    A validity check is passed if for an example when:
       input.length >= labels.length + num(consecutive dup label tokens)
 
     Args:
-      paddings:              [batch_size, num_frames], 0/1 Tensor, paddings of input frames.
-      target_labels:         [batch_size, num_frames], int32 Tensor.
-      target_paddings:       [batch_size, num_frames], 0/1 Tensor.
+      paddings: A 0/1 tensor of shape [batch_size, num_frames], indicating whether
+        an input frame is a padding.
+      target_labels: A int32 tensor of shape [batch_size, num_frames].
+      target_paddings: A 0/1 tensor of shape [batch_size, num_frames], indicating
+        whether a label is a padding.
 
     Returns:
-      A shape [b] float tensor indicating if each (input, label) pair is valid,
+      A float tensor of [batch_size, ] indicating if each (input, label) pair is valid,
       with a value of 1.0 indicating valid and 0.0 otherwise.
     """
     # [batch_size, ]
@@ -219,7 +223,9 @@ class CTCDecoderModel(BaseModel):
         )
 
         # Drop examples with targets longer than inputs.
-        per_example_weight = _is_valid_ctc_seq(paddings, target_labels, target_paddings)
+        per_example_weight = _is_valid_ctc_seq(
+            paddings=paddings, target_labels=target_labels, target_paddings=target_paddings
+        )
         per_example_weight = per_example_weight.astype(per_example_loss.dtype)
 
         # Compute weighted loss.

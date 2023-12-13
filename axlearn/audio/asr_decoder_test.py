@@ -124,9 +124,9 @@ class ValidCtcSeqTest(TestCase):
             # Because these are invalid sequence loss, the optax.ctc_loss will return
             # -logeps for these sequences (but theoretically, this is not correct).
             self.assertGreater(x, 1e5)
-        per_seq_validality = _is_valid_ctc_seq(paddings, target_labels, target_paddings).astype(
-            jnp.float32
-        )
+        per_seq_validality = _is_valid_ctc_seq(
+            paddings=paddings, target_labels=target_labels, target_paddings=target_paddings
+        ).astype(jnp.float32)
         self.assertTensorAllClose(per_seq_validality, [0.0] * batch_size)
 
     def test_label_shorter_than_input(self):
@@ -137,36 +137,41 @@ class ValidCtcSeqTest(TestCase):
         logits, paddings, _, target_paddings = self.get_logits_and_labels(
             batch_size, input_lengths, target_lengths, vocab_size
         )
-        # to make sure there is no duplicate in the labels
+        # This is to make sure there is no duplicate in the labels.
         labels = jnp.tile(jnp.arange(target_lengths)[jnp.newaxis, :], [batch_size, 1])
 
         per_seq_loss = optax.ctc_loss(logits, paddings, labels, target_paddings)
-        # per_seq_loss in this case looks normal, it should be around log(400)*15, so
-        # significantly smaller than 1e5
+        # `per_seq_loss` in this case looks normal, it should be around log(400)*15, so
+        # significantly smaller than 1e5.
         for x in per_seq_loss:
             self.assertLess(x, 1e5)
-        per_seq_validality = _is_valid_ctc_seq(paddings, labels, target_paddings).astype(
-            jnp.float32
-        )
-        self.assertTensorAllClose(per_seq_validality, [1.0] * batch_size)
+        per_seq_validality = _is_valid_ctc_seq(
+            paddings=paddings, target_labels=labels, target_paddings=target_paddings
+        ).astype(jnp.float32)
+        # self.assertTensorAllClose(per_seq_validality, [1.0] * batch_size)
+        import pdb
+
+        pdb.set_trace()
+        self.assertNestedAllClose(per_seq_validality, jnp.array([1.0] * batch_size))
 
     def test_label_with_duplicates(self):
-        batch_size = 4
+        batch_size = 5
         input_lengths = 12
         target_lengths = 10
         vocab_size = 400
         logits, paddings, _, target_paddings = self.get_logits_and_labels(
             batch_size, input_lengths, target_lengths, vocab_size
         )
-        # there are 12 timesteps, and 10 labels. If the consecutive duplicates in
+        # There are 12 timesteps, and 10 labels. If the consecutive duplicates in
         # one sequence is larger than 2, then the pair become non-valid
         target_labels = np.array(
             [
                 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],  # no duplicates
-                [0, 0, 1, 1, 2, 3, 4, 5, 6, 7],  # 2 duplicates
+                [0, 0, 1, 1, 2, 3, 4, 5, 6, 7],  # 2 consecutive duplicates
                 [0, 0, 0, 1, 1, 2, 3, 4, 5, 6],  # 3 duplicates -> invalid seq
-                [0, 0, 1, 1, 2, 3, 4, 5, 6, 6],
-                # 2 duplicates, since the last 6 is a padding
+                [0, 0, 1, 1, 2, 3, 4, 5, 6, 6],  # 2 duplicates, since the last 6 is a padding
+                [0, 1, 2, 3, 0, 1, 2, 3, 4, 5],
+                # "0,1,2,3" is duplicated 2 times, but they are not consecutive
             ],
             dtype=np.int32,
         )
@@ -177,11 +182,12 @@ class ValidCtcSeqTest(TestCase):
         self.assertLess(per_seq_loss[0], 1e5)
         self.assertLess(per_seq_loss[1], 1e5)
         self.assertLess(per_seq_loss[3], 1e5)
+        self.assertLess(per_seq_loss[4], 1e5)
         self.assertGreater(per_seq_loss[2], 1e5)
-        per_seq_validality = _is_valid_ctc_seq(paddings, target_labels, target_paddings).astype(
-            jnp.float32
-        )
-        self.assertTensorAllClose(per_seq_validality, [1.0, 1.0, 0.0, 1.0])
+        per_seq_validality = _is_valid_ctc_seq(
+            paddings=paddings, target_labels=target_labels, target_paddings=target_paddings
+        ).astype(jnp.float32)
+        self.assertTensorAllClose(per_seq_validality, [1.0, 1.0, 0.0, 1.0, 1.0])
 
 
 class CTCPrefixMergerTest(TestCase):
