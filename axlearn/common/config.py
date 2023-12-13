@@ -793,6 +793,39 @@ def _config_class_for_class(cls: Type[T]) -> Type[ClassConfigBase[T]]:
 
 
 def config_for_class(cls: Type[T]) -> Union[Any, ClassConfigBase[T]]:
+    """Returns an instance of ClassConfigBase, which is an object factory for `cls`.
+
+    In other words, instantiating the config produces an instance of `cls`, where the configured
+    attributes will be provided as arguments to `__init__`.
+
+    Example:
+        ```
+        class MyClass:
+            def __init__(self, a: int, b: Optional[int] = None):
+                self.a = a
+                self.b = b
+
+            def values(self):
+                return (self.a, self.b)
+
+        cfg = config_for_class(MyClass).set(a=2)
+
+        # Should produce unique instances.
+        assert cfg.instantiate() is not cfg.instantiate()
+
+        # Should produce the correct values.
+        assert cfg.instantiate().values() == cfg.instantiate().values()
+        assert cfg.instantiate().values() == (2, None)
+        assert cfg.set(b=3).instantiate().values() == (2, 3)
+        ```
+
+    Args:
+        cls: The class to configure.
+
+    Returns:
+        A Config that when instantiated, invokes `cls.__init__` based on any config fields that have
+        been set.
+    """
     config_cls = _config_class_for_class(cls)
     return config_cls(klass=cls)
 

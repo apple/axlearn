@@ -1,5 +1,14 @@
 # Getting Started
 
+## Table of Contents
+
+| Section | Description |
+| - | - |
+| [Installing Dependencies](#installing-dependencies) | Setup instructions. |
+| [A Short Tutorial](#a-short-tutorial) | Writing an experiment from scratch. |
+| [Launching Training](#launching-training) | Launching training with cloud TPUs. |
+| [Next Steps](#next-steps) | Where to go next. |
+
 ## Installing Dependencies
 
 First, clone the repo. If you intend to develop AXLearn, please fork the repo first, and then clone the fork.
@@ -212,7 +221,7 @@ For simplicity, we will use the default values of our ResNet-50 backbone.
 
 ### Training and Evaluation Data
 
-Next, we will define an input pipeline for reading ImageNet. As of writing, the most well-supported[1] option uses [Tensorflow Datasets](https://www.tensorflow.org/datasets) (TFDS), which may already be familiar to you (if not, that's completely fine).
+Next, we will define an input pipeline for reading ImageNet. As of writing, the most well-supported[^1] option uses [Tensorflow Datasets](https://www.tensorflow.org/datasets) (TFDS), which may already be familiar to you (if not, that's completely fine).
 
 As before, we can leverage existing building blocks in AXLearn. This time we can reuse the `ImagenetInput` under the `vision.input_image` module:
 ```diff
@@ -235,8 +244,8 @@ Like before, let's inspect the config API inherited from its parent class, the `
 https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/input_tf_data.py#L847-L879
 
 The main required fields are:
-- `is_training`: a bool indicating whether the dataset is used for training[2].
-- The `source`: a function[3] that returns a dataset (in this case, a `tf.data.Dataset`).
+- `is_training`: a bool indicating whether the dataset is used for training[^2].
+- The `source`: a function[^3] that returns a dataset (in this case, a `tf.data.Dataset`).
 - The `processor`: a function that takes a dataset, and outputs another dataset.
 - The `batcher`: a function that takes a dataset, and outputs a batched dataset.
 
@@ -309,9 +318,9 @@ Hopefully, this provides some basic intuition about the design of the config sys
 
 For now, let's stick to the original `imagenet2012`.
 
-[1] Note that it's possible to use other types of data processing pipelines (e.g. [torch dataloaders](https://pytorch.org/tutorials/beginner/basics/data_tutorial.html)). AXLearn is designed to be an open system.
-[2] This affects things like whether we should shuffle the dataset or not.
-[3] More accurately, it is a config that instantiates to such a function, but more on that in [concepts](02-concepts.md).
+[^1]: Note that it's possible to use other types of data processing pipelines (e.g. [torch dataloaders](https://pytorch.org/tutorials/beginner/basics/data_tutorial.html)). AXLearn is designed to be an open system.
+[^2]: This affects things like whether we should shuffle the dataset or not.
+[^3]: More accurately, it is a config that instantiates to such a function, but more on that in [concepts](02-concepts.md).
 
 ### Evaluation Metrics
 
@@ -502,7 +511,7 @@ def resnet_imagenet_trainer():
     )
 ```
 
-One caveat of applying weight decay naively is that we regularize all parameters globally. Empirically, we find that regularizing the BatchNorm[1] parameters hurts model performance, so we exclude them from weight decay:
+One caveat of applying weight decay naively is that we regularize all parameters globally. Empirically, we find that regularizing the BatchNorm[^4] parameters hurts model performance, so we exclude them from weight decay:
 
 ```diff
 from axlearn.common import config, optimizers
@@ -532,7 +541,7 @@ def resnet_imagenet_trainer():
     )
 ```
 
-[1] [BatchNorm](https://arxiv.org/abs/1502.03167) is used throughout the ResNet architecture by default. We did not need to configure it explicitly.
+[^4]: [BatchNorm](https://arxiv.org/abs/1502.03167) is used throughout the ResNet architecture by default. We did not need to configure it explicitly.
 
 ### Putting Everything Together
 
@@ -726,7 +735,7 @@ To launch an actual experiment, we must first define an experiment module that A
 
 There are two aspects to this:
 1. By default, AXLearn looks under the `axlearn/experiments` directory for experiment modules, so we should define it there.
-2. Experiment modules must expose a function `named_trainer_configs` which returns a dictionary with experiment names as keys, and [`TrainerConfigFn`](https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/experiments/trainer_config_utils.py#L11)s as values. As the name implies, a `TrainerConfigFn` is a function that simply returns a trainer config, similar to the one constructed [above](#putting-everything-together)[1].
+2. Experiment modules must expose a function `named_trainer_configs` which returns a dictionary with experiment names as keys, and [`TrainerConfigFn`](https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/experiments/trainer_config_utils.py#L11)s as values. As the name implies, a `TrainerConfigFn` is a function that simply returns a trainer config, similar to the one constructed [above](#putting-everything-together)[^5].
 
 We've already packaged the ResNet on ImageNet example for you, which can be launched via:
 ```bash
@@ -761,7 +770,7 @@ tensorboard --logdir=$OUTPUT_DIR
 ```
 Or, if VertexAI is [configured](#preparing-the-cli), you should also see a VertexAI Tensorboard link.
 
-[1] One common question is: why return a `TrainerConfigFn` instead of, say, the trainer config itself? The reason is that a `TrainerConfigFn` allows us to defer the construction of a trainer config until we need to use it. When your project has many experiments, the cost of building all trainer configs can be non-trivial (such as when running [golden config tests](#testing)).
+[^5]: One common question is: why return a `TrainerConfigFn` instead of, say, the trainer config itself? The reason is that a `TrainerConfigFn` allows us to defer the construction of a trainer config until we need to use it. When your project has many experiments, the cost of building all trainer configs can be non-trivial (such as when running [golden config tests](#testing)).
 
 ### Launching via Bastion
 
