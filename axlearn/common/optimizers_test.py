@@ -33,7 +33,11 @@ from axlearn.common.optimizers import (
     opt_param_values,
     param_ema,
     per_param_scale_by_path,
+)
+from axlearn.common.optimizers import scale as scale_by_value
+from axlearn.common.optimizers import (
     scale_by_param_block_rms,
+    scale_by_schedule,
     scale_by_trust_ratio,
     scale_update_per_param,
     sgd_optimizer,
@@ -219,6 +223,9 @@ class OptimizerTest(TestCase):
 
     @parameterized.parameters((0.1, 0, False), (0.1, 0.01, True), (0.1, 0.0, True))
     def test_adamw_optimizer(self, learning_rate, weight_decay, multiply_by_parameter_scale):
+        adam_update_transformation = None
+        if multiply_by_parameter_scale:
+            adam_update_transformation = scale_by_param_block_rms()
         self._test_optimizer(
             adamw_optimizer(
                 learning_rate=learning_rate,
@@ -226,7 +233,7 @@ class OptimizerTest(TestCase):
                 b2=0.99,
                 eps=1e-5,
                 weight_decay=weight_decay,
-                multiply_by_parameter_scale=multiply_by_parameter_scale,
+                adam_update_transformation=adam_update_transformation,
             )
         )
 
@@ -234,6 +241,9 @@ class OptimizerTest(TestCase):
     def test_adamw_decoupled_optimizer(
         self, learning_rate, weight_decay, update_schedule, multiply_by_parameter_scale
     ):
+        adam_update_transformation = None
+        if multiply_by_parameter_scale:
+            adam_update_transformation = scale_by_param_block_rms()
         self._test_optimizer(
             adamw_decoupled_optimizer(
                 learning_rate=learning_rate,
@@ -242,7 +252,7 @@ class OptimizerTest(TestCase):
                 eps=1e-5,
                 update_schedule=update_schedule,
                 weight_decay=weight_decay,
-                multiply_by_parameter_scale=multiply_by_parameter_scale,
+                adam_update_transformation=adam_update_transformation,
             )
         )
 
@@ -481,7 +491,7 @@ class OptimizerTest(TestCase):
             b2=0.999,
             eps=1e-8,
             weight_decay=0,
-            multiply_by_parameter_scale=True,
+            adam_update_transformation=scale_by_param_block_rms(),
         )
         optimizer_no_pps = adamw_optimizer(
             learning_rate=0.01,
@@ -489,7 +499,7 @@ class OptimizerTest(TestCase):
             b2=0.999,
             eps=1e-8,
             weight_decay=0,
-            multiply_by_parameter_scale=False,
+            adam_update_transformation=None,
         )
         params_pps = OptParam(
             value=jnp.asarray(params, dtype=jnp.float32),
@@ -519,8 +529,12 @@ class OptimizerTest(TestCase):
 
         jax.tree_util.tree_map(check_pps, updates_pps, updates_no_pps, params_rms)
 
-    @parameterized.product(weight_decay=(0.1, 0.2), update_schedule=(1.0, 0.2, 0.3))
-    def test_adamw_decoupled_update_schedule(self, weight_decay: float, update_schedule: float):
+    @parameterized.product(
+        weight_decay=(0.1, 0.2), update_schedule=(1.0, 0.2, 0.3), scale_adam_by=(0.2, 0.5)
+    )
+    def test_adamw_decoupled_update_schedule(
+        self, weight_decay: float, update_schedule: float, scale_adam_by: float
+    ):
         learning_rate = 0.01
         shared_optimizer_kwargs = {
             "b1": 0.9,
@@ -534,6 +548,7 @@ class OptimizerTest(TestCase):
             learning_rate=learning_rate,
             weight_decay=weight_decay,
             update_schedule=update_schedule,
+            adam_update_transformation=scale_by_value(scale_adam_by),
             **shared_optimizer_kwargs,
         )
 
@@ -556,7 +571,9 @@ class OptimizerTest(TestCase):
             grads_adam_decoupled, state=state_adamw_decoupled, params=params
         )
 
-        expected_updates_wdr = updates_adam - params.value * weight_decay * update_schedule
+        expected_updates_wdr = (
+            updates_adam * scale_adam_by - params.value * weight_decay * update_schedule
+        )
         self.assertNestedAllClose(updates_adam_decoupled, expected_updates_wdr)
 
     @parameterized.product(
@@ -1034,6 +1051,19 @@ class OptimizerTest(TestCase):
                     jax.tree_util.tree_map(lambda p: p.value, params),
                     new_state.ema,
                 )
+
+    def test_scale_by_schedule(self):
+        params = OptParam(
+            value=jnp.asarray([1.0], dtype=jnp.float32),
+            factorization_spec=None,
+            weight_decay_scale=1.0,
+        )
+        scale = 0.5
+        schedule_fn = scale_by_schedule(scale)
+        state = schedule_fn.init(params)
+        update = jnp.array(5.0)
+        scaled_update, _ = schedule_fn.update(update, state, params)
+        self.assertEqual(scaled_update, update * scale)
 
 
 if __name__ == "__main__":
