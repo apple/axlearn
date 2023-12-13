@@ -47,7 +47,10 @@ def _is_valid_ctc_seq(
         an input frame is a padding.
       target_labels: A int32 tensor of shape [batch_size, num_frames].
       target_paddings: A 0/1 tensor of shape [batch_size, num_frames], indicating
-        whether a label is a padding.
+        whether a label is a padding. Note that at the moment, `target_paddings`
+        must be left-justified, i.e., it must starts with 0 and followed by 1, and
+        not transition back to 0.
+        TODO(yqw): support generic target_paddings.
 
     Returns:
       A float tensor of [batch_size, ] indicating if each (input, label) pair is valid,
