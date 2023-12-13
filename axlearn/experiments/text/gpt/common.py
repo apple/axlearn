@@ -68,7 +68,7 @@ STEP_DTYPE = jnp.bfloat16
 
 # The default mesh-axis names for LM training, from least to most communication intensive.
 # See mesh_shape_from_axes() docstring for more details.
-MESH_AXIS_NAMES = ("data", "seq", "expert", "fsdp", "model")
+MESH_AXIS_NAMES = ("data", "expert", "fsdp", "seq", "model")
 
 
 def scaled_hidden_dim(scale: float, *, round_up_to_multiples_of: int = 256) -> FunctionConfigBase:
@@ -131,28 +131,28 @@ def tfds_input(
 
 
 def mesh_shape_from_axes(
-    *, data: int = 1, seq: int = 1, expert: int = 1, fsdp: int = 1, model: int = 1
-) -> Tuple[int, int, int, int]:
+    *, data: int = 1, expert: int = 1, fsdp: int = 1, seq: int = 1, model: int = 1
+) -> Sequence[int]:
     """Builds a 5D logical mesh from the provided spec.
 
     Args:
         data: For data-paralellism. Expect model state to be fully replicated over this axis.
             Useful for e.g. multi-slice/granule partitioning with slow networking between granules.
-        seq: Used for sequence-parallelism. Typically this means sharding the activation sequence
-            dimension, and possibly a subset of the weights.
         expert: Designed to be used for partitioning "experts" in mixture-of-expert models.
             E.g. <https://arxiv.org/abs/2006.16668>.
         fsdp: Fully-sharded-data-parallelism a.k.a. async-with-compute model-parallelism.
             E.g. <https://arxiv.org/abs/1910.02054>.
+        seq: Used for sequence-parallelism. Typically this means sharding the activation sequence
+            dimension, and possibly a subset of the weights.
         model: Tensor parallelism a.k.a. sync-with-compute model-parallelism.
             E.g. <https://arxiv.org/abs/1909.08053>.
 
     Returns:
         A tuple describing the logical mesh shape (from least to most communication intensive).
     """
-    assert MESH_AXIS_NAMES == ("data", "seq", "expert", "fsdp", "model")
+    assert MESH_AXIS_NAMES == ("data", "expert", "fsdp", "seq", "model")
     # We set the minimum size for a mesh axis to 1 as anything lower is degenerate, except -1.
-    return tuple((max(x, 1) if x != -1 else -1 for x in [data, seq, expert, fsdp, model]))
+    return tuple((max(x, 1) if x != -1 else -1 for x in [data, expert, fsdp, seq, model]))
 
 
 def model_config(
@@ -247,7 +247,7 @@ def model_config(
     set_double_shard_weights_config(
         cfg.decoder.transformer.layer,
         batch_axis_names=batch_axis_names,
-        fsdp_axis_names=("seq", "expert", "fsdp"),
+        fsdp_axis_names=("expert", "fsdp", "seq"),
         tp_axis_names="model",
         seq_axis_names=("seq",),
     )
