@@ -179,13 +179,14 @@ class TPURunnerJob(TPUJob):
         # A monitor that checks if a job is stalled/stuck.
         monitor: Optional[LivenessMonitor.Config] = None
         # Optional VertexAI Tensorboard Uploader.
-        vertexai_tb_uploader: Optional[VertexAITensorboardUploader] = None
+        vertexai_tb_uploader: Optional[VertexAITensorboardUploader.Config] = None
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg = super().from_flags(fv, **kwargs)
         # NOTE: if running on TPU, name is required as there may not be a $USER.
         cfg.name = cfg.name or generate_job_name()
+        cfg.env_vars = {**cfg.env_vars, **parse_kv_flags(fv.env)}
         cfg.output_dir = (
             cfg.output_dir or f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{cfg.name}"
         )
@@ -518,6 +519,31 @@ class TPURunnerJob(TPUJob):
                 time.sleep(cfg.status_interval_seconds)
 
 
+def with_tpu_training_defaults(
+    cfg: TPUJob.Config, *, flag_values: flags.FlagValues
+) -> TPUJob.Config:
+    """Configures the job with TPU training defaults."""
+    default_env = dict(
+        # Use a large refresh to mitigate DNS timeout issues until tf>2.12 upgrade.
+        GCS_RESOLVE_REFRESH_SECS=600,
+        TPU_TYPE=flag_values.tpu_type,
+        NUM_TPU_SLICES=flag_values.num_slices,
+        XLA_FLAGS=f"--xla_dump_to=/output/{cfg.name}/xla",
+        TF_CPP_MIN_LOG_LEVEL=0,
+        # Forces TensorStore to retry failed requests.
+        TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60,
+        TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES=256,
+    )
+    vertexai_tb_uploader = None
+    if is_vertexai_tensorboard_configured():
+        vertexai_tb_uploader = VertexAITensorboardUploader.default_config()
+
+    return cfg.set(
+        env_vars={**default_env, **cfg.env_vars},
+        vertexai_tb_uploader=vertexai_tb_uploader,
+    )
+
+
 @catch_auth
 def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     action = parse_action(argv, options=["start", "stop", "list"])
@@ -537,29 +563,13 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         if not command:
             raise app.UsageError("Command is required.")
 
-        default_env = dict(
-            # Use a large refresh to mitigate DNS timeout issues until tf>2.12 upgrade.
-            GCS_RESOLVE_REFRESH_SECS=600,
-            TPU_TYPE=flag_values.tpu_type,
-            NUM_TPU_SLICES=flag_values.num_slices,
-            XLA_FLAGS=f"--xla_dump_to=/output/{flag_values.name}/xla",
-            TF_CPP_MIN_LOG_LEVEL=0,
-            # Forces TensorStore to retry failed requests.
-            TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60,
-            TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES=256,
-        )
-        vertexai_tb_uploader = None
-        if is_vertexai_tensorboard_configured():
-            vertexai_tb_uploader = VertexAITensorboardUploader.default_config()
-
-        cfg.set(
-            env_vars={**default_env, **parse_kv_flags(flag_values.env)},
-            command=command,
-            vertexai_tb_uploader=vertexai_tb_uploader,
-        )
+        cfg = with_tpu_training_defaults(cfg, flag_values=flag_values).set(command=command)
         job: TPURunnerJob = cfg.instantiate()
         job.execute()
     elif action == "stop":
+        if not flag_values.name:
+            raise app.UsageError("--name is required.")
+
         job: TPURunnerJob = cfg.set(command="").instantiate()
         job._delete()  # pylint: disable=protected-access
     else:
