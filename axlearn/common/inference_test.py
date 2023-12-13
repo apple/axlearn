@@ -19,7 +19,7 @@ from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
 
-from axlearn.common import layers, test_utils, utils, utils_spmd
+from axlearn.common import layers, test_utils, utils
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import CheckpointValidationType, TensorStoreStateStorage
 from axlearn.common.config import Configurable, config_class, config_for_function
@@ -179,10 +179,6 @@ def is_supported(
 
 class InferenceTest(test_utils.TestCase):
     """Inference tests."""
-
-    def setUp(self):
-        super().setUp()
-        utils_spmd.setup()
 
     @parameterized.parameters(
         (tf.constant("query"), "query"),

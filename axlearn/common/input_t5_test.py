@@ -636,33 +636,55 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         dict(
             is_training=True,
             example=dict(
-                target_ids=tf.constant([1, 2, 3, 4, 1, 5, 6]),
-                target_positions=tf.constant([0, 1, 2, 3, 0, 1, 2]),
+                target=dict(
+                    input_ids=tf.constant([1, 2, 3, 4, 1, 5, 6]),
+                    positions=tf.constant([0, 1, 2, 3, 0, 1, 2]),
+                ),
             ),
             expected=dict(
-                target_ids=tf.constant([0, 2, 3, 4, 0, 5, 6]),
-                target_positions=tf.constant([0, 1, 2, 3, 0, 1, 2]),
+                dict(
+                    target=dict(
+                        input_ids=tf.constant([0, 2, 3, 4, 0, 5, 6]),
+                        positions=tf.constant([0, 1, 2, 3, 0, 1, 2]),
+                    ),
+                ),
             ),
         ),
         dict(
             is_training=True,
             example=dict(
-                target_ids=tf.constant([1, 1, 8, 1, 9, 10, 11]),
-                target_positions=tf.constant([0, 0, 1, 0, 1, 2, 3]),
+                dict(
+                    target=dict(
+                        input_ids=tf.constant([1, 1, 8, 1, 9, 10, 11]),
+                        positions=tf.constant([0, 0, 1, 0, 1, 2, 3]),
+                    ),
+                ),
             ),
             expected=dict(
-                target_ids=tf.constant([0, 0, 8, 0, 9, 10, 11]),
-                target_positions=tf.constant([0, 0, 1, 0, 1, 2, 3]),
+                dict(
+                    target=dict(
+                        input_ids=tf.constant([0, 0, 8, 0, 9, 10, 11]),
+                        positions=tf.constant([0, 0, 1, 0, 1, 2, 3]),
+                    ),
+                ),
             ),
         ),
         # Unpacked input.
         dict(
             is_training=True,
             example=dict(
-                target_ids=tf.constant([1, 2, 3, 4, 0, 0, 0]),
+                dict(
+                    target=dict(
+                        input_ids=tf.constant([1, 2, 3, 4, 0, 0, 0]),
+                    ),
+                ),
             ),
             expected=dict(
-                target_ids=tf.constant([0, 2, 3, 4, 0, 0, 0]),
+                dict(
+                    target=dict(
+                        input_ids=tf.constant([0, 2, 3, 4, 0, 0, 0]),
+                    ),
+                ),
             ),
         ),
         # Eval input.
@@ -680,8 +702,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         ds = processor(source())
         actual = next(iter(ds))
         if is_training:
-            for key in expected:
-                self.assertAllEqual(expected[key], actual[key])
+            tf.nest.map_structure(self.assertAllEqual, expected, actual)
         else:
             self.assertAllEqual(expected["prefix"], actual["prefix"])
 

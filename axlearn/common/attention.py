@@ -1628,7 +1628,7 @@ class MultiheadAttention(BaseLayer):
         *,
         time_step: Tensor,
         query: Tensor,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -1660,7 +1660,7 @@ class MultiheadAttention(BaseLayer):
         cached_states: NestedTensor,
         query: Tensor,
         *,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -1997,7 +1997,7 @@ class MultiheadAttentionXL(MultiheadAttention):
         cached_states: NestedTensor,
         query: Tensor,
         *,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, MultiheadAttention.Output]:
         raise NotImplementedError(type(self))
 
@@ -2191,7 +2191,7 @@ class TransformerAttentionLayer(BaseLayer):
         *,
         time_step: NestedTensor,
         target: Tensor,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -2223,7 +2223,7 @@ class TransformerAttentionLayer(BaseLayer):
         cached_states: NestedTensor,
         target: Tensor,
         *,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -2756,6 +2756,7 @@ def set_double_shard_weights_config(
     batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp"),
     fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
     tp_axis_names: Union[str, Sequence[str]] = "model",
+    seq_axis_names: Union[str, Sequence[str]] = "seq",
 ):
     """Sets `cfg` to shard FFN and attention weights over both fsdp and tp axes.
 
@@ -2764,6 +2765,7 @@ def set_double_shard_weights_config(
         batch_axis_names: Axis name(s) over which we shard the batch dimension of output tensors.
         fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
         tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
+        seq_axis_names: Axis name(s) over which we shard sequence-parallel tensors.
     """
 
     # pytype: disable=attribute-error
@@ -2780,8 +2782,8 @@ def set_double_shard_weights_config(
         ff_layer.linear1.param_partition_spec = (fsdp_axis_names, tp_axis_names)
         ff_layer.linear2.param_partition_spec = (tp_axis_names, fsdp_axis_names)
         # Encourage the right activation sharding.
-        ff_layer.linear1.output_partition_spec = (batch_axis_names, None, tp_axis_names)
-        ff_layer.linear2.output_partition_spec = (batch_axis_names, None, tp_axis_names)
+        ff_layer.linear1.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
+        ff_layer.linear2.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
 
     if not isinstance(cfg, Sequence):
         cfg = [cfg]

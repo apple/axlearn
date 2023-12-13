@@ -138,15 +138,22 @@ class Summable(Protocol):
 # TODO(markblee): Link to docs on invocation contexts.
 @dataclass
 class InvocationContext:  # pylint: disable=too-many-instance-attributes
-    """The invocation context for `Module.__call__()`."""
+    """The invocation context for `Module.__call__()`.
 
-    # The context name. Must be unique among sibling contexts.
+    Attributes:
+        name: The context name. Must be unique among sibling contexts.
+        parent: The parent context, or None if `self` is the root context.
+        module: The Module associated with the context.
+        state: The state of the module.
+        is_training: Whether the invocation should run in the training mode.
+        prng_key: The pseudo-random number generator key (can be None if the computation does not
+            require random numbers).
+        output_collection: See `OutputCollection`.
+    """
+
     name: str
-    # The parent context, or None if `self` is the root context.
     parent: Optional["InvocationContext"]
-    # The Module associated with the context.
     module: "Module"
-    # The state of the module.
     state: NestedTensor
     is_training: bool
     prng_key: Optional[Tensor]
@@ -405,8 +412,9 @@ class Module(Configurable):
     class Config(Configurable.Config):
         """Module config.
 
-        name: name of this module.
-        vlog: the maximum vlog level. If None, vlog is disabled.
+        Attributes:
+            name: Name of this module.
+            vlog: The maximum vlog level. If None, vlog is disabled.
         """
 
         name: Required[str] = REQUIRED

@@ -3,7 +3,7 @@
 """Tests EncoderDecoder layers."""
 
 import os
-from typing import Optional
+from typing import Literal, Optional
 
 import jax
 import numpy as np
@@ -14,18 +14,25 @@ from transformers import BertConfig, BertModel, EncoderDecoderConfig
 from transformers import EncoderDecoderModel as HFEncoderDecoderModel
 from transformers import GPT2Config, GPT2LMHeadModel
 
-from axlearn.common import encoder_decoder, utils
-from axlearn.common.attention import StackedTransformerLayer, TransformerAttentionLayer
+from axlearn.common import decoding, utils
+from axlearn.common.attention import (
+    BaseStackedTransformerLayer,
+    RepeatedTransformerLayer,
+    StackedTransformerLayer,
+    TransformerAttentionLayer,
+)
+from axlearn.common.base_layer import RematSpec
 from axlearn.common.bert import bert_embedding_config, bert_transformer_config
 from axlearn.common.bert_test import bert_encoder_config_from_hf
 from axlearn.common.causal_lm import gpt_decoder_config
 from axlearn.common.decoder import Decoder, LmHead
 from axlearn.common.encoder import Encoder
+from axlearn.common.encoder_decoder import EncoderDecoderModel
 from axlearn.common.layers import set_layer_norm_eps_recursively
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor, parameters_from_t5x_encoder_decoder
 from axlearn.common.t5 import t5_encoder_decoder_config
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, dummy_padding_mask
 from axlearn.common.torch_utils import parameters_from_torch_layer
 
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
@@ -47,70 +54,55 @@ def set_decoder_cross_attention_config(
     layer_cfg.cross_attention.attention.num_heads = num_heads
 
 
-# TODO(bwzhang@) Set the unittest that it will use cross_attention_logit_biases.
+def _model_config(
+    *, vocab_size: int, source_len: int, target_len: int, remat_spec: Optional[RematSpec] = None
+) -> EncoderDecoderModel.Config:
+    hidden_dim = 12
+    num_heads = 4
+    encoder = Encoder.default_config().set(
+        dim=hidden_dim,
+        vocab_size=vocab_size,
+        emb=bert_embedding_config(type_vocab_size=1, max_position_embeddings=source_len),
+        transformer=bert_transformer_config(num_layers=2, num_heads=num_heads),
+        pad_token_id=0,
+    )
+    set_layer_norm_eps_recursively(encoder, 1e-8)
+
+    decoder = gpt_decoder_config(
+        stack_cfg=StackedTransformerLayer.default_config(),
+        num_layers=2,
+        hidden_dim=hidden_dim,
+        num_heads=num_heads,
+        vocab_size=vocab_size,
+        activation_function="nn.relu",
+        max_position_embeddings=target_len,
+        layer_remat=remat_spec,
+    )
+    set_decoder_cross_attention_config(decoder_cfg=decoder, num_heads=num_heads)
+    return EncoderDecoderModel.default_config().set(decoder=decoder, encoder=encoder)
+
+
 class TestEncoderDecoder(TestCase):
     """Tests EncoderDecoder layer."""
 
     def test_tied_lm_head_differs_from_untied(self):
-        hidden_dim = 12
-        num_heads = 4
         vocab_size = 24
         source_len = 11
         target_len = 5
 
-        encoder = Encoder.default_config().set(
-            dim=hidden_dim,
-            vocab_size=vocab_size,
-            emb=bert_embedding_config(type_vocab_size=1, max_position_embeddings=source_len),
-            transformer=bert_transformer_config(num_layers=2, num_heads=num_heads),
-            pad_token_id=0,
+        tied_cfg = _model_config(
+            vocab_size=vocab_size, source_len=source_len, target_len=target_len
         )
-        set_layer_norm_eps_recursively(encoder, 1e-8)
-
-        shared_model_kwargs = dict(
-            encoder=encoder,
-        )
-        decoder = gpt_decoder_config(
-            stack_cfg=StackedTransformerLayer.default_config(),
-            num_layers=2,
-            hidden_dim=hidden_dim,
-            num_heads=num_heads,
-            vocab_size=vocab_size,
-            activation_function="nn.relu",
-            max_position_embeddings=target_len,
-        )
-        set_decoder_cross_attention_config(
-            decoder_cfg=decoder,
-            num_heads=num_heads,
-        )
-        tied_head = (
-            encoder_decoder.EncoderDecoderModel.default_config()
-            .set(name="test_tied", decoder=decoder, **shared_model_kwargs)
-            .instantiate(parent=None)
-        )
+        tied_head = tied_cfg.set(name="test_tied").instantiate(parent=None)
         tied_head_state = tied_head.initialize_parameters_recursively(jax.random.PRNGKey(0))
         self.assertIsNone(tied_head_state.get("lm_head"))
-        untied_decoder = gpt_decoder_config(
-            stack_cfg=StackedTransformerLayer.default_config(),
-            num_layers=2,
-            hidden_dim=hidden_dim,
-            num_heads=num_heads,
-            vocab_size=vocab_size,
-            activation_function="nn.relu",
-            max_position_embeddings=target_len,
-        )
-        set_decoder_cross_attention_config(
-            decoder_cfg=untied_decoder,
-            num_heads=num_heads,
-        )
-        untied_decoder.lm_head = LmHead.default_config()
-        untied_head = (
-            encoder_decoder.EncoderDecoderModel.default_config()
-            .set(name="test_untied", decoder=untied_decoder, **shared_model_kwargs)
-            .instantiate(parent=None)
-        )
+
+        untied_cfg = tied_cfg.clone()
+        untied_cfg.decoder.lm_head = LmHead.default_config()
+        untied_head = untied_cfg.set(name="test_untied").instantiate(parent=None)
         untied_head_state = untied_head.initialize_parameters_recursively(jax.random.PRNGKey(0))
         self.assertIsNotNone(untied_head_state.get("decoder").get("lm_head"))
+
         batch_size = 3
         source_ids = jax.random.randint(
             jax.random.PRNGKey(1), minval=1, maxval=vocab_size, shape=(batch_size, source_len)
@@ -126,7 +118,9 @@ class TestEncoderDecoder(TestCase):
                 layer,
                 inputs=dict(
                     input_batch=dict(
-                        source_ids=source_ids, target_ids=target_ids, target_labels=target_labels
+                        source=dict(input_ids=source_ids),
+                        target=dict(input_ids=target_ids),
+                        target_labels=target_labels,
                     ),
                     return_aux=True,
                 ),
@@ -162,14 +156,127 @@ class TestEncoderDecoder(TestCase):
         ]["weight"]
         check_grads(tied_head_state, untied_head_state)
 
+    @parameterized.product(
+        stack_cfg=[
+            StackedTransformerLayer.default_config(),
+            RepeatedTransformerLayer.default_config(),
+        ],
+        num_decodes=[5],
+        # Each is of shape [batch], representing per-example prefix lengths.
+        prefix_length=[jnp.array([1, 1]), jnp.array([1, 3, 6])],
+        method=["sample_decode", "beam_search_decode"],
+        pad_token_id=[0, -1],
+    )
+    # pylint: disable-next=too-many-statements
+    def test_decode(
+        self,
+        stack_cfg: BaseStackedTransformerLayer.Config,
+        num_decodes: int,
+        prefix_length: utils.Tensor,
+        method: Literal["sample_decode", "beam_search_decode"],
+        pad_token_id: int,
+    ):
+        """Test beam search and sample decoding from a randomly initialized model."""
+        with jax.checking_leaks():
+            batch_size, src_len, tgt_len, vocab_size = prefix_length.shape[0], 11, 10, 6
+            bos_id = 1
+            init_key, prefix_key, source_key, method_key = jax.random.split(
+                jax.random.PRNGKey(0), num=4
+            )
 
-def gpt2_decoder_config_from_hf(
+            if isinstance(stack_cfg, RepeatedTransformerLayer.Config):
+                remat_spec = RematSpec(prevent_cse=False)
+            else:
+                remat_spec = None
+
+            cfg = _model_config(
+                vocab_size=vocab_size, source_len=src_len, target_len=tgt_len, remat_spec=remat_spec
+            )
+            cfg.encoder.pad_token_id = pad_token_id
+            cfg.decoder.pad_token_id = pad_token_id
+            model = cfg.set(name="test").instantiate(parent=None)
+            params = model.initialize_parameters_recursively(init_key)
+
+            prefix = jax.random.randint(
+                prefix_key,
+                shape=[batch_size, tgt_len],
+                # Prefix can consist of any tokens, including pad and eos.
+                minval=0,
+                maxval=vocab_size,
+            )
+            # Explicitly fill positions >= prefix_length with pad_token_id.
+            # Note that each batch example may have a different prefix length.
+            # [batch_size, tgt_len].
+            prefix_mask = jnp.arange(tgt_len) < prefix_length[:, None]
+            prefix = prefix * prefix_mask + pad_token_id * (1 - prefix_mask)
+            # Set last token to a non-pad token, to fix the prefix length.
+            oh_indices = jax.nn.one_hot(prefix_length - 1, tgt_len, dtype=prefix.dtype)
+            prefix = prefix * (1 - oh_indices) + bos_id * oh_indices
+
+            source_ids = jax.random.randint(
+                source_key, minval=1, maxval=vocab_size, shape=(batch_size, src_len)
+            )
+            source_mask = dummy_padding_mask(batch_size=batch_size, max_seq_len=src_len)
+            source_ids = source_ids * source_mask + pad_token_id * (1 - source_mask)
+            inputs = dict(
+                input_batch=dict(prefix=prefix, source=dict(input_ids=source_ids)),
+                max_sequence_length=tgt_len,
+                num_decodes=num_decodes,
+            )
+            if method == "sample_decode":
+                # Modify logits so that we will always sample the last token ID.
+                inputs["logits_modifier"] = (
+                    lambda logits: jnp.full_like(logits, decoding.NEG_INF).at[:, -1].set(0)
+                )
+
+            outputs, _ = F(
+                model,
+                inputs=inputs,
+                state=params,
+                is_training=False,
+                prng_key=method_key,
+                method=method,
+            )
+            sequences = outputs.sequences
+            self.assertEqual(sequences.shape, (batch_size, num_decodes, tgt_len))
+            if method == "beam_search_decode":
+                # Per sequence scores for beam search decode.
+                self.assertEqual(outputs.scores.shape, (batch_size, num_decodes))
+            elif method == "sample_decode":
+                # Per token scores for sample-decoding.
+                self.assertEqual(outputs.token_scores.shape, (batch_size, num_decodes, tgt_len))
+            else:
+                raise NotImplementedError(f"Don't know how to test method {method}.")
+
+            # Shift prefix/mask to drop dummy BOS.
+            prefix_mask = jnp.concatenate(
+                [prefix_mask[:, 1:], jnp.zeros([batch_size, 1], dtype=prefix_mask.dtype)], axis=1
+            )
+            prefix = jnp.concatenate(
+                [prefix[:, 1:], jnp.full([batch_size, 1], pad_token_id, dtype=prefix.dtype)], axis=1
+            )
+            # Expand num_heads dim.
+            prefix_mask = prefix_mask[:, None, :]
+            prefix = prefix[:, None, :]
+
+            # Check that all hypotheses start with the prefix.
+            # Note that mask excludes the dummy BOS token.
+            self.assertTrue(jnp.all(sequences * prefix_mask == prefix * prefix_mask))
+            # If sample-decoding, test that the remainder of the tokens are equal to
+            # the last token-id (due to adding the logits modifier).
+            if method == "sample_decode":
+                self.assertTrue(
+                    jnp.all(sequences * (1 - prefix_mask) == (vocab_size - 1) * (1 - prefix_mask))
+                )
+
+
+def _gpt2_decoder_config_from_hf(
     hf_cfg: GPT2Config,
     vocab_size: Optional[int] = None,
     layer_norm_epsilon: Optional[float] = None,
     dropout_rate: Optional[float] = None,
 ) -> Decoder.Config:
-    return gpt_decoder_config(
+    cfg = gpt_decoder_config(
         stack_cfg=StackedTransformerLayer.default_config(),
         num_layers=hf_cfg.n_layer,
         hidden_dim=hf_cfg.n_embd,
@@ -180,6 +287,8 @@ def gpt2_decoder_config_from_hf(
         layer_norm_epsilon=layer_norm_epsilon,
         dropout_rate=dropout_rate,
     )
+    cfg.pad_token_id = hf_cfg.pad_token_id
+    return cfg
 
 
 class TestAgainstHF(TestCase):
@@ -204,7 +313,7 @@ class TestAgainstHF(TestCase):
             n_embd=self.hf_encoder_cfg.hidden_size,
             n_head=self.hf_encoder_cfg.num_attention_heads,
             n_layer=self.hf_encoder_cfg.num_hidden_layers,
-            n_positions=4,  # seq_len.
+            n_positions=8,  # seq_len.
             vocab_size=self.hf_encoder_cfg.vocab_size,
             activation_function="relu",
             bos_token_id=1,
@@ -215,6 +324,7 @@ class TestAgainstHF(TestCase):
             resid_pdrop=0.0,
             embd_pdrop=0.0,
             attn_pdrop=0.0,
+            pad_token_id=self.hf_encoder_cfg.pad_token_id,
         )
         self.hf_encoder_decoder_cfg = EncoderDecoderConfig.from_encoder_decoder_configs(
             self.hf_encoder_cfg,
@@ -222,22 +332,22 @@ class TestAgainstHF(TestCase):
         )
 
         # Setup dummy axlearn model.
-        axlearn_encoder = bert_encoder_config_from_hf(
+        test_encoder = bert_encoder_config_from_hf(
             self.hf_encoder_cfg,
             vocab_size=self.hf_encoder_cfg.vocab_size,
             layer_norm_epsilon=self.hf_encoder_cfg.layer_norm_eps,
             dropout_rate=self.hf_encoder_cfg.hidden_dropout_prob,
         )
-        axlearn_decoder = gpt2_decoder_config_from_hf(
+        test_decoder = _gpt2_decoder_config_from_hf(
             self.hf_decoder_cfg,
             vocab_size=self.hf_decoder_cfg.vocab_size,
             layer_norm_epsilon=self.hf_decoder_cfg.layer_norm_epsilon,
             dropout_rate=self.hf_decoder_cfg.embd_pdrop,
         )
-        set_decoder_cross_attention_config(axlearn_decoder, self.hf_decoder_cfg.n_head)
-        self.axlearn_encoder_decoder = (
-            encoder_decoder.EncoderDecoderModel.default_config()
-            .set(name="layer_test", encoder=axlearn_encoder, decoder=axlearn_decoder)
+        set_decoder_cross_attention_config(test_decoder, self.hf_decoder_cfg.n_head)
+        self.test_encoder_decoder = (
+            EncoderDecoderModel.default_config()
+            .set(name="layer_test", encoder=test_encoder, decoder=test_decoder)
             .instantiate(parent=None)
         )
 
@@ -252,16 +362,36 @@ class TestAgainstHF(TestCase):
 
         self.hf_encoder_decoder = hf_encoder_decoder.eval()
 
-    def test_basic(self):
+    @parameterized.product(
+        # Parameterize how source padding is represented:
+        # 1. none: Test no padding.
+        # 2. pad_id: Allow source_ids to contain pad_id.
+        # 3. segment_ids: Supply segment_ids where paddings are 0's.
+        source_padding_type=["none", "pad_id", "segment_ids"],
+        # Parameterize how target padding is represented:
+        # 1. none: Test no padding.
+        # 2. pad_id: Allow target_ids to contain pad_id.
+        # 3. segment_ids: Supply segment_ids where paddings are 0's.
+        target_padding_type=["none", "pad_id", "segment_ids"],
+    )
+    def test_forward(self, *, source_padding_type: str, target_padding_type: str):
+        if (source_padding_type == "segment_ids") != (target_padding_type == "segment_ids"):
+            # segment_ids on source/target should be provided together.
+            return
+
         batch_size = 3
         vocab_size = self.hf_encoder_cfg.vocab_size
         source_len = self.hf_encoder_cfg.max_position_embeddings
         target_len = self.hf_decoder_cfg.n_positions
         type_vocab_size = self.hf_encoder_cfg.type_vocab_size
+        encoder_pad_id = self.hf_encoder_cfg.pad_token_id
+        decoder_pad_id = self.hf_decoder_cfg.pad_token_id
+
+        # Initially generate inputs without padding.
         source_ids = jax.random.randint(
             jax.random.PRNGKey(101),
             (batch_size, source_len),
-            minval=0,
+            minval=encoder_pad_id + 1,
             maxval=vocab_size,
             dtype=jnp.int32,
         )
@@ -275,45 +405,98 @@ class TestAgainstHF(TestCase):
         target_ids = jax.random.randint(
             jax.random.PRNGKey(103),
             (batch_size, target_len),
-            minval=0,
+            minval=decoder_pad_id + 1,
             maxval=vocab_size,
             dtype=jnp.int32,
         )
         target_labels = jax.random.randint(
             jax.random.PRNGKey(104),
             (batch_size, target_len),
-            minval=0,
+            minval=decoder_pad_id + 1,
             maxval=vocab_size,
             dtype=jnp.int32,
         )
+        hf_source_ids = source_ids
+        hf_target_ids = target_ids
+        source_segment_ids = source_positions = None
+        target_segment_ids = target_positions = None
+        source_mask = target_mask = None
+
+        # Generate source paddings.
+        if source_padding_type != "none":
+            source_mask = dummy_padding_mask(batch_size=batch_size, max_seq_len=source_len)
+            hf_source_ids = jnp.where(source_mask, source_ids, encoder_pad_id)
+
+        # Generate target paddings.
+        if target_padding_type != "none":
+            target_mask = dummy_padding_mask(batch_size=batch_size, max_seq_len=target_len)
+            target_labels = jnp.where(target_mask, target_labels, -100)  # HF expects -100.
+            hf_target_ids = jnp.where(target_mask, target_ids, decoder_pad_id)
+
+        # Apply source padding masks.
+        if source_padding_type == "pad_id":
+            source_ids = jnp.where(source_mask, source_ids, encoder_pad_id)
+        elif source_padding_type == "segment_ids":
+            source_segment_ids = source_mask
+            source_positions = jnp.arange(source_len)[None, :] * source_mask
+            # Make sure we aren't relying on pad_id.
+            self.assertTrue(jnp.all(source_ids > encoder_pad_id))
+
+        # Apply target padding masks.
+        if target_padding_type == "pad_id":
+            target_ids = jnp.where(target_mask, target_ids, decoder_pad_id)
+        elif target_padding_type == "segment_ids":
+            target_segment_ids = target_mask
+            target_positions = jnp.arange(target_len)[None, :] * target_mask
+            # Make sure we aren't relying on pad_id.
+            self.assertTrue(jnp.all(target_ids > decoder_pad_id))
 
         # Compute outputs.
         (loss, test_aux), ref_outputs = self._compute_layer_outputs(
-            test_layer=self.axlearn_encoder_decoder,
+            test_layer=self.test_encoder_decoder,
             ref_layer=self.hf_encoder_decoder,
             test_inputs=dict(
                 input_batch=dict(
-                    source_ids=source_ids,
-                    source_token_type_ids=source_token_type_ids,
-                    target_ids=target_ids,
+                    source=dict(
+                        input_ids=source_ids,
+                        token_type_ids=source_token_type_ids,
+                        input_segment_ids=source_segment_ids,
+                        positions=source_positions,
+                    ),
+                    target=dict(
+                        input_ids=target_ids,
+                        input_segment_ids=target_segment_ids,
+                        positions=target_positions,
+                    ),
                     target_labels=target_labels,
                 ),
                 return_aux=True,
             ),
             ref_inputs=dict(
-                input_ids=as_torch_tensor(source_ids),
+                input_ids=as_torch_tensor(hf_source_ids),
+                attention_mask=(None if source_mask is None else as_torch_tensor(source_mask)),
                 token_type_ids=as_torch_tensor(source_token_type_ids),
-                decoder_input_ids=as_torch_tensor(target_ids),
+                decoder_input_ids=as_torch_tensor(hf_target_ids),
+                decoder_attention_mask=(
+                    None if target_mask is None else as_torch_tensor(target_mask)
+                ),
                 labels=as_torch_tensor(target_labels).to(torch.long),
                 output_hidden_states=True,
             ),
             parameters_from_ref_layer=parameters_from_torch_layer,
         )
 
-        # Compare outputs.
+        # Compare outputs at non-padding positions.
+        test_logits = test_aux["logits"]
+        ref_logits = utils.as_tensor(ref_outputs.logits)
+        if target_mask is not None:
+            test_logits *= target_mask[..., None]
+            ref_logits *= target_mask[..., None]
+        test_name = f"{source_padding_type}:{target_padding_type}"
+
         # We occasionally observe rounding errors.
-        assert_allclose(test_aux["logits"], utils.as_tensor(ref_outputs.logits), atol=5e-6)
-        assert_allclose(loss, utils.as_tensor(ref_outputs.loss))
+        assert_allclose(test_logits, ref_logits, atol=5e-6, err_msg=test_name)
+        assert_allclose(loss, utils.as_tensor(ref_outputs.loss), err_msg=test_name)
 
 
 class TestAgainstT5X(TestCase):
@@ -348,12 +531,17 @@ class TestAgainstT5X(TestCase):
             ),
             inputs=dict(
                 input_batch=dict(
-                    source_ids=testcase["source_ids"],
-                    source_segment_ids=testcase["source_segment_ids"],
-                    source_positions=testcase["source_positions"],
-                    target_ids=testcase["target_ids"],
-                    target_segment_ids=testcase["target_segment_ids"],
-                    target_positions=testcase["target_positions"],
+                    source=dict(
+                        input_ids=testcase["source_ids"],
+                        input_segment_ids=testcase["source_segment_ids"],
+                        positions=testcase["source_positions"],
+                    ),
+                    target=dict(
+                        input_ids=testcase["target_ids"],
+                        input_segment_ids=testcase["target_segment_ids"],
+                        positions=testcase["target_positions"],
+                    ),
+                    target_labels=testcase["target_labels"],
                 ),
             ),
             method="predict",

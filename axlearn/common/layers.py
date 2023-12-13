@@ -546,13 +546,18 @@ class Linear(BaseLayer):
         params = dict(
             weight=ParameterSpec(
                 shape=(cfg.input_dim, cfg.output_dim),
+                # A mapping from parameter axes to logical mesh axes (or None if replicating along
+                # an axis).
                 mesh_axes=cfg.param_partition_spec,
+                # Used by optimizers that maintain factored stats, e.g., Adafactor.
                 factorization=FactorizationSpec(axes=("row", "col")),
             )
         )
         if cfg.bias:
             params["bias"] = ParameterSpec(
-                shape=[cfg.output_dim], mesh_axes=(cfg.param_partition_spec[-1],)
+                shape=[cfg.output_dim],
+                # Follow the partitioning of the output dimension of the weight matrix.
+                mesh_axes=(cfg.param_partition_spec[-1],),
             )
         return params
 

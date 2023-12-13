@@ -52,8 +52,6 @@ from axlearn.common.utils import (
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-# See utils_spmd.py for where we set "jax_default_prng_impl".
-_default_prng_impl = "rbg"
 _PYTEST_OPT_REGISTERED = {}
 
 
@@ -131,8 +129,9 @@ class TestCase(parameterized.TestCase):
         return "FAKE"
 
     def setUp(self):
-        utils_spmd.setup()
         push_data_dir(self.data_dir)
+        # Setup without distributed initialization.
+        utils_spmd.setup(jax_backend="cpu")
 
     def tearDown(self) -> None:
         self.assertEqual(pop_data_dir(), self.data_dir)
@@ -310,11 +309,9 @@ class TestWithTemporaryCWD(TestCase):
 
 @contextlib.contextmanager
 def prng_impl(new_prng_impl: str):
-    old_prng_impl = _default_prng_impl
+    old_prng_impl = jax.config.jax_default_prng_impl
 
     def switch(value):
-        global _default_prng_impl  # pylint: disable=global-statement
-        _default_prng_impl = value
         jax.config.update("jax_default_prng_impl", value)
 
     switch(new_prng_impl)
@@ -553,6 +550,7 @@ def read_per_param_settings(
     return all_param_settings
 
 
+# TODO(markblee): Update to take prng_key explicitly.
 def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     """Builds a dummy attention mask where non-padding tokens are followed by padding tokens.
 
@@ -575,9 +573,10 @@ def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     input_len = jax.random.randint(
         jax.random.PRNGKey(123), shape=(batch_size,), minval=0, maxval=max_seq_len
     )
-    return lower_diag[input_len]
+    return lower_diag[input_len].astype(jnp.int32)
 
 
+# TODO(markblee): Update to take prng_key explicitly.
 def dummy_segments_positions(
     batch: int, seq_len: int, *, num_segments: int
 ) -> Tuple[Tensor, Tensor]:
@@ -588,7 +587,7 @@ def dummy_segments_positions(
         seq_len: 4
         num_segments: 3
         output: (
-            [[0, 1, 1, 1], [1, 1, 2, 2]],  # segment_ids
+            [[1, 2, 2, 2], [1, 1, 2, 2]],  # segment_ids
             [[0, 0, 1, 2], [0, 1, 0, 1]],  # positions
         )
 

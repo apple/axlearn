@@ -638,7 +638,7 @@ class BoxMatcher:
             """
             with tf.name_scope("empty_gt_boxes"):
                 matched_columns = tf.zeros([batch_size, num_rows], dtype=tf.int32)
-                match_indicators = -tf.ones([batch_size, num_rows], dtype=tf.int32)
+                match_indicators = tf.negative(tf.ones([batch_size, num_rows], dtype=tf.int32))
                 return matched_columns, match_indicators
 
         def _match_when_rows_are_non_empty():

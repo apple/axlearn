@@ -409,9 +409,11 @@ class Decoder(DecodingMixin, BaseLayer):
     class Config(BaseLayer.Config):
         """Configures Decoder."""
 
-        attention_mask: AttentionLogitBiasLayer.Config = (
-            CausalAttentionLogitBiasLayer.default_config()
-        )
+        # attention_mask can be None if the attention layer supports the causal mode, e.g.,
+        # FlashAttention with `causal=True`.
+        attention_mask: Optional[
+            AttentionLogitBiasLayer.Config
+        ] = CausalAttentionLogitBiasLayer.default_config()
         vocab_size: Required[int] = REQUIRED  # Size of vocabulary.
         # Dimensionality of embeddings and inputs to each transformer layer.
         dim: Required[int] = REQUIRED
@@ -443,7 +445,8 @@ class Decoder(DecodingMixin, BaseLayer):
         cfg = self.config
         set_dropout_rate_recursively(cfg, dropout_rate=cfg.dropout_rate, set_only_if_none=True)
 
-        self._add_child("attention_mask", cfg.attention_mask)
+        if cfg.attention_mask is not None:
+            self._add_child("attention_mask", cfg.attention_mask)
         self._add_child("emb", cfg.emb.set(dim=cfg.dim, vocab_size=cfg.vocab_size))
         self._add_child("transformer", cfg.transformer.set(input_dim=cfg.dim))
         if cfg.output_norm is not None:
@@ -459,7 +462,7 @@ class Decoder(DecodingMixin, BaseLayer):
         *,
         mode: ForwardMode,
         input_ids: Tensor,
-        self_attention_logit_biases: Tensor,
+        self_attention_logit_biases: Optional[Tensor],
         token_type_ids: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
@@ -527,7 +530,7 @@ class Decoder(DecodingMixin, BaseLayer):
             input_segment_ids: An optional Tensor of same shape as `input_ids` with values in
                 [0, num_segments). Tokens are only allowed to attend to other tokens within the same
                 segment. input_segment_ids == 0 represents paddings. If None, inferred from
-                input_segment_ids != pad_token_id.
+                input_ids != pad_token_id.
             token_type_ids: An optional int Tensor of shape [batch_size, target_len].
                 Values should be in the range [0, type_vocab_size).
             cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
@@ -647,14 +650,13 @@ class Decoder(DecodingMixin, BaseLayer):
         )
         return updated_states, outputs
 
-    # TODO(bwzhang): check the T5 checkpoint to see whether this func is necessary.
     def compute_attention_logit_biases(
         self,
         input_ids: Tensor,
         *,
         segment_ids: Optional[Tensor] = None,
         positions: Optional[Tensor] = None,
-    ) -> Tensor:
+    ) -> Optional[Tensor]:
         """Produces self-attention logit biases.
 
         Args:
@@ -669,11 +671,14 @@ class Decoder(DecodingMixin, BaseLayer):
                 provided.
 
         Returns:
-            Attention logit biases of shape [batch_size, num_heads, seq_len, seq_len].
+            Attention logit biases of shape [batch_size, num_heads, seq_len, seq_len],
+            or None if cfg.attention_mask is None.
 
         Raises:
             ValueError: If segment_ids and positions are not both provided, or both omitted.
         """
+        if "attention_mask" not in self.children:
+            return None
         if (segment_ids is None) != (positions is None):
             raise ValueError("segment_ids and positions must be provided together")
         cfg = self.config
