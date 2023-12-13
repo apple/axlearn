@@ -148,11 +148,7 @@ class ValidCtcSeqTest(TestCase):
         per_seq_validality = _is_valid_ctc_seq(
             paddings=paddings, target_labels=labels, target_paddings=target_paddings
         ).astype(jnp.float32)
-        # self.assertTensorAllClose(per_seq_validality, [1.0] * batch_size)
-        import pdb
-
-        pdb.set_trace()
-        self.assertNestedAllClose(per_seq_validality, jnp.array([1.0] * batch_size))
+        self.assertTensorAllClose(per_seq_validality, [1.0] * batch_size)
 
     def test_label_with_duplicates(self):
         batch_size = 5
