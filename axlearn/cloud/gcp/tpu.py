@@ -7,7 +7,6 @@ import json
 import pathlib
 import re
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Union
@@ -112,10 +111,6 @@ def _execute_create_tpu_request(req: HttpRequest):
     If TPU creation fails with quota errors, there's usually no value in retrying the create.
     """
     try:
-        # Add UUID as Request ID to HttpRequest
-        # Reference: https://google.aip.dev/155
-        req_id = uuid.uuid1()
-        req.uri = req.uri + f"&request_id={req_id}"
         resp = req.execute()
         # TODO(markblee): Unclear whether code 3 is sufficient for queued resource quota errors.
         # Ryan Day from google suggested checking the error text as well to be safe.
