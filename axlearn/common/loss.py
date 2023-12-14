@@ -895,6 +895,7 @@ def flops_loss(
     *,
     embeddings: Tensor,
     paddings: Optional[Tensor] = None,
+    sparsity_threshold: float = 0.0,
 ) -> Tensor:
     """The FLOPs loss in 'Minimizing FLOPs to learn efficient sparse representations' ICLR2020.
 
@@ -907,9 +908,14 @@ def flops_loss(
         embeddings: A float tensor of shape [batch_size, vocab_size] or [batch_size, 1, vocab_size].
         paddings: A 0/1 tensor of shape [batch_size] where 1 means padding and 0 means valid
             example.
+        sparsity_threshold: Embedding elements that are no greater than this threshold will be
+            counted sparse.
 
     Returns:
-        A float32 tensor representing the FLOPs loss.
+        A tuple of (loss, average_sparsity_count):
+        - loss: A float32 tensor representing the FLOPs loss.
+        - average_sparsity_count: Average number of elements that are no greater than
+            sparsity_threshold per example.
     """
     if len(embeddings.shape) == 3:
         assert embeddings.shape[1] == 1, "Invalid embeddings shape!"
@@ -919,10 +925,14 @@ def flops_loss(
         paddings = jnp.zeros(embeddings.shape[0])
 
     is_valid = 1 - jnp.expand_dims(paddings, 1)
+    is_negligible = jnp.abs(embeddings) <= sparsity_threshold
+    average_sparsity_count = jnp.sum(
+        jnp.sum(is_negligible, axis=-1, keepdims=True) * is_valid
+    ) / jnp.sum(is_valid)
     per_dim_loss = jnp.sum(jnp.abs(embeddings) * is_valid, axis=0) / jnp.sum(is_valid)
     loss = jnp.sum(per_dim_loss**2)
 
-    return loss
+    return loss, average_sparsity_count
 
 
 def large_margin_cosine_loss(

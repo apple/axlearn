@@ -149,12 +149,12 @@ class WindowedAttention(MultiheadAttention):
                 params["rel_pos_emb_h"] = ParameterSpec(
                     shape=(2 * cfg.input_size[0] - 1, cfg.output_dim // cfg.num_heads),
                     mesh_axes=(None, "model"),
-                    initializer=param_init.ConstantInitializer(0.0),
+                    initializer=param_init.constant_initializer(0.0),
                 )
                 params["rel_pos_emb_w"] = ParameterSpec(
                     shape=(2 * cfg.input_size[1] - 1, cfg.output_dim // cfg.num_heads),
                     mesh_axes=(None, "model"),
-                    initializer=param_init.ConstantInitializer(0.0),
+                    initializer=param_init.constant_initializer(0.0),
                 )
         return params
 

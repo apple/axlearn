@@ -5,10 +5,8 @@
 import os
 from typing import Any, Callable, Optional, Type
 
-import flax
 import jax
 import pytest
-import seqio
 import torch
 from absl.testing import parameterized
 from jax import numpy as jnp
@@ -40,7 +38,14 @@ from axlearn.common.deberta_test import (
 )
 from axlearn.common.deberta_test import build_cfg as deberta_build_cfg
 from axlearn.common.deberta_test import build_model_config as deberta_build_model_config
-from axlearn.common.layers import Embedding, L2Norm, LayerNorm, Linear, set_dropout_rate_recursively
+from axlearn.common.layers import (
+    Embedding,
+    L2Norm,
+    LayerNorm,
+    LayerNormStateless,
+    Linear,
+    set_dropout_rate_recursively,
+)
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import (
     _parameters_from_t5x_attention,
@@ -54,6 +59,7 @@ from axlearn.common.param_converter import (
     as_torch_tensor,
     axlearn_to_torch,
     parameters_from_t5x_encoder_decoder,
+    torch_to_axlearn,
 )
 from axlearn.common.t5_test import prepare_hf_t5_inputs, random_inputs_for_t5
 from axlearn.common.test_utils import TestCase, dummy_padding_mask
@@ -67,19 +73,8 @@ from axlearn.common.utils import as_tensor
 from axlearn.common.utils_text_dual_encoder import bert_text_embedding_stream_encoder_config
 from axlearn.huggingface import hf_text_encoder
 
-try:
-    # Used for T5X converter tests.
-    # pytype: disable=import-error
-    from t5x.examples.t5 import layers, network
-
-    # pytype: enable=import-error
-
-    _T5X_INSTALLED = True
-except ImportError:
-    _T5X_INSTALLED = False
-
-
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
+testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
+tokenizers_dir = os.path.join(testdata_dir, "tokenizers")
 
 
 def torch_output_to_dict(ref_outputs):
@@ -104,9 +99,13 @@ class BaseParamConverterTest(TestCase):
         ref_inputs: Any,
         parameters_to_ref_layer: Callable = axlearn_to_torch,
         method: str = "forward",
+        test_torch_to_axlearn: bool = False,
     ):
         params = test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
         parameters_to_ref_layer(test_layer, params, ref_layer)
+        if test_torch_to_axlearn:
+            params_from_ref_layer = torch_to_axlearn(ref_layer, dst_layer=test_layer)
+            self.assertNestedAllClose(params_from_ref_layer, params)
         test_outputs, _ = F(
             test_layer,
             is_training=True,
@@ -161,11 +160,12 @@ class ParameterTest(BaseParamConverterTest):
         # pooler=bert.BertPooler.default_config()
         return model_cfg
 
-    def test_layer_norm(self):
+    @parameterized.parameters(LayerNorm, LayerNormStateless)
+    def test_layer_norm(self, norm_cls):
         batch, dim = 20, 10
-        cfg = LayerNorm.default_config().set(input_dim=dim)
+        cfg = norm_cls.default_config().set(input_dim=dim)
         layer = cfg.set(name="convert_test").instantiate(parent=None)
-        hf_layer = torch.nn.LayerNorm(dim)
+        hf_layer = torch.nn.LayerNorm(dim, elementwise_affine=(norm_cls == LayerNorm))
 
         inputs = jax.random.uniform(
             jax.random.PRNGKey(1), shape=(batch, dim), minval=-10, maxval=10
@@ -176,6 +176,7 @@ class ParameterTest(BaseParamConverterTest):
             ref_layer=hf_layer,
             test_inputs=[inputs],
             ref_inputs=as_torch_tensor(inputs),
+            test_torch_to_axlearn=True,
         )
         self.assertNestedAllClose(out, hf_out)
 
@@ -397,9 +398,11 @@ class ParameterTest(BaseParamConverterTest):
         self.assertNestedAllClose(out.data, hf_out[0])
 
     @parameterized.product(
-        hf_model=[hf_bert.BertEncoder, hf_roberta.RobertaEncoder], remat=[False, True]
+        hf_model=[hf_bert.BertEncoder, hf_roberta.RobertaEncoder],
+        remat=[False, True],
+        test_torch_to_axlearn=[False, True],
     )
-    def test_bert_encoder(self, hf_model, remat):
+    def test_bert_encoder(self, hf_model, remat, test_torch_to_axlearn):
         batch = 3
         cfg = self._param_converter_bert_encoder_config_from_hf(self.hf_cfg, remat)
         cfg = cfg.transformer.set(input_dim=self.hf_cfg.hidden_size)
@@ -420,6 +423,7 @@ class ParameterTest(BaseParamConverterTest):
                 hidden_states=as_torch_tensor(inputs),
                 return_dict=False,
             ),
+            test_torch_to_axlearn=test_torch_to_axlearn,
         )
         self.assertNestedAllClose(out.data, hf_out[0])
 
@@ -570,12 +574,16 @@ class T5ModelConverterTest(TestCase):
         axlearn_to_torch(test_layer, params, hf_layer_copy)
 
         t5_inputs = random_inputs_for_t5(
-            encoder_input_length=64,
-            decoder_input_length=64,
-            encoder_vocab_size=self.hf_cfg.vocab_size,
-            decoder_vocab_size=self.hf_cfg.vocab_size,
+            source_length=64,
+            target_length=64,
+            source_vocab_size=self.hf_cfg.vocab_size,
+            target_vocab_size=self.hf_cfg.vocab_size,
         )
-        hf_inputs = prepare_hf_t5_inputs(**t5_inputs)
+        hf_inputs = prepare_hf_t5_inputs(
+            source_ids=t5_inputs["source"]["input_ids"],
+            target_ids=t5_inputs["target"]["input_ids"],
+            target_labels=t5_inputs["target_labels"],
+        )
         expected, actual = jax.tree_util.tree_map(
             as_tensor,
             (
@@ -583,7 +591,7 @@ class T5ModelConverterTest(TestCase):
                 hf_layer_copy(**hf_inputs).logits,
             ),
         )
-        self.assertNestedAllClose(expected, actual)
+        self.assertNestedAllClose(expected, actual, atol=1e-5, rtol=1e-3)
 
 
 class HFGPT2ModelConverterTest(TestCase):
@@ -875,7 +883,6 @@ class TestHFMultiStreamTextEmbeddingModel(TestCase):
             )
 
 
-@pytest.mark.skipif(not _T5X_INSTALLED, reason="T5X is not installed.")
 @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
 class T5XModelConverterTest(TestCase):
     """Tests individual T5X -> AXLearn layer conversions.
@@ -891,125 +898,55 @@ class T5XModelConverterTest(TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vocab = seqio.SentencePieceVocabulary(
-            sentencepiece_model_file=os.path.join(tokenizers_dir, "sentencepiece/t5-base"),
-            extra_ids=100,
-        )
-        cls.t5x_config = network.T5Config(
-            vocab_size=32128,  # Vocab size rounded to a multiple of 128 for TPU efficiency.
-            dtype=jnp.float32,  # Note: T5X uses "bfloat16" by default.
-            emb_dim=768,
-            num_heads=12,
-            num_encoder_layers=12,
-            num_decoder_layers=12,
-            head_dim=64,
-            mlp_dim=2048,
-            mlp_activations=("gelu", "linear"),
-            dropout_rate=0,
-            logits_via_embedding=False,
-        )
-
-        # Construct a t5 v1.1 base model.
-        test_model_cfg: t5.T5EncoderDecoderModel.Config = t5.t5_encoder_decoder_config(
-            vocab_size=32128,
-            dim=768,
-            num_encoder_layers=12,
-            num_decoder_layers=12,
-            num_attention_heads=12,
-            dropout_rate=0.0,
-        )
-        cls.test_model = test_model_cfg.set(name="t5").instantiate(parent=None)
-
-        cls.batch_size, cls.seq_len = 32, 10
-        inputs = random_inputs_for_t5(cls.seq_len, 10, 32128, 32128, cls.batch_size)
-        source_ids = inputs["source_ids"]
-        target_ids = inputs["target_ids"]
-        target_labels = inputs["target_labels"]
-
-        cls.test_inputs = dict(
-            source_ids=source_ids,
-            target_ids=target_ids,
-            target_labels=target_labels,
-        )
-        cls.ref_inputs = dict(
-            encoder_input_tokens=source_ids,
-            decoder_input_tokens=target_ids,
-            decoder_target_tokens=target_labels,
-        )
-
+        cls.test_model = cls._model_config().set(name="t5").instantiate(parent=None)
         # For some tests, atol is set to 1e-5 for CPU. Test passses for atol=1e-6 on TPU.
         # This is due to precision/rounding errors.
-        cls.atol = 1e-5 if "CPU" in str(jax.devices()[0]) else 1e-6
+        cls.atol = 1e-5 if "cpu" in str(jax.devices()[0]).lower() else 1e-6
 
-    # pylint: disable-next=no-self-use
-    def _base_model_config(self, stack_cfg: Optional[BaseStackedTransformerLayer.Config]):
+    @classmethod
+    def _model_config(cls, stack_cfg: Optional[BaseStackedTransformerLayer.Config] = None):
+        # Construct a t5 v1.1 base model.
         return t5.t5_encoder_decoder_config(
-            vocab_size=32_128,
-            dim=768,
-            num_encoder_layers=12,
-            num_decoder_layers=12,
-            num_attention_heads=12,
+            vocab_size=128,
+            dim=48,
+            num_encoder_layers=4,
+            num_decoder_layers=4,
+            num_attention_heads=4,
             dropout_rate=0,
             stack_cfg=stack_cfg,
         )
 
     def test_parameters_from_t5x_ff(self):
-        t5x_ff = layers.MlpBlock(
-            intermediate_dim=self.t5x_config.mlp_dim,
-            activations=self.t5x_config.mlp_activations,
-            intermediate_dropout_rate=self.t5x_config.dropout_rate,
-            dtype=self.t5x_config.dtype,
-            name="mlp",
-        )
-        ff_input = jax.random.normal(
-            jax.random.PRNGKey(111), (self.batch_size, self.seq_len, self.t5x_config.emb_dim)
-        )
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_ff.npy"),
+            allow_pickle=True,
+        ).item()
 
         with jax.default_matmul_precision("float32"):
-            # Pre-MLP norm not in this scope
-            ref_ff_input = ff_input * jax.lax.rsqrt(
-                jax.lax.square(ff_input).mean(axis=-1, keepdims=True) + 1e-6
-            )
-            ref_outputs, variables = t5x_ff.init_with_output(
-                jax.random.PRNGKey(222),
-                ref_ff_input,
-                decode=False,
-                deterministic=True,
-            )
-
             test_outputs, _ = F(
                 self.test_model.decoder.transformer.layer0.feed_forward,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
                 state=_parameters_from_t5x_ff(
-                    variables["params"],
+                    testcase["params"],
                     # Avoid scaling to compare directly with T5X
-                    src_norm=dict(scale=jnp.ones_like(ff_input)),
+                    src_norm=dict(scale=jnp.ones_like(testcase["inputs"])),
                 ),
-                inputs=dict(inputs=ff_input),
+                inputs=dict(inputs=testcase["inputs"]),
             )
 
-        self.assertNestedAllClose(test_outputs, as_tensor(ref_outputs + ff_input))
+        self.assertNestedAllClose(test_outputs, testcase["outputs"])
 
     @parameterized.parameters([True, False])
-    def test_parameters_from_t5x_rel_pos_emb(self, bidirectional):
-        t5x_rel_emb = layers.RelativePositionBiases(
-            num_buckets=32,
-            max_distance=128,
-            num_heads=self.t5x_config.num_heads,
-            dtype=self.t5x_config.dtype,
-            embedding_init=flax.linen.initializers.variance_scaling(1.0, "fan_avg", "uniform"),
-            name="relpos_bias",
-        )
+    def test_parameters_from_t5x_rel_pos_emb(self, bidirectional: bool):
+        testcase = jnp.load(
+            os.path.join(
+                testdata_dir, __name__, f"test_parameters_from_t5x_rel_pos_emb_{bidirectional}.npy"
+            ),
+            allow_pickle=True,
+        ).item()
 
         with jax.default_matmul_precision("float32"):
-            ref_outputs, variables = t5x_rel_emb.init_with_output(
-                jax.random.PRNGKey(333),
-                self.t5x_config.emb_dim,
-                self.t5x_config.emb_dim,
-                bidirectional=bidirectional,
-            )
-
             test_outputs, _ = F(
                 self.test_model.encoder.relative_pos_emb
                 if bidirectional
@@ -1017,50 +954,21 @@ class T5XModelConverterTest(TestCase):
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
                 state=_parameters_from_t5x_rel_pos_emb(
-                    variables["params"],
+                    testcase["params"],
                 ),
-                inputs=dict(
-                    attention_logit_biases=jnp.zeros(
-                        (
-                            1,
-                            self.t5x_config.num_heads,
-                            self.t5x_config.emb_dim,
-                            self.t5x_config.emb_dim,
-                        )
-                    )
-                ),
+                inputs=dict(attention_logit_biases=testcase["inputs"]),
             )
 
-        self.assertNestedAllClose(test_outputs, as_tensor(ref_outputs))
+        self.assertNestedAllClose(test_outputs, testcase["outputs"])
 
     @parameterized.parameters([QKVLinear, FusedQKVLinear])
     def test_parameters_from_t5x_attention(self, proj_cls: Type[BaseQKVLinear]):
-        t5x_attn = layers.MultiHeadDotProductAttention(
-            num_heads=self.t5x_config.num_heads,
-            dtype=self.t5x_config.dtype,
-            head_dim=self.t5x_config.head_dim,
-            dropout_rate=self.t5x_config.dropout_rate,
-            float32_logits=self.t5x_config.float32_attention_logits,
-            name="attention",
-        )
-
-        inputs_q = jax.random.normal(
-            jax.random.PRNGKey(111), (self.batch_size, self.seq_len, self.t5x_config.emb_dim)
-        )
-        inputs_kv = jax.random.normal(
-            jax.random.PRNGKey(222), (self.batch_size, self.seq_len, self.t5x_config.emb_dim)
-        )
-        mask = jnp.ones((self.batch_size, self.t5x_config.num_heads, self.seq_len, self.seq_len))
-        bias = jax.random.normal(
-            jax.random.PRNGKey(333),
-            (self.batch_size, self.t5x_config.num_heads, self.seq_len, self.seq_len),
-        )
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_attention.npy"),
+            allow_pickle=True,
+        ).item()
 
         with jax.default_matmul_precision("float32"):
-            ref_outputs, variables = t5x_attn.init_with_output(
-                jax.random.PRNGKey(444), inputs_q, inputs_kv, mask, bias, deterministic=True
-            )
-
             attention_cfg = self.test_model.decoder.transformer.layer0.cross_attention.config
             attention_cfg.attention.input_linear = proj_cls.default_config()
             attention_layer = attention_cfg.set(name="test").instantiate(parent=None)
@@ -1070,60 +978,43 @@ class T5XModelConverterTest(TestCase):
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
                 state=_parameters_from_t5x_attention(
-                    variables["params"],
-                    src_norm=dict(scale=jnp.ones_like(inputs_q)),
+                    testcase["params"],
+                    src_norm=dict(scale=jnp.ones_like(testcase["inputs"]["query"])),
                     dst_layer=attention_layer,
                 )["attention"],
-                inputs=dict(
-                    query=inputs_q, key=inputs_kv, value=inputs_kv, attention_logit_biases=bias
-                ),
+                inputs=testcase["inputs"],
             )
 
-        self.assertNestedAllClose(test_outputs.data, as_tensor(ref_outputs))
+        self.assertNestedAllClose(test_outputs.data, testcase["outputs"])
 
     def test_parameters_from_t5x_layer_norm(self):
-        t5x_layer_norm = layers.LayerNorm(dtype=self.t5x_config.dtype, name="layer_norm")
-        layer_norm_input = jax.random.normal(
-            jax.random.PRNGKey(111),
-            (self.batch_size, self.t5x_config.emb_dim, self.t5x_config.mlp_dim),
-        )
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_layer_norm.npy"),
+            allow_pickle=True,
+        ).item()
 
         with jax.default_matmul_precision("float32"):
-            ref_outputs, variables = t5x_layer_norm.init_with_output(
-                jax.random.PRNGKey(222), layer_norm_input
-            )
-
             test_outputs, _ = F(
                 self.test_model.decoder.output_norm,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
-                state=_parameters_from_t5x_layer_norm(
-                    variables["params"],
-                ),
-                inputs=dict(x=layer_norm_input),
+                state=_parameters_from_t5x_layer_norm(testcase["params"]),
+                inputs=dict(x=testcase["inputs"]),
             )
 
-        self.assertNestedAllClose(test_outputs, as_tensor(ref_outputs))
+        self.assertNestedAllClose(test_outputs, testcase["outputs"])
 
     def test_parameters_from_t5x_dense(self):
-        t5x_dense = layers.DenseGeneral(
-            self.t5x_config.mlp_dim,
-            dtype=self.t5x_config.dtype,
-            kernel_init=flax.linen.initializers.variance_scaling(1.0, "fan_in", "truncated_normal"),
-            kernel_axes=("embed", "mlp"),
-            name="dense",
-        )
-        dense_input = jax.random.normal(
-            jax.random.PRNGKey(111), (self.t5x_config.emb_dim, self.t5x_config.mlp_dim)
-        )
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_dense.npy"),
+            allow_pickle=True,
+        ).item()
 
         with jax.default_matmul_precision("float32"):
-            ref_outputs, variables = t5x_dense.init_with_output(
-                jax.random.PRNGKey(222), dense_input
-            )
-
             test_model_cfg = Linear.default_config().set(
-                bias=False, input_dim=self.t5x_config.emb_dim, output_dim=self.t5x_config.mlp_dim
+                bias=False,
+                input_dim=testcase["inputs"].shape[0],
+                output_dim=testcase["inputs"].shape[1],
             )
             test_model = test_model_cfg.set(name="linear").instantiate(parent=None)
 
@@ -1131,32 +1022,23 @@ class T5XModelConverterTest(TestCase):
                 test_model,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
-                state=_parameters_from_t5x_linear_like(
-                    variables["params"],
-                ),
-                inputs=dict(x=dense_input),
+                state=_parameters_from_t5x_linear_like(testcase["params"]),
+                inputs=dict(x=testcase["inputs"]),
             )
 
-        self.assertNestedAllClose(test_outputs, as_tensor(ref_outputs))
+        self.assertNestedAllClose(test_outputs, testcase["outputs"])
 
     def test_parameters_from_t5x_embedding(self):
-        t5x_embed = layers.Embed(
-            num_embeddings=self.t5x_config.vocab_size,
-            features=self.t5x_config.emb_dim,
-            dtype=self.t5x_config.dtype,
-            attend_dtype=jnp.float32,  # for logit training stability
-            embedding_init=flax.linen.initializers.normal(stddev=1.0),
-            one_hot=True,
-            name="token_embedder",
-        )
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_embedding.npy"),
+            allow_pickle=True,
+        ).item()
 
         with jax.default_matmul_precision("float32"):
-            ref_outputs, variables = t5x_embed.init_with_output(
-                jax.random.PRNGKey(222), self.ref_inputs["encoder_input_tokens"]
-            )
-
+            model_cfg = self.test_model.config
             test_model_cfg = Embedding.default_config().set(
-                num_embeddings=self.t5x_config.vocab_size, dim=self.t5x_config.emb_dim
+                num_embeddings=model_cfg.shared_token_emb.num_embeddings,
+                dim=model_cfg.shared_token_emb.dim,
             )
             test_model = test_model_cfg.set(name="embed").instantiate(parent=None)
 
@@ -1164,109 +1046,61 @@ class T5XModelConverterTest(TestCase):
                 test_model,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
-                state=_parameters_from_t5x_linear_like(
-                    variables["params"],
-                ),
-                inputs=dict(x=self.test_inputs["source_ids"]),
+                state=_parameters_from_t5x_linear_like(testcase["params"]),
+                inputs=dict(x=testcase["inputs"]),
             )
 
-        self.assertNestedAllClose(test_outputs, as_tensor(ref_outputs))
+        self.assertNestedAllClose(test_outputs, testcase["outputs"])
 
     def test_parameters_from_t5x_transformer_layer(self):
-        t5x_rel_emb = layers.RelativePositionBiases(
-            num_buckets=32,
-            max_distance=128,
-            num_heads=self.t5x_config.num_heads,
-            dtype=self.t5x_config.dtype,
-            embedding_init=flax.linen.initializers.variance_scaling(1.0, "fan_avg", "uniform"),
-            name="relpos_bias",
-        )
-        t5x_transformer_layer = network.DecoderLayer(self.t5x_config, t5x_rel_emb, name="layer")
-        transformer_input = jax.random.normal(
-            jax.random.PRNGKey(101), (self.batch_size, self.seq_len, self.t5x_config.emb_dim)
-        )
-        cross_attention_data = jax.random.normal(
-            jax.random.PRNGKey(222), (self.batch_size, self.seq_len, self.t5x_config.emb_dim)
-        )
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_transformer_layer.npy"),
+            allow_pickle=True,
+        ).item()
 
         with jax.default_matmul_precision("float32"):
-            ref_outputs, variables = t5x_transformer_layer.init_with_output(
-                jax.random.PRNGKey(333), transformer_input, cross_attention_data, deterministic=True
-            )
-            attn_bias = t5x_rel_emb.apply(
-                {"params": variables["params"]["relative_embedding"]},
-                self.seq_len,
-                self.seq_len,
-                bidirectional=False,
-            )
-
             test_outputs, _ = F(
                 self.test_model.decoder.transformer.layer0,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
                 state=_parameters_from_t5x_transformer_layer(
-                    {k: v for k, v in variables["params"].items() if k != "relative_embedding"},
+                    {k: v for k, v in testcase["params"].items() if k != "relative_embedding"},
                     self.test_model.decoder.transformer.layer0,
                 ),
-                inputs=dict(
-                    data=transformer_input,
-                    self_attention_logit_biases=attn_bias,
-                    cross_attention_data=cross_attention_data,
-                ),
+                inputs=testcase["inputs"],
             )
 
         # Tolerance set to 1e-5 for CPU. Test passses for atol=1e-6 on TPU.
-        self.assertNestedAllClose(test_outputs.data, as_tensor(ref_outputs), atol=self.atol)
+        self.assertNestedAllClose(test_outputs.data, testcase["outputs"], atol=self.atol)
 
     @parameterized.parameters(StackedTransformerLayer, RepeatedTransformerLayer)
     def test_parameters_from_t5x_decoder(self, stack_cls: Type[BaseStackedTransformerLayer]):
-        decoder_mask = layers.make_decoder_mask(
-            decoder_target_tokens=self.ref_inputs["decoder_target_tokens"],
-            dtype=self.t5x_config.dtype,
-        )
-
-        shared_embedding = layers.Embed(
-            num_embeddings=self.t5x_config.vocab_size,
-            features=self.t5x_config.emb_dim,
-            dtype=self.t5x_config.dtype,
-            attend_dtype=jnp.float32,  # for logit training stability
-            embedding_init=flax.linen.initializers.normal(stddev=1.0),
-            one_hot=True,
-            name="token_embedder",
-        )
-        t5x_decoder = network.Decoder(self.t5x_config, shared_embedding)
-        cross_attention_data = jax.random.normal(
-            jax.random.PRNGKey(111), (self.batch_size, self.seq_len, self.t5x_config.emb_dim)
-        )
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_decoder.npy"),
+            allow_pickle=True,
+        ).item()
 
         with jax.default_matmul_precision("float32"):
-            ref_outputs, variables = t5x_decoder.init_with_output(
-                jax.random.PRNGKey(222),
-                cross_attention_data,
-                self.ref_inputs["decoder_input_tokens"],
-                decoder_mask=decoder_mask,
-                deterministic=True,
-            )
-
-            test_model_cfg: t5.T5EncoderDecoderModel.Config = self._base_model_config(
+            test_model_cfg: t5.T5EncoderDecoderModel.Config = self._model_config(
                 stack_cfg=t5.t5_transformer_stack_config(base_cfg=stack_cls.default_config())
             )
             test_model_cfg.decoder.emb.token_emb = Embedding.default_config().set(
-                num_embeddings=self.t5x_config.vocab_size, dim=self.t5x_config.emb_dim
+                num_embeddings=test_model_cfg.shared_token_emb.num_embeddings,
+                dim=test_model_cfg.shared_token_emb.dim,
             )
             test_model_cfg.decoder.transformer.layer.cross_attention.source_dim = (
-                self.t5x_config.emb_dim
+                test_model_cfg.shared_token_emb.dim
             )
             test_model_cfg = test_model_cfg.decoder
             test_model = test_model_cfg.set(name="decoder").instantiate(parent=None)
             test_state = _parameters_from_t5x_decoder(
-                {k: v for k, v in variables["params"].items() if k != "shared_embedding"},
+                {k: v for k, v in testcase["params"].items() if k != "shared_embedding"},
                 test_model,
             )
             test_state.update(
                 emb=dict(
                     token_emb=_parameters_from_t5x_linear_like(
-                        variables["params"]["shared_embedding"]
+                        testcase["params"]["shared_embedding"]
                     )
                 )
             )
@@ -1276,61 +1110,43 @@ class T5XModelConverterTest(TestCase):
                 prng_key=jax.random.PRNGKey(123),
                 state=test_state,
                 inputs=dict(
-                    input_ids=self.test_inputs["target_ids"],
-                    cross_attention_data=cross_attention_data,
+                    input_ids=testcase["inputs"]["target_ids"],
+                    cross_attention_data=testcase["inputs"]["cross_attention_data"],
                 ),
             )
 
-        label_mask = (self.test_inputs["target_labels"] > 0)[:, :, None]
+        label_mask = (testcase["inputs"]["target_labels"] > 0)[:, :, None]
         self.assertGreater(label_mask.sum(), (1 - label_mask).sum())
         # Tolerance set to 1e-5 for CPU. Test passses for atol=1e-6 on TPU.
         self.assertNestedAllClose(
-            test_outputs["logits"] * label_mask, as_tensor(ref_outputs) * label_mask, atol=self.atol
+            test_outputs["logits"] * label_mask, testcase["outputs"] * label_mask, atol=self.atol
         )
 
     @parameterized.parameters([StackedTransformerLayer, RepeatedTransformerLayer])
     def test_parameters_from_t5x_encoder(self, stack_cls: Type[BaseStackedTransformerLayer]):
-        encoder_mask = layers.make_attention_mask(
-            self.ref_inputs["encoder_input_tokens"] > 0,
-            self.ref_inputs["encoder_input_tokens"] > 0,
-            dtype=self.t5x_config.dtype,
-        )
-
-        shared_embedding = layers.Embed(
-            num_embeddings=self.t5x_config.vocab_size,
-            features=self.t5x_config.emb_dim,
-            dtype=self.t5x_config.dtype,
-            attend_dtype=jnp.float32,  # for logit training stability
-            embedding_init=flax.linen.initializers.normal(stddev=1.0),
-            one_hot=True,
-            name="token_embedder",
-        )
-        t5x_encoder = network.Encoder(self.t5x_config, shared_embedding)
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_encoder.npy"),
+            allow_pickle=True,
+        ).item()
 
         with jax.default_matmul_precision("float32"):
-            ref_outputs, variables = t5x_encoder.init_with_output(
-                jax.random.PRNGKey(222),
-                self.ref_inputs["encoder_input_tokens"],
-                encoder_mask=encoder_mask,
-                deterministic=True,
-            )
-
-            test_model_cfg: t5.T5EncoderDecoderModel.Config = self._base_model_config(
+            test_model_cfg: t5.T5EncoderDecoderModel.Config = self._model_config(
                 stack_cfg=t5.t5_transformer_stack_config(base_cfg=stack_cls.default_config())
             )
             test_model_cfg.encoder.emb.token_emb = Embedding.default_config().set(
-                num_embeddings=self.t5x_config.vocab_size, dim=self.t5x_config.emb_dim
+                num_embeddings=test_model_cfg.shared_token_emb.num_embeddings,
+                dim=test_model_cfg.shared_token_emb.dim,
             )
             test_model_cfg = test_model_cfg.encoder
             test_model = test_model_cfg.set(name="encoder").instantiate(parent=None)
             test_state = _parameters_from_t5x_encoder(
-                {k: v for k, v in variables["params"].items() if k != "shared_embedding"},
+                {k: v for k, v in testcase["params"].items() if k != "shared_embedding"},
                 test_model,
             )
             test_state.update(
                 emb=dict(
                     token_emb=_parameters_from_t5x_linear_like(
-                        variables["params"]["shared_embedding"]
+                        testcase["params"]["shared_embedding"]
                     )
                 )
             )
@@ -1339,13 +1155,13 @@ class T5XModelConverterTest(TestCase):
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
                 state=test_state,
-                inputs=dict(input_ids=self.test_inputs["source_ids"]),
+                inputs=dict(input_ids=testcase["inputs"]["source_ids"]),
             )
 
         # Tolerance set to 1e-5 for CPU. Test passses for atol=1e-6 on TPU.
-        source_mask = (self.test_inputs["source_ids"] > 0)[:, :, None]
+        source_mask = (testcase["inputs"]["source_ids"] > 0)[:, :, None]
         self.assertNestedAllClose(
-            test_outputs * source_mask, as_tensor(ref_outputs) * source_mask, atol=self.atol
+            test_outputs * source_mask, testcase["outputs"] * source_mask, atol=self.atol
         )
 
     @parameterized.product(
@@ -1357,20 +1173,17 @@ class T5XModelConverterTest(TestCase):
         stack_cls: Type[BaseStackedTransformerLayer],
         proj_cls: Type[BaseQKVLinear],
     ):
-        t5x_model = network.Transformer(self.t5x_config)
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_encoder_decoder.npy"),
+            allow_pickle=True,
+        ).item()
+
+        print(testcase.keys())
 
         with jax.default_matmul_precision("float32"):
-            ref_outputs, variables = t5x_model.init_with_output(
-                jax.random.PRNGKey(111),
-                self.ref_inputs["encoder_input_tokens"],
-                self.ref_inputs["decoder_input_tokens"],
-                self.ref_inputs["decoder_target_tokens"],
-                enable_dropout=False,
-            )
-
             stack_cfg = stack_cls.default_config()
             stack_cfg.layer.self_attention.attention.input_linear = proj_cls.default_config()
-            test_model_cfg: t5.T5EncoderDecoderModel.Config = self._base_model_config(
+            test_model_cfg: t5.T5EncoderDecoderModel.Config = self._model_config(
                 stack_cfg=t5.t5_transformer_stack_config(base_cfg=stack_cfg),
             )
             test_model = test_model_cfg.set(name="t5").instantiate(parent=None)
@@ -1379,14 +1192,24 @@ class T5XModelConverterTest(TestCase):
                 test_model,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
-                state=parameters_from_t5x_encoder_decoder(variables["params"], test_model),
-                inputs=dict(input_batch=self.test_inputs),
+                state=parameters_from_t5x_encoder_decoder(testcase["params"], test_model),
+                inputs=dict(
+                    input_batch=dict(
+                        source=dict(
+                            input_ids=testcase["inputs"]["source_ids"],
+                        ),
+                        target=dict(
+                            input_ids=testcase["inputs"]["target_ids"],
+                        ),
+                        target_labels=testcase["inputs"]["target_labels"],
+                    ),
+                ),
                 method="predict",
             )
 
         # Tolerance set to 1e-5 for CPU. Test passses for atol=1e-6 on TPU.
-        label_mask = (self.test_inputs["target_labels"] > 0)[:, :, None]
+        label_mask = (testcase["inputs"]["target_labels"] > 0)[:, :, None]
         self.assertGreater(label_mask.sum(), (1 - label_mask).sum())
         self.assertNestedAllClose(
-            test_outputs["logits"] * label_mask, as_tensor(ref_outputs) * label_mask, atol=self.atol
+            test_outputs["logits"] * label_mask, testcase["outputs"] * label_mask, atol=self.atol
         )

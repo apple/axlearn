@@ -7,52 +7,45 @@ name = "axlearn"
 version = "0.0.1"
 description = "AXLearn"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 
 # Production dependencies.
 # Every time we upgrade JAX, we should try to bring the rest to the newest versions.
 dependencies = [
     "attrs>=21.3.0",
     "absl-py",
-    "chex>=0.1.6",
-    "flax>=0.7.1",  # only for checkpoints
+    "chex<0.1.81",  # chex 0.1.81 depends on numpy>=1.25.0.
+    "flax==0.7.4",  # only for checkpoints.
     "importlab==0.7",  # breaks pytype on 0.8
-    "jax==0.4.13",
-    "jaxlib==0.4.13",
+    "jax==0.4.21",
+    "jaxlib==0.4.21",
     "nltk==3.7",  # for text preprocessing
     "numpy<1.24",  # needed to pin to < 1.24; tf ragged_tensor depends on deprecated np.object.
-    "optax==0.1.3",  # optimizers (0.1.0 has known bugs).
+    "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
-    "protobuf==3.20.3",  # needed to pin to 3.20.x or lower for tensorflow 2.8.0.
-    "tensorboard-plugin-profile==2.8.0",  # needed to pin to 2.8.0 for tensorflow 2.8.0.
-    "tensorflow==2.8.0; platform_machine == 'x86_64'",  # needed for tfds to work
-    "tensorflow-datasets==4.7.0",
-    "tensorflow-io[tensorflow]; platform_machine == 'x86_64'",
-    "tensorflow-io-gcs-filesystem[tensorflow]; platform_machine == 'x86_64'",
-    "tensorflow_text==2.8.2",  # implied by seqio, but also used directly for text processing
+    "protobuf>=3.20.3",
+    "tensorboard-plugin-profile==2.14.0",
+    # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
+    "tensorflow==2.14.0",
+    "tensorflow-datasets>=4.9.2",
+    # tensorflow-io 0.34.0 enabled macOS arm64 builds.
+    "tensorflow-io>=0.34.0",
+    "tensorflow_text==2.14.0; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.21",  # used for supporting GDA checkpoints
+    "toml",  # for config management
     "typing-extensions>=4.2.0",  # needed for typing.Protocol
-    "seqio@git+https://github.com/google/seqio.git@8efd5dc016bb626509bdf656e2bbcdfa8a7cf2d8",  # used for inputs
+    "seqio==0.0.18",  # used for inputs
 ]
 
 [project.optional-dependencies]
 # Apple Silicon dependencies.
+# Need to run `conda install -c apple tensorflow-deps` separately.
 apple-silicon = [
-    "attrs>=21.3.0",
-    "absl-py",
-    "chex>=0.1.6",
-    "flax>=0.7.1",  # only for checkpoints
-    "jax==0.4.13",
-    "jaxlib==0.4.13",
-    "nltk==3.7",  # for text preprocessing
-    "optax>=0.1.1",  # optimizers (0.1.0 has known bugs).
-    "portpicker",
-    "tensorboard-plugin-profile==2.8.0",  # needed to pin to 2.8.0 for tensorflow 2.8.0.
-    "tensorflow-datasets==4.7.0",
-    "tensorstore>=0.1.21",  # used for supporting GDA checkpoints
-    "typing-extensions>=4.2.0",  # needed for typing.Protocol
-    "seqio@git+https://github.com/google/seqio.git@8efd5dc016bb626509bdf656e2bbcdfa8a7cf2d8",  # used for inputs
+    "tensorflow-metal==1.1.0; platform_machine == 'arm64'",
+    # As of Nov 15, 2023, tensorflow_text has no arm64 build.
+    # We need to manually build the wheel and install it, following instructions at https://github.com/tensorflow/text/tree/2.14#build-from-source-steps.
 ]
+
 # Requirements for testing and development.
 dev = [
     "black==23.1a1",  # formatting
@@ -73,35 +66,44 @@ dev = [
     "tqdm",  # test-only
     "timm==0.6.12",  # DiT Dependency test-only
     "torch>=1.12.1",  # test-only
-    "torchvision==0.14.1",  # test-only
-    "transformers==4.27.1",  # test-only
+    "torchvision==0.16.1",  # test-only
+    "transformers==4.36.0",  # test-only
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
 ]
 # Requirements for GCP job management.
 gcp = [
-    "cloud-tpu-client",
-    "crcmod",
-    "google-api-python-client==1.8.0",
-    "google-auth==1.35.0",
-    "google-cloud-storage==2.2.1",
-    "google-cloud-core==1.7.3",
-    "toml",  # for config management
+    "cloud-tpu-client",  # for creating and managing TPUs.
+    "crcmod",  # for file uploads.
+    "google-api-python-client==2.109.0",
+    "google-auth==2.23.0",
+    "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
+    "pyOpenSSL>=22.1.0",  # compat with cryptography version.
+    "google-cloud-storage==2.11.0",
+    "google-cloud-core==2.3.3",
 ]
-# Note: Currently tested on x86.
-t5x = [
-    "t5==0.9.4",
-    "t5x@git+https://github.com/google-research/t5x.git@caa500771af314e3cb877b5c158c1db4ae0427c2"
+# For TPU training.
+# Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
+tpu = [
+    "axlearn[gcp]",
+    "jax[tpu]==0.4.21",  # must be >=0.4.19 for compat with v5p.
 ]
-# Jax-triton. Can only be installed on a GPU machine.
-jax_triton = [
-    "cmake",
-    # Compatible with jax 0.4.13.
-    "jax-triton@git+https://github.com/jax-ml/jax-triton.git@c3721db034b4311e0a8799d6a28ce8aea7be1da1",
-    "jaxlib==0.4.13+cuda12.cudnn89",
-    "nvidia-cudnn-cu12==8.9.2.26",
-    # To avoid conflicting with jax.
-    "tensorflow-cpu==2.8.0",
+# Vertex AI tensorboard.
+vertexai_tensorboard = [
+    # Required to fix a `distro-info` bug we run into when using `tb_gcp_tensorboard` from
+    # `google_cloud_aiplatform[tensorboard]`. See:
+    # [1] https://bugs.launchpad.net/ubuntu/+source/distro-info/+bug/1991606
+    # [2] https://github.com/pypa/setuptools/issues/3772
+    "setuptools==65.7.0",
+    "google-cloud-aiplatform[tensorboard]",
+    "tensorboard",
+]
+# Dataflow dependencies.
+dataflow = [
+    "apache-beam==2.52.0",
+    "apache-beam[gcp]",
+    "google-apitools",  # for beam pipeline
+    "orjson==3.9.10",
 ]
 
 [tool.flit.module]

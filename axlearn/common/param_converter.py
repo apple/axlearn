@@ -42,6 +42,7 @@ from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
 from axlearn.common.attention import (
     BaseMultiheadLinear,
+    BaseStackedTransformerLayer,
     FusedQKVLinear,
     LearnedPositionalEmbedding,
     MultiheadAttention,
@@ -68,8 +69,8 @@ from axlearn.common.dit import (
     TimeStepEmbedding,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
-from axlearn.common.encoder import EncoderModel
-from axlearn.common.layers import Conv2D, Embedding, LayerNorm, Linear, RMSNorm
+from axlearn.common.encoder import Encoder, EncoderModel
+from axlearn.common.layers import Conv2D, Embedding, LayerNorm, LayerNormStateless, Linear, RMSNorm
 from axlearn.common.t5 import T5Decoder, T5Encoder, T5EncoderDecoderModel
 from axlearn.common.text_encoder import TextEmbeddingEncoder
 from axlearn.common.utils import NestedTensor, Tensor, VDict, as_tensor
@@ -303,9 +304,18 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
             return
 
     if isinstance(dst, torch.nn.LayerNorm):
-        check_supported(LayerNorm)
-        dst.weight.data = as_torch_tensor(src["scale"])
-        dst.bias.data = as_torch_tensor(src["bias"])
+        check_supported(LayerNorm, LayerNormStateless)
+        if isinstance(layer, LayerNorm):
+            if not dst.elementwise_affine:
+                raise ValueError("elementwise_affine must be True for conversion from LayerNorm")
+            dst.weight.data = as_torch_tensor(src["scale"])
+            dst.bias.data = as_torch_tensor(src["bias"])
+        else:
+            if dst.elementwise_affine:
+                raise ValueError(
+                    "elementwise_affine must be False for conversion from LayerNormStateless"
+                )
+            # No parameter to set.
     elif isinstance(dst, torch.nn.Linear):
         check_supported(Linear, MultiheadInputLinear)
         if isinstance(layer, MultiheadInputLinear):
@@ -652,7 +662,10 @@ def torch_to_axlearn(
             return as_tensor(convert_fn(src=src, dst=dst_layer))
 
     if isinstance(src, torch.nn.LayerNorm):
-        dst = dict(scale=src.weight, bias=src.bias)
+        if src.elementwise_affine:
+            dst = dict(scale=src.weight, bias=src.bias)
+        else:
+            dst = {}
     elif isinstance(src, torch.nn.Linear):
         # torch.nn.Linear.weight uses layout (output, input) while AXLearn uses (input, output).
         dst = dict(weight=src.weight.transpose(0, 1))
@@ -704,7 +717,9 @@ def torch_to_axlearn(
     elif isinstance(src, hf_encoder_decoder.EncoderDecoderModel):
         dst = _parameters_from_encoder_decoder_model(src)
     elif isinstance(src, hf_bert.BertModel):
-        dst = _parameters_from_bert_model(src)
+        dst = _parameters_from_bert_model(src, dst_layer=dst_layer)
+    elif isinstance(src, (hf_bert.BertEncoder, hf_roberta.RobertaEncoder)):
+        dst = _parameters_from_bert_encoder(src, dst_layer=dst_layer)
     elif isinstance(src, hf_roberta.RobertaModel):
         dst = _parameters_from_roberta_model(src)
     elif isinstance(src, hf_xlnet.XLNetRelativeAttention):
@@ -1130,11 +1145,12 @@ def _parameters_from_attention_dense(
         )
         i_proj[dst_proj] = dense_params
     output_dense = output.dense
+    o_proj = torch_to_axlearn(output_dense)
     o_proj = dict(
-        weight=output_dense.weight.view(-1, num_heads, per_head_dim),
-        bias=output_dense.bias,
+        weight=o_proj["weight"].transpose().reshape(-1, num_heads, per_head_dim),
+        bias=o_proj["bias"],
     )
-    return dict(i_proj=i_proj, o_proj=o_proj, dropout={})
+    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_query={}, scale_key={})
 
 
 def _parameters_from_roberta_attention(src: hf_roberta.RobertaAttention):
@@ -1285,7 +1301,8 @@ def _parameters_from_gpt2_attention(
 ):
     # GPT2 attention weights are concat into one array, break out head and q/k/v dims.
     num_heads = src.num_heads
-    attention = {}
+    # Add empty state for the key/query scaling.
+    attention = {"scale_key": {}, "scale_query": {}}
     # Head projection.
     c_attn_w = src.c_attn.weight
     c_attn_b = src.c_attn.bias
@@ -1387,10 +1404,26 @@ def _parameters_from_bert_pooler(src: hf_bert.BertPooler):
     )
 
 
-def _parameters_from_bert_encoder(src: Union[hf_bert.BertEncoder, hf_roberta.RobertaEncoder]):
-    return {
-        f"layer{i}": _parameters_from_roberta_layer(module) for i, module in enumerate(src.layer)
+def _parameters_from_bert_encoder(
+    src: Union[hf_bert.BertEncoder, hf_roberta.RobertaEncoder],
+    dst_layer: Optional[BaseStackedTransformerLayer] = None,
+):
+    transformer_layers = {
+        i: _parameters_from_roberta_layer(module) for i, module in enumerate(src.layer)
     }
+    num_layers = len(transformer_layers)
+    if dst_layer is not None and isinstance(dst_layer, RepeatedTransformerLayer):
+        return dict(
+            repeat=VDict(
+                # pylint: disable-next=no-value-for-parameter
+                layer=jax.tree_util.tree_map(
+                    lambda *inputs: jnp.stack(inputs),
+                    *[transformer_layers[i] for i in range(num_layers)],
+                )
+            )
+        )
+    else:
+        return {f"layer{i}": transformer_layers[i] for i in range(num_layers)}
 
 
 # Note: Hugging Face RoBERTa uses slightly different embeddings from BERT.
@@ -1404,10 +1437,12 @@ def _parameters_from_roberta_model(src: hf_roberta.RobertaModel):
     return params
 
 
-def _parameters_from_bert_model(src: hf_bert.BertModel):
+def _parameters_from_bert_model(src: hf_bert.BertModel, dst_layer: Optional[Encoder] = None):
     encoder = dict(
         emb=_parameters_from_bert_embeddings(src.embeddings),
-        transformer=_parameters_from_bert_encoder(src.encoder),
+        transformer=_parameters_from_bert_encoder(
+            src.encoder, dst_layer=dst_layer.transformer if dst_layer is not None else None
+        ),
         attention_mask={},
     )
     params = dict(encoder=encoder)
@@ -1500,7 +1535,7 @@ def _parameters_from_t5_attention(src: hf_t5.T5Attention, *, dst_layer: Transfor
                 )
             ),
         )
-    return dict(i_proj=i_proj, dropout={}, **o_proj)
+    return dict(i_proj=i_proj, dropout={}, **o_proj, scale_query={}, scale_key={})
 
 
 def _parameters_from_t5_self_attention(
@@ -1681,6 +1716,8 @@ def _parameters_from_xlnet_attention(src: hf_xlnet.XLNetRelativeAttention):
             v_bias=src.r_r_bias,
             dropout={},
             relative_pos_emb={},
+            scale_query={},
+            scale_key={},
         ),
         norm=torch_to_axlearn(src.layer_norm),
         dropout={},
@@ -1738,7 +1775,7 @@ def _parameters_from_distilbert_attention_dense(
         weight=output_dense.weight.view(-1, num_heads, per_head_dim),
         bias=output_dense.bias,
     )
-    return dict(i_proj=i_proj, o_proj=o_proj, dropout={})
+    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_query={}, scale_key={})
 
 
 def _parameters_from_distilbert_attention(src: hf_distilbert.Transformer):

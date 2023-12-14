@@ -34,7 +34,7 @@ import tensorflow as tf
 from absl import logging
 
 from axlearn.common import input_tf_data
-from axlearn.common.config import config_class, config_for_function
+from axlearn.common.config import config_for_function
 from axlearn.common.utils import Tensor
 from axlearn.vision import augment
 from axlearn.vision.mask_generator import MaskingGenerator
@@ -353,7 +353,7 @@ def _process_example(
         return data
 
     def dataset_fn(ds: tf.data.Dataset) -> tf.data.Dataset:
-        return ds.map(example_fn, num_parallel_calls=num_parallel_calls)
+        return ds.map(example_fn, num_parallel_calls=num_parallel_calls or tf.data.AUTOTUNE)
 
     return dataset_fn
 
@@ -363,28 +363,19 @@ def pad_with_negative_labels(element_spec: Any) -> Any:
     # For multilabel classification usecases, we support the plural version of label.
     for key in ("label", "labels", "text"):
         if key in example:
-            example[key] = -tf.ones_like(example[key])
+            example[key] = tf.negative(tf.ones_like(example[key]))
     return example
 
 
 class ImagenetInput(input_tf_data.Input):
     """ImageNet input module."""
 
-    @config_class
-    class Config(input_tf_data.Input.Config):
-        """Configures ImagenetInput."""
-
-        image_size: Tuple[int, int] = (224, 224)  # The image size.
-        # The image size to resize to during eval before cropping. If set to None, center crop the
-        # image then resize to `image_size` while perserving the original aspect ratio.
-        eval_resize: Optional[Tuple[int, int]] = None
-
     @classmethod
     def default_config(cls):
         cfg = super().default_config()  # type: ImagenetInput.Config
         cfg.source = config_for_function(input_tf_data.tfds_dataset).set(
             dataset_name="imagenet2012",
-            shuffle_buffer_size=1024,  # to be tuned.
+            train_shuffle_buffer_size=1024,  # to be tuned.
         )
         cfg.processor = config_for_function(_process_example).set(
             image_size=(224, 224),

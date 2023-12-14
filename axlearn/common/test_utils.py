@@ -5,6 +5,8 @@ import contextlib
 import copy
 import dataclasses
 import os
+import pathlib
+import re
 import tempfile
 from collections import OrderedDict
 from functools import partial
@@ -19,7 +21,7 @@ from absl import logging
 from absl.testing import parameterized
 from jax import numpy as jnp
 
-from axlearn.common import decoding, optimizers, schedule, utils_spmd
+from axlearn.common import optimizers, schedule, utils_spmd
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import every_n_steps_policy
@@ -32,7 +34,6 @@ from axlearn.common.config import (
 )
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import Learner
-from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.module import functional as F
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import opt_param_values
@@ -51,19 +52,6 @@ from axlearn.common.utils import (
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-# Instead of running setup() in TestCase.setUp(), we need to run it here, because setUp() runs
-# after parameterized.parameters(), so if we have
-#     @parameterized.parameters(
-#         {
-#             "data": jnp.array([[1.0, 0.8, 0, 0]], dtype=jnp.float32),
-#         }
-#     )
-# `data` will be of type jax.DeviceArray() instead of jax.Array() because we haven't called
-# jax.config.update("jax_array", True) yet.
-utils_spmd.setup()
-
-# See utils_spmd.py for where we set "jax_default_prng_impl".
-_default_prng_impl = "rbg"
 _PYTEST_OPT_REGISTERED = {}
 
 
@@ -111,6 +99,23 @@ def as_local_tensor(x: Tensor) -> NestedTensor:
     raise NotImplementedError(f"{type(x)}: {x}")
 
 
+def clean_hlo(hlo: str) -> str:
+    """Returns a cleaned version of `hlo` with non-functional parts that may impact test reliability
+    removed.
+
+    Args:
+        hlo: The hlo to clean.
+
+    Returns:
+        A cleaned version of `hlo`.
+    """
+    # Matches an escaped string literal. E.g., "hello, world\"\\"
+    escaped_str = '"' + r"""([^"\\]|\\\\|\\")*""" + '"'
+    metadata_value = "(" + escaped_str + "|" + r"\d+" + ")"
+    pattern = r"metadata=\{(\w+=" + metadata_value + r"\s*)*\}"
+    return re.sub(pattern=pattern, repl="", string=hlo)
+
+
 class ParameterConversionFn(Protocol):
     def __call__(self, src: Any, *, dst_layer: BaseLayer) -> NestedTensor:
         """Converts parameters from `src` to parameters for `dst_layer`."""
@@ -125,6 +130,8 @@ class TestCase(parameterized.TestCase):
 
     def setUp(self):
         push_data_dir(self.data_dir)
+        # Setup without distributed initialization.
+        utils_spmd.setup(jax_backend="cpu")
 
     def tearDown(self) -> None:
         self.assertEqual(pop_data_dir(), self.data_dir)
@@ -207,7 +214,7 @@ class TestCase(parameterized.TestCase):
                 self.assertEqual(a_value.shape, b_value.shape, msg=f"{a_name}")
                 assert_allclose(a_value, b_value, atol=atol, rtol=rtol, err_msg=f"{a_name}")
             else:
-                self.assertAlmostEqual(a_value, b_value)
+                self.assertAlmostEqual(a_value, b_value, msg=f"{a_name}")
 
     def assertNestedEqual(self, a, b):
         a_kv = flatten_items(a)
@@ -223,6 +230,7 @@ class TestCase(parameterized.TestCase):
                 self.assertEqual(a_value.dtype, b_value.dtype)
 
 
+# TODO(markblee): Move this to axlearn/experiments/test_utils.py, where it's used.
 class TrainerConfigTestCase(TestCase):
     """Base class for testing trainer configs."""
 
@@ -238,7 +246,7 @@ class TrainerConfigTestCase(TestCase):
             for evaler_cfg in cfg.evalers.values():
                 if getattr(evaler_cfg.eval_policy, "fn", None) is eval_every_n_steps_policy:
                     evaler_cfg.eval_policy.n = 2
-                evaler_cfg.vlog = max(evaler_cfg.vlog, 3)
+                evaler_cfg.vlog = max(evaler_cfg.vlog or 0, 3)
             if getattr(cfg.checkpointer.save_policy, "fn", None) is every_n_steps_policy:
                 cfg.checkpointer.save_policy.n = 2
             logging.info("_test_with_trainer_config: %s", trainer_config)
@@ -287,149 +295,23 @@ class DummyForwardModel(BaseModel):
         return self.forward(input_batch)[1]
 
 
-# forward() is not implemented.
-# pylint: disable-next=abstract-method
-class DummyDecodingModel(BaseModel):
-    """A dummy model whose `beam_search_decode` and `sample_decode` returns ids from
-    input_batch["predicted"]."""
-
-    @config_class
-    class Config(BaseModel.Config):
-        vocab_size: Required[int] = REQUIRED
-        # bos_id: Required[int] = REQUIRED
-        eos_id: Required[int] = REQUIRED
-
-    def _token_to_scores(
-        self,
-        predicted_sequences: Tensor,
-        num_decodes: int,
-        logits_modifier: Optional[LogitsToLogitsFn] = None,
-    ):
-        cfg = self.config
-
-        print(f"predicted_sequences={predicted_sequences}")
-        batch_size = predicted_sequences.shape[0]
-        vocab_size = cfg.vocab_size
-
-        # This fn aims to duplicate the input sequences.
-        def tokens_to_scores(
-            token_indices: Tensor, state_cache: NestedTensor  # pylint: disable=unused-argument
-        ) -> Tuple[Tensor, NestedTensor]:
-            cur_step = state_cache["cur_step"]
-            # Gets the golden token for the next time step.
-            # [batch_size, num_decodes]
-            # Adds EOS after predicted_sequences.shape[1] (all tokens would be equally likely).
-            cur_golden_token = jnp.take_along_axis(
-                predicted_sequences,
-                jnp.reshape(cur_step[:, 0] + 1, (batch_size, num_decodes)),
-                axis=1,
-            )
-            print(f"cur_golden_token={cur_golden_token}, vocab_size={vocab_size}")
-            # Convert tokens to the logits by the one hot operation.
-            # The golden token's logit will be 1000 and others' are zeros.
-            # [batch_size * num_decodes, vocab_size]
-            logits_for_tokens = jnp.reshape(
-                jax.nn.one_hot(cur_golden_token, vocab_size, axis=-1) * 1000,
-                (batch_size * num_decodes, vocab_size),
-            )
-            log_probs_for_tokens = jax.nn.log_softmax(logits_for_tokens)
-            # Update state in the cache.
-            new_cache = state_cache.copy()
-            new_cache["cur_step"] = cur_step + 1
-            # Apply logits_modifier.
-            if logits_modifier is not None:
-                log_probs_for_tokens = logits_modifier(log_probs_for_tokens)
-            return log_probs_for_tokens, new_cache
-
-        return tokens_to_scores
-
-    def beam_search_decode(
-        self,
-        input_batch: NestedTensor,
-        *,
-        num_decodes: int = 1,
-        max_len: int = 114,
-    ) -> decoding.BeamSearchOutputs:
-        cfg = self.config
-
-        if "beam_search_outputs" in input_batch:
-            return input_batch["beam_search_outputs"]
-
-        predicted_sequences = input_batch["predicted"]
-        batch_size = predicted_sequences.shape[0]
-
-        # Initializes the cache for the beam search.
-        init_cache = {}
-        init_cache["cur_step"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
-        inputs = jnp.zeros_like(predicted_sequences)
-        if "prefix" in input_batch:
-            inputs = inputs.at[:, : input_batch["prefix"].shape[1]].set(input_batch["prefix"])
-        return decoding.beam_search_decode(
-            inputs=inputs,
-            cache=init_cache,
-            tokens_to_scores=self._token_to_scores(predicted_sequences, num_decodes),
-            eos_id=cfg.eos_id,
-            num_decodes=num_decodes,
-            max_decode_len=max(max_len, predicted_sequences.shape[-1]),
-        )
-
-    def sample_decode(
-        self,
-        input_batch: NestedTensor,
-        *,
-        num_decodes: int,
-        max_len: int,
-        logits_modifier: LogitsToLogitsFn,
-    ) -> decoding.SampleOutputs:
-        cfg = self.config
-
-        if "sample_outputs" in input_batch:
-            return input_batch["sample_outputs"]
-
-        predicted_sequences = input_batch["predicted"]
-        batch_size = predicted_sequences.shape[0]
-
-        # Initializes the cache for the beam search.
-        init_cache = {}
-        init_cache["cur_step"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
-        inputs = jnp.zeros_like(predicted_sequences)
-        inputs = inputs.at[:, 0].set(cfg.eos_id)
-        return decoding.sample_decode(
-            inputs=inputs,
-            cache=init_cache,
-            tokens_to_scores=self._token_to_scores(
-                predicted_sequences,
-                num_decodes,
-                logits_modifier=logits_modifier,
-            ),
-            stop_decoding_condition=decoding.StopOnSubsequence([[cfg.eos_id]]),
-            num_decodes=num_decodes,
-            max_decode_len=max(max_len, predicted_sequences.shape[-1]),
-            prng_key=jax.random.PRNGKey(123),
-        )
-
-
 class TestWithTemporaryCWD(TestCase):
     """Run all tests in a temp directory to isolate from local env."""
 
     def run(self, result=None):
         temp_root = tempfile.TemporaryDirectory()
-        # Note that using "as" will only return the dir name.
-        with temp_root:
-            # pylint: disable-next=attribute-defined-outside-init
-            self._temp_root = temp_root
-            temp_root = os.path.realpath(self._temp_root.name)
-            os.chdir(temp_root)
+        # Note that using "with temp_root as ..." will only return the dir name.
+        # pylint: disable-next=attribute-defined-outside-init
+        self._temp_root = temp_root
+        with temp_root, temp_chdir(os.path.realpath(self._temp_root.name)):
             super().run(result)
 
 
 @contextlib.contextmanager
 def prng_impl(new_prng_impl: str):
-    old_prng_impl = _default_prng_impl
+    old_prng_impl = jax.config.jax_default_prng_impl
 
     def switch(value):
-        global _default_prng_impl  # pylint: disable=global-statement
-        _default_prng_impl = value
         jax.config.update("jax_default_prng_impl", value)
 
     switch(new_prng_impl)
@@ -451,8 +333,9 @@ class ThirdPartyInitializer(Initializer):
     """An stand-in initializer that indicates that initialization is delegated to a third party
     library, like HuggingFace."""
 
-    def __init__(self, library: str):
-        self._library = library
+    @config_class
+    class Config(Initializer.Config):
+        library: Required[str] = REQUIRED
 
     def debug_string(
         self,
@@ -460,11 +343,10 @@ class ThirdPartyInitializer(Initializer):
         shape: Optional[Shape] = None,
         axes: Optional[FanAxes] = None,
     ) -> str:
-        return f"delegated({self._library})"
+        return f"delegated({self.config.library})"
 
 
-# When pytype supports recursive types, switch to:
-# Optional[Union[ParamInitSpec, Dict[str, "NestedParamInitSpec"]]]
+# For new code, use Nested[ParamInitSpec].
 NestedParamInitSpec = Optional[Union[ParamInitSpec, Dict[str, Any]]]
 
 
@@ -668,6 +550,7 @@ def read_per_param_settings(
     return all_param_settings
 
 
+# TODO(markblee): Update to take prng_key explicitly.
 def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     """Builds a dummy attention mask where non-padding tokens are followed by padding tokens.
 
@@ -690,9 +573,10 @@ def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     input_len = jax.random.randint(
         jax.random.PRNGKey(123), shape=(batch_size,), minval=0, maxval=max_seq_len
     )
-    return lower_diag[input_len]
+    return lower_diag[input_len].astype(jnp.int32)
 
 
+# TODO(markblee): Update to take prng_key explicitly.
 def dummy_segments_positions(
     batch: int, seq_len: int, *, num_segments: int
 ) -> Tuple[Tensor, Tensor]:
@@ -703,7 +587,7 @@ def dummy_segments_positions(
         seq_len: 4
         num_segments: 3
         output: (
-            [[0, 1, 1, 1], [1, 1, 2, 2]],  # segment_ids
+            [[1, 2, 2, 2], [1, 1, 2, 2]],  # segment_ids
             [[0, 0, 1, 2], [0, 1, 0, 1]],  # positions
         )
 
@@ -808,3 +692,14 @@ def mock_trainer_config(
         )
     )
     return cfg
+
+
+@contextlib.contextmanager
+def temp_chdir(new_cwd: Union[pathlib.Path, str]):
+    """Changes into a temp CWD only within the context."""
+    old_cwd = os.getcwd()
+    os.chdir(new_cwd)
+    try:
+        yield
+    finally:
+        os.chdir(old_cwd)

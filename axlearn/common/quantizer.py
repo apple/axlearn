@@ -33,23 +33,17 @@ import jax.nn
 import jax.numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Linear, MultiLinear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import InvocationContext, Module, current_context
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_init import (
-    ConstantInitializer,
     DefaultInitializer,
     FanAxes,
     GaussianInitializer,
     WeightInitializer,
+    constant_initializer,
 )
 from axlearn.common.schedule import as_schedule_fn
 from axlearn.common.utils import NestedTensor, Tensor
@@ -315,7 +309,7 @@ class RandomVectorQuantizer(BaseQuantizer):
         # Sect 3.1 https://arxiv.org/pdf/2202.01855.pdf.
         # Codebook uses standard Gaussian initialization.
         cfg.param_init = DefaultInitializer.default_config().set(
-            init_by_param_name={".*codebook$": config_for_class(GaussianInitializer).set(std=1.0)}
+            init_by_param_name={".*codebook$": GaussianInitializer.default_config().set(std=1.0)}
         )
         return cfg
 
@@ -331,7 +325,7 @@ class RandomVectorQuantizer(BaseQuantizer):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         params = super().initialize_parameters_recursively(prng_key=prng_key, prebuilt=prebuilt)
         # In RandomVectorQuantizer, we freeze codebook throughout training. So we can
@@ -582,7 +576,7 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
             shape=[],
             dtype=jnp.float32,
             mesh_axes=(None,),
-            initializer=ConstantInitializer(0.0),
+            initializer=constant_initializer(0.0),
             weight_decay_scale=0,
         )
         return params

@@ -109,4 +109,6 @@ def _parameters_from_fairseq_rel_pos_attention(
         v_bias=src.pos_bias_v,
         dropout={},
         relative_pos_emb={},
+        scale_query={},
+        scale_key={},
     )

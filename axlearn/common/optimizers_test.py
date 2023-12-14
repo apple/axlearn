@@ -20,6 +20,7 @@ from axlearn.common.optimizers import (
     ParamEmaState,
     adafactor_optimizer,
     adam_optimizer,
+    adamw_decoupled_optimizer,
     adamw_optimizer,
     add_decayed_weights,
     chain,
@@ -32,7 +33,11 @@ from axlearn.common.optimizers import (
     opt_param_values,
     param_ema,
     per_param_scale_by_path,
+)
+from axlearn.common.optimizers import scale as scale_by_value
+from axlearn.common.optimizers import (
     scale_by_param_block_rms,
+    scale_by_schedule,
     scale_by_trust_ratio,
     scale_update_per_param,
     sgd_optimizer,
@@ -218,6 +223,9 @@ class OptimizerTest(TestCase):
 
     @parameterized.parameters((0.1, 0, False), (0.1, 0.01, True), (0.1, 0.0, True))
     def test_adamw_optimizer(self, learning_rate, weight_decay, multiply_by_parameter_scale):
+        adam_update_transformation = None
+        if multiply_by_parameter_scale:
+            adam_update_transformation = scale_by_param_block_rms()
         self._test_optimizer(
             adamw_optimizer(
                 learning_rate=learning_rate,
@@ -225,7 +233,26 @@ class OptimizerTest(TestCase):
                 b2=0.99,
                 eps=1e-5,
                 weight_decay=weight_decay,
-                multiply_by_parameter_scale=multiply_by_parameter_scale,
+                adam_update_transformation=adam_update_transformation,
+            )
+        )
+
+    @parameterized.parameters((0.1, 0, 0.5, False), (0.1, 0.01, 0.2, True), (0.1, 0.0, 0.3, True))
+    def test_adamw_decoupled_optimizer(
+        self, learning_rate, weight_decay, update_schedule, multiply_by_parameter_scale
+    ):
+        adam_update_transformation = None
+        if multiply_by_parameter_scale:
+            adam_update_transformation = scale_by_param_block_rms()
+        self._test_optimizer(
+            adamw_decoupled_optimizer(
+                learning_rate=learning_rate,
+                b1=0.9,
+                b2=0.99,
+                eps=1e-5,
+                update_schedule=update_schedule,
+                weight_decay=weight_decay,
+                adam_update_transformation=adam_update_transformation,
             )
         )
 
@@ -277,6 +304,38 @@ class OptimizerTest(TestCase):
                 multiply_by_parameter_scale=multiply_by_parameter_scale,
             )
         )
+
+    @parameterized.product(
+        mu_dtype=(None, jnp.bfloat16, jnp.float32), params_dtype=(jnp.bfloat16, jnp.float32)
+    )
+    def test_lion_optimizer_dtype(self, mu_dtype, params_dtype):
+        """Tests that dtypes are consistent between init, update and partition."""
+
+        # Construct params.
+        params = OptParam(
+            value=jnp.array(0, dtype=params_dtype),
+            factorization_spec=None,
+            weight_decay_scale=None,
+        )
+        param_specs = ParameterSpec(shape=params.shape, dtype=params.dtype)
+        grads = jnp.array(0, dtype=params_dtype)
+
+        # Construct states.
+        base = lion_optimizer(learning_rate=1.0, b1=0.9, b2=0.99, mu_dtype=mu_dtype)
+        init_state = base.init(params)
+        partition_state = base.partition(param_specs)
+        _, update_state = base.update(grads, init_state, params)
+
+        logging.info("init_state=%s", init_state)
+        logging.info("partition_state=%s", partition_state)
+        logging.info("update_state=%s", update_state)
+
+        def _check_dtypes(x, y, z):
+            self.assertTrue(
+                getattr(x, "dtype", None) == getattr(y, "dtype", None) == getattr(z, "dtype", None)
+            )
+
+        jax.tree_util.tree_map(_check_dtypes, init_state, partition_state, update_state)
 
     def _test_optimizer(self, optimizer):
         params = OptParam(
@@ -432,7 +491,7 @@ class OptimizerTest(TestCase):
             b2=0.999,
             eps=1e-8,
             weight_decay=0,
-            multiply_by_parameter_scale=True,
+            adam_update_transformation=scale_by_param_block_rms(),
         )
         optimizer_no_pps = adamw_optimizer(
             learning_rate=0.01,
@@ -440,7 +499,7 @@ class OptimizerTest(TestCase):
             b2=0.999,
             eps=1e-8,
             weight_decay=0,
-            multiply_by_parameter_scale=False,
+            adam_update_transformation=None,
         )
         params_pps = OptParam(
             value=jnp.asarray(params, dtype=jnp.float32),
@@ -469,6 +528,53 @@ class OptimizerTest(TestCase):
             assert_allclose(update_pps, update_no_pps * param_rms)
 
         jax.tree_util.tree_map(check_pps, updates_pps, updates_no_pps, params_rms)
+
+    @parameterized.product(
+        weight_decay=(0.1, 0.2), update_schedule=(1.0, 0.2, 0.3), scale_adam_by=(0.2, 0.5)
+    )
+    def test_adamw_decoupled_update_schedule(
+        self, weight_decay: float, update_schedule: float, scale_adam_by: float
+    ):
+        learning_rate = 0.01
+        shared_optimizer_kwargs = {
+            "b1": 0.9,
+            "b2": 0.999,
+            "eps": 1e-8,
+        }
+        optimizer_adam = adam_optimizer(
+            learning_rate=learning_rate * update_schedule, **shared_optimizer_kwargs
+        )
+        optimizer_adamw_decoupled = adamw_decoupled_optimizer(
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            update_schedule=update_schedule,
+            adam_update_transformation=scale_by_value(scale_adam_by),
+            **shared_optimizer_kwargs,
+        )
+
+        params = OptParam(
+            value=jnp.asarray([2, 3, 4, 5], dtype=jnp.float32),
+            factorization_spec=None,
+            weight_decay_scale=None,
+        )
+
+        def compute_loss(x):
+            return -jax.nn.log_softmax(x)[1]
+
+        state_adam = optimizer_adam.init(params)
+        state_adamw_decoupled = optimizer_adamw_decoupled.init(params)
+
+        _, grads_adam = jax.value_and_grad(compute_loss)(params.value)
+        updates_adam, _ = optimizer_adam.update(grads_adam, state=state_adam, params=params)
+        _, grads_adam_decoupled = jax.value_and_grad(compute_loss)(params.value)
+        updates_adam_decoupled, _ = optimizer_adamw_decoupled.update(
+            grads_adam_decoupled, state=state_adamw_decoupled, params=params
+        )
+
+        expected_updates_wdr = (
+            updates_adam * scale_adam_by - params.value * weight_decay * update_schedule
+        )
+        self.assertNestedAllClose(updates_adam_decoupled, expected_updates_wdr)
 
     @parameterized.product(
         optimizer_cfg=[config_for_function(sgd_optimizer).set(decouple_weight_decay=True)],
@@ -945,6 +1051,19 @@ class OptimizerTest(TestCase):
                     jax.tree_util.tree_map(lambda p: p.value, params),
                     new_state.ema,
                 )
+
+    def test_scale_by_schedule(self):
+        params = OptParam(
+            value=jnp.asarray([1.0], dtype=jnp.float32),
+            factorization_spec=None,
+            weight_decay_scale=1.0,
+        )
+        scale = 0.5
+        schedule_fn = scale_by_schedule(scale)
+        state = schedule_fn.init(params)
+        update = jnp.array(5.0)
+        scaled_update, _ = schedule_fn.update(update, state, params)
+        self.assertEqual(scaled_update, update * scale)
 
 
 if __name__ == "__main__":

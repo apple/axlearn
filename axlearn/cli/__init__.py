@@ -36,7 +36,24 @@ The executed `Command` ultimately gets processed at `absl_main`. Depending on wh
 contain a `module`, (shell) `command`, or something else. This is used to determine how to process
 the command, and can be easily extended to support additional command types.
 """
-from axlearn.cli.utils import main
+# pylint: disable=import-outside-toplevel
+from axlearn.cli.utils import main as base_main
+from axlearn.cli.utils import register_root_command_group
+
+
+def main(**kwargs):
+    # Register default command groups, depending on which extras the user has installed.
+    # Do this in __main__ to avoid registering on import.
+    try:
+        from axlearn.cli.gcp import add_cmd_group
+
+        register_root_command_group(add_cmd_group, name="gcp")
+    except (ImportError, ModuleNotFoundError):
+        # GCP extras not installed.
+        pass
+
+    base_main(**kwargs)
+
 
 if __name__ == "__main__":
     # Note: don't use `app.run(main)`, as we invoke `app.run` within `main` itself.

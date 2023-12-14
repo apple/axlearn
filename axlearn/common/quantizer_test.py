@@ -18,7 +18,6 @@ from absl.testing import absltest, parameterized
 from fairseq.modules import GumbelVectorQuantizer as fairseq_gumbel_vq
 
 from axlearn.common import schedule
-from axlearn.common.config import config_for_class
 from axlearn.common.module import functional as F
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_init import ConstantInitializer, DefaultInitializer
@@ -33,7 +32,7 @@ from axlearn.common.quantizer import (
     quantize_by_nearest_neighbor,
 )
 from axlearn.common.test_utils import TestCase, assert_allclose, prng_impl
-from axlearn.common.utils import shapes
+from axlearn.common.utils import Tensor, shapes
 
 _CODE_BOOK = jnp.array(
     [
@@ -45,9 +44,9 @@ _CODE_BOOK = jnp.array(
 )
 
 
-def _create_prngkeyarray(key_data: List[int]) -> jax.random.KeyArray:
+def _create_prngkeyarray(key_data: List[int]) -> Tensor:
     # pylint: disable-next=protected-access
-    return jax._src.prng.PRNGKeyArrayImpl(
+    return jax._src.prng.PRNGKeyArrayImpl(  # pytype: disable=module-attr
         impl=jax.random.default_prng_impl(), key_data=jnp.array(key_data, dtype=jnp.uint32)
     )
 
@@ -157,7 +156,7 @@ class HelpersTest(TestCase):
                 num_codebooks=num_groups,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        ".*codebook$": config_for_class(ConstantInitializer).set(value=0.0),
+                        ".*codebook$": ConstantInitializer.default_config().set(value=0.0),
                     }
                 ),
             )

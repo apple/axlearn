@@ -33,6 +33,19 @@ jobs:
             docker build --build-arg="PYTEST_FILES='${SPLIT_TESTFILES_ONELINE}'" -t mydockertarget --target=ci .
 
 workflows:
-  build-and-test-workflow:
+  wf-build:
+    when:
+      equal: [ main, << pipeline.git.branch >> ]
     jobs:
       - build-and-test-job
+
+  wf-pr:
+    when:
+      not:
+        equal: [ main, << pipeline.git.branch >> ]
+    jobs:
+      - hold:
+          type: approval
+      - build-and-test-job:
+          requires:
+            - hold

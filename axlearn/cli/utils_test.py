@@ -84,9 +84,9 @@ class TestUtils(parameterized.TestCase):
                 _parse([self.root_module, "child1", "--help"])
             self.assertEqual(e.exception.code, 0)
 
-            helpstring = stdout.getvalue()
+            helpstring = stdout.getvalue().replace("\n", "  ")
             self.assertRegex(
-                helpstring, r"usage: .* child1 \[-h\] \[--helpfull\] \[--child1\] {grandchild1}"
+                helpstring, r"usage: .* child1 \[-h\] \[--helpfull\] \[--child1\] +{grandchild1}"
             )
 
         # Test that passing --help exits without error.
@@ -95,10 +95,10 @@ class TestUtils(parameterized.TestCase):
                 _parse([self.root_module, "child1", "grandchild1", "--help"])
             self.assertEqual(e.exception.code, 0)
 
-            helpstring = stdout.getvalue()
+            helpstring = stdout.getvalue().replace("\n", "  ")
             self.assertRegex(
                 helpstring,
-                r"usage: .* child1 grandchild1 \[-h\] \[--helpfull\] {command1,command2}",
+                r"usage: .* child1 grandchild1 \[-h\] \[--helpfull\] +{command1,command2}",
             )
 
     def test_invoke_basic(self):
@@ -123,7 +123,6 @@ class TestUtils(parameterized.TestCase):
                 "--root_default=some_value",
             ],
         )
-        # Note: subprocess.run needs an actual fd, so StringIO won't work here.
         returncode, stdout, _ = _run(args)
         self.assertEqual(returncode, 0)
         self.assertEqual(stdout, "required: test1, optional: test2, root_default: some_value")

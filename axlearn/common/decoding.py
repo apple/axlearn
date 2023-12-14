@@ -188,7 +188,7 @@ def brevity_penalty_fn(
     *,
     alpha: float = 0.0,
     bp_type: Literal["t5", "hf"] = "t5",
-) -> Callable[[jnp.array, Tensor], jnp.array]:
+) -> Callable[[Tensor, Tensor], Tensor]:
     """Brevity penalty function to do length normalization during beam search.
 
     If alpha is zero, we do not apply length normaliation.
@@ -204,10 +204,12 @@ def brevity_penalty_fn(
         bp_type: The way to compute the bevity penalty.
 
     Returns:
-        A fn accepts length and raw_score and returns a normalized score.
+        A fn that accepts `length` of shape broadcastable to [batch_size, beam_size] and
+        `raw_scores` of shape [batch_size, beam_size], and returns normalized scores of same shape
+        as `raw_scores`.
     """
 
-    def fn(*, length: jnp.array, raw_scores: Tensor) -> jnp.array:
+    def fn(*, length: Tensor, raw_scores: Tensor) -> Tensor:
         if bp_type == "t5":
             bp = jnp.power(((5.0 + length) / 6.0), alpha)
         elif bp_type == "hf":
@@ -281,7 +283,17 @@ class PrefixMerger:
         we only merge lower-ranked prefixes into higher-ranked ones.
     """
 
-    def init_state(self, *, batch_size: int, num_decodes: int, max_decode_len: int) -> NestedTensor:
+    def init_state(self, *, tokens: Tensor) -> NestedTensor:
+        """Initializes prefix merger state.
+
+        Args:
+            tokens: The initial live sequences, of shape [batch_size, num_decodes, max_decode_len].
+                When prefilling the decoding cache, this consists of the decoding prefixes padded to
+                `max_decode_len`.
+
+        Returns:
+            The initial state.
+        """
         raise NotImplementedError(type(self))
 
     def compute(self, state: NestedTensor) -> Tensor:
@@ -347,22 +359,23 @@ class BeamSearchOutputs:
 
 def _beam_init(
     *,
-    batch_size: int,
+    inputs: Tensor,
+    time_step: Tensor,
     beam_size: int,
     max_decode_len: int,
     cache: NestedTensor,
-    inputs: Tensor,
     pad_id: int,
     prefix_merger: Optional[PrefixMerger] = None,
 ) -> _BeamState:
     """Initializes the beam search state data structure.
 
     Args:
+        inputs: An int tensor of shape [batch_size, length] where length <= max_decode_length.
+        time_step: Initial time steps for decoding of shape [batch_size].
         batch_size: Size of batch.
         beam_size: Number of hypotheses per beam (aka num_decodes).
         max_decode_len: The maximum length of the sequence to be generated.
         cache: State of the decoder model.
-        inputs: An int tensor of shape [batch_size, length] where length <= max_decode_length.
         pad_id: Token ID associated with padded input.
         prefix_merger: Optional prefix merger.
 
@@ -372,23 +385,26 @@ def _beam_init(
     Raises:
         ValueError: If inputs has an invalid shape.
     """
+    if inputs.shape[0] != time_step.shape[0]:
+        raise ValueError(
+            f"Expected inputs.shape[0] ({inputs.shape[0]}) "
+            f"== time_step.shape[0] ({time_step.shape[0]})."
+        )
     if inputs.shape[1] > max_decode_len:
         raise ValueError(
             f"Expected inputs.shape[1] ({inputs.shape[1]}) <= max_decode_len ({max_decode_len})."
         )
+    batch_size = inputs.shape[0]
     live_seqs = jnp.full((batch_size, beam_size, max_decode_len), pad_id, dtype=jnp.int32)
-    # inputs are the prefix we will use for teacher forcing.
+    # Inputs are the prefix we will use for teacher forcing.
     live_seqs = live_seqs.at[:, :, : inputs.shape[1]].set(inputs[:, None, :])
 
-    prefix_merger_state = (
-        {}
-        if prefix_merger is None
-        else prefix_merger.init_state(
-            batch_size=batch_size, num_decodes=beam_size, max_decode_len=max_decode_len
-        )
-    )
+    prefix_merger_state = None
+    if prefix_merger is not None:
+        prefix_merger_state = prefix_merger.init_state(tokens=live_seqs)
+
     return _BeamState(
-        cur_index=jnp.array(0),
+        cur_index=time_step,
         # Handle first time step by masking out scores of all but the top hypothesis in the beam.
         live_scores=jnp.tile(jnp.array([0.0] + [NEG_INF] * (beam_size - 1)), [batch_size, 1]),
         finished_scores=jnp.ones((batch_size, beam_size)) * NEG_INF,
@@ -404,35 +420,36 @@ def _beam_init(
 def beam_search_decode(
     *,
     inputs: Tensor,
+    time_step: Tensor,
     cache: NestedTensor,
     tokens_to_scores: Callable[[Tensor, NestedTensor], Tuple[Tensor, NestedTensor]],
     eos_id: int,
     num_decodes: int,
     max_decode_len: Optional[int] = None,
     loop: Literal["lax", "python"] = "lax",
-    brevity_penalty: Optional[Callable[[jnp.array, Tensor], jnp.array]] = None,
+    brevity_penalty: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
     pad_id: int = 0,
     prefix_merger: Optional[PrefixMerger] = None,
 ) -> BeamSearchOutputs:
     """Performs beam search decoding.
 
-    If `inputs` has non-zero entries, those values are not modified, i.e.,
-    the sampled values for those positions are discarded. This simulates the
-    teacher forcing on the prefix positions.
-
-    Often times, the vocabulary uses the same token id for BOS and EOS.
-    This function supports using the EOS token id as a prefix. If you
-    are using the EOS for prompting, the EOS must occur at index 0 in
-    in `input` (e.g. [EOS, ...]). If the EOS occurs after this index, it
-    will be interpreted as the stop token.
-
     Args:
         inputs: An int32 Tensor of shape [batch_size, length] containing a sequence of tokens.
+        time_step: Initial time steps for decoding of shape [batch_size].
+            Time steps are indices into the sequence dimension, and range from [0, length).
+            If time_step[i] == 0, it means there is no prefix (we assume inputs[i, 0] == BOS whether
+            there's prefix or not).
+            Otherwise, inputs[i, 1:time_step[i] + 1] represents the input prefix for sequence i.
+            Tokens within this input prefix are not modified. This simulates teacher forcing on the
+            prefix positions.
+            See also `infer_initial_time_step` for details on how time step is initialized from the
+            input.
         cache: State of the decoder model. Each tensor in `cache` must be either a scalar or
-            has shape [batch_size, ...].
-        tokens_to_scores: Fast autoregressive decoder function taking single token
-            slices and cache and returning next-token scores and updated cache.
-            note: the callable is expected to return log_probs atm. Higher the better.
+            has shape [batch_size, ...]. If `time_step[i] > 0`, the assumption is that the `cache`
+            has been prefilled for the prefix positions.
+        tokens_to_scores: Fast autoregressive decoder function taking single token slices and cache
+            and returning next-token scores and updated cache.
+            Note: the callable is expected to return log_probs. Higher the better.
             [batch*beam, vocab], updated_cache = tokens_to_scores([batch*beam, 1], flat_cache).
             Each tensor in `flat_cache` and `updated_cache` is either a scalar or has batch*beam
             as the leading dim.
@@ -463,27 +480,24 @@ def beam_search_decode(
     Raises:
         NotImplementedError: If an unsupported loop is provided.
     """
-    # We liberally annotate shape information for clarity below.
-
     # If brevity_penalty is set as None, we explictly use the default function
     # without length normalization.
     if brevity_penalty is None:
         brevity_penalty = brevity_penalty_fn(alpha=0.0)
 
     beam_size = num_decodes
-
     batch_size = inputs.shape[0]
     if max_decode_len is None:
         max_decode_len = inputs.shape[1]
     max_decode_len += 1
 
-    # initialize beam search state.
+    # Initialize beam search state.
     beam_search_init_state = _beam_init(
-        batch_size=batch_size,
+        inputs=inputs,
+        time_step=time_step,
         beam_size=beam_size,
         max_decode_len=max_decode_len,
         cache=cache,
-        inputs=inputs,
         prefix_merger=prefix_merger,
         pad_id=pad_id,
     )
@@ -495,30 +509,33 @@ def beam_search_decode(
         not_at_end = state.cur_index < max_decode_len - 1
 
         # Is no further progress in the beam search possible?
-        # Get the best possible scores from alive sequences.
+        # Get the best possible scores from alive sequences. [batch_size, 1].
         best_live_scores = brevity_penalty(
             length=jnp.array(max_decode_len),
             raw_scores=jnp.max(state.live_scores, axis=1, keepdims=True),
         )
 
-        # Get the worst scores from finished sequences.
+        # Get the worst scores from finished sequences. [batch_size, 1].
         worst_finished_scores = jnp.min(state.finished_scores, axis=1, keepdims=True)
         # If no best possible live score is better than current worst finished
         # scores, the search cannot improve the finished set further.
-        search_terminated = jnp.all(worst_finished_scores > best_live_scores)
+        search_terminated = worst_finished_scores > best_live_scores
 
         # If we're not at the max decode length, and the search hasn't terminated,
         # continue looping.
-        return not_at_end & (~search_terminated)
+        return jnp.any(not_at_end & ~search_terminated)
 
     def beam_search_loop_body_fn(state: _BeamState) -> _BeamState:
         """Beam search loop state update function."""
-        # Collect the current position slice along length to feed the fast
-        # autoregressive decoder model.  Flatten the beam dimension into batch
-        # dimension for feeding into the model.
+        # [batch].
+        cur_index = state.cur_index
+        next_index = cur_index + 1
+
+        # Collect the current position slice along length to feed the fast autoregressive decoder
+        # model. Flatten the beam dimension into batch dimension for feeding into the model.
         # --> [batch * beam, 1]
         flat_ids = flatten_decoding_dim(
-            lax.dynamic_slice(state.live_seqs, (0, 0, state.cur_index), (batch_size, beam_size, 1))
+            jnp.take_along_axis(state.live_seqs, cur_index[:, None, None], axis=2)
         )
         # Flatten beam dimension into batch to be compatible with model.
         # {[batch, beam, ...], ...} --> {[batch * beam, ...], ...}.
@@ -538,10 +555,10 @@ def beam_search_decode(
             merge_matrix = prefix_merger.compute(prefix_merger_state)
             live_scores = _merge_prefixes(merge_matrix=merge_matrix, log_probs=live_scores)
 
-        # unflatten beam dimension.
+        # Unflatten beam dimension.
         # [batch * beam, vocab] --> [batch, beam, vocab].
         candidate_log_probs = unflatten_decoding_dim(new_flat_log_probs, batch_size, beam_size)
-        # Unflatten beam dimension in attention cache arrays.
+        # Unflatten beam dimension in decoding cache.
         # {[batch * beam, ...], ...} --> {[batch, beam, ...], ...}.
         new_cache = vectorized_tree_map(
             lambda x: unflatten_decoding_dim(x, batch_size, beam_size), new_flat_cache
@@ -568,24 +585,23 @@ def beam_search_decode(
         # --> [batch, beam], [batch, beam].
         topk_log_probs, topk_indices = _top_k_two_stage(flat_log_probs, k=beam_size)
 
-        # Append the most probable K token IDs to the top K sequences
-
-        # Recover token id by modulo division.
+        # Recover token ID by modulo division.
         topk_ids = topk_indices % vocab_size
         # Recover the beam index by floor division.
         topk_beam_indices = topk_indices // vocab_size
 
-        # Force decode `inputs` into topk_ids up until PAD. When `inputs` is all
-        # PADs this is a no-op.
-        next_input_token = jnp.expand_dims(inputs, axis=1).astype(jnp.int32)[
-            :, :, state.cur_index + 1
-        ]
+        # Force decode `inputs` into topk_ids up until PAD. When `inputs` is all PADs this is a
+        # no-op.
+        next_input_token = jnp.take_along_axis(
+            inputs.astype(jnp.int32), next_index[:, None], axis=1, mode="clip"
+        )
+
         # [batch, 1].
         out_of_prompt = next_input_token == pad_id
 
-        # When forcing prompts, update log probabilities to `0` for the top of the
-        # beam and -INF for the rest, effectively keeping only one beam alive.
-        # --> [batch, 2*beams].
+        # When forcing prompts, update log probabilities to `0` for the top of the beam and NEG_INF
+        # for the rest, effectively keeping only one beam alive.
+        # --> [batch, beams].
         inside_prompt_log_probs = jnp.concatenate(
             [
                 jnp.zeros((batch_size, 1), dtype=topk_log_probs.dtype),
@@ -598,14 +614,12 @@ def beam_search_decode(
         )
         # Apply the brevity penalty.
         cur_finishing_scores = brevity_penalty(
-            length=state.cur_index + 1, raw_scores=cur_finishing_scores
+            length=next_index[:, None],
+            raw_scores=cur_finishing_scores,
         )
         # Set cur_finishing_scores[i] to be NEG_INF if it is still within the given prompt,
         # so that it will not be picked when we select top_finished_scores.
         cur_finishing_scores = cur_finishing_scores * out_of_prompt + NEG_INF * ~out_of_prompt
-
-        # Compute top_alive_seq.
-        topk_ids = topk_ids * out_of_prompt + next_input_token * ~out_of_prompt
 
         # Gather K top beams.
         # --> [batch, beam, length].
@@ -617,14 +631,21 @@ def beam_search_decode(
             beam_size,
         )
 
-        # Expand id array for broadcasting.
+        # Compute next token ID. Expand for broadcasting.
         # --> [batch, beam, 1].
-        topk_ids = jnp.expand_dims(topk_ids, axis=2)
+        topk_ids = jnp.expand_dims(
+            topk_ids * out_of_prompt + next_input_token * ~out_of_prompt,
+            axis=2,
+        )
+        # Note: for indices in `next_index` that exceed `max_decode_len-1`, one-hot will zero-out
+        # the update.
+        oh_indices = jax.nn.one_hot(
+            next_index[:, None], topk_alive_seq.shape[-1], dtype=topk_alive_seq.dtype
+        )
         # Update sequences for the top-k new sequences.
         # --> [batch, beam, length].
-        top_alive_seq = lax.dynamic_update_slice(
-            topk_alive_seq, topk_ids, (0, 0, state.cur_index + 1)
-        )
+        topk_alive_seq = topk_alive_seq * (1 - oh_indices) + topk_ids * oh_indices
+
         # Gather the top k beam-associated caches.
         # --> {[batch, beams, ...], ...}.
         top_alive_cache = _gather_beams(
@@ -637,9 +658,7 @@ def beam_search_decode(
         # Combine sequences, scores, and flags along the beam dimension and compare
         # new finished sequence scores to existing finished scores and select the
         # best from the new set of beams.
-        cur_finishing_seq = lax.dynamic_update_slice(
-            state.live_seqs, jnp.full_like(topk_ids, eos_id), (0, 0, state.cur_index + 1)
-        )
+        cur_finishing_seq = state.live_seqs * (1 - oh_indices) + eos_id * oh_indices
         finished_seqs = jnp.concatenate(  # --> [batch, 2*beams, length].
             [state.finished_seqs, cur_finishing_seq], axis=1
         )
@@ -651,12 +670,25 @@ def beam_search_decode(
             [finished_seqs, finished_scores], finished_scores, batch_size, beam_size
         )
 
+        # When decoding starts at different indices, some sequences can reach the end first.
+        # In these cases, we use this mask to "freeze" beams corresponding to those batch indices.
+        out_of_sequence = next_index >= max_decode_len
+
+        def mask_out_of_sequence(old: Tensor, new: Tensor):
+            assert old.ndim == new.ndim
+            mask = out_of_sequence
+            while mask.ndim < new.ndim:
+                mask = mask[..., None]
+            return old * mask + new * ~mask
+
         return _BeamState(
             cur_index=state.cur_index + 1,
-            live_scores=top_alive_log_probs,
-            finished_scores=top_finished_scores,
-            live_seqs=top_alive_seq,
-            finished_seqs=top_finished_seq,
+            live_scores=mask_out_of_sequence(state.live_scores, top_alive_log_probs),
+            finished_scores=mask_out_of_sequence(state.finished_scores, top_finished_scores),
+            live_seqs=mask_out_of_sequence(state.live_seqs, topk_alive_seq),
+            finished_seqs=mask_out_of_sequence(state.finished_seqs, top_finished_seq),
+            # For simplicity and efficiency, we don't mask updates to the cache.
+            # Ultimately this should have no impact as the sequences and scores are masked.
             cache=top_alive_cache,
             prefix_merger=prefix_merger_state,
         )
@@ -697,29 +729,29 @@ class DecodingState(NamedTuple):
     # The current state of the autoregressive decoding caches.
     cache: NestedTensor
     # Random generator state.
-    prng_key: jax.random.KeyArray
+    prng_key: Tensor
 
 
 def _decode_init(
-    batch_size: int,
     *,
+    inputs: Tensor,
+    time_step: Tensor,
     num_decodes: int,
     max_decode_len: int,
     cache: NestedTensor,
-    inputs: Tensor,
-    prng_key: jax.random.KeyArray,
+    prng_key: Tensor,
     pad_id: int,
     token_scores: Optional[Tensor] = None,
 ) -> DecodingState:
     """Initializes the sample decode state data structure.
 
     Args:
-        batch_size: Size of batch.
+        inputs: An int32 tensor of shape [batch_size, length] where length <= max_decode_len.
+        time_step: Initial time steps for decoding of shape [batch_size].
         num_decodes: Number of sequences to decode per batch example.
         max_decode_len: The maximum length of the sequence to be generated (including dummy prompt
             token).
         cache: State of the decoder model.
-        inputs: An int32 tensor of shape [batch_size, length] where length <= max_decode_len.
         prng_key: The initial JAX random key state.
         pad_id: Token ID associated with padded input.
         token_scores: Optional initial scores of shape [batch_size, length] where
@@ -733,10 +765,16 @@ def _decode_init(
     Raises:
         ValueError: If inputs has an invalid shape.
     """
+    if inputs.shape[0] != time_step.shape[0]:
+        raise ValueError(
+            f"Expected inputs.shape[0] ({inputs.shape[0]}) "
+            f"== time_step.shape[0] ({time_step.shape[0]})."
+        )
     if inputs.shape[1] > max_decode_len:
         raise ValueError(
             f"Expected inputs.shape[1] ({inputs.shape[1]}) <= max_decode_len ({max_decode_len})."
         )
+    batch_size = inputs.shape[0]
     sequences = jnp.full((batch_size, num_decodes, max_decode_len), pad_id, dtype=jnp.int32)
     # Inputs are the prefix we will use for teacher forcing.
     sequences = sequences.at[:, :, : inputs.shape[1]].set(inputs[:, None, :])
@@ -753,8 +791,7 @@ def _decode_init(
         )
 
     return DecodingState(
-        # Subtract the dummy BOS token. For example, in the no-prefill case, we should start at 0.
-        cur_index=(inputs != pad_id).sum(axis=-1) - 1,
+        cur_index=time_step,
         token_scores=init_scores,
         sequences=sequences,
         stop_decoding=jnp.zeros((batch_size, num_decodes), bool),
@@ -860,11 +897,12 @@ class StopOnSubsequence:
 def sample_decode(
     *,
     inputs: Tensor,
+    time_step: Tensor,
     cache: NestedTensor,
     tokens_to_scores: Callable[[Tensor, NestedTensor], Tuple[Tensor, NestedTensor]],
     stop_decoding_condition: StopDecodingCondition,
     num_decodes: int,
-    prng_key: jax.random.KeyArray,
+    prng_key: Tensor,
     max_decode_len: Optional[int] = None,
     loop: Literal["lax", "python"] = "lax",
     pad_id: int = 0,
@@ -874,7 +912,9 @@ def sample_decode(
 
     Args:
         inputs: An int32 Tensor of shape [batch_size, length] containing a sequence of tokens.
-            Please refer to beam_search_decode for more information on `inputs`.
+            Please refer to `beam_search_decode` for more information on `inputs`.
+        time_step: Initial time steps for decoding of shape [batch_size].
+            Please refer to `beam_search_decode` for more information on `time_step`.
         cache: State of the decoder model.
         tokens_to_scores: Fast autoregressive decoder function taking single token
             slices and cache and returning next-token scores and updated cache.
@@ -895,7 +935,7 @@ def sample_decode(
         input_token_scores: Optional initial scores of shape [batch_size, length] where
             length < max_decode_len, e.g. as produced by prefilling. Note that length should be
             strictly less than max_decode_len, as we exclude the scores for the dummy prompt token.
-            In other words, input_token_scores[i, j] represents the score for inputs[i, j - 1],
+            In other words, input_token_scores[i, j - 1] represents the score for inputs[i, j],
             since the token at inputs[i, 0] does not have a score. Defaults to all zeros.
 
     Returns:
@@ -912,11 +952,11 @@ def sample_decode(
 
     # Initialize state.
     sample_decode_init_state = _decode_init(
-        batch_size,
+        inputs=inputs,
+        time_step=time_step,
         num_decodes=num_decodes,
         max_decode_len=max_decode_len,
         cache=cache,
-        inputs=inputs,
         prng_key=prng_key,
         pad_id=pad_id,
         token_scores=input_token_scores,
@@ -959,7 +999,7 @@ def sample_decode(
         # We allow next_index to exceed `max_decode_len-1`:
         # - When reading from next_index, mode="clip" will effectively read `max_decode_len-1`;
         # - When writing to next_index, one-hot will cause the write to become a no-op.
-        # [batch, num_decodes=1].
+        # [batch].
         next_index = cur_index + 1
 
         # Collect next input token.
@@ -1035,3 +1075,19 @@ def sample_decode(
         sequences=final_state.sequences[:, :, 1:],
         token_scores=final_state.token_scores[:, :, 1:],
     )
+
+
+def infer_initial_time_step(prefix: Tensor, *, pad_id: int) -> Tensor:
+    """Computes initial time step based on prefix.
+
+    We infer these from the last non-pad token in the prefix (i.e., the prefix itself can have
+    pad tokens). If the prefix consists of all pad tokens, we start at index 0.
+
+    Args:
+        prefix: Initial decoding inputs of shape [batch_size, ..., prefix_length].
+        pad_id: Token ID corresponding to padding.
+
+    Returns:
+        Initial time steps of shape [batch_size, ...] with values in [0, prefix_length).
+    """
+    return ((prefix != pad_id) * jnp.arange(prefix.shape[-1])).max(axis=-1)

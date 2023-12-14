@@ -240,7 +240,7 @@ class EmbeddingRetrievalMetricCalculatorTest(TestCase, parameterized.TestCase):
                 }
 
         calculator_cfg = EmbeddingRetrievalMetricCalculator.default_config().set(
-            metrics=["MAP@1", "MAP@2", "accuracy@1"],
+            metrics=["MAP@1", "MAP@2", "accuracy@1", "recall@1"],
             categories_names=("cat", "dog"),
             max_query_chunk_size=max_query_chunk_size,
         )
@@ -261,6 +261,10 @@ class EmbeddingRetrievalMetricCalculatorTest(TestCase, parameterized.TestCase):
             "accuracy@1_cat": (1.0 + 0.0) / 2,
             "accuracy@1_dog": 0.0,
             "accuracy@1_avg_category": ((1.0 + 0.0) / 2 + 0.0) / 2,
+            "recall@1": (1.0 + 0.0 + 0.0) / 3,
+            "recall@1_cat": (1.0 + 0.0) / 2,
+            "recall@1_dog": 0.0,
+            "recall@1_avg_category": ((1.0 + 0.0) / 2 + 0.0) / 2,
             "num_valid": 3,
         }
         self.assertNestedAllClose(summaries, expected_metrics)

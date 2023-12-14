@@ -239,6 +239,7 @@ def cosine_with_linear_warmup(
     warmup_steps: int = 500,
     begin_value: float = 0.0,
     alpha: float = 0.0,
+    decay_begin_step: Optional[int] = None,
 ) -> ScheduleFn:
     """Cosine learning rate schedule with linear warm-up.
 
@@ -249,25 +250,41 @@ def cosine_with_linear_warmup(
         warmup_steps: The number of steps of the warm-up schedule.
         begin_value: The begin value of the linear warm-up.
         alpha: The minimum value of the multiplier used to adjust the cosine learning rate.
+        decay_begin_step: The step to begin cosine decay. The learning rate is kept constant
+            in [warmup_steps, decay_begin_step). Ignored if decay_begin_step <= warmup_steps.
 
     Returns:
         A composite schedule.
     """
-    return stepwise(
-        sub=[
+    sub = [
+        config_for_function(polynomial).set(
+            begin_step=0,
+            begin_value=begin_value,
+            end_step=warmup_steps,
+            end_value=peak_lr,
+        )
+    ]
+    start_step = [warmup_steps]
+    if decay_begin_step is not None and decay_begin_step > warmup_steps:
+        sub.append(
             config_for_function(polynomial).set(
                 begin_step=0,
-                begin_value=begin_value,
-                end_step=warmup_steps,
+                begin_value=peak_lr,
+                end_step=decay_begin_step - warmup_steps,
                 end_value=peak_lr,
-            ),
-            config_for_function(cosine_decay_schedule).set(
-                init_value=peak_lr,
-                decay_steps=max_step - warmup_steps,
-                alpha=alpha,
-            ),
-        ],
-        start_step=[warmup_steps],
+            )
+        )
+        start_step.append(decay_begin_step)
+    sub.append(
+        config_for_function(cosine_decay_schedule).set(
+            init_value=peak_lr,
+            decay_steps=max_step - start_step[-1],
+            alpha=alpha,
+        )
+    )
+    return stepwise(
+        sub=sub,
+        start_step=start_step,
     )
 
 

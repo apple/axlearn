@@ -1,10 +1,12 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests BaseLayer."""
+import dataclasses
 import math
 from functools import partial
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+import jax.ad_checkpoint
 import jax.core
 import jax.interpreters.ad
 import jax.random
@@ -20,6 +22,7 @@ from axlearn.common.base_layer import (
     ParameterNoise,
     ParameterSpec,
     RematSpec,
+    no_remat,
 )
 from axlearn.common.config import config_class
 from axlearn.common.module import Module, OutputCollection
@@ -42,7 +45,7 @@ class TestLayer(BaseLayer):
                 shape=[],
                 mesh_axes=None,
                 dtype=jnp.float32,
-                initializer=param_init.ConstantInitializer(value=1.0),
+                initializer=param_init.constant_initializer(1.0),
             )
         }
 
@@ -99,7 +102,7 @@ class ParameterScaler(ParameterNoise):
     class Config(ParameterNoise.Config):
         scale: float = 1.0
 
-    def apply(self, prng_key: jax.random.KeyArray, params: NestedTensor) -> NestedTensor:
+    def apply(self, prng_key: utils.Tensor, params: NestedTensor) -> NestedTensor:
         cfg = self.config
         return jax.tree_util.tree_map(lambda x: x * cfg.scale, params)
 
@@ -116,7 +119,7 @@ def _callback_primitive(forward, backward):
     prim = jax.core.Primitive("passthrough_with_callback")
     prim.def_impl(forward_impl)
     prim.def_abstract_eval(forward_impl)
-    jax.ad.deflinear(prim, backward_impl)
+    jax.interpreters.ad.deflinear(prim, backward_impl)
     return prim.bind
 
 
@@ -404,6 +407,58 @@ class BaseLayerTest(TestCase):
             rtol=1e-6,
         )
 
+    def test_no_remat_inheritance(self):
+        # Check that @no_remat is preserved by inheritance unless the method
+        # is explicitly overriden by one without @no_remat.
+        class AnotherTestLayer(BaseLayer):
+            @no_remat
+            def fn(self, st: str):
+                pass
+
+        class Subclass1(AnotherTestLayer):
+            pass
+
+        class Subclass2(AnotherTestLayer):
+            def fn(self, st: str):
+                pass
+
+        self.assertTrue(hasattr(AnotherTestLayer.fn, "_no_remat"))
+        self.assertTrue(hasattr(Subclass1.fn, "_no_remat"))
+        self.assertFalse(hasattr(Subclass2.fn, "_no_remat"))
+
+    def test_no_remat(self):
+        # pylint: disable=missing-class-docstring
+        # Checks that using @no_remat allows calling a function with a non-JAX type.
+        class AnotherTestLayer(BaseLayer):
+            @config_class
+            class Config(BaseLayer.Config):
+                remat_spec: Optional[RematSpec] = RematSpec(
+                    policy=jax_remat_policies.nothing_saveable
+                )
+
+            def forward(self, x):
+                b = self.fn("three")
+                x = b * x
+                return x.sum()
+
+            @no_remat
+            def fn(self, st: str):
+                if st == "three":
+                    return 3
+
+        # Pytype doesn't like us directly accessing the _no_remat attribute, so we use getattr.
+        self.assertTrue(getattr(AnotherTestLayer.fn, "_no_remat", False))
+
+        layer = AnotherTestLayer.default_config().set(name="tmp").instantiate(parent=None)
+        params = {}
+        rng = jax.random.PRNGKey(0)
+        jit_value_and_grad = jax.jit(
+            lambda *args, inputs, **kwargs: jax.value_and_grad(
+                lambda inputs: F(layer, *args, inputs=inputs, is_training=True, **kwargs)[0]
+            )(inputs)
+        )
+        _ = jit_value_and_grad(prng_key=rng, state=params, inputs=[jax.numpy.ones(5)])
+
 
 class ComputeFanAxesTest(TestCase):
     """Tests compute_fan_axes."""
@@ -446,8 +501,8 @@ class ComputeFanAxesTest(TestCase):
             FanAxes(in_axis=(1, 2), out_axis=3),
             {
                 "fan_in": 6 * 12 * 4 * 4,
-                "fan_out": 6 * 8 * 12,
-                "fan_avg": 6 * 10 * 14,
+                "fan_out": 6 * 12 * 8,
+                "fan_avg": 6 * 12 * 12,
             },
         ),
         (
@@ -455,8 +510,8 @@ class ComputeFanAxesTest(TestCase):
             FanAxes(in_axis=(1, 2), out_axis=3, batch_axis=0),
             {
                 "fan_in": 12 * 4 * 4,
-                "fan_out": 8 * 12,
-                "fan_avg": 10 * 14,
+                "fan_out": 12 * 8,
+                "fan_avg": 12 * 12,
             },
         ),
     )
@@ -480,6 +535,8 @@ class ComputeFanAxesTest(TestCase):
                         layer._compute_fan_axes("weight", param_spec_map["weight"]),
                         fan_axes,
                     )
+                    spec = dataclasses.replace(param_spec_map["weight"], fan_axes=fan_axes)
+                    self.assertEqual(spec.fans(), fans)
                     layer_params = layer.initialize_parameters_recursively(jax.random.PRNGKey(1))
                     weight = layer_params["weight"]
                     fan = fans[fan_type]
@@ -487,6 +544,14 @@ class ComputeFanAxesTest(TestCase):
                     expected_std = scale / math.sqrt(fan)
                     actual_std = np.std(weight)
                     self.assertBetween(actual_std, expected_std / 1.5, expected_std * 1.5)
+
+    def test_fan_axes_in_create_parameter_specs_recursively(self):
+        layer_cfg = self.BatchedCustomFanLayer.default_config().set(name="test")
+        layer = layer_cfg.instantiate(parent=None)
+        specs = layer.create_parameter_specs_recursively()
+        self.assertEqual(
+            specs["weight"].fan_axes, FanAxes(in_axis=(1, 2), out_axis=3, batch_axis=0)
+        )
 
 
 if __name__ == "__main__":

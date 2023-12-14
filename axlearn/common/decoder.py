@@ -2,7 +2,7 @@
 
 """Decoder layers."""
 import contextlib
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import jax
 from jax import numpy as jnp
@@ -30,6 +30,7 @@ from axlearn.common.decoding import (
     StopDecodingCondition,
     StopOnSubsequence,
     beam_search_decode,
+    infer_initial_time_step,
     sample_decode,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
@@ -96,7 +97,9 @@ def _segment_ids_from_causal_input_ids(input_ids: Tensor, *, pad_token_id: int) 
     return jnp.arange(input_ids.shape[-1]) < non_pad_count[:, None]
 
 
-def _scores_from_logits(logits: Tensor, logits_modifier: Optional[LogitsToLogitsFn]) -> Tensor:
+def _scores_from_logits(
+    logits: Tensor, logits_modifier: Optional[LogitsToLogitsFn] = None
+) -> Tensor:
     """Produces decoding scores from logits and optional logit modifier."""
     if logits.dtype in (jnp.bfloat16, jnp.float16):
         # Cast for log softmax.
@@ -121,6 +124,7 @@ class DecodingMixin(Module):
         pad_token_id: Required[int] = REQUIRED
         eos_token_id: Required[int] = REQUIRED
 
+    # TODO(markblee): Remove this in favor of prefill_states.
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
         """Initializes cache for autoregressive cached decoding.
 
@@ -200,7 +204,7 @@ class DecodingMixin(Module):
         num_decodes: int,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-        brevity_penalty: Optional[Callable[[jnp.array, Tensor], jnp.array]] = None,
+        brevity_penalty: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
     ) -> BeamSearchOutputs:
         """Perform beam search decoding.
 
@@ -213,8 +217,7 @@ class DecodingMixin(Module):
             cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
             cross_attention_logit_biases: A Tensor of shape [batch_size, target_len, source_len].
                 A -inf represents a disconnected position pair.
-            brevity_penalty: Brevity penalty function to add length normalization
-                in the beam search.
+            brevity_penalty: Brevity penalty function for length normalization during beam search.
 
         Returns:
             The beam search outputs.
@@ -229,13 +232,20 @@ class DecodingMixin(Module):
             cross_attention_logit_biases=cross_attention_logit_biases,
             logits_modifier=None,
         )
+        input_ids = self._pad(
+            prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
+        )
+        time_step = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id)
+        init_states, _ = self.prefill_states(
+            time_step=time_step,
+            input_ids=input_ids,
+            cross_attention_data=cross_attention_data,
+            cross_attention_logit_biases=cross_attention_logit_biases,
+        )
         return beam_search_decode(
-            inputs=self._pad(
-                prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
-            ),
-            cache=self.init_states(
-                batch_size=prefix.shape[0], max_sequence_length=max_sequence_length
-            ),
+            inputs=input_ids,
+            time_step=time_step,
+            cache=init_states,
             tokens_to_scores=tokens_to_scores_fn,
             eos_id=cfg.eos_token_id,
             num_decodes=num_decodes,
@@ -283,11 +293,9 @@ class DecodingMixin(Module):
         input_ids = self._pad(
             prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
         )
+        time_step = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id)
         init_states, init_outputs = self.prefill_states(
-            # Compute initial time step based on prefix lengths. The prefix for each example in the
-            # batch should begin with a dummy prompt token (e.g. [BOS]). A pad token represents the
-            # end of the prefix and must be followed only by zero or more pad tokens.
-            time_step=(prefix != cfg.pad_token_id).sum(axis=-1) - 1,
+            time_step=time_step,
             input_ids=input_ids,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
@@ -300,6 +308,7 @@ class DecodingMixin(Module):
         )
         return sample_decode(
             inputs=input_ids,
+            time_step=time_step,
             cache=init_states,
             tokens_to_scores=tokens_to_scores_fn,
             stop_decoding_condition=(
@@ -400,9 +409,11 @@ class Decoder(DecodingMixin, BaseLayer):
     class Config(BaseLayer.Config):
         """Configures Decoder."""
 
-        attention_mask: AttentionLogitBiasLayer.Config = (
-            CausalAttentionLogitBiasLayer.default_config()
-        )
+        # attention_mask can be None if the attention layer supports the causal mode, e.g.,
+        # FlashAttention with `causal=True`.
+        attention_mask: Optional[
+            AttentionLogitBiasLayer.Config
+        ] = CausalAttentionLogitBiasLayer.default_config()
         vocab_size: Required[int] = REQUIRED  # Size of vocabulary.
         # Dimensionality of embeddings and inputs to each transformer layer.
         dim: Required[int] = REQUIRED
@@ -422,13 +433,20 @@ class Decoder(DecodingMixin, BaseLayer):
         lm_head: Optional[InstantiableConfig] = None
         pad_token_id: int = 0  # Int ID of the inputs to be masked for self-attention.
         eos_token_id: int = 1  # Int ID of the end of sequence token id.
+        # Specifies how to partition the output logits of shape [batch, max_seq_len, vocab_size].
+        logits_partition_spec: Tuple[Union[Optional[str], Tuple[Optional[str]]], ...] = (
+            "data",
+            None,
+            "model",
+        )
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         set_dropout_rate_recursively(cfg, dropout_rate=cfg.dropout_rate, set_only_if_none=True)
 
-        self._add_child("attention_mask", cfg.attention_mask)
+        if cfg.attention_mask is not None:
+            self._add_child("attention_mask", cfg.attention_mask)
         self._add_child("emb", cfg.emb.set(dim=cfg.dim, vocab_size=cfg.vocab_size))
         self._add_child("transformer", cfg.transformer.set(input_dim=cfg.dim))
         if cfg.output_norm is not None:
@@ -444,7 +462,7 @@ class Decoder(DecodingMixin, BaseLayer):
         *,
         mode: ForwardMode,
         input_ids: Tensor,
-        self_attention_logit_biases: Tensor,
+        self_attention_logit_biases: Optional[Tensor],
         token_type_ids: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
@@ -489,7 +507,7 @@ class Decoder(DecodingMixin, BaseLayer):
             # Reuse the token embedding.
             with child_context("emb_attend", module=self.emb):
                 logits = self.emb.attend(x)
-        logits = with_sharding_constraint(logits, PartitionSpec("data", None, "model"))
+        logits = with_sharding_constraint(logits, PartitionSpec(*self.config.logits_partition_spec))
         # TODO(markblee): Rename to just "transformer". "transformer_state" is a bit redundant.
         return dict(transformer_state=transformer_state), dict(logits=logits, hidden_states=x)
 
@@ -512,7 +530,7 @@ class Decoder(DecodingMixin, BaseLayer):
             input_segment_ids: An optional Tensor of same shape as `input_ids` with values in
                 [0, num_segments). Tokens are only allowed to attend to other tokens within the same
                 segment. input_segment_ids == 0 represents paddings. If None, inferred from
-                input_segment_ids != pad_token_id.
+                input_ids != pad_token_id.
             token_type_ids: An optional int Tensor of shape [batch_size, target_len].
                 Values should be in the range [0, type_vocab_size).
             cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
@@ -632,14 +650,13 @@ class Decoder(DecodingMixin, BaseLayer):
         )
         return updated_states, outputs
 
-    # TODO(bwzhang): check the T5 checkpoint to see whether this func is necessary.
     def compute_attention_logit_biases(
         self,
         input_ids: Tensor,
         *,
         segment_ids: Optional[Tensor] = None,
         positions: Optional[Tensor] = None,
-    ) -> Tensor:
+    ) -> Optional[Tensor]:
         """Produces self-attention logit biases.
 
         Args:
@@ -654,11 +671,14 @@ class Decoder(DecodingMixin, BaseLayer):
                 provided.
 
         Returns:
-            Attention logit biases of shape [batch_size, num_heads, seq_len, seq_len].
+            Attention logit biases of shape [batch_size, num_heads, seq_len, seq_len],
+            or None if cfg.attention_mask is None.
 
         Raises:
             ValueError: If segment_ids and positions are not both provided, or both omitted.
         """
+        if "attention_mask" not in self.children:
+            return None
         if (segment_ids is None) != (positions is None):
             raise ValueError("segment_ids and positions must be provided together")
         cfg = self.config

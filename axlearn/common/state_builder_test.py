@@ -35,6 +35,7 @@ from axlearn.common.repeat import Repeat
 from axlearn.common.state_builder import (
     _BUILDERS,
     BaseConv2DStateBuilder,
+    BaseConverterFromPretrainedModel,
     Builder,
     ChainBuilder,
     ChainConverter,
@@ -726,10 +727,24 @@ class TestConv2DStateBuilders(TestCase):
         return mock_trainer_config(input_config=input_cfg, model_config=model_cfg)
 
 
+class BaseConverterFromPretrainedModelTest(TestCase):
+    """Sanity checks for BaseConverterFromPretrainedModel."""
+
+    def test_mesh_shape(self):
+        mock_trainer_cfg, mock_state = _create_dummy_state(jax.random.PRNGKey(1))
+        cfg = BaseConverterFromPretrainedModel.default_config().set(
+            source_trainer_config=mock_trainer_cfg,
+            mesh_shape=(-1, 1),
+        )
+        # Ensure that we're able to instantiate mock_trainer_cfg with -1 in the mesh.
+        converter = cfg.set(name="test_converter").instantiate(parent=None)
+        converter.target_to_source(mock_state)
+
+
 class DiffusersPretrainedBuilderTest(TestCase):
     """Tests FlaxPretrainedBuilder for a diffusers model."""
 
-    def _init_state(self, model, prng_key: jax.random.KeyArray):
+    def _init_state(self, model, prng_key: Tensor):
         prng_key, init_key = jax.random.split(prng_key)
         model_params = model.initialize_parameters_recursively(init_key)
         return _TrainerState(
@@ -840,7 +855,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
     """Tests HuggingFacePreTrainedBuilder."""
 
     # TODO(bwzhang@) add a HF builder test by setting a temporary path for downloading the models.
-    def _init_state(self, model, prng_key: jax.random.KeyArray):
+    def _init_state(self, model, prng_key: Tensor):
         prng_key, init_key = jax.random.split(prng_key)
         model_params = model.initialize_parameters_recursively(init_key)
         return _TrainerState(
@@ -958,29 +973,39 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             )
             self.assertNestedAllClose(new_trainer_state, ref_params)
 
-    def test_converter(self):
+    @parameterized.parameters(
+        [
+            None,
+            torch.nn.Linear,
+            config_for_function(
+                lambda: Linear.default_config()
+                .set(input_dim=5, output_dim=2, name="test")
+                .instantiate(parent=None)
+            ),
+        ]
+    )
+    def test_converter(self, dst_layer):
         x = torch.nn.Linear(in_features=5, out_features=2)
 
         def dummy_layer():
             return x
 
-        def dummy_converter(layer):
-            self.assertIs(layer, x)
-            return as_tensor(layer.weight.transpose(0, 1))
-
-        builder = (
-            HuggingFacePreTrainedBuilder.default_config()
-            .set(
-                name="test",
-                hf_layer_config=config_for_function(dummy_layer),
-                converter=config_for_function(lambda: dummy_converter),
-            )
-            .instantiate(parent=None)
+        cfg = HuggingFacePreTrainedBuilder.default_config().set(
+            name="test",
+            hf_layer_config=config_for_function(dummy_layer),
         )
+        if dst_layer is not None:
+            cfg.converter.dst_layer = dst_layer
 
-        init_state = _TrainerState(model=jnp.zeros([5, 2]), prng_key=None, learner=None)
+        builder = cfg.instantiate(parent=None)
+        init_state = _TrainerState(
+            model=dict(weight=jnp.zeros([5, 2]), bias=jnp.zeros([2])), prng_key=None, learner=None
+        )
         output = builder(Builder.State(step=0, trainer_state=init_state, built_keys=set()))
-        self.assertNestedAllClose(as_tensor(x.weight.transpose(0, 1)), output.trainer_state.model)
+        self.assertNestedAllClose(
+            dict(weight=as_tensor(x.weight.transpose(0, 1)), bias=x.bias),
+            output.trainer_state.model,
+        )
 
 
 def _create_dummy_state(prng_key, model_config=DummyModel.default_config(), use_ema=False):

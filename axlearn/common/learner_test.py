@@ -151,6 +151,8 @@ class LearnerTest(TestCase):
                 "learning_rate": learning_rate_fn(step),
                 "lr_schedule_step": 0,
                 "gradient_norm": 1.0093285,
+                "schedule_step": 0,
+                "schedule_scale": -1.0 * learning_rate_fn(step),
             },
             summaries,
         )
@@ -319,6 +321,8 @@ class LearnerTest(TestCase):
                 "learning_rate": learning_rate_fn(step),
                 "lr_schedule_step": 0,
                 "gradient_norm": expected_grad_norm,
+                "schedule_step": 0,
+                "schedule_scale": -1.0 * learning_rate_fn(step),
             },
             summaries,
         )
@@ -479,6 +483,8 @@ class LearnerTest(TestCase):
                 "param_rms/moving_mean": 0.5,
                 "grad_rms/weight": jnp.sqrt(jnp.mean(expected_grad**2)),
                 "grad_rms/moving_mean": jnp.sqrt(jnp.mean(expected_grad**2)),
+                "schedule_step": 0,
+                "schedule_scale": -1.0,
             },
             output_collection.summaries,
         )
@@ -747,6 +753,7 @@ class CompositeLearnerTest(TestCase):
             expected_summaries,
             output_collection.summaries,
         )
+        # pytype: enable=attribute-error
 
     def test_learner_config(self):
         opt1_cfg = config_for_function(sgd_optimizer).set(

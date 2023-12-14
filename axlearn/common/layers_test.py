@@ -25,7 +25,7 @@ from sklearn.metrics import recall_score as sklearn_recall_score
 
 from axlearn.common import module, utils
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import config_class, config_for_class
+from axlearn.common.config import config_class
 from axlearn.common.decoder import Decoder
 from axlearn.common.layers import (
     BatchNorm,
@@ -61,6 +61,7 @@ from axlearn.common.layers import (
     get_stochastic_depth_linear_rate,
     set_bias_recursively,
     set_dropout_rate_recursively,
+    set_layer_norm_eps_recursively,
     set_norm_recursively,
 )
 from axlearn.common.module import Module, Tensor, child_context
@@ -792,7 +793,6 @@ class LayerTest(TestCase, tf.test.TestCase):
         out_paddings = _compute_conv_output_1d_padding(
             jnp.array([input_paddings]), window=window, stride=stride, conv_padding_cfg=padding_cfg
         )
-
         assert_allclose(out_paddings[0], expected_paddings)
 
     @parameterized.parameters(
@@ -1937,7 +1937,7 @@ class RedirectToSharedModuleTest(TestCase):
                 shared_modules=["shared_bias"],
                 children=dict(
                     shared_bias=BiasLayer.default_config().set(
-                        param_init=config_for_class(ConstantInitializer).set(value=1)
+                        param_init=ConstantInitializer.default_config().set(value=1)
                     ),
                     parent_a=ParentLayer.default_config().set(
                         children=dict(
@@ -2019,6 +2019,14 @@ class SetConfigTest(TestCase):
         self.assertEqual(0.1, cfg.transformer.layer.self_attention.dropout.rate)
         self.assertEqual(0.1, cfg.transformer.layer.feed_forward.dropout.rate)
         self.assertEqual(0.1, cfg.output_dropout.rate)
+
+    def test_set_layer_norm_eps_recursively(self):
+        cfg = Decoder.default_config()
+        self.assertEqual(1e-8, cfg.transformer.layer.self_attention.norm.eps)
+        self.assertEqual(1e-8, cfg.transformer.layer.feed_forward.norm.eps)
+        set_layer_norm_eps_recursively(cfg, 1e-5)
+        self.assertEqual(1e-5, cfg.transformer.layer.self_attention.norm.eps)
+        self.assertEqual(1e-5, cfg.transformer.layer.feed_forward.norm.eps)
 
 
 if __name__ == "__main__":

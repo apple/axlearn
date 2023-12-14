@@ -41,14 +41,16 @@ On `attention_logit_biases`:
 """
 # pylint: disable=abstract-method,too-many-lines
 import enum
+import functools
 import math
 from enum import Enum, unique
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
+from axlearn.common import ops, param_init
 from axlearn.common.base_layer import (
     BaseLayer,
     FactorizationSpec,
@@ -62,7 +64,6 @@ from axlearn.common.config import (
     InstantiableConfig,
     Required,
     config_class,
-    config_for_class,
     config_for_function,
 )
 from axlearn.common.layers import (
@@ -80,6 +81,7 @@ from axlearn.common.param_init import (
     DefaultInitializer,
     FanAxes,
     WeightInitializer,
+    constant_initializer,
 )
 from axlearn.common.pipeline import Pipeline
 from axlearn.common.repeat import Repeat
@@ -586,6 +588,10 @@ class BaseQKVLinear(BaseLayer):
         # [batch, source_length, num_heads, per_head_dim].
         value: Tensor
 
+    @property
+    def num_kv_heads(self):
+        raise NotImplementedError(type(self))
+
     def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
         cfg = self.config
         # Default to base layer dtype for initialization if cache_dtype is None.
@@ -597,11 +603,11 @@ class BaseQKVLinear(BaseLayer):
         # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
         cache = dict(
             key=jnp.zeros(
-                shape=(target_batch_size, cfg.num_heads, cfg.per_head_dim, target_max_len),
+                shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
                 dtype=dtype,
             ),
             value=jnp.zeros(
-                shape=(target_batch_size, cfg.num_heads, cfg.per_head_dim, target_max_len),
+                shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
                 dtype=dtype,
             ),
             time_step=jnp.zeros(target_batch_size, dtype=jnp.int32),
@@ -758,19 +764,23 @@ class QKVLinear(BaseQKVLinear):
         # The layer used to project.
         layer: MultiheadInputLinear.Config = MultiheadInputLinear.default_config()
 
-    def __init__(self, cfg: BaseQKVLinear.Config, *, parent: Module):
+    def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        for name, dim in (
-            ("q", cfg.query_dim),
-            ("k", cfg.key_dim),
-            ("v", cfg.value_dim),
+        for name, dim, num_heads in (
+            ("q", cfg.query_dim, cfg.num_heads),
+            ("k", cfg.key_dim, self.num_kv_heads),
+            ("v", cfg.value_dim, self.num_kv_heads),
         ):
             proj_cfg = cfg.layer
             proj_cfg.model_dim = dim
-            proj_cfg.num_heads = cfg.num_heads
+            proj_cfg.num_heads = num_heads
             proj_cfg.per_head_dim = cfg.per_head_dim
             self._add_child(f"{name}_proj", proj_cfg)
+
+    @property
+    def num_kv_heads(self):
+        return self.config.num_heads
 
     def forward(
         self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
@@ -789,9 +799,37 @@ class QKVLinear(BaseQKVLinear):
         return self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
+class GroupedQKVLinear(QKVLinear):
+    """A variant of QKVLinear that supports configuring a different number of key, value
+    projections.
+
+    Note that the number of key, value projections must evenly divide the number of query heads.
+    """
+
+    @config_class
+    class Config(QKVLinear.Config):
+        """Configures GroupedQKVLinear."""
+
+        # Number of heads for key, value projections.
+        # It is required that num_heads % num_kv_heads == 0.
+        num_kv_heads: Required[int] = REQUIRED
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        if cfg.num_heads % cfg.num_kv_heads != 0:
+            raise ValueError(
+                f"The number of query subgroups ({cfg.num_kv_heads}) should divide "
+                f"the number of query heads ({cfg.num_heads})."
+            )
+
+    @property
+    def num_kv_heads(self):
+        return self.config.num_kv_heads
+
+
 class FusedQKVLinear(BaseQKVLinear):
-    """Maps input query, key, and value to multi-headed query, key, and value
-    using a fused weight.
+    """Maps input query, key, and value to multi-headed query, key, and value using a fused weight.
 
     N.B. Only supports cases where query, key, and value all have the same shape.
     """
@@ -803,7 +841,7 @@ class FusedQKVLinear(BaseQKVLinear):
         # The layer used to project.
         layer: MultiheadInputLinear.Config = MultiheadInputLinear.default_config()
 
-    def __init__(self, cfg: BaseQKVLinear.Config, *, parent: Module):
+    def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         if not cfg.query_dim == cfg.key_dim == cfg.value_dim:
@@ -817,8 +855,10 @@ class FusedQKVLinear(BaseQKVLinear):
         proj_cfg.per_head_dim = cfg.per_head_dim
         self._add_child("qkv_proj", proj_cfg)
 
-    # Similar (but not identical) code in repeat.py.
-    # pylint: disable=duplicate-code
+    @property
+    def num_kv_heads(self):
+        return self.config.num_heads
+
     def create_parameter_specs_recursively(self) -> NestedParameterSpec:
         specs = VDict(**super().create_parameter_specs_recursively())
 
@@ -835,15 +875,15 @@ class FusedQKVLinear(BaseQKVLinear):
                 shape=(3, *spec.shape),
                 mesh_axes=PartitionSpec(None, *spec.mesh_axes),
                 factorization=transform_factorization_spec(spec.factorization),
+                fan_axes=param_init.maybe_prepend_axis(
+                    spec.fan_axes, axis_type=param_init.FanAxes.AxisType.BATCH_AXIS
+                ),
             ),
             specs,
         )
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
             return prebuilt
@@ -852,8 +892,6 @@ class FusedQKVLinear(BaseQKVLinear):
             return VDict(qkv_proj=self.qkv_proj.initialize_parameters_recursively(prng_key_i))
 
         return jax.vmap(init)(split_prng_key(prng_key, 3).keys)
-
-    # pylint: enable=duplicate-code
 
     def forward(
         self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
@@ -897,7 +935,67 @@ class FusedQKVLinear(BaseQKVLinear):
         return self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
-def _rotary_sinusoidal_positional_embeddings(positions: Tensor, max_len: int, dim: int) -> Tensor:
+class FusedGroupedQKVLinear(BaseQKVLinear):
+    """Maps input query, key, and value to multi-headed query, key, and value using a fused weight.
+
+    The main difference from FusedQKVLinear is supporting a different number of key, value heads
+    than query heads. All of the projection weights are concatenated/fused along the `num_heads`
+    axis and then split after projection.
+    """
+
+    @config_class
+    class Config(BaseQKVLinear.Config):
+        """Configures FusedGroupedQKVLinear."""
+
+        # Number of heads for key, value projections.
+        # It is required that num_heads % num_kv_heads == 0.
+        num_kv_heads: Required[int] = REQUIRED
+        # The layer used to project.
+        layer: MultiheadInputLinear.Config = MultiheadInputLinear.default_config()
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        if not cfg.query_dim == cfg.key_dim == cfg.value_dim:
+            raise ValueError(
+                f"All projection dims must be equal for {type(self)}, saw: "
+                f"query:{cfg.query_dim}, key:{cfg.key_dim}, value:{cfg.value_dim}"
+            )
+        if cfg.num_heads % cfg.num_kv_heads != 0:
+            raise ValueError(
+                f"The number of query subgroups {cfg.num_kv_heads} should divide "
+                f"the number of query heads {cfg.num_heads}."
+            )
+        proj_cfg = cfg.layer
+        proj_cfg.model_dim = cfg.query_dim
+        proj_cfg.num_heads = cfg.num_heads + 2 * cfg.num_kv_heads
+        proj_cfg.per_head_dim = cfg.per_head_dim
+        self._add_child("qkv_proj", proj_cfg)
+
+    @property
+    def num_kv_heads(self):
+        return self.config.num_kv_heads
+
+    def forward(
+        self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
+    ) -> FusedQKVLinear.Output:
+        """See FusedQKVLinear for full docstring.
+
+        N.B. Only supports cases where key and value are both None.
+        """
+        if key is not None or value is not None:
+            raise ValueError("Key and value should be both None.")
+        cfg = self.config
+        proj = self.qkv_proj(query)
+        q_proj, k_proj, v_proj = jnp.split(
+            proj, [cfg.num_heads, cfg.num_heads + cfg.num_kv_heads], axis=-2
+        )
+        return self.Output(query=q_proj, key=k_proj, value=v_proj)
+
+
+def _rotary_sinusoidal_positional_embeddings(
+    *, positions: Tensor, max_len: int, dim: int, theta: float = 10000.0
+) -> Tensor:
     """Generate the sin/cos positional embedding.
 
     Ref:
@@ -907,13 +1005,14 @@ def _rotary_sinusoidal_positional_embeddings(positions: Tensor, max_len: int, di
         positions: A tensor representing the token position IDs with shape [seq_len].
         max_len: The max length of the input sequence.
         dim: The dimensionality of the positional embedding.
+        theta: A parameter to scale the frequencies.
 
     Returns:
         Rotary Positional Embedding with shape [seq_len, dim].
     """
     exponents = jnp.arange(dim).astype(jnp.float32)
     pos_array = jnp.arange(max_len).astype(jnp.float32)
-    exponents = jnp.power(10000, 2 * (exponents // 2) / dim)
+    exponents = jnp.power(theta, 2 * (exponents // 2) / dim)
     position_enc = jnp.expand_dims(pos_array, 1) / jnp.expand_dims(exponents, 0)
 
     rope_part_1 = jnp.sin(position_enc[:, 0::2])
@@ -935,6 +1034,7 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
 
         max_len: Required[int] = REQUIRED  # The max length of the input sequence.
         dim: Required[int] = REQUIRED  # The dimensionality of the positional embedding.
+        theta: float = 10000.0  # The scale of base frequency.
 
     def forward(self, positions: Tensor) -> Tensor:
         """
@@ -958,11 +1058,18 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
                 f"Seq. length ({seq_len}) should be less than or "
                 "equal to max length ({cfg.max_len})"
             )
-        return _rotary_sinusoidal_positional_embeddings(positions, cfg.max_len, cfg.dim)
+        return _rotary_sinusoidal_positional_embeddings(
+            positions=positions, max_len=cfg.max_len, dim=cfg.dim, theta=cfg.theta
+        )
 
 
 def apply_rotary_position_embeddings(
-    *, query: Tensor, key: Tensor, value: Tensor, sinusoidal_pos: Tensor
+    *,
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    sinusoidal_pos: Tensor,
+    rotary_value: bool,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """This is a jax implementation (a copy) of the RoPE apply_rotary_position_embeddings.
 
@@ -974,12 +1081,14 @@ def apply_rotary_position_embeddings(
         key: Key embeddings with shape [batch_size, seq_len, num_heads, dim].
         value: Value embeddings with shape [batch_size, seq_len, num_heads, dim].
         sinusoidal_pos: Rotary position embeddings with shape [1, seq_len, 1, dim].
+        rotary_value: Whether to apply rotary position embeddings on value layer.
 
     Returns:
         A tuple of:
         Rotary position affined query embeddings with shape [batch_size, seq_len, num_heads, dim]
         Rotary position affined key embeddings with shape [batch_size, seq_len, num_heads, dim]
         Rotary position affined value embeddings with shape [batch_size, seq_len, num_heads, dim]
+            if rotary_value == True, else original value embeddings
     """
     # sin [batch_size, num_heads, sequence_length, embed_size_per_head//2]
     # cos [batch_size, num_heads, sequence_length, embed_size_per_head//2]
@@ -996,11 +1105,12 @@ def apply_rotary_position_embeddings(
     # rotate_half_key_layer [-k1,k0,-k3,k2......,-kd-1,kd-2]
     rotate_half_key = jnp.reshape(jnp.stack([-key[..., 1::2], key[..., ::2]], axis=-1), key.shape)
     key = key * cos_pos + rotate_half_key * sin_pos
-    # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
-    rotate_half_value = jnp.reshape(
-        jnp.stack([-value[..., 1::2], value[..., ::2]], axis=-1), value.shape
-    )
-    value = value * cos_pos + rotate_half_value * sin_pos
+    if rotary_value:
+        # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
+        rotate_half_value = jnp.reshape(
+            jnp.stack([-value[..., 1::2], value[..., ::2]], axis=-1), value.shape
+        )
+        value = value * cos_pos + rotate_half_value * sin_pos
     return query, key, value
 
 
@@ -1019,6 +1129,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
             RoFormerSinusoidalPositionalEmbedding.default_config()
         )
         input_linear: BaseQKVLinear.Config = QKVLinear.default_config()
+        rotary_value: Required[bool] = REQUIRED
 
     def __init__(self, cfg: QKVLinear.Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1038,17 +1149,29 @@ class RoFormerQKVLinear(BaseQKVLinear):
             ),
         )
 
+    @property
+    def num_kv_heads(self):
+        """Propagate num KV heads from input linear."""
+        return self.i_proj.num_kv_heads
+
     def forward(
         self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
     ) -> BaseQKVLinear.Output:
         cfg = self.config
         query, key, value = self.i_proj(query, key=key, value=value)
-        # Query should has shape of [batch_size, num_len, num_heads, dim]
-        positions = jnp.arange(cfg.max_seq_length)
-        # sinusoidal_pos_emb shape should be [1, num_len, 1, dim]
+        # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
+        # So `positions` will be in range [0, seq_len - 1).
+        positions = jnp.arange(query.shape[1])
+        # sinusoidal_pos_emb shape should be [1, seq_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(self.rope_pos_emb_layer.forward(positions), [0, 2])
-        kwargs = {"sinusoidal_pos": sinusoidal_pos_emb, "query": query, "key": key, "value": value}
-        query, key, value = apply_rotary_position_embeddings(**kwargs)
+        sinusoidal_pos_emb = sinusoidal_pos_emb.astype(query.dtype)
+        query, key, value = apply_rotary_position_embeddings(
+            sinusoidal_pos=sinusoidal_pos_emb,
+            query=query,
+            key=key,
+            value=value,
+            rotary_value=cfg.rotary_value,
+        )
 
         return self.Output(query, key, value)
 
@@ -1065,7 +1188,7 @@ class PerDimScale(BaseLayer):
     @classmethod
     def default_config(cls) -> Config:
         cfg: PerDimScale.Config = super().default_config()
-        cfg.param_init = config_for_class(ConstantInitializer).set(value=0.0)
+        cfg.param_init = ConstantInitializer.default_config().set(value=0.0)
         return cfg
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
@@ -1084,6 +1207,176 @@ class PerDimScale(BaseLayer):
         r_softplus_0 = 1.442695041
         scale = jax.nn.softplus(self.parameters["param"]) * r_softplus_0
         return (x * scale).astype(x.dtype)
+
+
+ScaleFn = Callable[[int], float]  # A function mapping per_head_dim to a scale.
+
+
+def constant_scale_fn(value: float) -> ScaleFn:
+    """A constant scale function for `MultiheadAttention`.
+
+    Example:
+        `key_scale = config_for_function(constant_scale_fn).set(value=0.01)`
+
+    Args:
+        value: The value to scale by.
+
+    Returns:
+        A `ScaleFn` that always returns `value`.
+    """
+
+    def constant_function(per_head_dim: int) -> float:
+        del per_head_dim
+        return value
+
+    return constant_function
+
+
+def pow_scale_fn(exp: float) -> ScaleFn:
+    """A scale function for `MultiheadAttention` that computes `per_head_dim ** exp`.
+
+    Example:
+        `query_scale = config_for_function(pow_scale_fn).set(exp=-0.5)`
+
+    Args:
+        exp: The exponent.
+
+    Returns:
+        A `ScaleFn` that computes `per_head_dim ** exp`.
+    """
+
+    return functools.partial(pow, exp=exp)
+
+
+class BaseScaleQK(BaseLayer):
+    """Defines the common interface for scaling projected attention queries or keys.
+
+    * All subclasses must have `per_head_dim` in their config.
+    """
+
+    @config_class
+    class Config(BaseLayer.Config):
+        """Configures BaseScaleQKV."""
+
+        # The per-head dimension.
+        per_head_dim: Required[int] = REQUIRED
+
+    def forward(self, proj: Tensor) -> Tensor:
+        """Scales the projected queries or keys.
+
+        Args:
+            proj: The projected queries/keys.
+                Shape: [batch, seq_length, num_heads, per_head_dim].
+
+        Returns:
+            A tensor with the same shape as the input.
+        """
+        raise NotImplementedError(type(self))
+
+
+class ScaleQuery(BaseScaleQK):
+    """Default implementation for scaling projected queries."""
+
+    @config_class
+    class Config(BaseScaleQK.Config):
+        """Configures ScaleQuery."""
+
+        # The config for a normalization layer applied along the per-head dim.
+        # If None, no normalization is applied.
+        norm: Optional[InstantiableConfig] = None
+        # The config for a function to compute a query scale muliplier factor.
+        # If None, then self.default_scale_fn_config.
+        scale_factor: Optional[InstantiableConfig[ScaleFn]] = None
+        # A vector to apply per dimension scale to the query projection.
+        per_dim_scale: Optional[PerDimScale.Config] = None
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._scale_factor = self.default_scale_factor_config()
+        if cfg.scale_factor is not None:
+            self._scale_factor = cfg.scale_factor
+        self._scale_factor = self._scale_factor.instantiate()
+        if cfg.norm is not None:
+            self._add_child("norm", cfg.norm.set(input_dim=cfg.per_head_dim))
+        if cfg.per_dim_scale:
+            self._add_child("per_dim_scale", cfg.per_dim_scale.set(dim=cfg.per_head_dim))
+
+    def apply_norm(self, proj: Tensor) -> Tensor:
+        """Applies the norm to projected queries if configured."""
+        if "norm" in self.children:
+            proj = self.norm(proj)
+        return proj
+
+    def apply_per_dim_scale(self, proj: Tensor) -> Tensor:
+        """Applies the per-dim scale to projected queries if configured."""
+        if "per_dim_scale" in self.children:
+            # The Lingvo MultiheadAttention applies a per_dim_scale:
+            # https://github.com/tensorflow/lingvo/blob/41212226eac7a26491790c2bd476b78493f93ff6/lingvo/core/batch_major_attention.py#L790
+            proj = self.per_dim_scale(proj)
+        return proj
+
+    def apply_scale_factor(self, proj: Tensor) -> Tensor:
+        """Applies the scale-factor to projected queries."""
+        scale = self._scale_factor(self.config.per_head_dim)
+        return proj * scale
+
+    def forward(self, proj: Tensor) -> Tensor:
+        """Scales the projected queries."""
+        proj = self.apply_norm(proj)
+        proj = self.apply_per_dim_scale(proj)
+        proj = self.apply_scale_factor(proj)
+        # Stop scale constant from being folded with others.
+        # May increase numerical stability.
+        return ops.forward_optimization_barrier(proj)
+
+    @staticmethod
+    def default_scale_factor_config() -> InstantiableConfig[ScaleFn]:
+        """The config for the default function used to compute the query scale."""
+
+        return config_for_function(pow_scale_fn).set(exp=-0.5)
+
+
+class ScaleKey(BaseScaleQK):
+    """Default implementation for scaling projected keys."""
+
+    @config_class
+    class Config(BaseScaleQK.Config):
+        """Configures ScaleQuery."""
+
+        # The config for a normalization layer applied along the per-head dim.
+        # If None, no normalization is applied.
+        norm: Optional[InstantiableConfig] = None
+        # The config for a function to compute a key scale muliplier factor.
+        # If None, then self.default_scale_factor_config.
+        scale_factor: Optional[InstantiableConfig[ScaleFn]] = None
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._scale_factor = self.default_scale_factor_config()
+        if cfg.scale_factor is not None:
+            self._scale_factor = cfg.scale_factor
+        self._scale_factor = self._scale_factor.instantiate()
+        if cfg.norm is not None:
+            self._add_child("norm", cfg.norm.set(input_dim=cfg.per_head_dim))
+
+    def forward(self, proj: Tensor) -> Tensor:
+        """Scales the projected keys."""
+        cfg = self.config
+        if cfg.norm is not None:
+            proj = self.norm(proj)
+        scale = self._scale_factor(cfg.per_head_dim)
+        proj = proj * scale
+        # Stop scale constant from being folded with others.
+        # May increase numerical stability.
+        return ops.forward_optimization_barrier(proj)
+
+    @staticmethod
+    def default_scale_factor_config() -> InstantiableConfig[ScaleFn]:
+        """The config for the default function used to compute the key scale."""
+
+        return config_for_function(constant_scale_fn).set(value=1)
 
 
 class MultiheadAttention(BaseLayer):
@@ -1112,8 +1405,10 @@ class MultiheadAttention(BaseLayer):
         output_linear: MultiheadOutputLinear.Config = MultiheadOutputLinear.default_config()
         # The dropout layer.
         dropout: Dropout.Config = Dropout.default_config()
-        # A vector to apply per dimension scale to the query projection.
-        per_dim_scale: Optional[PerDimScale.Config] = None
+        # Config used to scale projected queries prior to computing logits.
+        query_scale: BaseScaleQK.Config = ScaleQuery.default_config()
+        # Config used to scale projected keys prior to computing logits.
+        key_scale: BaseScaleQK.Config = ScaleKey.default_config()
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = None
 
@@ -1136,8 +1431,10 @@ class MultiheadAttention(BaseLayer):
         self._add_child("o_proj", o_proj_cfg)
         # Add dropout layer.
         self._add_child("dropout", cfg.dropout)
-        if cfg.per_dim_scale:
-            self._add_child("per_dim_scale", cfg.per_dim_scale.set(dim=self.per_head_dim()))
+        # Add query scaling layer.
+        self._add_child("scale_query", cfg.query_scale.set(per_head_dim=self.per_head_dim()))
+        # Add key scaling layer.
+        self._add_child("scale_key", cfg.key_scale.set(per_head_dim=self.per_head_dim()))
 
     def output_dim(self):
         cfg = self.config
@@ -1297,17 +1594,6 @@ class MultiheadAttention(BaseLayer):
         )
         return output
 
-    def _scale_query(self, q_proj: Tensor) -> Tensor:
-        cfg = self.config
-        if cfg.per_dim_scale is not None:
-            # The Lingvo MultiheadAttention applies a per_dim_scale on q_proj:
-            # https://github.com/tensorflow/lingvo/blob/41212226eac7a26491790c2bd476b78493f93ff6/lingvo/core/batch_major_attention.py#L790
-            q_proj = self.per_dim_scale(q_proj)
-
-        q_scale = self.per_head_dim() ** -0.5
-        q_proj = q_proj * q_scale
-        return q_proj
-
     def _cap_logits(self, logits: Tensor) -> Tensor:
         """Caps the logits with tanh."""
         cfg = self.config
@@ -1317,7 +1603,8 @@ class MultiheadAttention(BaseLayer):
         return cap * jnp.tanh(logits / cap)
 
     def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
-        q_proj = self._scale_query(q_proj)
+        q_proj = self.scale_query(q_proj)
+        k_proj = self.scale_key(k_proj)
         return jnp.einsum("btnh,bsnh->bnts", q_proj, k_proj)
 
     def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
@@ -1341,7 +1628,7 @@ class MultiheadAttention(BaseLayer):
         *,
         time_step: Tensor,
         query: Tensor,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -1373,7 +1660,7 @@ class MultiheadAttention(BaseLayer):
         cached_states: NestedTensor,
         query: Tensor,
         *,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -1400,6 +1687,68 @@ class MultiheadAttention(BaseLayer):
             mode=ForwardMode.EXTEND_STEP,
             query=query,
             cached_states=cached_states,
+            attention_logit_biases=attention_logit_biases,
+        )
+
+    @staticmethod
+    def default_query_scale_config() -> InstantiableConfig[ScaleFn]:
+        """The config for the default function used to compute the query scale."""
+
+        return config_for_function(pow_scale_fn).set(exp=-0.5)
+
+    @staticmethod
+    def default_key_scale_config() -> InstantiableConfig[ScaleFn]:
+        """The config for the default function used to compute the key scale."""
+
+        return config_for_function(constant_scale_fn).set(value=1)
+
+
+class GroupedQueryAttention(MultiheadAttention):
+    """A Grouped-Query Attention (GQA) layer.
+
+    Query projections are divided into K groups along the `num_heads` dimension. Projections in the
+    same query subgroup share one common key/value head. This reduces the size of the KV-cache by a
+    factor of `num_heads/num_kv_heads`.
+
+    When `input_linear` is a `GroupedQKVLinear` layer with `num_kv_heads=1`, GQA reduces to
+    multi-query attention (MQA).
+    When `input_linear` is a `QKVLinear` layer (i.e. `num_kv_heads=num_heads`), GQA is equivalent to
+    multi-head attention (MHA).
+
+    Note that in some cases fused variants `FusedQKVLinear` or `FusedGroupedQKVLinear` can be used
+    as drop-in replacements for `QKVLinear` or `GroupedQKVLinear` respectively (see corresponding
+    layer docstrings for details).
+
+    Reference: https://arxiv.org/abs/2305.13245
+    """
+
+    @property
+    def num_kv_heads(self):
+        return self.i_proj.num_kv_heads
+
+    def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
+        """Repeats key or value heads dim to match the query."""
+        num_head_repeats = self.config.num_heads // self.num_kv_heads
+        if num_head_repeats == 1:
+            return key_or_value
+        # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
+        return jnp.repeat(key_or_value, num_head_repeats, axis=2)
+
+    def _compute_attention(
+        self,
+        *,
+        q_proj: Tensor,
+        k_proj: Tensor,
+        v_proj: Tensor,
+        attention_logit_biases: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        """See `MultiheadAttention._compute_attention` for details."""
+        k_proj = self._repeat_kv_heads(k_proj)
+        v_proj = self._repeat_kv_heads(v_proj)
+        return super()._compute_attention(
+            q_proj=q_proj,
+            k_proj=k_proj,
+            v_proj=v_proj,
             attention_logit_biases=attention_logit_biases,
         )
 
@@ -1532,9 +1881,9 @@ class MultiheadAttentionXL(MultiheadAttention):
 
     @unique
     class ScalePosition(Enum):
-        # Applies 1/sqrt(dim) scaling on the logits.
+        # Applies query scale-factor to the logits.
         LOGIT = 0
-        # Applies 1/sqrt(dim) scaling on the queries.
+        # Applies query scale-factor to the queries.
         QUERY = 1
 
     @config_class
@@ -1584,7 +1933,7 @@ class MultiheadAttentionXL(MultiheadAttention):
         params = super()._create_layer_parameter_specs()
         params["u_bias"] = params["v_bias"] = ParameterSpec(
             shape=(cfg.num_heads, self.per_head_dim()),
-            initializer=ConstantInitializer(0),
+            initializer=constant_initializer(0),
             mesh_axes=cfg.relative_pos_linear.param_partition_spec[-2:],
         )
         return params
@@ -1603,13 +1952,16 @@ class MultiheadAttentionXL(MultiheadAttention):
 
     def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
         cfg = self.config
-        if cfg.per_dim_scale is not None:
-            # Applies a per dim scale on q_proj.
-            q_proj = self.per_dim_scale(q_proj)
+        with child_context("apply_query_norm", module=self):
+            # We apply the query norm (if configured) to the projection (not the logits).
+            q_proj = self.scale_query.apply_norm(q_proj)
+
+        with child_context("apply_per_dim_scale", module=self):
+            q_proj = self.scale_query.apply_per_dim_scale(q_proj)
 
         if cfg.scale_position == MultiheadAttentionXL.ScalePosition.QUERY:
-            scale = self.per_head_dim() ** -0.5
-            q_proj = q_proj * scale
+            with child_context("apply_scale_factor_queries", module=self):
+                q_proj = self.scale_query.apply_scale_factor(q_proj)
 
         seq_len = q_proj.shape[1]
         # [2*seq_len - 1, pos_emb_dim].
@@ -1622,6 +1974,9 @@ class MultiheadAttentionXL(MultiheadAttention):
         # [2*seq_len - 1, num_heads, per_head_dim].
         r_proj = self.r_proj(pos_emb)
 
+        # Apply key scaling.
+        k_proj = self.scale_key(k_proj)
+
         logits = xl_attention_logits(
             q_proj=q_proj,
             k_proj=k_proj,
@@ -1633,8 +1988,8 @@ class MultiheadAttentionXL(MultiheadAttention):
             # In the original XL-Net code, it applies scale on AC + BD:
             #
             # https://github.com/zihangdai/xlnet/blob/bbaa3a6fa0b3a2ee694e8cf66167434f9eca9660/modeling.py#L148
-            scale = self.per_head_dim() ** -0.5
-            logits = logits * scale
+            with child_context("apply_scale_factor_logits", module=self):
+                logits = self.scale_query.apply_scale_factor(logits)
         return logits
 
     def extend_step(
@@ -1642,7 +1997,7 @@ class MultiheadAttentionXL(MultiheadAttention):
         cached_states: NestedTensor,
         query: Tensor,
         *,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, MultiheadAttention.Output]:
         raise NotImplementedError(type(self))
 
@@ -1836,7 +2191,7 @@ class TransformerAttentionLayer(BaseLayer):
         *,
         time_step: NestedTensor,
         target: Tensor,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -1868,7 +2223,7 @@ class TransformerAttentionLayer(BaseLayer):
         cached_states: NestedTensor,
         target: Tensor,
         *,
-        attention_logit_biases: Tensor,
+        attention_logit_biases: Optional[Tensor],
     ) -> Tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -2395,24 +2750,51 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         )
 
 
-def set_double_shard_weights_config(cfg: TransformerLayer.Config):
-    """Sets `cfg` to shard FFN and attention weights over both data and model axes."""
-    ff_layer = cfg.feed_forward
-    # Shard weights.
-    ff_layer.linear1.param_partition_spec = ("data", "model")
-    ff_layer.linear2.param_partition_spec = ("model", "data")
-    # Encourage the right activation sharding.
-    ff_layer.linear1.output_partition_spec = ("data", None, "model")
-    ff_layer.linear2.output_partition_spec = ("data", None, "model")
+def set_double_shard_weights_config(
+    cfg: Union[TransformerLayer.Config, Sequence[TransformerLayer.Config]],
+    *,
+    batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp"),
+    fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
+    tp_axis_names: Union[str, Sequence[str]] = "model",
+    seq_axis_names: Union[str, Sequence[str]] = "seq",
+):
+    """Sets `cfg` to shard FFN and attention weights over both fsdp and tp axes.
 
+    Args:
+        cfg: (A sequence of) Transformer layer config to apply sharding spec to.
+        batch_axis_names: Axis name(s) over which we shard the batch dimension of output tensors.
+        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
+        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
+        seq_axis_names: Axis name(s) over which we shard sequence-parallel tensors.
+    """
+
+    # pytype: disable=attribute-error
     def set_attn_partition_specs(attn_layer: MultiheadAttention.Config):
         # Shard weights.
-        attn_layer.input_linear.layer.param_partition_spec = ("data", "model", None)
-        attn_layer.output_linear.param_partition_spec = ("data", "model", None)
+        input_linear_cfg = attn_layer.input_linear
+        if hasattr(input_linear_cfg, "input_linear"):
+            input_linear_cfg = input_linear_cfg.input_linear
+        input_linear_cfg.layer.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+        attn_layer.output_linear.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
 
-    set_attn_partition_specs(cfg.self_attention.attention)
-    if cfg.cross_attention is not None:
-        set_attn_partition_specs(cfg.cross_attention.attention)
+    def set_ffn_partition_specs(ff_layer: TransformerFeedForwardLayer.Config):
+        # Shard weights.
+        ff_layer.linear1.param_partition_spec = (fsdp_axis_names, tp_axis_names)
+        ff_layer.linear2.param_partition_spec = (tp_axis_names, fsdp_axis_names)
+        # Encourage the right activation sharding.
+        ff_layer.linear1.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
+        ff_layer.linear2.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
+
+    if not isinstance(cfg, Sequence):
+        cfg = [cfg]
+
+    for layer_cfg in cfg:
+        set_attn_partition_specs(layer_cfg.self_attention.attention)
+        if layer_cfg.cross_attention is not None:
+            set_attn_partition_specs(layer_cfg.cross_attention.attention)
+        if isinstance(layer_cfg.feed_forward, TransformerFeedForwardLayer.Config):
+            set_ffn_partition_specs(layer_cfg.feed_forward)
+    # pytype: enable=attribute-error
 
 
 class BaseStackedTransformerLayer(BaseTransformerLayer):
@@ -2477,10 +2859,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             self._layers.append(self._add_child(f"layer{i}", layer_cfg))
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         cfg = self.config  # type: StackedTransformerLayer.Config
         prng_key = split_prng_key(prng_key, cfg.num_layers)
@@ -2700,7 +3079,10 @@ class _TransformerRepeat(Repeat):
 
             ys = {k: v for k, v in layer_outputs._asdict().items() if k != "data"}
             if layer_states is not None:
-                ys["cached_states"] = VDict(layer_states)  # Vectorize over scan axis.
+                # Vectorize over scan axis.
+                ys["cached_states"] = jax.tree_map(
+                    VDict, layer_states, is_leaf=lambda v: isinstance(v, dict)
+                )
             return layer_outputs.data, ys
 
         repeat_outputs: Repeat.Output = self._run(layer_fn, carry=data, xs=cached_states)
@@ -2728,7 +3110,11 @@ class _TransformerRepeat(Repeat):
 
     def init_states(self, *args: Any, **kwargs: Any) -> NestedTensor:
         def layer_fn(_):
-            return VDict(self.layer.init_states(*args, **kwargs))
+            return jax.tree_map(
+                VDict,
+                self.layer.init_states(*args, **kwargs),
+                is_leaf=lambda v: isinstance(v, dict),
+            )
 
         cfg = self.config
         return jax.vmap(layer_fn)(jnp.empty(cfg.num_layers))
@@ -2779,22 +3165,23 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
     XLA compilation overhead of large models with many layers.
     """
 
-    Config = BaseStackedTransformerLayer.Config
+    @config_class
+    class Config(BaseStackedTransformerLayer.Config):
+        """Configures RepeatedTransformerLayer."""
+
+        repeat: Repeat.Config = _TransformerRepeat.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config  # type: RepeatedTransformerLayer.Config
-        repeat_cfg = _TransformerRepeat.default_config().set(
+        repeat_cfg = cfg.repeat.set(
             layer=cfg.layer.set(input_dim=cfg.input_dim),
             num_layers=cfg.num_layers,
         )
         self._add_child("repeat", repeat_cfg)
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         # We need to call self.repeat.initialize_parameters_recursively() with the same prng_key
         # to ensure initialization parity with StackedTransformerLayer.
@@ -2925,10 +3312,7 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
         self._add_child("pipeline", pipeline_cfg)
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         cfg = self.config  # type: PipelinedTransformerLayer.Config
         # We pre-split all num_layers keys to ensure initialization parity with
@@ -2981,11 +3365,12 @@ def build_remat_spec(
     Returns:
         None (if no rematerialization is needed) or a RematSpec.
     """
-    if stack_cfg.cls is PipelinedTransformerLayer:
+    # TODO(markblee): Switch to using isinstance everywhere.
+    if stack_cfg.klass is PipelinedTransformerLayer:
         return None
-    attention_name = stack_cfg.layer.self_attention.attention.cls.__name__
+    attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
     return RematSpec(
-        prevent_cse=stack_cfg.cls is StackedTransformerLayer,
+        prevent_cse=stack_cfg.klass is StackedTransformerLayer,
         # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
         # or Repeated Conformers) we can enable common subexpression elimination optimizations.
         policy=config_for_function(jax_remat_policies.save_only_these_names).set(

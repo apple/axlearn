@@ -11,12 +11,12 @@ from jax import numpy as jnp
 
 from axlearn.common import param_init
 from axlearn.common.base_layer import BaseLayer, ParameterSpec, RematSpec
-from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 from axlearn.common.layers import RedirectToSharedModule
 from axlearn.common.layers_test import ParentLayer
-from axlearn.common.module import Module
+from axlearn.common.module import Module, OutputCollection
 from axlearn.common.module import functional as F
-from axlearn.common.repeat import Repeat
+from axlearn.common.repeat import Repeat, _drop_by_regex
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import PartitionSpec, VDict, get_recursively, shapes
 
@@ -26,7 +26,9 @@ class TestLayer(BaseLayer):
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
         return dict(
-            inc=ParameterSpec(shape=[], mesh_axes=[], initializer=param_init.ConstantInitializer(1))
+            inc=ParameterSpec(
+                shape=[], mesh_axes=[], initializer=param_init.constant_initializer(1)
+            )
         )
 
     def init_forward_state(self, batch_size):
@@ -34,8 +36,11 @@ class TestLayer(BaseLayer):
 
     def forward(self, *, carry, forward_state):
         logging.info("TestLayer: carry=%s forward_state=%s", shapes(carry), shapes(forward_state))
+        forward_state = forward_state + carry
         self.add_summary("carry_mean", jnp.mean(carry))
-        return carry + self.parameters["inc"], forward_state + carry
+        self.add_module_output("state", forward_state)
+        self.add_state_update("inc", 2)
+        return carry + self.parameters["inc"], forward_state
 
 
 class TestComplicatedLayer(BaseLayer):
@@ -121,13 +126,15 @@ class TestEnsemble(BaseLayer):
 class RepeatTest(TestCase):
     """Tests repeat layer."""
 
-    @parameterized.parameters(
-        itertools.product((jnp.float32, jnp.bfloat16), (None, RematSpec(prevent_cse=False)))
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.bfloat16),
+        remat_spec=(None, RematSpec(prevent_cse=False)),
+        drop_output=(None, config_for_function(_drop_by_regex).set(rules=["module_outputs.*"])),
     )
-    def test_repeat(self, dtype, remat_spec):
+    def test_repeat(self, dtype, remat_spec, drop_output):
         batch_size, num_layers = 14, 4
         cfg = TestEnsemble.default_config().set(name="test", num_layers=num_layers, dtype=dtype)
-        cfg.repeat_layer.remat_spec = remat_spec
+        cfg.repeat_layer.set(remat_spec=remat_spec, drop_output=drop_output)
         layer: TestEnsemble = cfg.instantiate(parent=None)
         self.assertEqual(
             PartitionSpec(None),
@@ -146,6 +153,7 @@ class RepeatTest(TestCase):
                 forward_state=input_forward_state,
             ),
             is_training=True,
+            drop_output_collections=(),
         )
         logging.info("forward_state=%s", output_forward_state)
         logging.info("output_collection=%s", output_collection)
@@ -158,13 +166,65 @@ class RepeatTest(TestCase):
                 (num_layers, batch_size),
             ),
         )
+        # Check output collection.
         self.assertEqual(
-            {"repeat_layer": {"layer": {"carry_mean": (num_layers,)}}},
+            OutputCollection(
+                state_updates={
+                    "repeat_layer": {
+                        # State update values are stacked across layers.
+                        "layer": {"inc": (num_layers,)},
+                        **{f"layer{i}": {} for i in range(num_layers)},
+                    },
+                },
+                module_outputs={
+                    "repeat_layer": {
+                        # Module output values are stacked across layers.
+                        "layer": (
+                            {"state": (num_layers, batch_size)} if drop_output is None else {}
+                        ),
+                        **{f"layer{i}": {} for i in range(num_layers)},
+                    },
+                },
+                summaries={
+                    "repeat_layer": {
+                        "layer": {},
+                        # Summary values are unstacked and placed in separate "layer{i}" scopes.
+                        **{f"layer{i}": {"carry_mean": tuple()} for i in range(num_layers)},
+                    }
+                },
+            ),
+            shapes(output_collection),
+        )
+        if drop_output is not None:
+            self.assertEqual(
+                get_recursively(output_collection.module_outputs, "repeat_layer/layer"),
+                {},
+            )
+        else:
+            assert_allclose(
+                get_recursively(output_forward_state, "repeat_layer/layer"),
+                get_recursively(output_collection.module_outputs, "repeat_layer/layer/state"),
+            )
+        assert_allclose(
+            [2] * num_layers,
+            get_recursively(output_collection.state_updates, "repeat_layer/layer/inc"),
+        )
+        # Check summaries.
+        self.assertEqual(
+            {
+                "repeat_layer": {
+                    "layer": {},
+                    **{f"layer{i}": {"carry_mean": tuple()} for i in range(num_layers)},
+                }
+            },
             shapes(output_collection.summaries),
         )
         assert_allclose(
             0.5 * (batch_size - 1) + jnp.arange(num_layers, dtype=dtype),
-            output_collection.summaries["repeat_layer"]["layer"]["carry_mean"],
+            [
+                output_collection.summaries["repeat_layer"][f"layer{i}"]["carry_mean"]
+                for i in range(num_layers)
+            ],
         )
         if remat_spec is None:
             # pylint: disable-next=protected-access
@@ -228,7 +288,10 @@ class RepeatTest(TestCase):
             )
             assert_allclose(
                 0.5 * (batch_size - 1) + jnp.arange(num_layers, dtype=dtype) * multiple_values,
-                output_collection.summaries["repeat_layer"]["layer"]["layer1"]["carry_mean"],
+                [
+                    output_collection.summaries["repeat_layer"][f"layer{i}"]["layer1"]["carry_mean"]
+                    for i in range(num_layers)
+                ],
             )
             if remat_spec is None:
                 # pylint: disable-next=protected-access
@@ -284,8 +347,12 @@ class RepeatTest(TestCase):
         )
 
         for forward_path, output_path, remat_methods in [
-            ("repeat", "repeat/layer/redirect/carry_mean", ["forward"]),
-            ("nested/repeat", "nested/repeat/layer/redirect/carry_mean", ["forward", "forward"]),
+            ("repeat", "repeat/layer{i}/redirect/carry_mean", ["forward"]),
+            (
+                "nested/repeat",
+                "nested/repeat/layer{i}/redirect/carry_mean",
+                ["forward", "forward"],
+            ),
         ]:
             (carry, output_forward_state), output_collection = F(
                 layer,
@@ -308,18 +375,12 @@ class RepeatTest(TestCase):
                 ),
             )
 
-            # Construct expected output.
-            expected_shapes = curr = {}
-            for path in output_path.split("/")[:-1]:
-                curr[path] = curr.get(path, {})
-                curr = curr[path]
-            curr[output_path.rsplit("/", maxsplit=1)[-1]] = (num_layers,)
-
-            # Compare.
-            self.assertEqual(expected_shapes, shapes(output_collection.summaries))
             assert_allclose(
                 0.5 * (batch_size - 1) + jnp.arange(num_layers, dtype=dtype),
-                get_recursively(output_collection.summaries, output_path.split("/")),
+                [
+                    get_recursively(output_collection.summaries, output_path.format(i=i))
+                    for i in range(num_layers)
+                ],
             )
 
             # Test remat spec.

@@ -11,7 +11,6 @@ import jax.numpy as jnp
 import jax.random
 import tensorflow as tf
 from absl import logging
-from flax.core.frozen_dict import freeze, unfreeze
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_flax_utils import FlaxPreTrainedModel
 
@@ -37,29 +36,31 @@ def get_hf_models_cache_dir() -> Path:
     return hf_models_cache_dir
 
 
-def download_hf_models_from_gs(gs_path: str) -> str:
-    """Downloads HuggingFace model artifacts from gs buckets.
+def download_hf_models_from_remote(remote_path: str) -> str:
+    """Downloads HuggingFace model artifacts from remote storage like gs:// or s3://.
+
+    If the remote_path is actually local, it will just copy it to the cache_dir.
 
     Args:
-        gs_path: Model artifacts location.
+        remote_path: Model artifacts location.
 
     Returns:
         Local path of downloaded models.
     """
-    model_name = gs_path.rstrip("/").split("/")[-1]
+    model_name = remote_path.rstrip("/").split("/")[-1]
     cache_dir = get_hf_models_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
     local_pretrained_model_path = cache_dir / model_name
     if not local_pretrained_model_path.exists():
         local_pretrained_model_path.mkdir(parents=True)
-        for filename in tf.io.gfile.listdir(gs_path):
+        for filename in tf.io.gfile.listdir(remote_path):
             logging.info(
                 "Downloading %s to %s",
-                os.path.join(gs_path, filename),
+                os.path.join(remote_path, filename),
                 local_pretrained_model_path / filename,
             )
             tf.io.gfile.copy(
-                os.path.join(gs_path, filename),
+                os.path.join(remote_path, filename),
                 str(local_pretrained_model_path / filename),
             )
     return str(local_pretrained_model_path)
@@ -90,7 +91,8 @@ class HfModuleWrapper(BaseModel, ABC):
         dtype: Required[jnp.dtype] = REQUIRED
         # Type of HF pretrained model.
         hf_model_type: Required[Type[FlaxPreTrainedModel]] = REQUIRED
-        # A local or GCS path to the Hugging Face model directory.
+        # A local or remote path to the Hugging Face model directory.
+        # Schemes must be supported by tf.io.
         pretrained_model_path: Optional[str] = None
         # Initialize model parameters from PyTorch checkpoint rather than Flax checkpoint.
         from_pt: Optional[bool] = False
@@ -109,9 +111,18 @@ class HfModuleWrapper(BaseModel, ABC):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
+        self._local_pretrained_model_path = None
         if cfg.pretrained_model_path is not None:
             hf_config_cls = cfg.hf_model_type.config_class
-            with tf.io.gfile.GFile(os.path.join(cfg.pretrained_model_path, "config.json")) as f:
+
+            self._local_pretrained_model_path = download_hf_models_from_remote(
+                cfg.pretrained_model_path
+            )
+            logging.info("Using model path %s", self._local_pretrained_model_path)
+
+            with open(
+                os.path.join(self._local_pretrained_model_path, "config.json"), encoding="utf-8"
+            ) as f:
                 final_hf_config = hf_config_cls(**json.load(f))
 
             if cfg.hf_config is not None:
@@ -143,43 +154,17 @@ class HfModuleWrapper(BaseModel, ABC):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
             return prebuilt
         params = super().initialize_parameters_recursively(prng_key, prebuilt=prebuilt)
         cfg = self.config
-        if cfg.pretrained_model_path is not None:
-            if cfg.pretrained_model_path.startswith("gs://"):
-                # Cache the model locally, if it is not already cached.
-                model_name = cfg.pretrained_model_path.rstrip("/").split("/")[-1]
-                cache_dir = get_hf_models_cache_dir()
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                local_pretrained_model_path = cache_dir / model_name
-                if not local_pretrained_model_path.exists():
-                    local_pretrained_model_path.mkdir(parents=True)
-                    for filename in tf.io.gfile.listdir(cfg.pretrained_model_path):
-                        logging.info(
-                            "Downloading %s to %s",
-                            os.path.join(cfg.pretrained_model_path, filename),
-                            local_pretrained_model_path / filename,
-                        )
-                        tf.io.gfile.copy(
-                            os.path.join(cfg.pretrained_model_path, filename),
-                            str(local_pretrained_model_path / filename),
-                        )
-                else:
-                    logging.info(
-                        "Found cache %s, skipping downloading model from %s",
-                        local_pretrained_model_path,
-                        cfg.pretrained_model_path,
-                    )
-            else:
-                local_pretrained_model_path = cfg.pretrained_model_path
+        if self._local_pretrained_model_path is not None:
             hf_model = cfg.hf_model_type.from_pretrained(
-                local_pretrained_model_path, from_pt=cfg.from_pt
+                self._local_pretrained_model_path, from_pt=cfg.from_pt
             )
-            hf_module_params = unfreeze(params[HF_MODULE_KEY])
+            hf_module_params = params[HF_MODULE_KEY]
             hf_module_params["params"] = {
                 key: (
                     value
@@ -188,7 +173,7 @@ class HfModuleWrapper(BaseModel, ABC):
                 )
                 for key, value in hf_model.params.items()
             }
-            params[HF_MODULE_KEY] = freeze(hf_module_params)
+            params[HF_MODULE_KEY] = hf_module_params
         return params
 
     def _dummy_input_kwargs(self) -> Dict[str, Optional[Tensor]]:  # pylint: disable=no-self-use

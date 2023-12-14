@@ -270,7 +270,7 @@ class StackedRNNLayer(BaseRNNCell):
 
     def initialize_parameters_recursively(
         self,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         *,
         prebuilt: Optional[NestedTensor] = None,
     ) -> NestedTensor:
@@ -410,7 +410,7 @@ class RepeatedRNNLayer(BaseRNNCell):
 
     def initialize_parameters_recursively(
         self,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         *,
         prebuilt: Optional[NestedTensor] = None,
     ) -> NestedTensor:

@@ -23,7 +23,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
-from axlearn.common.layers import LayerNorm, Linear, get_activation_fn
+from axlearn.common.layers import Linear
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor
 
@@ -69,8 +69,10 @@ class AttentionPooling(BasePoolingLayer):
     @classmethod
     def default_config(cls) -> Config:
         cfg: AttentionPooling.Config = super().default_config()
-        cfg.cross_attention.attention.num_heads = 1  # pylint: disable=no-member
-        cfg.feed_forward.hidden_dim = scaled_hidden_dim(scale=4)  # pylint: disable=no-member
+        # pylint: disable=no-member  # pytype: disable=attribute-error
+        cfg.cross_attention.attention.num_heads = 1
+        cfg.feed_forward.hidden_dim = scaled_hidden_dim(scale=4)
+        # pylint: enable=no-member  # pytype: enable=attribute-error
         return cfg
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
@@ -277,113 +279,6 @@ class LastNTokenPooling(BasePoolingLayer):
         chosen_tokens = jnp.einsum("bsd,bso->bod", tokens, dispatch)
 
         return chosen_tokens
-
-
-class SpladeMapping(BaseLayer):
-    """SpladeMapping is a simplified version of BertLM head.
-
-    The SpladeMapping maps the embedding from input_dim to intermediate_dim via input_mapping.
-    The embedding is further mapped into output_dim via vocab_mapping.
-    """
-
-    @config_class
-    class Config(BaseLayer.Config):
-        input_dim: Required[int] = REQUIRED
-        intermediate_dim: Required[int] = REQUIRED
-        output_dim: Required[int] = REQUIRED
-        input_mapping: Linear.Config = Linear.default_config()
-        activation_fn: str = "nn.gelu"
-        input_norm: LayerNorm.Config = LayerNorm.default_config()
-        vocab_mapping: InstantiableConfig = Linear.default_config()
-
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
-        cfg = self.config
-        self._add_child(
-            "input_mapping",
-            cfg.input_mapping.set(input_dim=cfg.input_dim, output_dim=cfg.intermediate_dim),
-        )
-        self._add_child(
-            "input_norm",
-            cfg.input_norm.set(input_dim=cfg.intermediate_dim),
-        )
-        self._add_child(
-            "vocab_mapping",
-            cfg.vocab_mapping.set(input_dim=cfg.intermediate_dim, output_dim=cfg.output_dim),
-        )
-
-    def forward(self, inputs: Tensor) -> Tensor:
-        x = self.input_mapping(inputs)
-        x = get_activation_fn(self.config.activation_fn)(x)
-        x = self.input_norm(x)
-        output_emb = self.vocab_mapping(x)
-        return output_emb
-
-
-class SpladePooling(BasePoolingLayer):
-    """Splade pooling layer."""
-
-    @config_class
-    class Config(BasePoolingLayer.Config):
-        # Splade activation function. ReLU by default.
-        splade_activation_fn: str = "nn.relu"
-        splade_mode: str = "max"
-        vocab_mapping: InstantiableConfig = SpladeMapping.default_config()
-
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
-        cfg = self.config
-        self._add_child(
-            "vocab_mapping",
-            cfg.vocab_mapping.set(
-                input_dim=cfg.input_dim,
-                output_dim=cfg.output_dim,
-            ),
-        )
-
-    def forward(  # pylint:disable=arguments-renamed
-        self, tokens: Tensor, paddings: Tensor = None
-    ) -> Tensor:
-        """Calculate the Splade Pooler.
-
-        Args:
-            tokens: A Tensor of shape [batch_size, seq_len, hidden_dim].
-            paddings: A Tensor of shape [batch_size, seq_len].
-
-        Returns:
-            A Tensor of shape [batch_size, num_outputs, vocab_size] representing Splade features,
-             where num_outputs is determined by the pooling mode.
-             Currently cfg.splade_mode supports max and sum. For both, num_outputs = 1.
-
-        Raises:
-            ValueError: If cfg.splade_mode is not supported.
-            NotImplementedError: If cfg.num_outputs > 1.
-        """
-        cfg = self.config
-        if paddings is None:
-            paddings = jnp.zeros((tokens.shape[0], tokens.shape[1]), dtype=tokens.dtype)
-        # paddings shape is expanded to [batch_size, seq_len, 1].
-        paddings = jnp.expand_dims(paddings, -1)
-        if cfg.splade_mode not in ["max", "sum"]:
-            raise ValueError(f"({cfg.splade_mode}) is not supported in Splade pooling.")
-        if cfg.num_outputs != 1:
-            raise NotImplementedError(
-                f"SPLADE pooling currently doesn't support num_outputs = ({cfg.num_outputs})."
-            )
-        # The output of MLM should have shape [batch_size, seq_len, vocab_size]
-        # BertLMHead uses predict instead of forward.
-        x = self.vocab_mapping(inputs=tokens)
-        # Splade = max( log(1 + relu(x)), dim=1)
-        # (yinfeiy@) reports doing max pooling first will reduce memory in pytorch.
-        # TODO(bwzhang@) Check the pooling order within AXLearn.
-        splade_output = jnp.log1p(get_activation_fn(cfg.splade_activation_fn)(x))
-        if cfg.splade_mode == "max":
-            splade_output += paddings * NEG_INF  # set padded values to -inf
-            splade_output = jnp.max(splade_output, axis=1, keepdims=True)
-        elif cfg.splade_mode == "sum":
-            splade_output *= 1 - paddings  # set padded values to 0
-            splade_output = jnp.sum(splade_output, axis=1, keepdims=True)
-        return splade_output
 
 
 class PoolingWithProjection(BasePoolingLayer):

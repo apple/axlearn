@@ -91,7 +91,7 @@ def text_to_lm_training_input(
         logging.warning("is_training was %s, did you mean to use this processor?", is_training)
     vocab = vocab_cfg.instantiate()
     if token_adjuster_cfg is not None:
-        token_adjuster = maybe_set_config(token_adjuster_cfg, "vocab_cfg", vocab_cfg).instantiate()
+        token_adjuster = maybe_set_config(token_adjuster_cfg, vocab_cfg=vocab_cfg).instantiate()
     else:
         token_adjuster = None
 
@@ -412,10 +412,10 @@ def make_autoregressive_inputs(
     (see corresponding docstring for details).
 
     Processing:
-        Decoder-only: Concatenate "source_ids" and "target_labels" as "input_ids".
-            If input_data_type == InputDataType.SEQ2SEQ_MASK, prepend "source_ids" as
+        Decoder-only: Concatenate "input_ids" and "target_labels" as "input_ids".
+            If input_data_type == InputDataType.SEQ2SEQ_MASK, prepend "input_ids" as
                 IGNORE_TARGET_LABEL in target_labels so they don't contribute to the loss.
-            If input_data_type == InputDataType.SEQ2SEQ_NO_MASK, do not replace "source_ids"
+            If input_data_type == InputDataType.SEQ2SEQ_NO_MASK, do not replace "input_ids"
                 with IGNORE_TARGET_LABEL in target_labels so they contribute to the loss.
                 However, we still replace "prefix" with IGNORE_TARGET_LABEL in target_labels
                 so they don't contribute to the loss.
@@ -425,17 +425,17 @@ def make_autoregressive_inputs(
                 pad=0, bos=1, eos=2, ignore_target_label=-1
 
                 if input_data_type == InputDataType.SEQ2SEQ_MASK:
-                    Before: source_ids=[100, 101], target_labels=[102, 2], prefix=[1]
+                    Before: input_ids=[100, 101], target_labels=[102, 2], prefix=[1]
                     After: input_ids=[1, 100, 101, 102], target_labels=[-1, -1, 102, 2]
 
-                    Before: source_ids=[100, 101], target_labels=[102, 2], prefix=[1, 3]
+                    Before: input_ids=[100, 101], target_labels=[102, 2], prefix=[1, 3]
                     After: input_ids=[1, 3, 100, 101, 102], target_labels=[-1, -1, -1 102, 2]
 
                 if input_data_type == InputDataType.SEQ2SEQ_NO_MASK:
-                    Before: source_ids=[100, 101], target_labels=[102, 2], prefix=[1]
+                    Before: input_ids=[100, 101], target_labels=[102, 2], prefix=[1]
                     After: input_ids=[1, 100, 101, 102], target_labels=[100, 101, 102, 2]
 
-                    Before: source_ids=[100, 101], target_labels=[102, 2], prefix=[1, 3]
+                    Before: input_ids=[100, 101], target_labels=[102, 2], prefix=[1, 3]
                     After: input_ids=[1, 3, 100, 101, 102], target_labels=[-1, 100, 101, 102, 2]
 
             Specifically, outputs will be:
@@ -625,29 +625,24 @@ def _trim_and_pad_with_segments(
 
     Returns:
         The same output as `seqio.trim_and_pad_dataset`, except in addition we return the following
-        fields for each input key ending with `_ids`:
+        fields for each feature:
         - `{input_key}_segment_ids`: will be 1's for the first `input_key.shape[-1]` tokens, and 0's
             for padding;
         - `{input_key}_positions`: will be `range(input_key.shape[-1])`, and 0's for padding.
     """
 
+    # Make a copy to avoid mutating input.
     feature_lengths_with_new_keys = dict(**feature_lengths)
     for key, length in feature_lengths.items():
-        # Drop "target_labels_{segment_ids,positions}", as they are redundant.
-        # These fields are used for attention on the inputs.
-        if not key.endswith("ids"):
-            continue
-        for new_key in [key.replace("_ids", "_segment_ids"), key.replace("_ids", "_positions")]:
+        for new_key in [f"{key}_segment_ids", f"{key}_positions"]:
             assert new_key not in feature_lengths_with_new_keys
             feature_lengths_with_new_keys[new_key] = length
 
     @seqio.map_over_dataset
     def add_segments_positions(example: Dict[str, tf.Tensor]):
-        for key in feature_lengths_with_new_keys:
-            if key.endswith("_segment_ids"):
-                example[key] = tf.ones_like(example[key.replace("_segment_ids", "_ids")])
-            elif key.endswith("_positions"):
-                example[key] = tf.range(tf.shape(example[key.replace("_positions", "_ids")])[-1])
+        for key in feature_lengths:
+            example[f"{key}_segment_ids"] = tf.ones_like(example[key])
+            example[f"{key}_positions"] = tf.range(tf.shape(example[key])[-1])
         return example
 
     return input_tf_data.chain(
@@ -761,34 +756,68 @@ def text2text_lm_input(
 
     # Instantiate main processor.
     processor_cfg = processor_cfg or config_for_function(make_autoregressive_inputs)
-    processor_cfg = maybe_set_config(processor_cfg, "model_type", model_type)
-    processor_cfg = maybe_set_config(processor_cfg, "max_source_length", max_source_length)
-    processor_cfg = maybe_set_config(processor_cfg, "max_target_length", max_target_length)
+    processor_cfg = maybe_set_config(
+        processor_cfg,
+        model_type=model_type,
+        max_source_length=max_source_length,
+        max_target_length=max_target_length,
+    )
     process_inputs_fn = processor_cfg.instantiate()
+
+    # Retain all original feature keys.
+    pack_or_pad_rekey = {k: k for k in feature_lengths}
+    for k in feature_lengths:
+        # Drop "target_labels_{segment_ids,positions}", as they are redundant.
+        if not k.endswith("ids"):
+            continue
+        # Instead of the more verbose "source_ids_segment_ids", we rename to
+        # "source_segment_ids". Likewise for "source_ids_positions" to "source_positions".
+        for suffix in ["segment_ids", "positions"]:
+            pack_or_pad_rekey[k.replace("_ids", f"_{suffix}")] = f"{k}_{suffix}"
 
     # Instantiate post-processor. Padding can be used e.g. for eval.
     if packing_mode == "pack":
-        # Retain all original feature keys.
-        pack_rekeys = {k: k for k in feature_lengths}
-        for k in feature_lengths:
-            # Drop "target_labels_{segment_ids,positions}", as they are redundant.
-            if not k.endswith("ids"):
-                continue
-            # Instead of the more verbose "source_ids_segment_ids", we rename to
-            # "source_segment_ids". Likewise for "source_ids_positions" to "source_positions".
-            for suffix in ["segment_ids", "positions"]:
-                pack_rekeys[k.replace("_ids", f"_{suffix}")] = f"{k}_{suffix}"
-
         pack_or_pad_fn = input_tf_data.chain(
             _trim_and_pack_with_segments(feature_lengths=feature_lengths),
-            rekey(pack_rekeys, retain_original_inputs=False),
+            rekey(pack_or_pad_rekey, retain_original_inputs=False),
         )
     elif packing_mode == "pad":
-        pack_or_pad_fn = _trim_and_pad_with_segments(feature_lengths=feature_lengths)
+        pack_or_pad_fn = input_tf_data.chain(
+            _trim_and_pad_with_segments(feature_lengths=feature_lengths),
+            # For trim_and_pad, retain all original keys except for the rekeyed ones.
+            rekey(pack_or_pad_rekey, retain_original_inputs=True),
+            input_tf_data.remove_fields(
+                [x for k in feature_lengths for x in [f"{k}_segment_ids", f"{k}_positions"]],
+            ),
+        )
     elif packing_mode == "none":
         pack_or_pad_fn = input_tf_data.identity()
     else:
         raise ValueError(f"Unrecognized packing mode: {packing_mode}")
+
+    # EncoderDecoderModel expects encoder inputs under "source" and decoder inputs under "target".
+    if model_type == ModelType.ENCODER_DECODER:
+        encoder_decoder_rekey = {}
+        for key in ["source", "target"]:
+            encoder_decoder_rekey.update(
+                {
+                    f"{key}/input_ids": f"{key}_ids",
+                    f"{key}/input_segment_ids": f"{key}_segment_ids",
+                    f"{key}/positions": f"{key}_positions",
+                }
+            )
+        make_encoder_decoder_inputs = input_tf_data.chain(
+            # Retain original keys except those that were rekeyed.
+            rekey(
+                encoder_decoder_rekey,
+                default_value=None,
+                separator="/",
+                retain_original_inputs=True,
+            ),
+            input_tf_data.remove_fields(list(set(encoder_decoder_rekey.values()))),
+        )
+    else:
+        make_encoder_decoder_inputs = input_tf_data.identity()
 
     # TODO(gyin): Avoid double tokenization for decoder only.
     return input_tf_data.chain(
@@ -815,6 +844,7 @@ def text2text_lm_input(
         pack_or_pad_fn,
         # Ensures that padding introduced at "target_labels" during pad/pack are out-of-class.
         map_targets_out_of_class,
+        make_encoder_decoder_inputs,
     )
 
 
@@ -828,6 +858,7 @@ def lm_text_preprocessor(
     window_size: int = 128,
     additional_preprocessors: Optional[Sequence[InstantiableConfig]] = None,
     token_adjuster_cfg: Optional[InstantiableConfig] = None,
+    is_training: Optional[bool] = None,
 ) -> input_tf_data.DatasetToDatasetFn:
     """Produces processors for lm data for LM training."""
 
@@ -855,6 +886,7 @@ def lm_text_preprocessor(
                 window_size=window_size,
                 shuffle_buffer_size=shuffle_buffer_size,
                 token_adjuster_cfg=token_adjuster_cfg,
+                is_training=is_training if is_training is not None else True,
             )
         )
         return processors

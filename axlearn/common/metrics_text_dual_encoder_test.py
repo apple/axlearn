@@ -10,7 +10,10 @@ import numpy as np
 from jax.experimental.pjit import pjit
 
 from axlearn.common.eval_retrieval_test import DummyRetrievalModel
-from axlearn.common.metrics_text_dual_encoder import TextDualEncoderMetricCalculator
+from axlearn.common.metrics_text_dual_encoder import (
+    TextDualEncoderMetricCalculator,
+    calculate_retrieval_metrics_from_similarity_matrix,
+)
 from axlearn.common.test_utils import TestCase
 from axlearn.common.text_dual_encoder import (
     NEGATIVE_EMBEDDINGS,
@@ -152,8 +155,9 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
         # text_negative_paddings are set as None.
         text_negative_embeddings = None
         text_negative_paddings = None
+        top_ks_for_accuracy = [1, 4]
         summaries = _compute_metrics(
-            top_ks_for_accuracy=[1, 4],
+            top_ks_for_accuracy=top_ks_for_accuracy,
             data_generator=dummy_data_generator(
                 query_embeddings,
                 query_paddings,
@@ -164,6 +168,18 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
             ),
         )
 
+        summaries_from_similarity_matrix = calculate_retrieval_metrics_from_similarity_matrix(
+            sim=jnp.einsum(
+                "i d, j d -> i j",
+                jnp.reshape(query_embeddings, (-1, 2)),
+                jnp.reshape(text_positive_embeddings, (-1, 2)),
+            ),
+            text_positive_paddings=text_positive_paddings,
+            query_paddings=query_paddings,
+            text_paddings=jnp.reshape(text_positive_paddings, -1),
+            top_ks_for_accuracy=top_ks_for_accuracy,
+        )
+
         expected_metrics = {
             "avg_rank": (2 + 5 + 1) / 3,
             "retrieval_accuracy@1": 1 / 3,
@@ -171,6 +187,7 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
         }
 
         self.assertNestedAllClose(summaries, expected_metrics)
+        self.assertNestedAllClose(summaries_from_similarity_matrix, expected_metrics)
 
         # Tests when there is no negative text. text_negative_embeddings and
         # text_negative_paddings have a shape of (num_examples, 0).
@@ -199,6 +216,7 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
             ]
         )
         text_negative_paddings = jnp.asarray([[0], [0], [0], [1]])
+        top_ks_for_accuracy = [1, 7]
         """
         similarity_matrix:
         [[ 17   7   9   5   4  19   3  10  11  18   3  -6]
@@ -207,7 +225,7 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
          [  7  10  16   4   1  13  -2  19  11  10  -2   4]]
         """
         summaries = _compute_metrics(
-            top_ks_for_accuracy=[1, 7],
+            top_ks_for_accuracy=top_ks_for_accuracy,
             data_generator=dummy_data_generator(
                 query_embeddings,
                 query_paddings,
@@ -217,7 +235,28 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
                 text_negative_paddings,
             ),
         )
-
+        text_embeddings = jnp.concatenate(
+            [
+                jnp.reshape(text_positive_embeddings, (-1, 2)),
+                jnp.reshape(text_negative_embeddings, (-1, 2)),
+            ],
+            axis=0,
+        )
+        text_paddings = jnp.concatenate(
+            [jnp.reshape(text_positive_paddings, -1), jnp.reshape(text_negative_paddings, -1)],
+            axis=0,
+        )
+        summaries_from_similarity_matrix = calculate_retrieval_metrics_from_similarity_matrix(
+            sim=jnp.einsum(
+                "i d, j d -> i j",
+                jnp.reshape(query_embeddings, (-1, 2)),
+                text_embeddings,
+            ),
+            text_positive_paddings=text_positive_paddings,
+            query_paddings=query_paddings,
+            text_paddings=text_paddings,
+            top_ks_for_accuracy=top_ks_for_accuracy,
+        )
         expected_metrics = {
             "avg_rank": (3 + 8 + 1) / 3,
             "retrieval_accuracy@1": 1 / 3,
@@ -225,3 +264,4 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
         }
 
         self.assertNestedAllClose(summaries, expected_metrics)
+        self.assertNestedAllClose(summaries_from_similarity_matrix, expected_metrics)

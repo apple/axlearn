@@ -26,10 +26,11 @@ import dataclasses
 import functools
 from typing import NamedTuple, Optional, Tuple, Union
 
-import jax
+import jax.ad_checkpoint
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
+from axlearn.common import param_init
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, NestedParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.module import (
@@ -147,13 +148,16 @@ class Pipeline(BaseLayer):
                 shape=(cfg.num_layers, *spec.shape),
                 mesh_axes=PartitionSpec("pipeline", *spec.mesh_axes),
                 factorization=transform_factorization_spec(spec.factorization),
+                fan_axes=param_init.maybe_prepend_axis(
+                    spec.fan_axes, axis_type=param_init.FanAxes.AxisType.BATCH_AXIS
+                ),
             ),
             specs,
         )
 
     def initialize_parameters_recursively(
         self,
-        prng_key: Union[jax.random.KeyArray, VDict],
+        prng_key: Union[Tensor, VDict],
         *,
         prebuilt: Optional[NestedTensor] = None,
     ) -> NestedTensor:
@@ -233,16 +237,19 @@ class Pipeline(BaseLayer):
             )
 
         def pad_carry(v_carry: Tensor, partition_spec: PartitionSpec):
-            """Pads input [M, microbatch_size, ...] to [M + N - 1, N, microbatch_size, ...]."""
-            # [M, 1, ...]
+            """Pads input [M, microbatch_size, ...] to [M + N - 1, 1, microbatch_size, ...]."""
+            # Pad to shape [M + N - 1, ...].
+            v_carry = jnp.pad(v_carry, [(0, n - 1)] + [(0, 0)] * (v_carry.ndim - 1))
+            v_carry = with_sharding_constraint(
+                v_carry, PartitionSpec(PartitionSpec.UNCONSTRAINED, *partition_spec[1:])
+            )
+            # Expand to shape [M + N - 1, 1, ...].
             v_carry = jnp.expand_dims(v_carry, 1)
-            # Pad to shape [M + N - 1, N, ...].
-            v_carry = jnp.pad(v_carry, [[0, n - 1], [0, n - 1]] + [(0, 0)] * (v_carry.ndim - 2))
-            partition_spec = PartitionSpec(partition_spec[0], "pipeline", *partition_spec[1:])
-            v_carry = with_sharding_constraint(v_carry, partition_spec)
             return v_carry
 
+        # [M + N - 1, 1, microbatch_size, ...].
         padded_carry = jax.tree_util.tree_map(pad_carry, carry, carry_partition_spec)
+
         # Transpose from "layer-major" [N, M, ...] to "pipeline-major" [N + M - 1, N, ...].
         #
         # Note: for efficient decoding we may want to skip transposes and keep decoding states in
@@ -263,7 +270,8 @@ class Pipeline(BaseLayer):
             return jnp.reshape(keys, [m + n - 1, n] + list(keys.shape[1:]))
 
         prng_keys = jax.tree_util.tree_map(stack_and_reshape, *prng_keys)
-        with child_context("layer") as layer_context:
+        layer_output_collection = new_output_collection()
+        with child_context("layer", output_collection=layer_output_collection) as layer_context:
 
             def vmap_fn(
                 state_n: Tensor, prng_key_tn: jax.random.PRNGKey, carry_tn: Tensor, x_tn: Tensor
@@ -292,8 +300,7 @@ class Pipeline(BaseLayer):
                     output_collection=output_collection_tn,
                 ):
                     carry_tn, y_tn = fn(carry_tn, x_tn)
-                # TODO(adesai22): Find way to avoid clearing intermediate outputs.
-                output_collection_tn.module_outputs.clear()
+                self.vlog(3, "output_collection_tn=%s", shapes(output_collection_tn))
                 return dict(carry=carry_tn, y=y_tn, output_collection=output_collection_tn)
 
             @functools.partial(
@@ -311,47 +318,48 @@ class Pipeline(BaseLayer):
                     carry_output_t_1: A NestedTensor where each Tensor has shape
                         [N=num_layers, ...], representing carry output of timestep {t-1}.
                     scan_t: A tuple of (prng_key_t, input_t, x_t), each is a NestedTensor where each
-                        leaf tensor has shape [N, ...].
+                        leaf tensor has shape [N, ...] or [1, ...].
 
                 Returns:
                     carry_output_t, dict(carry=..., y=..., output_collection=...), where
                     - `carry_output_t` and `carry` represents the carry output of timestep t and has
                        the same structure and shape as `carry_carry_output_t_1`;
                     - `y` is a NestedTensor representing the layerwise output of fn with leaves of
-                       shape [N, ...];
+                       shape [N, ...].
                     - `output_collection` is an OutputCollection representing the auxiliary outputs
                        of fn with leaves of shape [N, ...];
                 """
 
-                def compute_carry_input(v_input_t: Tensor, v_carry_output_t_1: Tensor):
+                def compute_carry_input(
+                    v_input_t: Tensor, v_carry_output_t_1: Tensor, partition_spec: PartitionSpec
+                ):
                     """Computes the carry input for timestep v_carry.
 
                     Args:
-                        v_input_t: a Tensor of shape [N, ...], where
-                            v_input_t[0] of timestep t == microbatch[t] if t < M;
-                            v_input_t[1:] are not used and are only there to make jnp.where() work
-                            shape-wise.
+                        v_input_t: a Tensor of shape [1, ...], where
+                            v_input_t of timestep t == microbatch[t] if t < M; otherwise padding.
                         v_carry_output_t_1: a Tensor of shape [N, ...], representing carry output of
                             timestep {t-1}.
+                        partition_spec: PartitionSpec for carry values.
                     """
-                    # Move carry outputs from the previous timestep along the pipeline to the next
-                    # stage so that the output from layer[j] becomes the input for layer[j+1].
-                    v_carry_output_t_1 = jnp.roll(v_carry_output_t_1, 1, axis=0)
-                    # The input to layer[0] comes from v_input_t[0].
-                    return jnp.where(
-                        jax.lax.broadcasted_iota("int32", v_input_t.shape, 0) == 0,
-                        v_input_t,
-                        v_carry_output_t_1,
+                    # Layer 0 input will be v_input_t, that is, microbatch[t] if t < M.
+                    # Layer 1..N-1 inputs will be v_carry_output_t_1[0..N-2], that is, the outputs
+                    # of layer 0..N-2 from iteration t - 1.
+                    v_carry_input_t = jnp.concatenate([v_input_t, v_carry_output_t_1[:-1]], axis=0)
+                    return with_sharding_constraint(
+                        v_carry_input_t, PartitionSpec(*(["pipeline"] + list(partition_spec[1:])))
                     )
 
-                # Per-timestep inputs. Each leaf tensor has shape [N, ...].
+                # Per-timestep inputs.
+                # Each leaf tensor in `prng_key_t` and `x_t` has shape [N, ...].
                 prng_key_t, input_t, x_t = scan_t
                 carry_input_t = jax.tree_util.tree_map(
-                    compute_carry_input, input_t, carry_output_t_1
+                    compute_carry_input, input_t, carry_output_t_1, carry_partition_spec
                 )
 
                 # Parallel processing along the N axis.
                 vmap_out = jax.vmap(vmap_fn)(layer_context.state, prng_key_t, carry_input_t, x_t)
+                self.vlog(3, "vmap_out.output_collection=%s", shapes(vmap_out["output_collection"]))
                 return vmap_out["carry"], vmap_out
 
             carry_t0 = jax.tree_util.tree_map(
@@ -389,12 +397,33 @@ class Pipeline(BaseLayer):
             ys = jax.tree_util.tree_map(
                 transpose_from_pipeline_stage_outputs, ys, ys_partition_spec
             )
-            scan_output_collection = jax.tree_util.tree_map(
-                transpose_from_pipeline_stage_outputs, scan_ys["output_collection"]
+            self.vlog(3, "scan_ys.output_collection=%s", shapes(scan_ys["output_collection"]))
+            layer_output_collection.update(
+                jax.tree_util.tree_map(
+                    transpose_from_pipeline_stage_outputs, scan_ys["output_collection"]
+                )
             )
-            output_collection = layer_context.output_collection
-            output_collection.update(scan_output_collection)
+            self.vlog(3, "layer_output_collection=%s", shapes(layer_output_collection))
 
+        this_output_collection = self.get_invocation_context().output_collection
+        layer_output = this_output_collection.add_child("layer")
+        layer_output.module_outputs.update(**layer_output_collection.module_outputs)
+        layer_output.state_updates.update(**layer_output_collection.state_updates)
+        self.vlog(3, "this_output_collection=%s", shapes(this_output_collection))
+
+        # Each summary value in `layer_output_collection` has shape (N, M, ...). For example,
+        # if a repeated layer outputs a scalar summary value, it will have shape [N, M].
+        # Below we split the stacked values and output them separately under scope
+        # "layer{i}/microbatch{j}" so that scalar summaries can be handled correctly.
+        for i in range(n):
+            layer_i_output = this_output_collection.add_child(f"layer{i}")
+            for j in range(m):
+                microbatch_j_output = layer_i_output.add_child(f"microbatch{j}")
+                microbatch_j_output.summaries.update(
+                    **jax.tree_util.tree_map(
+                        lambda x, i=i, j=j: x[i, j], layer_output_collection.summaries
+                    )
+                )
         return self.Output(carry=final_carry, ys=ys)
 
     def _to_microbatches(self, inputs):

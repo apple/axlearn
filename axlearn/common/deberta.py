@@ -36,7 +36,7 @@ from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config
 from axlearn.common.embedding import Embedding
 from axlearn.common.encoder import Encoder
 from axlearn.common.layers import BaseClassificationHead, Dropout, LayerNorm, RedirectToSharedModule
-from axlearn.common.module import Module
+from axlearn.common.module import Module, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 
 
@@ -336,7 +336,8 @@ class DisentangledSelfAttention(MultiheadAttention):
             # [1, 2 * num_directional_buckets, num_heads, per_head_dim].
             pos_k_proj = self.pos_k_proj(relative_pos_emb)
             # [batch, num_heads, query_len, 2 * num_directional_buckets].
-            c2p_score = self._attention_scores(q_proj, pos_k_proj)
+            with child_context("c2p_attn_scores", module=self):
+                c2p_score = self._attention_scores(q_proj, pos_k_proj)
             # Gather along last axis using the relative positions d(i,j), as in Equation (4).
             # [batch, 1, query_len, key_len]. Range is inclusive.
             d_ij = jnp.clip(relative_pos, 0, 2 * num_directional_buckets - 1)
@@ -348,7 +349,8 @@ class DisentangledSelfAttention(MultiheadAttention):
             # [1, 2 * num_directional_buckets, num_heads, per_head_dim].
             pos_q_proj = self.pos_q_proj(relative_pos_emb)
             # [batch, num_heads, key_len, 2 * num_directional_buckets].
-            p2c_score = self._attention_scores(k_proj, pos_q_proj)
+            with child_context("p2c_attn_scores", module=self):
+                p2c_score = self._attention_scores(k_proj, pos_q_proj)
             # Gather along last axis using the relative positions d(j,i), as in Equation (4).
             # [batch, 1, query_len, key_len']. Range is inclusive.
             d_ji = jnp.clip(

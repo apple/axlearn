@@ -49,25 +49,38 @@ In pseudo code:
       return carry, ys
 """
 import dataclasses
-from typing import NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional, Sequence
 
 import jax
 
+from axlearn.common import param_init
 from axlearn.common.base_layer import (
     BaseLayer,
     FactorizationSpec,
     NestedParameterSpec,
     PartitionSpec,
 )
-from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
-from axlearn.common.module import (
-    Module,
-    NestedTensor,
-    child_context,
-    current_context,
-    new_output_collection,
+from axlearn.common.config import (
+    REQUIRED,
+    InstantiableConfig,
+    Required,
+    config_class,
+    config_for_function,
 )
-from axlearn.common.utils import VDict, get_or_none, split_prng_key
+from axlearn.common.module import Module, child_context, new_output_collection, scan_in_context
+from axlearn.common.utils import (
+    NestedTensor,
+    Tensor,
+    VDict,
+    get_or_none,
+    match_regex_rules,
+    split_prng_key,
+)
+
+
+def _drop_by_regex(rules: Sequence[str]) -> Callable[[str], bool]:
+    """Returns a drop that regex-matches inputs against `rules`."""
+    return lambda x: match_regex_rules(x, rules=[(rule, True) for rule in rules])
 
 
 class Repeat(BaseLayer):
@@ -75,12 +88,25 @@ class Repeat(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
-        layer: Required[InstantiableConfig] = REQUIRED  # The config for the sub layer.
-        num_layers: Required[int] = REQUIRED  # Repeat layers specified in `layer` this many times.
+        # The config for the sub layer.
+        layer: Required[InstantiableConfig] = REQUIRED
+        # Repeat layers specified in `layer` this many times.
+        num_layers: Required[int] = REQUIRED
+        # A callable that drops outputs from the layer's output_collection based on path. By
+        # default, we drop all module outputs. See `scan_in_context` for details.
+        # TODO(markblee): Converge on dropping no outputs by default.
+        drop_output: InstantiableConfig[Callable[[str], bool]] = config_for_function(
+            _drop_by_regex
+        ).set(rules=["module_outputs.*"])
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
+        cfg = self.config
         self._add_child("layer", self._layer_config())
+
+        self._drop_output = None
+        if cfg.drop_output is not None:
+            self._drop_output = cfg.drop_output.instantiate()
 
     def _layer_config(self):
         return self.config.layer
@@ -102,15 +128,15 @@ class Repeat(BaseLayer):
                 shape=(cfg.num_layers, *spec.shape),
                 mesh_axes=PartitionSpec(None, *spec.mesh_axes),
                 factorization=transform_factorization_spec(spec.factorization),
+                fan_axes=param_init.maybe_prepend_axis(
+                    spec.fan_axes, axis_type=param_init.FanAxes.AxisType.BATCH_AXIS
+                ),
             ),
             specs,
         )
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
     ) -> NestedTensor:
         def init(prng_key_i, prebuilt_i):
             return VDict(
@@ -144,39 +170,39 @@ class Repeat(BaseLayer):
                 and T[i, ...] represents layer-wise output from the i'th sub-layer.
         """
         cfg = self.config
+        prng_key = self.prng_key
 
-        if xs is None:
-            xs = {}
         if carry is None:
             carry = {}
+        if xs is None:
+            xs = {}
 
-        context = current_context()
-        assert context is not None
-        prng_key = context.prng_key
-        with child_context("layer") as layer_context:
-
-            def scan_fn(carry_i, scan_i):
-                prng_key_i, layer_state_i, x_i = scan_i
-                output_collection_i = new_output_collection()
-                with child_context(
-                    "iter",
-                    module=layer_context.module,
-                    state=layer_state_i,
-                    prng_key=prng_key_i,
-                    output_collection=output_collection_i,
-                ):
-                    carry_i, y_i = fn(carry_i, x_i)
-                # TODO(adesai22): Find way to avoid clearing intermediate outputs.
-                output_collection_i.module_outputs.clear()
-                return carry_i, dict(y_i=y_i, output_collection=output_collection_i)
-
-            carry, scan_ys = jax.lax.scan(
-                scan_fn,
-                init=carry,
-                xs=(split_prng_key(prng_key, cfg.num_layers).keys, layer_context.state, xs),
+        layer_output_collection = new_output_collection()
+        with child_context("layer", output_collection=layer_output_collection) as layer_context:
+            carry, ys = scan_in_context(
+                fn,
+                carry=carry,
+                xs=dict(
+                    xs=xs,
+                    prng_key=split_prng_key(prng_key, cfg.num_layers).keys,
+                    state=layer_context.state,
+                ),
+                drop_output=self._drop_output,
             )
 
-            output_collection = layer_context.output_collection
-            output_collection.update(scan_ys["output_collection"])
+        this_output_collection = self.get_invocation_context().output_collection
+        layer_output = this_output_collection.add_child("layer")
+        layer_output.module_outputs.update(**layer_output_collection.module_outputs)
+        layer_output.state_updates.update(**layer_output_collection.state_updates)
 
-        return self.Output(carry=carry, ys=scan_ys["y_i"])
+        # Each summary value in `layer_output_collection` has shape (num_layers, ...). For example,
+        # if a repeated layer outputs a scalar summary value, it will have shape [num_layers].
+        # Below we split the stacked values and output them separately under scope "layer{i}"
+        # so that scalar summaries can be handled correctly.
+        for i in range(cfg.num_layers):
+            layer_i_output = this_output_collection.add_child(f"layer{i}")
+            layer_i_output.summaries.update(
+                **jax.tree_util.tree_map(lambda x, i=i: x[i], layer_output_collection.summaries)
+            )
+
+        return self.Output(carry=carry, ys=ys)

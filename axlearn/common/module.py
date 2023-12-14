@@ -39,30 +39,22 @@ import copy
 import dataclasses
 import hashlib
 import inspect
+import os.path
 import re
 import threading
 from dataclasses import dataclass
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    NamedTuple,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-    TypeVar,
-    Union,
-)
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
 
 import jax
 import numpy as np
 from absl import logging
 from typing_extensions import Protocol
 
+from axlearn.common import traceback_util
 from axlearn.common.config import REQUIRED, Configurable, Required, RequiredFieldValue, config_class
-from axlearn.common.utils import NestedTensor, Tensor, partial_with_fn_metadata
+from axlearn.common.summary import Summary
+from axlearn.common.traceback_util import annotate_stack, no_stack_summary
+from axlearn.common.utils import NestedTensor, Tensor, partial_with_fn_metadata, prune_tree
 
 
 def _generate_seed_from_name(name: str) -> np.int64:
@@ -146,18 +138,25 @@ class Summable(Protocol):
 # TODO(markblee): Link to docs on invocation contexts.
 @dataclass
 class InvocationContext:  # pylint: disable=too-many-instance-attributes
-    """The invocation context for `Module.__call__()`."""
+    """The invocation context for `Module.__call__()`.
 
-    # The context name. Must be unique among sibling contexts.
+    Attributes:
+        name: The context name. Must be unique among sibling contexts.
+        parent: The parent context, or None if `self` is the root context.
+        module: The Module associated with the context.
+        state: The state of the module.
+        is_training: Whether the invocation should run in the training mode.
+        prng_key: The pseudo-random number generator key (can be None if the computation does not
+            require random numbers).
+        output_collection: See `OutputCollection`.
+    """
+
     name: str
-    # The parent context, or None if `self` is the root context.
     parent: Optional["InvocationContext"]
-    # The Module associated with the context.
     module: "Module"
-    # The state of the module.
     state: NestedTensor
     is_training: bool
-    prng_key: Optional[jax.random.KeyArray]
+    prng_key: Optional[Tensor]
     output_collection: OutputCollection
 
     def path(self):
@@ -237,6 +236,12 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
         name: str,
         value: Union[Summable, Tensor],
     ):
+        """Adds the named value to the `OutputCollection.summaries`.
+
+        Args:
+            name: The name of the item to add.
+            value: The value to add.
+        """
         self.output_collection.summaries[name] = value
 
     def add_state_update(self, name: str, value: Tensor):
@@ -339,7 +344,11 @@ def set_current_context(context: InvocationContext):
             )
     try:
         _global_context_stack.stack.append(context)
-        yield context
+        if context.name != "remat":  # "remat" is already automatically added to JAX scope by JAX.
+            with jax.named_scope(f"{context.name}[{context.module.__class__.__qualname__}]"):
+                yield context
+        else:
+            yield context
     finally:
         _global_context_stack.stack.pop(-1)
 
@@ -355,20 +364,23 @@ def child_context(name: str, **kwargs):
         yield c
 
 
+@traceback_util.wrap
+@no_stack_summary
 def _call_method_in_context(
     module: "Module", *args, method_fn: Callable, method_name: str, **kwargs
 ):
+    @no_stack_summary
+    # Save call information on the stack so we can get this information from the traceback object.
+    @annotate_stack(
+        module_call=True,
+        module_type=type(module),
+        method_name=method_name,
+        arg_types=[type(a) for a in args],
+        kwarg_types={k: type(v) for k, v in kwargs.items()},
+    )
     def thunk():
-        try:
-            # pylint: disable-next=protected-access
-            x = module._call_thunk(*args, method_fn=method_fn, **kwargs)()
-        except TypeError as e:
-            arg_types = [type(a) for a in args]
-            kwarg_types = {k: type(v) for k, v in kwargs.items()}
-            raise TypeError(
-                f"{type(module)}.{method_name}(args={arg_types}, kwargs={kwarg_types}): {e}"
-            ) from e
-        return x
+        # pylint: disable-next=protected-access
+        return module._call_thunk(*args, method_fn=method_fn, **kwargs)()
 
     if len(args) > 1:
         logging.log_first_n(
@@ -383,6 +395,7 @@ def _call_method_in_context(
     if context is None:
         return thunk()
 
+    @no_stack_summary
     def call_thunk_in_context(reversed_path):
         if not reversed_path:
             return thunk()
@@ -399,12 +412,13 @@ class Module(Configurable):
     class Config(Configurable.Config):
         """Module config.
 
-        name: name of this module.
-        vlog: the maximum vlog level.
+        Attributes:
+            name: Name of this module.
+            vlog: The maximum vlog level. If None, vlog is disabled.
         """
 
         name: Required[str] = REQUIRED
-        vlog: int = 0
+        vlog: Optional[int] = None
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg)
@@ -427,12 +441,6 @@ class Module(Configurable):
             method_fn = partial_with_fn_metadata(method_fn, self)
             setattr(self, method_name, method_fn)
 
-    @property
-    def _auto_child_context_method_names(self) -> Set[str]:
-        return {
-            method for method in dir(self) if inspect.isfunction(getattr(type(self), method, None))
-        }
-
     def _methods_to_wrap_for_auto_child_context(self) -> Dict[str, Callable]:
         def _should_wrap_method(method: str) -> bool:
             # Only public methods defined in subclasses of Module need to be wrapped.
@@ -453,6 +461,7 @@ class Module(Configurable):
         }
 
     def _wrap_method_with_auto_child_context(self, *, method_fn, method_name):
+        @no_stack_summary
         def wrap_method_fn(self, *args, method_fn=method_fn, **kwargs):
             return _call_method_in_context(
                 self, *args, method_fn=method_fn, method_name=method_name, **kwargs
@@ -491,9 +500,31 @@ class Module(Configurable):
     def __repr__(self):
         return f"{type(self)}@{self.path()}"
 
-    def vlog(self, level, msg, *args, **kwargs):
-        if level <= self._vlog_level:
+    def vlog_is_on(self, level: int) -> bool:
+        return self._vlog_level is not None and level <= self._vlog_level
+
+    def vlog(self, level: int, msg: str, *args, **kwargs):
+        if self.vlog_is_on(level):
             logging.info(f"@{self.path()} {msg}", *args, **kwargs)
+
+    def vprint(self, level: int, msg: str, *args, **kwargs):
+        """Prints debug info with if level <= config.vlog.
+
+        Prints with jax.debug.print(prefix + msg, *args, **kwargs) so that it can handle tensors in
+        args and kwargs, where prefix includes information about the time and caller.
+
+        Args:
+            level: The verbosity level of the print message.
+            msg: The msg for jax.debug.print().
+            *args: The args for jax.debug.print, may contain Tensors.
+            **kwargs: The kwargs for jax.debug.print, may contain Tensors.
+        """
+        if self.vlog_is_on(level):
+            caller_frame = inspect.stack()[1]  # Get the frame of the caller (index 1).
+            filename = os.path.basename(caller_frame.filename)
+            line_number = caller_frame.lineno
+            prefix = f"{filename}:{line_number}] @{self.path()} "
+            jax.debug.print(prefix + msg, *args, **kwargs)
 
     def _add_child(
         self,
@@ -647,18 +678,20 @@ class Module(Configurable):
         return self.get_invocation_context().is_training
 
     @property
-    def prng_key(self) -> jax.random.KeyArray:
+    def prng_key(self) -> Tensor:
         return self.get_invocation_context().prng_key
 
     @property
     def state(self):
         return self.get_invocation_context().state
 
-    def add_summary(
-        self,
-        name: str,
-        value: Union[Summable, Tensor],
-    ):
+    def add_summary(self, name: str, value: Union[Summable, Tensor, Summary]):
+        """Adds the named value to `OutputCollection.summaries`.
+
+        Args:
+            name: The name of the item to add.
+            value: The value to add.
+        """
         return self.get_invocation_context().add_summary(name, value)
 
     def add_state_update(self, name: str, value: Tensor):
@@ -671,6 +704,7 @@ class Module(Configurable):
     def get_module_outputs(self):
         return self.get_invocation_context().get_module_outputs()
 
+    @no_stack_summary
     def __call__(self, *args, **kwargs) -> Any:
         """A shortcut for self.forward(*args, **kwargs).
 
@@ -689,6 +723,7 @@ class Module(Configurable):
 
     def _call_thunk(self, *args, method_fn, **kwargs) -> Callable[[], Any]:
         # Build nullary that that evaluates <method_fn(self, *args, **kwargs)> when called.
+        @no_stack_summary
         def nullary():
             return method_fn(self, *args, **kwargs)
 
@@ -697,7 +732,7 @@ class Module(Configurable):
 
 def functional(
     module: Module,
-    prng_key: Optional[jax.random.KeyArray],
+    prng_key: Optional[Tensor],
     state: NestedTensor,
     inputs: Union[Sequence[Any], Dict[str, Any]],
     *,
@@ -751,3 +786,69 @@ def functional(
         getattr(context.output_collection, output_collection_type).clear()
 
     return method_outputs, context.output_collection
+
+
+def scan_in_context(
+    fn,
+    *,
+    carry: NestedTensor,
+    xs: NestedTensor,
+    drop_output: Optional[Callable[[str], bool]] = None,
+) -> Tuple[NestedTensor, NestedTensor]:
+    """A thin wrapper around `jax.lax.scan` which is compatible with `OutputCollection`.
+
+    In particular, summaries and outputs added by `add_summary` and `add_module_output` respectively
+    are accumulated in `current_context().output_collection`, subject to any output filtering.
+
+    Args:
+        fn: A function with args (carry, x) returning a dict(carry=..., y=...).
+        carry: The initial value of the loop carry, to be accumulated across scan.
+        xs: A dict with at least "x" as a key, where each leaf is a tensor of shape
+            [num_scan_iters, ...]. At scan iteration i:
+            - xs["x"][i, ...] represents the inputs to `fn`.
+            - xs[key][i, ...] is provided as a kwarg to the ith invocation context.
+        drop_output: A callable that takes a path and outputs a decision of whether to drop the
+            output at the given path, where True means we drop. By default, the callable is None,
+            meaning nothing is dropped.
+
+    Returns:
+        The scan outputs (carry, ys):
+            - carry: A NestedTensor with the same structure as the input `carry`, representing its
+                value at the final iteration.
+            - ys: A NestedTensor with tensor leaves T of shape [num_scan_iters, ...], with T[i, ...]
+                representing the `fn` outputs and output collection of the ith scan iteration,
+                respesctively.
+    """
+
+    ctx = current_context()
+    if ctx is None:
+        raise ValueError("Expected current_context() to not be None.")
+
+    def scan_fn(carry_i: NestedTensor, scan_i: NestedTensor):
+        output_collection_i = new_output_collection()
+        x_i = scan_i.pop("xs")
+        with child_context(
+            "iter",
+            module=ctx.module,
+            output_collection=output_collection_i,
+            **scan_i,
+        ):
+            carry_i, y_i = fn(carry_i, x_i)
+
+        # Filter output collection.
+        if drop_output is not None:
+            pruned_collection_i = new_output_collection()._asdict()
+            pruned_collection_i.update(
+                prune_tree(
+                    output_collection_i._asdict(),
+                    lambda path, _: drop_output(path),
+                )
+            )
+            output_collection_i = OutputCollection(**pruned_collection_i)
+
+        return carry_i, dict(y_i=y_i, output_collection=output_collection_i)
+
+    carry, scan_ys = jax.lax.scan(scan_fn, init=carry, xs=xs)
+    ctx.output_collection.update(scan_ys.pop("output_collection"))
+
+    return carry, scan_ys["y_i"]

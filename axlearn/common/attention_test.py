@@ -8,12 +8,17 @@
 #
 # ofirpress/attention_with_linear_biases:
 # Copyright (c) Facebook, Inc. and its affiliates.
+#
+# facebookresearch/llama:
+# Copyright (c) Facebook, Inc. and its affiliates.
 
 """Tests attention layers."""
+import contextlib
+
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
 from itertools import combinations
-from typing import List, Optional
+from typing import List, Optional, Tuple, Type, Union
 
 import jax
 import numpy as np
@@ -29,9 +34,10 @@ from transformers.models.roberta import modeling_roberta as hf_roberta
 from transformers.models.roformer import modeling_roformer as hf_roformer
 from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
-from axlearn.common import attention, utils
+from axlearn.common import attention, test_utils, utils
 from axlearn.common.attention import (
     NEG_INF,
+    BaseStackedTransformerLayer,
     BottleNeckAdapterTransformerLayer,
     FusedQKVLinear,
     LearnedPositionalEmbedding,
@@ -60,7 +66,14 @@ from axlearn.common.attention import (
     xl_attention_logits,
 )
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec, RematSpec
-from axlearn.common.config import InstantiableConfig, config_class
+from axlearn.common.config import (
+    InstantiableConfig,
+    UnknownFieldError,
+    config_class,
+    config_for_function,
+    maybe_set_config,
+)
+from axlearn.common.layers import RMSNorm, set_bias_recursively
 from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
@@ -658,14 +671,16 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
     """Tests RoFormerSinusoidalPositionalEmbedding."""
 
     @parameterized.parameters(
-        (2, 3, 10, 32),
-        (2, 3, 8, 32),
-        (2, 4, 6, 32),
-        (2, 4, 8, 16),
-        (2, 5, 8, 48),
-        (2, 5, 8, 64),
+        (2, 3, 10, 32, True),
+        (2, 3, 8, 32, False),
+        (2, 4, 6, 32, True),
+        (2, 4, 8, 16, False),
+        (2, 5, 8, 48, True),
+        (2, 5, 8, 64, False),
     )
-    def test_apply_rotary_position_embeddings(self, batch_size, num_heads, max_len, dim):
+    def test_apply_rotary_position_embeddings(
+        self, batch_size, num_heads, max_len, dim, rotary_value
+    ):
         # Unittest against the apply_rotary_position_embeddings in HF.
         token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
         sinusoidal_pos_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
@@ -675,16 +690,27 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         value = np.random.random([batch_size, num_heads, max_len, dim])
         ref_layer = hf_roformer.RoFormerSelfAttention.apply_rotary_position_embeddings
         test_layer = apply_rotary_position_embeddings
-        ref_q_proj, ref_k_proj, ref_v_proj = ref_layer(
-            sinusoidal_pos, as_torch_tensor(query), as_torch_tensor(key), as_torch_tensor(value)
+        if rotary_value:
+            ref_q_proj, ref_k_proj, ref_v_proj = ref_layer(
+                sinusoidal_pos,
+                as_torch_tensor(query),
+                as_torch_tensor(key),
+                as_torch_tensor(value),
+            )
+        else:
+            # If rotary_value is set to False, value keeps unchanged.
+            # pylint: disable-next=unbalanced-tuple-unpacking
+            ref_q_proj, ref_k_proj = ref_layer(
+                sinusoidal_pos, as_torch_tensor(query), as_torch_tensor(key)
+            )
+            ref_v_proj = as_torch_tensor(value)
+        test_q_proj, test_k_proj, test_v_proj = test_layer(
+            sinusoidal_pos=as_tensor(sinusoidal_pos),
+            query=query,
+            key=key,
+            value=value,
+            rotary_value=rotary_value,
         )
-        kwargs = {
-            "sinusoidal_pos": as_tensor(sinusoidal_pos),
-            "query": query,
-            "key": key,
-            "value": value,
-        }
-        test_q_proj, test_k_proj, test_v_proj = test_layer(**kwargs)
         np.testing.assert_allclose(test_q_proj, ref_q_proj, atol=5e-7)
         np.testing.assert_allclose(test_k_proj, ref_k_proj, atol=5e-7)
         np.testing.assert_allclose(test_v_proj, ref_v_proj, atol=5e-7)
@@ -767,7 +793,8 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             )
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
 
-    def test_rope_self_attention(self):
+    @parameterized.parameters([True, False])
+    def test_rope_self_attention(self, rotary_value: bool):
         model_dim = 32
         num_heads = 4
         max_sequence_length = 12
@@ -777,7 +804,9 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=num_heads,
-            input_linear=RoFormerQKVLinear.default_config().set(max_seq_length=max_sequence_length),
+            input_linear=RoFormerQKVLinear.default_config().set(
+                max_seq_length=max_sequence_length, rotary_value=rotary_value
+            ),
         )
         rope_emb_layer = (
             attention.RoFormerSinusoidalPositionalEmbedding.default_config()
@@ -798,12 +827,324 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             num_attention_heads=num_heads,
             attention_probs_dropout_prob=0,
             hidden_dropout_prob=0,
-            rotary_value=True,
+            rotary_value=rotary_value,
         )
         print(f"roformer_config={roformer_config}")
         ref = hf_roformer.RoFormerAttention(roformer_config)
         self._compare_against_roformer_attention(
             ref, layer, max_sequence_length, batch_size, ref_rope_emb
+        )
+
+
+def llama_reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """LLaMA reshape for broadcast function.
+
+    Ref:
+    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L55-L60
+    """
+    ndim = x.ndim
+    assert 0 <= 1 < ndim
+    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
+    shape = [
+        d if i == 1 or i == ndim - 1 else 1  # pylint: disable=consider-using-in
+        for i, d in enumerate(x.shape)
+    ]
+    return freqs_cis.view(*shape)
+
+
+def llama_apply_rotary_emb(
+    *,
+    xq: torch.Tensor,
+    xk: torch.Tensor,
+    freqs_cis: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """LLaMA apply rotary embeddings to input tensors using the given frequency tensor.
+
+    Ref:
+    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L63-L73
+    """
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    freqs_cis = llama_reshape_for_broadcast(freqs_cis, xq_)
+    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
+    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    return xq_out.type_as(xq), xk_out.type_as(xk)
+
+
+class RefLLaMAAttention(torch.nn.Module):
+    """Reference Implementation of LLaMA-1.
+
+    Ref:
+    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L76
+
+    The modifications are removing the dependency of ColumnParallelLinear and RowParallelLinear.
+    """
+
+    def __init__(self, n_heads: int, dim: int, max_batch_size: int, max_seq_len: int):
+        super().__init__()
+
+        self.n_local_heads = n_heads
+        self.head_dim = dim // n_heads
+
+        self.wq = torch.nn.Linear(
+            dim,
+            n_heads * self.head_dim,
+            bias=False,
+        )
+        self.wk = torch.nn.Linear(
+            dim,
+            n_heads * self.head_dim,
+            bias=False,
+        )
+        self.wv = torch.nn.Linear(
+            dim,
+            n_heads * self.head_dim,
+            bias=False,
+        )
+        self.wo = torch.nn.Linear(
+            n_heads * self.head_dim,
+            dim,
+            bias=False,
+        )
+
+        self.cache_k = torch.zeros((max_batch_size, max_seq_len, self.n_local_heads, self.head_dim))
+        self.cache_v = torch.zeros((max_batch_size, max_seq_len, self.n_local_heads, self.head_dim))
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        start_pos: int,
+        freqs_cis: torch.Tensor,
+        mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        bsz, seqlen, _ = x.shape
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+
+        xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+
+        xq, xk = llama_apply_rotary_emb(xq=xq, xk=xk, freqs_cis=freqs_cis)
+
+        self.cache_k = self.cache_k.to(xq)
+        self.cache_v = self.cache_v.to(xq)
+
+        self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
+        self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
+
+        keys = self.cache_k[:bsz, : start_pos + seqlen]
+        values = self.cache_v[:bsz, : start_pos + seqlen]
+
+        xq = xq.transpose(1, 2)
+        keys = keys.transpose(1, 2)
+        values = values.transpose(1, 2)
+        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
+        if mask is not None:
+            scores = scores + mask  # (bs, n_local_heads, slen, cache_len + slen)
+        scores = torch.nn.functional.softmax(scores.float(), dim=-1).type_as(xq)
+        output = torch.matmul(scores, values)  # (bs, n_local_heads, slen, head_dim)
+        output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
+
+        return self.wo(output)
+
+
+class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
+    def llama_ref_precompute_freqs_cis(
+        self, *, dim: int, end: int, theta: float = 10000.0
+    ) -> torch.Tensor:
+        """Reference LLaMA-1 implemention.
+
+        Ref:
+        https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L47-L52
+        """
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+        t = torch.arange(end, device=freqs.device)  # type: ignore
+        freqs = torch.outer(t, freqs).float()  # type: ignore
+        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
+        return freqs_cis
+
+    @parameterized.parameters([10000.0, 1000000.0])
+    def test_against_llama_for_precompute_freqs_cis(self, theta: float):
+        max_len = 100
+        dim = 32
+        positions = jnp.arange(max_len)
+        axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
+            max_len=max_len,
+            dim=dim,
+            theta=theta,
+        )
+        axlearn_rope_layer = axlearn_rope_cfg.set(name="rope").instantiate(parent=None)
+        axlearn_rope, _ = F(
+            axlearn_rope_layer,
+            inputs=dict(positions=positions),
+            state=axlearn_rope_layer.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(0)
+            ),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len, theta=theta)
+        axlearn_imag, axlearn_real = jnp.split(axlearn_rope, 2, axis=-1)
+        llama_real, llama_imag = llama_rope.real, llama_rope.imag
+        assert_allclose(llama_real, as_tensor(axlearn_real))
+        assert_allclose(llama_imag, as_tensor(axlearn_imag))
+
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.bfloat16),
+        max_seq_len=(100, 6),
+        input_linear=(
+            None,
+            attention.QKVLinear.default_config(),
+            attention.GroupedQKVLinear.default_config(),
+        ),
+    )
+    def test_roformer_qkv_linear(
+        self, dtype: jnp.dtype, max_seq_len: int, input_linear: attention.BaseQKVLinear.Config
+    ):
+        seq_len = 6
+        batch_size = 2
+        model_dim = 16
+        num_heads = 4
+        per_head_dim = model_dim // num_heads
+        roformer_qkv_linear_kwargs = {
+            "name": "roformer_qkv_linear",
+            "max_seq_length": max_seq_len,
+            "query_dim": model_dim,
+            "key_dim": model_dim,
+            "value_dim": model_dim,
+            "num_heads": num_heads,
+            "per_head_dim": per_head_dim,
+            "rotary_value": False,
+        }
+        num_kv_heads = num_heads
+        if input_linear is not None:
+            if isinstance(input_linear, attention.GroupedQKVLinear.Config):
+                num_kv_heads = num_heads // 2
+                input_linear = input_linear.set(num_kv_heads=num_kv_heads)
+            roformer_qkv_linear_kwargs["input_linear"] = input_linear
+
+        roformer_qkv_linear = (
+            RoFormerQKVLinear.default_config()
+            .set(**roformer_qkv_linear_kwargs)
+            .instantiate(parent=None)
+        )
+
+        # Check that we see the num kv heads is propagated from child input linear.
+        self.assertEqual(roformer_qkv_linear.num_kv_heads, num_kv_heads)
+
+        query = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, model_dim))
+        key = jax.random.uniform(jax.random.PRNGKey(2), shape=(batch_size, seq_len, model_dim))
+        value = jax.random.uniform(jax.random.PRNGKey(3), shape=(batch_size, seq_len, model_dim))
+        roformer_qkv_linear_state = roformer_qkv_linear.initialize_parameters_recursively(
+            jax.random.PRNGKey(0)
+        )
+        input_batch = dict(query=query, key=key, value=value)
+        layer_outputs, _ = F(
+            roformer_qkv_linear,
+            inputs=utils.cast_floats(input_batch, to_dtype=dtype),
+            state=utils.cast_floats(roformer_qkv_linear_state, to_dtype=dtype),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertEqual(layer_outputs.query.dtype, dtype)
+        self.assertEqual(layer_outputs.key.dtype, dtype)
+        self.assertEqual(layer_outputs.value.dtype, dtype)
+
+    def test_against_llama_for_apply_rotary_emb(self):
+        max_len = 100
+        dim = 32
+        batch_size = 4
+        positions = jnp.arange(max_len)
+        axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
+            max_len=max_len, dim=dim
+        )
+        axlearn_rope_layer = axlearn_rope_cfg.set(name="rope").instantiate(parent=None)
+        axlearn_rope, _ = F(
+            axlearn_rope_layer,
+            inputs=dict(positions=positions),
+            state=axlearn_rope_layer.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(0)
+            ),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len)
+        rng = np.random.default_rng(seed=123)
+        query = rng.random([batch_size, max_len, dim])
+        key = rng.random([batch_size, max_len, dim])
+        value = rng.random([batch_size, max_len, dim])
+        llama_q, llama_k = llama_apply_rotary_emb(
+            xq=torch.Tensor(query), xk=torch.Tensor(key), freqs_cis=llama_rope
+        )
+        axlearn_q, axlearn_k, _ = attention.apply_rotary_position_embeddings(
+            query=jnp.asarray(query),
+            key=jnp.asarray(key),
+            value=jnp.asarray(value),
+            sinusoidal_pos=axlearn_rope,
+            rotary_value=False,
+        )
+
+        assert_allclose(as_tensor(llama_q.reshape(batch_size, max_len, -1)), axlearn_q, atol=5e-6)
+        assert_allclose(as_tensor(llama_k.reshape(batch_size, max_len, -1)), axlearn_k, atol=5e-6)
+
+    def test_against_llama_for_attention(self):
+        max_len = 100
+        dim = 32
+        batch_size = 4
+        n_heads = 4
+        rng = np.random.default_rng(seed=123)
+        x = rng.random([batch_size, max_len, dim])
+        ref_llama = RefLLaMAAttention(
+            n_heads=n_heads, dim=dim, max_batch_size=batch_size, max_seq_len=max_len
+        )
+        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim // n_heads, end=max_len)
+        llama_output = ref_llama.forward(torch.Tensor(x), 0, llama_rope, mask=None)
+
+        rope_mha_cfg = attention.MultiheadAttention.default_config().set(
+            query_dim=dim,
+            key_dim=dim,
+            value_dim=dim,
+            num_heads=n_heads,
+            input_linear=RoFormerQKVLinear.default_config().set(
+                max_seq_length=max_len,
+                rotary_value=False,
+            ),
+        )
+
+        rope_mha = rope_mha_cfg.set(name="rope").instantiate(parent=None)
+
+        state = rope_mha.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        state["i_proj"]["i_proj"]["q_proj"]["weight"] = jnp.asarray(
+            ref_llama.wq.weight.transpose(0, 1)
+            .reshape(dim, n_heads, dim // n_heads)
+            .detach()
+            .numpy()
+        )
+        state["i_proj"]["i_proj"]["k_proj"]["weight"] = jnp.asarray(
+            ref_llama.wk.weight.transpose(0, 1)
+            .reshape(dim, n_heads, dim // n_heads)
+            .detach()
+            .numpy()
+        )
+        state["i_proj"]["i_proj"]["v_proj"]["weight"] = jnp.asarray(
+            ref_llama.wv.weight.transpose(0, 1)
+            .reshape(dim, n_heads, dim // n_heads)
+            .detach()
+            .numpy()
+        )
+        state["o_proj"]["weight"] = jnp.asarray(
+            ref_llama.wo.weight.reshape(dim, n_heads, dim // n_heads).detach().numpy()
+        )
+
+        axlearn_output, _ = F(
+            rope_mha,
+            inputs=dict(query=jnp.asarray(x)),
+            state=state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        assert_allclose(
+            as_tensor(llama_output.reshape(batch_size, max_len, -1)), axlearn_output.data
         )
 
 
@@ -871,9 +1212,13 @@ class MultiheadLinearInitTest(TestCase):
 
 
 class QKVLinearTest(TestCase):
-    """Tests QKVLinear."""
+    """Tests QKVLinear, FusedQKVLinear, and associated layers."""
 
-    def test_qkv_fused_equality(self):
+    @parameterized.parameters(
+        attention.FusedQKVLinear, attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear
+    )
+    def test_qkv_equality(self, test_cls: Type[attention.BaseQKVLinear]):
+        """Tests that the QKVLinear variants are equivalent when num_kv_heads=num_heads."""
         with utils.numeric_checks(True):
             model_dim = 12
             num_heads = 4
@@ -885,45 +1230,49 @@ class QKVLinearTest(TestCase):
                 num_heads=num_heads,
                 per_head_dim=per_head_dim,
             )
-            qkv_linear = (
-                attention.QKVLinear.default_config()
-                .set(
-                    name="qkv_test",
-                    **layer_kwargs,
-                )
-                .instantiate(parent=None)
-            )
-            qkv_linear_state = qkv_linear.initialize_parameters_recursively(jax.random.PRNGKey(0))
-            fused_qkv_linear = (
-                attention.FusedQKVLinear.default_config()
-                .set(
-                    name="fused_qkv_test",
-                    **layer_kwargs,
-                )
-                .instantiate(parent=None)
-            )
+            base_cfg = QKVLinear.default_config().set(**layer_kwargs)
+            test_cfg = test_cls.default_config().set(**layer_kwargs)
+            maybe_set_config(test_cfg, num_kv_heads=num_heads)
+            base_layer = base_cfg.set(name="base").instantiate(parent=None)
+            test_layer = test_cfg.set(name="test").instantiate(parent=None)
 
-            def fused_state_from(state):
-                weight = jnp.array([state[el]["weight"] for el in ("q_proj", "k_proj", "v_proj")])
-                bias = jnp.array([state[el]["bias"] for el in ("q_proj", "k_proj", "v_proj")])
-                return {"qkv_proj": dict(weight=weight, bias=bias)}
+            # Construct base layer state.
+            base_state = base_layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
 
             # Map state to fused version.
-            fused_qkv_linear_state = fused_state_from(qkv_linear_state)
+            if test_cls == attention.FusedQKVLinear:
+                weight = jnp.array(
+                    [base_state[el]["weight"] for el in ("q_proj", "k_proj", "v_proj")]
+                )
+                bias = jnp.array([base_state[el]["bias"] for el in ("q_proj", "k_proj", "v_proj")])
+                test_state = {"qkv_proj": dict(weight=weight, bias=bias)}
+            elif test_cls == attention.FusedGroupedQKVLinear:
+                # Concatenate along the num_heads dim.
+                weight = jnp.concatenate(
+                    [base_state[el]["weight"] for el in ("q_proj", "k_proj", "v_proj")], axis=1
+                )
+                bias = jnp.concatenate(
+                    [base_state[el]["bias"] for el in ("q_proj", "k_proj", "v_proj")], axis=0
+                )
+                test_state = {"qkv_proj": dict(weight=weight, bias=bias)}
+            else:
+                test_state = base_state
 
+            # Construct test inputs.
             batch_size, src_len, tgt_len = 2, 6, 6
-            rng = np.random.default_rng(seed=123)
-            query = jnp.asarray(rng.random([batch_size, tgt_len, model_dim]))
-            key = jnp.asarray(rng.random([batch_size, src_len, model_dim]))
-            value = jnp.asarray(rng.random([batch_size, src_len, model_dim]))
-            inputs = dict(query=query, key=key, value=value)
+            query = jax.random.uniform(jax.random.PRNGKey(0), [batch_size, tgt_len, model_dim])
+            key = jax.random.uniform(jax.random.PRNGKey(1), [batch_size, src_len, model_dim])
+            value = jax.random.uniform(jax.random.PRNGKey(2), [batch_size, src_len, model_dim])
 
+            # In the fused GQA case, we assume query=key=value.
+            if test_cls == attention.FusedGroupedQKVLinear:
+                key = value = None
+
+            inputs = dict(query=query, key=key, value=value)
             outputs = {}
-            layer_names = ("qkv_linear", "fused_qkv_linear")
+            layer_names = ("base", "test")
             for name, layer, state in zip(
-                layer_names,
-                (qkv_linear, fused_qkv_linear),
-                (qkv_linear_state, fused_qkv_linear_state),
+                layer_names, (base_layer, test_layer), (base_state, test_state)
             ):
                 outputs[name], _ = F(
                     layer,
@@ -935,6 +1284,57 @@ class QKVLinearTest(TestCase):
             for layer_a, layer_b in combinations(layer_names, 2):
                 # Check that the outputs are close for all pairs.
                 self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
+
+    @parameterized.parameters(
+        dict(layer_cls=attention.QKVLinear, expected=4),
+        dict(layer_cls=attention.FusedQKVLinear, expected=4),
+        dict(
+            layer_cls=attention.QKVLinear,
+            num_kv_heads=2,
+            expected=UnknownFieldError("num_kv_heads"),
+        ),
+        dict(
+            layer_cls=attention.FusedQKVLinear,
+            num_kv_heads=2,
+            expected=UnknownFieldError("num_kv_heads"),
+        ),
+        dict(
+            layer_cls=attention.GroupedQKVLinear,
+            num_kv_heads=3,
+            expected=ValueError("should divide"),
+        ),
+        dict(
+            layer_cls=attention.FusedGroupedQKVLinear,
+            num_kv_heads=3,
+            expected=ValueError("should divide"),
+        ),
+        dict(layer_cls=attention.GroupedQKVLinear, num_kv_heads=2, expected=2),
+        dict(layer_cls=attention.FusedGroupedQKVLinear, num_kv_heads=2, expected=2),
+    )
+    def test_num_kv_heads(
+        self,
+        layer_cls: Type[attention.BaseQKVLinear],
+        expected: Union[int, Exception],
+        num_kv_heads: Optional[int] = None,
+    ):
+        model_dim = 12
+        num_heads = 4
+        per_head_dim = model_dim // num_heads
+        common_kwargs = dict(
+            query_dim=model_dim, key_dim=model_dim, value_dim=model_dim, per_head_dim=per_head_dim
+        )
+        cfg = layer_cls.default_config().set(name="test", num_heads=num_heads, **common_kwargs)
+
+        if isinstance(expected, Exception):
+            ctx = self.assertRaisesRegex(type(expected), str(expected))
+        else:
+            ctx = contextlib.nullcontext()
+
+        with ctx:
+            if num_kv_heads is not None:
+                cfg.set(num_kv_heads=num_kv_heads)
+            layer = cfg.instantiate(parent=None)
+            self.assertEqual(expected, layer.num_kv_heads)
 
 
 class PerDimScaleTest(TestCase):
@@ -969,8 +1369,172 @@ class PerDimScaleTest(TestCase):
         self.assertEqual(outputs.dtype, query.dtype)
 
 
+class ScaleQueryTest(TestCase):
+    """Tests ScaleQuery."""
+
+    @parameterized.product(
+        scale_factor=[None, 7],
+        norm=[None, RMSNorm.default_config()],
+        per_dim_scale=[
+            None,
+            PerDimScale.default_config(),
+        ],
+    )
+    def test_scale_query(
+        self,
+        *,
+        scale_factor: Optional[float],
+        norm: Optional[RMSNorm.Config],
+        per_dim_scale: Optional[PerDimScale.Config],
+    ):
+        kwargs = self._scale_kwargs(
+            scale_factor=scale_factor, norm=norm, per_dim_scale=per_dim_scale
+        )
+        forward_outputs, _ = F(**kwargs)
+
+        self.assertEqual(forward_outputs.shape, kwargs["inputs"]["proj"].shape)
+        q_proj_scaled = kwargs["inputs"]["proj"]
+        if norm is not None:
+            assert isinstance(norm, RMSNorm.Config)
+            moment2 = (q_proj_scaled * q_proj_scaled).mean(axis=-1, keepdims=True)
+            q_proj_scaled = q_proj_scaled * jax.lax.rsqrt(moment2 + norm.eps)
+        if per_dim_scale is not None:
+            assert isinstance(per_dim_scale, PerDimScale.Config)
+            # We overrode the initializer for PerDimScale so we can measure the effect.
+            q_proj_scaled = q_proj_scaled * jax.nn.softplus(1.0) * 1.442695041
+
+        if scale_factor is None:
+            scale_factor = kwargs["module"].config.per_head_dim ** -0.5
+        scale_factor = float(scale_factor)
+        q_proj_scaled = q_proj_scaled * scale_factor
+
+        self.assertNestedAllClose(forward_outputs, q_proj_scaled)
+
+    def _scale_kwargs(
+        self,
+        *,
+        scale_factor: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+        norm: Optional[InstantiableConfig],
+        per_dim_scale: Optional[PerDimScale.Config],
+    ):
+        model_dim = 16
+        if isinstance(scale_factor, (int, float)):
+            scale_factor = config_for_function(attention.constant_scale_fn).set(value=scale_factor)
+
+        num_heads = 2
+        per_head_dim = model_dim // num_heads
+        if per_dim_scale is not None:
+            per_dim_scale = per_dim_scale.set(dim=per_head_dim)
+
+        cfg = attention.ScaleQuery.default_config().set(
+            name="test",
+            per_head_dim=per_head_dim,
+            norm=norm,
+            scale_factor=scale_factor,
+            per_dim_scale=per_dim_scale,
+        )
+        layer = cfg.instantiate(parent=None)
+
+        param_specs = layer.create_parameter_specs_recursively()
+        layer_params = jax.tree_util.tree_map(
+            lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
+        )
+
+        batch_size = 3
+        tgt_len = 10
+        q_proj = jnp.concatenate(
+            (
+                jnp.ones([batch_size, tgt_len // 2, num_heads, per_head_dim]),
+                jnp.zeros([batch_size, tgt_len // 2, num_heads, per_head_dim]),
+            ),
+            axis=1,
+        )
+        kwargs = dict(
+            module=layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=dict(proj=q_proj),
+        )
+        return kwargs
+
+
+class ScaleKeyTest(TestCase):
+    """Tests ScaleKey."""
+
+    @parameterized.product(
+        scale_factor=[None, 7],
+        norm=[None, RMSNorm.default_config()],
+    )
+    def test_scale_key(
+        self,
+        *,
+        scale_factor: Optional[float],
+        norm: Optional[RMSNorm.Config],
+    ):
+        kwargs = self._scale_kwargs(scale_factor=scale_factor, norm=norm)
+        forward_outputs, _ = F(**kwargs)
+
+        self.assertEqual(forward_outputs.shape, kwargs["inputs"]["proj"].shape)
+        q_proj_scaled = kwargs["inputs"]["proj"]
+        if norm is not None:
+            assert isinstance(norm, RMSNorm.Config)
+            moment2 = (q_proj_scaled * q_proj_scaled).mean(axis=-1, keepdims=True)
+            q_proj_scaled = q_proj_scaled * jax.lax.rsqrt(moment2 + norm.eps)
+
+        if scale_factor is None:
+            scale_factor = 1.0
+        scale_factor = float(scale_factor)
+        q_proj_scaled = q_proj_scaled * scale_factor
+        self.assertNestedAllClose(forward_outputs, q_proj_scaled)
+
+    def _scale_kwargs(
+        self,
+        *,
+        scale_factor: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+        norm: Optional[InstantiableConfig],
+    ):
+        model_dim = 16
+        if isinstance(scale_factor, (int, float)):
+            scale_factor = config_for_function(attention.constant_scale_fn).set(value=scale_factor)
+
+        num_heads = 2
+        per_head_dim = model_dim // num_heads
+
+        cfg = attention.ScaleKey.default_config().set(
+            name="test",
+            per_head_dim=per_head_dim,
+            norm=norm,
+            scale_factor=scale_factor,
+        )
+        layer = cfg.instantiate(parent=None)
+
+        param_specs = layer.create_parameter_specs_recursively()
+        layer_params = jax.tree_util.tree_map(
+            lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
+        )
+
+        batch_size = 4
+        tgt_len = 12
+        k_proj = jnp.concatenate(
+            (
+                jnp.ones([batch_size, tgt_len // 2, num_heads, per_head_dim]),
+                jnp.zeros([batch_size, tgt_len // 2, num_heads, per_head_dim]),
+            ),
+            axis=1,
+        )
+        kwargs = dict(
+            module=layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            inputs=dict(proj=k_proj),
+        )
+        return kwargs
+
+
 class MultiheadAttentionTest(TestCase):
-    """Tests MultiheadAttention."""
+    """Tests MultiheadAttention, GroupedQueryAttention, and associated layers."""
 
     def test_invalid_key_value_combinations_raise(self):
         model_dim = 12
@@ -1014,7 +1578,7 @@ class MultiheadAttentionTest(TestCase):
                 key_dim=model_dim,
                 value_dim=model_dim,
                 num_heads=num_heads,
-                per_dim_scale=per_dim_scale,
+                query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             )
             multihead_attention = (
                 attention.MultiheadAttention.default_config()
@@ -1093,7 +1657,7 @@ class MultiheadAttentionTest(TestCase):
                 key_dim=model_dim,
                 value_dim=model_dim,
                 num_heads=num_heads,
-                per_dim_scale=per_dim_scale,
+                query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             )
             layer: attention.MultiheadAttention = cfg.instantiate(parent=None)
             self.assertContainsSubset(
@@ -1142,13 +1706,16 @@ class MultiheadAttentionTest(TestCase):
             qkv_shapes = dict(
                 weight=(model_dim, num_heads, per_head_dim), bias=(num_heads, per_head_dim)
             )
+            expected_scale_query_params = {}
+            if per_dim_scale:
+                expected_scale_query_params["per_dim_scale"] = dict(param=(per_head_dim,))
             expected_params = {
                 "i_proj": {f"{x}_proj": qkv_shapes for x in ("q", "k", "v")},
                 "o_proj": dict(weight=(model_dim, num_heads, per_head_dim), bias=(model_dim,)),
                 "dropout": {},
+                "scale_key": {},
+                "scale_query": expected_scale_query_params,
             }
-            if per_dim_scale:
-                expected_params["per_dim_scale"] = dict(param=(per_head_dim,))
             self.assertEqual(
                 expected_params,
                 shapes(layer_params),
@@ -1188,7 +1755,7 @@ class MultiheadAttentionTest(TestCase):
             value_dim=model_dim,
             num_heads=num_heads,
             dtype=dtype,
-            per_dim_scale=per_dim_scale,
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
         )
         layer = cfg.instantiate(parent=None)
 
@@ -1211,27 +1778,135 @@ class MultiheadAttentionTest(TestCase):
         )
         self.assertEqual(layer_outputs.data.dtype, dtype)
 
-    @parameterized.product(
-        dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
-        per_dim_scale=(None, PerDimScale.default_config()),
-        atten_logit_cap=(0.0, 20.0),
-    )
-    def test_extend_step(
-        self, dtype: jnp.dtype, per_dim_scale: Optional[PerDimScale.Config], atten_logit_cap: float
-    ):
-        model_dim = 16
-        num_heads = 4
-        cfg = attention.MultiheadAttention.default_config().set(
-            name="test",
+    def test_gqa_kv_heads(self):
+        """Checks that only the heads dim is repeated."""
+        batch = source_length = num_heads = 8
+        per_head_dim = 2
+        num_kv_heads = 4
+        dtype = jnp.float32
+        key_or_value = jnp.zeros((batch, source_length, num_kv_heads, per_head_dim), dtype=dtype)
+        model_dim = per_head_dim * num_heads
+        cfg = attention.GroupedQueryAttention.default_config().set(
             query_dim=model_dim,
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=num_heads,
-            per_dim_scale=per_dim_scale,
+            input_linear=attention.FusedGroupedQKVLinear.default_config().set(
+                num_kv_heads=num_kv_heads
+            ),
+            dtype=dtype,
+        )
+        test_layer = cfg.set(name="test").instantiate(parent=None)
+        # pylint: disable-next=protected-access
+        repeated_key_or_value = test_layer._repeat_kv_heads(key_or_value)
+        self.assertEqual(
+            repeated_key_or_value.shape, (batch, source_length, num_heads, per_head_dim)
+        )
+
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
+        per_dim_scale=(None, PerDimScale.default_config()),
+        atten_logit_cap=(0.0, 20.0),
+        input_linear=(
+            None,  # Use the default linear.
+            attention.QKVLinear.default_config(),
+            attention.FusedQKVLinear.default_config(),
+            attention.GroupedQKVLinear.default_config().set(num_kv_heads=4),
+            attention.FusedGroupedQKVLinear.default_config().set(num_kv_heads=4),
+        ),
+        bias=(True, False),
+    )
+    def test_gqa_forward(
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        input_linear: attention.BaseQKVLinear.Config,
+        bias: bool,
+    ):
+        """When num_kv_heads=num_heads, GQA should be equivalent to MHA."""
+        model_dim = 16
+        num_heads = 4
+        layer_kwargs = dict(
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             atten_logit_cap=atten_logit_cap,
+            dtype=dtype,
+        )
+        init_key = jax.random.PRNGKey(123)
+        # Initialize MultiheadAttention.
+        base_cfg = attention.MultiheadAttention.default_config().set(**layer_kwargs)
+        set_bias_recursively(base_cfg, bias=bias)
+        base_layer = base_cfg.set(name="base").instantiate(parent=None)
+        base_state = base_layer.initialize_parameters_recursively(prng_key=init_key)
+        # Initialize GroupedQueryAttenion.
+        cfg = attention.GroupedQueryAttention.default_config().set(**layer_kwargs)
+        if input_linear is not None:
+            cfg.set(input_linear=input_linear)
+        set_bias_recursively(cfg, bias=bias)
+        test_layer = cfg.set(name="test").instantiate(parent=None)
+        test_state = test_layer.initialize_parameters_recursively(prng_key=init_key)
+
+        if input_linear and issubclass(input_linear.klass, attention.FusedGroupedQKVLinear):
+            test_state["i_proj"]["qkv_proj"]["weight"] = jnp.concatenate(
+                [
+                    utils.get_recursively(base_state, f"i_proj/{proj}/weight")
+                    for proj in ("q_proj", "k_proj", "v_proj")
+                ],
+                axis=-2,
+            )
+
+        # Dummy inputs.
+        batch_size, tgt_len = 2, 6
+        inputs = dict(
+            query=jax.random.normal(
+                jax.random.PRNGKey(124),
+                [batch_size, tgt_len, model_dim],
+                dtype=dtype,
+            ),
+            key=None,
+            value=None,
+            attention_logit_biases=attention.make_causal_mask(tgt_len),
+        )
+        # Get outputs.
+        forward_key = jax.random.PRNGKey(456)
+        base_outputs, _ = F(
+            base_layer,
+            state=base_state,
+            is_training=False,
+            prng_key=forward_key,
+            inputs=inputs,
+        )
+        test_outputs, _ = F(
+            test_layer,
+            state=test_state,
+            is_training=False,
+            prng_key=forward_key,
+            inputs=inputs,
+        )
+        self.assertNestedAllClose(base_outputs, test_outputs)
+
+    def _test_extend_step(
+        self,
+        attention_cfg: attention.MultiheadAttention.Config,
+        *,
+        model_dim: int,
+        num_heads: int,
+        dtype: jnp.dtype,
+        bias: bool,
+    ):
+        cfg = attention_cfg.set(
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
         )
         cfg.input_linear.set(dtype=dtype, cache_dtype=None)
-        layer = cfg.instantiate(parent=None)
+        set_bias_recursively(cfg, bias=bias)
+        layer: attention.MultiheadAttention = cfg.set(name="test").instantiate(parent=None)
 
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
@@ -1239,8 +1914,10 @@ class MultiheadAttentionTest(TestCase):
         query = jax.random.normal(
             jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
         )
-        key = query
-        value = query
+        if attention_cfg.klass == attention.GroupedQueryAttention:
+            key = value = None
+        else:
+            key = value = query
         attention_logit_biases = attention.make_causal_mask(tgt_len)
         inputs = dict(
             query=query, key=key, value=value, attention_logit_biases=attention_logit_biases
@@ -1297,23 +1974,72 @@ class MultiheadAttentionTest(TestCase):
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
+        bias=(True, False),
     )
-    def test_prefill_states(
-        self, dtype: jnp.dtype, per_dim_scale: Optional[PerDimScale.Config], atten_logit_cap: float
+    def test_extend_step(
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        bias: bool,
     ):
         model_dim = 16
         num_heads = 4
         cfg = attention.MultiheadAttention.default_config().set(
-            name="test",
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
+            atten_logit_cap=atten_logit_cap,
+        )
+        self._test_extend_step(
+            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+        )
+
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
+        per_dim_scale=(None, PerDimScale.default_config()),
+        atten_logit_cap=(0.0, 20.0),
+        num_kv_heads=(1, 2, 4),
+        input_linear=(attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear),
+        bias=(True, False),
+    )
+    def test_gqa_extend_step(
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        num_kv_heads: int,
+        input_linear: Type[attention.BaseQKVLinear],
+        bias: bool,
+    ):
+        model_dim = 16
+        num_heads = 4
+        cfg = attention.GroupedQueryAttention.default_config().set(
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
+            atten_logit_cap=atten_logit_cap,
+            input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
+        )
+        self._test_extend_step(
+            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+        )
+
+    def _test_prefill_states(
+        self,
+        attention_cfg: attention.MultiheadAttention.Config,
+        *,
+        model_dim: int,
+        num_heads: int,
+        dtype: jnp.dtype,
+        bias: bool,
+        num_kv_heads: Optional[int] = None,
+    ):
+        cfg = attention_cfg.set(
             query_dim=model_dim,
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=num_heads,
-            per_dim_scale=per_dim_scale,
-            atten_logit_cap=atten_logit_cap,
         )
         cfg.input_linear.set(dtype=dtype, cache_dtype=None)
-        layer = cfg.instantiate(parent=None)
+        set_bias_recursively(cfg, bias=bias)
+        layer: attention.MultiheadAttention = cfg.set(name="test").instantiate(parent=None)
 
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
@@ -1348,7 +2074,7 @@ class MultiheadAttentionTest(TestCase):
         self.assertTrue(jnp.all(time_step == initial_states["i_proj"]["time_step"]))
         for proj in ["key", "value"]:
             self.assertEqual(
-                (batch_size, num_heads, model_dim // num_heads, tgt_len),
+                (batch_size, num_kv_heads or num_heads, model_dim // num_heads, tgt_len),
                 initial_states["i_proj"][proj].shape,
             )
             self.assertEqual(
@@ -1411,6 +2137,182 @@ class MultiheadAttentionTest(TestCase):
 
         assert_allclose(decoder_output, forward_outputs.data)
         assert_allclose(decoder_probs, forward_outputs.probs)
+
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
+        per_dim_scale=(None, PerDimScale.default_config()),
+        atten_logit_cap=(0.0, 20.0),
+        bias=(True, False),
+    )
+    def test_prefill_states(
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        bias: bool,
+    ):
+        model_dim = 16
+        num_heads = 4
+        cfg = attention.MultiheadAttention.default_config().set(
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
+            atten_logit_cap=atten_logit_cap,
+        )
+        self._test_prefill_states(
+            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+        )
+
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
+        per_dim_scale=(None, PerDimScale.default_config()),
+        atten_logit_cap=(0.0, 20.0),
+        num_kv_heads=(1, 2, 4),
+        input_linear=(attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear),
+        bias=(True, False),
+    )
+    def test_gqa_prefill_states(
+        self,
+        dtype: jnp.dtype,
+        per_dim_scale: Optional[PerDimScale.Config],
+        atten_logit_cap: float,
+        num_kv_heads: int,
+        input_linear: Type[attention.BaseQKVLinear],
+        bias: bool,
+    ):
+        model_dim = 16
+        num_heads = 4
+        cfg = attention.GroupedQueryAttention.default_config().set(
+            query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
+            atten_logit_cap=atten_logit_cap,
+            input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
+        )
+        self._test_prefill_states(
+            cfg,
+            model_dim=model_dim,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            dtype=dtype,
+            bias=bias,
+        )
+
+    def _scale_query_kwargs(
+        self,
+        *,
+        query_scale_factor: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+        key_scale_factor: Union[None, int, float, InstantiableConfig[attention.ScaleFn]],
+    ):
+        model_dim = 16
+        if isinstance(query_scale_factor, (int, float)):
+            query_scale_factor = config_for_function(attention.constant_scale_fn).set(
+                value=query_scale_factor
+            )
+        if isinstance(key_scale_factor, (int, float)):
+            key_scale_factor = config_for_function(attention.constant_scale_fn).set(
+                value=key_scale_factor
+            )
+
+        cfg = attention.MultiheadAttention.default_config().set(
+            name="test",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=2,
+            query_scale=attention.ScaleQuery.default_config().set(scale_factor=query_scale_factor),
+            key_scale=attention.ScaleKey.default_config().set(scale_factor=key_scale_factor),
+        )
+        cfg.input_linear.layer.bias = False
+        cfg.output_linear.bias = False
+        layer = cfg.instantiate(parent=None)
+
+        param_specs = layer.create_parameter_specs_recursively()
+        layer_params = jax.tree_util.tree_map(
+            lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
+        )
+
+        batch_size = 3
+        tgt_len = 10  # Must be even.
+        query = jnp.concatenate(
+            (
+                jnp.ones([batch_size, tgt_len // 2, model_dim]),
+                jnp.zeros([batch_size, tgt_len // 2, model_dim]),
+            ),
+            axis=1,
+        )
+        kwargs = dict(
+            module=layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=dict(query=query),
+        )
+        return kwargs
+
+    @parameterized.product(query_scale_factor=[None, 7], key_scale_factor=[None, 11])
+    def test_scale_query_key(
+        self, *, query_scale_factor: Optional[float], key_scale_factor: Optional[float]
+    ):
+        kwargs = self._scale_query_kwargs(
+            query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
+        )
+        forward_outputs, _ = F(**kwargs)
+        if query_scale_factor is None:
+            query_scale_factor = kwargs["module"].per_head_dim() ** -0.5
+        if key_scale_factor is None:
+            key_scale_factor = 1
+        query_scale_factor = float(query_scale_factor)
+        key_scale_factor = float(key_scale_factor)
+        self.assertNestedAllClose(
+            forward_outputs.probs[0, 0, 0, 0],
+            # All ones matrix times all ones vector has l2 norm dim ** 1.5.
+            # Half of input tokens are all ones, half are all zeros.
+            jax.nn.sigmoid(
+                kwargs["inputs"]["query"].shape[-1] ** 3 * query_scale_factor * key_scale_factor,
+            )
+            / (kwargs["inputs"]["query"].shape[1] // 2),
+        )
+
+    def test_scale_query_key_dim_dependence(self):
+        query_scale_factor = config_for_function(attention.pow_scale_fn).set(exp=1)
+        key_scale_factor = config_for_function(attention.pow_scale_fn).set(exp=-1)
+        kwargs = self._scale_query_kwargs(
+            query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
+        )
+        forward_outputs, _ = F(**kwargs)
+        self.assertNestedAllClose(
+            forward_outputs.probs[0, 0, 0, 0],
+            # All ones matrix times all ones vector has l2 norm dim ** 1.5.
+            # Half of input tokens are all ones, half are all zeros.
+            jax.nn.sigmoid(float(kwargs["inputs"]["query"].shape[-1] ** 3))
+            / (kwargs["inputs"]["query"].shape[1] // 2),
+        )
+
+    def test_scale_query_key_barrier(self):
+        """Tests that the scale factors are not combined.
+
+        Note that even without the barrier, it's not clear that they would be combined.
+        (They aren't on CPU even without the barrier.)
+        """
+        query_scale_factor = 7
+        key_scale_factor = 11
+        kwargs = self._scale_query_kwargs(
+            query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
+        )
+
+        # Check optimized HLO scales by query_scale_factor and key_scale_factor as separate
+        # multiplications. This only checks the default backend, so it doesn't check
+        # what happens on gpu/tpu unless jax is configured to use them.
+        f = jax.jit(F, static_argnames=("module", "is_training"))
+        compile_options = dict(
+            xla_cpu_enable_fast_math=True,
+            xla_cpu_fast_math_honor_nans=False,
+            xla_cpu_fast_math_honor_infs=False,
+            xla_cpu_fast_math_honor_functions=False,
+            xla_cpu_fast_math_honor_division=False,
+        )
+        hlo = f.lower(**kwargs).compile(compile_options).as_text()
+        hlo = test_utils.clean_hlo(hlo)
+        self.assertIn(str(query_scale_factor), hlo)
+        self.assertIn(str(key_scale_factor), hlo)
+        self.assertNotIn(str(query_scale_factor * key_scale_factor), hlo)
 
 
 def oracle_xl_attention_logits(
@@ -1503,7 +2405,9 @@ class TransformerXLTest(TestCase):
             source_dim=model_dim,
             structure="postnorm",
             attention=MultiheadAttentionXL.default_config().set(
-                num_heads=num_heads, per_dim_scale=per_dim_scale, scale_position=scale_position
+                num_heads=num_heads,
+                query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
+                scale_position=scale_position,
             ),
         )
         cfg.attention.output_linear.bias = False
@@ -1523,7 +2427,7 @@ class TransformerXLTest(TestCase):
             jax.random.PRNGKey(1), [num_heads, model_dim // num_heads]
         )
         if per_dim_scale:
-            layer_params["attention"]["per_dim_scale"]["param"] = jax.random.normal(
+            layer_params["attention"]["scale_query"]["per_dim_scale"]["param"] = jax.random.normal(
                 jax.random.PRNGKey(2), [model_dim // num_heads]
             )
         layer_outputs, _ = F(
@@ -1535,12 +2439,12 @@ class TransformerXLTest(TestCase):
         )
         expected_vals = {
             str(None): {
-                MultiheadAttentionXL.ScalePosition.LOGIT.value: 48.55191,
-                MultiheadAttentionXL.ScalePosition.QUERY.value: 48.91095,
+                MultiheadAttentionXL.ScalePosition.LOGIT.value: 48.06005,
+                MultiheadAttentionXL.ScalePosition.QUERY.value: 48.08012,
             },
             str(PerDimScale.default_config()): {
-                MultiheadAttentionXL.ScalePosition.LOGIT.value: 46.327015,
-                MultiheadAttentionXL.ScalePosition.QUERY.value: 46.608315,
+                MultiheadAttentionXL.ScalePosition.LOGIT.value: 47.321579,
+                MultiheadAttentionXL.ScalePosition.QUERY.value: 47.870319,
             },
         }
         assert_allclose(
@@ -1751,7 +2655,7 @@ class TestStackModel(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
-        stack: InstantiableConfig = None  # The transformer stack.
+        stack: Optional[BaseStackedTransformerLayer.Config] = None  # The transformer stack.
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1794,30 +2698,38 @@ class StackedTransformerTest(TestCase):
         layer_cfg.vlog = 5
         return cfg
 
-    @parameterized.parameters(StackedTransformerLayer, RepeatedTransformerLayer)
-    def test_transformer_extend_step(self, transformer_type):
+    @parameterized.product(
+        transformer_type=[StackedTransformerLayer, RepeatedTransformerLayer],
+        # Also tests stack-of-stacks and repeat-of-stacks.
+        layer_type=[TransformerLayer, StackedTransformerLayer],
+    )
+    def test_transformer_extend_step(self, transformer_type, layer_type):
         batch_size, src_len, tgt_len = 10, 4, 6
         num_dec_layers, model_dim, num_heads = 3, 16, 4
 
-        if isinstance(transformer_type, type):
-            cfg = transformer_type.default_config().set(
-                name="test",
-                input_dim=model_dim,
-                num_layers=num_dec_layers,
-            )
-        # TODO(sneha): add a test that compares hf_T5 vs ours like hf_roberta above?
+        cfg = transformer_type.default_config().set(
+            name="test",
+            input_dim=model_dim,
+            num_layers=num_dec_layers,
+        )
         cross_atten_cfg = TransformerAttentionLayer.default_config().set(
             source_dim=model_dim * 2,
             structure="postnorm",
         )
         cross_atten_cfg.attention.set(num_heads=num_heads)
-        layer_cfg = cfg.layer
+
+        # Prepare layer config.
+        if layer_type == StackedTransformerLayer:
+            cfg.layer = layer_type.default_config().set(num_layers=2)
+            layer_cfg = cfg.layer.layer
+        else:
+            layer_cfg = cfg.layer
         layer_cfg.self_attention.attention.set(num_heads=num_heads)
         layer_cfg.cross_attention = cross_atten_cfg
         layer_cfg.feed_forward.hidden_dim = model_dim * 4
 
+        # Instantiate transformer stack.
         layer = cfg.instantiate(parent=None)
-
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
@@ -1843,11 +2755,20 @@ class StackedTransformerTest(TestCase):
         initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
         inputs = dict(cached_states=initial_state, cross_attention_data=source)
         decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
-        decoder_self_attention_probs = jnp.zeros(
-            shape=[tgt_len, num_dec_layers, batch_size, num_heads, tgt_len]
+
+        # [num_dec_layers, [num_stacked_layers,] batch_size, num_heads, tgt_len, tgt_len] -->
+        # [tgt_len, num_dec_layers, [num_stacked_layers,] batch_size, num_heads, tgt_len].
+        # The layer being stacked can itself be a stack, in which case we have an extra dim.
+        decoder_self_attention_probs = jnp.moveaxis(
+            jnp.zeros_like(forward_outputs.self_attention_probs),
+            -2,
+            0,
         )
-        decoder_cross_attention_probs = jnp.zeros(
-            shape=[tgt_len, num_dec_layers, batch_size, num_heads, src_len]
+        # [tgt_len, num_dec_layers, [num_stacked_layers,] batch_size, num_heads, src_len].
+        decoder_cross_attention_probs = jnp.moveaxis(
+            jnp.zeros_like(forward_outputs.cross_attention_probs),
+            -2,
+            0,
         )
         for t in range(tgt_len):
             inputs["data"] = jnp.expand_dims(target[:, t, :], axis=1)
@@ -1867,21 +2788,23 @@ class StackedTransformerTest(TestCase):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                self.assertIsInstance(updated_states, utils.VDict)
+                jax.tree_map(
+                    lambda v: self.assertIsInstance(v, utils.VDict),
+                    updated_states,
+                    is_leaf=lambda v: isinstance(v, dict),
+                )
             inputs["cached_states"] = updated_states
             decoder_output = decoder_output.at[t].set(jnp.squeeze(layer_outputs.data, axis=1))
             decoder_self_attention_probs = decoder_self_attention_probs.at[t].set(
-                jnp.squeeze(layer_outputs.self_attention_probs, axis=3)
+                jnp.squeeze(layer_outputs.self_attention_probs, axis=-2)
             )
             decoder_cross_attention_probs = decoder_cross_attention_probs.at[t].set(
-                jnp.squeeze(layer_outputs.cross_attention_probs, axis=3)
+                jnp.squeeze(layer_outputs.cross_attention_probs, axis=-2)
             )
         decoder_out_transposed = jnp.transpose(decoder_output, [1, 0, 2])
-        decoder_self_attention_probs_transposed = jnp.transpose(
-            decoder_self_attention_probs, [1, 2, 3, 0, 4]
-        )
-        decoder_cross_attention_probs_transposed = jnp.transpose(
-            decoder_cross_attention_probs, [1, 2, 3, 0, 4]
+        decoder_self_attention_probs_transposed = jnp.moveaxis(decoder_self_attention_probs, 0, -2)
+        decoder_cross_attention_probs_transposed = jnp.moveaxis(
+            decoder_cross_attention_probs, 0, -2
         )
 
         assert_allclose(decoder_out_transposed, forward_outputs.data, atol=1e-6)
@@ -1894,14 +2817,16 @@ class StackedTransformerTest(TestCase):
             atol=1e-6,
         )
 
-    @parameterized.parameters(StackedTransformerLayer, RepeatedTransformerLayer)
+    @parameterized.product(
+        transformer_type=[StackedTransformerLayer, RepeatedTransformerLayer],
+        # Also tests stack-of-stacks and repeat-of-stacks.
+        layer_type=[TransformerLayer, StackedTransformerLayer],
+    )
     # pylint: disable-next=too-many-statements
-    def test_transformer_prefill_states(self, transformer_type):
+    def test_transformer_prefill_states(self, transformer_type, layer_type):
         batch_size, src_len, tgt_len = 10, 4, 6
         num_dec_layers, model_dim, num_heads = 3, 16, 4
 
-        model_dim = 16
-        num_heads = 4
         cfg = transformer_type.default_config().set(
             name="test",
             input_dim=model_dim,
@@ -1912,11 +2837,18 @@ class StackedTransformerTest(TestCase):
             structure="postnorm",
         )
         cross_atten_cfg.attention.set(num_heads=num_heads)
-        layer_cfg = cfg.layer
+
+        # Prepare layer config.
+        if layer_type == StackedTransformerLayer:
+            cfg.layer = layer_type.default_config().set(num_layers=2)
+            layer_cfg = cfg.layer.layer
+        else:
+            layer_cfg = cfg.layer
         layer_cfg.self_attention.attention.set(num_heads=num_heads)
         layer_cfg.cross_attention = cross_atten_cfg
         layer_cfg.feed_forward.hidden_dim = model_dim * 4
 
+        # Instantiate transformer stack.
         layer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
@@ -2009,7 +2941,11 @@ class StackedTransformerTest(TestCase):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                self.assertIsInstance(updated_states, utils.VDict)
+                jax.tree_map(
+                    lambda v: self.assertIsInstance(v, utils.VDict),
+                    updated_states,
+                    is_leaf=lambda v: isinstance(v, dict),
+                )
             inputs["cached_states"] = updated_states
 
             # [batch, model_dim, tgt_len=1]
@@ -2103,7 +3039,6 @@ class StackedTransformerTest(TestCase):
 
             all_params = []
             all_outputs = []
-            all_summaries = []
             all_gradients = []
             all_updates = []
             for stack_cfg in stack_configs:
@@ -2115,7 +3050,7 @@ class StackedTransformerTest(TestCase):
                     dtype=dtype,
                     remat_spec=remat_spec,
                 )
-                cls = cfg.stack.cls
+                cls = cfg.stack.klass
                 if cls == PipelinedTransformerLayer:
                     cfg.stack.num_microbatches = batch_size // 2
                     cfg.stack.num_stages = num_layers // 2
@@ -2133,7 +3068,10 @@ class StackedTransformerTest(TestCase):
                 logging.info(
                     "%s.params=%s",
                     cls,
-                    jax.tree_util.tree_map(lambda x: f"{x.dtype}({x.shape})", layer_params),
+                    [
+                        f"{path}={value.dtype}({value.shape})"
+                        for path, value in flatten_items(layer_params)
+                    ],
                 )
 
                 def _loss(layer_params, data, mask, layer=layer):
@@ -2153,6 +3091,10 @@ class StackedTransformerTest(TestCase):
                 loss, (aux, layer_output_collection) = value
                 layer_outputs = (loss, aux)
 
+                # Note that we do not compare summaries across stack layer types because:
+                # (1) attention layers do not emit summaries yet;
+                # (2) pipelines emit per-microbatch summaries which have a different structure
+                #     than summaries from other stack layers.
                 summaries = layer_output_collection.summaries
                 logging.info(
                     "layer_outputs=%s summaries=%s",
@@ -2210,27 +3152,28 @@ class StackedTransformerTest(TestCase):
                     }
 
                 if cls == StackedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
                         x["stack"] = recursive_stack(x["stack"])
 
                 if cls == RepeatedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
+                    for x in (layer_params, grads, updates):
                         x["stack"] = x["stack"]["repeat"]
 
                 if cls == PipelinedTransformerLayer:
-                    for x in (layer_params, grads, summaries, updates):
-                        if cfg.stack.stage.cls == StackedTransformerLayer:
+                    for x in (layer_params, grads, updates):
+                        logging.info("x=%s", shapes(x))
+                        if cfg.stack.stage.klass == StackedTransformerLayer:
                             # First stack within each stage.
                             x["stack"]["pipeline"]["layer"] = recursive_stack(
                                 x["stack"]["pipeline"]["layer"], axis=1
                             )
                             logging.info("x=%s", shapes(x))
-                        elif cfg.stack.stage.cls == RepeatedTransformerLayer:
+                        elif cfg.stack.stage.klass == RepeatedTransformerLayer:
                             x["stack"]["pipeline"]["layer"] = x["stack"]["pipeline"]["layer"][
                                 "repeat"
                             ]
                         else:
-                            raise NotImplementedError(cfg.stack.stage.cls)
+                            raise NotImplementedError(cfg.stack.stage.klass)
 
                         # Then reshape across stages.
                         x["stack"] = jax.tree_util.tree_map(
@@ -2240,7 +3183,6 @@ class StackedTransformerTest(TestCase):
 
                 all_params.append(layer_params)
                 all_outputs.append(layer_outputs)
-                all_summaries.append(summaries)
                 all_gradients.append(grads)
                 all_updates.append(updates)
 
@@ -2265,7 +3207,6 @@ class StackedTransformerTest(TestCase):
                 # pylint: enable=protected-access
 
             self.assertNestedAllClose(all_params[0], all_params[1])
-            self.assertNestedAllClose(all_summaries[0], all_summaries[1])
             self.assertNestedAllClose(all_outputs[0], all_outputs[1])
             self.assertNestedAllClose(all_gradients[0], all_gradients[1])
             self.assertNestedAllClose(all_updates[0], all_updates[1])
@@ -2353,44 +3294,152 @@ class ConfigHelperTest(TestCase):
         self_attention_input_linear_cfg=(
             QKVLinear.default_config(),
             FusedQKVLinear.default_config(),
+            RoFormerQKVLinear.default_config().set(input_linear=FusedQKVLinear.default_config()),
         ),
         cross_attention_cfg=(None, TransformerAttentionLayer.default_config()),
+        batch_axis_names=("data", ("replica", "data", "fsdp")),
+        fsdp_axis_names=("fsdp",),
+        tp_axis_names=("model",),
+        seq_axis_names=("seq",),
     )
     def test_set_double_shard_weights_config(
-        self, self_attention_input_linear_cfg, cross_attention_cfg
+        self,
+        self_attention_input_linear_cfg,
+        cross_attention_cfg,
+        batch_axis_names,
+        fsdp_axis_names,
+        tp_axis_names,
+        seq_axis_names,
     ):
         cfg: TransformerLayer.Config = TransformerLayer.default_config().set(
             cross_attention=cross_attention_cfg
         )
         cfg.self_attention.attention.input_linear = self_attention_input_linear_cfg
-        set_double_shard_weights_config(cfg)
+        set_double_shard_weights_config(
+            cfg,
+            batch_axis_names=batch_axis_names,
+            fsdp_axis_names=fsdp_axis_names,
+            tp_axis_names=tp_axis_names,
+            seq_axis_names=seq_axis_names,
+        )
 
         ff_layer = cfg.feed_forward
-        self.assertSequenceEqual(ff_layer.linear1.param_partition_spec, ("data", "model"))
-        self.assertSequenceEqual(ff_layer.linear2.param_partition_spec, ("model", "data"))
-        self.assertSequenceEqual(ff_layer.linear1.output_partition_spec, ("data", None, "model"))
-        self.assertSequenceEqual(ff_layer.linear2.output_partition_spec, ("data", None, "model"))
-
-        self_atten = cfg.self_attention.attention
-        # Shard weights.
         self.assertSequenceEqual(
-            self_atten.input_linear.layer.param_partition_spec, ("data", "model", None)
+            ff_layer.linear1.param_partition_spec, (fsdp_axis_names, tp_axis_names)
         )
         self.assertSequenceEqual(
-            self_atten.output_linear.param_partition_spec, ("data", "model", None)
+            ff_layer.linear2.param_partition_spec, (tp_axis_names, fsdp_axis_names)
+        )
+        self.assertSequenceEqual(
+            ff_layer.linear1.output_partition_spec,
+            (batch_axis_names, seq_axis_names, tp_axis_names),
+        )
+        self.assertSequenceEqual(
+            ff_layer.linear2.output_partition_spec,
+            (batch_axis_names, seq_axis_names, tp_axis_names),
+        )
+
+        self_atten = cfg.self_attention.attention
+        input_linear = self_atten.input_linear
+        if isinstance(self_attention_input_linear_cfg, RoFormerQKVLinear.Config):
+            input_linear = input_linear.input_linear
+        # Shard weights.
+        self.assertSequenceEqual(
+            input_linear.layer.param_partition_spec,
+            (fsdp_axis_names, tp_axis_names, None),
+        )
+        self.assertSequenceEqual(
+            self_atten.output_linear.param_partition_spec, (fsdp_axis_names, tp_axis_names, None)
         )
 
         if cross_attention_cfg is None:
             self.assertIsNone(cfg.cross_attention)
         else:
-            cross_atten = cfg.self_attention.attention
+            cross_atten = cfg.cross_attention.attention
             # Shard weights.
             self.assertSequenceEqual(
-                cross_atten.input_linear.layer.param_partition_spec, ("data", "model", None)
+                cross_atten.input_linear.layer.param_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
             )
             self.assertSequenceEqual(
-                cross_atten.output_linear.param_partition_spec, ("data", "model", None)
+                cross_atten.output_linear.param_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
             )
+
+    @parameterized.product(
+        self_attention_input_linear_cfg=(
+            QKVLinear.default_config(),
+            FusedQKVLinear.default_config(),
+        ),
+        cross_attention_cfg=(None, TransformerAttentionLayer.default_config()),
+        batch_axis_names=("data", ("replica", "data", "fsdp")),
+        fsdp_axis_names=("fsdp",),
+        tp_axis_names=("model",),
+        seq_axis_names=("seq",),
+    )
+    def test_set_double_shard_weights_config_for_list_of_configs(
+        self,
+        self_attention_input_linear_cfg,
+        cross_attention_cfg,
+        batch_axis_names,
+        fsdp_axis_names,
+        tp_axis_names,
+        seq_axis_names,
+    ):
+        cfg_layer: TransformerLayer.Config = TransformerLayer.default_config().set(
+            cross_attention=cross_attention_cfg
+        )
+        cfg_layer.self_attention.attention.input_linear = self_attention_input_linear_cfg
+        cfg_layers = [cfg_layer, cfg_layer]
+        set_double_shard_weights_config(
+            cfg_layers,
+            batch_axis_names=batch_axis_names,
+            fsdp_axis_names=fsdp_axis_names,
+            tp_axis_names=tp_axis_names,
+            seq_axis_names=seq_axis_names,
+        )
+
+        for cfg in cfg_layers:
+            ff_layer = cfg.feed_forward
+            self.assertSequenceEqual(
+                ff_layer.linear1.param_partition_spec, (fsdp_axis_names, tp_axis_names)
+            )
+            self.assertSequenceEqual(
+                ff_layer.linear2.param_partition_spec, (tp_axis_names, fsdp_axis_names)
+            )
+            self.assertSequenceEqual(
+                ff_layer.linear1.output_partition_spec,
+                (batch_axis_names, seq_axis_names, tp_axis_names),
+            )
+            self.assertSequenceEqual(
+                ff_layer.linear2.output_partition_spec,
+                (batch_axis_names, seq_axis_names, tp_axis_names),
+            )
+
+            self_atten = cfg.self_attention.attention
+            # Shard weights.
+            self.assertSequenceEqual(
+                self_atten.input_linear.layer.param_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
+            )
+            self.assertSequenceEqual(
+                self_atten.output_linear.param_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
+            )
+
+            if cross_attention_cfg is None:
+                self.assertIsNone(cfg.cross_attention)
+            else:
+                cross_atten = cfg.self_attention.attention
+                # Shard weights.
+                self.assertSequenceEqual(
+                    cross_atten.input_linear.layer.param_partition_spec,
+                    (fsdp_axis_names, tp_axis_names, None),
+                )
+                self.assertSequenceEqual(
+                    cross_atten.output_linear.param_partition_spec,
+                    (fsdp_axis_names, tp_axis_names, None),
+                )
 
 
 class PositionalEmbeddingTest(TestCase):
