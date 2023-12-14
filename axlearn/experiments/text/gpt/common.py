@@ -289,7 +289,7 @@ def learner_config(
                 update_schedule=update_schedule,
                 weight_decay=weight_decay,
                 weight_decay_per_param_scale=None,
-                multiply_by_parameter_scale=False,
+                adam_update_transformation=None,
             ),
         ]
     )

@@ -152,9 +152,34 @@ def scale(step_size: float) -> PartitionedGradientTransformation:
     return with_partition_fn(optax.scale(step_size), lambda _: optax.ScaleState())
 
 
-def scale_by_schedule(step_size_fn: schedule.Schedule) -> PartitionedGradientTransformation:
+def scale_by_schedule(
+    step_size_fn: schedule.Schedule, *, name: Optional[str] = None
+) -> PartitionedGradientTransformation:
+    """Scales updates using a custom schedule for the step size.
+
+    Args:
+        step_size_fn: A function that takes an update count as input and returns a scale factor
+            to multiply the updates by.
+        name: Name for this transformation (used to group logged summaries).
+            If None, will not group logged summaries under a name.
+
+    Returns:
+        A partitioned gradient transformation.
+    """
+
+    schedule_fn = schedule.as_schedule_fn(step_size_fn)
+    summary_name_prefix = "" if name is None else f"{name}/"
+
+    def wrapped_schedule_fn(step):
+        scale_multiplier = schedule_fn(step)
+        context = current_context()
+        if context:
+            context.add_summary(summary_name_prefix + "schedule_step", step)
+            context.add_summary(summary_name_prefix + "schedule_scale", scale_multiplier)
+        return scale_multiplier
+
     return with_partition_fn(
-        optax.scale_by_schedule(schedule.as_schedule_fn(step_size_fn)),
+        optax.scale_by_schedule(wrapped_schedule_fn),
         lambda _: optax.ScaleByScheduleState(
             count=OptStateSpec(shape=[], dtype=jnp.int32, mesh_axes=PartitionSpec())
         ),
@@ -569,7 +594,7 @@ def adamw_optimizer(
     weight_decay: float = 0,
     weight_decay_per_param_scale: Optional[Callable[[NestedOptParam], Any]] = None,
     mu_dtype: Optional[jnp.dtype] = None,
-    multiply_by_parameter_scale: bool = False,
+    adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
 ) -> PartitionedGradientTransformation:
     """AdamW optimizer with parameter scaling.
 
@@ -591,17 +616,15 @@ def adamw_optimizer(
             If None, all leaves will have a scale of 1.
         mu_dtype: optional `dtype` to be used for the first order accumulator;
             if `None` then the dtype is inferred from params and updates.
-        multiply_by_parameter_scale: if `True`, then scale learning_rate by
-            parameter RMS. if `False`, provided learning_rate is absolute step size.
-            Usually this should be left as False.
+        adam_update_transformation: A transformation applied directly on the adam updates
+            (but before weight decay). If None, no transformation is applied.
 
     Returns:
         A PartitionedGradientTransformation representing an AdamW optimizer with parameter scaling.
     """
     tx = [adam_partition(optax.scale_by_adam(b1=b1, b2=b2, eps=eps, mu_dtype=mu_dtype))]
-    # Add the per-parameter scaling (PPS) according to the adafactor optimizer.
-    if multiply_by_parameter_scale:
-        tx.append(scale_by_param_block_rms())
+    if adam_update_transformation is not None:
+        tx.append(maybe_instantiate(adam_update_transformation))
     tx.extend(
         [
             add_decayed_weights(
@@ -627,7 +650,7 @@ def adamw_decoupled_optimizer(
     weight_decay: float = 0,
     weight_decay_per_param_scale: Optional[Callable[[NestedOptParam], Any]] = None,
     mu_dtype: Optional[jnp.dtype] = None,
-    multiply_by_parameter_scale: bool = False,
+    adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
 ) -> PartitionedGradientTransformation:
     """A "decoupled" version of the AdamW optimizer, with optional parameter scaling.
 
@@ -651,18 +674,16 @@ def adamw_decoupled_optimizer(
             If None, all leaves will have a scale of 1.
         mu_dtype: optional `dtype` to be used for the first order accumulator;
             if `None` then the dtype is inferred from params and updates.
-        multiply_by_parameter_scale: if `True`, then scale learning_rate by
-            parameter RMS. if `False`, provided learning_rate is absolute step size.
-            Usually this should be left as False.
+        adam_update_transformation: A transformation applied directly on the adam updates
+            (but before weight decay). If None, no transformation is applied.
 
     Returns:
         A PartitionedGradientTransformation representing a decoupled AdamW optimizer with
             parameter scaling.
     """
     tx = [adam_partition(optax.scale_by_adam(b1=b1, b2=b2, eps=eps, mu_dtype=mu_dtype))]
-    # Add the per-parameter scaling (PPS) according to the adafactor optimizer.
-    if multiply_by_parameter_scale:
-        tx.append(scale_by_param_block_rms())
+    if adam_update_transformation is not None:
+        tx.append(maybe_instantiate(adam_update_transformation))
     tx.extend(
         [
             # Scale the update by the fixed learning rate.

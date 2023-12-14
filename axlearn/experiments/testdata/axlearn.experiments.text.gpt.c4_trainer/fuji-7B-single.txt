@@ -96,7 +96,6 @@ learner.optimizer.args[1].b2: 0.95
 learner.optimizer.args[1].eps: 1e-08
 learner.optimizer.args[1].fn: 'axlearn.common.optimizers.adamw_decoupled_optimizer'
 learner.optimizer.args[1].learning_rate: 0.0003
-learner.optimizer.args[1].multiply_by_parameter_scale: False
 learner.optimizer.args[1].update_schedule.alpha: 0.1
 learner.optimizer.args[1].update_schedule.begin_value: 0.0
 learner.optimizer.args[1].update_schedule.fn: 'axlearn.common.schedule.cosine_with_linear_warmup'

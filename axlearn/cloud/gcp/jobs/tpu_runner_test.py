@@ -394,15 +394,24 @@ class TPURunnerMainTest(TestWithTemporaryCWD):
 
     @parameterized.parameters(True, False)
     def test_list(self, running_from_vm):
+        fv = flags.FlagValues()
+        tpu_runner.launch_flags(flag_values=fv)
+        fv.mark_as_parsed()
+
         # Test that list can be invoked without additional flags.
         with _mock_job(running_from_vm), _mock_credentials():
-            tpu_runner.main(["cli", "list"])
+            tpu_runner.main(["cli", "list"], flag_values=fv)
 
     @parameterized.parameters(True, False)
     def test_stop(self, running_from_vm):
+        fv = flags.FlagValues()
+        tpu_runner.launch_flags(flag_values=fv)
+        fv.set_default("name", "test")
+        fv.mark_as_parsed()
+
         # Test that stop can be invoked with just --name.
         with _mock_job(running_from_vm):
-            tpu_runner.main(["cli", "stop", "--name=test"])
+            tpu_runner.main(["cli", "stop"], flag_values=fv)
 
     @parameterized.parameters(True, False)
     def test_start(self, running_from_vm):
