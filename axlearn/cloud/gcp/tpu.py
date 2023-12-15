@@ -429,7 +429,8 @@ def _create_multislice_tpu(
                 time.sleep(10)
             logging.info("All endpoints READY, HEALTHY and booted for multislice TPU %s", name)
             return
-        elif state in ["FAILED", "SUSPENDING", "SUSPENDED"]:
+        elif state in ["FAILED", "SUSPENDED"]:
+            # Per ttrimble@google.com, do not force delete if a node is in "SUSPENDING".
             logging.info("Deleting multislice TPU.")
             # By default, blocks until deleted.
             _delete_multislice_tpu(name, credentials=credentials)
@@ -437,7 +438,9 @@ def _create_multislice_tpu(
             # Poll until state change. Easier to track consecutive "unknown" count within this
             # block.
             for _ in range(10):
-                logging.warning("Unknown TPU state: %s. Will see if it resolves itself...", state)
+                logging.warning(
+                    "QR in unexpected state: %s. Will see if it resolves itself...", state
+                )
                 time.sleep(60)
                 node = get_queued_tpu_node(name, resource)
                 if get_queued_tpu_node_status(name, node=node)["state"] != state:
