@@ -31,7 +31,7 @@ from axlearn.common.utils import Nested, Tensor
 def _is_valid_ctc_seq(
     *, paddings: Tensor, target_labels: Tensor, target_paddings: Tensor
 ) -> Tensor:
-    """Returns for per example sequence if it passes validity check.
+    """Returns whether each input sequence passes validity check.
 
     Note that `optax.ctc_loss` returns -logeps (default to 1e5) if the
     input length is smaller than the label length plus number of
