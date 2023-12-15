@@ -11,6 +11,9 @@
 #   * Three GCS buckets
 #   * A service account with the Storage Admin role
 
+# Note: Running this script does NOT grant you TPU quota.
+# Please follow instructions here: https://cloud.google.com/tpu/docs/setup-gcp-account#prepare-to-request 
+
 
 #!/bin/sh
 
@@ -36,7 +39,7 @@ gcloud config set project $PROJECT_ID
 
 # Step 2: Link the project to a billing account
 # https://cloud.google.com/billing/docs/how-to/modify-project
-gcloud alpha billing projects link $PROJECT_ID --billing-account=$BILLING_ACCOUNT_ID
+gcloud billing projects link $PROJECT_ID --billing-account=$BILLING_ACCOUNT_ID
 
 # Step 3: Enable services
 gcloud services enable compute.googleapis.com
