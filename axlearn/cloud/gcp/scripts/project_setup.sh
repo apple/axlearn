@@ -1,9 +1,15 @@
-# This is a script to set up a brand new GCP project before you use AXLearn tools"""
+# Sets up a brand new GCP project for AXLearn. See also the "Getting Started" docs linked in the main readme.
 #
 # Usage: 
 #    # fill out environment variables below
 #    chmod +x project_setup.sh
 #    ./project_setup.sh
+
+# This will provision the following resources:
+#   * A new GCP project under your organization
+#   * A default VPC network
+#   * Three GCS buckets
+#   * A service account with the Storage Admin role
 
 
 #!/bin/sh
