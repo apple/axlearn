@@ -15,7 +15,6 @@
 #!/bin/sh
 
 set -e
-#set -x
 
 # Define environment variables
 export ORGANIZATION_ID= #your existing GCP organization
