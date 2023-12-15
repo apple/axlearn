@@ -128,8 +128,8 @@ class ValidCtcSeqTest(TestCase):
             paddings=paddings, target_labels=target_labels, target_paddings=target_paddings
         ).astype(jnp.float32)
         self.assertNestedAllClose(
-            per_seq_validality,
-            jnp.array([0.0] * batch_size, dtype=per_seq_validality.type))
+            per_seq_validality, jnp.array([0.0] * batch_size, dtype=per_seq_validality.dtype)
+        )
 
     def test_label_shorter_than_input(self):
         batch_size = 4
@@ -151,8 +151,8 @@ class ValidCtcSeqTest(TestCase):
             paddings=paddings, target_labels=labels, target_paddings=target_paddings
         ).astype(jnp.float32)
         self.assertNestedAllClose(
-            per_seq_validality,
-            jnp.array([1.0] * batch_size), dtype=per_seq_validality.type)
+            per_seq_validality, jnp.array([1.0] * batch_size, dtype=per_seq_validality.dtype)
+        )
 
     def test_label_with_duplicates(self):
         batch_size = 5
@@ -188,8 +188,8 @@ class ValidCtcSeqTest(TestCase):
             paddings=paddings, target_labels=target_labels, target_paddings=target_paddings
         ).astype(jnp.float32)
         self.assertNestedAllClose(
-            per_seq_validality, 
-            jnp.array([1.0, 1.0, 0.0, 1.0, 1.0], dtype=per_seq_validality.type))
+            per_seq_validality, jnp.array([1.0, 1.0, 0.0, 1.0, 1.0], dtype=per_seq_validality.dtype)
+        )
 
 
 class CTCPrefixMergerTest(TestCase):
