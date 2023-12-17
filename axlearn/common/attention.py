@@ -2381,7 +2381,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         cfg = self.config
 
         def _linear2(x):
-            """Root mean square function."""
+            """Applies linear2, optionally logging RMS norm of the output."""
             x = self.linear2(x)
             if "linear2_outputs" in cfg.add_value_rms_norm_summary:
                 rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
