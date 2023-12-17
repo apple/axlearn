@@ -2325,7 +2325,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         # dead zone.
         #
         # Only supported for a subset of activation functions, including relu, gelu, and silu.
-        add_dead_neuron_summary: bool = False
+        add_dead_neuron_summary: Optional[bool] = None
 
         # Adds summary of RMS norms of the specified values. Supported value are:
         # - "linear2_outputs": outputs of linear2.
