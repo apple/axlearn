@@ -2378,6 +2378,8 @@ class TransformerFeedForwardLayer(BaseLayer):
                 raise NotImplementedError(f"add_value_rms_norm_summary: {value}")
 
     def forward(self, inputs: Tensor) -> Tensor:
+        cfg = self.config
+
         def _linear2(x):
             """Root mean square function."""
             x = self.linear2(x)
@@ -2386,7 +2388,6 @@ class TransformerFeedForwardLayer(BaseLayer):
                 self.add_summary("rms_norm/linear2_outputs", rms_norm)
             return x
 
-        cfg = self.config
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
         if cfg.structure == "prenorm":
