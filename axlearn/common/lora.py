@@ -518,6 +518,7 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         cfg = self.config
         if key is None and value is None:
@@ -525,7 +526,7 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         else:
             raise ValueError("Key and value should be both None in LoraFusedQKVLinear.")
 
-        q_proj, k_proj, v_proj = self.layer(query, key=key, value=value)
+        q_proj, k_proj, v_proj = self.layer(query, key=key, value=value, time_step=time_step)
         adapter_outputs = self.adapter(inputs)
 
         index = 0

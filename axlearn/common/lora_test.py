@@ -14,7 +14,7 @@ from absl.testing import absltest, parameterized
 from einops import rearrange
 
 from axlearn.common import utils
-from axlearn.common.attention import FusedQKVLinear, MultiheadOutputLinear
+from axlearn.common.attention import FusedQKVLinear, MultiheadOutputLinear, RoFormerQKVLinear
 from axlearn.common.layers import Linear
 from axlearn.common.lora import (
     LoraFusedQKVAdapter,
@@ -172,10 +172,18 @@ class LoraFusedQKVLinearTest(TestCase):
 
         assert_allclose(outputs, ref_outputs)
 
-    def test_extend_step(self):
-        model_dim = 6
+    @parameterized.product(
+        layer=(
+            FusedQKVLinear.default_config(),
+            RoFormerQKVLinear.default_config().set(
+                rotary_value=False, input_linear=FusedQKVLinear.default_config()
+            ),
+        ),
+    )
+    def test_extend_step(self, layer):
+        model_dim = 8
         num_heads = 2
-        per_head_dim = 3
+        per_head_dim = 4  # change this to 4 to adapt the need of RoPE.
         seq_len = 4
         batch_size = 2
         rank = 2
@@ -185,6 +193,7 @@ class LoraFusedQKVLinearTest(TestCase):
         inputs = jax.random.normal(jax.random.PRNGKey(456), (batch_size, seq_len, model_dim))
 
         layer_cfg = LoraFusedQKVLinear.default_config().set(
+            layer=layer,
             name="test",
             query_dim=model_dim,
             key_dim=model_dim,

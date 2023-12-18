@@ -73,8 +73,6 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
         raise NotImplementedError(f"Unknown model size {model_size}.")
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
-    max_sequence_length = trainer_kwargs.get("max_sequence_length", MAX_SEQUENCE_LENGTH)
-    model_kwargs.setdefault("max_sequence_length", max_sequence_length)
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
     trainer_kwargs["learner_cfg"] = learner_config(
         max_step=trainer_kwargs["max_step"],
@@ -90,7 +88,6 @@ def model_config(
     hidden_dim: int,
     num_heads: int,
     vocab_size: int,
-    max_sequence_length: int,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
 ) -> causal_lm.Model.Config:
@@ -101,7 +98,6 @@ def model_config(
         hidden_dim: The Transformer layer input/output dim.
         num_heads: The number of attention heads.
         vocab_size: The vocabulary size.
-        max_sequence_length: The maximum sequence length.
         dropout_rate: The dropout rate applied throughout the model.
             Defaults to 0.0 (i.e. no dropout).
         ffn_dim: The feed-forward dimension or config function.
@@ -128,7 +124,6 @@ def model_config(
         attention_mask=CausalAttentionLogitBiasLayer.default_config(),
         # RoPE embeddings: https://arxiv.org/abs/2104.09864.
         attention_qkv_linear=RoFormerQKVLinear.default_config().set(
-            max_seq_length=max_sequence_length,
             input_linear=FusedQKVLinear.default_config().set(cache_dtype=STEP_DTYPE),
             rotary_value=False,
         ),
