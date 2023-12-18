@@ -30,7 +30,7 @@ from tensorflow.python.ops import string_ops
 from tensorflow_text.python.ops.bert_tokenizer import AccentPreservingBasicTokenizer
 
 from axlearn.common import input_tf_data
-from axlearn.common.config import InstantiableConfig, maybe_instantiate
+from axlearn.common.config import ConfigOr, maybe_instantiate
 from axlearn.common.input_tf_data import DatasetToDatasetFn
 from axlearn.common.utils import Tensor
 
@@ -118,7 +118,7 @@ def strip_accents(
 
 
 def tokenize(
-    output_features: Union[InstantiableConfig, seqio.preprocessors.OutputFeaturesType],
+    output_features: ConfigOr[seqio.preprocessors.OutputFeaturesType],
     copy_pretokenized: bool = True,
     with_eos: bool = False,
 ) -> input_tf_data.DatasetToDatasetFn:

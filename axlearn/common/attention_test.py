@@ -52,6 +52,7 @@ from axlearn.common.attention import (
     RoFormerQKVLinear,
     StackedTransformerLayer,
     TransformerAttentionLayer,
+    TransformerFeedForwardLayer,
     TransformerLayer,
     _next_power_of_two,
     apply_attention_logit_biases,
@@ -726,35 +727,17 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
     def test_rope_emb(self, batch_size, max_len, dim):
         # Token id is in the np format for easier transition.
         token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
-        positions = jnp.arange(token_ids.shape[-1], dtype=jnp.int32)
+        positions = jnp.expand_dims(jnp.arange(token_ids.shape[-1], dtype=jnp.int32), 0)
         ref_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
         ref_output = ref_layer(as_torch_tensor(token_ids).shape)
         # Set up the RoPE AXLearn configs.
         test_layer = (
             attention.RoFormerSinusoidalPositionalEmbedding.default_config()
-            .set(name="test_rope_emb", max_len=max_len, dim=dim)
+            .set(name="test_rope_emb", dim=dim)
             .instantiate(parent=None)
         )
         test_output = test_layer.forward(positions)
-        np.testing.assert_allclose(ref_output, test_output, atol=5e-7)
-
-    def test_rope_emb_out_of_seq(self):
-        # Unittest for sequence length > max_len.
-        max_len = 8
-        seq_len = max_len * 2
-        dim = 32
-        positions = jnp.arange(seq_len, dtype=jnp.int32)
-        test_layer = (
-            attention.RoFormerSinusoidalPositionalEmbedding.default_config()
-            .set(name="test_rope_emb", max_len=max_len, dim=dim)
-            .instantiate(parent=None)
-        )
-        with self.assertRaises(Exception) as context:
-            test_layer.forward(positions)
-        self.assertTrue(
-            ValueError(f"Seq. length ({seq_len}) should be less than max length ({max_len})"),
-            context.exception,
-        )
+        np.testing.assert_allclose(np.expand_dims(ref_output, 0), test_output, atol=5e-7)
 
     def _compare_against_roformer_attention(
         self,
@@ -804,16 +787,16 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=num_heads,
-            input_linear=RoFormerQKVLinear.default_config().set(
-                max_seq_length=max_sequence_length, rotary_value=rotary_value
-            ),
+            input_linear=RoFormerQKVLinear.default_config().set(rotary_value=rotary_value),
         )
         rope_emb_layer = (
             attention.RoFormerSinusoidalPositionalEmbedding.default_config()
-            .set(name="test_rope_emb", max_len=max_sequence_length, dim=model_dim // num_heads)
+            .set(name="test_rope_emb", dim=model_dim // num_heads)
             .instantiate(parent=None)
         )
-        ref_rope_emb = as_torch_tensor(rope_emb_layer.forward(jnp.arange(max_sequence_length)))
+        ref_rope_emb = as_torch_tensor(
+            rope_emb_layer.forward(jnp.expand_dims(jnp.arange(max_sequence_length), 0))
+        )
         layer = attention.TransformerAttentionLayer.default_config().set(
             source_dim=model_dim,
             target_dim=model_dim,
@@ -967,9 +950,8 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
     def test_against_llama_for_precompute_freqs_cis(self, theta: float):
         max_len = 100
         dim = 32
-        positions = jnp.arange(max_len)
+        positions = jnp.expand_dims(jnp.arange(max_len), 0)
         axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
-            max_len=max_len,
             dim=dim,
             theta=theta,
         )
@@ -986,12 +968,12 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len, theta=theta)
         axlearn_imag, axlearn_real = jnp.split(axlearn_rope, 2, axis=-1)
         llama_real, llama_imag = llama_rope.real, llama_rope.imag
-        assert_allclose(llama_real, as_tensor(axlearn_real))
-        assert_allclose(llama_imag, as_tensor(axlearn_imag))
+        # [0] is added, as axlearn_real and axlearn_imag has a batch_size=1 dimension.
+        assert_allclose(llama_real, as_tensor(axlearn_real)[0])
+        assert_allclose(llama_imag, as_tensor(axlearn_imag)[0])
 
     @parameterized.product(
         dtype=(jnp.float32, jnp.bfloat16),
-        max_seq_len=(100, 6),
         input_linear=(
             None,
             attention.QKVLinear.default_config(),
@@ -999,7 +981,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         ),
     )
     def test_roformer_qkv_linear(
-        self, dtype: jnp.dtype, max_seq_len: int, input_linear: attention.BaseQKVLinear.Config
+        self, dtype: jnp.dtype, input_linear: attention.BaseQKVLinear.Config
     ):
         seq_len = 6
         batch_size = 2
@@ -1008,7 +990,6 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         per_head_dim = model_dim // num_heads
         roformer_qkv_linear_kwargs = {
             "name": "roformer_qkv_linear",
-            "max_seq_length": max_seq_len,
             "query_dim": model_dim,
             "key_dim": model_dim,
             "value_dim": model_dim,
@@ -1054,9 +1035,9 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
         max_len = 100
         dim = 32
         batch_size = 4
-        positions = jnp.arange(max_len)
+        positions = jnp.expand_dims(jnp.arange(max_len), 0)
         axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
-            max_len=max_len, dim=dim
+            dim=dim
         )
         axlearn_rope_layer = axlearn_rope_cfg.set(name="rope").instantiate(parent=None)
         axlearn_rope, _ = F(
@@ -1106,7 +1087,6 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             value_dim=dim,
             num_heads=n_heads,
             input_linear=RoFormerQKVLinear.default_config().set(
-                max_seq_length=max_len,
                 rotary_value=False,
             ),
         )
@@ -1975,19 +1955,26 @@ class MultiheadAttentionTest(TestCase):
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
         bias=(True, False),
+        input_linear=(attention.QKVLinear, attention.RoFormerQKVLinear),
     )
     def test_extend_step(
         self,
         dtype: jnp.dtype,
         per_dim_scale: Optional[PerDimScale.Config],
         atten_logit_cap: float,
+        input_linear: attention.BaseQKVLinear,
         bias: bool,
     ):
         model_dim = 16
         num_heads = 4
+        if input_linear == attention.RoFormerQKVLinear:
+            input_linear = input_linear.default_config().set(rotary_value=False)
+        else:
+            input_linear = input_linear.default_config()
         cfg = attention.MultiheadAttention.default_config().set(
             query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             atten_logit_cap=atten_logit_cap,
+            input_linear=input_linear,
         )
         self._test_extend_step(
             cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
@@ -2143,6 +2130,7 @@ class MultiheadAttentionTest(TestCase):
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
         bias=(True, False),
+        input_linear=(attention.QKVLinear, attention.RoFormerQKVLinear),
     )
     def test_prefill_states(
         self,
@@ -2150,12 +2138,18 @@ class MultiheadAttentionTest(TestCase):
         per_dim_scale: Optional[PerDimScale.Config],
         atten_logit_cap: float,
         bias: bool,
+        input_linear: attention.BaseQKVLinear,
     ):
         model_dim = 16
         num_heads = 4
+        if input_linear == attention.RoFormerQKVLinear:
+            input_linear = input_linear.default_config().set(rotary_value=False)
+        else:
+            input_linear = input_linear.default_config()
         cfg = attention.MultiheadAttention.default_config().set(
             query_scale=attention.ScaleQuery.default_config().set(per_dim_scale=per_dim_scale),
             atten_logit_cap=atten_logit_cap,
+            input_linear=input_linear,
         )
         self._test_prefill_states(
             cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
@@ -2531,7 +2525,83 @@ class TransformerXLTest(TestCase):
         )
 
 
-class TransformerTest(absltest.TestCase):
+class TransformerFeedForwardLayerTest(TestCase):
+    @parameterized.parameters(
+        dict(rms_norm_summary=[]),
+        dict(rms_norm_summary=["linear2_outputs"]),
+        dict(rms_norm_summary=["final_outputs"], expected_raise_regex="add_value_rms_norm_summary"),
+    )
+    def test_add_value_rms_norm_summary(
+        self, rms_norm_summary: List[str], *, expected_raise_regex=None
+    ):
+        batch, seq_len, dim = 2, 3, 4
+        cfg = TransformerFeedForwardLayer.default_config().set(
+            name="ffn",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            add_value_rms_norm_summary=rms_norm_summary,
+        )
+        if expected_raise_regex is not None:
+            with self.assertRaisesRegex(NotImplementedError, expected_raise_regex):
+                layer = cfg.instantiate(parent=None)
+            return
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        x = jax.random.normal(jax.random.PRNGKey(1), shape=[batch, seq_len, dim])
+        y, output_collection = F(
+            layer,
+            inputs=dict(inputs=x),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertSequenceEqual(x.shape, y.shape)
+        self.assertNestedAllClose(2.663487, jnp.sum(y))
+        self.assertSetEqual(
+            set(k for k in output_collection.summaries.keys() if k.startswith("rms_norm/")),
+            set(f"rms_norm/{k}" for k in rms_norm_summary),
+        )
+
+    @parameterized.parameters(
+        dict(activation_fn="nn.relu"),
+        dict(activation_fn=("nn.relu", "linear")),
+        dict(activation_fn=("linear", "quick_gelu")),
+        dict(activation_fn=("linear", "exact_gelu")),
+        dict(activation_fn=("linear", "nn.silu")),
+    )
+    def test_add_dead_neuron_summary(self, activation_fn: Union[str, List[str]]):
+        batch, seq_len, dim = 2, 3, 4
+        cfg = TransformerFeedForwardLayer.default_config().set(
+            name="ffn",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            activation=activation_fn,
+            add_dead_neuron_summary=True,
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        x = jax.random.normal(jax.random.PRNGKey(1), shape=[batch, seq_len, dim])
+        y, output_collection = F(
+            layer,
+            inputs=dict(inputs=x),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertSequenceEqual(x.shape, y.shape)
+        if isinstance(activation_fn, str):
+            activation_fn = [activation_fn]
+        self.assertSetEqual(
+            set(k for k in output_collection.summaries.keys() if k.startswith("dead_neurons/")),
+            set(
+                f"dead_neurons/{k}"
+                for k in activation_fn
+                if k in ("nn.relu", "quick_gelu", "exact_gelu", "nn.silu")
+            ),
+        )
+
+
+class TransformerTest(TestCase):
     """Tests TransformerLayer."""
 
     def _compare_against_roberta_attention(

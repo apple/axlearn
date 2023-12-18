@@ -608,32 +608,44 @@ def _tpu_body(
     else:
         raise ValueError(f"Unknown TPU-VM runtime version for {tpu_type}.")
 
-    body = {
-        "acceleratorType": tpu_type,
-        "metadata": {
-            "bundle_bucket": gcp_settings("ttl_bucket"),
-            "enable-oslogin": "false",
-            "job_name": name,
-            "startup-script": startup_script_contents,
-            "zone": gcp_settings("zone"),
-            "tpu_type": tpu_type,
-            "docker_registry": registry_from_repo(docker_repo) if docker_repo else "",
-            "bundler_type": bundler_type,
-            "create_request_time": datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f"),
-            **(metadata or {}),
-        },
-        "networkConfig": {
-            "enableExternalIps": False,
-            "network": gcp_settings("network"),
-            "subnetwork": gcp_settings("subnetwork"),
-        },
-        "runtimeVersion": runtime_version,
-        "serviceAccount": {
-            "email": service_account or gcp_settings("service_account_email"),
-            "scope": DEFAULT_TPU_SCOPES,
-        },
-        "tags": ["allow-internet-egress"],
-    }
+    body = {}
+    if metadata is not None and "enable_ici_resiliency" in metadata:
+        # If we don't set this, the platform (GCP) decides whether or not to enable it.
+        body["ici_resilience_config"] = {
+            # If True, the TPU will continue with degraded ICI throughput in the event of
+            # some forms of hardware failure.
+            "enable_ici_resiliency": metadata.pop("enable_ici_resiliency"),
+        }
+
+    body.update(
+        {
+            "acceleratorType": tpu_type,
+            "metadata": {
+                "bundle_bucket": gcp_settings("ttl_bucket"),
+                "enable-oslogin": "false",
+                "job_name": name,
+                "startup-script": startup_script_contents,
+                "zone": gcp_settings("zone"),
+                "tpu_type": tpu_type,
+                "docker_registry": registry_from_repo(docker_repo) if docker_repo else "",
+                "bundler_type": bundler_type,
+                "create_request_time": datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f"),
+                **(metadata or {}),
+            },
+            "networkConfig": {
+                "enableExternalIps": False,
+                "network": gcp_settings("network"),
+                "subnetwork": gcp_settings("subnetwork"),
+            },
+            "runtimeVersion": runtime_version,
+            "serviceAccount": {
+                "email": service_account or gcp_settings("service_account_email"),
+                "scope": DEFAULT_TPU_SCOPES,
+            },
+            "tags": ["allow-internet-egress"],
+        }
+    )
+
     return body
 
 
