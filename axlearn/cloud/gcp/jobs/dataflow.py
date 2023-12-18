@@ -72,6 +72,7 @@ https://cloud.google.com/dataflow/docs/quickstarts/create-pipeline-python#run-th
 """
 # pylint: disable=protected-access
 
+import platform
 import re
 import shlex
 import signal
@@ -194,7 +195,6 @@ class DataflowJob(GCPJob):
             "service_account_email": service_account,
             "dataflow_service_options": ["enable_secure_boot", "enable_google_cloud_heap_sampling"],
             "experiments": ["use_network_tags=allow-internet-egress", "use_runner_v2"],
-            "number_of_worker_harness_threads": "1",
             "no_use_public_ips": None,
             "runner": "DataflowRunner",
         }
@@ -229,13 +229,25 @@ class DataflowJob(GCPJob):
 
     def _execute(self):
         cfg: DataflowJob.Config = self.config
-
         # Run the setup command locally, but the launch command via docker.
         # This is to ensure that the launch environment matches the worker environment.
-        cmd = (
-            "docker run --rm --entrypoint /bin/bash "
-            f"{self._bundler.id(cfg.name)} -c '{cfg.command}'"
-        )
+        processor = platform.processor().lower()
+        if "arm" in processor:
+            # Disable running from docker on Mac M1 chip due to qemu core dump bug.
+            # https://github.com/docker/for-mac/issues/5342.
+            logging.info(
+                (
+                    "%s processor detected. "
+                    "Skipping docker launch and running from local environment instead."
+                ),
+                processor,
+            )
+            cmd = cfg.command
+        else:
+            cmd = (
+                "docker run --rm --entrypoint /bin/bash "
+                f"{self._bundler.id(cfg.name)} -c '{cfg.command}'"
+            )
         cmd = f"{cfg.setup_command} && {cmd}"
         cmd = f"bash -c {shlex.quote(cmd)}"
         logging.info("Executing in subprocess: %s", cmd)
