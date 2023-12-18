@@ -52,6 +52,7 @@ from axlearn.common.attention import (
     RoFormerQKVLinear,
     StackedTransformerLayer,
     TransformerAttentionLayer,
+    TransformerFeedForwardLayer,
     TransformerLayer,
     _next_power_of_two,
     apply_attention_logit_biases,
@@ -2531,7 +2532,83 @@ class TransformerXLTest(TestCase):
         )
 
 
-class TransformerTest(absltest.TestCase):
+class TransformerFeedForwardLayerTest(TestCase):
+    @parameterized.parameters(
+        dict(rms_norm_summary=[]),
+        dict(rms_norm_summary=["linear2_outputs"]),
+        dict(rms_norm_summary=["final_outputs"], expected_raise_regex="add_value_rms_norm_summary"),
+    )
+    def test_add_value_rms_norm_summary(
+        self, rms_norm_summary: List[str], *, expected_raise_regex=None
+    ):
+        batch, seq_len, dim = 2, 3, 4
+        cfg = TransformerFeedForwardLayer.default_config().set(
+            name="ffn",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            add_value_rms_norm_summary=rms_norm_summary,
+        )
+        if expected_raise_regex is not None:
+            with self.assertRaisesRegex(NotImplementedError, expected_raise_regex):
+                layer = cfg.instantiate(parent=None)
+            return
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        x = jax.random.normal(jax.random.PRNGKey(1), shape=[batch, seq_len, dim])
+        y, output_collection = F(
+            layer,
+            inputs=dict(inputs=x),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertSequenceEqual(x.shape, y.shape)
+        self.assertNestedAllClose(2.663487, jnp.sum(y))
+        self.assertSetEqual(
+            set(k for k in output_collection.summaries.keys() if k.startswith("rms_norm/")),
+            set(f"rms_norm/{k}" for k in rms_norm_summary),
+        )
+
+    @parameterized.parameters(
+        dict(activation_fn="nn.relu"),
+        dict(activation_fn=("nn.relu", "linear")),
+        dict(activation_fn=("linear", "quick_gelu")),
+        dict(activation_fn=("linear", "exact_gelu")),
+        dict(activation_fn=("linear", "nn.silu")),
+    )
+    def test_add_dead_neuron_summary(self, activation_fn: Union[str, List[str]]):
+        batch, seq_len, dim = 2, 3, 4
+        cfg = TransformerFeedForwardLayer.default_config().set(
+            name="ffn",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            activation=activation_fn,
+            add_dead_neuron_summary=True,
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        x = jax.random.normal(jax.random.PRNGKey(1), shape=[batch, seq_len, dim])
+        y, output_collection = F(
+            layer,
+            inputs=dict(inputs=x),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertSequenceEqual(x.shape, y.shape)
+        if isinstance(activation_fn, str):
+            activation_fn = [activation_fn]
+        self.assertSetEqual(
+            set(k for k in output_collection.summaries.keys() if k.startswith("dead_neurons/")),
+            set(
+                f"dead_neurons/{k}"
+                for k in activation_fn
+                if k in ("nn.relu", "quick_gelu", "exact_gelu", "nn.silu")
+            ),
+        )
+
+
+class TransformerTest(TestCase):
     """Tests TransformerLayer."""
 
     def _compare_against_roberta_attention(

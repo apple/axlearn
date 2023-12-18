@@ -2316,6 +2316,21 @@ class TransformerFeedForwardLayer(BaseLayer):
         # outputs = inputs + residual_weight * x.
         residual_weight: float = 1.0
 
+        # Auxiliary stats.
+
+        # If True, add "dead_neurons/{activation}" stats for activation functions that have
+        # zones of near-zero gradients, e.g., x < 0 for ReLU.
+        #
+        # A "neuron" `i` is considered dead if all of x[..., i] (across batch/seq) fall within the
+        # dead zone.
+        #
+        # Only supported for a subset of activation functions, including relu, gelu, and silu.
+        add_dead_neuron_summary: Optional[bool] = None
+
+        # Adds summary of RMS norms of the specified values. Supported value are:
+        # - "linear2_outputs": outputs of linear2.
+        add_value_rms_norm_summary: Sequence[str] = []
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg: TransformerFeedForwardLayer.Config = self.config
@@ -2358,9 +2373,21 @@ class TransformerFeedForwardLayer(BaseLayer):
             raise NotImplementedError(cfg.structure)
 
         self._add_child("stochastic_depth", cfg.stochastic_depth)
+        for value in cfg.add_value_rms_norm_summary:
+            if value != "linear2_outputs":
+                raise NotImplementedError(f"add_value_rms_norm_summary: {value}")
 
     def forward(self, inputs: Tensor) -> Tensor:
         cfg = self.config
+
+        def _linear2(x):
+            """Applies linear2, optionally logging RMS norm of the output."""
+            x = self.linear2(x)
+            if "linear2_outputs" in cfg.add_value_rms_norm_summary:
+                rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
+                self.add_summary("rms_norm/linear2_outputs", rms_norm)
+            return x
+
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
         if cfg.structure == "prenorm":
@@ -2368,7 +2395,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             x = self._linear1_activation(x)
             x = self._remat_name(x, remat_pt1)
             x = self.dropout1(x)
-            x = self.linear2(x)
+            x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
             x = self.dropout2(x)
             x = self.stochastic_depth(x)
@@ -2378,7 +2405,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         elif cfg.structure == "postnorm":
             x = self._linear1_activation(inputs)
             x = self._remat_name(x, remat_pt1)
-            x = self.linear2(x)
+            x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
             x = self.dropout(x)
             x = self.stochastic_depth(x)
@@ -2390,7 +2417,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             x = self._linear1_activation(x)
             x = self._remat_name(x, remat_pt1)
             x = self.dropout1(x)
-            x = self.linear2(x)
+            x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
             x = self.postnorm(x)
             x = self.dropout2(x)
@@ -2406,14 +2433,50 @@ class TransformerFeedForwardLayer(BaseLayer):
         cfg = self.config
         if isinstance(cfg.activation, tuple):
             activations = [
-                get_activation_fn(activation)(self.children[f"linear1_{i}"](x))
+                self._get_activation(
+                    self.children[f"linear1_{i}"](x), activation_fn_name=activation
+                )
                 for i, activation in enumerate(cfg.activation)
             ]
             assert len(activations) == 2, cfg.activation
             return activations[0] * activations[1]
         else:
             x = self.linear1(x)
-            return get_activation_fn(cfg.activation)(x)
+            return self._get_activation(x, activation_fn_name=cfg.activation)
+
+    def _get_activation(self, x: Tensor, activation_fn_name: str) -> Tensor:
+        """Applies activation function on 'x' and optionally counts the number of dead neurons.
+
+        Args:
+            x: A tensor of shape [B, S, H].
+            activation_fn_name: The name of the activation fn.
+
+        Returns:
+            activation_fn(x).
+        """
+        cfg = self.config
+        if cfg.add_dead_neuron_summary:
+            if activation_fn_name in ["quick_gelu", "exact_gelu"]:
+                # To make GELU be sufficiently small.
+                threshold = -4.0
+            elif activation_fn_name in ["nn.silu", "nn.sigmoid"]:
+                # nn.silu(jnp.array(-10.)) = -0.00045398
+                # nn.sigmoid(jnp.array(-10.)) = 4.5397872e-05
+                threshold = -10.0
+            elif activation_fn_name in ["nn.relu", "squared_relu"]:
+                threshold = 0
+            else:
+                threshold = None
+            if threshold is not None:
+                max_hidden_units = jnp.max(x, axis=(0, 1))
+                num_dead_units = jnp.count_nonzero(
+                    jnp.less(max_hidden_units, threshold).astype(jnp.int32)
+                )
+                self.add_summary(
+                    f"dead_neurons/{activation_fn_name}",
+                    num_dead_units,
+                )
+        return get_activation_fn(activation_fn_name)(x)
 
 
 class TransformerLayer(BaseTransformerLayer):
