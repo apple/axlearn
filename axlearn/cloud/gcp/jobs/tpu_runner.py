@@ -144,6 +144,13 @@ def launch_flags(flag_values: flags.FlagValues = FLAGS):
         "Otherwise will fallback to application-default credentials.",
         flag_values=flag_values,
     )
+    flags.DEFINE_boolean(
+        "enable_tpu_ici_resiliency",
+        None,
+        "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
+        "not all TPU types support this flag.",
+        flag_values=flag_values,
+    )
 
 
 def with_tpu_extras(bundler: Bundler.Config):
@@ -180,6 +187,12 @@ class TPURunnerJob(TPUJob):
         monitor: Optional[LivenessMonitor.Config] = None
         # Optional VertexAI Tensorboard Uploader.
         vertexai_tb_uploader: Optional[VertexAITensorboardUploader.Config] = None
+        # Whether to enable TPU ICI resiliency.
+        # If True, the job will persist through some types of network failure,
+        # but with degraded performance.
+        # If None, we leave it to GCP to determine whether it's appropriate for the
+        # requested TPU topology.
+        enable_tpu_ici_resiliency: Optional[bool] = None
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
@@ -297,6 +310,13 @@ class TPURunnerJob(TPUJob):
         # holding the TPU.
         credentials = self._get_job_credentials(DEFAULT_TPU_SCOPES)
         delete_tpu(cfg.name, credentials=credentials)
+
+        tpu_metadata = {}
+        if isinstance(self._bundler, BaseDockerBundler):
+            tpu_metadata["docker_image"] = self._bundler.id(cfg.name)
+        if cfg.enable_tpu_ici_resiliency is not None:
+            tpu_metadata["enable_ici_resiliency"] = cfg.enable_tpu_ici_resiliency
+
         create_tpu(
             name=cfg.name,
             tpu_type=cfg.tpu_type,
@@ -304,6 +324,7 @@ class TPURunnerJob(TPUJob):
             credentials=credentials,
             num_slices=cfg.num_slices,
             service_account=cfg.service_account,
+            metadata=tpu_metadata,
         )
 
     class Status(enum.Enum):
