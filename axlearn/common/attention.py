@@ -616,7 +616,12 @@ class BaseQKVLinear(BaseLayer):
         return cache
 
     def forward(
-        self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
+        self,
+        query: Tensor,
+        *,
+        key: Optional[Tensor] = None,
+        value: Optional[Tensor] = None,
+        time_step: Optional[Tensor] = None,
     ) -> Output:
         """Computes per-head query, key, and value for the input query, key, value.
 
@@ -626,6 +631,7 @@ class BaseQKVLinear(BaseLayer):
                    If None, will use `query`.
             value: an optional Tensor of shape [batch, source_length, source_dim].
                    If None, will use `query`.
+            time_step: an optional Tensor of shape [batch]. If None, will ignore.
 
         Returns:
             An Output instance, where query is of size
@@ -669,6 +675,9 @@ class BaseQKVLinear(BaseLayer):
         # Default to base layer dtype for initialization if cache_dtype is None.
         dtype = cfg.cache_dtype or cfg.dtype
 
+        # In the prefill state, the time_step filtering is not provided in the QKV forward function,
+        # but in the time_step_mask defined below.
+        # Therefore, time_step argument for the forward is set as None.
         q_proj, k_proj, v_proj = self.forward(query, key=key, value=value)
 
         # Zero-out everything from time_step onwards. Being able to assume that non-filled cache
@@ -725,7 +734,7 @@ class BaseQKVLinear(BaseLayer):
         assert time_step.ndim == 1
 
         # Project inputs to key, value and query. Each has shape [B, 1, N, H].
-        q_proj, k_proj, v_proj = self.forward(query, key=key, value=value)
+        q_proj, k_proj, v_proj = self.forward(query, key=key, value=value, time_step=time_step)
 
         # Move the length axis to the back. This allows us to update the cache key, value with
         # the "scatter via one-hot broadcast" trick, rather than a scatter/gather operation.
@@ -783,7 +792,12 @@ class QKVLinear(BaseQKVLinear):
         return self.config.num_heads
 
     def forward(
-        self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
+        self,
+        query: Tensor,
+        *,
+        key: Optional[Tensor] = None,
+        value: Optional[Tensor] = None,
+        time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         """Computes attention for the given query, key, value.
 
@@ -894,7 +908,12 @@ class FusedQKVLinear(BaseQKVLinear):
         return jax.vmap(init)(split_prng_key(prng_key, 3).keys)
 
     def forward(
-        self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
+        self,
+        query: Tensor,
+        *,
+        key: Optional[Tensor] = None,
+        value: Optional[Tensor] = None,
+        time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         """Computes multi-head query, key, and value for the input query, key, value
         using a fused weight.
@@ -977,7 +996,12 @@ class FusedGroupedQKVLinear(BaseQKVLinear):
         return self.config.num_kv_heads
 
     def forward(
-        self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
+        self,
+        query: Tensor,
+        *,
+        key: Optional[Tensor] = None,
+        value: Optional[Tensor] = None,
+        time_step: Optional[Tensor] = None,
     ) -> FusedQKVLinear.Output:
         """See FusedQKVLinear for full docstring.
 
@@ -994,7 +1018,7 @@ class FusedGroupedQKVLinear(BaseQKVLinear):
 
 
 def _rotary_sinusoidal_positional_embeddings(
-    *, positions: Tensor, max_len: int, dim: int, theta: float = 10000.0
+    *, positions: Tensor, dim: int, theta: float = 10000.0
 ) -> Tensor:
     """Generate the sin/cos positional embedding.
 
@@ -1002,23 +1026,24 @@ def _rotary_sinusoidal_positional_embeddings(
     https://github.com/huggingface/transformers/blob/main/src/transformers/models/roformer/modeling_roformer.py#L76-L90
 
     Args:
-        positions: A tensor representing the token position IDs with shape [seq_len].
-        max_len: The max length of the input sequence.
+        positions: A tensor representing the token position IDs with shape [batch_size, seq_len].
         dim: The dimensionality of the positional embedding.
         theta: A parameter to scale the frequencies.
 
     Returns:
-        Rotary Positional Embedding with shape [seq_len, dim].
+        Rotary Positional Embedding with shape [batch_size, seq_len, dim].
     """
+    if dim % 2 != 0:
+        raise ValueError(f"dim: {dim} should be a multiplier of 2.")
     exponents = jnp.arange(dim).astype(jnp.float32)
-    pos_array = jnp.arange(max_len).astype(jnp.float32)
+    pos_array = positions.astype(jnp.float32)
     exponents = jnp.power(theta, 2 * (exponents // 2) / dim)
-    position_enc = jnp.expand_dims(pos_array, 1) / jnp.expand_dims(exponents, 0)
+    position_enc = jnp.expand_dims(pos_array, 2) / jnp.expand_dims(exponents, [0, 1])
 
-    rope_part_1 = jnp.sin(position_enc[:, 0::2])
-    rope_part_2 = jnp.cos(position_enc[:, 1::2])
+    rope_part_1 = jnp.sin(position_enc[:, :, 0::2])
+    rope_part_2 = jnp.cos(position_enc[:, :, 1::2])
     rope = jnp.concatenate((rope_part_1, rope_part_2), axis=-1)
-    return rope[positions]
+    return rope
 
 
 class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
@@ -1032,34 +1057,23 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures RoFormerSinusoidalPositionalEmbedding."""
 
-        max_len: Required[int] = REQUIRED  # The max length of the input sequence.
         dim: Required[int] = REQUIRED  # The dimensionality of the positional embedding.
         theta: float = 10000.0  # The scale of base frequency.
 
     def forward(self, positions: Tensor) -> Tensor:
         """
-        TODO(bwzhang): 1. add the batch support. 2. verify the performance under float32.
+        TODO(bwzhang): 1. verify the performance under float32.
 
         Args:
             positions: A tensor representing the token position IDs.
-                Currently, it doesn't support batched tensor as input.
-                The shape is [seq_len].
+                The shape is [batch_size, seq_len].
 
         Returns:
             Rotary Positional Embedding. Shape is [seq_len, dim].
-
-        Raises:
-            ValueError: If positions has invalid shape.
         """
         cfg = self.config
-        seq_len = positions.shape[0]
-        if seq_len > cfg.max_len:
-            raise ValueError(
-                f"Seq. length ({seq_len}) should be less than or "
-                "equal to max length ({cfg.max_len})"
-            )
         return _rotary_sinusoidal_positional_embeddings(
-            positions=positions, max_len=cfg.max_len, dim=cfg.dim, theta=cfg.theta
+            positions=positions, dim=cfg.dim, theta=cfg.theta
         )
 
 
@@ -1080,7 +1094,7 @@ def apply_rotary_position_embeddings(
         query: Query embeddings with shape [batch_size, seq_len, num_heads, dim].
         key: Key embeddings with shape [batch_size, seq_len, num_heads, dim].
         value: Value embeddings with shape [batch_size, seq_len, num_heads, dim].
-        sinusoidal_pos: Rotary position embeddings with shape [1, seq_len, 1, dim].
+        sinusoidal_pos: Rotary position embeddings with shape [batch_size, seq_len, 1, dim].
         rotary_value: Whether to apply rotary position embeddings on value layer.
 
     Returns:
@@ -1124,7 +1138,6 @@ class RoFormerQKVLinear(BaseQKVLinear):
     class Config(BaseQKVLinear.Config):
         """Configures RoFormerQKVLinear."""
 
-        max_seq_length: Required[int] = REQUIRED
         rope_pos_emb_layer: InstantiableConfig = (
             RoFormerSinusoidalPositionalEmbedding.default_config()
         )
@@ -1136,7 +1149,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
         cfg = self.config
         self._add_child(
             "rope_pos_emb_layer",
-            cfg.rope_pos_emb_layer.set(max_len=cfg.max_seq_length, dim=cfg.per_head_dim),
+            cfg.rope_pos_emb_layer.set(dim=cfg.per_head_dim),
         )
         self._add_child(
             "i_proj",
@@ -1155,16 +1168,28 @@ class RoFormerQKVLinear(BaseQKVLinear):
         return self.i_proj.num_kv_heads
 
     def forward(
-        self, query: Tensor, *, key: Optional[Tensor] = None, value: Optional[Tensor] = None
+        self,
+        query: Tensor,
+        *,
+        key: Optional[Tensor] = None,
+        value: Optional[Tensor] = None,
+        time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         cfg = self.config
-        query, key, value = self.i_proj(query, key=key, value=value)
         # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
-        # So `positions` will be in range [0, seq_len - 1).
-        positions = jnp.arange(query.shape[1])
-        # sinusoidal_pos_emb shape should be [1, seq_len, 1, dim]
-        sinusoidal_pos_emb = jnp.expand_dims(self.rope_pos_emb_layer.forward(positions), [0, 2])
-        sinusoidal_pos_emb = sinusoidal_pos_emb.astype(query.dtype)
+        query, key, value = self.i_proj(query, key=key, value=value)
+        if time_step is None:
+            # If time_step is None, then we set it to [batch_size, seq_len].
+            # In this case, batch_size can be set as 1.
+            time_step = jnp.expand_dims(jnp.arange(query.shape[1]), 0)
+        else:
+            # Time step shape is [batch_size]
+            # The expected input shape for rope_pos_emb_layer is [batch_size, seq_len]
+            # Therefore, expanding the shape of time_step to [batch_size, 1]
+            time_step = jnp.expand_dims(time_step, 1)
+        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(time_step).astype(query.dtype)
+        # sinusoidal_pos_emb shape should be [batch_size, seq_len, 1, dim]
+        sinusoidal_pos_emb = jnp.expand_dims(sinusoidal_pos_emb, 2)
         query, key, value = apply_rotary_position_embeddings(
             sinusoidal_pos=sinusoidal_pos_emb,
             query=query,
