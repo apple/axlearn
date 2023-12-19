@@ -372,8 +372,11 @@ class TPURunnerJob(TPUJob):
         # Set env vars, run the command and pipe outputs to run log.
         # Depending on command returncode, emit either success or failure flag.
         # Note that we use PIPESTATUS[0] to check the returncode of the first command in the pipe.
-        cmd = f"""ulimit -n 100000;
-            mkdir -p {self._output_dir}; echo "Starting command..." >> {self._run_log};
+        cmd = f"""mkdir -p {self._output_dir};
+            echo "Checking ulimit..." >> {self._run_log};
+            ulimit -n >> {self._run_log};
+            ulimit -Hn >> {self._run_log};
+            echo "Starting command..." >> {self._run_log};
             {cmd} 2>&1 | stdbuf -oL sed "s/^/$HOSTNAME: /" | tee -a {self._run_log};
             if [ ${{PIPESTATUS[0]}} -eq 0 ]; then
                 echo "Setting status to SUCCESS..." >> {self._run_log};
