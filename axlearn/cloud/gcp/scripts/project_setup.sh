@@ -1,6 +1,6 @@
 # Sets up a brand new GCP project for AXLearn. See also the "Getting Started" docs linked in the main readme.
 #
-# Usage: 
+# Usage:
 #    # fill out environment variables below
 #    chmod +x project_setup.sh
 #    ./project_setup.sh
@@ -12,7 +12,7 @@
 #   * A service account with the Storage Admin role
 
 # Note: Running this script does NOT grant you TPU quota.
-# Please follow instructions here: https://cloud.google.com/tpu/docs/setup-gcp-account#prepare-to-request 
+# Please follow instructions here: https://cloud.google.com/tpu/docs/setup-gcp-account#prepare-to-request
 
 
 #!/bin/sh
@@ -30,7 +30,7 @@ export PRIVATE_BUCKET_NAME=${PROJECT_ID}-private
 export TTL_BUCKET_NAME=${PROJECT_ID}-ttl
 export BUCKET_REGION=us-central1
 export SERVICE_ACCOUNT_NAME=my-service-account
-export SERVICE_ACCOUNT_ID=${SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com 
+export SERVICE_ACCOUNT_ID=${SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com
 
 # Step 1: Create a GCP project
 # https://cloud.google.com/resource-manager/docs/creating-managing-projects
@@ -46,11 +46,11 @@ gcloud services enable compute.googleapis.com
 gcloud services enable tpu.googleapis.com
 
 # Step 4: Create an auto mode VPC
-# https://cloud.google.com/vpc/docs/create-modify-vpc-networks#create-auto-network 
+# https://cloud.google.com/vpc/docs/create-modify-vpc-networks#create-auto-network
 gcloud compute networks create $NETWORK_NAME --subnet-mode=auto
-# Note: certain TPUs (eg. v4) are located in a private region (eg. us-central2). 
+# Note: certain TPUs (eg. v4) are located in a private region (eg. us-central2).
 # You will need to request quota before creating a subnet in that case:
-# https://cloud.google.com/tpu/docs/setup-gcp-account#prepare-to-request 
+# https://cloud.google.com/tpu/docs/setup-gcp-account#prepare-to-request
 
 # Step 5: Create GCS buckets
 # https://cloud.google.com/storage/docs/creating-buckets#storage-create-bucket-cli
@@ -58,7 +58,7 @@ gcloud storage buckets create gs://$PERMANENT_BUCKET_NAME --location=$BUCKET_REG
 gcloud storage buckets create gs://$PRIVATE_BUCKET_NAME --location=$BUCKET_REGION --uniform-bucket-level-access
 gcloud storage buckets create gs://$TTL_BUCKET_NAME --location=$BUCKET_REGION --uniform-bucket-level-access
 # Note: to configure object lifecycles (eg. set a time to live), please follow instructions here:
-# https://cloud.google.com/storage/docs/managing-lifecycles#permissions-console 
+# https://cloud.google.com/storage/docs/managing-lifecycles#permissions-console
 
 # Step 6: Create a Service Account
 # https://cloud.google.com/iam/docs/service-accounts-create#iam-service-accounts-create-gcloud
