@@ -7,6 +7,7 @@ import functools
 
 import jax.random
 import numpy as np
+import optax
 import torch
 from absl.testing import parameterized
 from jax import numpy as jnp
@@ -15,6 +16,7 @@ from axlearn.audio.asr_decoder import (
     CTCDecoderModel,
     CTCPrefixMerger,
     DecodeOutputs,
+    _is_valid_ctc_seq,
     _map_label_sequences,
 )
 from axlearn.common.config import config_for_function
@@ -86,6 +88,107 @@ class UtilsTest(TestCase):
         self.assertNestedEqual(
             expected,
             jit_fn(inputs, blank_id=blank_id, pad_id=pad_id),
+        )
+
+
+class ValidCtcSeqTest(TestCase):
+    def get_logits_and_labels(
+        self, batch_size: int, input_lengths: int, target_lengths: int, vocab_size: int
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        prng_key = jax.random.PRNGKey(1234)
+        logits = jax.random.normal(
+            prng_key, (batch_size, input_lengths, vocab_size), dtype=jnp.float32
+        )
+        paddings = jnp.zeros((batch_size, input_lengths), dtype=np.int32)
+        target_labels = jax.random.randint(
+            prng_key,
+            shape=(batch_size, target_lengths),
+            minval=1,
+            maxval=vocab_size - 1,
+            dtype=jnp.int32,
+        )
+        target_paddings = jnp.zeros(shape=(batch_size, target_lengths), dtype=jnp.int32)
+        return logits, paddings, target_labels, target_paddings
+
+    def test_label_longer_than_input(self):
+        batch_size = 4
+        input_lengths = 10
+        target_lengths = 11
+        vocab_size = 400
+        # Generate logits and labels, which has logits shorter than labels.
+        logits, paddings, target_labels, target_paddings = self.get_logits_and_labels(
+            batch_size, input_lengths, target_lengths, vocab_size
+        )
+        per_seq_loss = optax.ctc_loss(logits, paddings, target_labels, target_paddings, blank_id=0)
+        for x in per_seq_loss:
+            # Because these are invalid sequence loss, the optax.ctc_loss will return
+            # -logeps for these sequences (but theoretically, this is not correct).
+            self.assertGreater(x, 1e5)
+        per_seq_validality = _is_valid_ctc_seq(
+            paddings=paddings, target_labels=target_labels, target_paddings=target_paddings
+        ).astype(jnp.float32)
+        self.assertNestedAllClose(
+            per_seq_validality, jnp.array([0.0] * batch_size, dtype=per_seq_validality.dtype)
+        )
+
+    def test_label_shorter_than_input(self):
+        batch_size = 4
+        input_lengths = 15
+        target_lengths = 10
+        vocab_size = 400
+        logits, paddings, _, target_paddings = self.get_logits_and_labels(
+            batch_size, input_lengths, target_lengths, vocab_size
+        )
+        # This is to make sure there is no duplicate in the labels.
+        labels = jnp.tile(jnp.arange(target_lengths)[jnp.newaxis, :], [batch_size, 1])
+
+        per_seq_loss = optax.ctc_loss(logits, paddings, labels, target_paddings)
+        # `per_seq_loss` in this case looks normal, it should be around log(400)*15, so
+        # significantly smaller than 1e5.
+        for x in per_seq_loss:
+            self.assertLess(x, 1e5)
+        per_seq_validality = _is_valid_ctc_seq(
+            paddings=paddings, target_labels=labels, target_paddings=target_paddings
+        ).astype(jnp.float32)
+        self.assertNestedAllClose(
+            per_seq_validality, jnp.array([1.0] * batch_size, dtype=per_seq_validality.dtype)
+        )
+
+    def test_label_with_duplicates(self):
+        batch_size = 5
+        input_lengths = 12
+        target_lengths = 10
+        vocab_size = 400
+        logits, paddings, _, target_paddings = self.get_logits_and_labels(
+            batch_size, input_lengths, target_lengths, vocab_size
+        )
+        # There are 12 timesteps, and 10 labels. If the consecutive duplicates in
+        # one sequence is larger than 2, then the pair become non-valid
+        target_labels = np.array(
+            [
+                [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],  # no duplicates
+                [0, 0, 1, 1, 2, 3, 4, 5, 6, 7],  # 2 consecutive duplicates
+                [0, 0, 0, 1, 1, 2, 3, 4, 5, 6],  # 3 duplicates -> invalid seq
+                [0, 0, 1, 1, 2, 3, 4, 5, 6, 6],  # 2 duplicates, since the last 6 is a padding
+                [0, 1, 2, 3, 0, 1, 2, 3, 4, 5],
+                # "0,1,2,3" is duplicated 2 times, but they are not consecutive
+            ],
+            dtype=np.int32,
+        )
+        target_paddings = target_paddings.at[3, 9].set(1)
+        per_seq_loss = optax.ctc_loss(logits, paddings, target_labels, target_paddings)
+        # per_seq_loss[0:1] and per_seq_loss[3] should near log(400) * 15, while
+        # per_seq_loss[2] should be around logepsilon
+        self.assertLess(per_seq_loss[0], 1e5)
+        self.assertLess(per_seq_loss[1], 1e5)
+        self.assertLess(per_seq_loss[3], 1e5)
+        self.assertLess(per_seq_loss[4], 1e5)
+        self.assertGreater(per_seq_loss[2], 1e5)
+        per_seq_validality = _is_valid_ctc_seq(
+            paddings=paddings, target_labels=target_labels, target_paddings=target_paddings
+        ).astype(jnp.float32)
+        self.assertNestedAllClose(
+            per_seq_validality, jnp.array([1.0, 1.0, 0.0, 1.0, 1.0], dtype=per_seq_validality.dtype)
         )
 
 
