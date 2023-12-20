@@ -602,6 +602,7 @@ def _tpu_body(
     startup_script_path = dir_path / "scripts" / "start_tpu.sh"
     with open(startup_script_path, "r", encoding="utf8") as of:
         startup_script_contents = of.read()
+    logging.info("start_tpu.sh contents=%s", startup_script_contents)
     docker_repo = gcp_settings("docker_repo", required=False)
 
     if tpu_type.startswith("v4") or tpu_type.startswith("v5lite"):
