@@ -28,6 +28,47 @@ from axlearn.common.module import Module
 from axlearn.common.utils import Nested, Tensor
 
 
+def _is_valid_ctc_seq(
+    *, paddings: Tensor, target_labels: Tensor, target_paddings: Tensor
+) -> Tensor:
+    """Returns whether each input sequence passes validity check.
+
+    Note that `optax.ctc_loss` returns -logeps (default to 1e5) if the
+    input length is smaller than the label length plus number of
+    consecutive duplications, because we need a blank label to transition
+    between the same labels. When this condition is not met, it should be
+    considered as an invalid sequence and the loss should be ignored.
+
+    A validity check is passed if for an example when:
+        input.length >= labels.length + num(consecutive dup label tokens)
+
+    Args:
+        paddings: A 0/1 tensor of shape [batch_size, num_frames], indicating whether
+            an input frame is a padding.
+        target_labels: A int32 tensor of shape [batch_size, num_frames].
+        target_paddings: A 0/1 tensor of shape [batch_size, num_frames], indicating
+            whether a label is a padding. Note that at the moment, `target_paddings`
+            must be left-justified, i.e., it must starts with 0 and followed by 1, and
+            not transition back to 0.
+            TODO(yqw): support generic target_paddings.
+
+    Returns:
+        A float tensor of [batch_size, ] indicating if each (input, label) pair is valid,
+        with a value of 1.0 indicating valid and 0.0 otherwise.
+    """
+    # [batch_size, ]
+    label_lengths = jnp.sum(1.0 - target_paddings, axis=-1)
+    # [batch_size, ]
+    input_lengths = jnp.sum(1.0 - paddings, axis=-1)
+    # [batch_size, num_frames - 1]
+    dups = (1.0 - target_paddings[:, 1:]) * (target_labels[:, :-1] == target_labels[:, 1:])
+    # [batch_size, ]
+    num_consecutive_dups = jnp.sum(dups, axis=-1)
+    # [batch_size, ]
+    is_valid = (label_lengths + num_consecutive_dups) <= input_lengths
+    return is_valid
+
+
 class CTCPrefixMerger(PrefixMerger):
     """Merges equivalent lower-ranked beams into higher-ranked ones.
 
@@ -185,9 +226,10 @@ class CTCDecoderModel(BaseModel):
         )
 
         # Drop examples with targets longer than inputs.
-        target_length = (1 - target_paddings).sum(axis=-1)
-        input_length = (1 - paddings).sum(axis=-1)
-        per_example_weight = (target_length <= input_length).astype(per_example_loss.dtype)
+        per_example_weight = _is_valid_ctc_seq(
+            paddings=paddings, target_labels=target_labels, target_paddings=target_paddings
+        )
+        per_example_weight = per_example_weight.astype(per_example_loss.dtype)
 
         # Compute weighted loss.
         loss = jnp.sum(per_example_loss * per_example_weight) / jnp.maximum(

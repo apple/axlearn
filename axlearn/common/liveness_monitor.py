@@ -82,11 +82,6 @@ class TfSummaryMonitor(LivenessMonitor):
         if not self.started():
             raise RuntimeError("Monitoring hasn't started yet.")
 
-        # Check grace period.
-        if time.time() - self._start_time <= cfg.max_start_seconds:
-            logging.info("Still in grace period, skipping healthcheck.")
-            return True
-
         # Look for the latest wall time in the summary dir.
         # Note that iter maintains its place each Load().
         try:
@@ -105,6 +100,10 @@ class TfSummaryMonitor(LivenessMonitor):
         )
 
         if delta > cfg.max_timeout_seconds:
+            # Check grace period.
+            if time.time() - self._start_time <= cfg.max_start_seconds:
+                logging.info("Still in grace period, skipping healthcheck.")
+                return True
             logging.error("Healthcheck failed (exceeded max timeout %s)", cfg.max_timeout_seconds)
             return False
 
