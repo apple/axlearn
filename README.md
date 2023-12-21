@@ -35,4 +35,4 @@ AXLearn supports a wide range of applications, including natural language proces
 vision, and speech recognition and contains baseline configurations for training state-of-the-art
 models.
 
-Please see [Concepts](docs/02-concepts.md) for more details on the core components and design of AXLearn, or [Getting Started](docs/01-start.md) if you want to get your hands dirty.
+Please see [Concepts](docs/02-concepts.md) for more details on the core components and design of AXLearn, or [Getting Started](docs/01-start.md) if you want to get your hands dirty. test
