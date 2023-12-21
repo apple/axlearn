@@ -61,7 +61,7 @@ def _convert_and_validate_resources(info: QuotaInfo) -> QuotaInfo:
     total_project_resources = defaultdict(float)
     for resources in info.project_resources.values():
         for resource_type, fraction in resources.items():
-            value = fraction * float(info.total_resources[resource_type])
+            value = fraction * float(info.total_resources.get(resource_type, 0))
             total_project_resources[resource_type] += value
             resources[resource_type] = value
 
