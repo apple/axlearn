@@ -12,7 +12,7 @@ echo "=== AXLearn start_tpu.sh ==="
 # Random sleep to prevent all TPU-VMs overwhelming pypi etc for large slices.
 sleep $((1 + $RANDOM % 30))
 
-# Increase file descriptor limits for `root` to avoid "Too many open files" errors.
+echo 'Increase file descriptor limits for `root` to avoid "Too many open files" errors.'
 sudo sh -c "echo 'root soft nofile 100000' >> /etc/security/limits.conf"
 sudo sh -c "echo 'root hard nofile 100000' >> /etc/security/limits.conf"
 
