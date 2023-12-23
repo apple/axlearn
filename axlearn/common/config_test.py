@@ -502,6 +502,11 @@ class ConfigTest(parameterized.TestCase):
             name: str
             age: int
 
+        @dataclasses.dataclass
+        class Cat:
+            name: str
+            bleed: Optional[str] = None
+
         @config_class
         class TestConfigA(ConfigBase):
             num_layers: int = 10
@@ -511,6 +516,7 @@ class ConfigTest(parameterized.TestCase):
             person: Person = Person("Johnny Appleseed", 30)  # pytype: disable=invalid-annotation
             person_cls: type = Person
             notes: Optional[str] = None
+            cats: List[Cat] = [Cat(name="Ross")]  # pytype: disable=invalid-annotation
 
         @config_class
         class TestConfigB(ConfigBase):
@@ -540,6 +546,7 @@ class ConfigTest(parameterized.TestCase):
                     "fn": {"args": [1, 2, 3], "fn": None},
                     "person": {"name": "Johnny Appleseed", "age": 30},
                     "person_cls": "axlearn.common.config_test.Person",
+                    "cats": [{"name": "Ross"}],
                 },
                 "config_dict": {"config_b": {"count": 5}},
                 "config_list": [{"count": 5}, {"count": 1}],
@@ -571,6 +578,8 @@ class ConfigTest(parameterized.TestCase):
                 "my_config.person_cls": Person,
                 "my_config.required_int": REQUIRED,
                 "my_config.notes": None,
+                "my_config.cats[0]['name']": "Ross",
+                "my_config.cats[0]['bleed']": None,
             },
         )
         self.assertCountEqual(
@@ -595,9 +604,11 @@ class ConfigTest(parameterized.TestCase):
                 "my_config.person['name']": "Johnny Appleseed",
                 "my_config.person['age']": 30,
                 "my_config.person_cls": Person,
+                "my_config.cats[0]['name']": "Ross",
                 # REQUIRED/None are trivial default values and so are omitted.
                 # "my_config.required_int": REQUIRED,
                 # "my_config.notes": None,
+                # "my_config.cats[0]['bleed']": None,
             },
         )
         self.assertEqual(
@@ -611,6 +622,7 @@ class ConfigTest(parameterized.TestCase):
                 "config_list[1].count: 1\n"
                 "config_type: 'axlearn.common.config_test.ConfigTest'\n"
                 "foo: 'hello world'\n"
+                "my_config.cats[0]['name']: 'Ross'\n"
                 "my_config.extra['alpha']: 1\n"
                 "my_config.extra['beta']: 2\n"
                 "my_config.fn.args[0]: 1\n"

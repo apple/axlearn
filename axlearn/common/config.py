@@ -387,6 +387,8 @@ class ConfigBase:
                 default_val = field.default
                 if val is default_val and default_val in omit_default_values:
                     return
+            elif field is None and val in omit_default_values:
+                return
             result[key] = val
 
         # Note that we cannot use `utils.flatten_items` to handle this because the treatment of
