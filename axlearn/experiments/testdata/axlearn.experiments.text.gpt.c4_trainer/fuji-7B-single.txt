@@ -141,7 +141,6 @@ model.decoder.emb.token_emb.param_init.init_by_param_name['.*weight$'].fan: 'fan
 model.decoder.emb.token_emb.param_init.init_by_param_name['.*weight$'].klass: 'axlearn.common.param_init.WeightInitializer'
 model.decoder.emb.token_emb.param_init.init_by_param_name['.*weight$'].scale: 1.0
 model.decoder.emb.token_emb.param_init.klass: 'axlearn.common.param_init.DefaultInitializer'
-model.decoder.emb.token_emb.param_partition_spec[0]: None
 model.decoder.emb.token_emb.param_partition_spec[1]: 'model'
 model.decoder.eos_token_id: 1
 model.decoder.klass: 'axlearn.common.decoder.Decoder'
@@ -209,7 +208,6 @@ model.decoder.transformer.layer.self_attention.attention.input_linear.input_line
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.param_partition_spec[0][1]: 'fsdp'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.param_partition_spec[0][2]: 'seq'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.param_partition_spec[1]: 'model'
-model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.param_partition_spec[2]: None
 model.decoder.transformer.layer.self_attention.attention.input_linear.klass: 'axlearn.common.attention.RoFormerQKVLinear'
 model.decoder.transformer.layer.self_attention.attention.input_linear.rope_pos_emb_layer.klass: 'axlearn.common.attention.RoFormerSinusoidalPositionalEmbedding'
 model.decoder.transformer.layer.self_attention.attention.input_linear.rope_pos_emb_layer.theta: 10000.0
@@ -223,7 +221,6 @@ model.decoder.transformer.layer.self_attention.attention.output_linear.param_par
 model.decoder.transformer.layer.self_attention.attention.output_linear.param_partition_spec[0][1]: 'fsdp'
 model.decoder.transformer.layer.self_attention.attention.output_linear.param_partition_spec[0][2]: 'seq'
 model.decoder.transformer.layer.self_attention.attention.output_linear.param_partition_spec[1]: 'model'
-model.decoder.transformer.layer.self_attention.attention.output_linear.param_partition_spec[2]: None
 model.decoder.transformer.layer.self_attention.attention.query_scale.klass: 'axlearn.common.attention.ScaleQuery'
 model.decoder.transformer.layer.self_attention.dropout.klass: 'axlearn.common.layers.Dropout'
 model.decoder.transformer.layer.self_attention.klass: 'axlearn.common.attention.TransformerAttentionLayer'
