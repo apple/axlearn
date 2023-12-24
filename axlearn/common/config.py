@@ -371,7 +371,14 @@ class ConfigBase:
         result = {}
 
         def enter(key: str, val: Any, default_result: Optional[List]) -> Optional[List]:
-            if key and isinstance(val, ConfigBase):
+            if dataclasses.is_dataclass(val) and not isinstance(val, type):
+                omitted_result = []
+                for cur_key, cur_val in default_result:
+                    if cur_val in omit_default_values:
+                        continue
+                    omitted_result.append((cur_key, cur_val))
+                return omitted_result
+            elif key and isinstance(val, ConfigBase):
                 # Call `to_flat_dict` on any sub config. This allows a sub config to override
                 # the behavior of `to_flat_dict`.
                 val_entries = val.to_flat_dict(omit_default_values=omit_default_values)
@@ -387,8 +394,6 @@ class ConfigBase:
                 default_val = field.default
                 if val is default_val and default_val in omit_default_values:
                     return
-            elif field is None and val in omit_default_values:
-                return
             result[key] = val
 
         # Note that we cannot use `utils.flatten_items` to handle this because the treatment of
