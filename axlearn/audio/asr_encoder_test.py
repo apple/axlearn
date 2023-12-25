@@ -150,7 +150,7 @@ class SpeechContextNetworkTest(TestCase):
 
         # If is_training, outputs should always be different due to augmentation.
         # Otherwise, outputs should be the same despite differences in padding.
-        self.assertEqual(not is_training, jnp.allclose(outputs[:2], outputs[2:]))
+        self.assertEqual(not is_training, bool(jnp.allclose(outputs[:2], outputs[2:])))
 
         outputs = outputs * (1 - output_paddings[:, :, None])
         weights = jnp.sum(1 - output_paddings)
