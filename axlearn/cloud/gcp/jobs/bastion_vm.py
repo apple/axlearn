@@ -182,7 +182,7 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
         # Must be a valid GCP VM name, as well as a valid docker tag name. For simplicity, check
         # that it's some letters followed by "-bastion", and that it's not too long (VM names are
         # capped at 63 chars).
-        return len(name) < 64 and re.match("[a-z][a-z0-9-]*-bastion", name)
+        return len(name) < 64 and re.match("[a-z][a-z\d-]*-bastion", name)
 
     flags.register_validator(
         "name",
@@ -374,7 +374,7 @@ def _project_history(*, bastion_name: str, project_id: str) -> str:
         with tf_io.gfile.GFile(path, mode="r") as f:
             entry = None
             for line in f:
-                if re.search("^[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}", line):
+                if re.search(r"^\d{4} \d{2}:\d{2}:\d{2}", line):
                     # Timestamp line.
                     if entry:
                         entries.append(entry)
