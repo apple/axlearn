@@ -23,7 +23,7 @@ import pathlib
 import shutil
 import tarfile
 import tempfile
-from typing import Dict, List, Optional, Sequence, Type, TypeVar, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Type, TypeVar, Union
 from urllib.parse import urlparse
 
 from absl import app, flags, logging
@@ -45,7 +45,19 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 
-BUNDLE_EXCLUDE = ["venv", ".git", ".idea", ".cache", ".pytest_cache", ".pytype", "__pycache__"]
+BUNDLE_EXCLUDE = [
+    # Each entry below specifies a subdir/file name or a relative path from the src dir whose
+    # contents should be excluded.
+    "venv",
+    ".git",
+    ".idea",
+    ".cache",
+    ".pytest_cache",
+    ".pytype",
+    "__pycache__",
+    ".ruff_cache",
+    ".DS_Store",
+]
 FLAGS = flags.FLAGS
 _DEFAULT_DOCKER_PLATFORM = "linux/amd64"
 
@@ -89,14 +101,32 @@ class Bundler(Configurable):
         temp_dir = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
         exclude_paths = set(canonicalize_to_list(cfg.exclude))
 
-        def copytree(src, dst, exclude):
+        def copytree(src: pathlib.Path, dst: pathlib.Path, exclude: Iterable[str], root=None):
+            """Recusively copies `src` to `dst`.
+
+            Args:
+                src: A path to a file or directory.
+                dst: A path to a file or directory.
+                exclude: Patterns to exclude.
+                root: The `src` of the original  call to `copytree` before recursing.
+                      I.e., the root of the tree being copied.
+            """
+            if root is None:
+                root = src
             for s in src.glob("*"):
                 d = dst / s.name
-                if s.name in exclude:
+                relative_s = s.relative_to(root)
+                # 1. Check if the final component of the path `s` is in exclude (which since we
+                # are walking the tree recursively, ultimately checks whether any component
+                # of the path is in exclude)
+                # 2. Check if the exclusion pattern specifies a parent path of `relative_s`,
+                # where both paths are relative to `root`. (`relative_s` is considered
+                # a parent of itself.)
+                if s.name in exclude or any(relative_s.is_relative_to(e) for e in exclude):
                     continue
                 if s.is_dir():
                     d.mkdir()
-                    copytree(s, d, exclude)
+                    copytree(s, d, exclude, root)
                 else:
                     shutil.copy2(s, d, follow_symlinks=True)
 

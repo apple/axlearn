@@ -87,7 +87,9 @@ class BaseTarBundlerTest(TestWithTemporaryCWD):
     def test_bundle(self):
         with tempfile.TemporaryDirectory() as remote_dir:
             # Create dummy file and requirements in CWD.
-            for f in ["test1.txt", "test2.txt"]:
+            (pathlib.Path(self._temp_root.name) / "a" / "b").mkdir(parents=True)
+            (pathlib.Path(self._temp_root.name) / "a" / "f").mkdir(parents=True)
+            for f in ["test1.txt", "test2.txt", "a/c.txt", "a/b/d.txt", "a/e.txt", "a/f/g.txt"]:
                 dummy_file = pathlib.Path(self._temp_root.name) / f
                 dummy_file.write_text("hello world")
 
@@ -98,7 +100,7 @@ class BaseTarBundlerTest(TestWithTemporaryCWD):
             # Create the bundle.
             cfg = BaseTarBundler.default_config().set(
                 remote_dir=remote_dir,
-                exclude=["test1.txt"],
+                exclude=["test1.txt", "./a/b", "a/c.txt", "f"],
                 extras=["test.whl", "dev"],
                 find_links=["link1", "link2"],
             )
@@ -113,7 +115,13 @@ class BaseTarBundlerTest(TestWithTemporaryCWD):
                 contents = tar.getnames()
                 # test1 is excluded.
                 self.assertNotIn("test1.txt", contents)
+                self.assertNotIn("a/b", contents)
+                self.assertNotIn("a/b/d.txt", contents)
+                self.assertNotIn("a/c.txt", contents)
+                self.assertNotIn("a/f/g.txt", contents)
                 self.assertIn("test2.txt", contents)
+                self.assertIn("a/e.txt", contents)
+                self.assertIn("a", contents)
                 self.assertIn(f"{CONFIG_DIR}/requirements.txt", contents)
                 self.assertIn(f"{CONFIG_DIR}/{DEFAULT_CONFIG_FILE}", contents)
 
