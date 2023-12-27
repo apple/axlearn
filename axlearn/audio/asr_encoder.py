@@ -44,7 +44,6 @@ class SpeechFeatureLayer(BaseLayer):
         self._add_child(
             "subsampler",
             cfg.subsampler.set(
-                input_dim=cfg.frontend.output_dim,
                 output_dim=cfg.output_dim,
             ),
         )
