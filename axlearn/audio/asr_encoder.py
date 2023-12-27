@@ -79,11 +79,11 @@ class SpeechFeatureLayer(BaseLayer):
         x = features["outputs"]
 
         if "augmenter" in self.children:
-            if len(features["outputs"].shape == 3):
+            if len(features["outputs"].shape) == 3:
                 x = x[..., None]
             # Apply augmentation.
             x = self.augmenter(inputs=x, paddings=features["paddings"])
-            if len(features["outputs"].shape == 3):
+            if len(features["outputs"].shape) == 3:
                 x = jnp.squeeze(x, axis=-1)
 
         # Apply subsampling.
