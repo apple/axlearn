@@ -506,6 +506,7 @@ class ConfigTest(parameterized.TestCase):
         class Cat:
             name: str
             bleed: Optional[str] = None
+            adopted: Optional[bool] = True
 
         @config_class
         class TestConfigA(ConfigBase):
@@ -516,7 +517,7 @@ class ConfigTest(parameterized.TestCase):
             person: Person = Person("Johnny Appleseed", 30)  # pytype: disable=invalid-annotation
             person_cls: type = Person
             notes: Optional[str] = None
-            cats: List[Cat] = [Cat(name="Ross")]  # pytype: disable=invalid-annotation
+            cats: List[Cat] = [Cat(name="Ross", adopted=True)]  # pytype: disable=invalid-annotation
 
         @config_class
         class TestConfigB(ConfigBase):
@@ -580,6 +581,7 @@ class ConfigTest(parameterized.TestCase):
                 "my_config.notes": None,
                 "my_config.cats[0]['name']": "Ross",
                 "my_config.cats[0]['bleed']": None,
+                "my_config.cats[0]['adopted']": True,
             },
         )
         self.assertCountEqual(
@@ -605,6 +607,7 @@ class ConfigTest(parameterized.TestCase):
                 "my_config.person['age']": 30,
                 "my_config.person_cls": Person,
                 "my_config.cats[0]['name']": "Ross",
+                "my_config.cats[0]['adopted']": True,
                 # REQUIRED/None are trivial default values and so are omitted.
                 # "my_config.required_int": REQUIRED,
                 # "my_config.notes": None,
@@ -623,6 +626,7 @@ class ConfigTest(parameterized.TestCase):
                 "config_type: 'axlearn.common.config_test.ConfigTest'\n"
                 "foo: 'hello world'\n"
                 "my_config.cats[0]['name']: 'Ross'\n"
+                "my_config.cats[0]['adopted']: True\n"
                 "my_config.extra['alpha']: 1\n"
                 "my_config.extra['beta']: 2\n"
                 "my_config.fn.args[0]: 1\n"

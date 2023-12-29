@@ -372,12 +372,21 @@ class ConfigBase:
 
         def enter(key: str, val: Any, default_result: Optional[List]) -> Optional[List]:
             if dataclasses.is_dataclass(val) and not isinstance(val, type):
-                omitted_result = []
-                for cur_key, cur_val in default_result:
-                    if cur_val in omit_default_values:
+                kvs_to_traverse = []
+                default_result_dict = dict(default_result)
+                for field in dataclasses.fields(val):
+                    # Concatenate field name to key as the full field key name.
+                    # Eg: key="my_config.cats[0]", field.name="adopted"
+                    #     cur_key="my_config.cats[0]['adopted']"
+                    cur_key = f"{key}['{field.name}']"
+                    if cur_key not in default_result_dict:
                         continue
-                    omitted_result.append((cur_key, cur_val))
-                return omitted_result
+                    default_val = field.default
+                    cur_val = default_result_dict[cur_key]
+                    if cur_val is default_val and default_val in omit_default_values:
+                        continue
+                    kvs_to_traverse.append((cur_key, cur_val))
+                return kvs_to_traverse
             elif key and isinstance(val, ConfigBase):
                 # Call `to_flat_dict` on any sub config. This allows a sub config to override
                 # the behavior of `to_flat_dict`.
