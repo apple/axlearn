@@ -210,6 +210,7 @@ class GaussianInitializer(Initializer):
     @config_class
     class Config(Initializer.Config):
         std: Required[float] = REQUIRED
+        mean: Optional[float] = None
 
     def initialize(
         self,
@@ -220,7 +221,9 @@ class GaussianInitializer(Initializer):
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
     ) -> jnp.ndarray:
-        return jax.random.normal(prng_key, shape=shape, dtype=dtype) * self.config.std
+        cfg = self.config
+        param = jax.random.normal(prng_key, shape=shape, dtype=dtype) * cfg.std
+        return param if cfg.mean is None else param + cfg.mean
 
     def debug_string(
         self,
@@ -228,7 +231,9 @@ class GaussianInitializer(Initializer):
         shape: Optional[Shape] = None,
         axes: Optional[FanAxes] = None,
     ) -> str:
-        return f"normal(0, {self.config.std}^2)"
+        cfg = self.config
+        mean = 0 if cfg.mean is None else cfg.mean
+        return f"normal({mean}, {cfg.std}^2)"
 
 
 def gaussian_initializer(std: float) -> ConstantInitializer:
