@@ -367,11 +367,34 @@ class ConfigBase:
         Returns:
             A dict where each key is a `.`-separated str of path and each value represents a
             leaf config field value.
+
+        Raises:
+            KeyError: Field name (key) is not in dataclass type value.
         """
         result = {}
 
         def enter(key: str, val: Any, default_result: Optional[List]) -> Optional[List]:
-            if key and isinstance(val, ConfigBase):
+            if dataclasses.is_dataclass(val) and not isinstance(val, type):
+                fields_default_dict = {}
+                for field in dataclasses.fields(val):
+                    # Concatenate field name to key as the full field key name.
+                    # Eg: key="my_config.cats[0]", field.name="adopted"
+                    #     cur_key="my_config.cats[0]['adopted']"
+                    cur_key = f"{key}['{field.name}']"
+                    fields_default_dict[cur_key] = field.default
+
+                kvs_to_traverse = []
+                for cur_key, cur_val in default_result:
+                    if cur_key not in fields_default_dict:
+                        raise KeyError(
+                            f"Field name {cur_key} is not found for dataclass type value."
+                        )
+                    default_val = fields_default_dict[cur_key]
+                    if cur_val is default_val and default_val in omit_default_values:
+                        continue
+                    kvs_to_traverse.append((cur_key, cur_val))
+                return kvs_to_traverse
+            elif key and isinstance(val, ConfigBase):
                 # Call `to_flat_dict` on any sub config. This allows a sub config to override
                 # the behavior of `to_flat_dict`.
                 val_entries = val.to_flat_dict(omit_default_values=omit_default_values)
