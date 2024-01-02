@@ -22,7 +22,7 @@ set -e
 # Define environment variables
 export ORGANIZATION_ID= #your existing GCP organization
 export BILLING_ACCOUNT_ID= #an existing billing account
-export PROJECT_ID= #the project name you want to create
+export PROJECT_ID= #the project name you want to create or already obtained
 export NETWORK_NAME=default
 export TPU_REGION=
 export PERMANENT_BUCKET_NAME=${PROJECT_ID}-perm
@@ -34,12 +34,14 @@ export SERVICE_ACCOUNT_ID=${SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceacco
 
 # Step 1: Create a GCP project
 # https://cloud.google.com/resource-manager/docs/creating-managing-projects
-gcloud projects create $PROJECT_ID --organization=$ORGANIZATION_ID
+# Uncomment the following line if you haven't created the project
+# gcloud projects create $PROJECT_ID --organization=$ORGANIZATION_ID
 gcloud config set project $PROJECT_ID
 
 # Step 2: Link the project to a billing account
 # https://cloud.google.com/billing/docs/how-to/modify-project
-gcloud billing projects link $PROJECT_ID --billing-account=$BILLING_ACCOUNT_ID
+# Uncomment the following line if you haven't created the project
+# gcloud billing projects link $PROJECT_ID --billing-account=$BILLING_ACCOUNT_ID
 
 # Step 3: Enable services
 gcloud services enable compute.googleapis.com
