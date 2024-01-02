@@ -676,8 +676,8 @@ class Checkpointer(Module):
         for saved_dir in dirs[: -cfg.keep_last_n]:
             saved_step = int(saved_dir[-8:])
             if cfg.keep_every_n_steps and saved_step - last_kept_step >= cfg.keep_every_n_steps:
-                logging.info(
-                    "Keeping %s >= %s + %s", saved_dir, last_kept_step, cfg.keep_every_n_steps
+                logging.vlog(
+                    2, "Keeping %s >= %s + %s", saved_dir, last_kept_step, cfg.keep_every_n_steps
                 )
                 remaining_dirs.append(saved_dir)
                 last_kept_step = saved_step
