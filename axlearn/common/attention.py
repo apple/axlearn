@@ -2690,9 +2690,12 @@ class ParallelTransformerLayer(BaseTransformerLayer):
     x = norm(inputs)
     outputs = inputs + self_atten(x) + ffn(x)
 
+    TODO(rpang): experiment to understand whether we should use separate normalization layers
+        for self_atten and ffn as in PaLM.
+
     References:
         https://github.com/kingoflolz/mesh-transformer-jax
-        https://arxiv.org/abs/2204.02311
+        PaLM: https://arxiv.org/abs/2204.02311
     """
 
     @config_class
