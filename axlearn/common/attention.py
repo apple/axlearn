@@ -2369,6 +2369,8 @@ class TransformerFeedForwardLayer(BaseLayer):
         elif cfg.structure == "hybridnorm":
             self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
             self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
+        elif cfg.structure == "nonorm":
+            pass
         else:
             raise NotImplementedError(cfg.structure)
 
@@ -2394,7 +2396,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             "linear2",
             cfg.linear2.set(input_dim=hidden_dim, output_dim=cfg.input_dim),
         )
-        if cfg.structure in ["prenorm", "hybridnorm"]:
+        if cfg.structure in ["prenorm", "hybridnorm", "nonorm"]:
             self._add_child("dropout1", cfg.dropout)
             self._add_child("dropout2", cfg.dropout)
         elif cfg.structure in ["postnorm"]:
@@ -2699,8 +2701,8 @@ class ParallelTransformerLayer(BaseTransformerLayer):
 
         norm: InstantiableConfig = LayerNorm.default_config()  # The normalization layer config.
         self_attention: MultiheadAttention.Config = MultiheadAttention.default_config()
-        feed_forward: TransformerFeedForwardLayer.Config = TransformerFeedForwardLayer.default_config().set(
-            structure="nonorm"
+        feed_forward: TransformerFeedForwardLayer.Config = (
+            TransformerFeedForwardLayer.default_config().set(structure="nonorm")
         )
 
     def __init__(self, cfg: Config, *, parent: Module):
@@ -2715,8 +2717,6 @@ class ParallelTransformerLayer(BaseTransformerLayer):
                 value_dim=cfg.input_dim,
                 output_dim=cfg.input_dim,
             ),
-        )
-
         )
         self._add_child("feed_forward", cfg.feed_forward.set(input_dim=cfg.input_dim))
 
@@ -2752,6 +2752,7 @@ class ParallelTransformerLayer(BaseTransformerLayer):
         return BaseTransformerLayer.Output(
             data=outputs,
             self_attention_probs=self_atten_outputs.probs,
+            cross_attention_probs=None,
         )
 
 
