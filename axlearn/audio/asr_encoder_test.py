@@ -177,12 +177,12 @@ class SpeechContextNetworkTest(TestCase):
 class ASREncoderTest(TestCase):
     """Tests ASREncoder."""
 
-    @parameterized.parameters([True, False])
+    @parameterized.product(is_training=[True, False], use_augmenter=[True, False])
     @pytest.mark.fp64
-    def test_asr_encoder(self, is_training: bool):
+    def test_asr_encoder(self, is_training: bool, use_augmenter: bool):
         conv_dim, output_dim = 12, 36
         num_filters, sample_rate, frame_size_ms, hop_size_ms = 80, 16000, 25, 10
-        num_layers, num_heads, dropout_rate = 2, 4, 0.2
+        num_layers, num_heads, dropout_rate = 2, 4, 0.0
 
         cfg = ASREncoder.default_config().set(
             dim=output_dim,
@@ -196,8 +196,13 @@ class ASREncoderTest(TestCase):
             frame_size_ms=frame_size_ms,
             hop_size_ms=hop_size_ms,
         )
-        cfg.feature.augmenter.freq_mask_sampler.set(max_num_masks=2, max_mask_length=27)
-        cfg.feature.augmenter.time_mask_sampler.set(max_num_masks_ratio=0.05, max_mask_length=10)
+        if use_augmenter:
+            cfg.feature.augmenter.freq_mask_sampler.set(max_num_masks=2, max_mask_length=27)
+            cfg.feature.augmenter.time_mask_sampler.set(
+                max_num_masks_ratio=0.05, max_mask_length=10
+            )
+        else:
+            cfg.feature.augmenter = None
         cfg.feature.subsampler.hidden_dim = conv_dim
         cfg.feature.output_dim = conv_dim
 
@@ -243,6 +248,8 @@ class ASREncoderTest(TestCase):
         self.assertEqual(output_paddings.shape, (batch_size, output_shape[1]))
         self.assertTrue(jnp.all(output_paddings[:2] == output_paddings[2:]))
 
-        # If is_training, outputs should always be different due to augmentation.
+        # If is_training and use_augmenter, outputs should always be different due to augmentation.
         # Otherwise, outputs should be the same despite differences in padding.
-        self.assertEqual(not is_training, jnp.allclose(outputs[:2], outputs[2:]))
+        self.assertEqual(
+            not (is_training and use_augmenter), jnp.allclose(outputs[:2], outputs[2:])
+        )
