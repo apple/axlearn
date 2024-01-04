@@ -2335,7 +2335,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         # * prenorm: y = x + feedforward(norm(x))
         # * postnorm: y = norm(x + feedforward(x))
         # * hybridnorm: y = postnorm(x + feedforward(prenorm(x)))
-        # * nonorm: y = feedforward(x)   # no residual!
+        # * nonorm: y = feedforward(x)   # no residual, which is usually applied externally.
         #
         # References:
         # prenorm/postnorm: https://arxiv.org/abs/2002.04745.
@@ -2466,6 +2466,8 @@ class TransformerFeedForwardLayer(BaseLayer):
             x = self._remat_name(x, remat_pt2)
             x = self.dropout2(x)
             x = self.stochastic_depth(x)
+            # We still apply `residual_weight`, since there is usually a residual link outside of
+            # this layer, e.g., in ParallelTransformerLayer.
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
         else:
@@ -2700,8 +2702,6 @@ class ParallelTransformerLayer(BaseTransformerLayer):
 
     @config_class
     class Config(BaseTransformerLayer.Config):
-        """Configures TransformerLayer."""
-
         norm: InstantiableConfig = LayerNorm.default_config()  # The normalization layer config.
         self_attention: MultiheadAttention.Config = MultiheadAttention.default_config()
         feed_forward: TransformerFeedForwardLayer.Config = (

@@ -2724,7 +2724,8 @@ class TransformerTest(TestCase):
 class ParallelTransformerTest(TestCase):
     """Tests ParallelTransformerLayer."""
 
-    def test_golden(self):
+    def test_with_golden_value(self):
+        """A test of ParallelTransformerLayer by comparing results to a golden value."""
         model_dim = 16
         num_heads = 4
         cfg = ParallelTransformerLayer.default_config().set(name="test", input_dim=model_dim)
