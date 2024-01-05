@@ -250,6 +250,20 @@ def fake_source(
     return fn
 
 
+class EmptyInput(FakeTextInput):
+    """An Empty input to be used as placeholder."""
+
+    @config_class
+    class Config(Module.Config):
+        """Configures EmptyInput."""
+
+        is_training: Required[bool] = REQUIRED
+
+    @classmethod
+    def default_config(cls):
+        cfg = super().default_config(global_batch_size=512)
+
+
 def fake_text_source(
     *,
     text_field_name: str = "text",

@@ -21,6 +21,7 @@ from jax._src.tree_util import KeyEntry
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
+from axlearn.common.input_fake import EmptyInput
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.checkpointer import (
     CheckpointValidationType,
@@ -434,8 +435,10 @@ class BaseConverterFromPretrainedModel(Converter):
         # Initialize the model and learner states for the pretrained model.
         # pytype: disable=attribute-error
         cfg_fn: TrainerConfigFn = cfg.source_trainer_config.instantiate()
+
         with set_data_dir(cfg.source_data_dir or get_data_dir()):
             trainer_cfg = cfg_fn()
+            logging.info("Initialize model and learner states for: %s", trainer_cfg.name)
             trainer_cfg.dir = mkdtemp()
             trainer_cfg.mesh_axis_names = (
                 cfg.mesh_axis_names or trainer_cfg.mesh_axis_names or ("data", "model")
@@ -443,7 +446,10 @@ class BaseConverterFromPretrainedModel(Converter):
             trainer_cfg.mesh_shape = infer_mesh_shape(
                 cfg.mesh_shape or trainer_cfg.mesh_shape or (len(jax.devices()), 1)
             )
+            # Reset datasets and evalers for the pretrained model config
+            trainer_cfg.input = EmptyInput.default_config()
             trainer_cfg.evalers = {}
+
             trainer = trainer_cfg.instantiate(parent=None)
             # pytype: enable=attribute-error
             source = Builder.State(
