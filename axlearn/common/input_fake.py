@@ -217,6 +217,17 @@ class FakeExtractiveQuestionAnsweringInput(FakeTextInput):
         )
 
 
+class EmptyInput(FakeTextInput):
+    """An Empty input to be used as placeholder."""
+
+    @config_class
+    class Config(Module.Config):
+        """Configures EmptyInput."""
+
+        is_training: Required[bool] = REQUIRED
+        global_batch_size: Required[int] = 512
+
+
 def fake_source(
     is_training: bool,
     examples: Sequence[Dict[str, tf.Tensor]],
@@ -247,20 +258,6 @@ def fake_source(
         return ds
 
     return fn
-
-
-class EmptyInput(FakeTextInput):
-    """An Empty input to be used as placeholder."""
-
-    @config_class
-    class Config(Module.Config):
-        """Configures EmptyInput."""
-
-        is_training: Required[bool] = REQUIRED
-
-    @classmethod
-    def default_config(cls):
-        cfg = super().default_config(global_batch_size=512)
 
 
 def fake_text_source(
