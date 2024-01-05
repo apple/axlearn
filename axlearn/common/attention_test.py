@@ -45,6 +45,7 @@ from axlearn.common.attention import (
     MultiheadInputLinear,
     MultiheadOutputLinear,
     MultiheadRelativePositionLinear,
+    ParallelTransformerLayer,
     PerDimScale,
     PipelinedTransformerLayer,
     QKVLinear,
@@ -2718,6 +2719,62 @@ class TransformerTest(TestCase):
         )
         ref = hf_roberta.RobertaLayer(roberta_config)
         self._compare_against_roberta_layer(ref, layer)
+
+
+class ParallelTransformerTest(TestCase):
+    """Tests ParallelTransformerLayer."""
+
+    def test_with_golden_value(self):
+        """A test of ParallelTransformerLayer by comparing results to a golden value."""
+        model_dim = 16
+        num_heads = 4
+        cfg = ParallelTransformerLayer.default_config().set(name="test", input_dim=model_dim)
+        cfg.feed_forward.set(hidden_dim=scaled_hidden_dim(4))
+        cfg.self_attention.set(num_heads=num_heads)
+        cfg.norm = RMSNorm.default_config()
+        set_bias_recursively(cfg, bias=False)
+        layer: TransformerLayer = cfg.instantiate(parent=None)
+
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        self.assertEqual(
+            {
+                "feed_forward": {
+                    "dropout1": {},
+                    "dropout2": {},
+                    "linear1": {"weight": (16, 64)},
+                    "linear2": {"weight": (64, 16)},
+                    "stochastic_depth": {},
+                },
+                "norm": {"scale": (16,)},
+                "self_attention": {
+                    "dropout": {},
+                    "i_proj": {
+                        "k_proj": {"weight": (16, 4, 4)},
+                        "q_proj": {"weight": (16, 4, 4)},
+                        "v_proj": {"weight": (16, 4, 4)},
+                    },
+                    "o_proj": {"weight": (16, 4, 4)},
+                    "scale_key": {},
+                    "scale_query": {},
+                },
+            },
+            utils.shapes(layer_params),
+        )
+
+        batch_size, tgt_len = 2, 6
+        rng = np.random.default_rng(seed=123)
+        target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
+        mask = attention.make_causal_mask(tgt_len)
+        mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
+        layer_outputs, _ = F(
+            layer,
+            inputs=dict(data=jnp.asarray(target), self_attention_logit_biases=mask),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertEqual(target.shape, layer_outputs.data.shape)
+        self.assertNestedAllClose(0.609666, np.mean(layer_outputs.data))
 
 
 class TestStackModel(BaseLayer):

@@ -2331,11 +2331,16 @@ class TransformerFeedForwardLayer(BaseLayer):
         # https://github.com/tensorflow/models/blob/master/official/projects/vit/modeling/nn_blocks.py#L103-L119
         stochastic_depth: InstantiableConfig = StochasticDepth.default_config()
 
-        # The inner structure of the layer: prenorm or postnorm.
-        # See https://arxiv.org/abs/2002.04745 for background.
-        # The structure also support hybridnorm, which uses two norms in the residual branch.
-        # hybridnorm: TransformerFeedForwardLayer(x) = x + layernorm_2(feedforward(layernorm_1(x)))
-        # Ref: https://github.com/google/praxis/blob/main/praxis/layers/transformers.py#L273
+        # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm", "nonorm".
+        # * prenorm: y = x + feedforward(norm(x))
+        # * postnorm: y = norm(x + feedforward(x))
+        # * hybridnorm: y = postnorm(x + feedforward(prenorm(x)))
+        # * nonorm: y = feedforward(x)   # no residual, which is usually applied externally.
+        #
+        # References:
+        # prenorm/postnorm: https://arxiv.org/abs/2002.04745.
+        # hybridnorm: https://github.com/google/praxis/blob/main/praxis/layers/transformers.py#L273
+        # nonorm: see ParallelTransformerLayer.
         structure: str = "prenorm"
 
         # outputs = inputs + residual_weight * x.
@@ -2364,6 +2369,8 @@ class TransformerFeedForwardLayer(BaseLayer):
         elif cfg.structure == "hybridnorm":
             self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
             self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
+        elif cfg.structure == "nonorm":
+            pass
         else:
             raise NotImplementedError(cfg.structure)
 
@@ -2389,7 +2396,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             "linear2",
             cfg.linear2.set(input_dim=hidden_dim, output_dim=cfg.input_dim),
         )
-        if cfg.structure in ["prenorm", "hybridnorm"]:
+        if cfg.structure in ["prenorm", "hybridnorm", "nonorm"]:
             self._add_child("dropout1", cfg.dropout)
             self._add_child("dropout2", cfg.dropout)
         elif cfg.structure in ["postnorm"]:
@@ -2450,6 +2457,19 @@ class TransformerFeedForwardLayer(BaseLayer):
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
             x += inputs
+        elif cfg.structure == "nonorm":
+            x = inputs
+            x = self._linear1_activation(x)
+            x = self._remat_name(x, remat_pt1)
+            x = self.dropout1(x)
+            x = _linear2(x)
+            x = self._remat_name(x, remat_pt2)
+            x = self.dropout2(x)
+            x = self.stochastic_depth(x)
+            # We still apply `residual_weight`, since there is usually a residual link outside of
+            # this layer, e.g., in ParallelTransformerLayer.
+            if cfg.residual_weight != 1:
+                x *= cfg.residual_weight
         else:
             raise NotImplementedError(cfg.structure)
         return x
@@ -2663,6 +2683,79 @@ class TransformerLayer(BaseTransformerLayer):
             self_attention_logit_biases=self_attention_logit_biases,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
+        )
+
+
+class ParallelTransformerLayer(BaseTransformerLayer):
+    """A Transformer layer with parallel self-attention and feed-forward layers:
+
+    x = norm(inputs)
+    outputs = inputs + self_atten(x) + ffn(x)
+
+    TODO(rpang): experiment to understand whether we should use separate normalization layers
+        for self_atten and ffn as in PaLM.
+
+    References:
+        https://github.com/kingoflolz/mesh-transformer-jax
+        PaLM: https://arxiv.org/abs/2204.02311
+    """
+
+    @config_class
+    class Config(BaseTransformerLayer.Config):
+        norm: InstantiableConfig = LayerNorm.default_config()  # The normalization layer config.
+        self_attention: MultiheadAttention.Config = MultiheadAttention.default_config()
+        feed_forward: TransformerFeedForwardLayer.Config = (
+            TransformerFeedForwardLayer.default_config().set(structure="nonorm")
+        )
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg: TransformerLayer.Config = self.config
+        self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
+        self._add_child(
+            "self_attention",
+            cfg.self_attention.set(
+                query_dim=cfg.input_dim,
+                key_dim=cfg.input_dim,
+                value_dim=cfg.input_dim,
+                output_dim=cfg.input_dim,
+            ),
+        )
+        self._add_child("feed_forward", cfg.feed_forward.set(input_dim=cfg.input_dim))
+
+    def forward(
+        self,
+        *,
+        data: Tensor,
+        self_attention_logit_biases: Optional[Tensor] = None,
+    ) -> BaseTransformerLayer.Output:
+        """Computes transformer layer outputs and self/cross-attention probabilities.
+
+        Args:
+            data: A Tensor of shape [batch, target_length, target_dim].
+            self_attention_logit_biases: An optional Tensor representing the self-attention biases.
+
+        Returns:
+            An Output instance, where .data is of the same shape as `data`, .self_attention_probs is
+            of shape [batch, num_heads, target_length, target_length].
+
+        Raises:
+            ValueError: If `mode` is unsupported.
+        """
+        inputs = data
+        data = self.norm(data)
+        self_atten_outputs = self.self_attention(
+            query=data,
+            key=data,
+            value=data,
+            attention_logit_biases=self_attention_logit_biases,
+        )
+        feed_forward_outputs = self.feed_forward(data)
+        outputs = inputs + self_atten_outputs.data + feed_forward_outputs
+        return BaseTransformerLayer.Output(
+            data=outputs,
+            self_attention_probs=self_atten_outputs.probs,
+            cross_attention_probs=None,
         )
 
 
