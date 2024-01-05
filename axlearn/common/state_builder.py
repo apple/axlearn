@@ -21,6 +21,7 @@ from axlearn.common import utils
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.checkpointer import (
     CheckpointValidationType,
+    StateStorage,
     TensorStoreStateStorage,
     check_state_structure,
     parse_step_from_dir,
@@ -376,6 +377,8 @@ class TensorStoreStateStorageBuilder(Builder):
         dir: Required[str] = REQUIRED
         validation: CheckpointValidationType = CheckpointValidationType.EXACT
         concurrent_gb: int = 32
+        # A config that instantiates to a StateStorage.
+        storage: StateStorage.Config = TensorStoreStateStorage.default_config()
 
     @classmethod
     def spec_to_config(cls, spec: str) -> Config:
@@ -394,7 +397,7 @@ class TensorStoreStateStorageBuilder(Builder):
             The restored state.
         """
         cfg = self.config
-        storage = TensorStoreStateStorage.default_config().instantiate()
+        storage = cfg.storage.instantiate()
         step = parse_step_from_dir(cfg.dir)
         restored_state = storage.restore_from_dir(
             step=step,
