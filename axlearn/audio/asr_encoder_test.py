@@ -249,7 +249,7 @@ class ASREncoderTest(TestCase):
         self.assertTrue(jnp.all(output_paddings[:2] == output_paddings[2:]))
 
         # If is_training and use_augmenter, outputs should always be different due to augmentation.
-        # Otherwise, outputs should be the same despite differences in padding.
+        # Otherwise, outputs should be the same.
         self.assertEqual(
             not (is_training and use_augmenter), jnp.allclose(outputs[:2], outputs[2:])
         )
