@@ -21,7 +21,6 @@ from jax._src.tree_util import KeyEntry
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
-from axlearn.common.input_fake import EmptyInput
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.checkpointer import (
     CheckpointValidationType,
@@ -39,6 +38,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_instantiate,
 )
+from axlearn.common.input_fake import EmptyInput
 from axlearn.common.module import Module
 from axlearn.common.optimizer_base import OptStateSpec
 from axlearn.common.optimizers import ParamEmaState
