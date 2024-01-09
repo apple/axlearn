@@ -342,7 +342,7 @@ class CTCDecoderModel(BaseModel):
         *,
         num_decodes: int = 1,
         logits_modifier: Optional[ConfigOr[LogitsToLogitsFn]] = None,
-    ):
+    ) -> DecodeOutputs:
         """CTC sample decoding.
 
         The output hypotheses will have blanks and repeats removed (via `_map_label_sequences`).
@@ -377,6 +377,48 @@ class CTCDecoderModel(BaseModel):
             sequences=sample_decode_outputs.sequences,
             paddings=paddings,
             scores=sample_decode_outputs.token_scores,
+        )
+
+    def greedy_decode(self, input_batch: Nested[Tensor]) -> DecodeOutputs:
+        """CTC greedy decoding.
+
+        The output hypotheses will have blanks and repeats removed (via `_map_label_sequences`).
+
+        Args:
+            input_batch: A dict containing:
+                inputs: A Tensor of shape [batch_size, num_frames, dim].
+                paddings: A 0/1 Tensor of shape [batch_size, num_frames]. 1's represent paddings.
+
+        Returns:
+            DecodeOutputs, containing:
+                raw_sequences: An int Tensor of shape [batch_size, 1, num_frames].
+                sequences: An int Tensor of shape [batch_size, 1, num_frames].
+                paddings: A 0/1 Tensor of shape [batch_size, 1, num_frames].
+                scores: A Tensor of shape [batch_size, 1].
+        """
+        cfg: CTCDecoderModel.Config = self.config
+        paddings = input_batch["paddings"]
+        # [batch_size, num_frames, vocab_size].
+        logits = self.predict(input_batch)
+        # [batch, 1, num_frames].
+        sequences = jnp.argmax(logits, axis=-1)[:, None, :]
+        # Remove repeats and blanks.
+        # We make the assumption that the trailing padding positions have 0 as the argmax index.
+        outputs = _map_label_sequences(inputs=sequences, blank_id=cfg.blank_token_id, pad_id=0)
+
+        # [batch_size, num_frames, vocab_size].
+        log_probs = jax.nn.log_softmax(logits, axis=-1)
+        log_probs += paddings[..., None] * NEG_INF
+        # [batch, num_frames, 1].
+        scores = jnp.take_along_axis(log_probs, sequences[:, 0, :, None], axis=-1)
+        # [batch, 1].
+        scores = jnp.sum(jnp.squeeze(scores, axis=-1) * (1 - paddings), axis=1, keepdims=True)
+
+        return DecodeOutputs(
+            raw_sequences=sequences,
+            sequences=outputs["sequences"],
+            paddings=outputs["paddings"],
+            scores=scores,
         )
 
     def _postprocess_outputs(self, *, sequences: Tensor, paddings: Tensor, scores: Tensor):

@@ -459,7 +459,7 @@ class CTCDecoderModelTest(TestCase):
         blank_token_id=[0, 1],
         logits_modifier=[top_k_logits(1), config_for_function(top_k_logits).set(k=1)],
     )
-    def test_sample_decode(self, num_decodes, vocab_size, blank_token_id, logits_modifier):
+    def test_greedy_decode(self, num_decodes, vocab_size, blank_token_id, logits_modifier):
         cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
             dim=6,
             vocab_size=vocab_size,
@@ -495,13 +495,20 @@ class CTCDecoderModelTest(TestCase):
             )
             return outputs
 
-        test_outputs: DecodeOutputs = jit_method(
+        sample_decode_outputs: DecodeOutputs = jit_method(
             dict(input_batch=dict(inputs=inputs, paddings=paddings)),
             prng_key=decode_key,
             method="sample_decode",
             modify_logits=True,
             num_decodes=num_decodes,
         )
+
+        greedy_decode_outputs: DecodeOutputs = jit_method(
+            dict(input_batch=dict(inputs=inputs, paddings=paddings)),
+            prng_key=decode_key,
+            method="greedy_decode",
+        )
+
         # Should be equivalent to taking the top logit of each output.
         # [batch_size, max_seq_len, vocab_size].
         logits = jit_method(
@@ -537,12 +544,19 @@ class CTCDecoderModelTest(TestCase):
         ref_scores = jnp.squeeze(ref_scores, axis=-1) * (1 - paddings)
         ref_scores = jnp.sum(ref_scores, axis=-1)
 
-        # Top decode should match.
-        self.assertNestedEqual(ref_sequences, test_outputs.sequences[:, 0, :])
-        self.assertNestedEqual(ref_paddings, test_outputs.paddings[:, 0, :])
-        self.assertNestedEqual(ref_scores, test_outputs.scores[:, 0])
+        # Sample decode top decode should match.
+        self.assertNestedEqual(ref_sequences, sample_decode_outputs.sequences[:, 0, :])
+        self.assertNestedEqual(ref_paddings, sample_decode_outputs.paddings[:, 0, :])
+        self.assertNestedEqual(ref_scores, sample_decode_outputs.scores[:, 0])
 
-        self._check_paddings(test_outputs, blank_token_id=cfg.blank_token_id)
+        self._check_paddings(sample_decode_outputs, blank_token_id=cfg.blank_token_id)
+
+        # Greedy decode output should match.
+        self.assertNestedEqual(ref_sequences, greedy_decode_outputs.sequences[:, 0, :])
+        self.assertNestedEqual(ref_paddings, greedy_decode_outputs.paddings[:, 0, :])
+        self.assertNestedEqual(ref_scores, greedy_decode_outputs.scores[:, 0])
+
+        self._check_paddings(greedy_decode_outputs, blank_token_id=cfg.blank_token_id)
 
     @parameterized.product(
         num_decodes=[1, 3],
