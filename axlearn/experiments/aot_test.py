@@ -2,6 +2,10 @@
 
 """AoT (ahead-of-time) compilation config tests.
 
+pip install 'jax[tpu]==0.4.21' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+
+python axlearn/experiments/aot_test.py
+
 Reference:
 https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
 """
