@@ -91,7 +91,7 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
             cfg = copy.deepcopy(trainer_config)
             cfg.dir = cfg.dir or tempfile.mkdtemp()
             cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
-            cfg.mesh_shape = cfg.mesh_shape or (len(jax.devices()), 1)
+            cfg.mesh_shape = [len(topology_devices)] + [1] * (len(cfg.mesh_axis_names) - 1)
             topology_devices = np.reshape(topology_devices, cfg.mesh_shape)
             cfg.max_step = 3
             for evaler_cfg in cfg.evalers.values():
