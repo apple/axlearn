@@ -102,13 +102,15 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
                 cfg.checkpointer.save_policy.n = 2
             logging.info("_test_with_trainer_config: %s", trainer_config)
             trainer: SpmdTrainer = cfg.instantiate(parent=None, devices=topology_devices)
-            # trainer.init(jax.random.PRNGKey(1))
-            trainer._pjit_train_step()
-            input_batch_spec = trainer.input.dataset().element_spec
-            compiled_train_step = trainer._jit_train_step.lower(
-                trainer.trainer_state, input_batch_spec
-            ).compile()
-            print(compiled_train_step)
+            with trainer.mesh():
+                # Do not run init(), which require real devices.
+                # trainer.init(jax.random.PRNGKey(1))
+                trainer._pjit_train_step()
+                input_batch_spec = trainer.input.dataset().element_spec
+                compiled_train_step = trainer._jit_train_step.lower(
+                    trainer.trainer_state, input_batch_spec
+                ).compile()
+                print(compiled_train_step)
 
     def test_gpt_c4(self):
         self._test_aot(
