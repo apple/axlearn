@@ -122,14 +122,18 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
             trainer: SpmdTrainer = cfg.instantiate(parent=None, devices=topology_devices)
             with trainer.mesh():
                 # Do not run init(), which require real devices.
-                # trainer.init(jax.random.PRNGKey(1))
-                trainer._pjit_train_step()
-                input_batch_spec = jax.tree_util.tree_map(
+                # trainer_state_specs = jax.eval_shape(trainer.init, jax.random.PRNGKey(1))
+                trainer_state_specs = jax.tree_util.tree_map(
+                    lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
+                    trainer.trainer_state_specs,
+                )
+                input_batch_specs = jax.tree_util.tree_map(
                     get_shape_dtype_struct,
                     trainer.input.dataset().element_spec,
                 )
+                trainer._pjit_train_step()
                 compiled_train_step = trainer._jit_train_step.lower(
-                    trainer.trainer_state, input_batch_spec
+                    trainer_state_specs, input_batch_specs
                 ).compile()
                 print(compiled_train_step)
 
