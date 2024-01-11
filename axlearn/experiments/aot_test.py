@@ -6,6 +6,7 @@ Reference:
 https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
 """
 import os
+import pickle
 
 import numpy as np
 
@@ -135,7 +136,15 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
                 compiled_train_step = trainer._jit_train_step.lower(
                     trainer_state_specs, input_batch_specs
                 ).compile()
-                print(compiled_train_step)
+
+                (
+                    serialized_compiled,
+                    in_tree,
+                    out_tree,
+                ) = jax.experimental.serialize_executable.serialze(compiled_train_step)
+                with open("/tmp/aot_compiled", "wb") as f:
+                    pickle.dump(serialized_compiled, f)
+                print(serialized_compiled)
 
     def test_gpt_c4(self):
         self._test_aot(
