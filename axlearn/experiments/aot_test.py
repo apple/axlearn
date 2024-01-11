@@ -103,6 +103,7 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
             logging.info("_test_with_trainer_config: %s", trainer_config)
             trainer: SpmdTrainer = cfg.instantiate(parent=None, devices=topology_devices)
             # trainer.init(jax.random.PRNGKey(1))
+            trainer._pjit_train_step()
             input_batch_spec = trainer.input.dataset().element_spec
             compiled_train_step = trainer._jit_train_step.lower(
                 trainer.trainer_state, input_batch_spec
