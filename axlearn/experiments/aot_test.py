@@ -102,7 +102,7 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
                 cfg.checkpointer.save_policy.n = 2
             logging.info("_test_with_trainer_config: %s", trainer_config)
             trainer: SpmdTrainer = cfg.instantiate(parent=None, devices=topology_devices)
-            trainer.init(jax.random.PRNGKey(1))
+            # trainer.init(jax.random.PRNGKey(1))
             input_batch_spec = self.input.dataset().element_spec
             compiled_train_step = trainer._jit_train_step.lower(
                 trainer.trainer_state, input_batch_spec
