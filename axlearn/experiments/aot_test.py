@@ -30,6 +30,7 @@ from jax import numpy as jnp
 from absl import logging
 from absl.testing import absltest
 from jax.experimental.topologies import get_topology_desc
+from jax.experimental.serialize_executable import serialize
 import tensorflow as tf
 
 from axlearn.common import test_utils
@@ -141,11 +142,7 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
                     trainer_state_specs, input_batch_specs
                 ).compile()
 
-                (
-                    serialized_compiled,
-                    in_tree,
-                    out_tree,
-                ) = jax.experimental.serialize_executable.serialze(compiled_train_step)
+                serialized_compiled, in_tree, out_tree = serialize(compiled_train_step)
                 with open("/tmp/aot_compiled", "wb") as f:
                     pickle.dump(serialized_compiled, f)
                 print(serialized_compiled)
