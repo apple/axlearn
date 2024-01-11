@@ -2,7 +2,8 @@
 
 """AoT (ahead-of-time) compilation config tests.
 
-E             RuntimeError: Unable to initialize backend 'tpu': INTERNAL: Failed to open /Users/rpang/miniforge3/envs/axlearn/lib/python3.9/site-packages/libtpu/libtpu.so: dlopen(/Users/rpang/miniforge3/envs/axlearn/lib/python3.9/site-packages/libtpu/libtpu.so, 0x0001): tried: '/Users/rpang/miniforge3/envs/axlearn/lib/python3.9/site-packages/libtpu/libtpu.so' (not a mach-o file), '/System/Volumes/Preboot/Cryptexes/OS/Users/rpang/miniforge3/envs/axlearn/lib/python3.9/site-packages/libtpu/libtpu.so' (no such file), '/Users/rpang/miniforge3/envs/axlearn/lib/python3.9/site-packages/libtpu/libtpu.so' (not a mach-o file) (set JAX_PLATFORMS='' to automatically choose an available backend)
+Reference:
+https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
 """
 import os
 
@@ -20,9 +21,11 @@ jax.config.update("jax_platforms", "cpu")
 from dataclasses import dataclass
 
 import jax.random
+from jax import numpy as jnp
 from absl import logging
 from absl.testing import absltest
 from jax.experimental.topologies import get_topology_desc
+import tensorflow as tf
 
 from axlearn.common import test_utils
 from axlearn.common.checkpointer import every_n_steps_policy
@@ -63,6 +66,21 @@ UserFacingNameToSystemCharacteristics = {
 
 def get_system_characteristics(user_facing_name):
     return UserFacingNameToSystemCharacteristics.get(user_facing_name)
+
+
+def to_jax_dtype(tf_dtype: tf.DType) -> jnp.dtype:
+    if tf_dtype == tf.int32:
+        return jnp.int32
+    elif tf_dtype == tf.float32:
+        return jnp.float32
+    elif tf_dtype == tf.bloat16:
+        return jnp.bloat16
+    else:
+        raise NotImplementedError(tf_dtype)
+
+
+def get_shape_dtype_struct(tf_spec) -> jax.ShapeDtypeStruct:
+    return jax.ShapeDtypeStruct(shape=tf_spec.shape, dtype=to_jax_dtype(tf_spec.dtype))
 
 
 class AoTCompilationTest(test_utils.TrainerConfigTestCase):
@@ -106,7 +124,10 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
                 # Do not run init(), which require real devices.
                 # trainer.init(jax.random.PRNGKey(1))
                 trainer._pjit_train_step()
-                input_batch_spec = trainer.input.dataset().element_spec
+                input_batch_spec = jax.tree_util.tree_map(
+                    get_shape_dtype_struct,
+                    trainer.input.dataset().element_spec,
+                )
                 compiled_train_step = trainer._jit_train_step.lower(
                     trainer.trainer_state, input_batch_spec
                 ).compile()
