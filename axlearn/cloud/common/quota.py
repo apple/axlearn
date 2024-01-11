@@ -66,7 +66,7 @@ def _convert_and_validate_resources(info: QuotaInfo) -> QuotaInfo:
             resources[resource_type] = value
 
     for resource_type, total in total_project_resources.items():
-        if total > info.total_resources[resource_type]:
+        if total > info.total_resources.get(resource_type, 0):
             raise ValueError(
                 f"Sum of {resource_type} project resources ({total}) "
                 f"exceeds total ({info.total_resources[resource_type]})"
