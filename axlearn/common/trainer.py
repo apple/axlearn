@@ -193,7 +193,9 @@ class SpmdTrainer(Module):
             [device.platform for device in jax.local_devices()],
         )
         self._step_log("Mesh shape: %s", cfg.mesh_shape)
-        devices = devices or utils.create_device_mesh(mesh_shape=cfg.mesh_shape)
+        devices = (
+            utils.create_device_mesh(mesh_shape=cfg.mesh_shape) if devices is None else devices
+        )
         mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
         self._step_log("Global mesh: %s", mesh)
         self._mesh = mesh
