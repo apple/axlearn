@@ -6,6 +6,8 @@ E             RuntimeError: Unable to initialize backend 'tpu': INTERNAL: Failed
 """
 import os
 
+import numpy as np
+
 os.environ["JAX_PLATFORMS"] = "cpu"
 
 import copy
@@ -90,6 +92,7 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
             cfg.dir = cfg.dir or tempfile.mkdtemp()
             cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
             cfg.mesh_shape = cfg.mesh_shape or (len(jax.devices()), 1)
+            topology_devices = np.reshape(topology_devices, cfg.mesh_shape)
             cfg.max_step = 3
             for evaler_cfg in cfg.evalers.values():
                 if getattr(evaler_cfg.eval_policy, "fn", None) is eval_every_n_steps_policy:
