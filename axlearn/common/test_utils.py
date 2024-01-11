@@ -130,8 +130,10 @@ class TestCase(parameterized.TestCase):
 
     def setUp(self):
         push_data_dir(self.data_dir)
-        # Setup without distributed initialization.
-        utils_spmd.setup(jax_backend="cpu")
+        utils_spmd.setup(jax_backend=self._jax_backend())
+
+    def _jax_backend(self) -> Optional[str]:
+        return None
 
     def tearDown(self) -> None:
         self.assertEqual(pop_data_dir(), self.data_dir)

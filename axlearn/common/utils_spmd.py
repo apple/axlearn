@@ -13,7 +13,7 @@ _jax_distributed_initialized = False
 
 def setup(
     *,
-    jax_backend: str,
+    jax_backend: str = None,
     distributed_coordinator: Optional[str] = None,
     num_processes: Optional[int] = None,
     process_id: Optional[int] = None,
@@ -70,6 +70,14 @@ def setup(
                     f"Instead, got num_processes={num_processes}, process_id={process_id}."
                 )
 
+            num_processes = (
+                num_processes
+                if num_processes is not None
+                else jax.process_count(backend=jax_backend)
+            )
+            process_id = (
+                process_id if process_id is not None else jax.process_index(backend=jax_backend)
+            )
             if not distributed_coordinator:
                 if num_processes == 1:
                     distributed_coordinator = f"localhost:{portpicker.pick_unused_port()}"
