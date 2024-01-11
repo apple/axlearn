@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests quota utilities."""
-
+import copy
 import tempfile
 from typing import Sequence
 
@@ -47,12 +47,31 @@ class QuotaUtilsTest(parameterized.TestCase):
 
         # Test a case where the totals don't add up.
         with tempfile.NamedTemporaryFile("r+") as f:
-            broken_config = {**_mock_config}
+            broken_config = copy.deepcopy({**_mock_config})
             broken_config["project_resources"]["team1"]["resource_type1"] = 0.8
             toml.dump(broken_config, f)
             f.seek(0)
             with self.assertRaisesRegex(ValueError, "exceeds total"):
                 get_resource_limits(f.name)
+
+        # Test a case where the set of resource types changed.
+        with tempfile.NamedTemporaryFile("r+") as f:
+            config = copy.deepcopy({**_mock_config})
+            # Remove "resource_type2" from "total_resources".
+            del config["total_resources"]["resource_type2"]
+            toml.dump(config, f)
+            f.seek(0)
+            self.assertEqual(
+                QuotaInfo(
+                    total_resources={"resource_type1": 16},
+                    project_resources={
+                        "team1": {"resource_type1": 8.0},
+                        # Note that the limit on "resource_type2" is 0.
+                        "team2": {"resource_type1": 8.0, "resource_type2": 0.0},
+                    },
+                ),
+                get_resource_limits(f.name),
+            )
 
     @parameterized.parameters(
         dict(user="user1", expected=["team1", "team2", "team3"]),
