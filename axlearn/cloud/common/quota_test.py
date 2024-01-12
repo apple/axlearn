@@ -17,8 +17,8 @@ _mock_config = {
         "resource_type2": 8,
     },
     "project_resources": {
-        "team1": {"resource_type1": 0.3},
-        "team2": {"resource_type1": 0.7, "resource_type2": 1.0},
+        "team1": {"resource_type1": 0.30000001},
+        "team2": {"resource_type1": 0.60000001, "resource_type2": 1.0},
     },
     "project_membership": {
         "team1": ["user1"],
@@ -33,17 +33,15 @@ class QuotaUtilsTest(parameterized.TestCase):
 
     def test_resource_limits(self):
         # Make sure fractions are converted properly.
-        expected = QuotaInfo(
-            total_resources=dict(resource_type1=16, resource_type2=8),
-            project_resources=dict(
-                team1=dict(resource_type1=4.8),
-                team2=dict(resource_type1=11.2, resource_type2=8),
-            ),
-        )
         with tempfile.NamedTemporaryFile("r+") as f:
             toml.dump(_mock_config, f)
             f.seek(0)
-            self.assertEqual(expected, get_resource_limits(f.name))
+            self.assertEqual(
+                QuotaInfo(total_resources={'resource_type1': 16, 'resource_type2': 8},
+                          project_resources={'team1': {'resource_type1': 4.80000016},
+                                             'team2': {'resource_type1': 9.60000016,
+                                                       'resource_type2': 8.0}}),
+                get_resource_limits(f.name))
 
         # Test a case where the totals don't add up.
         with tempfile.NamedTemporaryFile("r+") as f:
@@ -52,13 +50,10 @@ class QuotaUtilsTest(parameterized.TestCase):
             toml.dump(broken_config, f)
             f.seek(0)
             self.assertEqual(
-                QuotaInfo(
-                    total_resources={"resource_type1": 16, "resource_type2": 8},
-                    project_resources={
-                        "team1": {"resource_type1": 12.8},
-                        "team2": {"resource_type1": 11.2, "resource_type2": 8},
-                    },
-                ),
+                QuotaInfo(total_resources={'resource_type1': 16, 'resource_type2': 8},
+                          project_resources={'team1': {'resource_type1': 12.8},
+                                             'team2': {'resource_type1': 9.60000016,
+                                                       'resource_type2': 8.0}}),
                 get_resource_limits(f.name),
             )
 
@@ -70,14 +65,10 @@ class QuotaUtilsTest(parameterized.TestCase):
             toml.dump(config, f)
             f.seek(0)
             self.assertEqual(
-                QuotaInfo(
-                    total_resources={"resource_type1": 16},
-                    project_resources={
-                        "team1": {"resource_type1": 4.8},
-                        # Note that the limit on "resource_type2" is 0.
-                        "team2": {"resource_type1": 11.2, "resource_type2": 0},
-                    },
-                ),
+                QuotaInfo(total_resources={'resource_type1': 16},
+                          project_resources={'team1': {'resource_type1': 4.80000016},
+                                             'team2': {'resource_type1': 9.60000016,
+                                                       'resource_type2': 0.}}),
                 get_resource_limits(f.name),
             )
 
