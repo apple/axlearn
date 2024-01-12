@@ -4,6 +4,7 @@
 
 pip install 'jax[tpu]==0.4.21' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
+export TPU_SKIP_MDS_QUERY=1
 python axlearn/experiments/aot_test.py
 
 Reference:
