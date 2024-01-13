@@ -1,13 +1,13 @@
 # Copyright © 2023 Apple Inc.
 
 """Utilities to retrieve quotas."""
-
 import re
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import List, Protocol
 
 import toml
+from absl import logging
 from tensorflow import io as tf_io
 
 from axlearn.cloud.common.types import ProjectResourceMap, ResourceMap
@@ -66,10 +66,13 @@ def _convert_and_validate_resources(info: QuotaInfo) -> QuotaInfo:
             resources[resource_type] = value
 
     for resource_type, total in total_project_resources.items():
-        if total > info.total_resources.get(resource_type, 0):
-            raise ValueError(
-                f"Sum of {resource_type} project resources ({total}) "
-                f"exceeds total ({info.total_resources[resource_type]})"
+        limit = info.total_resources.get(resource_type, 0)
+        if total > limit + 0.01:
+            logging.warning(
+                "Sum of %s project resources (%s) exceeds total (%s)",
+                resource_type,
+                total,
+                info.total_resources[resource_type],
             )
     return info
 
