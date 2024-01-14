@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 import tensorflow as tf
@@ -68,6 +68,21 @@ def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
     """
     # Note that falsey values or empty Tensors are not considered empty.
     return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
+
+
+def to_jax_dtype(tf_dtype: tf.DType) -> jnp.dtype:
+    if tf_dtype == tf.int32:
+        return jnp.int32
+    elif tf_dtype == tf.float32:
+        return jnp.float32
+    elif tf_dtype == tf.bloat16:
+        return jnp.bloat16
+    else:
+        raise NotImplementedError(tf_dtype)
+
+
+def get_shape_dtype_struct(tf_spec) -> jax.ShapeDtypeStruct:
+    return jax.ShapeDtypeStruct(shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype)
 
 
 class _TrainerState(NamedTuple):
@@ -577,7 +592,7 @@ class SpmdTrainer(Module):
             self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
             return False
 
-        self._pjit_train_step()
+        self._jit_train_step = self._pjit_train_step()
         return True
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
@@ -731,8 +746,8 @@ class SpmdTrainer(Module):
             evaler_summaries[evaler_name] = summaries
         return evaler_summaries
 
-    def _pjit_train_step(self):
-        self._jit_train_step = pjit(
+    def _pjit_train_step(self) -> Callable:
+        return pjit(
             self._train_step,
             in_shardings=(
                 self._trainer_state_partition_specs,
@@ -748,6 +763,23 @@ class SpmdTrainer(Module):
             ),
             donate_argnums=(0,),  # donate the state
         )
+
+    def compile_train_step(self) -> Callable:
+        with self.mesh():
+            # Do not run init(), which require real devices.
+            # trainer_state_specs = jax.eval_shape(self.init, jax.random.PRNGKey(1))
+            trainer_state_specs = jax.tree_util.tree_map(
+                lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
+                self.trainer_state_specs,
+            )
+            input_batch_specs = jax.tree_util.tree_map(
+                lambda tf_spec: jax.ShapeDtypeStruct(
+                    shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype),
+                self.input.dataset().element_spec,
+            )
+            jit_train_step = self._pjit_train_step()
+            lowered_train_step = jit_train_step.lower(trainer_state_specs, input_batch_specs)
+            return lowered_train_step.compile()
 
     def _train_step(
         self,
