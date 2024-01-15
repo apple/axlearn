@@ -25,7 +25,7 @@ from axlearn.experiments.text.gpt import c4_trainer
 class AoTCompilationTest(test_utils.TrainerConfigTestCase):
     """Tests ahead-of-time (AoT) compilation."""
 
-    def _jax_backend(self) -> Optional[str]:
+    def _jax_backend(self) -> str:
         return "cpu"
 
     def _test_aot(
@@ -42,22 +42,6 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
         )
         compiled_train_step = programs["train_step"]
         self.assertIsNotNone(compiled_train_step)
-        print("== Help ==")
-        print(help(compiled_train_step))
-        print("== Text ==")
-        print(compiled_train_step.as_text())
-        print("== Cost analysis ==")
-        print(compiled_train_step.cost_analysis())
-        print("== Memeory analysis ==")
-        print(compiled_train_step.memory_analysis())
-
-        # Serialization does not work for CPU devices:
-        #     UNIMPLEMENTED: Not an XLA Runtime executable
-        if compile_topology is not None:
-            serialized_compiled, in_tree, out_tree = serialize(compiled_train_step)
-            with open("/tmp/aot_compiled", "wb") as f:
-                pickle.dump(serialized_compiled, f)
-            print(serialized_compiled)
 
     def test_fuji_7B(self):
         self._test_aot(

@@ -70,21 +70,6 @@ def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
     return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
 
 
-def to_jax_dtype(tf_dtype: tf.DType) -> jnp.dtype:
-    if tf_dtype == tf.int32:
-        return jnp.int32
-    elif tf_dtype == tf.float32:
-        return jnp.float32
-    elif tf_dtype == tf.bloat16:
-        return jnp.bloat16
-    else:
-        raise NotImplementedError(tf_dtype)
-
-
-def get_shape_dtype_struct(tf_spec) -> jax.ShapeDtypeStruct:
-    return jax.ShapeDtypeStruct(shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype)
-
-
 class _TrainerState(NamedTuple):
     prng_key: Union[Tensor, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
@@ -178,7 +163,7 @@ class SpmdTrainer(Module):
         # increment within this interval.
         watchdog_timeout_seconds: Optional[float] = None
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module], devices=None):
+    def __init__(self, cfg: Config, *, parent: Optional[Module], devices: Optional[Sequence[jax.Device]]=None):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
@@ -767,7 +752,6 @@ class SpmdTrainer(Module):
     def compile_train_step(self) -> Callable:
         with self.mesh():
             # Do not run init(), which require real devices.
-            # trainer_state_specs = jax.eval_shape(self.init, jax.random.PRNGKey(1))
             trainer_state_specs = jax.tree_util.tree_map(
                 lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
                 self.trainer_state_specs,
