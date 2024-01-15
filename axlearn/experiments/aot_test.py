@@ -63,7 +63,6 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
         self._test_aot(
             c4_trainer.named_trainer_configs()["fuji-7B"](),
             compile_topology=None,
-            # compile_topology="v4-8",
         )
 
 
