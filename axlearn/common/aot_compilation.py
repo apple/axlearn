@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict
 
 import jax
+jax.config.update("JAX_PLATFORMS", "cpu")
 import jax.random
 import numpy as np
 from jax.experimental.topologies import get_topology_desc
