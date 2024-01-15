@@ -19,6 +19,7 @@ import numpy as np
 from jax.experimental.topologies import get_topology_desc
 
 from axlearn.common.trainer import SpmdTrainer
+from axlearn.common.utils import infer_mesh_shape
 
 
 @dataclass
@@ -79,7 +80,10 @@ def compile_trainer_programs(
 
     cfg = copy.deepcopy(trainer_config)
     cfg.dir = "NOT_USED"
-    cfg.mesh_shape = [len(topology_devices)] + [1] * (len(cfg.mesh_axis_names) - 1)
+    if cfg.mesh_shape is None:
+        cfg.mesh_shape = [len(topology_devices)] + [1] * (len(cfg.mesh_axis_names) - 1)
+    else:
+        cfg.mesh_shape = infer_mesh_shape(cfg.mesh_shape, num_devices=len(topology_devices))
     topology_devices = np.reshape(topology_devices, cfg.mesh_shape)
     trainer: SpmdTrainer = cfg.instantiate(parent=None, devices=topology_devices)
     compiled_train_step = trainer.compile_train_step()

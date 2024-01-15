@@ -5,7 +5,7 @@ pip install 'jax[tpu]==0.4.21' -f https://storage.googleapis.com/jax-releases/li
 python axlearn/experiments/run_aot_compilation.py \
     --config_module=text.gpt.c4_trainer \
     --config=fuji-7B \
-    --topology=v4-8
+    --topology=v4-512
 
 Reference:
 https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
