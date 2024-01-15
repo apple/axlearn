@@ -3,6 +3,8 @@
 """A command-line tool to perform AoT (ahead-of-time) compilation.
 
 pip install 'jax[tpu]==0.4.21' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+
+XLA_FLAGS=--xla_dump_to=/tmp/aot_xla_dump \
 python axlearn/experiments/run_aot_compilation.py \
     --module=text.gpt.c4_trainer \
     --config=fuji-7B \
