@@ -163,7 +163,13 @@ class SpmdTrainer(Module):
         # increment within this interval.
         watchdog_timeout_seconds: Optional[float] = None
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+    def __init__(
+        self,
+        cfg: Config,
+        *,
+        parent: Optional[Module],
+        devices: Optional[Sequence[jax.Device]] = None,
+    ):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
@@ -193,7 +199,9 @@ class SpmdTrainer(Module):
             [device.platform for device in jax.local_devices()],
         )
         self._step_log("Mesh shape: %s", cfg.mesh_shape)
-        devices = utils.create_device_mesh(mesh_shape=cfg.mesh_shape)
+        devices = (
+            utils.create_device_mesh(mesh_shape=cfg.mesh_shape) if devices is None else devices
+        )
         mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
         self._step_log("Global mesh: %s", mesh)
         self._mesh = mesh
@@ -347,7 +355,7 @@ class SpmdTrainer(Module):
         with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
             cfg = self.config
             # Prepare training.
-            if not self._prepare_training(cfg, prng_key):
+            if not self._prepare_training(prng_key):
                 return None
 
             with self.checkpointer:
@@ -532,7 +540,7 @@ class SpmdTrainer(Module):
             trainer_state_structure, self._trainer_state_partition_specs
         )
 
-    def _prepare_training(self, cfg: Config, prng_key: Tensor) -> bool:
+    def _prepare_training(self, prng_key: Tensor) -> bool:
         """Prepares training.
 
         This function does the following to prepare the training procedure:
@@ -542,13 +550,13 @@ class SpmdTrainer(Module):
         4. Otherwise Jits self._train_step.
 
         Args:
-            cfg: The trainer config.
             prng_key: The PRNG key of the `run` method.
 
         Returns:
             A boolean indicating whether the model training should start. If not, return
                 None from the `run` function.
         """
+        cfg = self.config
 
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
         self.restore_checkpoint(restore_step=None)
@@ -575,7 +583,7 @@ class SpmdTrainer(Module):
             self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
             return False
 
-        self._pjit_train_step()
+        self._jit_train_step = self._pjit_train_step()
         return True
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
@@ -729,8 +737,8 @@ class SpmdTrainer(Module):
             evaler_summaries[evaler_name] = summaries
         return evaler_summaries
 
-    def _pjit_train_step(self):
-        self._jit_train_step = pjit(
+    def _pjit_train_step(self) -> jax.stages.Wrapped:
+        return pjit(
             self._train_step,
             in_shardings=(
                 self._trainer_state_partition_specs,
@@ -746,6 +754,23 @@ class SpmdTrainer(Module):
             ),
             donate_argnums=(0,),  # donate the state
         )
+
+    def compile_train_step(self) -> jax.stages.Compiled:
+        with self.mesh():
+            # Do not run init(), which require real devices.
+            trainer_state_specs = jax.tree_util.tree_map(
+                lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
+                self.trainer_state_specs,
+            )
+            input_batch_specs = jax.tree_util.tree_map(
+                lambda tf_spec: jax.ShapeDtypeStruct(
+                    shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
+                ),
+                self.input.dataset().element_spec,
+            )
+            jit_train_step = self._pjit_train_step()
+            lowered_train_step = jit_train_step.lower(trainer_state_specs, input_batch_specs)
+            return lowered_train_step.compile()
 
     def _train_step(
         self,
