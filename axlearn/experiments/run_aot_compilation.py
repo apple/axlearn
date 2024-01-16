@@ -8,7 +8,7 @@ XLA_FLAGS=--xla_dump_to=/tmp/aot_xla_dump \
 python axlearn/experiments/run_aot_compilation.py \
     --module=text.gpt.c4_trainer \
     --config=fuji-7B \
-    --topology=v4-1024 1> /tmp/aot_stdout 2| tee /tmp/aot_stderr
+    --topology=v4-1024 1>/tmp/aot_stdout 2| tee /tmp/aot_stderr
 
 Reference: https://jax.readthedocs.io/en/latest/aot.html
 """
@@ -16,7 +16,7 @@ Reference: https://jax.readthedocs.io/en/latest/aot.html
 import pickle
 from typing import Optional
 
-from absl import app, flags
+from absl import app, flags, logging
 from jax.experimental.serialize_executable import serialize
 
 from axlearn.common.aot_compilation import compile_trainer_programs
@@ -51,15 +51,18 @@ def _compile_and_dump_programs(
         print(f"== Cost analysis {program_name} ==")
         print(program.cost_analysis())
         print(f"== Memeory analysis {program_name} ==")
-        print(program.memory_analysis())
+        print(help(program.memory_analysis()))
 
         # Serialization does not work for CPU devices:
         #     UNIMPLEMENTED: Not an XLA Runtime executable
         if compile_topology is not None:
             serialized_compiled, _, _ = serialize(program)
-            with open("/tmp/aot_compiled", "wb") as f:
+            serialized_compiled_output_path = "/tmp/aot_compiled"
+            with open(serialized_compiled_output_path, "wb") as f:
                 pickle.dump(serialized_compiled, f)
-                print(serialized_compiled)
+            logging.info(
+                "Written serialized %s to %s", program_name, serialized_compiled_output_path
+            )
 
 
 def main(_):
