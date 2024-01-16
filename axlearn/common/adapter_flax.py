@@ -9,9 +9,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import jax.random
 from flax.linen import Module as FlaxModule
+from flax.linen import Partitioned
 
 from axlearn.common import utils
-from axlearn.common.base_layer import BaseLayer, NestedParameterSpec, ParameterSpec, PartitionSpec
+from axlearn.common.base_layer import BaseLayer, NestedParameterSpec, ParameterSpec
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module, NestedTensor
 
@@ -39,19 +40,29 @@ class FlaxLayer(BaseLayer):
         self.vlog(1, "dummy_inputs=%s", utils.shapes(self._dummy_inputs))
 
     def create_parameter_specs_recursively(self) -> NestedParameterSpec:
-        # Create parameters with a dummy PRNGKey. The parameters are used only to generate a
-        # NestedParameterSpec.
-        params = self.initialize_parameters_recursively(jax.random.PRNGKey(0))
         if self.config.param_partition_spec is not None:
-            raise NotImplementedError("FlaxLayer does not support partitioned parameters yet.")
+            raise ValueError("Specify partition specs on the Flax nn.Module directly.")
+
+        param_specs = jax.eval_shape(self.initialize_parameters_recursively, jax.random.PRNGKey(0))
+
+        def get_param_spec(param_spec: Union[Partitioned, jax.ShapeDtypeStruct]) -> ParameterSpec:
+            # Will be Partitioned e.g. if the flax layer has partitioning annotations.
+            if isinstance(param_spec, Partitioned):
+                mesh_axes = param_spec.get_partition_spec()
+                param_spec = param_spec.value
+            else:
+                # If not Partitioned, use None to indicate replication across all axes.
+                mesh_axes = None
+            return ParameterSpec(
+                dtype=param_spec.dtype,
+                shape=param_spec.shape,
+                mesh_axes=mesh_axes,
+            )
+
         return jax.tree_util.tree_map(
-            lambda x: ParameterSpec(
-                dtype=x.dtype,
-                shape=x.shape,
-                # Replicate the parameter.
-                mesh_axes=PartitionSpec(*([None] * len(x.shape))),
-            ),
-            params,
+            get_param_spec,
+            param_specs,
+            is_leaf=lambda x: isinstance(x, Partitioned),
         )
 
     def _create_flax_module(self) -> FlaxModule:
