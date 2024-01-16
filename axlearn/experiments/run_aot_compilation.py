@@ -8,7 +8,7 @@ XLA_FLAGS=--xla_dump_to=/tmp/aot_xla_dump \
 python axlearn/experiments/run_aot_compilation.py \
     --module=text.gpt.c4_trainer \
     --config=fuji-7B \
-    --topology=v4-1024 1>/tmp/aot_stdout 2| tee /tmp/aot_stderr
+    --topology=v4-1024 1> /tmp/aot_stdout
 
 Reference: https://jax.readthedocs.io/en/latest/aot.html
 """
