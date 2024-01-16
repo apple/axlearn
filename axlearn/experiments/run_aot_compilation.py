@@ -25,8 +25,8 @@ from axlearn.common.utils import set_data_dir
 from axlearn.common.utils_spmd import setup
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
 
-flags.DEFINE_string("module", None, "The trainer config module.")
-flags.DEFINE_string("config", None, "The trainer config name.")
+flags.DEFINE_string("module", None, "The trainer config module.", required=True)
+flags.DEFINE_string("config", None, "The trainer config name.", required=True)
 flags.DEFINE_string("topology", None, "The TPU topology.")
 flags.DEFINE_integer("topology_num_slices", 1, "The number of TPU slices.")
 
@@ -51,18 +51,16 @@ def _compile_and_dump_programs(
         print(f"== Cost analysis {program_name} ==")
         print(program.cost_analysis())
         print(f"== Memeory analysis {program_name} ==")
-        print(help(program.memory_analysis()))
+        print(program.memory_analysis())
 
         # Serialization does not work for CPU devices:
         #     UNIMPLEMENTED: Not an XLA Runtime executable
         if compile_topology is not None:
             serialized_compiled, _, _ = serialize(program)
-            serialized_compiled_output_path = "/tmp/aot_compiled"
+            serialized_compiled_output_path = f"/tmp/aot_compiled_{program_name}"
             with open(serialized_compiled_output_path, "wb") as f:
                 pickle.dump(serialized_compiled, f)
-            logging.info(
-                "Written serialized %s to %s", program_name, serialized_compiled_output_path
-            )
+            logging.info("Wrote serialized %s to %s", program_name, serialized_compiled_output_path)
 
 
 def main(_):
