@@ -10,8 +10,7 @@ python axlearn/experiments/run_aot_compilation.py \
     --config=fuji-7B \
     --topology=v4-1024 1> /tmp/aot_stdout 2| tee /tmp/aot_stderr
 
-Reference:
-https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
+Reference: https://jax.readthedocs.io/en/latest/aot.html
 """
 
 import pickle

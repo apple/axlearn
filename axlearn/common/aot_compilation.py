@@ -7,7 +7,7 @@ https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
 """
 import os
 from dataclasses import dataclass
-from typing import Callable, Dict
+from typing import Dict
 
 import jax
 import jax.random
@@ -154,7 +154,7 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
 
 def compile_trainer_programs(
     trainer_config: SpmdTrainer.Config, *, topology: str, topology_num_slices: int = 1
-) -> Dict[str, Callable]:
+) -> Dict[str, jax.stages.Compiled]:
     """Returns compiled XLA programs for the given trainer.
 
     Args:

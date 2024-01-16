@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 import tensorflow as tf
@@ -731,7 +731,7 @@ class SpmdTrainer(Module):
             evaler_summaries[evaler_name] = summaries
         return evaler_summaries
 
-    def _pjit_train_step(self) -> Callable:
+    def _pjit_train_step(self) -> jax.stages.Wrapped:
         return pjit(
             self._train_step,
             in_shardings=(
@@ -749,7 +749,7 @@ class SpmdTrainer(Module):
             donate_argnums=(0,),  # donate the state
         )
 
-    def compile_train_step(self) -> Callable:
+    def compile_train_step(self) -> jax.stages.Compiled:
         with self.mesh():
             # Do not run init(), which require real devices.
             trainer_state_specs = jax.tree_util.tree_map(
