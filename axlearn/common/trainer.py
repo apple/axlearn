@@ -163,7 +163,13 @@ class SpmdTrainer(Module):
         # increment within this interval.
         watchdog_timeout_seconds: Optional[float] = None
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module], devices: Optional[Sequence[jax.Device]]=None):
+    def __init__(
+        self,
+        cfg: Config,
+        *,
+        parent: Optional[Module],
+        devices: Optional[Sequence[jax.Device]] = None,
+    ):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
@@ -758,7 +764,8 @@ class SpmdTrainer(Module):
             )
             input_batch_specs = jax.tree_util.tree_map(
                 lambda tf_spec: jax.ShapeDtypeStruct(
-                    shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype),
+                    shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
+                ),
                 self.input.dataset().element_spec,
             )
             jit_train_step = self._pjit_train_step()
