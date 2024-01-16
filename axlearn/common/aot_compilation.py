@@ -6,22 +6,21 @@ Reference:
 https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
 """
 import os
-
-os.environ["TPU_SKIP_MDS_QUERY"] = "1"
-
 from dataclasses import dataclass
 from typing import Callable, Dict
 
 import jax
-
-# To avoid error: Unable to initialize backend 'tpu'.
-jax.config.update("jax_platforms", "cpu")
 import jax.random
 import numpy as np
 from jax.experimental.topologies import get_topology_desc
 
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import infer_mesh_shape
+
+os.environ["TPU_SKIP_MDS_QUERY"] = "1"
+
+# To avoid error: Unable to initialize backend 'tpu'.
+jax.config.update("jax_platforms", "cpu")
 
 
 @dataclass
@@ -162,13 +161,22 @@ def compile_trainer_programs(
         trainer_config: The trainer config.
         topology: A string representing the TPU topology, e.g., "v4-8". Must be a key in
             USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.
+            If None, use CPU devices.
         topology_num_slices: The number of TPU slices.
 
     Returns:
         A dict containing the following programs:
         * "train_step": a program to run a single training step.
+
+    Raises:
+        NotImplementedError: if `topology` is not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.
     """
     if topology is not None:
+        if topology not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
+            raise NotImplementedError(
+                f"Unsupported topology {topology}. "
+                f"Supported values are {USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.keys()}"
+            )
         target_hardware = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[topology]
         topology_devices = get_topology_desc(
             platform=target_hardware.platform,

@@ -57,13 +57,13 @@ def _compile_and_dump_programs(
         # Serialization does not work for CPU devices:
         #     UNIMPLEMENTED: Not an XLA Runtime executable
         if compile_topology is not None:
-            serialized_compiled, in_tree, out_tree = serialize(program)
+            serialized_compiled, _, _ = serialize(program)
             with open("/tmp/aot_compiled", "wb") as f:
                 pickle.dump(serialized_compiled, f)
                 print(serialized_compiled)
 
 
-def main(argv):
+def main(_):
     setup(jax_backend="cpu")
     trainer_config_fn: TrainerConfigFn = get_named_trainer_config(
         FLAGS.config,

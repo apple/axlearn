@@ -10,11 +10,9 @@ python axlearn/experiments/aot_test.py
 Reference:
 https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
 """
-import pickle
 from typing import Optional
 
 from absl.testing import absltest
-from jax.experimental.serialize_executable import serialize
 
 from axlearn.common import test_utils
 from axlearn.common.aot_compilation import compile_trainer_programs
@@ -24,9 +22,6 @@ from axlearn.experiments.text.gpt import c4_trainer
 
 class AoTCompilationTest(test_utils.TrainerConfigTestCase):
     """Tests ahead-of-time (AoT) compilation."""
-
-    def _jax_backend(self) -> str:
-        return "cpu"
 
     def _test_aot(
         self,
@@ -43,7 +38,7 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
         compiled_train_step = programs["train_step"]
         self.assertIsNotNone(compiled_train_step)
 
-    def test_fuji_7B(self):
+    def test_fuji_7b(self):
         self._test_aot(
             c4_trainer.named_trainer_configs()["fuji-7B"](),
             compile_topology=None,
