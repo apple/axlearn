@@ -3,9 +3,11 @@
 """Tests decoder layers."""
 # pylint: disable=no-self-use,too-many-branches
 import contextlib
+import unittest
 from typing import Literal, Optional
 from unittest import mock
 
+import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,7 +16,7 @@ from absl.testing import absltest, parameterized
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import Mesh
 
-from axlearn.common import decoding, utils
+from axlearn.common import causal_lm, decoding, logit_modifiers, utils
 from axlearn.common.attention import (
     NEG_INF,
     ALiBiAttentionLogitBiasLayer,
@@ -26,7 +28,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.causal_lm import gpt_decoder_config
-from axlearn.common.config import InstantiableConfig
+from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.decoder import Decoder, LmHead, _segment_ids_from_causal_input_ids
 from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.layers import set_bias_recursively
@@ -110,6 +112,7 @@ class TestDecoder(TestCase):
         tied_logits = layer_output(tied_head_state, tied_head)
         untied_logits = layer_output(untied_head_state, untied_head)
         np.testing.assert_raises(AssertionError, assert_allclose, tied_logits, untied_logits)
+
         # pylint: enable=duplicate-code
 
         # Test grads.
@@ -559,6 +562,28 @@ class TestDecoder(TestCase):
                 self.assertTrue(
                     jnp.all(sequences * (1 - prefix_mask) == (vocab_size - 1) * (1 - prefix_mask))
                 )
+
+    def test_output_logits_modifier(self):
+        """Tests the output_logits_modifier config property of `Decoder`."""
+
+        with unittest.mock.patch.object(
+            causal_lm.Decoder, "_forward_for_mode", lambda *args, **kwargs: (None, dict(logits=5))
+        ), unittest.mock.patch.object(causal_lm.Decoder, "compute_attention_logit_biases"):
+            decoder_cfg = gpt_decoder_config(
+                stack_cfg=StackedTransformerLayer.default_config(),
+                num_layers=2,
+                hidden_dim=5,
+                num_heads=1,
+                vocab_size=5,
+                activation_function="nn.relu",
+                max_position_embeddings=5,
+            )
+            output_logits_modifier = config_for_function(logit_modifiers.scale_by).set(
+                temperature=1 / 17
+            )
+            decoder_cfg.set(name="tmp", output_logits_modifier=output_logits_modifier)
+            decoder = decoder_cfg.instantiate(parent=None)
+            chex.assert_trees_all_close(decoder(5 * jnp.ones(3)), dict(logits=17 * 5 * jnp.ones(3)))
 
 
 class UtilsTest(TestCase):

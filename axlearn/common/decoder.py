@@ -8,6 +8,7 @@ import jax
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
+from axlearn.common import logit_modifiers
 from axlearn.common.attention import (
     AttentionLogitBiasLayer,
     BaseStackedTransformerLayer,
@@ -439,6 +440,8 @@ class Decoder(DecodingMixin, BaseLayer):
             None,
             "model",
         )
+        # The logit modifier to apply. If None, does not modify logits.
+        output_logits_modifier: Optional[ConfigOr[logit_modifiers.LogitsToLogitsFn]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -456,6 +459,7 @@ class Decoder(DecodingMixin, BaseLayer):
             self._add_child(
                 "lm_head", cfg.lm_head.set(vocab_size=cfg.vocab_size, embedding_dim=cfg.dim)
             )
+        self._output_logits_modifier = maybe_instantiate(cfg.output_logits_modifier)
 
     def _forward_for_mode(
         self,
@@ -558,6 +562,8 @@ class Decoder(DecodingMixin, BaseLayer):
             positions=positions,
             cached_states=None,
         )
+        if self._output_logits_modifier is not None:
+            output["logits"] = self._output_logits_modifier(output["logits"])
         return output
 
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
