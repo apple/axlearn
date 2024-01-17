@@ -35,14 +35,17 @@ jobs:
 workflows:
   wf-build:
     when:
-      equal: [ main, << pipeline.git.branch >> ]
+      matches:
+        pattern: "^main|gh-readonly-queue/main/pr-\\d+-[0-9a-f]{40}.*$"
+        value: << pipeline.git.branch >>
     jobs:
       - build-and-test-job
 
   wf-pr:
     when:
-      not:
-        equal: [ main, << pipeline.git.branch >> ]
+      matches:
+        pattern: "^pull/\\d+(/head)?$"
+        value: << pipeline.git.branch >>
     jobs:
       - hold:
           type: approval
