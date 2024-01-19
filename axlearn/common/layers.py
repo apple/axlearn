@@ -1067,12 +1067,24 @@ class Conv1D(BaseLayer):
         #   set of filters (of size output_dim / input_dim); if further output_dim == K * input_dim,
         #   where K is a positive integer, the operation is also known as a "depthwise convolution".
         num_input_dim_groups: Optional[int] = 1
+        # LHS_dilation is also known as transposed convolution. It is either None, or an int
+        # indicating the dilation factor applied on the input.
+        lhs_dilation: Optional[int] = None
+        # RHS_dilation is also known as atrous convolution. It is either None, or an int indicating
+        # dilation factor applied to the weight.
+        rhs_dilation: Optional[int] = None
 
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
         cfg.param_partition_spec = (None, None, "model")
         return cfg
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        # Check lhs_dilation and padding setting compatiablity.
+        if cfg.lhs_dilation is not None and cfg.lhs_dilation != 1 and isinstance(cfg.padding, str):
+            raise ValueError("String padding is not supported for LHS dilation.")
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
         cfg = self.config
@@ -1104,6 +1116,8 @@ class Conv1D(BaseLayer):
             dimension_numbers=("NWC", "WIO", "NWC"),
             padding=cfg.padding if isinstance(cfg.padding, str) else (cfg.padding,),
             feature_group_count=cfg.num_input_dim_groups,
+            lhs_dilation=[cfg.lhs_dilation] if cfg.lhs_dilation is not None else None,
+            rhs_dilation=[cfg.rhs_dilation] if cfg.rhs_dilation is not None else None,
         )
         if cfg.bias:
             output += self.parameters["bias"]
