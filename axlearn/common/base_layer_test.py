@@ -409,7 +409,7 @@ class BaseLayerTest(TestCase):
 
     def test_no_remat_inheritance(self):
         # Check that @no_remat is preserved by inheritance unless the method
-        # is explicitly overriden by one without @no_remat.
+        # is explicitly overridden by one without @no_remat.
         class AnotherTestLayer(BaseLayer):
             @no_remat
             def fn(self, st: str):
