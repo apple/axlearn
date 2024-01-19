@@ -16,7 +16,9 @@ import math
 import numbers
 import os
 import re
+import sys
 import threading
+import traceback
 from enum import Enum
 from typing import (
     Any,
@@ -1181,3 +1183,17 @@ def infer_mesh_shape(mesh_shape: MeshShape, *, num_devices: Optional[int] = None
     logging.info("Infer mesh shape from %s to %s", mesh_shape, new_mesh_shape)
 
     return new_mesh_shape
+
+
+def thread_stack_traces() -> Sequence[Sequence[str]]:
+    """Retrieves the current python stack traces."""
+    grouped_lines = []
+    for thread in threading.enumerate():
+        lines = []
+        thread_id = thread.ident
+        lines.append(f"Thread: {thread.name}({thread_id})")
+        # pylint: disable-next=protected-access
+        for line in traceback.format_stack(sys._current_frames()[thread_id]):
+            lines.append(f">>> {line.rstrip()}")
+        grouped_lines.append(lines)
+    return grouped_lines

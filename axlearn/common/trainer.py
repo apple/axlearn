@@ -2,12 +2,11 @@
 
 """Defines SpmdTrainer, a trainer that supports partitioning of computation and data with GSPMD."""
 import contextlib
+import itertools
 import math
 import os.path
-import sys
 import threading
 import time
-import traceback
 from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
@@ -40,18 +39,8 @@ from axlearn.common.utils import (
     flatten_items,
     match_regex_rules,
     prune_tree,
+    thread_stack_traces,
 )
-
-
-def _thread_stack_traces() -> Sequence[str]:
-    lines = []
-    for thread in threading.enumerate():
-        thread_id = thread.ident
-        lines.append(f"Thread: {thread.name}({thread_id})")
-        # pylint: disable-next=protected-access
-        for line in traceback.format_stack(sys._current_frames()[thread_id]):
-            lines.append(f">>> {line.rstrip()}")
-    return lines
 
 
 def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
@@ -344,7 +333,7 @@ class SpmdTrainer(Module):
                     "in case the trainer is stuck.\n"
                     "Threads:\n%s",
                     cfg.watchdog_timeout_seconds,
-                    "\n".join(_thread_stack_traces()),
+                    "\n".join(itertools.chain.from_iterable(thread_stack_traces())),
                 )
             else:
                 self.vlog(1, "Watchdog check passed: %s -> %s", last_step, current_step)

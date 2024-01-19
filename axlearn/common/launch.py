@@ -52,6 +52,7 @@ import logging as pylogging
 
 from absl import flags, logging
 
+from axlearn.common.status_server import StatusHTTPServer
 from axlearn.common.utils import get_data_dir
 from axlearn.common.utils_spmd import setup as setup_spmd
 
@@ -74,6 +75,7 @@ flags.DEFINE_string(
     "If 'FAKE', uses fake inputs.",
 )
 flags.DEFINE_integer("jax_profiler_port", None, "If not None, the profiler port.")
+flags.DEFINE_integer("status_port", None, "If not None, the status server port.")
 flags.DEFINE_string("jax_backend", None, "Specifies the XLA backend to use.", required=True)
 flags.DEFINE_string(
     "distributed_coordinator",
@@ -107,6 +109,10 @@ def setup():
     if FLAGS.jax_profiler_port is not None:
         # Start jax.profiler for Tensorboard and profiling in open source.
         jax.profiler.start_server(FLAGS.jax_profiler_port)
+
+    if FLAGS.status_port is not None:
+        status_server = StatusHTTPServer(FLAGS.status_port)
+        status_server.start()
 
     devices = jax.devices()
     logging.info("Devices: %s", devices)
