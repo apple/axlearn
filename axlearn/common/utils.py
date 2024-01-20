@@ -298,7 +298,7 @@ def expand_vdicts(tree: NestedTensor) -> NestedTensor:
 
         expanded: List[VDict] = []
         for ind in range(vdict_size):
-            value_i: VDict = jax.tree_util.tree_map(lambda x: x[ind], value)
+            value_i: VDict = jax.tree_util.tree_map(lambda x, i=ind: x[i], value)
             expanded_i = {k: expand_vdicts(v) for k, v in value_i.items()}
             expanded.append(expanded_i)
         return expanded
