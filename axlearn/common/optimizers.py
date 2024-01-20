@@ -49,6 +49,8 @@ from axlearn.common.utils import (
     NestedTree,
     Tensor,
     TensorSpec,
+    expand_vdicts,
+    flatten_items,
     register_per_param_settings,
     tree_paths,
     vectorized_tree_map,
@@ -1053,13 +1055,30 @@ def clip_by_block_rms(threshold: float) -> PartitionedGradientTransformation:
     def update_fn(updates, state, params=None):
         del params
 
+        @chex.dataclass
+        class Output:
+            norm: Tensor
+            clipped: Tensor
+
         def _clip_fn(u):
-            clip_denom = jnp.maximum(1.0, jnp.sqrt(jnp.mean(u**2)) / threshold)
-            return u / clip_denom
+            norm = jnp.sqrt(jnp.mean(u**2))
+            clip_denom = jnp.maximum(1.0, norm / threshold)
+            return Output(norm=norm, clipped=u / clip_denom)
 
         # The only difference from the optax implementation:
         # vectorized_tree_map vs. jax.tree_util.tree_map.
-        updates = vectorized_tree_map(_clip_fn, updates)
+        outputs = vectorized_tree_map(_clip_fn, updates)
+        context = current_context()
+        if context is not None:
+            norms = jax.tree_util.tree_map(
+                lambda x: x.norm, outputs, is_leaf=lambda x: isinstance(x, Output)
+            )
+            norms = expand_vdicts(norms)
+            for path, value in flatten_items(norms):
+                context.add_summary(f"{path}/norm", value)
+        updates = jax.tree_util.tree_map(
+            lambda x: x.clipped, outputs, is_leaf=lambda x: isinstance(x, Output)
+        )
         return updates, state
 
     return PartitionedGradientTransformation(init_fn, update_fn, lambda _: optax.EmptyState())

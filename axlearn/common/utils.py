@@ -253,6 +253,48 @@ def vectorized_tree_map(fn, tree, *rest):
     )
 
 
+def expand_vdicts(tree: NestedTensor) -> NestedTensor:
+    is_leaf = lambda x: isinstance(x, VDict)
+
+    def fn(value: Union[Tensor, VDict]) -> NestedTensor:
+        if not isinstance(value, VDict):
+            return value
+
+        leaves = jax.tree_util.tree_leaves(value)
+        if not leaves:
+            # An empty VDict.
+            return value
+
+        non_tensor_leaves = [leaf for leaf in leaves if not isinstance(leaf, Tensor)]
+        if non_tensor_leaves:
+            raise ValueError(
+                f"Expected a tree of Tensors, got {type(non_tensor_leaves[0])} in {tree}"
+            )
+
+        scalar_tensors = [leaf for leaf in leaves if not leaf.shape]
+        if scalar_tensors:
+            raise ValueError(
+                f"Expected a tree of vectorized Tensors, got scalar {scalar_tensors} in {tree}"
+            )
+
+        vdict_size = leaves[0].shape[0]
+        different_vdict_size_tensors = [leaf for leaf in leaves if leaf.shape[0] != vdict_size]
+        if different_vdict_size_tensors:
+            raise ValueError(
+                "Expected a tree of vectorized Tensors of same dim 0, "
+                f"got {different_vdict_size_tensors[0].shape} vs. {vdict_size} in {tree}"
+            )
+
+        expanded: List[VDict] = []
+        for ind in range(vdict_size):
+            value_i: VDict = jax.tree_util.tree_map(lambda x: x[ind], value)
+            expanded_i = {k: expand_vdicts(v) for k, v in value_i.items()}
+            expanded.append(expanded_i)
+        return expanded
+
+    return jax.tree_util.tree_map(fn, tree, is_leaf=is_leaf)
+
+
 class StackedKeyArray(NamedTuple):
     keys: Union[Tensor, "StackedKeyArray"]
 
