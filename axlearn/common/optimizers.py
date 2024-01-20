@@ -1033,7 +1033,7 @@ def clip_by_global_norm(
     )
 
 
-def clip_by_block_rms(threshold: float) -> PartitionedGradientTransformation:
+def clip_by_block_rms(threshold: Optional[float]) -> PartitionedGradientTransformation:
     """Clip updates to a max rms for the gradient of each param vector or matrix.
 
     A `block` is here a weight vector (e.g. in a Linear layer) or a weight matrix
@@ -1043,6 +1043,8 @@ def clip_by_block_rms(threshold: float) -> PartitionedGradientTransformation:
 
     Args:
         threshold: the maximum rms for the gradient of each param vector or matrix.
+            If None, does not clip, but only adds norms to summaries of the current
+            context (if set).
 
     Returns:
         An (init_fn, update_fn) tuple.
@@ -1062,8 +1064,11 @@ def clip_by_block_rms(threshold: float) -> PartitionedGradientTransformation:
 
         def _clip_fn(u):
             norm = jnp.sqrt(jnp.mean(u**2))
-            clip_denom = jnp.maximum(1.0, norm / threshold)
-            return Output(norm=norm, clipped=u / clip_denom)
+            if threshold is None:
+                clipped = u
+            else:
+                clipped = u / jnp.maximum(1.0, norm / threshold)
+            return Output(norm=norm, clipped=clipped)
 
         # The only difference from the optax implementation:
         # vectorized_tree_map vs. jax.tree_util.tree_map.

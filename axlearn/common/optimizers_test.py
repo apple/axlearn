@@ -814,7 +814,7 @@ class OptimizerTest(TestCase):
             updates["x"], [[1e-5] * 4, [1.8708287, 1.8708287, 1.8708287, 1.8708287]], atol=1e-6
         )
 
-    @parameterized.parameters(100.0, 1e-3)
+    @parameterized.parameters(100.0, 1e-3, None)
     def test_clip_by_block_rms(self, max_norm):
         clip = clip_by_block_rms(threshold=max_norm)
         params = dict(layer=VDict(x=jnp.asarray([[0, 0, 0, 0], [0, 1, 2, -3]], dtype=jnp.float32)))
@@ -846,7 +846,7 @@ class OptimizerTest(TestCase):
         with set_current_context(context):
             updates, _ = clip.update(grads, state=state, params=params)
         x_updates = updates["layer"]["x"]
-        if max_norm > 1:
+        if max_norm is None or max_norm > 1:
             np.testing.assert_allclose(x_updates, x_grads, atol=1e-6)
         else:
             np.testing.assert_allclose(
