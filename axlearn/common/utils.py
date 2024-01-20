@@ -254,6 +254,17 @@ def vectorized_tree_map(fn, tree, *rest):
 
 
 def expand_vdicts(tree: NestedTensor) -> NestedTensor:
+    """Expands each VDict in `tree` to a list.
+
+    Args:
+        tree: A nested tree of Tensors. All leaf nodes under a VDict must be tensors with the same
+            dim 0 size.
+
+    Returns:
+        Returns a tree where every VDict is replaced by a list of dicts, where the length of the
+        list equals to the dim 0 size of tensors in the VDict and list element i corresponds to
+        slice i of the VDict tensors. The only exception is empty VDicts, which are not expanded.
+    """
     is_leaf = lambda x: isinstance(x, VDict)
 
     def fn(value: Union[Tensor, VDict]) -> NestedTensor:

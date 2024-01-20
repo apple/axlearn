@@ -177,6 +177,8 @@ class TreeUtilsTest(TestCase):
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d2)))
 
     def test_expand_vdicts(self):
+        # An empty VDict is not expanded.
+        self.assertEqual(VDict(), expand_vdicts(VDict()))
         tree = VDict(a=jnp.asarray([1, 2, 3]))
         self.assertEqual([dict(a=jnp.asarray(i)) for i in (1, 2, 3)], expand_vdicts(tree))
         with self.assertRaisesRegex(ValueError, "Expected a tree of Tensors"):
