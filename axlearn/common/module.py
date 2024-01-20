@@ -153,7 +153,7 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
 
     name: str
     parent: Optional["InvocationContext"]
-    module: "Module"
+    module: Optional["Module"]
     state: NestedTensor
     is_training: bool
     prng_key: Optional[Tensor]
