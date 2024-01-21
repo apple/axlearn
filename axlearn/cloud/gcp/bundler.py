@@ -52,13 +52,15 @@ from typing import Dict
 
 from absl import app, flags, logging
 
-from axlearn.cloud.common.bundler import BaseDockerBundler, BaseTarBundler, DockerBundler
+from axlearn.cloud.common.bundler import BaseDockerBundler, BaseTarBundler, Bundler, DockerBundler
 from axlearn.cloud.common.bundler import main as bundler_main
 from axlearn.cloud.common.bundler import main_flags as bundler_main_flags
 from axlearn.cloud.common.bundler import register_bundler
 from axlearn.cloud.common.docker import registry_from_repo
+from axlearn.cloud.common.utils import canonicalize_to_list
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.utils import common_flags
+from axlearn.common.config import maybe_set_config
 
 FLAGS = flags.FLAGS
 
@@ -173,6 +175,19 @@ options:
         logging.info("Running %s", cmd)
         print(subprocess.run(cmd, check=False))
         return image
+
+
+def with_tpu_extras(bundler: Bundler.Config) -> Bundler.Config:
+    """Configures bundler to install 'tpu' extras."""
+    # Note: find_links is only applicable for tar bundlers.
+    # For docker bundlers, point to the TPU build target.
+    find_links = canonicalize_to_list(getattr(bundler, "find_links", []))
+    find_links.append("https://storage.googleapis.com/jax-releases/libtpu_releases.html")
+    maybe_set_config(bundler, find_links=find_links)
+    extras = canonicalize_to_list(bundler.extras)
+    extras.append("tpu")
+    bundler.set(extras=extras)
+    return bundler
 
 
 if __name__ == "__main__":

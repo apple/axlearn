@@ -65,20 +65,14 @@ from typing import Dict, Optional, Sequence
 
 from absl import app, flags, logging
 
-from axlearn.cloud.common.bundler import (
-    BaseDockerBundler,
-    Bundler,
-    bundler_flags,
-    get_bundler_config,
-)
+from axlearn.cloud.common.bundler import BaseDockerBundler, bundler_flags, get_bundler_config
 from axlearn.cloud.common.utils import (
-    canonicalize_to_list,
     configure_logging,
     generate_job_name,
     parse_action,
     parse_kv_flags,
 )
-from axlearn.cloud.gcp.bundler import GCSTarBundler
+from axlearn.cloud.gcp.bundler import GCSTarBundler, with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import TPUJob, docker_command
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
@@ -100,7 +94,7 @@ from axlearn.cloud.gcp.vertexai_tensorboard import (
     VertexAITensorboardUploader,
     is_vertexai_tensorboard_configured,
 )
-from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
+from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.liveness_monitor import LivenessMonitor
 
 FLAGS = flags.FLAGS
@@ -151,22 +145,6 @@ def launch_flags(flag_values: flags.FlagValues = FLAGS):
         "not all TPU types support this flag.",
         flag_values=flag_values,
     )
-
-
-def with_tpu_extras(bundler: Bundler.Config):
-    """Configures bundler to install 'tpu' extras."""
-    # Note: find_links is only applicable for tar bundlers.
-    # For docker bundlers, point to the TPU build target.
-    find_links = canonicalize_to_list(getattr(bundler, "find_links", []))
-    find_links.append("https://storage.googleapis.com/jax-releases/libtpu_releases.html")
-    maybe_set_config(
-        bundler,
-        find_links=find_links,
-    )
-    extras = canonicalize_to_list(bundler.extras)
-    extras.append("tpu")
-    bundler.set(extras=extras)
-    return bundler
 
 
 class TPURunnerJob(TPUJob):
