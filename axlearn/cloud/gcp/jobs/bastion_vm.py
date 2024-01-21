@@ -279,10 +279,7 @@ class CreateBastionJob(CPUJob):
 
         # Bastion outputs will be piped to run_log.
         run_log = os.path.join(output_dir(cfg.name), "logs", f"{cfg.name}-%Y%m%d")
-        output_cmd = (
-            f"tee >(python3 -m axlearn.cloud.common.writer "
-            f"--writer=tfio --writer_spec=output_path={run_log})"
-        )
+        output_cmd = f"tee >(python3 -m axlearn.cloud.common.writer --output_path={run_log})"
 
         # Command to start the bastion inside a docker container.
         image = self._bundler.id(cfg.name)
