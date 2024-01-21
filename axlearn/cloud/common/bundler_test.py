@@ -3,6 +3,7 @@
 """Tests bundling utilities."""
 
 import contextlib
+import os
 import pathlib
 import tarfile
 import tempfile
@@ -55,6 +56,34 @@ class BundlerTest(TestWithTemporaryCWD):
             self.assertTrue(
                 (pathlib.Path(temp_bundle) / "axlearn" / CONFIG_DIR / CONFIG_FILE).exists()
             )
+
+    def test_local_dir_context_external(self):
+        # Create a dummy config.
+        _create_dummy_config(self._temp_root.name)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            (pathlib.Path(temp_dir) / "a" / "b").mkdir(parents=True)
+            for f in ["test1.txt", "a/b/d.txt"]:
+                (pathlib.Path(temp_dir) / f).write_text("hello world")
+
+            # Using --bundler_spec=external=/path/to/dir should copy the dir.
+            b = Bundler.default_config().set(external=[os.path.join(temp_dir, "a")]).instantiate()
+            # pylint: disable-next=protected-access
+            with b._local_dir_context() as temp_bundle:
+                temp_bundle = pathlib.Path(temp_bundle) / "axlearn"
+                self.assertTrue((temp_bundle / "a").is_dir())
+                self.assertTrue((temp_bundle / "a" / "b").is_dir())
+                self.assertEqual("hello world", (temp_bundle / "a" / "b" / "d.txt").read_text())
+                self.assertFalse((temp_bundle / "test1.txt").exists())
+
+            # Using --bundler_spec=external=/path/to/dir/ should copy the dir contents.
+            b = Bundler.default_config().set(external=[os.path.join(temp_dir, "a/")]).instantiate()
+            # pylint: disable-next=protected-access
+            with b._local_dir_context() as temp_bundle:
+                temp_bundle = pathlib.Path(temp_bundle) / "axlearn"
+                self.assertFalse((temp_bundle / "a").exists())
+                self.assertTrue((temp_bundle / "b").is_dir())
+                self.assertEqual("hello world", (temp_bundle / "b" / "d.txt").read_text())
 
 
 class RegistryTest(TestCase):
