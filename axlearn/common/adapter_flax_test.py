@@ -1,10 +1,14 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests adapter flax layers."""
+from typing import Callable
+
 import jax.random
+import pytest
 from absl.testing import absltest
 from flax import linen as nn
 from jax import numpy as jnp
+from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
 from axlearn.common.adapter_flax import config_for_flax_module
@@ -12,7 +16,7 @@ from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import InstantiableConfig, config_class
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
-from axlearn.common.test_utils import TestCase
+from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 
 
 def dummy_inputs(dim, dtype):
@@ -100,6 +104,32 @@ class FlaxEmbedAttention(BaseLayer):
         return self.embed(x, module_method="attend")
 
 
+class DotReluDot(nn.Module):
+    """A Flax layer with sharding annotations.
+
+    https://flax.readthedocs.io/en/latest/guides/parallel_training/flax_on_pjit.html#define-a-layer
+    """
+
+    depth: int
+    dense_init: Callable = nn.initializers.xavier_normal()
+
+    @nn.compact
+    def __call__(self, x):
+        y = nn.Dense(
+            self.depth,
+            kernel_init=nn.with_partitioning(self.dense_init, (None, "model")),
+            use_bias=False,
+        )(x)
+        y = jax.nn.relu(y)
+        y = jax.lax.with_sharding_constraint(y, jax.sharding.PartitionSpec("data", "model"))
+        w2 = self.param(
+            "W2", nn.with_partitioning(self.dense_init, ("model", None)), (self.depth, x.shape[-1])
+        )
+        z = jnp.dot(y, w2)
+        z = jax.lax.with_sharding_constraint(z, jax.sharding.PartitionSpec("data", None))
+        return z, None
+
+
 class FlaxLayerTest(TestCase):
     """Tests FlaxLayer."""
 
@@ -116,7 +146,7 @@ class FlaxLayerTest(TestCase):
         def check_spec_and_param(spec, param):
             self.assertEqual(spec.dtype, param.dtype)
             self.assertSequenceEqual(spec.shape, param.shape)
-            self.assertSequenceEqual(spec.mesh_axes, [None] * len(param.shape))
+            self.assertEqual(spec.mesh_axes, None)
 
         jax.tree_util.tree_map(check_spec_and_param, param_specs, layer_params)
 
@@ -183,7 +213,7 @@ class FlaxLayerTest(TestCase):
         def check_spec_and_param(spec, param):
             self.assertEqual(spec.dtype, param.dtype)
             self.assertSequenceEqual(spec.shape, param.shape)
-            self.assertSequenceEqual(spec.mesh_axes, [None] * len(param.shape))
+            self.assertEqual(spec.mesh_axes, None)
 
         jax.tree_util.tree_map(check_spec_and_param, param_specs, layer_params)
 
@@ -207,6 +237,39 @@ class FlaxLayerTest(TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
         self.assertEqual((batch_size, num_embeddings), utils.shapes(outputs))
+
+    def test_sharding(self):
+        mesh_shape = (len(jax.devices()) // 2, 2)
+        if not is_supported_mesh_shape(mesh_shape):
+            pytest.skip(f"Unsupported mesh shape {mesh_shape}")
+
+        with jax.sharding.Mesh(utils.create_device_mesh(mesh_shape=mesh_shape), ("data", "model")):
+            dim = 4
+            cfg = config_for_flax_module(DotReluDot, dummy_inputs).set(
+                create_module_kwargs=dict(depth=dim),
+                create_dummy_input_kwargs=dict(dim=dim, dtype=jnp.int32),
+            )
+            layer = cfg.set(name="test").instantiate(parent=None)
+            param_specs = layer.create_parameter_specs_recursively()
+            partition_specs = jax.tree_util.tree_map(lambda spec: spec.mesh_axes, param_specs)
+
+            jit_init_state = pjit(
+                layer.initialize_parameters_recursively,
+                in_shardings=(None,),
+                out_shardings=partition_specs,
+            )
+            layer_params = jit_init_state(jax.random.PRNGKey(1))
+
+            jax.tree_map(
+                lambda x: self.assertFalse(x.value.is_fully_replicated),
+                layer_params,
+                is_leaf=lambda x: isinstance(x, nn.Partitioned),
+            )
+            jax.tree_map(
+                lambda x: jax.debug.visualize_array_sharding(x.value),
+                layer_params,
+                is_leaf=lambda x: isinstance(x, nn.Partitioned),
+            )
 
 
 if __name__ == "__main__":
