@@ -265,7 +265,6 @@ def expand_vdicts(tree: NestedTensor) -> NestedTensor:
         list equals to the dim 0 size of tensors in the VDict and list element i corresponds to
         slice i of the VDict tensors. The only exception is empty VDicts, which are not expanded.
     """
-    is_leaf = lambda x: isinstance(x, VDict)
 
     def fn(value: Union[Tensor, VDict]) -> NestedTensor:
         if not isinstance(value, VDict):
@@ -293,7 +292,7 @@ def expand_vdicts(tree: NestedTensor) -> NestedTensor:
         if different_vdict_size_tensors:
             raise ValueError(
                 "Expected a tree of vectorized Tensors of same dim 0, "
-                f"got {different_vdict_size_tensors[0].shape} vs. {vdict_size} in {tree}"
+                f"got {different_vdict_size_tensors[0].shape[0]} vs. {vdict_size} in {tree}"
             )
 
         expanded: List[VDict] = []
@@ -303,7 +302,7 @@ def expand_vdicts(tree: NestedTensor) -> NestedTensor:
             expanded.append(expanded_i)
         return expanded
 
-    return jax.tree_util.tree_map(fn, tree, is_leaf=is_leaf)
+    return jax.tree_util.tree_map(fn, tree, is_leaf=lambda x: isinstance(x, VDict))
 
 
 class StackedKeyArray(NamedTuple):

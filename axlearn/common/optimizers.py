@@ -1043,8 +1043,9 @@ def clip_by_block_rms(threshold: Optional[float]) -> PartitionedGradientTransfor
 
     Args:
         threshold: the maximum rms for the gradient of each param vector or matrix.
-            If None, does not clip, but only adds norms to summaries of the current
-            context (if set).
+            If None, does not clip.
+            In either case, norms will be added to summaries of the current context
+            (if a context is set).
 
     Returns:
         An (init_fn, update_fn) tuple.
