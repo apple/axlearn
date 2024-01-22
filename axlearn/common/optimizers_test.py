@@ -15,6 +15,7 @@ from jax import numpy as jnp
 from axlearn.common import schedule
 from axlearn.common.base_layer import FactorizationSpec, NestedParameterSpec, ParameterSpec
 from axlearn.common.config import config_for_function
+from axlearn.common.module import InvocationContext, new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam, OptStateSpec, PartitionedGradientTransformation
 from axlearn.common.optimizers import (
     ParamEmaState,
@@ -813,32 +814,48 @@ class OptimizerTest(TestCase):
             updates["x"], [[1e-5] * 4, [1.8708287, 1.8708287, 1.8708287, 1.8708287]], atol=1e-6
         )
 
-    @parameterized.parameters(100.0, 1e-3)
+    @parameterized.parameters(100.0, 1e-3, None)
     def test_clip_by_block_rms(self, max_norm):
         clip = clip_by_block_rms(threshold=max_norm)
-        params = VDict(x=jnp.asarray([[0, 0, 0, 0], [0, 1, 2, -3]], dtype=jnp.float32))
+        params = dict(layer=VDict(x=jnp.asarray([[0, 0, 0, 0], [0, 1, 2, -3]], dtype=jnp.float32)))
         state = clip.init(params)
         self.assertEqual(optax.EmptyState, type(state))
 
         def loss(params):
-            return -jax.nn.log_softmax(params["x"])[:, 1].mean()
+            return -jax.nn.log_softmax(params["layer"]["x"])[:, 1].mean()
 
         loss, grads = jax.value_and_grad(loss)(params)
         assert_allclose(loss, 1.399186)
+        x_grads = grads["layer"]["x"]
         assert_allclose(
-            [[0.125, -0.375, 0.125, 0.125], [0.044814, -0.378182, 0.331136, 0.002231]], grads["x"]
+            [[0.125, -0.375, 0.125, 0.125], [0.044814, -0.378182, 0.331136, 0.002231]], x_grads
         )
 
-        g_norm = jax.vmap(rms_norm)(grads["x"])
+        g_norm = jax.vmap(rms_norm)(x_grads)
         assert_allclose([0.216506, 0.252332], g_norm)
 
-        updates, _ = clip.update(grads, state=state, params=params)
-        if max_norm > 1:
-            np.testing.assert_allclose(updates["x"], grads["x"], atol=1e-6)
+        context = InvocationContext(
+            name="root",
+            parent=None,
+            module=None,
+            state=None,
+            output_collection=new_output_collection(),
+            is_training=True,
+            prng_key=None,
+        )
+        with set_current_context(context):
+            updates, _ = clip.update(grads, state=state, params=params)
+        x_updates = updates["layer"]["x"]
+        if max_norm is None or max_norm > 1:
+            np.testing.assert_allclose(x_updates, x_grads, atol=1e-6)
         else:
             np.testing.assert_allclose(
-                jax.vmap(rms_norm)(updates["x"]), [max_norm] * 2, atol=1e-6, rtol=1e-6
+                jax.vmap(rms_norm)(x_updates), [max_norm] * 2, atol=1e-6, rtol=1e-6
             )
+        summaries = context.output_collection.summaries
+        self.assertNestedAllClose(
+            {"layer/0/x/norm": g_norm[0], "layer/1/x/norm": g_norm[1]}, summaries
+        )
 
     @parameterized.parameters(100.0, 1e-3)
     def test_scale_by_param_block_rms(self, threshold):

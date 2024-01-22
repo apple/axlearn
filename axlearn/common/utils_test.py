@@ -55,6 +55,7 @@ from axlearn.common.utils import (
     count_model_params,
     create_device_mesh,
     dispatch_input_batch,
+    expand_vdicts,
     flatten_items,
     get_data_dir,
     get_recursively,
@@ -174,6 +175,28 @@ class TreeUtilsTest(TestCase):
         d2 = OrderedDict(reversed(kv))
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d1)))
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d2)))
+
+    def test_expand_vdicts(self):
+        # An empty VDict is not expanded.
+        self.assertEqual(VDict(), expand_vdicts(VDict()))
+        tree = VDict(a=jnp.asarray([1, 2, 3]))
+        self.assertEqual([dict(a=jnp.asarray(i)) for i in (1, 2, 3)], expand_vdicts(tree))
+        with self.assertRaisesRegex(ValueError, "Expected a tree of Tensors"):
+            expand_vdicts(VDict(a="x"))
+        with self.assertRaisesRegex(
+            ValueError, "Expected a tree of vectorized Tensors, got scalar"
+        ):
+            expand_vdicts(VDict(a=jnp.asarray(10)))
+        with self.assertRaisesRegex(
+            ValueError, "Expected a tree of vectorized Tensors of same dim 0"
+        ):
+            expand_vdicts(VDict(a=jnp.asarray([0, 1]), b=jnp.asarray([2, 3, 4])))
+        tree = VDict(a=jnp.asarray([1, 2, 3]), b=VDict(c=jnp.asarray([[4, 5]] * 3)))
+        # Nested VDict.
+        self.assertEqual(
+            [dict(a=jnp.asarray(i), b=[dict(c=jnp.asarray(j)) for j in (4, 5)]) for i in (1, 2, 3)],
+            expand_vdicts(tree),
+        )
 
     def assertTensorEqual(self, a, b):
         self.assertIsInstance(a, jnp.ndarray)

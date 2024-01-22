@@ -253,6 +253,58 @@ def vectorized_tree_map(fn, tree, *rest):
     )
 
 
+def expand_vdicts(tree: NestedTensor) -> NestedTensor:
+    """Expands each VDict in `tree` to a list.
+
+    Args:
+        tree: A nested tree of Tensors. All leaf nodes under a VDict must be tensors with the same
+            dim 0 size.
+
+    Returns:
+        Returns a tree where every VDict is replaced by a list of dicts, where the length of the
+        list equals to the dim 0 size of tensors in the VDict and list element i corresponds to
+        slice i of the VDict tensors. The only exception is empty VDicts, which are not expanded.
+    """
+
+    def fn(value: Union[Tensor, VDict]) -> NestedTensor:
+        if not isinstance(value, VDict):
+            return value
+
+        leaves = jax.tree_util.tree_leaves(value)
+        if not leaves:
+            # An empty VDict.
+            return value
+
+        non_tensor_leaves = [leaf for leaf in leaves if not isinstance(leaf, Tensor)]
+        if non_tensor_leaves:
+            raise ValueError(
+                f"Expected a tree of Tensors, got {type(non_tensor_leaves[0])} in {tree}"
+            )
+
+        scalar_tensors = [leaf for leaf in leaves if not leaf.shape]
+        if scalar_tensors:
+            raise ValueError(
+                f"Expected a tree of vectorized Tensors, got scalar {scalar_tensors} in {tree}"
+            )
+
+        vdict_size = leaves[0].shape[0]
+        different_vdict_size_tensors = [leaf for leaf in leaves if leaf.shape[0] != vdict_size]
+        if different_vdict_size_tensors:
+            raise ValueError(
+                "Expected a tree of vectorized Tensors of same dim 0, "
+                f"got {different_vdict_size_tensors[0].shape[0]} vs. {vdict_size} in {tree}"
+            )
+
+        expanded: List[VDict] = []
+        for ind in range(vdict_size):
+            value_i: VDict = jax.tree_util.tree_map(lambda x, i=ind: x[i], value)
+            expanded_i = {k: expand_vdicts(v) for k, v in value_i.items()}
+            expanded.append(expanded_i)
+        return expanded
+
+    return jax.tree_util.tree_map(fn, tree, is_leaf=lambda x: isinstance(x, VDict))
+
+
 class StackedKeyArray(NamedTuple):
     keys: Union[Tensor, "StackedKeyArray"]
 
