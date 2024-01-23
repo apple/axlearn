@@ -265,6 +265,8 @@ class TrainerConfigTestCase(TestCase):
                 if state_spec is None:
                     continue
                 self.assertSequenceEqual(value.shape, state_spec.shape)
+                if state_spec.mesh_axes is None:
+                    state_spec.mesh_axes = [None] * len(value.shape)
                 self.assertLen(
                     state_spec.mesh_axes,
                     len(value.shape),
