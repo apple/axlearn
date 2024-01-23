@@ -25,6 +25,7 @@ from axlearn.common.utils import set_data_dir
 from axlearn.common.utils_spmd import setup
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
 
+flags.DEFINE_string("root_module", "axlearn", "The root config module.")
 flags.DEFINE_string("module", None, "The trainer config module.", required=True)
 flags.DEFINE_string("config", None, "The trainer config name.", required=True)
 flags.DEFINE_string("topology", None, "The TPU topology.")
@@ -68,7 +69,7 @@ def main(_):
     trainer_config_fn: TrainerConfigFn = get_named_trainer_config(
         FLAGS.config,
         config_module=FLAGS.module,
-        root_module="axlearn",
+        root_module=FLAGS.root_module,
     )
     _compile_and_dump_programs(
         trainer_config_fn(),
