@@ -275,7 +275,7 @@ class LastNTokenPooling(BasePoolingLayer):
         # with the flipped input_masks.
         input_masks = input_masks[:, ::-1]
         input_masks_cumsum = input_masks.cumsum(axis=1)[:, ::-1]
-        dispatch = jax.nn.one_hot(input_masks_cumsum - 1, num_outputs)
+        dispatch = jax.nn.one_hot(input_masks_cumsum - 1, num_outputs, dtype=tokens.dtype)
         chosen_tokens = jnp.einsum("bsd,bso->bod", tokens, dispatch)
 
         return chosen_tokens
