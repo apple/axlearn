@@ -67,8 +67,7 @@ def main(_):
     setup(jax_backend="cpu")
     trainer_config_fn: TrainerConfigFn = get_named_trainer_config(
         FLAGS.config,
-        config_module=FLAGS.module,
-        root_module="axlearn",
+        config_module=f"axlearn.{FLAGS.module}",
     )
     _compile_and_dump_programs(
         trainer_config_fn(),
