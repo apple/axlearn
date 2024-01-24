@@ -74,7 +74,8 @@ class CreateBastionJobTest(TestWithTemporaryCWD):
 
         mock_execute = mock.patch.object(job, "_execute_remote_cmd", return_value=None)
         mock_creds = mock.patch.object(job, "_get_job_credentials", return_value=None)
-        with mock_execute, mock_creds, mock_vm(bastion_vm.__name__) as mocks:
+        mock_output_dir = mock.patch(f"{bastion_vm.__name__}.output_dir", return_value="temp_dir")
+        with mock_output_dir, mock_execute, mock_creds, mock_vm(bastion_vm.__name__) as mocks:
             job._execute()
             self.assertTrue(mocks["create_vm"].called)
             self.assertIn(cfg.name, mocks["create_vm"].call_args.args)

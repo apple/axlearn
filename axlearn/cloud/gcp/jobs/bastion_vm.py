@@ -277,26 +277,29 @@ class CreateBastionJob(CPUJob):
             credentials=self._get_job_credentials(),
         )
 
-        # Command to start the bastion inside a docker container.
         # Bastion outputs will be piped to run_log.
-        run_log = os.path.join(_LOG_DIR, cfg.name)
+        run_log = os.path.join(output_dir(cfg.name), "logs", f"{cfg.name}-%Y%m%d")
+        output_cmd = f"tee >(python3 -m axlearn.cloud.common.writer --output_path={run_log})"
+
+        # Command to start the bastion inside a docker container.
         image = self._bundler.id(cfg.name)
         # TODO(markblee): Instead of passing flags manually, consider serializing flags into a
         # flagfile, and reading that.
-        run_command = docker_command(
-            f"set -o pipefail; mkdir -p {_LOG_DIR}; "
+        run_cmd = docker_command(
             f"python3 -m axlearn.cloud.gcp.jobs.bastion_vm --name={cfg.name} "
-            f"--project={cfg.project} --zone={cfg.zone} start 2>&1 | tee -a {run_log}",
+            f"--project={cfg.project} --zone={cfg.zone} start 2>&1 | {output_cmd}",
             image=image,
             volumes={"/var/tmp": "/var/tmp"},
             detached_session=cfg.name,
         )
         # Command to setup the bastion. Along with the locking mechanism below, should be
-        # idempotent. Setup outputs are also piped to run_log.
+        # idempotent. Setup outputs are piped to setup_log.
+        setup_log = os.path.join(_LOG_DIR, "setup.log")
         start_cmd = f"""set -o pipefail;
             if [[ -z "$(docker ps -f "name={cfg.name}" -f "status=running" -q )" ]]; then
-                mkdir -p {_LOG_DIR};
-                {self._bundler.install_command(image)} 2>&1 | tee -a {run_log} && {run_command};
+                {self._bundler.install_command(image)} 2>&1 | tee -a {setup_log} && {run_cmd};
+            else
+                echo "Already started." >> {setup_log};
             fi"""
         # Run the start command on bastion.
         # Acquire a file lock '/root/start.lock' to guard against concurrent starts.
