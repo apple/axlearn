@@ -559,17 +559,23 @@ class CheckpointerTest(test_utils.TestCase):
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
-    @parameterized.parameters(jnp.float32, jnp.bfloat16, jnp.int32, jnp.int16)
-    def test_save_and_restore_from_dir(self, restore_floats_as: jnp.dtype):
+    @parameterized.parameters(
+        [jnp.float32, None],
+        [jnp.bfloat16, None],
+        [jnp.int32, None],
+        [jnp.int16, None],
+        [jnp.float32, jnp.bfloat16],
+    )
+    def test_save_and_restore_from_dir(self, restore_floats_as: jnp.dtype, cast_dtype: jnp.dtype):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
 
-        def make_state(float_dtype):
-            return dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=float_dtype))
+        def make_state(x_dtype: jnp.dtype, y_dtype: jnp.dtype):
+            return dict(x=jnp.zeros([], dtype=x_dtype), y=jnp.ones([2], dtype=y_dtype))
 
         with _mesh(mesh_shape):
-            state = make_state(float_dtype=jnp.float32)
+            state = make_state(x_dtype=jnp.int32, y_dtype=jnp.float32)
             storage = TensorStoreStateStorage.default_config().instantiate()
             with tempfile.TemporaryDirectory() as root_dir:
                 step = 1000
@@ -582,18 +588,22 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                 def restore_state():
                     return storage.restore_from_dir(
                         step,
-                        state=make_state(float_dtype=restore_floats_as),
+                        state=make_state(x_dtype=jnp.int32, y_dtype=restore_floats_as),
                         ckpt_dir=final_dir,
                         validation=CheckpointValidationType.EXACT_UP_TO_DTYPE,
+                        dtype=cast_dtype,
                     )
 
                 # Succesfully restores with different dtypes.
                 restored_state = restore_state()
+                target_state = state
+                if restore_floats_as is not None:
+                    target_state = make_state(x_dtype=jnp.int32, y_dtype=restore_floats_as)
+                if cast_dtype is not None:
+                    target_state = make_state(x_dtype=cast_dtype, y_dtype=cast_dtype)
                 self.assertNestedEqual(
                     restored_state,
-                    state
-                    if restore_floats_as is None
-                    else make_state(float_dtype=restore_floats_as),
+                    target_state,
                 )
 
 

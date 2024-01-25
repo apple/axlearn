@@ -377,6 +377,9 @@ class TensorStoreStateStorageBuilder(Builder):
         dir: Required[str] = REQUIRED
         validation: CheckpointValidationType = CheckpointValidationType.EXACT
         concurrent_gb: int = 32
+        # Data type to cast when restoring the checkpoint.
+        # By default it is None and dtype from index file will be used.
+        dtype: Optional[jnp.dtype] = None
         # A config that instantiates to a StateStorage.
         storage: StateStorage.Config = TensorStoreStateStorage.default_config()
 
@@ -405,6 +408,7 @@ class TensorStoreStateStorageBuilder(Builder):
             ckpt_dir=cfg.dir,
             validation=cfg.validation,
             concurrent_gb=cfg.concurrent_gb,
+            dtype=cfg.dtype,
         )
         built_keys = state.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
         return Builder.State(step=step, trainer_state=restored_state, built_keys=built_keys)

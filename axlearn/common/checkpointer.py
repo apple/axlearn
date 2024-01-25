@@ -404,7 +404,22 @@ class TensorStoreStateStorage(StateStorage):
         ckpt_dir: str,
         validation: CheckpointValidationType = CheckpointValidationType.EXACT,
         concurrent_gb: int = 32,
+        dtype: Optional[jnp.dtype] = None,
     ) -> NestedTensor:
+        """Restore checkpoints in tensorstore format from a target directory.
+
+        Args:
+            step (int): Step number to restore.
+            state (Union[NestedTensor, NestedTensorSpec]): Model states.
+            ckpt_dir (str): The path to checkpoint directory.
+            validation (CheckpointValidationType): Validation type after loading weights.
+            concurrent_gb (int): Max concurrent size to load for tensorstore checkpoints.
+            dtype (Optional[jnp.dtype]): Target dtype to cast all tensors.
+                By default, it is None and would infer from index file.
+
+        Returns:
+            NestedTensor: Restored model weights.
+        """
         spec = self._get_spec(step, state, ckpt_dir)
         logging.info("Restoring checkpoint from directory %s", ckpt_dir)
         with tf.io.gfile.GFile(os.path.join(ckpt_dir, "index"), "r") as f:
@@ -416,11 +431,19 @@ class TensorStoreStateStorage(StateStorage):
             spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}")
         )
 
+        # Override dtype to target cast dtype.
+        # From jax docs,
+        # Cast while reloading on process to avoid 2 copies on device if the
+        # casting is done on device.
+        spec_dtypes = spec.dtypes
+        if dtype is not None:
+            spec_dtypes = [dtype] * len(spec_dtypes)
+
         restored_gda_values = array_serialization.run_deserialization(
             shardings=spec.shardings,
             tensorstore_specs=spec.tensorstore_specs,
             global_shapes=spec.shapes,
-            dtypes=spec.dtypes,
+            dtypes=spec_dtypes,
             concurrent_gb=concurrent_gb,
         )
         state_leaves = []
