@@ -12,17 +12,12 @@ from axlearn.common import launch_trainer
 from axlearn.common.test_utils import TestCase
 
 
-def _mock_get_named_trainer_config(
-    config_name: str, *, config_module: str, root_module: Optional[str] = None
-) -> mock.MagicMock:
+def _mock_get_named_trainer_config(config_name: str, *, config_module: str) -> mock.MagicMock:
     valid_module_paths = {
         "local_module": {"config": mock.MagicMock()},
         "root_module.local_module": {"config": mock.MagicMock()},
         "axlearn.experiments.experiment_module": {"experiment_config": mock.MagicMock()},
     }
-    if root_module is not None:
-        config_module = f"{root_module}.{config_module}"
-
     if config_module not in valid_module_paths:
         raise ImportError(config_module)
 
@@ -56,20 +51,16 @@ class GetTrainerConfigTest(TestCase):
         ),
         # If specified, attempt to import from root_module directly.
         dict(
-            flag_values=dict(
-                config="config", config_module="local_module", root_module="root_module"
-            ),
+            flag_values=dict(config="config", config_module="root_module.local_module"),
             expect_args=("config",),
             expect_kwargs=dict(config_module="root_module.local_module"),
         ),
         # If specified, use trainer_config_fn directly.
         dict(
-            flag_values=dict(
-                config="config", config_module="local_module", root_module="root_module"
-            ),
+            flag_values=dict(config="config", config_module="root_module.local_module"),
             trainer_config=mock.MagicMock(),
-            expect_args=("config",),
-            expect_kwargs=dict(config_module="root_module.local_module"),
+            expect_args=(),
+            expect_kwargs={},
         ),
     )
     def test_get_trainer_config(
@@ -104,13 +95,6 @@ class GetTrainerConfigTest(TestCase):
         dict(
             flag_values=dict(config="unknown_config", config_module="local_module"),
             expect_raises=ImportError("axlearn.experiments.local_module"),
-        ),
-        # If root_module is specified explicitly, do not fallback to axlearn.experiments.
-        dict(
-            flag_values=dict(
-                config="unknown_config", config_module="local_module", root_module="root_module"
-            ),
-            expect_raises=KeyError("unknown_config"),
         ),
     )
     def test_get_trainer_config_failure(self, flag_values: dict, expect_raises: Exception):

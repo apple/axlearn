@@ -6,7 +6,7 @@ pip install 'jax[tpu]==0.4.21' -f https://storage.googleapis.com/jax-releases/li
 
 XLA_FLAGS=--xla_dump_to=/tmp/aot_xla_dump \
 python axlearn/experiments/run_aot_compilation.py \
-    --module=text.gpt.c4_trainer \
+    --module=axlearn.experiments.text.gpt.c4_trainer \
     --config=fuji-7B \
     --topology=v4-1024 1> /tmp/aot_stdout
 
@@ -67,7 +67,7 @@ def main(_):
     setup(jax_backend="cpu")
     trainer_config_fn: TrainerConfigFn = get_named_trainer_config(
         FLAGS.config,
-        config_module=f"axlearn.{FLAGS.module}",
+        config_module=FLAGS.module,
     )
     _compile_and_dump_programs(
         trainer_config_fn(),

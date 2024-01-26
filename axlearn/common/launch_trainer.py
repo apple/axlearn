@@ -23,13 +23,6 @@ flags.DEFINE_string(
 flags.DEFINE_alias("config_module", "module")
 flags.DEFINE_string("config", None, "The trainer config name.", required=True)
 flags.DEFINE_string(
-    "root_module",
-    None,
-    "Root module to look for experiments. "
-    "If None, we attempt to import `<module>` directly, falling back to "
-    "searching for experiments shipped with axlearn, i.e. `axlearn.experiments.<module>`. ",
-)
-flags.DEFINE_string(
     "trainer_dir",
     None,
     "The root directory of the trainer. "
@@ -72,7 +65,7 @@ def get_trainer_config(
     *,
     flag_values: flags.FlagValues = FLAGS,
 ) -> SpmdTrainer.Config:
-    if trainer_config_fn is None and flag_values.root_module is None:
+    if trainer_config_fn is None:
         # Attempt a direct import. This is a common case for launching from pip package.
         try:
             trainer_config_fn = get_named_trainer_config(
@@ -89,10 +82,9 @@ def get_trainer_config(
             trainer_config_fn = None
 
     if trainer_config_fn is None:
-        root_module = flag_values.root_module or "axlearn.experiments"
         trainer_config_fn = get_named_trainer_config(
             flag_values.config,
-            config_module=f"{root_module}.{flag_values.config_module}",
+            config_module=f"axlearn.experiments.{flag_values.config_module}",
         )
     trainer_config: SpmdTrainer.Config = trainer_config_fn()
     trainer_config.dir = trainer_config.dir or flag_values.trainer_dir
