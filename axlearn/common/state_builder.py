@@ -379,7 +379,7 @@ class TensorStoreStateStorageBuilder(Builder):
         concurrent_gb: int = 32
         # Data type to cast when restoring the checkpoint.
         # By default it is None and dtype from index file will be used.
-        dtype: Optional[jnp.dtype] = None
+        dtype_cast_func: Optional[jnp.dtype] = None
         # A config that instantiates to a StateStorage.
         storage: StateStorage.Config = TensorStoreStateStorage.default_config()
 
@@ -400,7 +400,7 @@ class TensorStoreStateStorageBuilder(Builder):
             The restored state.
         """
         cfg = self.config
-        storage = cfg.storage.instantiate()
+        storage: StateStorage = cfg.storage.instantiate()
         step = parse_step_from_dir(cfg.dir)
         restored_state = storage.restore_from_dir(
             step=step,
@@ -408,7 +408,7 @@ class TensorStoreStateStorageBuilder(Builder):
             ckpt_dir=cfg.dir,
             validation=cfg.validation,
             concurrent_gb=cfg.concurrent_gb,
-            dtype=cfg.dtype,
+            dtype_cast_func=cfg.dtype_cast_func,
         )
         built_keys = state.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
         return Builder.State(step=step, trainer_state=restored_state, built_keys=built_keys)
