@@ -16,6 +16,28 @@ Example (docker):
         --bundler_spec=dockerfile=Dockerfile \
         --bundler_spec=build_arg1=my-build-arg
 
+    # Bundlers support packaging external directories (besides just CWD) via the `external` spec.
+    # For example, you can copy a specific file into the bundle root:
+    axlearn cloud bundle ... --bundler_spec=external=/path/to/file.txt
+
+    # When pointing `external` to a directory, bundling behaves similarly to the linux `cp` command:
+    # specifying a trailing slash copies directory contents, and omitting a trailing slash copies
+    # the directory itself.
+    #
+    # As an example, suppose we have a directory like:
+    # external_dir/
+    # -- my_file.txt
+
+    # The following command produces a structure like:
+    # bundle_root/
+    # -- external_dir/
+    axlearn cloud bundle ... --bundler_spec=external=/path/to/external_dir
+
+    # The following command produces a structure like:
+    # bundle_root/
+    # -- my_file.txt
+    axlearn cloud bundle ... --bundler_spec=external=/path/to/external_dir/
+
 """
 
 import os
@@ -145,13 +167,19 @@ class Bundler(Configurable):
             if urlparse(dep).scheme:
                 # Has scheme so we try to use copy_blobs to handle.
                 copy_blobs(dep, to_prefix=temp_root.as_posix())
+                continue
+            # We rely on shutil for local-to-local copy as it follows symlinks.
+            dep_src = pathlib.Path(dep.strip())
+            if dep_src.is_file():
+                shutil.copy2(dep_src, temp_root / dep_src.name, follow_symlinks=True)
             else:
-                # We rely on shutil for local-to-local copy as it follows symlinks.
-                dep = pathlib.Path(dep.strip())
-                if dep.is_file():
-                    shutil.copy2(dep, temp_root / dep.name, follow_symlinks=True)
-                else:
-                    copytree(dep, temp_root, exclude_paths)
+                # If the external dir ends with /, copy only the contents of the directory.
+                # Otherwise, copy the directory itself. This is similar to linux `cp`.
+                dep_dst = temp_root
+                if not dep.endswith("/"):
+                    dep_dst = dep_dst / dep_src.name
+                    dep_dst.mkdir()
+                copytree(dep_src, dep_dst, exclude_paths)
 
         # Copy the configs to the bundle directory, since the config file(s) may not be in cwd.
         # Note that configs may comprise of multiple config files, so we serialize the full configs
