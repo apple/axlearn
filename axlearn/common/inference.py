@@ -219,8 +219,7 @@ class InferenceRunner(Module):
         with self.mesh():
             self._add_child("model", cfg.model)
             self._model_param_specs = self.model.create_parameter_specs_recursively()
-            if cfg.inference_dtype is not None:
-                self._model_param_specs = self._inference_cast(self._model_param_specs)
+            self._model_param_specs = self._inference_cast(self._model_param_specs)
 
             self._inference_runner_state_specs = _InferenceRunnerState(
                 prng_key=TensorSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),

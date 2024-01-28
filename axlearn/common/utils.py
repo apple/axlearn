@@ -832,13 +832,12 @@ def cast_floats(
 
     from_dtype = jnp.float32 if to_dtype == jnp.bfloat16 else jnp.bfloat16
 
-    def cast(x: Union[Tensor, TensorSpec]) -> [Tensor, TensorSpec]:
+    def cast(x: Union[Tensor, TensorSpec]) -> Union[Tensor, TensorSpec]:
         if x.dtype == from_dtype:
-            if isinstance(x, Tensor):
-                return x.astype(to_dtype)
+            if isinstance(x, TensorSpec):
+                return dataclasses.replace(x, dtype=to_dtype)
             else:
-                x.dtype = to_dtype
-                return x
+                return x.astype(to_dtype)
         return x
 
     return jax.tree_util.tree_map(cast, in_tree)
