@@ -807,7 +807,9 @@ def copy_recursively(
     return target
 
 
-def cast_floats(in_tree: NestedTensor, to_dtype: Optional[jnp.dtype]) -> NestedTensor:
+def cast_floats(
+    in_tree: Union[NestedTensor, NestedTensorSpec], to_dtype: Optional[jnp.dtype]
+) -> Union[NestedTensor, NestedTensorSpec]:
     """Maps valid float arrays found in the inputs to the requested dtype in {float32, bfloat16}.
 
     Args:
@@ -830,9 +832,13 @@ def cast_floats(in_tree: NestedTensor, to_dtype: Optional[jnp.dtype]) -> NestedT
 
     from_dtype = jnp.float32 if to_dtype == jnp.bfloat16 else jnp.bfloat16
 
-    def cast(x: Tensor) -> Tensor:
+    def cast(x: Union[Tensor, TensorSpec]) -> [Tensor, TensorSpec]:
         if x.dtype == from_dtype:
-            return x.astype(to_dtype)
+            if isinstance(x, Tensor):
+                return x.astype(to_dtype)
+            else:
+                x.dtype = to_dtype
+                return x
         return x
 
     return jax.tree_util.tree_map(cast, in_tree)

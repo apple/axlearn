@@ -219,6 +219,9 @@ class InferenceRunner(Module):
         with self.mesh():
             self._add_child("model", cfg.model)
             self._model_param_specs = self.model.create_parameter_specs_recursively()
+            if cfg.inference_dtype is not None:
+                self._model_param_specs = self._inference_cast(self._model_param_specs)
+
             self._inference_runner_state_specs = _InferenceRunnerState(
                 prng_key=TensorSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=self._model_param_specs,
@@ -360,6 +363,15 @@ class InferenceRunner(Module):
                 jit_run_on_batch=partial(jit_inference_iter_fn, self._inference_runner_state.model),
             )
 
+    def _inference_cast(
+        self, in_tree: Union[NestedTensor, NestedPartitionSpec]
+    ) -> Union[NestedTensor, NestedPartitionSpec]:
+        """Cast state or input tensors to inference dtype."""
+        cfg: InferenceRunner.Config = self.config
+        if cfg.inference_dtype is not None:
+            return utils.cast_floats(in_tree, to_dtype=cfg.inference_dtype)
+        return in_tree
+
     def _inference_iter(
         self,
         prng_key: Tensor,
@@ -370,21 +382,15 @@ class InferenceRunner(Module):
         **kwargs,
     ) -> Tuple[Tensor, NestedTensor, NestedTensor]:
         """Implements inference for a single input batch."""
-        cfg = self.config
         new_prng_key, iter_key = jax.random.split(prng_key)
-
-        def inference_cast(in_tree: NestedTensor) -> NestedTensor:
-            if cfg.inference_dtype is not None:
-                return utils.cast_floats(in_tree, to_dtype=cfg.inference_dtype)
-            return in_tree
 
         # Shard and (possibly) dispatch the input batch.
         input_batch = utils.dispatch_input_batch(input_batch)
         output_batch, output_collection = F(
             self.model,
             prng_key=iter_key,
-            state=inference_cast(model_params),
-            inputs={"input_batch": inference_cast(input_batch), **kwargs},
+            state=model_params,
+            inputs={"input_batch": self._inference_cast(input_batch), **kwargs},
             is_training=False,
             method=method,
         )
