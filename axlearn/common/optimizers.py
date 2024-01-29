@@ -1033,6 +1033,113 @@ def clip_by_global_norm(
     )
 
 
+class SkipClipState(NamedTuple):
+    """State returned by functions in skip_and_clip_by_global_norm()."""
+
+    nonvalid_count: Union[Tensor, TensorSpec]  # Number of non-valid steps.
+    inner_state: Any  # State of the inner PartitionedGradientTransformation.
+
+
+def skip_and_clip_by_global_norm(
+    inner: ConfigOr[PartitionedGradientTransformation],
+    *,
+    drop_norm: Optional[float] = None,
+    max_norm: Optional[float] = None,
+    eps: float = 1e-8,
+) -> PartitionedGradientTransformation:
+    """Skip updates when global norm >= drop_norm, otherwise clip the global norm.
+    If we detect abnormal gradients that have global norm >= drop_norm, we skip the gradient updates
+    and state updates. Otherwise we scale the gradients s.t. global norm <= max_norm, and apply the
+    wrapped gradient transformation `inner`. Note the difference compared to clip_by_global_norm()
+    is that this version skips all updates while clip_by_global_norm() still performs parameter
+    updates and optimizer state updates.
+    Example usage:
+        ```
+        config_for_function(skip_and_clip_by_global_norm).set(
+            inner=config_for_function(optimizers.adamw_optimizer).set(
+                learning_rate=learning_rate_schedule,
+                b1=0.95,
+                b2=0.995,
+                eps=1e-8,
+                weight_decay=0.05,
+                weight_decay_per_param_scale=None,
+                multiply_by_parameter_scale=False,
+            ),
+            drop_norm=100,
+            max_norm=1,
+        )
+        ```
+    Args:
+        inner: the PartitionedGradientTransformation we wrapped over, e.g. adamw_optimizer().
+        drop_norm: the threshold to detect abnormal gradients and skip gradient and state updates.
+        max_norm: the maximum global gradient norm. If this is set, larger gradients will be scaled
+            and clipped.
+        eps: a small constant added to scaling factor, i.e. `1/(norm + eps)`.
+    Returns:
+        A new PartitionedGradientTransformation that applies skipping and clipping.
+    """
+    inner = maybe_instantiate(inner)
+
+    def init_fn(params):
+        return SkipClipState(
+            nonvalid_count=jnp.zeros([], jnp.int32), inner_state=inner.init(params)
+        )
+
+    def update_fn(updates, state, params=None):
+        inner_state = state.inner_state
+        # Check if every gradient is finite.
+        flat_updates = jax.tree_util.tree_flatten(updates)[0]
+        is_finite = jnp.all(jnp.array([jnp.all(jnp.isfinite(p)) for p in flat_updates]))
+        g_norm = optax.global_norm(updates)
+        if drop_norm is not None:
+            # Check if gradient norm is abnormal.
+            is_valid_step = jnp.logical_and(is_finite, g_norm < drop_norm)
+        else:
+            is_valid_step = is_finite
+        # Log useful statistics.
+        nonvalid_count = jnp.where(
+            is_valid_step,
+            state.nonvalid_count,
+            optax.safe_int32_increment(state.nonvalid_count),
+        )
+        context = current_context()
+        if context is not None:
+            context.add_summary("gradient_norm", g_norm)
+            context.add_summary("nonvalid_count", nonvalid_count)
+        # Clip gradients s.t. grad norm <= max_norm.
+        clipped_updates = updates
+        if max_norm is not None:
+            g_scale = jnp.minimum(1.0, max_norm / (g_norm + eps))
+            clipped_updates = jax.tree_util.tree_map(lambda t: t * g_scale, updates)
+            if context is not None:
+                context.add_summary("gradient_scale", g_scale)
+        # Apply subsequent gradient transformation.
+        new_updates, new_inner_state = inner.update(clipped_updates, inner_state, params)
+        # Discard the updates and states in a nonvalid step.
+        final_updates = jax.tree_util.tree_map(
+            lambda x, y: jnp.where(is_valid_step, x, jnp.zeros_like(y)),
+            new_updates,
+            updates,
+        )
+        final_inner_state = jax.tree_util.tree_map(
+            lambda x, y: jnp.where(is_valid_step, x, y),
+            new_inner_state,
+            inner_state,
+        )
+
+        return final_updates, SkipClipState(
+            nonvalid_count=nonvalid_count, inner_state=final_inner_state
+        )
+
+    def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
+        return SkipClipState(
+            nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+            inner_state=inner.partition(param_specs),
+        )
+
+    return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
+
+
 def clip_by_block_rms(threshold: Optional[float]) -> PartitionedGradientTransformation:
     """Clip updates to a max rms for the gradient of each param vector or matrix.
 
