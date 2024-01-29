@@ -1053,6 +1053,7 @@ def skip_and_clip_by_global_norm(
     wrapped gradient transformation `inner`. Note the difference compared to clip_by_global_norm()
     is that this version skips all updates while clip_by_global_norm() still performs parameter
     updates and optimizer state updates.
+
     Example usage:
         ```
         config_for_function(skip_and_clip_by_global_norm).set(
@@ -1069,12 +1070,14 @@ def skip_and_clip_by_global_norm(
             max_norm=1,
         )
         ```
+
     Args:
         inner: the PartitionedGradientTransformation we wrapped over, e.g. adamw_optimizer().
         drop_norm: the threshold to detect abnormal gradients and skip gradient and state updates.
         max_norm: the maximum global gradient norm. If this is set, larger gradients will be scaled
             and clipped.
         eps: a small constant added to scaling factor, i.e. `1/(norm + eps)`.
+
     Returns:
         A new PartitionedGradientTransformation that applies skipping and clipping.
     """
