@@ -346,6 +346,8 @@ class InferenceTest(test_utils.TestCase):
         restored_state = inference_runner.inference_runner_state
         self.assertNestedEqual(restored_state.prng_key, prng_key)
         expected_model = state.learner["ema"].ema if use_ema else state.model
+        if inference_dtype is not None:
+            expected_model = utils.cast_floats(expected_model, to_dtype=inference_dtype)
         if param_dtype == jnp.float32 and local_run:
             # We check for model state equality only if restored dtype matches,
             # and if we are doing a local run (to avoid process gather on weights).
@@ -358,7 +360,9 @@ class InferenceTest(test_utils.TestCase):
             # Same path.
             self.assertEqual(value[0], restored_value[0])
             # Restored dtype matches param_dtype.
-            self.assertEqual(restored_value[1].dtype, param_dtype)
+            self.assertEqual(
+                restored_value[1].dtype, param_dtype if inference_dtype is None else inference_dtype
+            )
 
         # Now try to run inference.
         input_generator_fn = _build_input(global_batch_size, data_partition=data_partition)
