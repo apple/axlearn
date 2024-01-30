@@ -42,6 +42,7 @@ from axlearn.common.optimizers import (
     scale_by_trust_ratio,
     scale_update_per_param,
     sgd_optimizer,
+    skip_and_clip_by_global_norm,
     with_partition_fn,
 )
 from axlearn.common.schedule import Schedule, adafactor_decay_rate, decay_bias_correction
@@ -69,6 +70,20 @@ def optax_ema_partition(
         return optax.EmaState(count=None, ema=copy_partition(param_specs))
 
     return with_partition_fn(base, partition_fn)
+
+
+def _counter():
+    def init_fn(params):
+        del params
+        return jnp.zeros([], dtype=jnp.int32)
+
+    def update_fn(updates, state, params=None):
+        del params
+        return updates, optax.safe_int32_increment(state)
+
+    return PartitionedGradientTransformation(
+        init=init_fn, update=update_fn, partition=lambda _: optax.EmptyState()
+    )
 
 
 class OptimizerTest(TestCase):
@@ -737,6 +752,37 @@ class OptimizerTest(TestCase):
                 np.testing.assert_allclose(max_norm, optax.global_norm(updates))
         else:
             np.testing.assert_allclose(updates, jnp.zeros_like(grads))
+
+    @parameterized.product(max_norm=(None, 100.0, 0.1), drop_norm=(None, 5.0, 0.5))
+    def test_gradient_skipping_and_clipping(self, max_norm, drop_norm):
+        clip = skip_and_clip_by_global_norm(
+            inner=_counter(),
+            drop_norm=drop_norm,
+            max_norm=max_norm,
+        )
+        params = jnp.asarray([0, 1, 2, -3], dtype=jnp.float32)
+        state = clip.init(params)
+
+        def loss_fn(x):
+            return -jax.nn.log_softmax(x)[1]
+
+        loss, grads = jax.value_and_grad(loss_fn)(params)
+        np.testing.assert_allclose(loss, 1.412078, atol=1e-6)
+        np.testing.assert_allclose(grads, [0.089629, -0.756364, 0.662272, 0.004462], atol=1e-6)
+
+        g_norm = optax.global_norm(grads)
+        updates, state = clip.update(grads, state=state, params=params)
+        if drop_norm is None or g_norm < drop_norm:
+            if max_norm is None or g_norm < max_norm:
+                np.testing.assert_allclose(updates, grads, atol=1e-6)
+            else:
+                np.testing.assert_allclose(max_norm, optax.global_norm(updates))
+            np.testing.assert_equal(state.nonvalid_count, jnp.zeros([], dtype=jnp.int32))
+            np.testing.assert_equal(state.inner_state, jnp.ones([], dtype=jnp.int32))
+        else:
+            np.testing.assert_allclose(updates, jnp.zeros_like(grads))
+            np.testing.assert_equal(state.nonvalid_count, jnp.ones([], dtype=jnp.int32))
+            np.testing.assert_equal(state.inner_state, jnp.zeros([], dtype=jnp.int32))
 
     @parameterized.product(
         regularizer_weight=(0.0, 1.0),
