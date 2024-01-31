@@ -1,4 +1,6 @@
 version: 2.1
+orbs:
+  apple: apple/pr-approval@0.1.0
 executors:
   build-and-test-executor:
     docker:
@@ -49,6 +51,9 @@ workflows:
     jobs:
       - hold:
           type: approval
+      - apple/authenticate:
+          context: validation-project-context
       - build-and-test-job:
           requires:
             - hold
+            - apple/authenticate
