@@ -108,6 +108,9 @@ class Bundler(Configurable):
         # For example, one can include custom pip wheels as part of the tarball.
         # The `exclude` rules also apply to these directories.
         external: Optional[Union[str, Sequence[str]]] = None
+        # Files under local axlearn package can be skipped to bundle
+        # and allow others ways like github to download the package.
+        bundle_local_axlearn: bool = True
 
     def _local_dir_context(self) -> tempfile.TemporaryDirectory:
         """Copies contents of local directory to `target_dir`, excluding `exclude` paths,
@@ -156,9 +159,9 @@ class Bundler(Configurable):
         package_dir = pathlib.Path.cwd()
         temp_root = pathlib.Path(temp_dir.name) / "axlearn"
         temp_root.mkdir()
-
-        logging.info("Packaging %s.", package_dir)
-        copytree(package_dir, temp_root, exclude_paths)
+        if cfg.bundle_local_axlearn:
+            logging.info("Packaging %s.", package_dir)
+            copytree(package_dir, temp_root, exclude_paths)
 
         # Copy any external files/dirs.
         for dep in canonicalize_to_list(cfg.external):
@@ -180,6 +183,9 @@ class Bundler(Configurable):
                     dep_dst = dep_dst / dep_src.name
                     dep_dst.mkdir()
                 copytree(dep_src, dep_dst, exclude_paths)
+
+        if not cfg.bundle_local_axlearn:
+            return temp_dir
 
         # Copy the configs to the bundle directory, since the config file(s) may not be in cwd.
         # Note that configs may comprise of multiple config files, so we serialize the full configs

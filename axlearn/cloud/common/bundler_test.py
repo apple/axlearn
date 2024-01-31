@@ -57,6 +57,17 @@ class BundlerTest(TestWithTemporaryCWD):
                 (pathlib.Path(temp_bundle) / "axlearn" / CONFIG_DIR / CONFIG_FILE).exists()
             )
 
+    def test_local_dir_context_without_axlearn(self):
+        b = Bundler.default_config().set(bundle_local_axlearn=False).instantiate()
+        # Create a dummy config.
+        _create_dummy_config(self._temp_root.name)
+        # Check the local axlearn config file is not copied.
+        # pylint: disable-next=protected-access
+        with b._local_dir_context() as temp_bundle:
+            self.assertFalse(
+                (pathlib.Path(temp_bundle) / "axlearn" / CONFIG_DIR / CONFIG_FILE).exists()
+            )
+
     def test_local_dir_context_external(self):
         # Create a dummy config.
         _create_dummy_config(self._temp_root.name)
