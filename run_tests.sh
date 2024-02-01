@@ -20,7 +20,7 @@ exit_if_error() {
 download_assets() {
   mkdir -p axlearn/experiments/testdata/tokenizers/sentencepiece
   mkdir -p axlearn/experiments/testdata/tokenizers/bpe
-  curl https://huggingface.co/google-t5/t5-base/blob/main/spiece.model -o axlearn/experiments/testdata/tokenizers/sentencepiece/t5-base
+  curl https://huggingface.co/t5-base/resolve/main/spiece.model -o axlearn/experiments/testdata/tokenizers/sentencepiece/t5-base
   curl https://huggingface.co/FacebookAI/roberta-base/raw/main/merges.txt -o axlearn/experiments/testdata/tokenizers/bpe/roberta-base-merges.txt
   curl https://huggingface.co/FacebookAI/roberta-base/raw/main/vocab.json -o axlearn/experiments/testdata/tokenizers/bpe/roberta-base-vocab.json
 }
