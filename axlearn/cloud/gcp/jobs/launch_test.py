@@ -14,7 +14,7 @@ from axlearn.cloud.common.bastion import JobState as BastionJobState
 from axlearn.cloud.common.bastion import deserialize_jobspec, new_jobspec
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.scheduler import JobMetadata
-from axlearn.cloud.gcp.jobs import bastion_vm, launch
+from axlearn.cloud.gcp.jobs import bastion_vm, launch, tpu_runner
 from axlearn.cloud.gcp.jobs.launch import (
     BaseBastionLaunchJob,
     Launcher,
@@ -271,46 +271,62 @@ class TestLaunchTPUJob(TestWithTemporaryCWD):
     @parameterized.product(
         name=[None, "test-name"],
         output_dir=[None, "test-output"],
+        zone=[None, "test-zone"],
     )
-    def test_flags(self, name, output_dir):
+    def test_flags(self, name, output_dir, zone):
         # Construct flags.
         fv = flags.FlagValues()
         flags.DEFINE_string("instance_type", "test-type", help="test", flag_values=fv)
         fv.mark_as_parsed()
+
         patch_fns = mock.patch.multiple(
             launch.__name__,
-            shared_bastion_name=mock.Mock(return_value="shared-bastion"),
             generate_job_name=mock.Mock(return_value="job-name"),
         )
-        with patch_fns:
+        mock_settings = {
+            "ttl_bucket": "ttl_bucket",
+            "permanent_bucket": "permanent_bucket",
+            "zone": "default-zone",
+        }
+        patch_settings = mock_gcp_settings(
+            [launch.__name__, bastion_vm.__name__, tpu_runner.__name__], settings=mock_settings
+        )
+
+        with patch_fns, patch_settings:
             LaunchTPUJob.define_flags(fv)
 
-        # Parse argv.
-        argv = ["cli"]
-        if name is not None:
-            argv.append(f"--name={name}")
-        if output_dir is not None:
-            argv.append(f"--output_dir={output_dir}")
-        fv(argv)
+            # Parse argv.
+            argv = ["cli"]
+            if name is not None:
+                argv.append(f"--name={name}")
+            if output_dir is not None:
+                argv.append(f"--output_dir={output_dir}")
+            if zone is not None:
+                argv.append(f"--zone={zone}")
+            fv(argv)
 
-        # Check some basic flags.
-        self.assertEqual(fv.bastion, "shared-bastion")
-        self.assertEqual(fv.name, name or "job-name")
-        self.assertIn("tpu_type", fv)
-        self.assertIn("bundler_type", fv)
-        self.assertIsNotNone(fv["name"].default)
-        self.assertIsNotNone(fv["bundler_type"].default)
-        self.assertEqual(fv["tpu_type"].default, "test-type")
-        self.assertEqual(fv.output_dir, output_dir)
+            # Check some basic flags.
+            self.assertEqual(fv.bastion, None)
+            self.assertEqual(fv.name, name or "job-name")
+            self.assertEqual(fv.zone, zone or "default-zone")
+            self.assertIn("tpu_type", fv)
+            self.assertIn("bundler_type", fv)
+            self.assertIsNotNone(fv["name"].default)
+            self.assertIsNotNone(fv["bundler_type"].default)
+            self.assertEqual(fv["tpu_type"].default, "test-type")
+            self.assertEqual(fv.output_dir, output_dir)
 
-        # Make sure bundler config is constructed properly.
-        mock_settings = {"ttl_bucket": "ttl_bucket", "permanent_bucket": "permanent_bucket"}
-        with mock_gcp_settings(launch.__name__, settings=mock_settings), mock_gcp_settings(
-            bastion_vm.__name__, settings=mock_settings
-        ):
+            # Make sure bundler config is constructed properly.
             cfg = LaunchTPUJob.from_flags(fv, command="test command")
-
             self.assertIn("tpu", cfg.bundler.extras)
+
+            # Check bastion flag. If None, we should infer from zone in mock_settings.
+            if zone is None:
+                self.assertEqual(
+                    cfg.bastion.name, f"{mock_settings['zone']}-{bastion_vm._SHARED_BASTION_SUFFIX}"
+                )
+            else:
+                self.assertEqual(cfg.bastion.name, f"{zone}-{bastion_vm._SHARED_BASTION_SUFFIX}")
 
             # Check output_dir.
             if output_dir is None:
