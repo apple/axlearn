@@ -718,6 +718,12 @@ class ConfigTest(parameterized.TestCase):
         self.assertEqual(cfg.dtype, jnp.float32)
         self.assertFalse(hasattr(cfg, not_exist_key))
 
+    def test_similar_names(self):
+        candidates = ["apple", "banana", "cherry"]
+        assert similar_names("appl", candidates) == "apple"
+        assert similar_names("bnna", candidates) == "banana"
+        assert similar_names("chey", candidates) == "cherry"
+
 
 if __name__ == "__main__":
     absltest.main()

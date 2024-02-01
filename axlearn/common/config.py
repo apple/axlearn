@@ -125,26 +125,40 @@ def is_attrs(x: Any):
 
 
 def similar_names(name: str, candidates: Iterable[str]) -> List[str]:
-    """Return a sorted list of candidates that are similar to name."""
+    """Use Peter Novig's spell correcter at https://norvig.com/spell-correct.html"""
+    word_count = Counter([_ for _ in candidates])
 
-    def overlaps(name: str, key: str) -> float:
-        """The fraction of 3-char substrings in <name> that appear in key."""
-        matches = 0
-        trials = 0
-        for i in range(len(name) - 2):
-            trials += 1
-            if name[i : i + 3] in key:
-                matches += 1
-        return float(matches) / max(trials, 1)
+    def P(word, N=sum(word_count.values())):
+        "Probability of `word`."
+        return word_count[word] / N
 
-    # Compute overlaps for each candidate.
-    pairs = [(overlaps(name, key), key) for key in candidates]
-    # Filter out candidates below 0.5 overlap threshold.
-    pairs = [pair for pair in pairs if pair[0] > 0.5]
-    # Sort by highest overlap, breaking ties alphabetically.
-    pairs.sort(key=lambda pair: (-pair[0], pair[1]))
-    # Return just the keys.
-    return [key for _, key in pairs]
+    def correction(word):
+        "Most probable spelling correction for word."
+        return max(candidates(word), key=P)
+
+    def candidates(word):
+        "Generate possible spelling corrections for word."
+        return known([word]) or known(edits1(word)) or known(edits2(word)) or [word]
+
+    def known(words):
+        "The subset of `words` that appear in the dictionary of WORDS."
+        return set(w for w in words if w in word_count)
+
+    def edits1(word):
+        "All edits that are one edit away from `word`."
+        letters = "abcdefghijklmnopqrstuvwxyz"
+        splits = [(word[:i], word[i:]) for i in range(len(word) + 1)]
+        deletes = [L + R[1:] for L, R in splits if R]
+        transposes = [L + R[1] + R[0] + R[2:] for L, R in splits if len(R) > 1]
+        replaces = [L + c + R[1:] for L, R in splits if R for c in letters]
+        inserts = [L + c + R for L, R in splits for c in letters]
+        return set(deletes + transposes + replaces + inserts)
+
+    def edits2(word):
+        "All edits that are two edits away from `word`."
+        return (e2 for e1 in edits1(word) for e2 in edits1(e1))
+
+    return correction(name)
 
 
 T = TypeVar("T")
