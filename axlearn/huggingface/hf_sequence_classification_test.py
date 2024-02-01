@@ -87,6 +87,8 @@ class HfSequenceClassificationWrapperTest(parameterized.TestCase):
             method="predict",
             prng_key=jax.random.PRNGKey(0),
         )
+
+        self.assertEqual(type(outputs), dict)
         logits = outputs["logits"]
         self.assertEqual((batch_size, num_labels), logits.shape)
         self.assertFalse(jnp.isnan(logits).any().item())
