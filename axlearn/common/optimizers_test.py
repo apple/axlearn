@@ -23,6 +23,7 @@ from axlearn.common.optimizers import (
     adam_optimizer,
     adamw_decoupled_optimizer,
     adamw_optimizer,
+    adastar_optimizer,
     add_decayed_weights,
     chain,
     clip_by_block_rms,
@@ -1127,6 +1128,133 @@ class OptimizerTest(TestCase):
         update = jnp.array(5.0)
         scaled_update, _ = schedule_fn.update(update, state, params)
         self.assertEqual(scaled_update, update * scale)
+
+    @parameterized.product(
+        learning_rate=(0.01,),
+        b1=(0.9,),
+        b2=(0.95,),
+        eps=(1e-30,),
+        update_schedule=(0.1,),
+        weight_decay=(1e-4,),
+    )
+    def test_adastar_vs_adamw_decoupled(
+        self, learning_rate, b1, b2, eps, update_schedule, weight_decay
+    ):
+        self._compare_optimizers(
+            base_opt=adamw_decoupled_optimizer(
+                learning_rate=learning_rate,
+                b1=b1,
+                b2=b2,
+                eps=eps,
+                update_schedule=update_schedule,
+                weight_decay=weight_decay,
+            ),
+            test_opt=adastar_optimizer(
+                learning_rate=learning_rate,
+                gradient_ema_decay=b1,
+                gradient_ema_debias=True,
+                gradient_square_ema_decay=b2,
+                gradient_square_ema_debias=True,
+                eps=eps,
+                eps_root=0,
+                # adamw does not clip raw updates by norm.
+                raw_update_clipping_threshold=None,
+                # ... or apply smoothing on the updates.
+                update_ema_decay=None,
+                update_ema_debias=None,
+                weight_decay=weight_decay,
+                update_schedule=update_schedule,
+            ),
+        )
+
+    @parameterized.product(
+        learning_rate=(
+            0.01,
+            1,
+        ),
+        b1=(0.9,),
+        b2=(0.95,),
+        eps=(
+            1e-2,
+            1e-24,
+        ),
+        update_schedule=(0.1,),
+        clipping_threshold=(None, 1e-2, 1.0),
+        weight_decay=(1e-4,),
+    )
+    def test_adastar_vs_adafactor(
+        self,
+        learning_rate,
+        b1,
+        b2,
+        eps,
+        update_schedule,
+        clipping_threshold,
+        weight_decay,
+    ):
+        self._compare_optimizers(
+            base_opt=adafactor_optimizer(
+                learning_rate=learning_rate * update_schedule,
+                b1=b1,
+                # adafactor does not apply bias correction for b2 by default, but in practice
+                # we often transform b2 to correct biases.
+                b2=config_for_function(decay_bias_correction).set(decay=b2),
+                eps=eps,
+                # Disable per-param scaling.
+                multiply_by_parameter_scale=False,
+                clipping_threshold=clipping_threshold,
+                # adafactor_optimizer multiplies weight_decay by (learning_rate * update_schedule).
+                weight_decay_scale_by_learning_rate_exponent=1.,
+                weight_decay=weight_decay / learning_rate,
+                factored=False,
+            ),
+            test_opt=adastar_optimizer(
+                learning_rate=learning_rate,
+                # adafactor does not apply smoothing on gradients (but on raw updates).
+                gradient_ema_decay=None,
+                gradient_ema_debias=None,
+                gradient_square_ema_decay=b2,
+                gradient_square_ema_debias=True,
+                eps=0,
+                eps_root=eps,
+                # Clipping is applied on raw updates by per-param norm (not global norm).
+                raw_update_clipping_threshold=clipping_threshold,
+                # Smoothing is applied on raw updates.
+                update_ema_decay=b1,
+                # ... but without debiasing (!).
+                update_ema_debias=False,
+                weight_decay=weight_decay,
+                update_schedule=update_schedule,
+            ),
+        )
+
+    def _compare_optimizers(self, base_opt, test_opt):
+        def _compute_updates(opt) -> Tensor:
+            params = dict(
+                layer=VDict(
+                    w=OptParam(
+                        value=jnp.asarray([[0, 10, 2, -3], [1, -3, 2, 4]], dtype=jnp.float32),
+                        factorization_spec=None,
+                        weight_decay_scale=1.0,
+                    )
+                )
+            )
+            print(f"params={params}")
+            state = opt.init(params)
+
+            def compute_loss(param_values):
+                return -jnp.mean(jax.nn.log_softmax(param_values["layer"]["w"])[..., 1])
+
+            param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+            grads = jax.grad(compute_loss)(param_values)
+            print(f"grads={grads}")
+            updates, _ = opt.update(grads, state=state, params=params)
+            return updates
+
+        base_results = _compute_updates(base_opt)
+        test_results = _compute_updates(test_opt)
+        self.assertNestedAllClose(base_results, test_results, atol=1e-6, rtol=1e-6)
+
 
 
 if __name__ == "__main__":
