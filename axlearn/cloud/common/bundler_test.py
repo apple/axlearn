@@ -13,11 +13,11 @@ from unittest import mock
 import toml
 from absl.testing import parameterized
 
-from axlearn.cloud.common import bundler
+from axlearn.cloud.common import bundler, config
 from axlearn.cloud.common.bundler import BaseTarBundler, Bundler, DockerBundler, get_bundler_config
 from axlearn.cloud.common.config import CONFIG_DIR, CONFIG_FILE, DEFAULT_CONFIG_FILE
 from axlearn.cloud.common.config_test import create_default_config
-from axlearn.common.test_utils import TestCase, TestWithTemporaryCWD
+from axlearn.common.test_utils import TestCase, TestWithTemporaryCWD, temp_chdir
 
 
 @contextmanager
@@ -33,6 +33,7 @@ def _create_dummy_config(temp_dir: str):
     config_file = pathlib.Path(temp_dir) / CONFIG_DIR / CONFIG_FILE
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.touch()
+    return config_file
 
 
 class BundlerTest(TestWithTemporaryCWD):
@@ -48,7 +49,7 @@ class BundlerTest(TestWithTemporaryCWD):
                 pass
 
         # Create a dummy config.
-        _create_dummy_config(self._temp_root.name)
+        dummy_config_file = _create_dummy_config(self._temp_root.name)
 
         # Ensure the config file is copied to temp bundle.
         # pylint: disable-next=protected-access
@@ -56,6 +57,19 @@ class BundlerTest(TestWithTemporaryCWD):
             self.assertTrue(
                 (pathlib.Path(temp_bundle) / "axlearn" / CONFIG_DIR / CONFIG_FILE).exists()
             )
+
+        # Test copying config file from a path which is not relative to the package dir.
+        b2 = Bundler.default_config().instantiate()
+        with tempfile.TemporaryDirectory() as temp_new_cwd:
+            mock_search = mock.patch(
+                f"{config.__name__}._config_search_paths", return_value=[str(dummy_config_file)]
+            )
+            # pylint: disable-next=protected-access
+            with mock_search, temp_chdir(temp_new_cwd), b2._local_dir_context() as temp_bundle:
+                # Ensure the config file is copied to temp bundle.
+                self.assertTrue(
+                    (pathlib.Path(temp_bundle) / "axlearn" / CONFIG_DIR / CONFIG_FILE).exists()
+                )
 
     def test_local_dir_context_external(self):
         # Create a dummy config.
@@ -84,6 +98,43 @@ class BundlerTest(TestWithTemporaryCWD):
                 self.assertFalse((temp_bundle / "a").exists())
                 self.assertTrue((temp_bundle / "b").is_dir())
                 self.assertEqual("hello world", (temp_bundle / "b" / "d.txt").read_text())
+
+    def test_package_dir(self):
+        # Create a dummy config.
+        _create_dummy_config(self._temp_root.name)
+
+        temp_file = pathlib.Path(self._temp_root.name) / "test.txt"
+        temp_file.write_text("hello world")
+
+        b = Bundler.default_config().instantiate()
+        # pylint: disable-next=protected-access
+        with b._local_dir_context() as temp_bundle:
+            temp_bundle = pathlib.Path(temp_bundle) / "axlearn"
+            self.assertEqual("hello world", (temp_bundle / "test.txt").read_text())
+            self.assertTrue((temp_bundle / CONFIG_DIR / CONFIG_FILE).exists())
+
+        # Try excluding the temp dir itself.
+        b2 = Bundler.default_config().set(exclude=["."]).instantiate()
+        # pylint: disable-next=protected-access
+        with b2._local_dir_context() as temp_bundle:
+            temp_bundle = pathlib.Path(temp_bundle) / "axlearn"
+            self.assertFalse((temp_bundle / "test.txt").exists())
+            self.assertTrue((temp_bundle / CONFIG_DIR / CONFIG_FILE).exists())
+
+        # Try excluding the temp dir itself, but include the external file.
+        b2 = (
+            Bundler.default_config()
+            .set(
+                exclude=["."],
+                external=[str(temp_file)],
+            )
+            .instantiate()
+        )
+        # pylint: disable-next=protected-access
+        with b2._local_dir_context() as temp_bundle:
+            temp_bundle = pathlib.Path(temp_bundle) / "axlearn"
+            self.assertEqual("hello world", (temp_bundle / "test.txt").read_text())
+            self.assertTrue((temp_bundle / CONFIG_DIR / CONFIG_FILE).exists())
 
 
 class RegistryTest(TestCase):
