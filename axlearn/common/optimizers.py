@@ -44,6 +44,7 @@ from axlearn.common.optimizer_base import (
     TransformPartitionSpecFn,
 )
 from axlearn.common.utils import (
+    Nested,
     NestedPartitionSpec,
     NestedTensor,
     NestedTree,
@@ -1395,4 +1396,271 @@ def lion_optimizer(
         ]
     )
 
+    return chain(*tx)
+
+
+def adastar_optimizer(
+    learning_rate: float,
+    *,
+    gradient_ema_decay: Optional[float],
+    gradient_ema_debias: bool,
+    gradient_square_ema_decay: float,
+    gradient_square_ema_debias: bool,
+    eps: float,
+    eps_root: float,
+    raw_update_clipping_threshold: Optional[float],
+    update_ema_decay: Optional[float],
+    update_ema_debias: bool,
+    adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
+    weight_decay: float = 0,
+    update_schedule: schedule.Schedule,
+) -> PartitionedGradientTransformation:
+    """An optimizer covering both {adamw_decoupled,adafactor}_optimizer (with factored=False).
+
+    The generalized algorithm is:
+
+        # Stage 1.
+        smoothed_gradients = ema(gradients, gradient_ema_decay, gradient_ema_debias)
+        smoothed_gradient_squares = ema(
+            gradients ** 2, gradient_square_ema_decay, gradient_sqare_ema_debias)
+        # Normalized gradients.
+        raw_updates = smoothed_gradients / ((smoothed_gradient_squares + eps_root) ** 0.5 + eps)
+        clipped_updates = clip(scaled_gradients, raw_update_clipping_threshold)
+        smoothed_updates = ema(clipped_scaled_gradients, update_ema_decay, update_ema_debias)
+
+        # Apply per-param transformation.
+        transformed_updates = adam_update_transformation(smoothed_updates)
+
+        # Stage 2.
+        lr_scaled_updates = learning_rate * transformed_updates
+        updates_with_wd = add_weight_decay(lr_scaled_updates)
+        final_updates = - update_schedule * updates_with_wd
+
+    Notable special cases of adastar:
+
+        adamw_decoupled(b1, b2, eps) can represented by adastar(
+            gradient_ema_decay=b1,
+            gradient_ema_debias=True,
+            gradient_square_ema_decay=b2,
+            gradient_square_ema_debias=True,
+            eps=eps,
+            eps_root=0,
+            update_ema_decay=None,  # disabled.
+        )
+
+        adafactor(b1, decay_bias_correction(b2), eps) can represented by adastar(
+            gradient_ema_decay=None,  # disabled.
+            gradient_square_ema_decay=b2,
+            gradient_square_ema_debias=True,
+            eps=0,
+            eps_root=eps,  # adafactor eps is applied on the square.
+            update_ema_decay=b1,
+            update_ema_debias=False,
+        )
+
+    Usually only one of gradient_ema_* and update_ema_* is enabled, as each of them uses memory
+    of the same size as the parameters.
+
+    Args:
+        learning_rate: the learning rate (will be scaled by the update_schedule).
+        gradient_ema_decay: If not None, applies momentum on gradients to compute smoothed
+            gradients.
+        gradient_ema_debias: Whether to apply bias correction when computing smoothed gradients.
+        gradient_square_ema_decay: The ema decay for the second order momentum of gradients.
+        gradient_square_ema_debias: Whether to apply bias correction when computing
+            gradient square ema.
+        eps: (float) regularization constant added to the square root of smoothed_gradient_squares.
+        eps_root: (float) regularization constant added to smoothed_gradient_squares.
+        raw_update_clipping_threshold: If not None, clips the norms of the raw updates
+            to this value.
+        update_ema_decay: If not None, applies momentum on raw updates (normalized gradients) to
+            compute smoothed updates.
+        update_ema_debias: Whether to apply bias correction when computing smoothed updates.
+        adam_update_transformation: An optional transformation applied on the smoothed updates
+            (but before applying learning rate and weight decay).
+            If None, no transformation is applied.
+        weight_decay: (float) optional rate at which to decay weights. Note that weight_decay
+            is decoupled from `learning_rate` but is subject to `update_schedule`. This is
+            similar to adamw_adamw_decoupled_optimizer and different from adafactor_optimizer.
+        update_schedule: an update schedule, which is applied to scale both the learning rate
+            and the weight decay.
+
+    Returns:
+        A PartitionedGradientTransformation representing an Adafactor optimizer.
+    """
+
+    @chex.dataclass
+    class _AdastarPerParamState:
+        gradient_ema: Optional[Tensor]
+        gradient_square_ema: Tensor
+        update_ema: Optional[Tensor]
+
+    @chex.dataclass
+    class _AdastarState:
+        count: Tensor
+        pps: Nested[_AdastarPerParamState]
+
+    @chex.dataclass
+    class _AdastarUpdateResult:
+        """Opaque container that is not traversed by jax.tree_util.tree_map."""
+
+        updates: Tensor  # the update to apply to params.
+        pps: _AdastarPerParamState
+
+    update_schedule = schedule.as_schedule_fn(update_schedule)
+
+    def init_fn(params: NestedOptParam):
+        """Initializes the stage 1 state."""
+
+        def _init(param: OptParam):
+            v = param.value
+            return _AdastarPerParamState(
+                gradient_ema=None if gradient_ema_decay is None else jnp.zeros_like(v),
+                gradient_square_ema=jnp.zeros_like(v),
+                update_ema=None if update_ema_decay is None else jnp.zeros_like(v),
+            )
+
+        return _AdastarState(
+            count=jnp.zeros([], jnp.int32), pps=jax.tree_util.tree_map(_init, params)
+        )
+
+    def update_fn(grads: NestedTensor, state: _AdastarState, params: NestedOptParam):
+        """Applies (stage 1) gradient transformation to compute raw_updates."""
+        incremented_count = optax.safe_int32_increment(state.count)
+
+        if params is None:
+            raise ValueError("param is None")
+
+        def _moment(
+            x: Tensor, *, acc: Optional[Tensor], decay: Optional[float], debias: bool
+        ) -> Tuple[Tensor, Optional[Tensor]]:
+            if decay is None:
+                return x, None
+            value = acc = decay * acc + (1 - decay) * x
+            if debias:
+                value = optax.bias_correction(acc, decay=decay, count=incremented_count)
+            return value, acc
+
+        def _split_update_results(
+            update_results: Nested[_AdastarUpdateResult],
+        ) -> Tuple[NestedTensor, Nested[_AdastarPerParamState]]:
+            """Splits a tree of _AdastarUpdateResult to (updates, state)."""
+            updates = jax.tree_util.tree_map(
+                lambda ur: ur.updates,
+                update_results,
+                is_leaf=lambda x: isinstance(x, _AdastarUpdateResult),
+            )
+            pps_tree = jax.tree_util.tree_map(
+                lambda ur: ur.pps,
+                update_results,
+                is_leaf=lambda x: isinstance(x, _AdastarUpdateResult),
+            )
+            return updates, pps_tree
+
+        def _raw_updates(grad: Tensor, pps: _AdastarPerParamState) -> _AdastarUpdateResult:
+            """Computes raw updates from gradients."""
+            smoothed_gradient, gradient_ema = _moment(
+                grad,
+                acc=pps.gradient_ema,
+                decay=gradient_ema_decay,
+                debias=gradient_ema_debias,
+            )
+            smoothed_gradient_square, gradient_square_ema = _moment(
+                grad**2,
+                acc=pps.gradient_square_ema,
+                decay=gradient_square_ema_decay,
+                debias=gradient_square_ema_debias,
+            )
+            raw_updates = smoothed_gradient / ((smoothed_gradient_square + eps_root) ** 0.5 + eps)
+            if logging.vlog_is_on(3):
+                jax.debug.print("adastar mu={mu} nu={nu}", mu=gradient_ema, nu=gradient_square_ema)
+                jax.debug.print("adastar raw_updates={u}", u=raw_updates)
+            new_pps = _AdastarPerParamState(
+                gradient_ema=gradient_ema,
+                gradient_square_ema=gradient_square_ema,
+                update_ema=pps.update_ema,
+            )
+            return _AdastarUpdateResult(updates=raw_updates, pps=new_pps)
+
+        def _smoothed_updates(
+            raw_updates: Tensor, pps: _AdastarPerParamState
+        ) -> _AdastarUpdateResult:
+            """Computes smoothed updates from raw updates."""
+            smoothed_updates, update_ema = _moment(
+                raw_updates,
+                acc=pps.update_ema,
+                decay=update_ema_decay,
+                debias=update_ema_debias,
+            )
+            new_pps = _AdastarPerParamState(
+                gradient_ema=pps.gradient_ema,
+                gradient_square_ema=pps.gradient_square_ema,
+                update_ema=update_ema,
+            )
+            return _AdastarUpdateResult(updates=smoothed_updates, pps=new_pps)
+
+        # First compute raw updates.
+        raw_updates, pps_tree = _split_update_results(
+            vectorized_tree_map(
+                lambda g, s: _raw_updates(grad=g, pps=s),
+                grads,
+                state.pps,
+            )
+        )
+        # Clip raw updates if necessary.
+        if raw_update_clipping_threshold is not None:
+            clip_fn = clip_by_block_rms(raw_update_clipping_threshold).update
+            raw_updates, _ = clip_fn(raw_updates, None, params)
+        # Compute smoothed updates.
+        smoothed_updates, pps_tree = _split_update_results(
+            vectorized_tree_map(
+                lambda g, s: _smoothed_updates(raw_updates=g, pps=s),
+                raw_updates,
+                pps_tree,
+            )
+        )
+        return smoothed_updates, _AdastarState(count=incremented_count, pps=pps_tree)
+
+    def partition_fn(param_specs):
+        def _partition(param_spec: ParameterSpec):
+            opt_state_spec = OptStateSpec(
+                dtype=param_spec.dtype,
+                shape=param_spec.shape,
+                mesh_axes=param_spec.mesh_axes,
+            )
+            return _AdastarPerParamState(
+                gradient_ema=None if gradient_ema_decay is None else opt_state_spec,
+                gradient_square_ema=opt_state_spec,
+                update_ema=None if update_ema_decay is None else opt_state_spec,
+            )
+
+        return _AdastarState(
+            count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+            pps=jax.tree_util.tree_map(_partition, param_specs),
+        )
+
+    def update2_fn(updates, state: Tensor, params: NestedOptParam):
+        step = state
+
+        def _update2(u: Tensor, param: OptParam):
+            lr_scaled_updates = learning_rate * u
+            updates_with_wd = lr_scaled_updates + weight_decay * param.value
+            return -update_schedule(step) * updates_with_wd
+
+        updates2 = jax.tree_util.tree_map(lambda u, p: _update2(u, param=p), updates, params)
+        return updates2, optax.safe_int32_increment(step)
+
+    # Stage 1.
+    tx = [PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)]
+    # Interlude.
+    if adam_update_transformation is not None:
+        tx.append(adam_update_transformation)
+    # Stage 2.
+    tx.append(
+        PartitionedGradientTransformation(
+            init=lambda _: jnp.zeros([], dtype=jnp.int32),
+            update=update2_fn,
+            partition=lambda _: OptStateSpec(shape=[], dtype=jnp.int32, mesh_axes=PartitionSpec()),
+        )
+    )
     return chain(*tx)
