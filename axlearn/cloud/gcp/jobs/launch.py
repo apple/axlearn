@@ -159,9 +159,7 @@ class BaseBastionLaunchJob(Job):
         bundler_flags(**common_kwargs)
         # TODO(markblee): Support configuring an identity provider for --user_id.
         flags.DEFINE_string("name", generate_job_name(), "Job name.", **common_kwargs)
-        flags.DEFINE_string(
-            "bastion", shared_bastion_name(), "Name of bastion VM to use.", **common_kwargs
-        )
+        flags.DEFINE_string("bastion", None, "Name of bastion VM to use.", **common_kwargs)
         flags.DEFINE_integer(
             "priority",
             5,
@@ -198,6 +196,8 @@ class BaseBastionLaunchJob(Job):
         Returns:
             The job config.
         """
+        # Default bastion name depends on the final value of --zone.
+        fv.set_default("bastion", shared_bastion_name(fv.zone))
         # Default output_dir depends on the final value of --name.
         fv.set_default("output_dir", f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{fv.name}")
         cfg = super().from_flags(fv, **kwargs)
