@@ -53,7 +53,6 @@ from axlearn.common.utils import (
     expand_vdicts,
     flatten_items,
     register_per_param_settings,
-    shapes,
     tree_paths,
     vectorized_tree_map,
 )
