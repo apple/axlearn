@@ -1204,7 +1204,7 @@ class OptimizerTest(TestCase):
                 multiply_by_parameter_scale=False,
                 clipping_threshold=clipping_threshold,
                 # adafactor_optimizer multiplies weight_decay by (learning_rate * update_schedule).
-                weight_decay_scale_by_learning_rate_exponent=1.,
+                weight_decay_scale_by_learning_rate_exponent=1.0,
                 weight_decay=weight_decay / learning_rate,
                 factored=False,
             ),
@@ -1254,7 +1254,6 @@ class OptimizerTest(TestCase):
         base_results = _compute_updates(base_opt)
         test_results = _compute_updates(test_opt)
         self.assertNestedAllClose(base_results, test_results, atol=1e-6, rtol=1e-6)
-
 
 
 if __name__ == "__main__":
