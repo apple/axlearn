@@ -1462,7 +1462,7 @@ def adastar_optimizer(
     of the same size as the parameters.
 
     Args:
-        learning_rate: the leraning rate (will be scaled by the update_schedule).
+        learning_rate: the learning rate (will be scaled by the update_schedule).
         gradient_ema_decay: If not None, applies momentum on gradients to compute smoothed
             gradients.
         gradient_ema_debias: Whether to apply bias correction when computing smoothed gradients.
@@ -1544,7 +1544,7 @@ def adastar_optimizer(
         def _split_update_results(
             update_results: Nested[_AdastarUpdateResult],
         ) -> Tuple[NestedTensor, Nested[_AdastarPerParamState]]:
-            """Splits a tree of __AdastarUpdateResult to (updates, state)."""
+            """Splits a tree of _AdastarUpdateResult to (updates, state)."""
             updates = jax.tree_util.tree_map(
                 lambda ur: ur.updates,
                 update_results,
