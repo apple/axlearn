@@ -1532,14 +1532,14 @@ def adastar_optimizer(
             raise ValueError("param is None")
 
         def _moment(
-            x: Tensor, *, ema: Optional[Tensor], decay: Optional[float], debias: bool
+            x: Tensor, *, acc: Optional[Tensor], decay: Optional[float], debias: bool
         ) -> Tuple[Tensor, Optional[Tensor]]:
             if decay is None:
                 return x, None
-            value = ema = decay * ema + (1 - decay) * x
+            value = acc = decay * acc + (1 - decay) * x
             if debias:
-                value = optax.bias_correction(ema, decay=decay, count=incremented_count)
-            return value, ema
+                value = optax.bias_correction(acc, decay=decay, count=incremented_count)
+            return value, acc
 
         def _split_update_results(
             update_results: Nested[_AdastarUpdateResult]
@@ -1561,13 +1561,13 @@ def adastar_optimizer(
             """Computes raw updates from gradients."""
             smoothed_gradient, gradient_ema = _moment(
                 grad,
-                ema=pps.gradient_ema,
+                acc=pps.gradient_ema,
                 decay=gradient_ema_decay,
                 debias=gradient_ema_debias,
             )
             smoothed_gradient_square, gradient_square_ema = _moment(
                 grad**2,
-                ema=pps.gradient_square_ema,
+                acc=pps.gradient_square_ema,
                 decay=gradient_square_ema_decay,
                 debias=gradient_square_ema_debias,
             )
@@ -1588,7 +1588,7 @@ def adastar_optimizer(
             """Computes smoothed updates from raw updates."""
             smoothed_updates, update_ema = _moment(
                 raw_updates,
-                ema=pps.update_ema,
+                acc=pps.update_ema,
                 decay=update_ema_decay,
                 debias=update_ema_debias,
             )
