@@ -1542,7 +1542,7 @@ def adastar_optimizer(
             return value, acc
 
         def _split_update_results(
-            update_results: Nested[_AdastarUpdateResult]
+            update_results: Nested[_AdastarUpdateResult],
         ) -> Tuple[NestedTensor, Nested[_AdastarPerParamState]]:
             """Splits a tree of __AdastarUpdateResult to (updates, state)."""
             updates = jax.tree_util.tree_map(
