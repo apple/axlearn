@@ -48,8 +48,6 @@ print(f"jax version={jax.__version__}", file=sys.stderr)
 if instance_type != "none":
     print(f"instance_type={instance_type} num_slices={num_tpu_slices}", file=sys.stderr)
 
-import logging as pylogging
-
 from absl import flags, logging
 
 from axlearn.common.status_server import StatusHTTPServer
@@ -58,15 +56,6 @@ from axlearn.common.utils_spmd import setup as setup_spmd
 
 # pylint: enable=wrong-import-position
 
-flags.DEFINE_string(
-    "module",
-    None,
-    "The trainer config module. "
-    "Only configs from the module will be loaded to avoid dependency on other modules.",
-    required=True,
-)
-flags.DEFINE_alias("config_module", "module")
-flags.DEFINE_string("config", None, "The trainer config name.", required=True)
 flags.DEFINE_string(
     "data_dir",
     None,
@@ -87,11 +76,6 @@ flags.DEFINE_integer(
 )
 flags.DEFINE_integer(
     "process_id", None, "Rank of the current process. Must be None on tpu, otherwise required."
-)
-flags.DEFINE_string(
-    "mesh_selector",
-    None,
-    "The mesh selector string. See `SpmdTrainer.Config.mesh_rules` for details.",
 )
 
 
@@ -124,16 +108,3 @@ def setup():
         # TODO(ruoming): Get rid of --data_dir and use only env var DATA_DIR.
         os.environ["DATA_DIR"] = FLAGS.data_dir
     logging.info("DATA_DIR=%s", get_data_dir())
-
-
-class InfoLogOnlyOnMaster(pylogging.Filter):
-    """Filter to only log levels >= logging.INFO if on master process."""
-
-    def __init__(self, name=""):
-        super().__init__(name=name)
-        self._jax_pid = jax.process_index()
-
-    def filter(self, record):
-        if self._jax_pid != 0:
-            return record.levelno < logging.INFO
-        return True

@@ -14,6 +14,15 @@ from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
 
 # Trainer-specific flags.
 flags.DEFINE_string(
+    "module",
+    None,
+    "The trainer config module. "
+    "Only configs from the module will be loaded to avoid dependency on other modules.",
+    required=True,
+)
+flags.DEFINE_alias("config_module", "module")
+flags.DEFINE_string("config", None, "The trainer config name.", required=True)
+flags.DEFINE_string(
     "trainer_dir",
     None,
     "The root directory of the trainer. "
@@ -42,31 +51,54 @@ flags.DEFINE_integer(
     "If the trainer.step does not increment within this interval, "
     "the watchdog will log the stack traces of all threads.",
 )
+flags.DEFINE_string(
+    "mesh_selector",
+    None,
+    "The mesh selector string. See `SpmdTrainer.Config.mesh_rules` for details.",
+)
 
 FLAGS = flags.FLAGS
 
 
-def get_trainer_config(trainer_config_fn: Optional[TrainerConfigFn] = None) -> SpmdTrainer.Config:
+def get_trainer_config(
+    trainer_config_fn: Optional[TrainerConfigFn] = None,
+    *,
+    flag_values: flags.FlagValues = FLAGS,
+) -> SpmdTrainer.Config:
     if trainer_config_fn is None:
-        # Load from known experiments and provided flags.
-        trainer_config_fn: TrainerConfigFn = get_named_trainer_config(
-            FLAGS.config,
-            config_module=FLAGS.config_module,
-            root_module="axlearn",
+        # Attempt a direct import. This is a common case for launching from pip package.
+        try:
+            trainer_config_fn = get_named_trainer_config(
+                flag_values.config,
+                config_module=flag_values.config_module,
+            )
+        except (ImportError, AttributeError, KeyError):
+            logging.info(
+                "Did not find config '%s' or module '%s' -- will continue searching.",
+                flag_values.config,
+                flag_values.config_module,
+            )
+            # Fallback to original strategy of importing from axlearn.experiments below.
+            trainer_config_fn = None
+
+    if trainer_config_fn is None:
+        trainer_config_fn = get_named_trainer_config(
+            flag_values.config,
+            config_module=f"axlearn.experiments.{flag_values.config_module}",
         )
     trainer_config: SpmdTrainer.Config = trainer_config_fn()
-    trainer_config.dir = trainer_config.dir or FLAGS.trainer_dir
-    if FLAGS.mesh_selector is not None:
-        select_mesh_config(trainer_config, mesh_selector=FLAGS.mesh_selector)
+    trainer_config.dir = trainer_config.dir or flag_values.trainer_dir
+    if flag_values.mesh_selector is not None:
+        select_mesh_config(trainer_config, mesh_selector=flag_values.mesh_selector)
     trainer_config.mesh_axis_names = trainer_config.mesh_axis_names or ("data", "model")
     trainer_config.mesh_shape = trainer_config.mesh_shape or (len(jax.devices()), 1)
     trainer_config.mesh_shape = infer_mesh_shape(trainer_config.mesh_shape)
-    trainer_config.start_trace_steps = [int(el) for el in FLAGS.trace_at_steps]
+    trainer_config.start_trace_steps = [int(el) for el in flag_values.trace_at_steps]
     if trainer_config.watchdog_timeout_seconds is None:
-        trainer_config.watchdog_timeout_seconds = FLAGS.trainer_watchdog_timeout_seconds
+        trainer_config.watchdog_timeout_seconds = flag_values.trainer_watchdog_timeout_seconds
 
     for eval_cfg in trainer_config.evalers.values():
-        eval_cfg.trace_at_iters = [int(el) for el in FLAGS.eval_trace_at_iters]
+        eval_cfg.trace_at_iters = [int(el) for el in flag_values.eval_trace_at_iters]
 
     return trainer_config
 

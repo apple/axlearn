@@ -48,7 +48,7 @@ class GoldenCheckpointTest(TestCase):
 
     @property
     def root_module(self):
-        return "axlearn"
+        return "axlearn.experiments"
 
     def _test_golden_checkpoint(self, config_spec: TrainerConfigSpec):
         # Temporarily raises the soft limit of open files to the hard limit.
@@ -56,7 +56,7 @@ class GoldenCheckpointTest(TestCase):
         resource.setrlimit(resource.RLIMIT_NOFILE, (hard_limit, hard_limit))
 
         cfg_fn = get_named_trainer_config(
-            config_spec.name, config_module=config_spec.module, root_module=self.root_module
+            config_spec.name, config_module=f"{self.root_module}.{config_spec.module}"
         )
         cfg: SpmdTrainer.Config = cfg_fn()
         cfg.summary_writer = NoOpWriter.default_config()
