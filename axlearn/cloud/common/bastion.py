@@ -606,6 +606,7 @@ class Bastion(Configurable):
             if job_name not in self._active_jobs:
                 logging.info("Detected new job %s.", job_name)
                 self._active_jobs[job_name] = active_jobs[job_name]
+                self._append_to_job_history(active_jobs[job_name], "PENDING: detected jobspec")
             # Detected removed job: exists locally, but not in remote.
             elif job_name not in active_jobs:
                 job = self._active_jobs[job_name]
