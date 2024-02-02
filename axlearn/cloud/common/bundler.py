@@ -184,8 +184,17 @@ class Bundler(Configurable):
         # Copy the configs to the bundle directory, since the config file(s) may not be in cwd.
         # Note that configs may comprise of multiple config files, so we serialize the full configs
         # to a new file in the search paths, instead of copying config_file.
-        rel_config_file = pathlib.Path(config_file).relative_to(package_dir)
-        config.write_configs_with_header(str(temp_root / rel_config_file), configs)
+        # We also always copy to a standard path `CONFIG_DIR / CONFIG_FILE` within the bundle.
+        # Note that this may override the existing config if it originated from `cwd / CONFIG_DIR /
+        # CONFIG_FILE` in the first place (but this new config will have merged the original).
+        rel_config_file = temp_root / config.CONFIG_DIR / config.CONFIG_FILE
+        rel_config_file.parent.mkdir(parents=True, exist_ok=True)
+        logging.info(
+            "Copying the config file from %s to the package under %s.",
+            config_file,
+            rel_config_file,
+        )
+        config.write_configs_with_header(str(rel_config_file), configs)
 
         return temp_dir
 
