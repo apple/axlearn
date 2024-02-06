@@ -272,8 +272,9 @@ class TestLaunchTPUJob(TestWithTemporaryCWD):
         name=[None, "test-name"],
         output_dir=[None, "test-output"],
         zone=[None, "test-zone"],
+        action=["start", "list"],
     )
-    def test_flags(self, name, output_dir, zone):
+    def test_flags(self, name, output_dir, zone, action):
         # Construct flags.
         fv = flags.FlagValues()
         flags.DEFINE_string("instance_type", "test-type", help="test", flag_values=fv)
@@ -316,9 +317,12 @@ class TestLaunchTPUJob(TestWithTemporaryCWD):
             self.assertEqual(fv["tpu_type"].default, "test-type")
             self.assertEqual(fv.output_dir, output_dir)
 
-            # Make sure bundler config is constructed properly.
-            cfg = LaunchTPUJob.from_flags(fv, command="test command")
-            self.assertIn("tpu", cfg.bundler.extras)
+            cfg = LaunchTPUJob.from_flags(fv, command="test command", action=action)
+
+            if action == "start":
+                self.assertIn("tpu", cfg.bundler.extras)
+            else:
+                self.assertIsNone(cfg.bundler)
 
             # Check bastion flag. If None, we should infer from zone in mock_settings.
             if zone is None:

@@ -82,3 +82,23 @@ class RegistryTest(TestCase):
             self.assertEqual(cfg.build_args, {"build_arg1": "test_build_arg"})
             self.assertEqual(cfg.external, "test_external")
             self.assertEqual(cfg.target, "test_target")
+
+    @parameterized.parameters(
+        GCSTarBundler.TYPE, ArtifactRegistryBundler.TYPE, CloudBuildBundler.TYPE
+    )
+    def test_with_tpu_extras(self, bundler_type):
+        # Test configuring bundle for TPU.
+        with mock_gcp_settings(bundler.__name__, settings={"ttl_bucket": "default_bucket"}):
+            cfg = get_bundler_config(
+                bundler_type=bundler_type, spec=["find_links=test", "extras=test"]
+            )
+            cfg = bundler.with_tpu_extras(cfg)
+            if hasattr(cfg, "find_links"):
+                self.assertSameElements(
+                    [
+                        "test",
+                        "https://storage.googleapis.com/jax-releases/libtpu_releases.html",
+                    ],
+                    cfg.find_links,
+                )
+            self.assertSameElements(["tpu", "test"], cfg.extras)

@@ -51,6 +51,7 @@ import sys
 import tempfile
 from collections import defaultdict
 from datetime import datetime
+from types import ModuleType
 from typing import Any, Callable, Dict, NamedTuple, Optional, TextIO, Tuple, Type, cast
 
 import regex as re
@@ -74,6 +75,7 @@ from axlearn.cloud.common.utils import (
     infer_cli_name,
     parse_action,
 )
+from axlearn.cloud.gcp.bundler import with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import Job
 from axlearn.cloud.gcp.jobs import tpu_runner
@@ -186,11 +188,12 @@ class BaseBastionLaunchJob(Job):
         )
 
     @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
+    def from_flags(cls, fv: flags.FlagValues, action: str, **kwargs) -> Config:
         """Constructs config from flags defined by `define_flags()`.
 
         Args:
             fv: Flag values (e.g., FLAGS).
+            action: Action requested by the user.
             kwargs: Optional key/values to set on the config.
 
         Returns:
@@ -201,8 +204,9 @@ class BaseBastionLaunchJob(Job):
         # Default output_dir depends on the final value of --name.
         fv.set_default("output_dir", f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{fv.name}")
         cfg = super().from_flags(fv, **kwargs)
-        # Construct bundler config.
-        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
+        # Construct bundler config only for start.
+        if action == "start":
+            cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
         # Construct bastion/job config. Note that the output_dir should match the bastion dir.
         cfg.bastion = SubmitBastionJob.from_flags(fv, name=fv.bastion, job_name=cfg.name).set(
             job_spec_file="", bastion_dir=output_dir(fv.bastion)
@@ -294,7 +298,7 @@ class BaseBastionLaunchJob(Job):
                     f"User '{cfg.user_id}' is not a member of the project '{cfg.project_id}'. "
                     f"Instead, user '{cfg.user_id}' is a member of: {user_projects}"
                 )
-        if cfg.bundler:
+        if self._bundler:
             self._bundler.bundle(cfg.name)
         logging.info("Starting run for job name %s", cfg.name)
         with tempfile.NamedTemporaryFile("w") as f:
@@ -330,7 +334,7 @@ class BaseBastionLaunchJob(Job):
                 [
                     job.spec.name,
                     job.spec.metadata.user_id,
-                    job.state,
+                    job.state.name,
                     job.spec.metadata.project_id,
                     str(job.spec.metadata.resources),
                     str(job.spec.metadata.priority),
@@ -367,9 +371,18 @@ class BaseBastionLaunchJob(Job):
         return table
 
 
+class _RunnerModuleType(ModuleType):
+    """A Module defining launch_flags."""
+
+    launch_flags: Callable[[flags.FlagValues], None]
+
+
 # TODO(markblee): Add a LaunchCPUJob.
 class LaunchTPUJob(BaseBastionLaunchJob):
     """Launches a TPU job via bastion."""
+
+    # Runner module. Used to infer launch flags and launch command.
+    _runner: _RunnerModuleType = tpu_runner  # pytype: disable=annotation-type-mismatch
 
     @config_class
     class Config(BaseBastionLaunchJob.Config):
@@ -382,13 +395,13 @@ class LaunchTPUJob(BaseBastionLaunchJob):
     def define_flags(cls, fv: flags.FlagValues):
         """Defines launch flags using tpu_runner."""
         super().define_flags(fv)
-        tpu_runner.launch_flags(flag_values=fv)
+        cls._runner.launch_flags(fv)
         fv.set_default("name", generate_job_name())
         fv.set_default("tpu_type", cls._tpu_type(fv.instance_type))
         fv["tpu_type"].help += " (Note: inherited from --instance_type)."
 
     @classmethod
-    def from_flags(cls, fv: flags.FlagValues, *, command: str, **kwargs) -> Config:
+    def from_flags(cls, fv: flags.FlagValues, *, command: str, action: str, **kwargs) -> Config:
         """Constructs config from flags defined by `define_flags()`.
 
         In addition to logic defined in `BaseBastionLaunchJob.from_flags()`:
@@ -398,22 +411,24 @@ class LaunchTPUJob(BaseBastionLaunchJob):
         Args:
             fv: Flag values (e.g., FLAGS).
             command: The user-supplied command, i.e. everything after `--` as a string.
+            action: Action requested by the user.
             kwargs: Optional key/values to set on the config.
 
         Returns:
             The job config.
         """
-        cfg = super().from_flags(fv, **kwargs)
+        cfg: LaunchTPUJob.Config = super().from_flags(fv, action=action, **kwargs)
 
         # Construct bundler config.
-        cfg.bundler = tpu_runner.with_tpu_extras(cfg.bundler)
+        if cfg.bundler:
+            cfg.bundler = with_tpu_extras(cfg.bundler)
 
         # Save flags values corresponding to our launch flags.
         launch_fv = flags.FlagValues()
-        tpu_runner.launch_flags(flag_values=launch_fv)
+        cls._runner.launch_flags(launch_fv)
 
         # Convert the user-supplied flags into a space-separated string, which is forwarded to the
-        # command executed by bastion. Only flags which are used by the tpu_runner are forwarded.
+        # command executed by bastion. Only flags which are used by the runner are forwarded.
         filtered = []
         for _, module_flags in fv.flags_by_module_dict().items():
             for flag in module_flags:
@@ -422,7 +437,7 @@ class LaunchTPUJob(BaseBastionLaunchJob):
                     filtered.extend(flag.serialize().split("\n"))
         launch_flags = " ".join(filtered)
         # Note: command is only used for start.
-        cfg.command = f"python3 -m {tpu_runner.__name__} start {launch_flags} -- {command}"
+        cfg.command = f"python3 -m {cls._runner.__name__} start {launch_flags} -- {command}"
         return cfg
 
     @classmethod
@@ -587,7 +602,7 @@ def main(_):
         if arg.strip() == "--":
             command = shlex.join(sys.argv[i + 1 :])
             break
-    cfg = launcher.job_cls.from_flags(FLAGS, command=command)
+    cfg = launcher.job_cls.from_flags(FLAGS, command=command, action=action)
     job: BaseBastionLaunchJob = cfg.instantiate()
     if FLAGS.dry_run:
         print(f"Action: {action}\nJob config:\n{job.config}")

@@ -44,6 +44,7 @@ class Job(Configurable):
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
+        self._bundler = None
         if cfg.bundler:
             self._bundler: Bundler = cfg.bundler.instantiate()
 
