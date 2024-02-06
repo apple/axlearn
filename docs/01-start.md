@@ -653,9 +653,10 @@ AXLearn comes with tooling for provisioning and launching training on public clo
 ### Pre-requisites
 
 We assume you have:
-1. A Google Cloud Platform (GCP) project with TPU quota.
-2. At least one Google Cloud Storage (GCS) bucket.
-3. `gcloud` setup, following e.g. https://cloud.google.com/sdk/docs/install.
+1. `gcloud` setup, following e.g. https://cloud.google.com/sdk/docs/install.
+2. A Google Cloud Platform (GCP) project. To set up a brand new GCP project with the basic resources needed, please run [this script](../axlearn/cloud/gcp/scripts/project_setup.sh).
+3. TPU quota in your project. To request TPU quota, please follow [these instructions](https://cloud.google.com/tpu/docs/setup-gcp-account#prepare-to-request).
+4. At least one Google Cloud Storage (GCS) bucket.
 
 ### Preparing the CLI
 
