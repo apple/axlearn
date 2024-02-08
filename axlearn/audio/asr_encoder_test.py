@@ -105,6 +105,7 @@ class SpeechContextNetworkTest(TestCase):
     """Tests SpeechContextNetwork."""
 
     @parameterized.parameters([True, False])
+    @pytest.mark.fp64
     def test_speech_context_network(self, is_training: bool):
         input_dim, output_dim, dropout_rate, num_layers = 32, 16, 0.2, 2
 
