@@ -285,10 +285,13 @@ class DockerBundlerTest(TestWithTemporaryCWD):
                 )
                 self.assertEqual(b.bundle("FAKE_TAG"), 123)
 
-    @parameterized.parameters(dict(running_from_source=True), dict(running_from_source=False))
+    @parameterized.product(running_from_source=[True, False], allow_dirty=[False, True])
+    @mock.patch(f"{bundler.__name__}.get_git_branch", return_value="FAKE_BRANCH")
     @mock.patch(f"{bundler.__name__}.get_git_revision", return_value="FAKE_REVISION")
     @mock.patch(f"{bundler.__name__}.get_git_status", return_value=["FAKE_FILE"])
-    def test_call_unclean(self, get_git_status, get_git_revision, running_from_source):
+    def test_call_unclean(
+        self, get_git_status, get_git_revision, get_git_branch, running_from_source, allow_dirty
+    ):
         _create_dummy_config(self._temp_root.name)
 
         mock_running_from_source = mock.patch(
@@ -298,10 +301,17 @@ class DockerBundlerTest(TestWithTemporaryCWD):
         with mock_running_from_source as mock_source, _fake_dockerfile() as dockerfile:
             b = (
                 DockerBundler.default_config()
-                .set(image="test", repo="FAKE_REPO", dockerfile=str(dockerfile))
+                .set(
+                    image="test",
+                    repo="FAKE_REPO",
+                    dockerfile=str(dockerfile),
+                    allow_dirty=allow_dirty,
+                )
                 .instantiate()
             )
-            if running_from_source:
+            should_raise = running_from_source and not allow_dirty
+
+            if should_raise:
                 ctx = self.assertRaisesRegex(RuntimeError, "commit your changes")
             else:
                 ctx = contextlib.nullcontext()
@@ -309,8 +319,9 @@ class DockerBundlerTest(TestWithTemporaryCWD):
             mock_build_and_push = mock.patch.object(b, "_build_and_push", return_value=None)
             with ctx, mock_build_and_push as mock_push:
                 b.bundle("FAKE_TAG")
-                self.assertEqual(not running_from_source, mock_push.called)
+                self.assertEqual(not should_raise, mock_push.called)
 
             self.assertGreater(mock_source.call_count, 0)
             self.assertEqual(running_from_source, get_git_status.called)
-            self.assertEqual(get_git_revision.call_count, 0)
+            self.assertEqual(running_from_source and allow_dirty, get_git_branch.called)
+            self.assertEqual(running_from_source and allow_dirty, get_git_revision.called)
