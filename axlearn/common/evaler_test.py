@@ -467,6 +467,16 @@ class EvalerTest(TestCase):
             )
             self.assertIsNone(summaries)
 
+            # If metric dips below threshold again, eval should not run. But force it to run.
+            _, summaries, _ = evaler.eval_step(
+                3,
+                prng_key=keys[3],
+                model_params=model_state,
+                train_summaries={"test": 0.9},
+                force_run=True,
+            )
+            self.assertIsNotNone(summaries)
+
 
 class ModelSummaryAccumulatorTest(absltest.TestCase):
     def test_accumulated_summaries_match(self):

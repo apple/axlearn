@@ -611,6 +611,7 @@ class SpmdEvaler(Module):
         model_params: NestedTensor,
         return_aux: bool = False,
         train_summaries: Optional[NestedTensor] = None,
+        force_run: bool = False,
     ) -> Tuple[Tensor, Optional[Dict[str, Any]], Optional[List[NestedTensor]]]:
         """Runs eval for the given step.
 
@@ -621,6 +622,7 @@ class SpmdEvaler(Module):
             return_aux: Boolean to determine whether outputs are returned.
             train_summaries: Summaries from the most recent training step. Can be used in the
                 `evaler_policy`.
+            force_run: If True, force run the eval for the given step.
 
         Returns:
             A tuple (prng_key, summaries, outputs), where
@@ -633,7 +635,9 @@ class SpmdEvaler(Module):
         """
         cfg = self.config
 
-        if not self._eval_policy(step=step, train_summaries=(train_summaries or {})):
+        if not force_run and not self._eval_policy(
+            step=step, train_summaries=(train_summaries or {})
+        ):
             return prng_key, None, None
 
         self.vlog(
