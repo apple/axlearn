@@ -296,6 +296,7 @@ class CreateBastionJob(CPUJob):
         # idempotent. Setup outputs are piped to setup_log.
         setup_log = os.path.join(_LOG_DIR, "setup.log")
         start_cmd = f"""set -o pipefail;
+            mkdir -p {_LOG_DIR};
             if [[ -z "$(docker ps -f "name={cfg.name}" -f "status=running" -q )" ]]; then
                 {self._bundler.install_command(image)} 2>&1 | tee -a {setup_log} && {run_cmd};
             else
