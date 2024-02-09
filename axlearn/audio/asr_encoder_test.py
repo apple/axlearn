@@ -35,7 +35,9 @@ class SpeechFeatureLayerTest(TestCase):
         hidden_dim, output_dim = 32, 16
 
         cfg: SpeechFeatureLayer.Config = SpeechFeatureLayer.default_config().set(
-            output_dim=output_dim
+            output_dim=output_dim,
+            # Slightly higher diff without fp64 from conv subsampler on jax 0.4.21.
+            dtype=jnp.float64,
         )
         cfg.frontend.set(
             num_filters=num_filters,
@@ -69,10 +71,6 @@ class SpeechFeatureLayerTest(TestCase):
         inputs, paddings = _fake_audio_pairs(
             prng_key=input_key, batch_size=batch_size, seq_len=seq_len
         )
-
-        # Slightly higher diff without fp64 from conv subsampler on jax 0.4.21.
-        inputs = inputs.astype(jnp.float64)
-        layer_params = jax.tree_map(lambda x: x.astype(jnp.float64), layer_params)
 
         output_batch, output_collections = F(
             layer,
@@ -110,8 +108,7 @@ class SpeechContextNetworkTest(TestCase):
         input_dim, output_dim, dropout_rate, num_layers = 32, 16, 0.2, 2
 
         cfg = SpeechContextNetwork.default_config().set(
-            input_dim=input_dim,
-            output_dim=output_dim,
+            input_dim=input_dim, output_dim=output_dim, dtype=jnp.float64
         )
         cfg.dropout.rate = dropout_rate
         cfg.context.num_layers = num_layers
@@ -189,6 +186,7 @@ class ASREncoderTest(TestCase):
             dim=output_dim,
             feature=SpeechFeatureLayer.default_config(),
             context=SpeechContextNetwork.default_config(),
+            dtype=jnp.float64,
         )
         # Feature layers.
         cfg.feature.frontend.set(
@@ -224,10 +222,6 @@ class ASREncoderTest(TestCase):
         inputs, paddings = _fake_audio_pairs(
             prng_key=input_key, batch_size=batch_size, seq_len=seq_len
         )
-
-        # Slightly higher diff without fp64 from conv subsampler on jax 0.4.21.
-        inputs = inputs.astype(jnp.float64)
-        layer_params = jax.tree_map(lambda x: x.astype(jnp.float64), layer_params)
 
         output_batch, _ = F(
             layer,
