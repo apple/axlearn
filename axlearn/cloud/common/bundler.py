@@ -269,6 +269,9 @@ class BaseDockerBundler(Bundler):
         # Usually the image is to be run on the cloud on x86 machines, so "linux/amd64" is the
         # default even on arm64 machines like Apple Silicon. If None, let docker pick the platform.
         platform: Optional[str] = _DEFAULT_DOCKER_PLATFORM
+        # Allow git status to be dirty if bundling from source. This is sometimes necessary, e.g.
+        # during bundling-time modifications of files.
+        allow_dirty: bool = False
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -327,11 +330,14 @@ class BaseDockerBundler(Bundler):
             ValueError: If image, repo, or dockerfile are invalid.
             RuntimeError: If attempting to bundle with dirty git status.
         """
-        cfg = self.config
+        cfg: BaseDockerBundler.Config = self.config
 
         # Fail early if git status is dirty.
-        if running_from_source() and get_git_status():
-            raise RuntimeError("Please commit your changes or gitignore them.")
+        if running_from_source() and (status := get_git_status()):
+            if cfg.allow_dirty:
+                logging.warning("Bundling with local changes:\n%s", status)
+            else:
+                raise RuntimeError("Please commit your changes or gitignore them.")
 
         # If path is relative, assume it is relative to CWD.
         dockerfile = pathlib.Path(cfg.dockerfile).expanduser()
