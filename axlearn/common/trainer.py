@@ -7,7 +7,7 @@ import math
 import os.path
 import threading
 import time
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 import jax
 import tensorflow as tf
@@ -339,10 +339,78 @@ class SpmdTrainer(Module):
                 self.vlog(1, "Watchdog check passed: %s -> %s", last_step, current_step)
         logging.info("Watchdog loop done")
 
+    def _should_force_run_evals(
+        self,
+        *,
+        return_evaler_summaries: Optional[Union[bool, Set[str]]] = None,
+        evalers: Dict[str, SpmdEvaler.Config],
+    ) -> Set[str]:
+        """Determines which, if any, evalers to force run at the last training step.
+
+        Args:
+            return_evaler_summaries: Whether to run evalers at the last training step.
+                If None or False, do not force run evalers; if True, force run all
+                evalers; if given as a set of strings, force run all the evalers with
+                the name in the set.
+            evalers: A dict of evaler configs. Only the keys are used to check against
+                return_evaler_summaries.
+
+        Returns:
+            A set of strings for the evalers to force run at the last training step.
+            If empty, no evaler is force run.
+
+        Raises:
+            ValueError: If return_evaler_summaries is a set of strings with any not matching
+                evaler names; or return_evaler_summaries is an invalid type.
+        """
+        force_run_evals = set()
+        if return_evaler_summaries is True:
+            force_run_evals = set(evalers.keys())
+        elif isinstance(return_evaler_summaries, Set):
+            for evaler_name in return_evaler_summaries:
+                if evaler_name not in evalers:
+                    raise ValueError(
+                        f"{evaler_name} does not match any evaler names: {evalers.keys()}"
+                    )
+                force_run_evals.add(evaler_name)
+        elif not isinstance(return_evaler_summaries, bool) and return_evaler_summaries is not None:
+            raise ValueError(
+                f"return_evaler_summaries must be bool, None or Set. Got {return_evaler_summaries}"
+            )
+        return force_run_evals
+
     # pylint: disable-next=too-many-statements,too-many-branches
-    def run(self, prng_key: Tensor) -> Optional[NestedTensor]:
+    def run(
+        self, prng_key: Tensor, *, return_evaler_summaries: Optional[Union[bool, Set[str]]] = None
+    ) -> Optional[NestedTensor]:
+        """Runs training.
+
+        Args:
+            prng_key: The pseudo random generator key.
+            return_evaler_summaries: Whether to force run evalers and return summaries at the
+                last training step. If None or False, do not force run evalers and no evaler
+                summaries are returned; if True, force run all evalers at the last training step
+                and return summaries; if given as a set of strings, force run all the evalers
+                with the name in the set at teh last training step and return summaries.
+
+        Returns:
+            None if no training is run or a dict otherwise.
+            If returned is a dict, it contains the outputs from the last step of training,
+            with 'loss' and 'aux' outputs. If return_evaler_summaries is True or a set of strings,
+            it also contains 'evaler_summaries', which is a dict containing the evaler summaries
+            force run at the last training step. The dict will have evaler names as keys and
+            metrics summary dict as values (None for evalers not included in force run).
+            The metrics summary dict has string keys for the name of the metrics and can have
+            different types of values such as WeightedScalar, Tensor, or string, depending on
+            the specific `metric_calculator` config of the evaler.
+        """
         with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
             cfg = self.config
+            # Check if need to force run evals at the last training step.
+            force_run_eval_sets_at_max_step = self._should_force_run_evals(
+                return_evaler_summaries=return_evaler_summaries, evalers=cfg.evalers
+            )
+
             # Prepare training.
             if not self._prepare_training(prng_key):
                 return None
@@ -364,7 +432,12 @@ class SpmdTrainer(Module):
 
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
-                    output = self._run_step(utils.host_to_global_device_array(input_batch))
+                    output = self._run_step(
+                        utils.host_to_global_device_array(input_batch),
+                        force_run_evals=force_run_eval_sets_at_max_step
+                        if self.step >= cfg.max_step
+                        else None,
+                    )
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
                     if num_steps % 100 == 0:
@@ -677,14 +750,21 @@ class SpmdTrainer(Module):
         )
         return built_state
 
-    def _run_step(self, input_batch: NestedTensor) -> NestedTensor:
+    def _run_step(
+        self, input_batch: NestedTensor, *, force_run_evals: Optional[Set[str]] = None
+    ) -> NestedTensor:
         """Runs a single training step.
 
         Args:
             input_batch: a NestedTensor containing global arrays.
+            force_run_evals: Whether to force run evalers and return summaries.
+                If None, do not force run evalers and no evaler summaries are returned;
+                if given as a set of strings, force run all the evalers with the name in
+                the set and return summaries.
 
         Returns:
-            A dict containing 'loss' and 'aux' outputs.
+            A dict containing 'loss' and 'aux' outputs. If force_run_evals is a set,
+            force run the evalers in the set and return 'evaler_summaries' output.
         """
         with jax.profiler.StepTraceAnnotation("train", step_num=self.step):
             # Note(Jan 2022):
@@ -703,14 +783,26 @@ class SpmdTrainer(Module):
         self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
 
         # Aggregate summaries across evalers.
-        evaler_summaries = self._run_eval(train_summaries=outputs["summaries"])
+        evaler_summaries = self._run_eval(
+            train_summaries=outputs["summaries"], force_runs=force_run_evals
+        )
 
         # Checkpointer policy will decide if we should save.
         self.save_checkpoint(evaler_summaries=evaler_summaries)
 
-        return {"loss": outputs["loss"], "aux": outputs["aux"]}
+        return_dict = {"loss": outputs["loss"], "aux": outputs["aux"]}
+        # Returns evaler_summaries if force_run_evals is not None or empty set.
+        if force_run_evals:
+            return_dict["evaler_summaries"] = evaler_summaries
 
-    def _run_eval(self, *, train_summaries: Optional[NestedTensor] = None) -> Dict[str, Any]:
+        return return_dict
+
+    def _run_eval(
+        self,
+        *,
+        train_summaries: Optional[NestedTensor] = None,
+        force_runs: Optional[Set[str]] = None,
+    ) -> Dict[str, Any]:
         """Runs evaluations and returns the corresponding summaries."""
         evaler_summaries = {}
         # Note: we will use the same eval key as the training keys of the future step,
@@ -722,6 +814,7 @@ class SpmdTrainer(Module):
                 prng_key=prng_key,
                 model_params=self.model_params_for_eval(),
                 train_summaries=train_summaries,
+                force_run=bool(force_runs is not None and evaler_name in force_runs),
             )
             evaler_summaries[evaler_name] = summaries
         return evaler_summaries

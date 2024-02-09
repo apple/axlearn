@@ -473,6 +473,75 @@ class TrainerTest(test_utils.TestCase):
         # The prng_key per step is deterministic.
         np.testing.assert_array_equal(output_a["aux"]["prng_key"], output_b["aux"]["prng_key"])
 
+    @parameterized.parameters(
+        {"return_evaler_summaries": None},
+        {"return_evaler_summaries": True},
+        {"return_evaler_summaries": False},
+        {"return_evaler_summaries": {"wrong"}},
+        {"return_evaler_summaries": {"eval_dummy"}},
+        {"return_evaler_summaries": {"eval_dummy", "eval_dummy2"}},
+    )
+    def test_return_evaler_summaries(self, return_evaler_summaries):
+        step_dtype = None
+        cfg = SpmdTrainer.default_config().set(
+            name="test_return_evaler_summaries_trainer", train_dtype=step_dtype
+        )
+        cfg.dir = tempfile.mkdtemp()
+        cfg.mesh_axis_names = ("data", "model")
+        cfg.mesh_shape = (1, 1)
+        cfg.model = DummyModel.default_config().set(dtype=jnp.float32)
+        cfg.input = DummyInput.default_config()
+        cfg.learner = learner.Learner.default_config().set(
+            optimizer=config_for_function(optimizers.sgd_optimizer).set(
+                learning_rate=0.1,
+                decouple_weight_decay=True,
+                momentum=0.9,
+                weight_decay=1e-4,
+            )
+        )
+        evaler_cfg = SpmdEvaler.default_config().set(
+            input=DummyInput.default_config().set(total_num_batches=2),
+            eval_dtype=step_dtype,
+            eval_policy=config_for_function(eval_every_n_steps_policy).set(n=10),
+        )
+        evaler_cfg.summary_writer.vlog = 5
+        cfg.evalers = dict(eval_dummy=evaler_cfg, eval_dummy2=evaler_cfg.clone())
+        cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(n=5)
+        cfg.summary_writer.vlog = 5
+        cfg.max_step = 3
+        cfg.watchdog_timeout_seconds = 0.1
+        cfg.vlog = 2
+        trainer: SpmdTrainer = cfg.instantiate(parent=None)
+        # Check exception when return_evaler_summaries contains names that don't match evalers.
+        if isinstance(return_evaler_summaries, set) and "wrong" in return_evaler_summaries:
+            with self.assertRaises(ValueError):
+                trainer.run(
+                    prng_key=jax.random.PRNGKey(123),
+                    return_evaler_summaries=return_evaler_summaries,
+                )
+            return
+        else:
+            output = trainer.run(
+                prng_key=jax.random.PRNGKey(123), return_evaler_summaries=return_evaler_summaries
+            )
+        if return_evaler_summaries is None or return_evaler_summaries is False:
+            self.assertTrue("evaler_summaries" not in output)
+        else:
+            self.assertTrue("evaler_summaries" in output)
+            # evalers not force run will have None as value in evaler_summaries.
+            if return_evaler_summaries is True:
+                expected_non_empty_keys = {"eval_dummy", "eval_dummy2"}
+            elif isinstance(return_evaler_summaries, set):
+                expected_non_empty_keys = return_evaler_summaries
+            else:
+                raise ValueError(
+                    f"return_evaler_summaries {return_evaler_summaries} not supported!"
+                )
+            self.assertTrue(
+                expected_non_empty_keys
+                == set(k for k, v in output["evaler_summaries"].items() if v is not None)
+            )
+
     def test_stop_on_exception(self):
         """Test that trainer exits cleanly if there's an exception in the main loop."""
         if not test_utils.is_supported_platform("cpu"):
