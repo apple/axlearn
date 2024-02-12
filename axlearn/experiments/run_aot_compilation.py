@@ -80,7 +80,7 @@ def main(_):
         config_module=FLAGS.module,
     )
     cfg = trainer_config_fn()
-    cfg = select_mesh_config(cfg, mesh_selector=_mesh_selector(FLAGS.topology))
+    select_mesh_config(cfg, mesh_selector=_mesh_selector(FLAGS.topology))
     _compile_and_dump_programs(
         cfg,
         compile_topology=FLAGS.topology,
