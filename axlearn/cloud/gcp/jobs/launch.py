@@ -41,6 +41,9 @@ Examples:
         --bundler_spec=dockerfile=Dockerfile \
         --bundler_spec=build_arg1=my-build-arg ...
 
+    # To stop a job.
+    axlearn gcp launch stop --name=... --instance_type=tpu
+
 """
 # pylint: disable=redefined-outer-name,protected-access
 

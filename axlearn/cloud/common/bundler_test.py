@@ -62,7 +62,8 @@ class BundlerTest(TestWithTemporaryCWD):
         b2 = Bundler.default_config().instantiate()
         with tempfile.TemporaryDirectory() as temp_new_cwd:
             mock_search = mock.patch(
-                f"{config.__name__}._config_search_paths", return_value=[str(dummy_config_file)]
+                f"{config.__name__}._config_search_paths",
+                return_value=[str(dummy_config_file)],
             )
             # pylint: disable-next=protected-access
             with mock_search, temp_chdir(temp_new_cwd), b2._local_dir_context() as temp_bundle:
@@ -169,7 +170,14 @@ class BaseTarBundlerTest(TestWithTemporaryCWD):
             # Create dummy file and requirements in CWD.
             (pathlib.Path(self._temp_root.name) / "a" / "b").mkdir(parents=True)
             (pathlib.Path(self._temp_root.name) / "a" / "f").mkdir(parents=True)
-            for f in ["test1.txt", "test2.txt", "a/c.txt", "a/b/d.txt", "a/e.txt", "a/f/g.txt"]:
+            for f in [
+                "test1.txt",
+                "test2.txt",
+                "a/c.txt",
+                "a/b/d.txt",
+                "a/e.txt",
+                "a/f/g.txt",
+            ]:
                 dummy_file = pathlib.Path(self._temp_root.name) / f
                 dummy_file.write_text("hello world")
 
@@ -186,6 +194,12 @@ class BaseTarBundlerTest(TestWithTemporaryCWD):
             )
             b = cfg.instantiate()
             bundle_name = "test_bundle"
+
+            # Should fail if no pyproject.
+            with self.assertRaisesRegex(ValueError, "pyproject"):
+                b.bundle(bundle_name)
+
+            (pathlib.Path(self._temp_root.name) / "pyproject.toml").touch()
             bundle_id = b.bundle(bundle_name)
 
             # Check that bundle exists.

@@ -711,6 +711,17 @@ axlearn gcp config activate
 ```
 To set the project as active. (For more details on what this means, please refer to the [CLI docs](03-cli.md).)
 
+We assume that you are launching from a working directory that contains a `pyproject.toml` or `setup.py` (for instance, if you cloned the repo, you should have one already). If not, you can create a minimal `pyproject.toml`:
+```toml
+[project]
+name = "my_project"
+version = "0.0.1"
+dependencies = ["axlearn"]
+
+[project.optional-dependencies]
+tpu = ["axlearn[tpu]"]
+```
+
 ### Launching a Command
 
 We can now leverage the AXLearn infrastructure to launch commands on arbitrary TPU configurations.

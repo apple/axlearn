@@ -495,6 +495,13 @@ class BaseTarBundler(Bundler):
             temp_dir = pathlib.Path(temp_dir)
             temp_root = temp_dir / "axlearn"
 
+            # Tar bundling installs via `pip install`, which requires a pyproject or setup.py.
+            if not ((temp_root / "pyproject.toml").exists() or (temp_root / "setup.py").exists()):
+                raise ValueError(
+                    "No pyproject.toml or setup.py found in the bundle root -- "
+                    "This means that bundle installation will likely fail!"
+                )
+
             # Add a requirements file indicating which deps/extras to install. This allows
             # install_command() to know how to install the bundle given just the bundle_id, without
             # having to know which extras the bundler was configured with when bundle() was called.
