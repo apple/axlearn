@@ -63,7 +63,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
                 # tpu-v4. step time: 3.03s.
                 ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e. step time: TBD.
-                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=256)),
+                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # H100/A100 80G. Maximum per-node batch size = 64, hence need >= 32 nodes.
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",

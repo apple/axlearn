@@ -13,7 +13,7 @@ python -m axlearn.experiments.run_aot_compilation \
 python -m axlearn.experiments.run_aot_compilation \
     --module=axlearn.experiments.text.gpt.c4_trainer \
     --config=fuji-7B \
-    --topology=v4-256 --topology_num_slices=4 1> /tmp/aot_stdout
+    --topology=v5e-256 --topology_num_slices=4 1> /tmp/aot_stdout
 
 Reference: https://jax.readthedocs.io/en/latest/aot.html
 """
