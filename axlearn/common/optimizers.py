@@ -1407,7 +1407,7 @@ def adastar_optimizer(
     gradient_square_ema_decay: float,
     gradient_square_ema_debias: bool,
     eps: float,
-    eps_root: float,
+    eps_square: float,
     raw_update_clipping_threshold: Optional[float],
     update_ema_decay: Optional[float],
     update_ema_debias: bool,
@@ -1422,9 +1422,9 @@ def adastar_optimizer(
         # Stage 1.
         smoothed_gradients = ema(gradients, gradient_ema_decay, gradient_ema_debias)
         smoothed_gradient_squares = ema(
-            gradients ** 2, gradient_square_ema_decay, gradient_sqare_ema_debias)
+            gradients ** 2 + eps_square, gradient_square_ema_decay, gradient_sqare_ema_debias)
         # Normalized gradients.
-        raw_updates = smoothed_gradients / ((smoothed_gradient_squares + eps_root) ** 0.5 + eps)
+        raw_updates = smoothed_gradients / ((smoothed_gradient_squares) ** 0.5 + eps)
         clipped_updates = clip(scaled_gradients, raw_update_clipping_threshold)
         smoothed_updates = ema(clipped_scaled_gradients, update_ema_decay, update_ema_debias)
 
@@ -1444,7 +1444,7 @@ def adastar_optimizer(
             gradient_square_ema_decay=b2,
             gradient_square_ema_debias=True,
             eps=eps,
-            eps_root=0,
+            eps_square=0,
             update_ema_decay=None,  # disabled.
         )
 
@@ -1453,7 +1453,7 @@ def adastar_optimizer(
             gradient_square_ema_decay=b2,
             gradient_square_ema_debias=True,
             eps=0,
-            eps_root=eps,  # adafactor eps is applied on the square.
+            eps_square=eps,  # adafactor eps is applied on the square.
             update_ema_decay=b1,
             update_ema_debias=False,
         )
@@ -1470,7 +1470,7 @@ def adastar_optimizer(
         gradient_square_ema_debias: Whether to apply bias correction when computing
             gradient square ema.
         eps: (float) regularization constant added to the square root of smoothed_gradient_squares.
-        eps_root: (float) regularization constant added to smoothed_gradient_squares.
+        eps_square: (float) regularization constant added to gradient_squares.
         raw_update_clipping_threshold: If not None, clips the norms of the raw updates
             to this value.
         update_ema_decay: If not None, applies momentum on raw updates (normalized gradients) to
@@ -1566,12 +1566,12 @@ def adastar_optimizer(
                 debias=gradient_ema_debias,
             )
             smoothed_gradient_square, gradient_square_ema = _moment(
-                grad**2,
+                grad**2 + eps_square,
                 acc=pps.gradient_square_ema,
                 decay=gradient_square_ema_decay,
                 debias=gradient_square_ema_debias,
             )
-            raw_updates = smoothed_gradient / ((smoothed_gradient_square + eps_root) ** 0.5 + eps)
+            raw_updates = smoothed_gradient / ((smoothed_gradient_square) ** 0.5 + eps)
             if logging.vlog_is_on(3):
                 jax.debug.print("adastar mu={mu} nu={nu}", mu=gradient_ema, nu=gradient_square_ema)
                 jax.debug.print("adastar raw_updates={u}", u=raw_updates)
