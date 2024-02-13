@@ -320,7 +320,7 @@ class BaseBastionLaunchJob(Job):
             f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "
             f"--name={cfg.name} --bastion={cfg.bastion.name} --instance_type={cfg.instance_type} "
-            f"--zone={cfg.zone}"
+            f"--zone=$ZONE"
         )
 
     def _jobs_table(self, jobs: Dict[str, BastionJob]) -> Dict:

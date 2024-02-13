@@ -9,6 +9,8 @@
 
     GS_ROOT=gs://public-permanent-us-west4-0rxn; \
     ZONE=us-west4-a; \
+    GS_ROOT=gs://public-permanent-us-central1-0rxn; \
+    ZONE=us-central1-a; \
     INSTANCE_TYPE=tpu-v5litepod-256; \
     NUM_TPU_SLICES=4;
     GS_ROOT=gs://my-bucket; \

@@ -336,7 +336,7 @@ class SubmitBastionJob(BaseSubmitBastionJob):
             f"gsutil cat {os.path.join(self.bastion_dir, 'logs', cfg.job_name)}\n"
             "\nCheck job history with:\n"
             f"axlearn gcp bastion history --name={cfg.name} "
-            f"--job_name={cfg.job_name} --zone={cfg.zone}"
+            f"--job_name={cfg.job_name} --zone=$ZONE"
         )
         return super()._execute()
 
