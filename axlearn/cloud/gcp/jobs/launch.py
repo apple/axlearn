@@ -127,6 +127,7 @@ class Launcher(NamedTuple):
     description: str
 
 
+# TODO(rpang): rename this class to BaseBastionJob.
 class BaseBastionLaunchJob(Job):
     """A base job definition that launches commands via bastion.
 
@@ -141,6 +142,8 @@ class BaseBastionLaunchJob(Job):
     class Config(Job.Config):
         """Configures BaseBastionLaunchJob."""
 
+        # Where to run the remote job.
+        zone: Required[str] = REQUIRED
         # Instance type to launch.
         instance_type: Required[str] = REQUIRED
         # Bastion submit config.
@@ -207,6 +210,7 @@ class BaseBastionLaunchJob(Job):
         # Default output_dir depends on the final value of --name.
         fv.set_default("output_dir", f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{fv.name}")
         cfg = super().from_flags(fv, **kwargs)
+        cfg.zone = fv.zone
         # Construct bundler config only for start.
         if action == "start":
             cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
@@ -320,7 +324,7 @@ class BaseBastionLaunchJob(Job):
             f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "
             f"--name={cfg.name} --bastion={cfg.bastion.name} --instance_type={cfg.instance_type} "
-            f"--zone=$ZONE"
+            f"--zone={cfg.zone}"
         )
 
     def _jobs_table(self, jobs: Dict[str, BastionJob]) -> Dict:

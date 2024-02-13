@@ -317,10 +317,22 @@ class CreateBastionJob(CPUJob):
 class SubmitBastionJob(BaseSubmitBastionJob):
     """A job to submit a command to bastion.
 
+    TODO(rpang): rename this class to BastionRemoteJob.
+
     Main differences from base submit:
     - Emits gsutil commands to view logs.
     - Emits a warning if the bastion doesn't exist in GCE.
     """
+
+    @config_class
+    class Config(BaseSubmitBastionJob.Config):
+        zone: Required[str] = REQUIRED
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
+        cfg = super().from_flags(fv, **kwargs)
+        cfg.zone = fv.zone
+        return cfg
 
     def _execute(self):
         cfg: SubmitBastionJob.Config = self.config
@@ -336,7 +348,7 @@ class SubmitBastionJob(BaseSubmitBastionJob):
             f"gsutil cat {os.path.join(self.bastion_dir, 'logs', cfg.job_name)}\n"
             "\nCheck job history with:\n"
             f"axlearn gcp bastion history --name={cfg.name} "
-            f"--job_name={cfg.job_name} --zone=$ZONE"
+            f"--job_name={cfg.job_name} --zone={cfg.zone}"
         )
         return super()._execute()
 

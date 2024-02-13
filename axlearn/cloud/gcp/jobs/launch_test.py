@@ -84,6 +84,7 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
             instance_type="test",
             user_id="test_user",
             project_id=None,
+            zone="test_zone",
             name="test_job",
             command="test_command",
             max_tries=1,
