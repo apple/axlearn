@@ -1156,7 +1156,7 @@ class OptimizerTest(TestCase):
                 gradient_square_ema_decay=b2,
                 gradient_square_ema_debias=True,
                 eps=eps,
-                eps_root=0,
+                eps_square=0,
                 # adamw does not clip raw updates by norm.
                 raw_update_clipping_threshold=None,
                 # ... or apply smoothing on the updates.
@@ -1216,7 +1216,7 @@ class OptimizerTest(TestCase):
                 gradient_square_ema_decay=b2,
                 gradient_square_ema_debias=True,
                 eps=0,
-                eps_root=eps,
+                eps_square=eps,
                 # Clipping is applied on raw updates by per-param norm (not global norm).
                 raw_update_clipping_threshold=clipping_threshold,
                 # Smoothing is applied on raw updates.
