@@ -58,7 +58,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             train_batch_size=4 * 1024 * 1024 // MAX_SEQUENCE_LENGTH,  # 4M tokens.
             max_step=500_000,  # 2T tokens // 4M tokens/step.
-            mesh_shape=mesh_shape_from_axes(data=-1),
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16),
             mesh_rules=(
                 # tpu-v4. step time: 3.03s.
                 ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
