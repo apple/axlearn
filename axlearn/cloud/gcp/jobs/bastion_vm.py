@@ -128,7 +128,7 @@ from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.uploader import Uploader, with_interval
-from axlearn.cloud.common.utils import configure_logging, infer_cli_name, parse_action
+from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, docker_command
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
