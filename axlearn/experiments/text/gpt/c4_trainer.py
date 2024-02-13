@@ -10,6 +10,7 @@
     GS_ROOT=gs://my-bucket; \
     CONFIG=fuji-7B; \
     INSTANCE_TYPE=tpu-v4-1024; \
+    NUM_TPU_SLICES=1; \
     EXP=$(echo "text-gpt-c4-${CONFIG}-$(date +%F-%H%M)" | tr '[:upper:]' '[:lower:]'); \
     OUTPUT_DIR=$GS_ROOT/$USER/experiments/$EXP; \
     axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NUM_TPU_SLICES} \
