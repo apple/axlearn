@@ -5,10 +5,15 @@
 pip install 'jax[tpu]==0.4.21' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 XLA_FLAGS=--xla_dump_to=/tmp/aot_xla_dump \
-python axlearn/experiments/run_aot_compilation.py \
+python -m axlearn.experiments.run_aot_compilation \
     --module=axlearn.experiments.text.gpt.c4_trainer \
     --config=fuji-7B \
     --topology=v4-1024 1> /tmp/aot_stdout
+
+python -m axlearn.experiments.run_aot_compilation \
+    --module=axlearn.experiments.text.gpt.c4_trainer \
+    --config=fuji-7B \
+    --topology=v5e-256 --topology_num_slices=4 1> /tmp/aot_stdout
 
 Reference: https://jax.readthedocs.io/en/latest/aot.html
 """
@@ -20,7 +25,7 @@ from absl import app, flags, logging
 from jax.experimental.serialize_executable import serialize
 
 from axlearn.common.aot_compilation import compile_trainer_programs
-from axlearn.common.trainer import SpmdTrainer
+from axlearn.common.trainer import SpmdTrainer, select_mesh_config
 from axlearn.common.utils import set_data_dir
 from axlearn.common.utils_spmd import setup
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
@@ -31,6 +36,11 @@ flags.DEFINE_string("topology", None, "The TPU topology.")
 flags.DEFINE_integer("topology_num_slices", 1, "The number of TPU slices.")
 
 FLAGS = flags.FLAGS
+
+
+def _mesh_selector(topology: str) -> str:
+    slice_type = topology.replace("v5e", "v5litepod")
+    return f"tpu-{slice_type}"
 
 
 def _compile_and_dump_programs(
@@ -69,8 +79,10 @@ def main(_):
         FLAGS.config,
         config_module=FLAGS.module,
     )
+    cfg = trainer_config_fn()
+    select_mesh_config(cfg, mesh_selector=_mesh_selector(FLAGS.topology))
     _compile_and_dump_programs(
-        trainer_config_fn(),
+        cfg,
         compile_topology=FLAGS.topology,
         compile_topology_num_slices=FLAGS.topology_num_slices,
     )
