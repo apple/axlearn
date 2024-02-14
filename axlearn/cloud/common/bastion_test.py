@@ -871,7 +871,7 @@ class StartBastionJobTest(parameterized.TestCase):
 
 
 def _mock_submit_config():
-    return bastion.SubmitBastionJob.default_config().set(
+    return bastion.BastionManagedJob.default_config().set(
         name="test",
         job_name="test-job",
         job_spec_file="spec",
@@ -881,8 +881,8 @@ def _mock_submit_config():
     )
 
 
-class SubmitBastionJobTest(parameterized.TestCase):
-    """Tests SubmitBastionJob."""
+class BastionManagedJobTest(parameterized.TestCase):
+    """Tests BastionManagedJob."""
 
     @parameterized.parameters(True, False)
     def test_execute(self, spec_exists):

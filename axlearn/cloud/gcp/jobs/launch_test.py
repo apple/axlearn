@@ -94,8 +94,8 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
         )
         cfg.set(**kwargs)
 
-        def dummy_submit_job(name: str, job_spec_file: str = ""):
-            del name
+        def dummy_submit_job(name: str, job_spec_file: str = "", bastion_dir: str = ""):
+            del name, bastion_dir
             if job_spec_file:
                 with open(job_spec_file, "r", encoding="utf-8") as f:
                     spec = deserialize_jobspec(f)

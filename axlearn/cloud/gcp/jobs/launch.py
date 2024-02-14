@@ -82,7 +82,7 @@ from axlearn.cloud.gcp.bundler import with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import Job
 from axlearn.cloud.gcp.jobs import tpu_runner
-from axlearn.cloud.gcp.jobs.bastion_vm import SubmitBastionJob, output_dir, shared_bastion_name
+from axlearn.cloud.gcp.jobs.bastion_vm import BastionManagedJob, output_dir, shared_bastion_name
 from axlearn.cloud.gcp.tpu import (
     infer_tpu_cores,
     infer_tpu_version,
@@ -147,7 +147,7 @@ class BaseBastionLaunchJob(Job):
         # Instance type to launch.
         instance_type: Required[str] = REQUIRED
         # Bastion submit config.
-        bastion: Required[SubmitBastionJob.Config] = REQUIRED
+        bastion: Required[BastionManagedJob.Config] = REQUIRED
         # User ID for bastion quota and scheduling.
         user_id: Required[str] = REQUIRED
         # Project ID for bastion quota and scheduling.
@@ -214,7 +214,7 @@ class BaseBastionLaunchJob(Job):
         if action == "start":
             cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
         # Construct bastion/job config. Note that the output_dir should match the bastion dir.
-        cfg.bastion = SubmitBastionJob.from_flags(fv, name=fv.bastion, job_name=cfg.name).set(
+        cfg.bastion = BastionManagedJob.from_flags(fv, name=fv.bastion, job_name=cfg.name).set(
             job_spec_file="", bastion_dir=output_dir(fv.bastion)
         )
         return cfg
@@ -227,8 +227,8 @@ class BaseBastionLaunchJob(Job):
 
     def _delete(self):
         """Submits a delete request to bastion."""
-        bastion: SubmitBastionJob = self.config.bastion.instantiate()
-        bastion._delete()
+        bastion_managed_job: BastionManagedJob = self.config.bastion.instantiate()
+        bastion_managed_job._delete()
 
     def _list(self, output_file: Optional[TextIO] = None) -> Dict[str, Any]:
         """Lists running jobs and optionally prints them in tabular format.
@@ -246,9 +246,8 @@ class BaseBastionLaunchJob(Job):
                 descending by total usage.
         """
         cfg = self.config
-        bastion: SubmitBastionJob = cfg.bastion.instantiate()
         with tempfile.TemporaryDirectory() as tmpdir:
-            base_dir = bastion.bastion_dir
+            base_dir = cfg.bastion.bastion_dir
             jobs, _ = download_job_batch(
                 spec_dir=f"{base_dir}/jobs/active",
                 state_dir=f"{base_dir}/jobs/states",
@@ -317,8 +316,10 @@ class BaseBastionLaunchJob(Job):
                 priority=cfg.priority,
             )
             serialize_jobspec(new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata), f)
-            bastion: SubmitBastionJob = cfg.bastion.set(job_spec_file=f.name).instantiate()
-            bastion._execute()
+            bastion_managed_job: BastionManagedJob = cfg.bastion.set(
+                job_spec_file=f.name
+            ).instantiate()
+            bastion_managed_job._execute()
         print(
             f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "

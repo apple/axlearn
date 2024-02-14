@@ -879,12 +879,20 @@ class StartBastionJob(CloudJob):
         self._bastion.execute()
 
 
-class SubmitBastionJob(CloudJob):
-    """A job to submit a command to bastion."""
+class BastionManagedJob(CloudJob):
+    """A remote job managed by a bastion.
+
+    _execute() writes the job spec to the active job dir watched by the bastion, which will
+    start a process on the bastion VM to run the command when resources are ready. The on-bastion
+    process usually further creates and watches remote VMs.
+
+    _delete() writes a job state file to the cancel job dir watched by the bastion, which will
+    terminate the on-bastion process.
+    """
 
     @config_class
     class Config(CloudJob.Config):
-        """Configures SubmitBastionJob."""
+        """Configures BastionManagedJob."""
 
         # Name of the job. Not to be confused with cfg.name, the bastion name.
         job_name: Required[str] = REQUIRED
@@ -906,7 +914,7 @@ class SubmitBastionJob(CloudJob):
         return os.path.join(self.bastion_dir, "jobs")
 
     def _delete(self):
-        cfg: SubmitBastionJob.Config = self.config
+        cfg: BastionManagedJob.Config = self.config
         try:
             jobspec = os.path.join(self._job_dir(), "active", cfg.job_name)
             if not tf_io.gfile.exists(jobspec):
@@ -926,7 +934,7 @@ class SubmitBastionJob(CloudJob):
             logging.info("Failed with error: %s -- Has the job been cancelled already?", e)
 
     def _execute(self):
-        cfg: SubmitBastionJob.Config = self.config
+        cfg: BastionManagedJob.Config = self.config
         dst = os.path.join(self._job_dir(), "active", cfg.job_name)
         if tf_io.gfile.exists(dst):
             logging.info("\n\nNote: Job is already running. To restart it, cancel the job first.\n")
