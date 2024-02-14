@@ -127,6 +127,7 @@ class Launcher(NamedTuple):
     description: str
 
 
+# TODO(rpang): rename this class to BaseBastionJob.
 class BaseBastionLaunchJob(Job):
     """A base job definition that launches commands via bastion.
 
@@ -141,6 +142,8 @@ class BaseBastionLaunchJob(Job):
     class Config(Job.Config):
         """Configures BaseBastionLaunchJob."""
 
+        # Where to run the remote job.
+        zone: Required[str] = REQUIRED
         # Instance type to launch.
         instance_type: Required[str] = REQUIRED
         # Bastion submit config.
@@ -319,7 +322,8 @@ class BaseBastionLaunchJob(Job):
         print(
             f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "
-            f"--name={cfg.name} --bastion={cfg.bastion.name} --instance_type={cfg.instance_type}"
+            f"--name={cfg.name} --bastion={cfg.bastion.name} --instance_type={cfg.instance_type} "
+            f"--zone={cfg.zone}"
         )
 
     def _jobs_table(self, jobs: Dict[str, BastionJob]) -> Dict:

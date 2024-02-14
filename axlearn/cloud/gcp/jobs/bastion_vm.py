@@ -128,7 +128,7 @@ from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.uploader import Uploader, with_interval
-from axlearn.cloud.common.utils import configure_logging, infer_cli_name, parse_action
+from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, docker_command
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
@@ -317,10 +317,16 @@ class CreateBastionJob(CPUJob):
 class SubmitBastionJob(BaseSubmitBastionJob):
     """A job to submit a command to bastion.
 
+    TODO(rpang): rename this class to BastionRemoteJob.
+
     Main differences from base submit:
     - Emits gsutil commands to view logs.
     - Emits a warning if the bastion doesn't exist in GCE.
     """
+
+    @config_class
+    class Config(BaseSubmitBastionJob.Config):
+        zone: Required[str] = REQUIRED
 
     def _execute(self):
         cfg: SubmitBastionJob.Config = self.config
@@ -335,7 +341,8 @@ class SubmitBastionJob(BaseSubmitBastionJob):
             "\nView bastion outputs with:\n"
             f"gsutil cat {os.path.join(self.bastion_dir, 'logs', cfg.job_name)}\n"
             "\nCheck job history with:\n"
-            f"{infer_cli_name()} gcp bastion history --name={cfg.name} --job_name={cfg.job_name}"
+            f"axlearn gcp bastion history --name={cfg.name} "
+            f"--job_name={cfg.job_name} --zone={cfg.zone}"
         )
         return super()._execute()
 
