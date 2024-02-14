@@ -881,7 +881,7 @@ def _mock_submit_config():
     )
 
 
-class SubmitBastionJobTest(parameterized.TestCase):
+class BastionManagedJobTest(parameterized.TestCase):
     """Tests BastionManagedJob."""
 
     @parameterized.parameters(True, False)
