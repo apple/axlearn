@@ -210,7 +210,6 @@ class BaseBastionLaunchJob(Job):
         # Default output_dir depends on the final value of --name.
         fv.set_default("output_dir", f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{fv.name}")
         cfg = super().from_flags(fv, **kwargs)
-        cfg.zone = fv.zone
         # Construct bundler config only for start.
         if action == "start":
             cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
