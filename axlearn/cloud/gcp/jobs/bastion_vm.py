@@ -116,9 +116,10 @@ from typing import Sequence
 from absl import app, flags, logging
 from tensorflow import io as tf_io
 
-from axlearn.cloud.common.bastion import _LOG_DIR, Bastion, StartBastionJob
+from axlearn.cloud.common.bastion import _LOG_DIR, Bastion
 from axlearn.cloud.common.bastion import BastionManagedJob as BaseBastionManagedJob
 from axlearn.cloud.common.bastion import (
+    StartBastionJob,
     bastion_job_flags,
     deserialize_jobspec,
     download_job_batch,

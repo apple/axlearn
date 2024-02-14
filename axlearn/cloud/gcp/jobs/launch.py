@@ -316,7 +316,9 @@ class BaseBastionLaunchJob(Job):
                 priority=cfg.priority,
             )
             serialize_jobspec(new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata), f)
-            bastion_managed_job: BastionManagedJob = cfg.bastion.set(job_spec_file=f.name).instantiate()
+            bastion_managed_job: BastionManagedJob = cfg.bastion.set(
+                job_spec_file=f.name
+            ).instantiate()
             bastion_managed_job._execute()
         print(
             f"\nStop/cancel the job with:\n"
