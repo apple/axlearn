@@ -117,7 +117,7 @@ from absl import app, flags, logging
 from tensorflow import io as tf_io
 
 from axlearn.cloud.common.bastion import _LOG_DIR, Bastion, StartBastionJob
-from axlearn.cloud.common.bastion import SubmitBastionJob as BaseSubmitBastionJob
+from axlearn.cloud.common.bastion import BastionManagedJob as BaseBastionManagedJob
 from axlearn.cloud.common.bastion import (
     bastion_job_flags,
     deserialize_jobspec,
@@ -314,22 +314,20 @@ class CreateBastionJob(CPUJob):
         )
 
 
-class SubmitBastionJob(BaseSubmitBastionJob):
-    """A job to submit a command to bastion.
+class BastionManagedJob(BaseBastionManagedJob):
+    """A remote job managed by a bastion.
 
-    TODO(rpang): rename this class to BastionRemoteJob.
-
-    Main differences from base submit:
+    Main differences from BaseBastionManagedJob:
     - Emits gsutil commands to view logs.
     - Emits a warning if the bastion doesn't exist in GCE.
     """
 
     @config_class
-    class Config(BaseSubmitBastionJob.Config):
+    class Config(BaseBastionManagedJob.Config):
         zone: Required[str] = REQUIRED
 
     def _execute(self):
-        cfg: SubmitBastionJob.Config = self.config
+        cfg: BastionManagedJob.Config = self.config
         node = get_vm_node(cfg.name, _compute_resource(get_credentials()))
         if node is None or node.get("status", None) != "RUNNING":
             logging.warning(
@@ -515,7 +513,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         spec = deserialize_jobspec(flag_values.spec)
         # Construct a job for bastion to execute. This typically runs locally.
         # The spec file provided from the flags will be used and submitted to bastion vm.
-        cfg = SubmitBastionJob.from_flags(flag_values).set(
+        cfg = BastionManagedJob.from_flags(flag_values).set(
             job_name=spec.name,
             job_spec_file=flag_values.spec,
             bastion_dir=output_dir(flag_values.name),
@@ -527,7 +525,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         if not flag_values.job_name:
             raise app.UsageError("--job_name must be provided if running 'cancel'.")
         # Cancel a job that bastion is running (or planning to run).
-        cfg = SubmitBastionJob.from_flags(flag_values).set(
+        cfg = BastionManagedJob.from_flags(flag_values).set(
             job_spec_file="", bastion_dir=output_dir(flag_values.name)
         )
         job = cfg.instantiate()
