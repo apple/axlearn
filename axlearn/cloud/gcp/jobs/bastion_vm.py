@@ -119,6 +119,7 @@ from tensorflow import io as tf_io
 from axlearn.cloud.common.bastion import (
     _LOG_DIR,
     Bastion,
+    BastionDirectory,
     StartBastionJob,
     bastion_job_flags,
     deserialize_jobspec,
@@ -483,23 +484,22 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         spec = deserialize_jobspec(flag_values.spec)
         # Construct a job for bastion to execute. This typically runs locally.
         # The spec file provided from the flags will be used and submitted to bastion vm.
-        cfg = BastionDirectory.from_flags(flag_values).set(
-            job_name=spec.name,
-            job_spec_file=flag_values.spec,
-            bastion_dir=output_dir(flag_values.name),
+        bastion_dir = (
+            BastionDirectory.default_config()
+            .set(root_dir=output_dir(flag_values.name))
+            .instantiate()
         )
-        # Execute the job.
-        job = cfg.instantiate()
-        job.execute()
+        bastion_dir.submit(spec.name, job_spec_file=flag_values.spec)
     elif action == "cancel":
         if not flag_values.job_name:
             raise app.UsageError("--job_name must be provided if running 'cancel'.")
         # Cancel a job that bastion is running (or planning to run).
-        cfg = BastionDirectory.from_flags(flag_values).set(
-            job_spec_file="", bastion_dir=output_dir(flag_values.name)
+        bastion_dir = (
+            BastionDirectory.default_config()
+            .set(root_dir=output_dir(flag_values.name))
+            .instantiate()
         )
-        job = cfg.instantiate()
-        job._delete()  # pylint: disable=protected-access
+        bastion_dir.cancel(flag_values.name)
     elif action == "history":
         if flag_values.job_name:
             # Print job history.

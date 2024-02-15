@@ -22,8 +22,8 @@ from axlearn.cloud.gcp.jobs.launch import (
     LaunchTPUJob,
     _get_launcher_or_exit,
     _match_by_regex,
-    output_dir,
 )
+from axlearn.cloud.gcp.jobs.launch import output_dir as bastion_root_dir
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.config import config_for_function
 from axlearn.common.test_utils import TestWithTemporaryCWD
@@ -100,7 +100,7 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
 
         class FakeBastionDirectory(BastionDirectory):
             def submit(self, job_name: str, *, job_spec_file: str):
-                test_fixture.assertEqual(self.config.root_dir, output_dir(cfg.bastion_name))
+                test_fixture.assertEqual(self.config.root_dir, bastion_root_dir(cfg.bastion_name))
                 with open(job_spec_file, "r", encoding="utf-8") as f:
                     spec = deserialize_jobspec(f)
                     test_fixture.assertEqual(spec.name, cfg.name)

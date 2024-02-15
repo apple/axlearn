@@ -246,7 +246,6 @@ class BaseBastionLaunchJob(Job):
             * usage_by_project: A dict mapping project_id to (total usage, number of jobs), sorted
                 descending by total usage.
         """
-        cfg = self.config
         with tempfile.TemporaryDirectory() as tmpdir:
             jobs, _ = download_job_batch(
                 spec_dir=self._bastion_dir.active_job_dir,
