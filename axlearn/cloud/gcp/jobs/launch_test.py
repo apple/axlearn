@@ -100,7 +100,7 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
 
         class FakeBastionDirectory(BastionDirectory):
             def submit(self, job_name: str, *, job_spec_file: str):
-                test_fixture.assertEqual(self.config.root_dir, bastion_root_dir(cfg.bastion_name))
+                test_fixture.assertEqual("temp_dir", self.config.root_dir)
                 with open(job_spec_file, "r", encoding="utf-8") as f:
                     spec = deserialize_jobspec(f)
                     test_fixture.assertEqual(spec.name, cfg.name)
@@ -122,8 +122,13 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
             cfg.instantiate()
 
     def test_start(self):
-        fake_vm_node = dict(status="RUNNING")
-        with mock.patch(f"{launch.__name__}.get_vm_node", return_value=fake_vm_node):
+        mock_get_vm_node = mock.patch(
+            f"{launch.__name__}.get_vm_node", return_value=dict(status="RUNNING")
+        )
+        mock_bastion_root_dir = mock.patch(
+            f"{launch.__name__}.bastion_root_dir", return_value="temp_dir"
+        )
+        with mock_get_vm_node, mock_bastion_root_dir:
             # Test with defaults.
             job = self._mock_config().instantiate()
             job._execute()
