@@ -902,6 +902,9 @@ class BastionDirectory(Configurable):
     def root_dir(self):
         return self.config.root_dir
 
+    def __str__(self) -> str:
+        return self.root_dir
+
     @property
     def logs_dir(self):
         return os.path.join(self.root_dir, "logs")

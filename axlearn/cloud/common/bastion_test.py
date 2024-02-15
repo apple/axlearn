@@ -891,6 +891,12 @@ class BastionDirectoryTest(parameterized.TestCase):
         bastion_dir = (
             bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
         )
+        self.assertEqual("test-dir", str(bastion_dir))
+        self.assertEqual("test-dir/logs", bastion_dir.logs_dir)
+        self.assertEqual("test-dir/jobs/active", bastion_dir.active_job_dir)
+        self.assertEqual("test-dir/jobs/complete", bastion_dir.complete_job_dir)
+        self.assertEqual("test-dir/jobs/states", bastion_dir.job_states_dir)
+        self.assertEqual("test-dir/jobs/user_states", bastion_dir.user_states_dir)
         patch_tfio = mock.patch.multiple(
             f"{bastion.__name__}.tf_io.gfile",
             exists=mock.MagicMock(return_value=spec_exists),
