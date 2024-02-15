@@ -211,7 +211,7 @@ def shared_bastion_name(zone: str) -> str:
     )
 
 
-def output_dir(bastion: str) -> str:
+def bastion_root_dir(bastion: str) -> str:
     """Directory in gs where jobs are recorded."""
     return os.path.join("gs://", gcp_settings("permanent_bucket"), bastion)
 
@@ -280,7 +280,7 @@ class CreateBastionJob(CPUJob):
         )
 
         # Bastion outputs will be piped to run_log.
-        run_log = os.path.join(output_dir(cfg.name), "logs", f"{cfg.name}-%Y%m%d")
+        run_log = os.path.join(bastion_root_dir(cfg.name), "logs", f"{cfg.name}-%Y%m%d")
         output_cmd = f"tee >(python3 -m axlearn.cloud.common.writer --output_path={run_log})"
 
         # Command to start the bastion inside a docker container.
@@ -323,7 +323,7 @@ def _project_quotas_from_file(quota_file: str):
 
 def _job_history(*, bastion_name: str, job_name: str) -> str:
     result = ""
-    bastion_path = output_dir(bastion_name)
+    bastion_path = bastion_root_dir(bastion_name)
     spec_path_pattern = os.path.join(bastion_path, "jobs", "*", job_name)
     spec_paths = tf_io.gfile.glob(spec_path_pattern)
     if not spec_paths:
@@ -341,7 +341,7 @@ def _job_history(*, bastion_name: str, job_name: str) -> str:
 
 def _project_history(*, bastion_name: str, project_id: str) -> str:
     project_dir = os.path.join(
-        output_dir(bastion_name),
+        bastion_root_dir(bastion_name),
         "history",
         "projects",
         project_id,
@@ -394,7 +394,7 @@ def _maybe_delete_child_jobs(flag_values: flags.FlagValues):
     if not flag_values.delete_child_jobs:
         return
     cleaner = TPUCleaner.default_config().instantiate()
-    bastion_dir = output_dir(flag_values.name)
+    bastion_dir = bastion_root_dir(flag_values.name)
     with tempfile.TemporaryDirectory() as tmpdir:
         jobs, _ = download_job_batch(
             spec_dir=f"{bastion_dir}/jobs/active",
@@ -464,7 +464,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     elif action == "start":
         # Start the bastion. This should run on the bastion itself.
         bastion_cfg = Bastion.default_config().set(
-            output_dir=output_dir(flag_values.name),
+            output_dir=bastion_root_dir(flag_values.name),
             scheduler=JobScheduler.default_config().set(
                 quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file()),
             ),
@@ -486,7 +486,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         # The spec file provided from the flags will be used and submitted to bastion vm.
         bastion_dir = (
             BastionDirectory.default_config()
-            .set(root_dir=output_dir(flag_values.name))
+            .set(root_dir=bastion_root_dir(flag_values.name))
             .instantiate()
         )
         bastion_dir.submit(spec.name, job_spec_file=flag_values.spec)
@@ -496,7 +496,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         # Cancel a job that bastion is running (or planning to run).
         bastion_dir = (
             BastionDirectory.default_config()
-            .set(root_dir=output_dir(flag_values.name))
+            .set(root_dir=bastion_root_dir(flag_values.name))
             .instantiate()
         )
         bastion_dir.cancel(flag_values.name)
@@ -523,7 +523,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             options = json.loads(flag_values.runtime_options)
         except (TypeError, json.JSONDecodeError) as e:
             raise app.UsageError(f"--runtime_options should be a valid json string: {e}")
-        set_runtime_options(output_dir(flag_values.name), **options)
+        set_runtime_options(bastion_root_dir(flag_values.name), **options)
     else:
         raise ValueError(f"Unknown action {action}")
 

@@ -22,8 +22,8 @@ from axlearn.cloud.gcp.jobs.launch import (
     LaunchTPUJob,
     _get_launcher_or_exit,
     _match_by_regex,
+    bastion_root_dir,
 )
-from axlearn.cloud.gcp.jobs.launch import output_dir as bastion_root_dir
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.config import config_for_function
 from axlearn.common.test_utils import TestWithTemporaryCWD
@@ -204,7 +204,13 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
                 cleanup_proc=None,
             ),
         }
-        with mock.patch(f"{launch.__name__}.download_job_batch", return_value=(mock_jobs, set())):
+        mock_bastion_root_dir = mock.patch(
+            f"{launch.__name__}.bastion_root_dir", return_value="temp_dir"
+        )
+        mock_download_job_batch = mock.patch(
+            f"{launch.__name__}.download_job_batch", return_value=(mock_jobs, set())
+        )
+        with mock_download_job_batch, mock_bastion_root_dir:
             job = self._mock_config().instantiate()
             out = job._list()
             self.assertEqual(out["jobs"], mock_jobs)

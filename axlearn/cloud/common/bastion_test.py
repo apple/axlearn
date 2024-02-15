@@ -885,29 +885,33 @@ class BastionDirectoryTest(parameterized.TestCase):
     """Tests BastionDirectory."""
 
     @parameterized.parameters(True, False)
-    def test_execute(self, spec_exists):
-        cfg = _mock_submit_config()
-        job = cfg.instantiate()
-
+    def test_submit(self, spec_exists):
+        job_name = "test-job"
+        job_spec_file = "spec"
+        bastion_dir = (
+            bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
+        )
         patch_tfio = mock.patch.multiple(
             f"{bastion.__name__}.tf_io.gfile",
             exists=mock.MagicMock(return_value=spec_exists),
             copy=mock.DEFAULT,
         )
         with patch_tfio as mock_tfio:
-            job.execute()
+            bastion_dir.submit(job_name, job_spec_file=job_spec_file)
             if not spec_exists:
                 mock_tfio["copy"].assert_called_with(
-                    cfg.job_spec_file,
-                    os.path.join(job._job_dir(), "active", cfg.job_name),
+                    job_spec_file,
+                    os.path.join(bastion_dir.active_job_dir, job_name),
                 )
             else:
                 mock_tfio["copy"].assert_not_called()
 
     @parameterized.parameters(True, False)
     def test_delete(self, spec_exists):
-        cfg = _mock_submit_config()
-        job = cfg.instantiate()
+        job_name = "test-job"
+        bastion_dir = (
+            bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
+        )
         patch_tfio = mock.patch.multiple(
             f"{bastion.__name__}.tf_io.gfile",
             exists=mock.MagicMock(side_effect=[spec_exists, False]),
@@ -918,12 +922,12 @@ class BastionDirectoryTest(parameterized.TestCase):
             _upload_job_state=mock.DEFAULT,
         )
         with patch_tfio, patch_fns as mock_fns:
-            job._delete()
+            bastion_dir.cancel(job_name)
             if not spec_exists:
                 mock_fns["_upload_job_state"].assert_not_called()
             else:
                 mock_fns["_upload_job_state"].assert_called_with(
-                    cfg.job_name,
+                    job_name,
                     JobState.CANCELLING,
-                    remote_dir=os.path.join(job._job_dir(), "user_states"),
+                    remote_dir=bastion_dir.user_states_dir,
                 )

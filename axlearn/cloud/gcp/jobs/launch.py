@@ -83,7 +83,7 @@ from axlearn.cloud.gcp.bundler import with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import Job
 from axlearn.cloud.gcp.jobs import tpu_runner
-from axlearn.cloud.gcp.jobs.bastion_vm import output_dir, shared_bastion_name
+from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, shared_bastion_name
 from axlearn.cloud.gcp.tpu import (
     infer_tpu_cores,
     infer_tpu_version,
@@ -225,7 +225,9 @@ class BaseBastionLaunchJob(Job):
         cfg = self.config
         if not (cfg.instance_type and cfg.output_dir):
             raise ValueError("instance_type, output_dir cannot be empty")
-        self._bastion_dir = cfg.bastion_dir.set(root_dir=output_dir(cfg.bastion_name)).instantiate()
+        self._bastion_dir = cfg.bastion_dir.set(
+            root_dir=bastion_root_dir(cfg.bastion_name)
+        ).instantiate()
 
     def _delete(self):
         """Submits a delete request to bastion."""
