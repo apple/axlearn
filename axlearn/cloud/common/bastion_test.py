@@ -870,17 +870,6 @@ class StartBastionJobTest(parameterized.TestCase):
         self.assertTrue(mock_bastion.execute.called)
 
 
-def _mock_submit_config():
-    return bastion.BastionDirectory.default_config().set(
-        name="test",
-        job_name="test-job",
-        job_spec_file="spec",
-        max_tries=1,
-        retry_interval=1,
-        bastion_dir="test-output",
-    )
-
-
 class BastionDirectoryTest(parameterized.TestCase):
     """Tests BastionDirectory."""
 
