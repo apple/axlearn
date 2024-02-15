@@ -22,7 +22,6 @@ from axlearn.cloud.gcp.jobs.launch import (
     LaunchTPUJob,
     _get_launcher_or_exit,
     _match_by_regex,
-    bastion_root_dir,
 )
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.config import config_for_function
