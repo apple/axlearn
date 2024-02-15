@@ -104,6 +104,10 @@ from axlearn.common.config import (
 FLAGS = flags.FLAGS
 
 
+def _get_bastion_vm(bastion_name: str) -> Dict[str, Any]:
+    return get_vm_node(bastion_name, _compute_resource(get_credentials()))
+
+
 class Launcher(NamedTuple):
     """A job launcher.
 
@@ -292,7 +296,7 @@ class BaseBastionLaunchJob(Job):
         """Submits the command to bastion."""
         cfg = self.config
 
-        bastion_node = get_vm_node(cfg.bastion_name, _compute_resource(get_credentials()))
+        bastion_node = _get_bastion_vm(cfg.bastion_name)
         if bastion_node is None or bastion_node.get("status", None) != "RUNNING":
             logging.warning(
                 "Bastion %s does not appear to be running yet. "

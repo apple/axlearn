@@ -122,7 +122,7 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
 
     def test_start(self):
         mock_get_vm_node = mock.patch(
-            f"{launch.__name__}.get_vm_node", return_value=dict(status="RUNNING")
+            f"{launch.__name__}._get_bastion_vm", return_value=dict(status="RUNNING")
         )
         mock_bastion_root_dir = mock.patch(
             f"{launch.__name__}.bastion_root_dir", return_value="temp_dir"
