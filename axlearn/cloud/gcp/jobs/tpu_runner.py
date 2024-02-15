@@ -64,6 +64,7 @@ import time
 from typing import Dict, Optional, Sequence
 
 from absl import app, flags, logging
+from googleapiclient import errors
 
 from axlearn.cloud.common.bundler import BaseDockerBundler, bundler_flags, get_bundler_config
 from axlearn.cloud.common.utils import (
@@ -85,7 +86,6 @@ from axlearn.cloud.gcp.tpu import (
     get_queued_tpu_node,
     get_queued_tpu_node_status,
     get_tpu_node,
-    get_tpu_node_status,
     infer_tpu_workers,
     list_tpu_info,
 )
@@ -120,7 +120,10 @@ def launch_flags(flag_values: flags.FlagValues = FLAGS):
         "max_tries", 10, "Max attempts to launch the job.", flag_values=flag_values
     )
     flags.DEFINE_integer(
-        "retry_interval", 60, "Interval in seconds between tries.", flag_values=flag_values
+        "retry_interval",
+        60,
+        "Interval in seconds between tries.",
+        flag_values=flag_values,
     )
     flags.DEFINE_multi_string(
         "env", [], "Env var in the format key:value.", flag_values=flag_values
@@ -205,6 +208,7 @@ class TPURunnerJob(TPUJob):
             ).instantiate()
         else:
             self._vertexai_tb_uploader = None
+        self._qrm_resource = None
 
     def _sync_outputs(self, *, session: str, src: str, dst: str, interval_s: int):
         """Starts a screen session to sync outputs to gs."""
@@ -395,6 +399,23 @@ class TPURunnerJob(TPUJob):
         cfg: TPURunnerJob.Config = self.config
         return infer_tpu_workers(cfg.tpu_type) * cfg.num_slices
 
+    def _call_qrm_api(self, fn, *args, max_tries: int = 2):
+        for i in range(max_tries):
+            try:
+                if self._qrm_resource is None:
+                    logging.info("Building QRM resource...")
+                    credentials = self._get_job_credentials(DEFAULT_TPU_SCOPES)
+                    self._qrm_resource = _qrm_resource(credentials)
+
+                return fn(*args, resource=self._qrm_resource)
+            except (errors.HttpError, OSError) as e:
+                logging.warning("QRM API %s call failed with: %s", fn.__name__, e)
+                if i < max_tries - 1:
+                    logging.info("Will attempt to retry with new connection...")
+                if self._qrm_resource is not None:
+                    self._qrm_resource.close()  # Also closes http.
+                time.sleep(10)
+
     def _get_status(self) -> Status:
         """Attempts to infer the status of the job.
 
@@ -404,20 +425,13 @@ class TPURunnerJob(TPUJob):
         TODO(markblee): If TPU util is low or idle core duration is high, return IDLE.
         """
         cfg: TPURunnerJob.Config = self.config
-        credentials = self._get_job_credentials(DEFAULT_TPU_SCOPES)
 
         # If no TPU, or TPU not fully booted, return NOT_STARTED.
         num_booted = 0
-        if cfg.num_slices > 1:
-            node = get_queued_tpu_node(cfg.name, _qrm_resource(credentials))
-            num_vms = cfg.num_slices * infer_tpu_workers(cfg.tpu_type)
-            if node is not None:
-                num_booted = get_queued_tpu_node_status(cfg.name, node=node)["num_booted"]
-        else:
-            node = get_tpu_node(cfg.name, _tpu_resource(credentials))
-            num_vms = infer_tpu_workers(cfg.tpu_type)
-            if node is not None:
-                num_booted = get_tpu_node_status(cfg.name, node=node)["num_booted"]
+        node = self._call_qrm_api(get_queued_tpu_node, cfg.name)
+        num_vms = cfg.num_slices * infer_tpu_workers(cfg.tpu_type)
+        if node is not None:
+            num_booted = get_queued_tpu_node_status(cfg.name, node=node)["num_booted"]
         if num_booted < num_vms:
             logging.info("TPU doesn't exist or not fully booted: %d/%d", num_booted, num_vms)
             return TPURunnerJob.Status.NOT_STARTED
@@ -456,7 +470,9 @@ class TPURunnerJob(TPUJob):
                             statuses[worker_id] = TPURunnerJob.Status[status]
             else:
                 logging.warning(
-                    "Failed to get job status. stdout=%s, stderr=%s", proc.stdout, proc.stderr
+                    "Failed to get job status. stdout=%s, stderr=%s",
+                    proc.stdout,
+                    proc.stderr,
                 )
 
         logging.info("Worker statuses: %s", statuses)
