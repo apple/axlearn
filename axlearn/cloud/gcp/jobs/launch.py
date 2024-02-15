@@ -104,7 +104,7 @@ from axlearn.common.config import (
 FLAGS = flags.FLAGS
 
 
-def _get_bastion_vm(bastion_name: str) -> Dict[str, Any]:
+def _get_bastion_vm(bastion_name: str) -> Optional[Dict[str, Any]]:
     return get_vm_node(bastion_name, _compute_resource(get_credentials()))
 
 
