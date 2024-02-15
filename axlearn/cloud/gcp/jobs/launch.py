@@ -60,6 +60,7 @@ from typing import Any, Callable, Dict, NamedTuple, Optional, TextIO, Tuple, Typ
 import regex as re
 from absl import app, flags, logging
 
+from axlearn.cloud.common.bastion import BastionDirectory
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import (
     JobState,
@@ -82,7 +83,7 @@ from axlearn.cloud.gcp.bundler import with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import Job
 from axlearn.cloud.gcp.jobs import tpu_runner
-from axlearn.cloud.gcp.jobs.bastion_vm import BastionManagedJob, output_dir, shared_bastion_name
+from axlearn.cloud.gcp.jobs.bastion_vm import output_dir, shared_bastion_name
 from axlearn.cloud.gcp.tpu import (
     infer_tpu_cores,
     infer_tpu_version,
@@ -90,6 +91,7 @@ from axlearn.cloud.gcp.tpu import (
     list_tpu_info,
 )
 from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials
+from axlearn.cloud.gcp.vm import _compute_resource, get_vm_node
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -127,9 +129,9 @@ class Launcher(NamedTuple):
     description: str
 
 
-# TODO(rpang): rename this class to BaseBastionJob.
+# TODO(rpang): rename this class to BaseBastionManagedJob.
 class BaseBastionLaunchJob(Job):
-    """A base job definition that launches commands via bastion.
+    """A base job definition for jobs managed by a bastion.
 
     It provides functionality to submit, delete, and list bastion jobs, but is agnostic to specific
     resource types. At minimum, subclasses should override `_resources()` to specify resources used
@@ -146,8 +148,10 @@ class BaseBastionLaunchJob(Job):
         zone: Required[str] = REQUIRED
         # Instance type to launch.
         instance_type: Required[str] = REQUIRED
-        # Bastion submit config.
-        bastion: Required[BastionManagedJob.Config] = REQUIRED
+        # Bastion name.
+        bastion_name: Required[str] = REQUIRED
+        # Bastion dir.
+        bastion_dir: BastionDirectory.Config = BastionDirectory.default_config()
         # User ID for bastion quota and scheduling.
         user_id: Required[str] = REQUIRED
         # Project ID for bastion quota and scheduling.
@@ -213,10 +217,7 @@ class BaseBastionLaunchJob(Job):
         # Construct bundler config only for start.
         if action == "start":
             cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
-        # Construct bastion/job config. Note that the output_dir should match the bastion dir.
-        cfg.bastion = BastionManagedJob.from_flags(fv, name=fv.bastion, job_name=cfg.name).set(
-            job_spec_file="", bastion_dir=output_dir(fv.bastion)
-        )
+        cfg.bastion_name = fv.bastion
         return cfg
 
     def __init__(self, cfg: Config):
@@ -224,11 +225,11 @@ class BaseBastionLaunchJob(Job):
         cfg = self.config
         if not (cfg.instance_type and cfg.output_dir):
             raise ValueError("instance_type, output_dir cannot be empty")
+        self._bastion_dir = cfg.bastion_dir.set(root_dir=output_dir(cfg.bastion_name)).instantiate()
 
     def _delete(self):
         """Submits a delete request to bastion."""
-        bastion_managed_job: BastionManagedJob = self.config.bastion.instantiate()
-        bastion_managed_job._delete()
+        self._bastion_dir.cancel(self.config.name)
 
     def _list(self, output_file: Optional[TextIO] = None) -> Dict[str, Any]:
         """Lists running jobs and optionally prints them in tabular format.
@@ -247,11 +248,10 @@ class BaseBastionLaunchJob(Job):
         """
         cfg = self.config
         with tempfile.TemporaryDirectory() as tmpdir:
-            base_dir = cfg.bastion.bastion_dir
             jobs, _ = download_job_batch(
-                spec_dir=f"{base_dir}/jobs/active",
-                state_dir=f"{base_dir}/jobs/states",
-                user_state_dir=f"{base_dir}/jobs/user_states",
+                spec_dir=self._bastion_dir.active_job_dir,
+                state_dir=self._bastion_dir.job_states_dir,
+                user_state_dir=self._bastion_dir.user_states_dir,
                 local_spec_dir=tmpdir,
             )
             jobs: Dict[str, BastionJob] = dict(sorted(jobs.items(), key=lambda kv: kv[0]))
@@ -291,11 +291,19 @@ class BaseBastionLaunchJob(Job):
         """Submits the command to bastion."""
         cfg = self.config
 
+        bastion_node = get_vm_node(cfg.bastion_name, _compute_resource(get_credentials()))
+        if bastion_node is None or bastion_node.get("status", None) != "RUNNING":
+            logging.warning(
+                "Bastion %s does not appear to be running yet. "
+                "It will need to be running before jobs will execute.",
+                cfg.bastion_name,
+            )
+
         # Check for group membership if --project_id is provided.
         # TODO(markblee): Make this check at the bastion level.
         if cfg.project_id:
             quota_file = (
-                f"gs://{gcp_settings('private_bucket')}/{cfg.bastion.name}/{QUOTA_CONFIG_PATH}"
+                f"gs://{gcp_settings('private_bucket')}/{cfg.bastion_name}/{QUOTA_CONFIG_PATH}"
             )
             user_projects = get_user_projects(quota_file, user_id=cfg.user_id)
             if cfg.project_id.lower() not in user_projects:
@@ -308,6 +316,13 @@ class BaseBastionLaunchJob(Job):
         logging.info("Starting run for job name %s", cfg.name)
         with tempfile.NamedTemporaryFile("w") as f:
             logging.info("Command: %s", cfg.command)
+            print(
+                "\nView bastion outputs with:\n"
+                f"gsutil cat {os.path.join(self._bastion_dir.logs_dir, cfg.name)}\n"
+                "\nCheck job history with:\n"
+                f"axlearn gcp bastion history --name={cfg.bastion_name} "
+                f"--job_name={cfg.name} --zone={cfg.zone}"
+            )
             metadata = JobMetadata(
                 user_id=cfg.user_id,
                 project_id=cfg.project_id or "none",
@@ -316,14 +331,11 @@ class BaseBastionLaunchJob(Job):
                 priority=cfg.priority,
             )
             serialize_jobspec(new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata), f)
-            bastion_managed_job: BastionManagedJob = cfg.bastion.set(
-                job_spec_file=f.name
-            ).instantiate()
-            bastion_managed_job._execute()
+            self._bastion_dir.submit(cfg.name, job_spec_file=f.name)
         print(
             f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "
-            f"--name={cfg.name} --bastion={cfg.bastion.name} --instance_type={cfg.instance_type} "
+            f"--name={cfg.name} --bastion={cfg.bastion_name} --instance_type={cfg.instance_type} "
             f"--zone={cfg.zone}"
         )
 

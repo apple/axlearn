@@ -116,9 +116,9 @@ from typing import Sequence
 from absl import app, flags, logging
 from tensorflow import io as tf_io
 
-from axlearn.cloud.common.bastion import _LOG_DIR, Bastion
-from axlearn.cloud.common.bastion import BastionManagedJob as BaseBastionManagedJob
 from axlearn.cloud.common.bastion import (
+    _LOG_DIR,
+    Bastion,
     StartBastionJob,
     bastion_job_flags,
     deserialize_jobspec,
@@ -133,8 +133,8 @@ from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, docker_command
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
-from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials
-from axlearn.cloud.gcp.vm import _compute_resource, create_vm, delete_vm, get_vm_node
+from axlearn.cloud.gcp.utils import catch_auth, common_flags
+from axlearn.cloud.gcp.vm import create_vm, delete_vm
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 
 _SHARED_BASTION_SUFFIX = "shared-bastion"
@@ -315,37 +315,6 @@ class CreateBastionJob(CPUJob):
         )
 
 
-class BastionManagedJob(BaseBastionManagedJob):
-    """A remote job managed by a bastion.
-
-    Main differences from BaseBastionManagedJob:
-    - Emits gsutil commands to view logs.
-    - Emits a warning if the bastion doesn't exist in GCE.
-    """
-
-    @config_class
-    class Config(BaseBastionManagedJob.Config):
-        zone: Required[str] = REQUIRED
-
-    def _execute(self):
-        cfg: BastionManagedJob.Config = self.config
-        node = get_vm_node(cfg.name, _compute_resource(get_credentials()))
-        if node is None or node.get("status", None) != "RUNNING":
-            logging.warning(
-                "Bastion %s does not appear to be running yet. "
-                "It will need to be running before jobs will execute.",
-                cfg.name,
-            )
-        print(
-            "\nView bastion outputs with:\n"
-            f"gsutil cat {os.path.join(self.bastion_dir, 'logs', cfg.job_name)}\n"
-            "\nCheck job history with:\n"
-            f"axlearn gcp bastion history --name={cfg.name} "
-            f"--job_name={cfg.job_name} --zone={cfg.zone}"
-        )
-        return super()._execute()
-
-
 def _project_quotas_from_file(quota_file: str):
     """Returns a callable that fetches quota information."""
     return functools.partial(get_resource_limits, path=quota_file)
@@ -514,7 +483,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         spec = deserialize_jobspec(flag_values.spec)
         # Construct a job for bastion to execute. This typically runs locally.
         # The spec file provided from the flags will be used and submitted to bastion vm.
-        cfg = BastionManagedJob.from_flags(flag_values).set(
+        cfg = BastionDirectory.from_flags(flag_values).set(
             job_name=spec.name,
             job_spec_file=flag_values.spec,
             bastion_dir=output_dir(flag_values.name),
@@ -526,7 +495,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         if not flag_values.job_name:
             raise app.UsageError("--job_name must be provided if running 'cancel'.")
         # Cancel a job that bastion is running (or planning to run).
-        cfg = BastionManagedJob.from_flags(flag_values).set(
+        cfg = BastionDirectory.from_flags(flag_values).set(
             job_spec_file="", bastion_dir=output_dir(flag_values.name)
         )
         job = cfg.instantiate()
