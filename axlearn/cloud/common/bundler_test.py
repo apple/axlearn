@@ -195,10 +195,6 @@ class BaseTarBundlerTest(TestWithTemporaryCWD):
             b = cfg.instantiate()
             bundle_name = "test_bundle"
 
-            # Should fail if no pyproject.
-            with self.assertRaisesRegex(ValueError, "pyproject"):
-                b.bundle(bundle_name)
-
             (pathlib.Path(self._temp_root.name) / "pyproject.toml").touch()
             bundle_id = b.bundle(bundle_name)
 
@@ -304,7 +300,12 @@ class DockerBundlerTest(TestWithTemporaryCWD):
     @mock.patch(f"{bundler.__name__}.get_git_revision", return_value="FAKE_REVISION")
     @mock.patch(f"{bundler.__name__}.get_git_status", return_value=["FAKE_FILE"])
     def test_call_unclean(
-        self, get_git_status, get_git_revision, get_git_branch, running_from_source, allow_dirty
+        self,
+        get_git_status,
+        get_git_revision,
+        get_git_branch,
+        running_from_source,
+        allow_dirty,
     ):
         _create_dummy_config(self._temp_root.name)
 

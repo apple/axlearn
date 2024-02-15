@@ -497,7 +497,7 @@ class BaseTarBundler(Bundler):
 
             # Tar bundling installs via `pip install`, which requires a pyproject or setup.py.
             if not ((temp_root / "pyproject.toml").exists() or (temp_root / "setup.py").exists()):
-                raise ValueError(
+                logging.warning(
                     "No pyproject.toml or setup.py found in the bundle root -- "
                     "This means that bundle installation will likely fail!"
                 )
