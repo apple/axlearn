@@ -8,7 +8,7 @@ import pathlib
 from typing import Dict, Optional, Union
 from unittest import mock
 
-from absl import flags
+from absl import app, flags
 from absl.testing import parameterized
 
 from axlearn.cloud import ROOT_MODULE_NAME
@@ -438,3 +438,35 @@ class CLITest(TestWithTemporaryCWD):
             "\n"
         ))
         # fmt: on
+
+    def test_main_action_get(self):
+        temp_root = os.path.realpath(self._temp_root.name)
+        namespace = "test"
+
+        def _assert_get(setting, expected):
+            cmd = ["cli", "get"]
+            if setting is not None:
+                cmd.append(setting)
+
+            if isinstance(expected, Exception):
+                with self.assertRaises(type(expected)):
+                    config_main(cmd, namespace=namespace, fv=flags.FlagValues())
+            else:
+                with mock.patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+                    config_main(cmd, namespace=namespace, fv=flags.FlagValues())
+                self.assertEqual(expected, mock_stdout.getvalue())
+
+        create_default_config(temp_root, contents={namespace: {"project0": {"foo", "bar"}}})
+        _assert_get("foo", app.UsageError("Please activate a project first via config activate."))
+
+        project_configs = {
+            "_active": "project0",
+            "project0": {"foo": "bar", "labels": ["a", "b"]},
+            "project1": {"foo": "baz"},
+        }
+        create_default_config(temp_root, contents={namespace: project_configs})
+
+        _assert_get("foo", "bar\n")
+        _assert_get("labels", "['a', 'b']\n")
+        _assert_get(None, app.UsageError("Usage: config get <setting_name>"))
+        _assert_get("invalid_setting", app.UsageError("Unknown setting invalid_setting."))
