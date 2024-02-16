@@ -104,7 +104,6 @@ def mock_tpu_statuses(
 
     mock_tpu_status = mock.patch.multiple(
         tpu_runner.__name__,
-        get_tpu_node_status=mock.Mock(side_effect=mock_get_tpu_node_status),
         get_queued_tpu_node_status=mock.Mock(side_effect=mock_get_tpu_node_status),
     )
     mock_ssh_status = mock.patch.object(
