@@ -116,9 +116,10 @@ from typing import Sequence
 from absl import app, flags, logging
 from tensorflow import io as tf_io
 
-from axlearn.cloud.common.bastion import _LOG_DIR, Bastion
-from axlearn.cloud.common.bastion import BastionManagedJob as BaseBastionManagedJob
 from axlearn.cloud.common.bastion import (
+    _LOG_DIR,
+    Bastion,
+    BastionDirectory,
     StartBastionJob,
     bastion_job_flags,
     deserialize_jobspec,
@@ -133,8 +134,8 @@ from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, docker_command
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
-from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials
-from axlearn.cloud.gcp.vm import _compute_resource, create_vm, delete_vm, get_vm_node
+from axlearn.cloud.gcp.utils import catch_auth, common_flags
+from axlearn.cloud.gcp.vm import create_vm, delete_vm
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 
 _SHARED_BASTION_SUFFIX = "shared-bastion"
@@ -210,7 +211,7 @@ def shared_bastion_name(zone: str) -> str:
     )
 
 
-def output_dir(bastion: str) -> str:
+def bastion_root_dir(bastion: str) -> str:
     """Directory in gs where jobs are recorded."""
     return os.path.join("gs://", gcp_settings("permanent_bucket"), bastion)
 
@@ -279,7 +280,7 @@ class CreateBastionJob(CPUJob):
         )
 
         # Bastion outputs will be piped to run_log.
-        run_log = os.path.join(output_dir(cfg.name), "logs", f"{cfg.name}-%Y%m%d")
+        run_log = os.path.join(bastion_root_dir(cfg.name), "logs", f"{cfg.name}-%Y%m%d")
         output_cmd = f"tee >(python3 -m axlearn.cloud.common.writer --output_path={run_log})"
 
         # Command to start the bastion inside a docker container.
@@ -315,37 +316,6 @@ class CreateBastionJob(CPUJob):
         )
 
 
-class BastionManagedJob(BaseBastionManagedJob):
-    """A remote job managed by a bastion.
-
-    Main differences from BaseBastionManagedJob:
-    - Emits gsutil commands to view logs.
-    - Emits a warning if the bastion doesn't exist in GCE.
-    """
-
-    @config_class
-    class Config(BaseBastionManagedJob.Config):
-        zone: Required[str] = REQUIRED
-
-    def _execute(self):
-        cfg: BastionManagedJob.Config = self.config
-        node = get_vm_node(cfg.name, _compute_resource(get_credentials()))
-        if node is None or node.get("status", None) != "RUNNING":
-            logging.warning(
-                "Bastion %s does not appear to be running yet. "
-                "It will need to be running before jobs will execute.",
-                cfg.name,
-            )
-        print(
-            "\nView bastion outputs with:\n"
-            f"gsutil cat {os.path.join(self.bastion_dir, 'logs', cfg.job_name)}\n"
-            "\nCheck job history with:\n"
-            f"axlearn gcp bastion history --name={cfg.name} "
-            f"--job_name={cfg.job_name} --zone={cfg.zone}"
-        )
-        return super()._execute()
-
-
 def _project_quotas_from_file(quota_file: str):
     """Returns a callable that fetches quota information."""
     return functools.partial(get_resource_limits, path=quota_file)
@@ -353,7 +323,7 @@ def _project_quotas_from_file(quota_file: str):
 
 def _job_history(*, bastion_name: str, job_name: str) -> str:
     result = ""
-    bastion_path = output_dir(bastion_name)
+    bastion_path = bastion_root_dir(bastion_name)
     spec_path_pattern = os.path.join(bastion_path, "jobs", "*", job_name)
     spec_paths = tf_io.gfile.glob(spec_path_pattern)
     if not spec_paths:
@@ -371,7 +341,7 @@ def _job_history(*, bastion_name: str, job_name: str) -> str:
 
 def _project_history(*, bastion_name: str, project_id: str) -> str:
     project_dir = os.path.join(
-        output_dir(bastion_name),
+        bastion_root_dir(bastion_name),
         "history",
         "projects",
         project_id,
@@ -424,7 +394,7 @@ def _maybe_delete_child_jobs(flag_values: flags.FlagValues):
     if not flag_values.delete_child_jobs:
         return
     cleaner = TPUCleaner.default_config().instantiate()
-    bastion_dir = output_dir(flag_values.name)
+    bastion_dir = bastion_root_dir(flag_values.name)
     with tempfile.TemporaryDirectory() as tmpdir:
         jobs, _ = download_job_batch(
             spec_dir=f"{bastion_dir}/jobs/active",
@@ -494,7 +464,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     elif action == "start":
         # Start the bastion. This should run on the bastion itself.
         bastion_cfg = Bastion.default_config().set(
-            output_dir=output_dir(flag_values.name),
+            output_dir=bastion_root_dir(flag_values.name),
             scheduler=JobScheduler.default_config().set(
                 quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file()),
             ),
@@ -514,23 +484,22 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         spec = deserialize_jobspec(flag_values.spec)
         # Construct a job for bastion to execute. This typically runs locally.
         # The spec file provided from the flags will be used and submitted to bastion vm.
-        cfg = BastionManagedJob.from_flags(flag_values).set(
-            job_name=spec.name,
-            job_spec_file=flag_values.spec,
-            bastion_dir=output_dir(flag_values.name),
+        bastion_dir = (
+            BastionDirectory.default_config()
+            .set(root_dir=bastion_root_dir(flag_values.name))
+            .instantiate()
         )
-        # Execute the job.
-        job = cfg.instantiate()
-        job.execute()
+        bastion_dir.submit_job(spec.name, job_spec_file=flag_values.spec)
     elif action == "cancel":
         if not flag_values.job_name:
             raise app.UsageError("--job_name must be provided if running 'cancel'.")
         # Cancel a job that bastion is running (or planning to run).
-        cfg = BastionManagedJob.from_flags(flag_values).set(
-            job_spec_file="", bastion_dir=output_dir(flag_values.name)
+        bastion_dir = (
+            BastionDirectory.default_config()
+            .set(root_dir=bastion_root_dir(flag_values.name))
+            .instantiate()
         )
-        job = cfg.instantiate()
-        job._delete()  # pylint: disable=protected-access
+        bastion_dir.cancel_job(flag_values.name)
     elif action == "history":
         if flag_values.job_name:
             # Print job history.
@@ -554,7 +523,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             options = json.loads(flag_values.runtime_options)
         except (TypeError, json.JSONDecodeError) as e:
             raise app.UsageError(f"--runtime_options should be a valid json string: {e}")
-        set_runtime_options(output_dir(flag_values.name), **options)
+        set_runtime_options(bastion_root_dir(flag_values.name), **options)
     else:
         raise ValueError(f"Unknown action {action}")
 

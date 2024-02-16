@@ -74,7 +74,9 @@ class CreateBastionJobTest(TestWithTemporaryCWD):
 
         mock_execute = mock.patch.object(job, "_execute_remote_cmd", return_value=None)
         mock_creds = mock.patch.object(job, "_get_job_credentials", return_value=None)
-        mock_output_dir = mock.patch(f"{bastion_vm.__name__}.output_dir", return_value="temp_dir")
+        mock_output_dir = mock.patch(
+            f"{bastion_vm.__name__}.bastion_root_dir", return_value="temp_dir"
+        )
         with mock_output_dir, mock_execute, mock_creds, mock_vm(bastion_vm.__name__) as mocks:
             job._execute()
             self.assertTrue(mocks["create_vm"].called)
@@ -269,7 +271,7 @@ class MainTest(TestWithTemporaryCWD):
             with tempfile.TemporaryDirectory() as temp_dir:
                 if original is not None:
                     set_runtime_options(temp_dir, **original)
-                with mock.patch(f"{bastion_vm.__name__}.output_dir", return_value=temp_dir):
+                with mock.patch(f"{bastion_vm.__name__}.bastion_root_dir", return_value=temp_dir):
                     bastion_vm.main(["cli", "set"], flag_values=fv)
                 return _load_runtime_options(temp_dir)
 

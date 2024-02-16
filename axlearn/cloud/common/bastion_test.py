@@ -870,44 +870,43 @@ class StartBastionJobTest(parameterized.TestCase):
         self.assertTrue(mock_bastion.execute.called)
 
 
-def _mock_submit_config():
-    return bastion.BastionManagedJob.default_config().set(
-        name="test",
-        job_name="test-job",
-        job_spec_file="spec",
-        max_tries=1,
-        retry_interval=1,
-        bastion_dir="test-output",
-    )
-
-
-class BastionManagedJobTest(parameterized.TestCase):
-    """Tests BastionManagedJob."""
+class BastionDirectoryTest(parameterized.TestCase):
+    """Tests BastionDirectory."""
 
     @parameterized.parameters(True, False)
-    def test_execute(self, spec_exists):
-        cfg = _mock_submit_config()
-        job = cfg.instantiate()
-
+    def test_submit_job(self, spec_exists):
+        job_name = "test-job"
+        job_spec_file = "spec"
+        bastion_dir = (
+            bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
+        )
+        self.assertEqual("test-dir", str(bastion_dir))
+        self.assertEqual("test-dir/logs", bastion_dir.logs_dir)
+        self.assertEqual("test-dir/jobs/active", bastion_dir.active_job_dir)
+        self.assertEqual("test-dir/jobs/complete", bastion_dir.complete_job_dir)
+        self.assertEqual("test-dir/jobs/states", bastion_dir.job_states_dir)
+        self.assertEqual("test-dir/jobs/user_states", bastion_dir.user_states_dir)
         patch_tfio = mock.patch.multiple(
             f"{bastion.__name__}.tf_io.gfile",
             exists=mock.MagicMock(return_value=spec_exists),
             copy=mock.DEFAULT,
         )
         with patch_tfio as mock_tfio:
-            job.execute()
+            bastion_dir.submit_job(job_name, job_spec_file=job_spec_file)
             if not spec_exists:
                 mock_tfio["copy"].assert_called_with(
-                    cfg.job_spec_file,
-                    os.path.join(job._job_dir(), "active", cfg.job_name),
+                    job_spec_file,
+                    os.path.join(bastion_dir.active_job_dir, job_name),
                 )
             else:
                 mock_tfio["copy"].assert_not_called()
 
     @parameterized.parameters(True, False)
     def test_delete(self, spec_exists):
-        cfg = _mock_submit_config()
-        job = cfg.instantiate()
+        job_name = "test-job"
+        bastion_dir = (
+            bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
+        )
         patch_tfio = mock.patch.multiple(
             f"{bastion.__name__}.tf_io.gfile",
             exists=mock.MagicMock(side_effect=[spec_exists, False]),
@@ -918,12 +917,12 @@ class BastionManagedJobTest(parameterized.TestCase):
             _upload_job_state=mock.DEFAULT,
         )
         with patch_tfio, patch_fns as mock_fns:
-            job._delete()
+            bastion_dir.cancel_job(job_name)
             if not spec_exists:
                 mock_fns["_upload_job_state"].assert_not_called()
             else:
                 mock_fns["_upload_job_state"].assert_called_with(
-                    cfg.job_name,
+                    job_name,
                     JobState.CANCELLING,
-                    remote_dir=os.path.join(job._job_dir(), "user_states"),
+                    remote_dir=bastion_dir.user_states_dir,
                 )
