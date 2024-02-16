@@ -9,7 +9,12 @@ from axlearn.common.attention import NEG_INF
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.evaler import GlobalMetricCalculator, PredictionOutputs
 from axlearn.common.loss import contrastive_logits
-from axlearn.common.metrics_retrieval import average_rank, top_k_accuracy
+from axlearn.common.metrics_retrieval import (
+    average_rank,
+    calculate_mean_metrics,
+    ndcg_at_k,
+    top_k_accuracy,
+)
 from axlearn.common.text_dual_encoder import (
     FLATTENED_LEFT_EMBEDDINGS,
     FLATTENED_RIGHT_EMBEDDINGS,
@@ -32,6 +37,7 @@ def _calculate_retrieval_metrics_from_embeddings(
     text_positive_paddings: Tensor,
     text_negative_embeddings: Optional[Tensor] = None,
     text_negative_paddings: Optional[Tensor] = None,
+    top_ks_for_ndcg: Optional[List[int]] = None,
 ) -> Dict[str, Tensor]:
     """Main function to calculate all different retrieval metrics given embeddings for text dual
     encoder model.
@@ -51,6 +57,7 @@ def _calculate_retrieval_metrics_from_embeddings(
             [num_queries, max_negative_texts, dim].
         text_negative_paddings: Negative text paddings with shape
             [num_queries, max_negative_texts].
+        top_ks_for_ndcg: Optional. The values for k for which to compute nDCG metrics.
 
     Returns:
         A dict containing all different metrics for text dual encoder model.
@@ -74,6 +81,7 @@ def _calculate_retrieval_metrics_from_embeddings(
         query_paddings=query_paddings,
         text_paddings=text_paddings,
         top_ks_for_accuracy=top_ks_for_accuracy,
+        top_ks_for_ndcg=top_ks_for_ndcg,
     )
 
 
@@ -84,6 +92,7 @@ def calculate_retrieval_metrics_from_similarity_matrix(
     query_paddings: Tensor,
     text_paddings: Tensor,
     top_ks_for_accuracy: List[int],
+    top_ks_for_ndcg: Optional[List[int]] = None,
 ) -> Dict[str, Tensor]:
     """Function to calculate all different retrieval metrics given similarity matrix.
 
@@ -100,6 +109,7 @@ def calculate_retrieval_metrics_from_similarity_matrix(
             [num_queries * (max_positive_texts + max_negative_texts)]. 1 means paddings and 0 means
             valid queries.
         top_ks_for_accuracy: The values for k for which to compute accuracy.
+        top_ks_for_ndcg: Optional. The values for k for which to compute nDCG.
 
     Returns:
         A dict containing all different metrics for text dual encoder model.
@@ -138,6 +148,25 @@ def calculate_retrieval_metrics_from_similarity_matrix(
     )["avg_rank"]
 
     metrics = {}
+
+    if top_ks_for_ndcg:
+        # Used to mask out queries which don't have any relevant items.
+        no_relevant_item_query_mask = relevance_labels.max(axis=-1) == 0
+        ndcg_metrics = ndcg_at_k(
+            scores=sim_with_masks, relevance_labels=relevance_labels, top_ks=top_ks_for_ndcg
+        )
+        for k, ndcg_metric in ndcg_metrics.items():
+            # Calculate average nDCG at each postion k.
+            metrics.update(
+                calculate_mean_metrics(
+                    metric_name=f"ndcg@{k}",
+                    query_metrics=ndcg_metric,
+                    query_padding=jnp.logical_or(
+                        query_paddings.reshape(-1), no_relevant_item_query_mask
+                    ),
+                )
+            )
+
     # Shape: [num_queries].
     flattened_valid_queries = 1 - jnp.reshape(query_paddings, -1)
     num_valid_queries = jnp.sum(flattened_valid_queries)
@@ -157,6 +186,7 @@ class TextDualEncoderMetricCalculator(GlobalMetricCalculator):
     Currently it supports following metrics:
         retrieval_accuracy@K: Accuracy@K of highest-ranked positive text predicted by model.
         avg_rank: Computes average rank of each query's first relevant text.
+        ndcg@k: Average of nDCG@K for each query if top_ks_for_ndcg is set.
     """
 
     @config_class
@@ -167,6 +197,8 @@ class TextDualEncoderMetricCalculator(GlobalMetricCalculator):
         right_encoder_name: Required[str] = REQUIRED
         # The values for k for which to compute accuracy.
         top_ks_for_accuracy: Required[List[int]] = REQUIRED
+        # The values for k for which to compute nDCG.
+        top_ks_for_ndcg: Optional[List[int]] = None
 
     def _calculate_metrics(self, outputs: PredictionOutputs) -> Dict[str, Tensor]:
         cfg = self.config
@@ -176,6 +208,7 @@ class TextDualEncoderMetricCalculator(GlobalMetricCalculator):
         )
         metrics = _calculate_retrieval_metrics_from_embeddings(
             top_ks_for_accuracy=cfg.top_ks_for_accuracy,
+            top_ks_for_ndcg=cfg.top_ks_for_ndcg,
             query_embeddings=predict_outputs[cfg.left_encoder_name][POSITIVE_EMBEDDINGS],
             query_paddings=input_batch[cfg.left_encoder_name][POSITIVE_PADDINGS],
             text_positive_embeddings=predict_outputs[cfg.right_encoder_name][POSITIVE_EMBEDDINGS],
