@@ -75,7 +75,6 @@ except ModuleNotFoundError:
     logging.warning("tensorflow_io is not installed -- tf_io may not work with s3://")
 
 from axlearn.cloud.common.cleaner import Cleaner
-from axlearn.cloud.common.job import Job as CloudJob
 from axlearn.cloud.common.scheduler import JobMetadata, ResourceMap, Scheduler
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
