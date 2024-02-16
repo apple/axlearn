@@ -2,7 +2,7 @@
 
 """Manages the GCP config namespace.
 
-Possible actions: [list|activate|cleanup]
+Possible actions: [list|activate|cleanup|get]
 
     List:
         - Lists all configured projects, as well as their labels.
@@ -18,6 +18,9 @@ Possible actions: [list|activate|cleanup]
     Cleanup:
         - Removes all configuration files. Will prompt for confirmation.
 
+    Get:
+        - Prints the specified setting value.
+
 Examples:
 
     # List available projects.
@@ -31,6 +34,9 @@ Examples:
 
     # Activate a project by one or more labels.
     axlearn gcp config activate --label=my-label --label=my-other-label
+
+    # Print the setting value for labels.
+    axlearn gcp config get labels
 
 """
 

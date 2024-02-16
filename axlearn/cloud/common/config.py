@@ -17,7 +17,7 @@ import sys
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import toml
-from absl import flags, logging
+from absl import app, flags, logging
 
 from axlearn.cloud.common import utils
 
@@ -300,7 +300,9 @@ def config_flags():
 
 def main(argv: Sequence[str], *, namespace: str, fv: flags.FlagValues):
     """Entrypoint for interacting with projects in a config namespace."""
-    action = utils.parse_action(argv, options=["list", "activate", "cleanup"], default="list")
+    action = utils.parse_action(
+        argv, options=["list", "activate", "cleanup", "get"], default="list"
+    )
 
     # Load existing configs, if any.
     _, project_configs = load_configs(namespace)
@@ -341,6 +343,22 @@ def main(argv: Sequence[str], *, namespace: str, fv: flags.FlagValues):
                 print(f"Found {path}, deleting.")
                 os.remove(path)
         print("Cleanup complete.")
+        return
+
+    elif action == "get":
+        if len(argv) < 3:
+            raise app.UsageError("Usage: config get <setting_name>")
+        setting_name = argv[2]
+        active_project = project_configs.get("_active", None)
+        if not active_project:
+            raise app.UsageError("Please activate a project first via config activate.")
+        active_settings = project_configs[active_project]
+        setting = active_settings.get(setting_name, None)
+        if setting is None:
+            raise app.UsageError(
+                f"Unknown setting {setting_name}. View available settings using config list."
+            )
+        print(setting)
         return
 
     else:
