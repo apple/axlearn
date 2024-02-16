@@ -75,7 +75,6 @@ except ModuleNotFoundError:
     logging.warning("tensorflow_io is not installed -- tf_io may not work with s3://")
 
 from axlearn.cloud.common.cleaner import Cleaner
-from axlearn.cloud.common.job import Job as CloudJob
 from axlearn.cloud.common.scheduler import JobMetadata, ResourceMap, Scheduler
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
@@ -855,28 +854,6 @@ class Bastion(Configurable):
                     cfg.update_interval_seconds,
                 )
             time.sleep(max(0, cfg.update_interval_seconds - execute_s))
-
-
-class StartBastionJob(CloudJob):
-    """A job that runs the bastion."""
-
-    @config_class
-    class Config(CloudJob.Config):
-        """Configures StartBastionJob."""
-
-        bastion: Required[Bastion.Config] = REQUIRED
-
-    @classmethod
-    def default_config(cls) -> Config:
-        return super().default_config().set(command="")
-
-    def __init__(self, cfg: Config):
-        super().__init__(cfg)
-        self._bastion: Bastion = cfg.bastion.instantiate()
-
-    def _execute(self) -> Any:
-        # Wraps bastion with retries.
-        self._bastion.execute()
 
 
 class BastionDirectory(Configurable):
