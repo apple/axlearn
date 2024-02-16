@@ -882,11 +882,11 @@ class StartBastionJob(CloudJob):
 class BastionDirectory(Configurable):
     """A directory watched by a Bastion.
 
-    submit() writes the job spec to the active job dir watched by the bastion, which will
+    submit_job() writes the job spec to the active job dir watched by the bastion, which will
     start a process on the bastion VM to run the command when resources are ready. The on-bastion
     process usually further creates and watches remote VMs.
 
-    cancel() writes a job state file to the cancel job dir watched by the bastion, which will
+    cancel_job() writes a job state file to the cancel job dir watched by the bastion, which will
     terminate the on-bastion process.
     """
 
@@ -925,7 +925,7 @@ class BastionDirectory(Configurable):
     def user_states_dir(self):
         return os.path.join(self.root_dir, "jobs", "user_states")
 
-    def cancel(self, job_name: str):
+    def cancel_job(self, job_name: str):
         try:
             jobspec = os.path.join(self.active_job_dir, job_name)
             if not tf_io.gfile.exists(jobspec):
@@ -944,7 +944,7 @@ class BastionDirectory(Configurable):
         except ValueError as e:
             logging.info("Failed with error: %s -- Has the job been cancelled already?", e)
 
-    def submit(self, job_name: str, *, job_spec_file: str):
+    def submit_job(self, job_name: str, *, job_spec_file: str):
         dst = os.path.join(self.active_job_dir, job_name)
         if tf_io.gfile.exists(dst):
             logging.info("\n\nNote: Job is already running. To restart it, cancel the job first.\n")

@@ -489,7 +489,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             .set(root_dir=bastion_root_dir(flag_values.name))
             .instantiate()
         )
-        bastion_dir.submit(spec.name, job_spec_file=flag_values.spec)
+        bastion_dir.submit_job(spec.name, job_spec_file=flag_values.spec)
     elif action == "cancel":
         if not flag_values.job_name:
             raise app.UsageError("--job_name must be provided if running 'cancel'.")
@@ -499,7 +499,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             .set(root_dir=bastion_root_dir(flag_values.name))
             .instantiate()
         )
-        bastion_dir.cancel(flag_values.name)
+        bastion_dir.cancel_job(flag_values.name)
     elif action == "history":
         if flag_values.job_name:
             # Print job history.

@@ -98,7 +98,7 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
         test_fixture = self
 
         class FakeBastionDirectory(BastionDirectory):
-            def submit(self, job_name: str, *, job_spec_file: str):
+            def submit_job(self, job_name: str, *, job_spec_file: str):
                 test_fixture.assertEqual("temp_dir", self.config.root_dir)
                 with open(job_spec_file, "r", encoding="utf-8") as f:
                     spec = deserialize_jobspec(f)

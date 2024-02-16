@@ -874,7 +874,7 @@ class BastionDirectoryTest(parameterized.TestCase):
     """Tests BastionDirectory."""
 
     @parameterized.parameters(True, False)
-    def test_submit(self, spec_exists):
+    def test_submit_job(self, spec_exists):
         job_name = "test-job"
         job_spec_file = "spec"
         bastion_dir = (
@@ -892,7 +892,7 @@ class BastionDirectoryTest(parameterized.TestCase):
             copy=mock.DEFAULT,
         )
         with patch_tfio as mock_tfio:
-            bastion_dir.submit(job_name, job_spec_file=job_spec_file)
+            bastion_dir.submit_job(job_name, job_spec_file=job_spec_file)
             if not spec_exists:
                 mock_tfio["copy"].assert_called_with(
                     job_spec_file,
@@ -917,7 +917,7 @@ class BastionDirectoryTest(parameterized.TestCase):
             _upload_job_state=mock.DEFAULT,
         )
         with patch_tfio, patch_fns as mock_fns:
-            bastion_dir.cancel(job_name)
+            bastion_dir.cancel_job(job_name)
             if not spec_exists:
                 mock_fns["_upload_job_state"].assert_not_called()
             else:

@@ -235,7 +235,7 @@ class BaseBastionLaunchJob(Job):
 
     def _delete(self):
         """Submits a delete request to bastion."""
-        self._bastion_dir.cancel(self.config.name)
+        self._bastion_dir.cancel_job(self.config.name)
 
     def _list(self, output_file: Optional[TextIO] = None) -> Dict[str, Any]:
         """Lists running jobs and optionally prints them in tabular format.
@@ -336,7 +336,7 @@ class BaseBastionLaunchJob(Job):
                 priority=cfg.priority,
             )
             serialize_jobspec(new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata), f)
-            self._bastion_dir.submit(cfg.name, job_spec_file=f.name)
+            self._bastion_dir.submit_job(cfg.name, job_spec_file=f.name)
         print(
             f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "
