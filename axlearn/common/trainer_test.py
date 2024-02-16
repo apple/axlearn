@@ -31,7 +31,7 @@ from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_pol
 from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
-from axlearn.common.trainer import SpmdTrainer, _prune_empty, _TrainerState, select_mesh_config
+from axlearn.common.trainer import SpmdTrainer, TrainerState, _prune_empty, select_mesh_config
 from axlearn.common.utils import NestedTensor, Tensor, as_tensor, flatten_items, match_regex_rules
 
 FLAGS = flags.FLAGS
@@ -258,7 +258,7 @@ class DummyStateBuilder(TrainerStateBuilder):
         logging.info("built_keys=%s", built_keys)
         return TrainerStateBuilder.State(
             step=self.config.step,
-            trainer_state=_TrainerState(
+            trainer_state=TrainerState(
                 prng_key=built_state.trainer_state.prng_key,
                 model=self.config.model_state(),
                 learner=built_state.trainer_state.learner,
@@ -441,7 +441,7 @@ class TrainerTest(test_utils.TestCase):
             2,  # Once for the train step trace, once for the eval_step trace.
         )
         with open(os.path.join(cfg.dir, "trainer_state_tree.txt"), encoding="utf-8") as f:
-            self.assertStartsWith(f.read(), "PyTreeDef(CustomNode(namedtuple[_TrainerState], [*, ")
+            self.assertStartsWith(f.read(), "PyTreeDef(CustomNode(namedtuple[TrainerState], [*, ")
 
         if start_trace_steps:
             trace_dir = os.path.join(cfg.dir, "summaries", "train_train", "plugins", "profile")
