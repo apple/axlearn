@@ -1,10 +1,10 @@
-# Copyright © 2023 Apple Inc.
+# Copyright © 2024 Apple Inc.
 
 """Utilities for loading pre-trained Hugging Face models."""
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Sequence
 
 from axlearn.common.config import config_for_function
-from axlearn.common.state_builder import Builder, HuggingFacePreTrainedBuilder
+from axlearn.common.state_builder import HuggingFacePreTrainedBuilder
 from axlearn.huggingface.hf_module import download_hf_models_from_remote
 
 
@@ -34,9 +34,9 @@ def hf_pretrained_builder_config(
     model_name_or_path: str,
     target_scope: Sequence[str] = tuple(),
     source_scope: Sequence[str] = ("encoder",),
-    from_pretrained_fn: Optional[Callable[[str], Any]] = auto_model_from_pretrained,
-) -> Builder.Config:
-    """Constructs HuggingFacePreTrainedBuilder to initialize from HF models.
+    from_pretrained_fn: Callable[[str], Any] = auto_model_from_pretrained,
+) -> HuggingFacePreTrainedBuilder.Config:
+    """Constructs a HuggingFacePreTrainedBuilder config to initialize from HF models.
 
     The builder will replace the target model's parameters under
     target_scope1->target_scope2->... to the HF model's parameters under
@@ -44,8 +44,10 @@ def hf_pretrained_builder_config(
 
     Args:
         model_name_or_path: Model name or location of the model's artifacts folder.
-        target_scope: List of scope path of target state.
-        source_scope: List of scope path of source state.
+        target_scope: A list of strings with multiple scope names.
+            If empty, it means the whole model state parameters will be replaced.
+        source_scope: A list of strings with multiple scope names.
+            If empty, it means the whole HF model parameters will be used for replacement.
         from_pretrained_fn: A function that takes a model identifier and returns an HF model.
 
     Returns:

@@ -1,4 +1,4 @@
-# Copyright © 2023 Apple Inc.
+# Copyright © 2024 Apple Inc.
 
 """Tests utilities for loading pre-trained Hugging Face models."""
 from typing import Any, Optional
