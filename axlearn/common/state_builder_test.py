@@ -55,7 +55,7 @@ from axlearn.common.state_builder import (
     traverse_and_set_target_state_parameters,
 )
 from axlearn.common.test_utils import TestCase, mock_trainer_config
-from axlearn.common.trainer import SpmdTrainer, _TrainerState
+from axlearn.common.trainer import SpmdTrainer, TrainerState
 from axlearn.common.utils import (
     NestedTensor,
     PartitionSpec,
@@ -232,7 +232,7 @@ class ChainBuilderTest(TestCase):
             .instantiate(parent=None)
         )
         prng_key = jax.random.PRNGKey(0)
-        init_trainer_state = _TrainerState(
+        init_trainer_state = TrainerState(
             prng_key=prng_key,
             model=model.initialize_parameters_recursively(prng_key=prng_key),
             learner=None,
@@ -268,7 +268,7 @@ class ChainBuilderTest(TestCase):
             .instantiate(parent=None)
         )
         prng_key = jax.random.PRNGKey(0)
-        init_trainer_state = _TrainerState(
+        init_trainer_state = TrainerState(
             prng_key=prng_key,
             model=model.initialize_parameters_recursively(prng_key=prng_key),
             learner=None,
@@ -747,7 +747,7 @@ class DiffusersPretrainedBuilderTest(TestCase):
     def _init_state(self, model, prng_key: Tensor):
         prng_key, init_key = jax.random.split(prng_key)
         model_params = model.initialize_parameters_recursively(init_key)
-        return _TrainerState(
+        return TrainerState(
             prng_key=prng_key,
             model=model_params,
             learner=None,
@@ -788,7 +788,7 @@ class DiffusersPretrainedBuilderTest(TestCase):
 
             model = autoencoder_cfg.instantiate(parent=None)
             prng_key = jax.random.PRNGKey(0)
-            trainer_state_specs = _TrainerState(
+            trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
@@ -858,7 +858,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
     def _init_state(self, model, prng_key: Tensor):
         prng_key, init_key = jax.random.split(prng_key)
         model_params = model.initialize_parameters_recursively(init_key)
-        return _TrainerState(
+        return TrainerState(
             prng_key=prng_key,
             model=model_params,
             learner=None,
@@ -868,7 +868,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
         with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
             model = DummyModel.default_config().set(name="model").instantiate(parent=None)
             prng_key = jax.random.PRNGKey(0)
-            trainer_state_specs = _TrainerState(
+            trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
@@ -929,7 +929,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             model_cfg = DummyModel.default_config().set(child=repeat_cfg)
             model = model_cfg.set(name="model").instantiate(parent=None)
             prng_key = jax.random.PRNGKey(0)
-            trainer_state_specs = _TrainerState(
+            trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
@@ -998,7 +998,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             cfg.converter.dst_layer = dst_layer
 
         builder = cfg.instantiate(parent=None)
-        init_state = _TrainerState(
+        init_state = TrainerState(
             model=dict(weight=jnp.zeros([5, 2]), bias=jnp.zeros([2])), prng_key=None, learner=None
         )
         output = builder(Builder.State(step=0, trainer_state=init_state, built_keys=set()))
