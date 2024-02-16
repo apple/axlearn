@@ -857,28 +857,6 @@ class Bastion(Configurable):
             time.sleep(max(0, cfg.update_interval_seconds - execute_s))
 
 
-class StartBastionJob(CloudJob):
-    """A job that runs the bastion."""
-
-    @config_class
-    class Config(CloudJob.Config):
-        """Configures StartBastionJob."""
-
-        bastion: Required[Bastion.Config] = REQUIRED
-
-    @classmethod
-    def default_config(cls) -> Config:
-        return super().default_config().set(command="")
-
-    def __init__(self, cfg: Config):
-        super().__init__(cfg)
-        self._bastion: Bastion = cfg.bastion.instantiate()
-
-    def _execute(self) -> Any:
-        # Wraps bastion with retries.
-        self._bastion.execute()
-
-
 class BastionDirectory(Configurable):
     """A directory watched by a Bastion.
 

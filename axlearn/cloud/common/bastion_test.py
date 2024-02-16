@@ -854,22 +854,6 @@ class BastionTest(parameterized.TestCase):
                 self.assertEqual({"dry_run": expect_dry_run, "verbosity": expect_verbosity}, kwargs)
 
 
-class StartBastionJobTest(parameterized.TestCase):
-    """Tests StartBastionJob."""
-
-    def test_execute(self):
-        mock_bastion = mock.MagicMock()
-        cfg = bastion.StartBastionJob.default_config().set(
-            name="test",
-            bastion=config_for_function(lambda: mock_bastion),
-            max_tries=1,
-            retry_interval=1,
-        )
-        job = cfg.instantiate()
-        job.execute()
-        self.assertTrue(mock_bastion.execute.called)
-
-
 class BastionDirectoryTest(parameterized.TestCase):
     """Tests BastionDirectory."""
 

@@ -22,7 +22,7 @@ from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.gcp.jobs import bastion_vm
 from axlearn.cloud.gcp.jobs.bastion_vm import CreateBastionJob
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
-from axlearn.common.config import _validate_required_fields, config_for_function
+from axlearn.common.config import _validate_required_fields, config_class, config_for_function
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
@@ -156,12 +156,27 @@ class MainTest(TestWithTemporaryCWD):
             "permanent_bucket": "test-bucket",
             "private_bucket": "test-private",
         }
-        mock_job = _mock_job(
-            bastion_vm.StartBastionJob, bundler_kwargs={}, settings_kwargs=settings_kwargs
+
+        class FakeBastion(bastion_vm.Bastion):
+            @config_class
+            class Config(bastion_vm.Bastion.Config):
+                def instantiate(self):
+                    return FakeBastion()
+
+            def __init__(self):
+                pass
+
+            def execute(self):
+                pass
+
+        bastion_cfg = FakeBastion.default_config()
+        mock_bastion_config = mock.patch(
+            f"{bastion_vm.__name__}.Bastion.default_config",
+            return_value=bastion_cfg,
         )
-        with mock_job as (mock_cfg, _, _):
+        mock_settings = mock_gcp_settings(bastion_vm.__name__, settings_kwargs)
+        with mock_settings, mock_bastion_config:
             bastion_vm.main(["cli", "start"], flag_values=fv)
-            bastion_cfg = mock_cfg.set.call_args.kwargs["bastion"]
             _validate_required_fields(bastion_cfg)
             self.assertIn("test-bucket", bastion_cfg.output_dir)
             self.assertIn("test-bastion", bastion_cfg.output_dir)

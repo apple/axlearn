@@ -120,7 +120,6 @@ from axlearn.cloud.common.bastion import (
     _LOG_DIR,
     Bastion,
     BastionDirectory,
-    StartBastionJob,
     bastion_job_flags,
     deserialize_jobspec,
     download_job_batch,
@@ -473,9 +472,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
                 upload_fn=config_for_function(with_interval).set(upload_fn=_gsutil_rsync),
             ),
         )
-        cfg = StartBastionJob.from_flags(flag_values).set(max_tries=-1, bastion=bastion_cfg)
-        job = cfg.instantiate()
-        job.execute()
+        bastion_cfg.instantiate().execute()
     # TODO(markblee): Split out 'internal' commands from user-facing ones.
     elif action == "stop":
         _stop_bastion(flag_values=flag_values)
