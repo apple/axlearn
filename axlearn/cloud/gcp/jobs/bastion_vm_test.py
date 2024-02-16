@@ -159,6 +159,7 @@ class MainTest(TestWithTemporaryCWD):
 
         class FakeBastion(bastion_vm.Bastion):
             """A fake Bastion for testing."""
+
             @config_class
             class Config(bastion_vm.Bastion.Config):
                 def instantiate(self):
