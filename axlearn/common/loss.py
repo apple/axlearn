@@ -86,7 +86,9 @@ def _reduce_loss(
 def cross_entropy(
     logits: Tensor,
     target_labels: Tensor,
-    mask: Tensor = None,
+    *,
+    live_targets: Optional[Tensor] = None,
+    mask: Optional[Tensor] = None,
     z_loss_scale: float = 0.0,
     label_smoothing: float = 0.0,
     soft_target_labels: Optional[Tensor] = None,
@@ -106,9 +108,11 @@ def cross_entropy(
         target_labels: An int Tensor of shape [...].
             The per-example loss will be 0 if the corresponding target is masked, or out-of-class
             (i.e. target_labels[i] < 0 or target_labels[i] >= num_classes).
-        mask: Indicates which example should contribute to the loss.
+        live_targets: Indicates which example should contribute to the loss.
             A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
-            contribute to the loss.
+            contribute to the loss. If None, infer from 0 <= target_labels < num_classes.
+        mask: (deprecated) Used as `live_targets` if `live_targets is None`.
+            Must be None if `live_targets` is specified.
         z_loss_scale: Coefficient for auxilliary z-loss loss term.
         label_smoothing: The factor to control label smoothing.
         soft_target_labels: Optional labels that are already smoothed/in one-hot form. If provided,
@@ -122,7 +126,7 @@ def cross_entropy(
                 loss = cross_entropy_loss + z_loss_scale * z_loss.
             * "cross_entropy_loss": the cross_entropy_loss.
             * "z_loss": the unscaled z_loss.
-            * "pre_mask_loss": the loss across all tokens unmasked.
+            * "pre_mask_loss": the loss per target, of the same shape as `target_labels`.
 
     Raises:
         ValueError: If z_loss_scale is negative.
@@ -144,15 +148,21 @@ def cross_entropy(
     pre_mask_loss, pre_mask_cross_entropy_loss, pre_mask_z_loss = _stable_cross_entropy(
         logits, targets, z_loss_scale
     )
-    if mask is None:
-        mask = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
-    mask = mask.astype(pre_mask_loss.dtype)
-    num_unmasked = jnp.maximum(mask.sum(), 1)
-    cross_entropy_loss = (pre_mask_cross_entropy_loss * mask).sum() / num_unmasked
-    z_loss = (pre_mask_z_loss * mask).sum() / num_unmasked
-    loss = (pre_mask_loss * mask).sum() / num_unmasked
+    if mask is not None:
+        if live_targets is None:
+            live_targets = mask
+        else:
+            raise ValueError("mask and live_targets must not be specified together")
+    if live_targets is None:
+        live_targets = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
+    live_targets = live_targets.astype(pre_mask_loss.dtype)
+    num_live_targets = live_targets.sum()
+    denominator = jnp.maximum(num_live_targets, 1)
+    cross_entropy_loss = (pre_mask_cross_entropy_loss * live_targets).sum() / denominator
+    z_loss = (pre_mask_z_loss * live_targets).sum() / denominator
+    loss = (pre_mask_loss * live_targets).sum() / denominator
     predicted_labels = jnp.argmax(logits, axis=-1)
-    accuracy = (jnp.equal(predicted_labels, target_labels) * mask).sum() / num_unmasked
+    accuracy = (jnp.equal(predicted_labels, target_labels) * live_targets).sum() / denominator
     return loss, {
         "total_loss": loss,
         "z_loss": z_loss,
@@ -164,7 +174,9 @@ def cross_entropy(
 
 def binary_cross_entropy(
     logits: Tensor,
+    *,
     target_labels: Tensor,
+    live_targets: Optional[Tensor] = None,
     mask: Optional[Tensor] = None,
 ) -> Tuple[Tensor, Dict[str, Tensor]]:
     """Compute the binary cross entropy loss between logits and targets.
@@ -175,11 +187,13 @@ def binary_cross_entropy(
 
     Args:
         logits: A float Tensor of shape [batch_size, d0, ..., dN].
-        target_labels: An 0/1 int Tensor of shape [batch_size, d0, ..., dN].
+        target_labels: An 0/1 int Tensor of the same shape as `logits`.
             The per-example loss will be 0 if the corresponding target is masked.
-        mask: Indicates which example should contribute to the loss.
-            A bool or 0/1 Tensor of same shape as batch_size.
-            If None, infer from 0 <= target_labels < 2.
+        live_targets: Indicates which example should contribute to the loss.
+            A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
+            contribute to the loss. If None, infer from 0 <= target_labels < 2.
+        mask: (deprecated) Used as `live_targets` if `live_targets is None`.
+            Must be None if `live_targets` is specified.
 
     Returns:
         (loss, all_losses), where
@@ -191,11 +205,17 @@ def binary_cross_entropy(
     if logits.dtype in (jnp.bfloat16, jnp.float16):
         logits = logits.astype(jnp.float32)
     pre_mask_cross_entropy_loss = sigmoid_cross_entropy_with_logits(logits, target_labels)
-    if mask is None:
-        mask = jnp.logical_and(0 <= target_labels, target_labels < 2)
-    mask = mask.astype(pre_mask_cross_entropy_loss.dtype)
-    num_unmasked = jnp.maximum(mask.sum(), 1)
-    binary_cross_entropy_loss = (pre_mask_cross_entropy_loss * mask).sum() / num_unmasked
+    if mask is not None:
+        if live_targets is None:
+            live_targets = mask
+        else:
+            raise ValueError("mask and live_targets must not be specified together")
+    if live_targets is None:
+        live_targets = jnp.logical_and(0 <= target_labels, target_labels < 2)
+    live_targets = live_targets.astype(pre_mask_cross_entropy_loss.dtype)
+    binary_cross_entropy_loss = (pre_mask_cross_entropy_loss * live_targets).sum() / jnp.maximum(
+        live_targets.sum(), 1
+    )
     return binary_cross_entropy_loss, {
         "binary_cross_entropy_loss": binary_cross_entropy_loss,
         "pre_mask_loss": pre_mask_cross_entropy_loss,
