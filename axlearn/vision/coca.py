@@ -628,7 +628,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         )  # pytype: disable=attribute-error
 
         # Compute prediction loss.
-        loss, _ = cross_entropy(logits, caption_labels, live_targets)
+        loss, _ = cross_entropy(logits, target_labels=caption_labels, live_targets=live_targets)
 
         # Add training metrics.
         token_accuracy = jnp.equal(jnp.argmax(logits, axis=-1), caption_labels)
