@@ -20,7 +20,7 @@ from axlearn.cloud.common.bastion import (
 )
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.gcp.jobs import bastion_vm
-from axlearn.cloud.gcp.jobs.bastion_vm import CreateBastionJob
+from axlearn.cloud.gcp.jobs.bastion_vm import RemoteBastionJob
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.config import _validate_required_fields, config_class, config_for_function
 from axlearn.common.test_utils import TestWithTemporaryCWD
@@ -53,7 +53,7 @@ def _mock_create_config():
     mock_bundler = mock.MagicMock()
     mock_bundler.TYPE = "test-bundler"
     mock_bundler.install_command.return_value = "test_install"
-    return CreateBastionJob.default_config().set(
+    return RemoteBastionJob.default_config().set(
         name="test",
         project="test-project",
         zone="test-zone",
@@ -65,8 +65,8 @@ def _mock_create_config():
     )
 
 
-class CreateBastionJobTest(TestWithTemporaryCWD):
-    """Tests CreateBastionJob."""
+class RemoteBastionJobTest(TestWithTemporaryCWD):
+    """Tests RemoteBastionJob."""
 
     def test_create(self):
         cfg = _mock_create_config()
@@ -135,7 +135,7 @@ class MainTest(TestWithTemporaryCWD):
             "default_dockerfile": "default-dockerfile",
         }
         mock_job = _mock_job(
-            bastion_vm.CreateBastionJob,
+            bastion_vm.RemoteBastionJob,
             bundler_kwargs=bundler_kwargs,
             settings_kwargs=settings_kwargs,
         )

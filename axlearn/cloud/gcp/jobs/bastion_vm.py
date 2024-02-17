@@ -247,12 +247,12 @@ def _gsutil_rsync(
     raise ValueError(f"Failed to sync jobs from {src}")
 
 
-class CreateBastionJob(CPUJob):
-    """A job to create and start the remote bastion."""
+class RemoteBastionJob(CPUJob):
+    """A bastion job running on a remote VM."""
 
     @config_class
     class Config(CPUJob.Config):
-        """Configures CreateBastionJob."""
+        """Configures RemoteBastionJob."""
 
         # Type of VM.
         vm_type: Required[str] = REQUIRED
@@ -268,7 +268,7 @@ class CreateBastionJob(CPUJob):
         delete_vm(cfg.name, credentials=self._get_job_credentials())
 
     def _execute(self):
-        cfg: CreateBastionJob.Config = self.config
+        cfg: RemoteBastionJob.Config = self.config
         # Create the bastion if it doesn't exist.
         create_vm(
             cfg.name,
@@ -444,7 +444,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         bundler_cfg = get_bundler_config(
             bundler_type=DockerBundler.TYPE, spec=flag_values.bundler_spec
         )
-        cfg = CreateBastionJob.from_flags(flag_values).set(
+        cfg = RemoteBastionJob.from_flags(flag_values).set(
             bundler=bundler_cfg.set(
                 image=bundler_cfg.image or "base",
                 repo=bundler_cfg.repo or gcp_settings("docker_repo", required=False),
@@ -456,7 +456,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         job = cfg.instantiate()
         job.execute()
     elif action == "delete":
-        cfg = CreateBastionJob.from_flags(flag_values)
+        cfg = RemoteBastionJob.from_flags(flag_values)
         job = cfg.instantiate()
         job._delete()  # pylint: disable=protected-access
         _maybe_delete_child_jobs(flag_values=flag_values)
