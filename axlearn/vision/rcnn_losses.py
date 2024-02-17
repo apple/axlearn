@@ -134,7 +134,7 @@ class RCNNDetectionMetric(BaseLayer):
             A Tensor represents the final loss. `None` is returned if `labels` is None.
         """
         score_loss = cross_entropy(
-            logits=outputs["class_scores"], target_labels=labels["class_targets"], mask=~paddings
+            logits=outputs["class_scores"], target_labels=labels["class_targets"], live_targets=~paddings
         )[1]["cross_entropy_loss"]
 
         # Box weights to only apply loss on positive samples.

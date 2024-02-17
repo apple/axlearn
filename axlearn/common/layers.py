@@ -1311,13 +1311,13 @@ class ClassificationMetric(BaseClassificationMetric):
             A float Tensor represents the loss.
         """
         cfg = self.config
-        mask = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        num_examples = mask.sum()
+        live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
+        num_examples = live_targets.sum()
 
         loss, all_losses = cross_entropy(
             logits,
             target_labels=labels,
-            mask=mask,
+            live_targets=live_targets,
             label_smoothing=cfg.label_smoothing,
             soft_target_labels=soft_labels,
         )

@@ -157,7 +157,7 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
         loss, loss_dict = cross_entropy(
             logits=logits,
             target_labels=target_labels,
-            mask=live_targets,
+            live_targets=live_targets,
             z_loss_scale=cfg.z_loss_scale,
             label_smoothing=cfg.label_smoothing,
         )

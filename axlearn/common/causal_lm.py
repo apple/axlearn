@@ -290,7 +290,7 @@ class Model(BaseModel):
         loss, loss_dict = cross_entropy(
             logits=logits,
             target_labels=target_labels,
-            mask=live_targets,
+            live_targets=live_targets,
             z_loss_scale=self.config.z_loss_scale,
         )
         per_token_loss = loss_dict["pre_mask_loss"] * live_targets

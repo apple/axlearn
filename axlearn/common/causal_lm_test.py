@@ -171,7 +171,7 @@ class ModelMetricsTest(TestCase):
         loss, loss_dict = cross_entropy(
             logits=logits[0],
             target_labels=target_labels[0],
-            mask=live_targets[0],
+            live_targets=live_targets[0],
         )
         self.assertEqual(2.0 / 5, summaries["accuracy"].mean)
         self.assertAlmostEqual(loss, summaries["loss"].mean)
