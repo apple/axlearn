@@ -147,6 +147,7 @@ class Model(BaseModel):
         self,
         input_batch: NestedTensor,
         num_decodes: int = 1,
+        eos_token_id: Optional[int] = None,
         brevity_penalty: Optional[Callable[[jnp.array, Tensor], jnp.array]] = brevity_penalty_fn(
             alpha=0.0
         ),
@@ -157,6 +158,7 @@ class Model(BaseModel):
             input_batch: a dict with a minimum of the following entries:
                 prefix: Prompt IDs representing a Tensor of shape [batch, max_sequence_length].
             num_decodes: the number of beams to decode.
+            eos_token_id: The end of sentence token id. If not set, will use cfg.eos_token_id.
             brevity_penalty: brevity penalty function to add length normalization
                 in the beam search.
 
@@ -170,6 +172,7 @@ class Model(BaseModel):
                 prefix=prefix,
                 max_sequence_length=prefix.shape[-1],
                 num_decodes=num_decodes,
+                eos_token_id=eos_token_id,
                 brevity_penalty=brevity_penalty,
             )
 
@@ -180,6 +183,7 @@ class Model(BaseModel):
         num_decodes: int = 1,
         logits_modifier: Optional[ConfigOr[LogitsToLogitsFn]] = None,
         stop_decoding_condition: Optional[StopDecodingCondition] = None,
+        max_decode_len: Optional[int] = None,
     ) -> SampleOutputs:
         """Perform sample decoding given prefix prompt.
 
@@ -191,6 +195,8 @@ class Model(BaseModel):
                 If None, do not modify the logits.
             stop_decoding_condition: StopDecodingCondition callable indicating if generation should
                 stop. If None, stop on EOS.
+            max_decode_len: An optional maximum length of decoded sequence. If
+                None, it uses `input_batch["prefix"].shape[1]` as `max_decode_len`.
 
 
         Returns:
@@ -205,6 +211,7 @@ class Model(BaseModel):
                 num_decodes=num_decodes,
                 logits_modifier=logits_modifier,
                 stop_decoding_condition=stop_decoding_condition,
+                max_decode_len=max_decode_len,
             )
 
     def extract_logits(self, input_batch: NestedTensor) -> Tensor:

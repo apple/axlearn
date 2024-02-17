@@ -203,6 +203,7 @@ class DecodingMixin(Module):
         prefix: Tensor,
         max_sequence_length: int,
         num_decodes: int,
+        eos_token_id: Optional[int] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         brevity_penalty: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
@@ -215,6 +216,7 @@ class DecodingMixin(Module):
             max_sequence_length: The maximum sequence length of tokens to generate.
             num_decodes: The number of decoded sequences to return. These are the number of
                 hypotheses per batch example.
+            eos_token_id: The end of sentence token id. If not set, will use cfg.eos_token_id.
             cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
             cross_attention_logit_biases: A Tensor of shape [batch_size, target_len, source_len].
                 A -inf represents a disconnected position pair.
@@ -248,7 +250,7 @@ class DecodingMixin(Module):
             time_step=time_step,
             cache=init_states,
             tokens_to_scores=tokens_to_scores_fn,
-            eos_id=cfg.eos_token_id,
+            eos_id=eos_token_id or cfg.eos_token_id,
             num_decodes=num_decodes,
             brevity_penalty=brevity_penalty,
             pad_id=cfg.pad_token_id,
@@ -264,6 +266,7 @@ class DecodingMixin(Module):
         cross_attention_logit_biases: Optional[Tensor] = None,
         logits_modifier: Optional[ConfigOr[LogitsToLogitsFn]] = None,
         stop_decoding_condition: Optional[StopDecodingCondition] = None,
+        max_decode_len: Optional[int] = None,
     ) -> SampleOutputs:
         """Perform sample-based decoding.
 
@@ -280,6 +283,8 @@ class DecodingMixin(Module):
                 If None, do not modify the logits.
             stop_decoding_condition: StopDecodingCondition callable indicating if generation should
                 stop. If None, stop on EOS.
+            max_decode_len: An optional maximum length of decoded sequence. If
+                None, it uses `inputs.shape[1]` as `max_decode_len`.
 
         Returns:
             The sample decoding outputs.
@@ -319,6 +324,7 @@ class DecodingMixin(Module):
             prng_key=self.prng_key,
             pad_id=cfg.pad_token_id,
             input_token_scores=init_scores,
+            max_decode_len=max_decode_len,
         )
 
     def _tokens_to_scores(
