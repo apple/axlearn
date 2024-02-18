@@ -338,7 +338,6 @@ _stable_cross_entropy.defvjp(_stable_cross_entropy_fwd, _stable_cross_entropy_bw
 def _weighted_mean(
     arr: Tensor,
     *,
-    mask: Optional[Tensor] = None,
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
 ) -> WeightedScalar:
@@ -346,10 +345,6 @@ def _weighted_mean(
 
     Args:
         arr: A float Tensor of any shape.
-        mask: One of the following:
-              (1) A boolean tensor. Its shape must be a prefix of `arr.shape`.
-              (2) 'nan', in which case a mask selecting non-Nan entries of arr is used.
-              (3) None, in which case a mask selecting all entries of arr is used.
         sample_weight: A float tensor to weight each sample by. Its shape must be a prefix of the
                        shape of `arr`.
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
@@ -357,18 +352,17 @@ def _weighted_mean(
     Returns:
         A WeightedScalar with the result.
     """
-    mask = _compute_mask(mask, targets=arr)
     if sample_weight is None:
         sample_weight = jnp.array(1.0)
     while sample_weight.ndim < arr.ndim:
         sample_weight = sample_weight[..., None]
     sample_weight = jnp.broadcast_to(sample_weight, arr.shape)
-    total_weight = (mask * sample_weight).sum()
-    loss = jnp.sum(sample_weight * (mask * arr)) / jnp.maximum(total_weight, eps)
+    total_weight = sample_weight.sum()
+    loss = jnp.sum(sample_weight * arr) / jnp.maximum(total_weight, eps)
     return WeightedScalar(loss, total_weight)
 
 
-def _compute_mask(mask: Optional[Union[Tensor, Literal["nan"]]], *, targets: Tensor) -> Tensor:
+def _compute_paddings(mask: Optional[Union[Tensor, Literal["nan"]]], *, targets: Tensor) -> Tensor:
     """Computes a mask, assigning it a default value based on targets if necessary.
 
     Args:
@@ -401,7 +395,6 @@ def _compute_mask(mask: Optional[Union[Tensor, Literal["nan"]]], *, targets: Ten
 def mean_squared_error(
     preds: Tensor,
     targets: Tensor,
-    mask: Optional[Union[Tensor, Literal["nan"]]] = "nan",
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
 ) -> WeightedScalar:
@@ -410,10 +403,6 @@ def mean_squared_error(
     Args:
         preds: A float Tensor of any shape.
         targets: A float Tensor of same shape as `preds`.
-        mask: One of the following:
-              (1) A boolean tensor. Its shape must be a prefix of `targets.shape`.
-              (2) 'nan', in which case a mask selecting non-Nan entries of targets is used.
-              (3) None, in which case a mask selecting all entries of targets is used.
         sample_weight: A float tensor to weight each sample by. Its shape must be a prefix of the
                shape of `targets`.
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
@@ -426,7 +415,7 @@ def mean_squared_error(
         ValueError: If an invalid value is provided for `mask`.
     """
     # Not redundant because diff may have different NaN locations than targets.
-    mask = _compute_mask(mask, targets=targets)
+    mask = _compute_paddings(mask, targets=targets)
     diff = (preds - targets) ** 2
     return _weighted_mean(diff, mask=mask, sample_weight=sample_weight, eps=eps)
 
@@ -436,7 +425,6 @@ def bilinear_mean_squared_error(
     targets: Tensor,
     *,
     shape: Tuple[int, ...],
-    mask: Optional[Union[Tensor, Literal["nan"]]] = None,
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
 ) -> WeightedScalar:
@@ -447,10 +435,6 @@ def bilinear_mean_squared_error(
         targets: A float Tensor of same shape as `preds`.
         shape: The shape preds and targets should be resized to using bilinear resampling
                prior to computing the MSE.
-        mask: One of the following:
-              (1) A boolean tensor. Its shape must be a prefix of `targets.shape`.
-              (2) 'nan', in which case a mask selecting non-Nan entries of targets is used.
-              (3) None, in which case a mask selecting all entries of targets is used.
         sample_weight: A float tensor to weight each sample by. Its shape must be a prefix of the
                shape of `targets`.
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
@@ -458,10 +442,6 @@ def bilinear_mean_squared_error(
     Returns:
         A WeightedScalar consisting of the loss and the number of examples that contributed to the
         loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
-
-    Raises:
-        NotImplementedError: If mask=='nan' or the dimensions in shape and (preds-targets).shape
-                             are not whole multiples of one another.
     """
     src_shape = jnp.broadcast_shapes(preds.shape, targets.shape)
     for dim, new_dim in jax.util.safe_zip(src_shape, shape):
@@ -470,19 +450,15 @@ def bilinear_mean_squared_error(
                 f"The dimensions in shape and (preds-targets).shape must be "
                 f"whole multiples of one another, {src_shape} vs. {shape}"
             )
-    if isinstance(mask, str):
-        raise NotImplementedError("nan is not a supported mask for this loss")
     diff = preds - targets
     diff = jax.image.resize(diff, shape=shape, method="bilinear", antialias=False)
     diff = diff**2
-    mask = _compute_mask(mask, targets=diff)
-    return _weighted_mean(diff, mask=mask, sample_weight=sample_weight, eps=eps)
+    return _weighted_mean(diff, sample_weight=sample_weight, eps=eps)
 
 
 def l1_loss(
     preds: Tensor,
     targets: Tensor,
-    mask: Optional[Union[Tensor, Literal["nan"]]] = None,
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
 ) -> WeightedScalar:
@@ -491,10 +467,6 @@ def l1_loss(
     Args:
         preds: A float Tensor of any shape.
         targets: A float Tensor of same shape as `preds`.
-        mask: One of the following:
-              (1) A boolean tensor. Its shape must be a prefix of `targets.shape`.
-              (2) 'nan', in which case a mask selecting non-Nan entries of targets is returned.
-              (3) None, in which case a mask selecting all entries of targets is returned.
         sample_weight: A float tensor to weight each sample by. Its shape must be a prefix of the
                shape of `targets`.
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
@@ -502,13 +474,9 @@ def l1_loss(
     Returns:
         A WeightedScalar consisting of the loss and the number of examples that contributed to the
         loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
-
-    Raises:
-        ValueError: If an invalid value is provided for `mask`.
     """
-    mask = _compute_mask(mask, targets=targets)
     diff = jnp.abs(preds - targets)
-    return _weighted_mean(diff, mask=mask, sample_weight=sample_weight, eps=eps)
+    return _weighted_mean(diff, sample_weight=sample_weight, eps=eps)
 
 
 def contrastive_logits(x: Tensor, y: Tensor) -> Tensor:
@@ -589,8 +557,10 @@ def asymmetric_contrastive_loss_from_logits(
     if soft_labels is not None:
         assert (
             soft_labels.shape == masked_logits.shape
-        ), f"soft_labels has a shape of {soft_labels.shape} while logits has a shape of \
-{masked_logits.shape}!"
+        ), (
+            f"soft_labels has a shape of {soft_labels.shape} while logits has a shape of "
+            f"{masked_logits.shape}!"
+        )
         soft_labels = soft_labels * (1 - key_paddings)
 
     loss = cross_entropy(
@@ -859,16 +829,16 @@ def focal_loss(
     """
     logits = logits.astype(jnp.float32)
     targets = targets.astype(jnp.float32)
-    positive_label_mask = jnp.equal(targets, 1.0)
+    is_positive_label = jnp.equal(targets, 1.0)
 
     cross_entropy_loss = sigmoid_cross_entropy_with_logits(logits, targets)
 
     probs = jax.nn.sigmoid(logits)
-    probs_gt = jnp.where(positive_label_mask, probs, 1.0 - probs)
+    probs_gt = jnp.where(is_positive_label, probs, 1.0 - probs)
     modulator = jnp.power(1.0 - probs_gt, gamma)
 
     loss = modulator * cross_entropy_loss
-    weighted_loss = jnp.where(positive_label_mask, alpha * loss, (1.0 - alpha) * loss)
+    weighted_loss = jnp.where(is_positive_label, alpha * loss, (1.0 - alpha) * loss)
     # Zero out losses on padding targets.
     # TODO(xianzhi): disable padding as it breaks focal loss. Will enable it later.
     # weighted_loss *= targets.sum(axis=-1, keepdims=True) > 0
