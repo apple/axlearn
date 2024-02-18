@@ -250,8 +250,7 @@ def _gsutil_rsync(
 class RemoteBastionJob(CPUJob):
     """A bastion job running on a remote VM.
 
-    Do we need a specific class for running bastion? Can we generalize this class into a
-    RemoteVMJob or merge the logic into CPUJob?
+    TODO(rpang): use CPURunnerJob for remote bastion.
     """
 
     @config_class
