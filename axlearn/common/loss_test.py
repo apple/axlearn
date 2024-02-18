@@ -35,12 +35,12 @@ from torchvision.ops import generalized_box_iou_loss
 from axlearn.common.loss import (
     ReductionMethod,
     _reduce_loss,
+    apply_paddings_to_weights,
     asymmetric_contrastive_loss_from_features,
     asymmetric_contrastive_loss_from_logits,
     bilinear_mean_squared_error,
     binary_cross_entropy,
     categorical_hinge_loss,
-    apply_paddings_to_weights,
     contrastive_logits,
     cross_entropy,
     flops_loss,
