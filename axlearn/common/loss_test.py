@@ -40,7 +40,7 @@ from axlearn.common.loss import (
     bilinear_mean_squared_error,
     binary_cross_entropy,
     categorical_hinge_loss,
-    compute_sample_weights,
+    apply_paddings_to_weights,
     contrastive_logits,
     cross_entropy,
     flops_loss,
@@ -366,7 +366,7 @@ def test_mean_squared_error(
     if paddings is not None:
         if isinstance(paddings, (list, tuple)):
             paddings = jnp.asarray(paddings)
-        weights = compute_sample_weights(paddings=paddings, targets=targets, sample_weights=weights)
+        weights = apply_paddings_to_weights(paddings=paddings, targets=targets, sample_weights=weights)
 
     # Makes sure compat with jit.
     actual = jax.jit(mean_squared_error)(preds, targets, weights)

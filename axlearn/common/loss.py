@@ -362,13 +362,13 @@ def _weighted_mean(
     return WeightedScalar(loss, total_weight)
 
 
-def compute_sample_weights(
+def apply_paddings_to_weights(
     *,
     paddings: Optional[Union[Tensor, Literal["nan"]]],
     targets: Tensor,
     sample_weights: Optional[Tensor] = None,
 ) -> Tensor:
-    """Computes a mask, assigning it a default value based on targets if necessary.
+    """Applies paddings to weights.
 
     Args:
         paddings: One of the following:
@@ -379,7 +379,7 @@ def compute_sample_weights(
         sample_weights: An optional Tensor with the same shape as `targets`. If None, assume all 1s.
 
     Returns:
-        The computed sample weights of the same shape as targets.
+        The computed sample weights of the same shape as `targets`.
 
     Raises:
         NotImplementedError: If an unsupported value is provided for `paddings`.
