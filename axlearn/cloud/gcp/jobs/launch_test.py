@@ -16,10 +16,10 @@ from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.gcp.jobs import bastion_vm, launch, tpu_runner
 from axlearn.cloud.gcp.jobs.launch import (
-    BaseBastionLaunchJob,
+    BaseBastionManagedJob,
     BastionDirectory,
+    BastionManagedTPUJob,
     Launcher,
-    LaunchTPUJob,
     _get_launcher_or_exit,
     _match_by_regex,
 )
@@ -77,11 +77,11 @@ class TestUtils(parameterized.TestCase):
                 _get_launcher_or_exit(action="start", instance_type="other")
 
 
-class TestBaseBastionLaunchJob(parameterized.TestCase):
-    """Tests BaseBastionLaunchJob."""
+class TestBaseBastionManagedJob(parameterized.TestCase):
+    """Tests BaseBastionManagedJob."""
 
     def _mock_config(self, **kwargs):
-        cfg = BaseBastionLaunchJob.default_config().set(
+        cfg = BaseBastionManagedJob.default_config().set(
             instance_type="test",
             user_id="test_user",
             project_id=None,
@@ -281,8 +281,8 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
             )
 
 
-class TestLaunchTPUJob(TestWithTemporaryCWD):
-    """Tests LaunchTPUJob."""
+class TestBastionManagedTPUJob(TestWithTemporaryCWD):
+    """Tests BastionManagedTPUJob."""
 
     @parameterized.product(
         name=[None, "test-name"],
@@ -310,7 +310,7 @@ class TestLaunchTPUJob(TestWithTemporaryCWD):
         )
 
         with patch_fns, patch_settings:
-            LaunchTPUJob.define_flags(fv)
+            BastionManagedTPUJob.define_flags(fv)
 
             # Parse argv.
             argv = ["cli"]
@@ -333,7 +333,7 @@ class TestLaunchTPUJob(TestWithTemporaryCWD):
             self.assertEqual(fv["tpu_type"].default, "test-type")
             self.assertEqual(fv.output_dir, output_dir)
 
-            cfg = LaunchTPUJob.from_flags(fv, command="test command", action=action)
+            cfg = BastionManagedTPUJob.from_flags(fv, command="test command", action=action)
 
             if action == "start":
                 self.assertIn("tpu", cfg.bundler.extras)
