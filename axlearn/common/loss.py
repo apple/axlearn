@@ -362,34 +362,41 @@ def _weighted_mean(
     return WeightedScalar(loss, total_weight)
 
 
-def _compute_paddings(mask: Optional[Union[Tensor, Literal["nan"]]], *, targets: Tensor) -> Tensor:
+def compute_sample_weights(
+    *,
+    paddings: Optional[Union[Tensor, Literal["nan"]]],
+    targets: Tensor,
+    sample_weights: Optional[Tensor] = None,
+) -> Tensor:
     """Computes a mask, assigning it a default value based on targets if necessary.
 
     Args:
-        mask: One of the following:
+        paddings: One of the following:
               (1) A boolean tensor. Its shape must be a prefix of `targets.shape`.
-              (2) 'nan', in which case a mask selecting non-Nan entries of targets is returned.
-              (3) None, in which case a mask selecting all entries of targets is returned.
+              (2) 'nan', in which case paddings = isnan(targets).
+              (3) None, in which case paddings = zero_like(targets).
         targets: A Tensor of any shape to reference when constructing `mask`.
+        sample_weights: An optional Tensor with the same shape as `targets`. If None, assume all 1s.
 
     Returns:
-        The computed mask of the same shape as targets.
+        The computed sample weights of the same shape as targets.
 
     Raises:
-        ValueError: If an invalid value is provided for `mask`.
+        NotImplementedError: If an unsupported value is provided for `paddings`.
     """
-
-    if isinstance(mask, str):
-        if mask.lower() == "nan":
-            mask = jnp.logical_not(jnp.isnan(targets))
+    if isinstance(paddings, str):
+        if paddings.lower() == "nan":
+            paddings = jnp.isnan(targets)
         else:
-            raise ValueError(f"Invalid value {mask} for mask.")
-    elif mask is None:
-        mask = jnp.array(1, dtype=bool)
-    while mask.ndim < targets.ndim:
-        mask = mask[..., None]
-    mask = jnp.broadcast_to(mask, targets.shape)
-    return mask
+            raise NotImplementedError(f"Invalid value {paddings} for mask.")
+    elif paddings is None:
+        paddings = jnp.array(0, dtype=bool)
+    while paddings.ndim < targets.ndim:
+        paddings = paddings[..., None]
+    paddings = jnp.broadcast_to(paddings, targets.shape)
+    if sample_weights is None:
+        return ~paddings
+    return sample_weights * ~paddings
 
 
 def mean_squared_error(
@@ -415,9 +422,8 @@ def mean_squared_error(
         ValueError: If an invalid value is provided for `mask`.
     """
     # Not redundant because diff may have different NaN locations than targets.
-    mask = _compute_paddings(mask, targets=targets)
     diff = (preds - targets) ** 2
-    return _weighted_mean(diff, mask=mask, sample_weight=sample_weight, eps=eps)
+    return _weighted_mean(diff, sample_weight=sample_weight, eps=eps)
 
 
 def bilinear_mean_squared_error(
@@ -555,9 +561,7 @@ def asymmetric_contrastive_loss_from_logits(
     masked_logits = logits_with_temperature + key_paddings * NEG_INF
 
     if soft_labels is not None:
-        assert (
-            soft_labels.shape == masked_logits.shape
-        ), (
+        assert soft_labels.shape == masked_logits.shape, (
             f"soft_labels has a shape of {soft_labels.shape} while logits has a shape of "
             f"{masked_logits.shape}!"
         )
