@@ -29,7 +29,7 @@
 """Loss functions."""
 # pylint: disable=too-many-lines
 import enum
-from typing import Dict, Literal, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -360,43 +360,6 @@ def _weighted_mean(
     total_weight = sample_weight.sum()
     loss = jnp.sum(sample_weight * arr) / jnp.maximum(total_weight, eps)
     return WeightedScalar(loss, total_weight)
-
-
-def apply_paddings_to_weights(
-    *,
-    paddings: Optional[Union[Tensor, Literal["nan"]]],
-    targets: Tensor,
-    sample_weights: Optional[Tensor] = None,
-) -> Tensor:
-    """Applies paddings to weights.
-
-    Args:
-        paddings: One of the following:
-              (1) A boolean tensor. Its shape must be a prefix of `targets.shape`.
-              (2) 'nan', in which case paddings = isnan(targets).
-              (3) None, in which case paddings = zero_like(targets).
-        targets: A Tensor of any shape to reference when constructing `mask`.
-        sample_weights: An optional Tensor with the same shape as `targets`. If None, assume all 1s.
-
-    Returns:
-        The computed sample weights of the same shape as `targets`.
-
-    Raises:
-        NotImplementedError: If an unsupported value is provided for `paddings`.
-    """
-    if isinstance(paddings, str):
-        if paddings.lower() == "nan":
-            paddings = jnp.isnan(targets)
-        else:
-            raise NotImplementedError(f"Invalid value {paddings} for mask.")
-    elif paddings is None:
-        paddings = jnp.array(0, dtype=bool)
-    while paddings.ndim < targets.ndim:
-        paddings = paddings[..., None]
-    paddings = jnp.broadcast_to(paddings, targets.shape)
-    if sample_weights is None:
-        return ~paddings
-    return sample_weights * ~paddings
 
 
 def mean_squared_error(

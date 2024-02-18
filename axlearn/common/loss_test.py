@@ -35,7 +35,6 @@ from torchvision.ops import generalized_box_iou_loss
 from axlearn.common.loss import (
     ReductionMethod,
     _reduce_loss,
-    apply_paddings_to_weights,
     asymmetric_contrastive_loss_from_features,
     asymmetric_contrastive_loss_from_logits,
     bilinear_mean_squared_error,
@@ -316,57 +315,47 @@ def test_cross_entropy_soft_target_labels():
 
 
 @pytest.mark.parametrize(
-    "preds,targets,expected,paddings,weights",
+    "preds,targets,expected,weights",
     [
-        ([], [], WeightedScalar(0, 0), "NaN", None),  # No targets.
-        ([jnp.inf], [jnp.nan], WeightedScalar(0, 0), "NaN", None),  # No targets.
+        ([], [], WeightedScalar(0, 0), None),  # No targets.
         (
             [0.0, 1.0, 2.0],
             [jnp.nan, jnp.nan, jnp.nan],
             WeightedScalar(0, 0),
-            "NaN",
-            None,
+            [False, False, False],
         ),  # No targets.
-        ([jnp.inf], [0], WeightedScalar(jnp.inf, 1), "NaN", None),  # inf - 0 is inf.
-        ([jnp.inf], [jnp.inf], WeightedScalar(jnp.nan, 1), "NaN", None),  # inf - inf is nan.
+        ([jnp.inf], [0], WeightedScalar(jnp.inf, 1), None),  # inf - 0 is inf.
+        ([jnp.inf], [jnp.inf], WeightedScalar(jnp.nan, 1), None),  # inf - inf is nan.
         (
             [0.0, 1.0, 2.0, 3.0, 4.0],
             [1.0, 2.0, 3.0, 4.0, 5.0],
             WeightedScalar(1.0, 5),
-            "NaN",
             None,
         ),  # Basic case.
         (
             [0.0, 1.0, 2.0, 3.0, 4.0],
             [2.0, jnp.nan, 2.0, 2.0, jnp.nan],
             WeightedScalar(5.0 / 3.0, 3),
-            "NaN",
-            None,
+            [True, False, True, True, False],
         ),  # Basic case.
         (
             [7, 5, 11],
             [3, 2, 13],
             WeightedScalar(12, 3),
-            [False, True, False],
-            [2, 10, 1],
-        ),  # Test paddings and weights.
+            [2, 0, 1],
+        ),  # Test non-boolean weights.
     ],
 )
 def test_mean_squared_error(
     preds: Sequence[float],
     targets: Sequence[float],
     expected: WeightedScalar,
-    paddings: Optional[Sequence[bool]],
     weights: Optional[Sequence[float]],
 ):
     preds = jnp.asarray(preds)
     targets = jnp.asarray(targets)
     if weights is not None:
         weights = jnp.asarray(weights)
-    if paddings is not None:
-        if isinstance(paddings, (list, tuple)):
-            paddings = jnp.asarray(paddings)
-        weights = apply_paddings_to_weights(paddings=paddings, targets=targets, sample_weights=weights)
 
     # Makes sure compat with jit.
     actual = jax.jit(mean_squared_error)(preds, targets, weights)
