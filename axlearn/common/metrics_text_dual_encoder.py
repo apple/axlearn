@@ -58,6 +58,7 @@ def _calculate_retrieval_metrics_from_embeddings(
         text_negative_paddings: Negative text paddings with shape
             [num_queries, max_negative_texts].
         top_ks_for_ndcg: Optional. The values for k for which to compute nDCG metrics.
+            If not None, return nDCG for specified k values.
 
     Returns:
         A dict containing all different metrics for text dual encoder model.
@@ -110,6 +111,7 @@ def calculate_retrieval_metrics_from_similarity_matrix(
             valid queries.
         top_ks_for_accuracy: The values for k for which to compute accuracy.
         top_ks_for_ndcg: Optional. The values for k for which to compute nDCG.
+            If not None, return nDCG for specified k values.
 
     Returns:
         A dict containing all different metrics for text dual encoder model.
