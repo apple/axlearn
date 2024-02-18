@@ -290,10 +290,10 @@ class Model(BaseModel):
         loss, loss_dict = cross_entropy(
             logits=logits,
             target_labels=target_labels,
-            mask=live_targets,
+            live_targets=live_targets,
             z_loss_scale=self.config.z_loss_scale,
         )
-        per_token_loss = loss_dict["pre_mask_loss"] * live_targets
+        per_token_loss = loss_dict["per_target_loss"] * live_targets
         self.add_summary("accuracy", WeightedScalar(accuracy, num_targets))
         self.add_summary("z_loss", WeightedScalar(loss_dict["z_loss"], num_targets))
         if target_num_bytes is not None:

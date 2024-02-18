@@ -97,7 +97,7 @@ class MaskedImageModel(BaseModel):
         loss, _ = self.config.loss_fn(
             logits.astype(jnp.float32),
             labels.astype(jnp.float32),
-            mask=is_masked,
+            live_targets=is_masked,
         )
         return loss
 

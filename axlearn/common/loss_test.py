@@ -86,24 +86,30 @@ def test_accuracy():
             [2, pad_token_id, pad_token_id],
         ]
     )
-    mask = (targets != pad_token_id).astype(jnp.float32)
-    _, loss_dict = cross_entropy(logits, targets, mask=mask)
+    live_targets = (targets != pad_token_id).astype(jnp.float32)
+    _, loss_dict = cross_entropy(logits, targets, live_targets=live_targets)
     assert jnp.allclose(loss_dict["accuracy"], 2 / 3)
 
 
 def test_binary_cross_entropy():
     logits = jnp.asarray([[100.0, 5.0, 0.0], [0.0, 100.0, 25.0], [0.0, 2000.0, 100.0]])
     targets = jnp.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-    mask = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
+    live_targets = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
     tf_bce = tf.keras.losses.BinaryCrossentropy(from_logits=True)
     tf_cross_entropy = tf_bce(targets, logits)
-    assert jnp.allclose(binary_cross_entropy(logits, targets, mask)[0], tf_cross_entropy.numpy())
+    assert jnp.allclose(
+        binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
+        tf_cross_entropy.numpy(),
+    )
 
     logits = jnp.asarray([[100.0, 5.0, 0.0], [5.0, 100.0, 25.0], [0.0, 2000.0, 100.0]])
     targets = jnp.asarray([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 1.0]])
-    mask = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
+    live_targets = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
     tf_cross_entropy = tf_bce(targets, logits)
-    assert jnp.allclose(binary_cross_entropy(logits, targets, mask)[0], tf_cross_entropy.numpy())
+    assert jnp.allclose(
+        binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
+        tf_cross_entropy.numpy(),
+    )
 
 
 def test_binary_cross_entropy_zero_loss():
@@ -111,10 +117,13 @@ def test_binary_cross_entropy_zero_loss():
         [[100.0, -100.0, -100.0], [-100.0, 100.0, -100.0], [-100.0, -100.0, 100.0]]
     )
     targets = jnp.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-    mask = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
+    live_targets = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
     tf_bce = tf.keras.losses.BinaryCrossentropy(from_logits=True)
     tf_cross_entropy = tf_bce(targets, logits)
-    assert jnp.allclose(binary_cross_entropy(logits, targets, mask)[0], tf_cross_entropy.numpy())
+    assert jnp.allclose(
+        binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
+        tf_cross_entropy.numpy(),
+    )
 
 
 def test_cross_entropy_with_label_smoothing():
@@ -160,7 +169,7 @@ def test_cross_entropy_with_less_than_0_z_loss_scale_exception():
 def _standard_cross_entropy(
     logits: Tensor,
     target_labels: Tensor,
-    mask: Tensor = None,
+    live_targets: Tensor = None,
     z_loss_scale: float = 0.0,
     soft_target_labels: Tensor = None,
 ) -> Tensor:
@@ -175,8 +184,8 @@ def _standard_cross_entropy(
         )
     ).sum(axis=-1)
 
-    if mask is None:
-        mask = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
+    if live_targets is None:
+        live_targets = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
     # Z-loss.
     logits_sum = jax.scipy.special.logsumexp(logits, axis=-1, keepdims=True)
     log_z = jnp.squeeze(logits_sum, axis=-1)
@@ -184,8 +193,8 @@ def _standard_cross_entropy(
 
     per_example_loss = cross_entropy_loss + total_z_loss * z_loss_scale
 
-    mask = mask.astype(per_example_loss.dtype)
-    return (per_example_loss * mask).sum() / jnp.maximum(mask.sum(), 1)
+    live_targets = live_targets.astype(per_example_loss.dtype)
+    return (per_example_loss * live_targets).sum() / jnp.maximum(live_targets.sum(), 1)
 
 
 def test_cross_entropy_z_loss():
@@ -229,39 +238,54 @@ def test_cross_entropy_soft_target_with_z_loss_gradient():
     assert jnp.allclose(grad, grad_ref)
 
 
-def test_cross_entropy_mask():
+def test_cross_entropy_live_targets():
     logits = jnp.asarray([[100.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 0.0, 0.0]])
     targets = jnp.asarray([0, 1, 2])
-    mask = jnp.asarray([1, 0, 0])
+    live_targets = jnp.asarray([1, 0, 0])
     assert cross_entropy(logits, targets)[0] > 0.0
-    assert jnp.allclose(cross_entropy(logits, targets, mask)[0], 0.0)
+    assert jnp.allclose(cross_entropy(logits, targets, live_targets=live_targets)[0], 0.0)
+    # Test legacy mask.
+    assert jnp.allclose(cross_entropy(logits, targets, mask=live_targets)[0], 0.0)
 
 
 # TODO(jbiloki): Convert tf style masking to have attribute _keras_mask
 # to allow internal tf logic to mask requires keras >= 2.11.0.
-def test_binary_cross_entropy_mask():
+def test_binary_cross_entropy_live_targets():
     logits = jnp.asarray([100.0, -100.0, -100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0])
     targets = jnp.asarray([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0])
-    mask = jnp.asarray([1, 1, 1, 0, 0, 0, 1, 1, 0])
+    live_targets = jnp.asarray([1, 1, 1, 0, 0, 0, 1, 1, 0])
     tf_bce = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-    tf_cross_entropy = tf_bce(targets[mask > 0], logits[mask > 0])
-    assert jnp.allclose(binary_cross_entropy(logits, targets, mask)[0], tf_cross_entropy.numpy())
+    tf_cross_entropy = tf_bce(targets[live_targets > 0], logits[live_targets > 0])
+    assert jnp.allclose(
+        binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
+        tf_cross_entropy.numpy(),
+    )
+    # Test legacy mask.
+    assert jnp.allclose(
+        binary_cross_entropy(logits, target_labels=targets, mask=live_targets)[0],
+        tf_cross_entropy.numpy(),
+    )
 
     logits = jnp.asarray([100.0, -100.0, -100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0])
     targets = jnp.asarray([10.0, -1.0, -5.0, 0.0, 1.0, 0.0, 3.0, 1.0, 1.0])
-    mask = jnp.logical_and(0 <= targets, targets < 2)
+    live_targets = jnp.logical_and(0 <= targets, targets < 2)
     tf_bce = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-    tf_cross_entropy = tf_bce(targets[mask], logits[mask])
-    assert jnp.allclose(binary_cross_entropy(logits, targets)[0], tf_cross_entropy.numpy())
+    tf_cross_entropy = tf_bce(targets[live_targets], logits[live_targets])
+    assert jnp.allclose(
+        binary_cross_entropy(logits, target_labels=targets)[0], tf_cross_entropy.numpy()
+    )
 
 
 def test_binary_cross_entropy_single():
     logits = jnp.asarray([[100.0], [-100], [100.0]])
     targets = jnp.asarray([[1.0], [0.0], [1.0]])
-    mask = jnp.asarray([[1], [1], [1]])
+    live_targets = jnp.asarray([[1], [1], [1]])
     tf_bce = tf.keras.losses.BinaryCrossentropy(from_logits=True)
     tf_cross_entropy = tf_bce(targets, logits)
-    assert jnp.allclose(binary_cross_entropy(logits, targets, mask)[0], tf_cross_entropy.numpy())
+    assert jnp.allclose(
+        binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
+        tf_cross_entropy.numpy(),
+    )
 
 
 def test_cross_entropy_valid_targets():
@@ -291,7 +315,7 @@ def test_cross_entropy_soft_target_labels():
 
 
 @pytest.mark.parametrize(
-    "preds,targets,expected,mask,weights",
+    "preds,targets,expected,live_targets,weights",
     [
         ([], [], WeightedScalar(0, 0), "NaN", None),  # No targets.
         ([jnp.inf], [jnp.nan], WeightedScalar(0, 0), "NaN", None),  # No targets.
@@ -324,21 +348,21 @@ def test_cross_entropy_soft_target_labels():
             WeightedScalar(12, 3),
             [True, False, True],
             [2, 10, 1],
-        ),  # Test mask and weights.
+        ),  # Test live_targets and weights.
     ],
 )
 def test_mean_squared_error(
     preds: Sequence[float],
     targets: Sequence[float],
     expected: WeightedScalar,
-    mask: Optional[Sequence[bool]],
+    live_targets: Optional[Sequence[bool]],
     weights: Optional[Sequence[float]],
 ):
     preds = jnp.asarray(preds)
     targets = jnp.asarray(targets)
     static_argnums = ()
-    if isinstance(mask, (list, tuple)):
-        mask = jnp.asarray(mask)
+    if isinstance(live_targets, (list, tuple)):
+        live_targets = jnp.asarray(live_targets)
     else:
         static_argnums = (2,)
     if weights is not None:
@@ -346,7 +370,7 @@ def test_mean_squared_error(
 
     # Makes sure compat with jit.
     actual = jax.jit(mean_squared_error, static_argnums=static_argnums)(
-        preds, targets, mask, weights
+        preds, targets, live_targets, weights
     )
     if not (jnp.isnan(actual.mean) and jnp.isnan(expected.mean)):
         chex.assert_trees_all_close(actual.mean, expected.mean)
@@ -950,7 +974,7 @@ def test_giou_loss():
 def test_cosine_similarity_without_mask():
     predictions = np.random.uniform(-1, 1, size=[2, 4, 16]).astype(np.float32)
     targets = np.random.uniform(-1, 1, size=[2, 4, 16]).astype(np.float32)
-    _, aux = negative_cosine_similarity_loss(predictions=predictions, targets=targets, mask=None)
+    _, aux = negative_cosine_similarity_loss(predictions=predictions, targets=targets)
     ref = optax.cosine_similarity(predictions, targets)
     assert jnp.allclose(aux["cosine_similarity"], ref, atol=1e-06)
 
@@ -958,8 +982,10 @@ def test_cosine_similarity_without_mask():
 def test_cosine_similarity_with_mask():
     predictions = np.random.rand(2, 4, 16)
     targets = np.random.rand(2, 4, 16)
-    mask = np.array([[0, 1, 1, 0], [0, 1, 1, 0]])
-    loss, _ = negative_cosine_similarity_loss(predictions=predictions, targets=targets, mask=mask)
+    live_targets = np.array([[0, 1, 1, 0], [0, 1, 1, 0]])
+    loss, _ = negative_cosine_similarity_loss(
+        predictions=predictions, targets=targets, live_targets=live_targets
+    )
     masked_predictions = predictions[:, 1:3, :]
     masked_targets = targets[:, 1:3, :]
     ref = optax.cosine_similarity(masked_predictions, masked_targets)
@@ -970,8 +996,10 @@ def test_cosine_similarity_with_mask():
 def test_negative_cosine_similarity_loss_against_torch():
     predictions = np.random.rand(2, 4, 16)
     targets = np.random.rand(2, 4, 16)
-    mask = np.array([[0, 1, 1, 0], [0, 1, 1, 0]])
-    loss, _ = negative_cosine_similarity_loss(predictions=predictions, targets=targets, mask=mask)
+    live_targets = np.array([[0, 1, 1, 0], [0, 1, 1, 0]])
+    loss, _ = negative_cosine_similarity_loss(
+        predictions=predictions, targets=targets, live_targets=live_targets
+    )
     # Ref torch implementation from:
     # https://github.com/baaivision/EVA/blob/86cf99c50612b11bad39bfcf17899c410a7030d4/eva/engine_for_pretraining.py#L39-L42
     masked_predictions = predictions[:, 1:3, :]

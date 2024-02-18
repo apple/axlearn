@@ -86,7 +86,9 @@ def _reduce_loss(
 def cross_entropy(
     logits: Tensor,
     target_labels: Tensor,
-    mask: Tensor = None,
+    *,
+    live_targets: Optional[Tensor] = None,
+    mask: Optional[Tensor] = None,
     z_loss_scale: float = 0.0,
     label_smoothing: float = 0.0,
     soft_target_labels: Optional[Tensor] = None,
@@ -94,8 +96,9 @@ def cross_entropy(
     """Compute the cross entropy loss between logits and target_labels.
 
     Computes a stabilized-gradient version of:
-        -jnp.sum(targets * nn.log_softmax(logits), axis=-1) * mask / jnp.sum(mask, axis=-1)
-        Here, targets is a categorical one-hot float array based on target_labels.
+        -jnp.sum(targets * nn.log_softmax(logits), axis=-1) * live_targets
+        / jnp.sum(live_targets, axis=-1)
+    where targets is a categorical one-hot float array based on target_labels.
 
     This function extends the T5X implmentation by supporting masked labels.
 
@@ -106,13 +109,15 @@ def cross_entropy(
         target_labels: An int Tensor of shape [...].
             The per-example loss will be 0 if the corresponding target is masked, or out-of-class
             (i.e. target_labels[i] < 0 or target_labels[i] >= num_classes).
-        mask: Indicates which example should contribute to the loss.
+        live_targets: Indicates which examples should contribute to the loss.
             A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
-            contribute to the loss.
+            contribute to the loss. If None, infer from 0 <= target_labels < num_classes.
+        mask: (deprecated) Used as `live_targets` if `live_targets is None`.
+            Must be None if `live_targets` is specified.
         z_loss_scale: Coefficient for auxilliary z-loss loss term.
         label_smoothing: The factor to control label smoothing.
         soft_target_labels: Optional labels that are already smoothed/in one-hot form. If provided,
-            target_labels will only be used for inferring the mask during loss calculation.
+            target_labels will only be used for inferring the live targets during loss calculation.
 
     Returns:
         (loss, all_losses), where
@@ -122,7 +127,7 @@ def cross_entropy(
                 loss = cross_entropy_loss + z_loss_scale * z_loss.
             * "cross_entropy_loss": the cross_entropy_loss.
             * "z_loss": the unscaled z_loss.
-            * "pre_mask_loss": the loss across all tokens unmasked.
+            * "per_target_loss": the loss per target, of the same shape as `target_labels`.
 
     Raises:
         ValueError: If z_loss_scale is negative.
@@ -141,64 +146,80 @@ def cross_entropy(
         targets = _one_hot_with_label_smoothing(
             target_labels, num_classes, label_smoothing=label_smoothing
         )
-    pre_mask_loss, pre_mask_cross_entropy_loss, pre_mask_z_loss = _stable_cross_entropy(
+    per_target_loss, per_target_cross_entropy_loss, per_target_z_loss = _stable_cross_entropy(
         logits, targets, z_loss_scale
     )
-    if mask is None:
-        mask = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
-    mask = mask.astype(pre_mask_loss.dtype)
-    num_unmasked = jnp.maximum(mask.sum(), 1)
-    cross_entropy_loss = (pre_mask_cross_entropy_loss * mask).sum() / num_unmasked
-    z_loss = (pre_mask_z_loss * mask).sum() / num_unmasked
-    loss = (pre_mask_loss * mask).sum() / num_unmasked
+    if mask is not None:
+        if live_targets is None:
+            live_targets = mask
+        else:
+            raise ValueError("mask and live_targets must not be specified together")
+    if live_targets is None:
+        live_targets = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
+    live_targets = live_targets.astype(per_target_loss.dtype)
+    denominator = jnp.maximum(live_targets.sum(), 1)
+    cross_entropy_loss = (per_target_cross_entropy_loss * live_targets).sum() / denominator
+    z_loss = (per_target_z_loss * live_targets).sum() / denominator
+    loss = (per_target_loss * live_targets).sum() / denominator
     predicted_labels = jnp.argmax(logits, axis=-1)
-    accuracy = (jnp.equal(predicted_labels, target_labels) * mask).sum() / num_unmasked
+    accuracy = (jnp.equal(predicted_labels, target_labels) * live_targets).sum() / denominator
     return loss, {
         "total_loss": loss,
         "z_loss": z_loss,
         "cross_entropy_loss": cross_entropy_loss,
-        "pre_mask_loss": pre_mask_loss,
+        "per_target_loss": per_target_loss,
         "accuracy": accuracy,
     }
 
 
 def binary_cross_entropy(
     logits: Tensor,
+    *,
     target_labels: Tensor,
+    live_targets: Optional[Tensor] = None,
     mask: Optional[Tensor] = None,
 ) -> Tuple[Tensor, Dict[str, Tensor]]:
     """Compute the binary cross entropy loss between logits and targets.
 
     Computes a stabilized-gradient version of:
-        -jnp.sum(targets * jnp.log(logits) + (1-targets) * jnp.log(1 - logits), axis=-1) * mask / jnp.sum(mask, axis=-1) # pylint: disable=line-too-long
-        where targets are a one-hot float array.
+        -jnp.sum(targets * jnp.log(logits) + (1-targets) * jnp.log(1 - logits), axis=-1)
+        * live_targets / jnp.sum(live_targets, axis=-1)
+    where targets are a one-hot float array.
 
     Args:
         logits: A float Tensor of shape [batch_size, d0, ..., dN].
-        target_labels: An 0/1 int Tensor of shape [batch_size, d0, ..., dN].
+        target_labels: An 0/1 int Tensor of the same shape as `logits`.
             The per-example loss will be 0 if the corresponding target is masked.
-        mask: Indicates which example should contribute to the loss.
-            A bool or 0/1 Tensor of same shape as batch_size.
-            If None, infer from 0 <= target_labels < 2.
+        live_targets: Indicates which examples should contribute to the loss.
+            A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
+            contribute to the loss. If None, infer from 0 <= target_labels < 2.
+        mask: (deprecated) Used as `live_targets` if `live_targets is None`.
+            Must be None if `live_targets` is specified.
 
     Returns:
         (loss, all_losses), where
         loss is a scalar tensor for the binary cross entropy loss;
         all_losses is a dictionary containing:
             * "binary_cross_entropy_loss": the binary_cross_entropy_loss.
-            * "pre_mask_loss": the loss across all tokens unmasked.
+            * "per_target_loss": the loss per target, of the same shape as `target_labels`.
     """
     if logits.dtype in (jnp.bfloat16, jnp.float16):
         logits = logits.astype(jnp.float32)
-    pre_mask_cross_entropy_loss = sigmoid_cross_entropy_with_logits(logits, target_labels)
-    if mask is None:
-        mask = jnp.logical_and(0 <= target_labels, target_labels < 2)
-    mask = mask.astype(pre_mask_cross_entropy_loss.dtype)
-    num_unmasked = jnp.maximum(mask.sum(), 1)
-    binary_cross_entropy_loss = (pre_mask_cross_entropy_loss * mask).sum() / num_unmasked
+    per_target_cross_entropy_loss = sigmoid_cross_entropy_with_logits(logits, target_labels)
+    if mask is not None:
+        if live_targets is None:
+            live_targets = mask
+        else:
+            raise ValueError("mask and live_targets must not be specified together")
+    if live_targets is None:
+        live_targets = jnp.logical_and(0 <= target_labels, target_labels < 2)
+    live_targets = live_targets.astype(per_target_cross_entropy_loss.dtype)
+    binary_cross_entropy_loss = (per_target_cross_entropy_loss * live_targets).sum() / jnp.maximum(
+        live_targets.sum(), 1
+    )
     return binary_cross_entropy_loss, {
         "binary_cross_entropy_loss": binary_cross_entropy_loss,
-        "pre_mask_loss": pre_mask_cross_entropy_loss,
+        "per_target_loss": per_target_cross_entropy_loss,
     }
 
 
@@ -1061,7 +1082,7 @@ def negative_cosine_similarity_loss(
     *,
     normalize_embedding: bool = True,
     eps: float = 1e-8,
-    mask: Optional[Tensor] = None,
+    live_targets: Optional[Tensor] = None,
     reduction: ReductionMethod = ReductionMethod.MEAN,
 ) -> Tuple[Tensor, Dict[str, Tensor]]:
     """Compute the negative cross similarity loss between predictions and targets.
@@ -1071,8 +1092,8 @@ def negative_cosine_similarity_loss(
         targets: A float Tensor of shape [..., dim].
         normalize_embedding: If True, apply normalization to embeddings.
         eps: minimum norm for terms in the denominator of the cosine similarity.
-        mask: A bool or 0/1 Tensor of shape [...] indicates the valid positions for computing loss.
-            1 indicates positions that contribute to the loss.
+        live_targets: A bool or 0/1 Tensor of shape [...] indicates the valid positions for
+            computing loss. 1 indicates positions that contribute to the loss.
         reduction: The reduction method.
 
     Returns:
@@ -1091,7 +1112,9 @@ def negative_cosine_similarity_loss(
     elementwise_similarity = targets * predictions
     # Compute cosine_similarity.
     cosine_similarity = jnp.sum(elementwise_similarity, axis=-1)
-    loss = -1 * _reduce_loss(loss=cosine_similarity, reduction=reduction, sample_weight=mask)
+    loss = -1 * _reduce_loss(
+        loss=cosine_similarity, reduction=reduction, sample_weight=live_targets
+    )
     return loss, {
         "cosine_similarity": cosine_similarity,
         "elementwise_similarity": elementwise_similarity,
