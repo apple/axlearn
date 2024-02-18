@@ -380,9 +380,6 @@ def mean_squared_error(
     Returns:
         A WeightedScalar consisting of the loss and the number of examples that contributed to the
         loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
-
-    Raises:
-        ValueError: If an invalid value is provided for `mask`.
     """
     # Not redundant because diff may have different NaN locations than targets.
     diff = (preds - targets) ** 2
