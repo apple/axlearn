@@ -1080,7 +1080,7 @@ def negative_cosine_similarity_loss(
     *,
     normalize_embedding: bool = True,
     eps: float = 1e-8,
-    mask: Optional[Tensor] = None,
+    live_targets: Optional[Tensor] = None,
     reduction: ReductionMethod = ReductionMethod.MEAN,
 ) -> Tuple[Tensor, Dict[str, Tensor]]:
     """Compute the negative cross similarity loss between predictions and targets.
@@ -1090,8 +1090,8 @@ def negative_cosine_similarity_loss(
         targets: A float Tensor of shape [..., dim].
         normalize_embedding: If True, apply normalization to embeddings.
         eps: minimum norm for terms in the denominator of the cosine similarity.
-        mask: A bool or 0/1 Tensor of shape [...] indicates the valid positions for computing loss.
-            1 indicates positions that contribute to the loss.
+        live_targets: A bool or 0/1 Tensor of shape [...] indicates the valid positions for
+            computing loss. 1 indicates positions that contribute to the loss.
         reduction: The reduction method.
 
     Returns:
@@ -1110,7 +1110,9 @@ def negative_cosine_similarity_loss(
     elementwise_similarity = targets * predictions
     # Compute cosine_similarity.
     cosine_similarity = jnp.sum(elementwise_similarity, axis=-1)
-    loss = -1 * _reduce_loss(loss=cosine_similarity, reduction=reduction, sample_weight=mask)
+    loss = -1 * _reduce_loss(
+        loss=cosine_similarity, reduction=reduction, sample_weight=live_targets
+    )
     return loss, {
         "cosine_similarity": cosine_similarity,
         "elementwise_similarity": elementwise_similarity,

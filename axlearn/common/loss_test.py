@@ -974,7 +974,7 @@ def test_giou_loss():
 def test_cosine_similarity_without_mask():
     predictions = np.random.uniform(-1, 1, size=[2, 4, 16]).astype(np.float32)
     targets = np.random.uniform(-1, 1, size=[2, 4, 16]).astype(np.float32)
-    _, aux = negative_cosine_similarity_loss(predictions=predictions, targets=targets, mask=None)
+    _, aux = negative_cosine_similarity_loss(predictions=predictions, targets=targets)
     ref = optax.cosine_similarity(predictions, targets)
     assert jnp.allclose(aux["cosine_similarity"], ref, atol=1e-06)
 
@@ -982,8 +982,10 @@ def test_cosine_similarity_without_mask():
 def test_cosine_similarity_with_mask():
     predictions = np.random.rand(2, 4, 16)
     targets = np.random.rand(2, 4, 16)
-    mask = np.array([[0, 1, 1, 0], [0, 1, 1, 0]])
-    loss, _ = negative_cosine_similarity_loss(predictions=predictions, targets=targets, mask=mask)
+    live_targets = np.array([[0, 1, 1, 0], [0, 1, 1, 0]])
+    loss, _ = negative_cosine_similarity_loss(
+        predictions=predictions, targets=targets, live_targets=live_targets
+    )
     masked_predictions = predictions[:, 1:3, :]
     masked_targets = targets[:, 1:3, :]
     ref = optax.cosine_similarity(masked_predictions, masked_targets)
@@ -994,8 +996,10 @@ def test_cosine_similarity_with_mask():
 def test_negative_cosine_similarity_loss_against_torch():
     predictions = np.random.rand(2, 4, 16)
     targets = np.random.rand(2, 4, 16)
-    mask = np.array([[0, 1, 1, 0], [0, 1, 1, 0]])
-    loss, _ = negative_cosine_similarity_loss(predictions=predictions, targets=targets, mask=mask)
+    live_targets = np.array([[0, 1, 1, 0], [0, 1, 1, 0]])
+    loss, _ = negative_cosine_similarity_loss(
+        predictions=predictions, targets=targets, live_targets=live_targets
+    )
     # Ref torch implementation from:
     # https://github.com/baaivision/EVA/blob/86cf99c50612b11bad39bfcf17899c410a7030d4/eva/engine_for_pretraining.py#L39-L42
     masked_predictions = predictions[:, 1:3, :]
