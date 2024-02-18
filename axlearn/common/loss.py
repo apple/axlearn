@@ -96,8 +96,9 @@ def cross_entropy(
     """Compute the cross entropy loss between logits and target_labels.
 
     Computes a stabilized-gradient version of:
-        -jnp.sum(targets * nn.log_softmax(logits), axis=-1) * mask / jnp.sum(mask, axis=-1)
-        Here, targets is a categorical one-hot float array based on target_labels.
+        -jnp.sum(targets * nn.log_softmax(logits), axis=-1) * live_targets
+        / jnp.sum(live_targets, axis=-1)
+    where targets is a categorical one-hot float array based on target_labels.
 
     This function extends the T5X implmentation by supporting masked labels.
 
@@ -116,7 +117,7 @@ def cross_entropy(
         z_loss_scale: Coefficient for auxilliary z-loss loss term.
         label_smoothing: The factor to control label smoothing.
         soft_target_labels: Optional labels that are already smoothed/in one-hot form. If provided,
-            target_labels will only be used for inferring the mask during loss calculation.
+            target_labels will only be used for inferring the live targets during loss calculation.
 
     Returns:
         (loss, all_losses), where
@@ -126,7 +127,7 @@ def cross_entropy(
                 loss = cross_entropy_loss + z_loss_scale * z_loss.
             * "cross_entropy_loss": the cross_entropy_loss.
             * "z_loss": the unscaled z_loss.
-            * "pre_mask_loss": the loss per target, of the same shape as `target_labels`.
+            * "per_target_loss": the loss per target, of the same shape as `target_labels`.
 
     Raises:
         ValueError: If z_loss_scale is negative.
@@ -145,7 +146,7 @@ def cross_entropy(
         targets = _one_hot_with_label_smoothing(
             target_labels, num_classes, label_smoothing=label_smoothing
         )
-    pre_mask_loss, pre_mask_cross_entropy_loss, pre_mask_z_loss = _stable_cross_entropy(
+    per_target_loss, per_target_cross_entropy_loss, per_target_z_loss = _stable_cross_entropy(
         logits, targets, z_loss_scale
     )
     if mask is not None:
@@ -155,18 +156,18 @@ def cross_entropy(
             raise ValueError("mask and live_targets must not be specified together")
     if live_targets is None:
         live_targets = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
-    live_targets = live_targets.astype(pre_mask_loss.dtype)
+    live_targets = live_targets.astype(per_target_loss.dtype)
     denominator = jnp.maximum(live_targets.sum(), 1)
-    cross_entropy_loss = (pre_mask_cross_entropy_loss * live_targets).sum() / denominator
-    z_loss = (pre_mask_z_loss * live_targets).sum() / denominator
-    loss = (pre_mask_loss * live_targets).sum() / denominator
+    cross_entropy_loss = (per_target_cross_entropy_loss * live_targets).sum() / denominator
+    z_loss = (per_target_z_loss * live_targets).sum() / denominator
+    loss = (per_target_loss * live_targets).sum() / denominator
     predicted_labels = jnp.argmax(logits, axis=-1)
     accuracy = (jnp.equal(predicted_labels, target_labels) * live_targets).sum() / denominator
     return loss, {
         "total_loss": loss,
         "z_loss": z_loss,
         "cross_entropy_loss": cross_entropy_loss,
-        "pre_mask_loss": pre_mask_loss,
+        "per_target_loss": per_target_loss,
         "accuracy": accuracy,
     }
 
@@ -181,8 +182,9 @@ def binary_cross_entropy(
     """Compute the binary cross entropy loss between logits and targets.
 
     Computes a stabilized-gradient version of:
-        -jnp.sum(targets * jnp.log(logits) + (1-targets) * jnp.log(1 - logits), axis=-1) * mask / jnp.sum(mask, axis=-1) # pylint: disable=line-too-long
-        where targets are a one-hot float array.
+        -jnp.sum(targets * jnp.log(logits) + (1-targets) * jnp.log(1 - logits), axis=-1)
+        * live_targets / jnp.sum(live_targets, axis=-1)
+    where targets are a one-hot float array.
 
     Args:
         logits: A float Tensor of shape [batch_size, d0, ..., dN].
@@ -199,11 +201,11 @@ def binary_cross_entropy(
         loss is a scalar tensor for the binary cross entropy loss;
         all_losses is a dictionary containing:
             * "binary_cross_entropy_loss": the binary_cross_entropy_loss.
-            * "pre_mask_loss": the loss across all tokens unmasked.
+            * "per_target_loss": the loss per target, of the same shape as `target_labels`.
     """
     if logits.dtype in (jnp.bfloat16, jnp.float16):
         logits = logits.astype(jnp.float32)
-    pre_mask_cross_entropy_loss = sigmoid_cross_entropy_with_logits(logits, target_labels)
+    per_target_cross_entropy_loss = sigmoid_cross_entropy_with_logits(logits, target_labels)
     if mask is not None:
         if live_targets is None:
             live_targets = mask
@@ -211,13 +213,13 @@ def binary_cross_entropy(
             raise ValueError("mask and live_targets must not be specified together")
     if live_targets is None:
         live_targets = jnp.logical_and(0 <= target_labels, target_labels < 2)
-    live_targets = live_targets.astype(pre_mask_cross_entropy_loss.dtype)
-    binary_cross_entropy_loss = (pre_mask_cross_entropy_loss * live_targets).sum() / jnp.maximum(
+    live_targets = live_targets.astype(per_target_cross_entropy_loss.dtype)
+    binary_cross_entropy_loss = (per_target_cross_entropy_loss * live_targets).sum() / jnp.maximum(
         live_targets.sum(), 1
     )
     return binary_cross_entropy_loss, {
         "binary_cross_entropy_loss": binary_cross_entropy_loss,
-        "pre_mask_loss": pre_mask_cross_entropy_loss,
+        "per_target_loss": per_target_cross_entropy_loss,
     }
 
 

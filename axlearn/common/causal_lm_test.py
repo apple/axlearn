@@ -177,7 +177,7 @@ class ModelMetricsTest(TestCase):
         self.assertAlmostEqual(loss, summaries["loss"].mean)
         self.assertEqual(5, summaries["loss"].weight)
         self.assertAlmostEqual(jnp.exp(loss), summaries["perplexity"].mean, places=6)
-        per_token_loss = loss_dict["pre_mask_loss"] * live_targets
+        per_token_loss = loss_dict["per_target_loss"] * live_targets
         total_bytes = target_num_bytes.sum()
         bits_per_byte = per_token_loss.sum() / jnp.maximum(1, total_bytes) / jnp.log(2)
         self.assertAlmostEqual(bits_per_byte, summaries["bits_per_byte"].mean)

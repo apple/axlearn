@@ -1447,13 +1447,13 @@ class CategoricalHingeLossMetric(BaseClassificationMetric):
 
         one_hot_labels = jax.nn.one_hot(labels, cfg.num_classes)
 
-        pre_mask_loss = categorical_hinge_loss(logits, one_hot_labels)
+        per_target_loss = categorical_hinge_loss(logits, one_hot_labels)
 
         live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        live_targets = live_targets.astype(pre_mask_loss.dtype)
+        live_targets = live_targets.astype(per_target_loss.dtype)
         num_live_targets = live_targets.sum()
         denominator = jnp.maximum(1, num_live_targets)
-        loss = (pre_mask_loss * live_targets).sum() / denominator
+        loss = (per_target_loss * live_targets).sum() / denominator
 
         predictions = jnp.argmax(logits, axis=-1)
         accuracy = jnp.equal(predictions, labels).sum() / denominator
