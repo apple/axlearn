@@ -108,7 +108,7 @@ def cross_entropy(
         target_labels: An int Tensor of shape [...].
             The per-example loss will be 0 if the corresponding target is masked, or out-of-class
             (i.e. target_labels[i] < 0 or target_labels[i] >= num_classes).
-        live_targets: Indicates which example should contribute to the loss.
+        live_targets: Indicates which examples should contribute to the loss.
             A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
             contribute to the loss. If None, infer from 0 <= target_labels < num_classes.
         mask: (deprecated) Used as `live_targets` if `live_targets is None`.
@@ -156,8 +156,7 @@ def cross_entropy(
     if live_targets is None:
         live_targets = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
     live_targets = live_targets.astype(pre_mask_loss.dtype)
-    num_live_targets = live_targets.sum()
-    denominator = jnp.maximum(num_live_targets, 1)
+    denominator = jnp.maximum(live_targets.sum(), 1)
     cross_entropy_loss = (pre_mask_cross_entropy_loss * live_targets).sum() / denominator
     z_loss = (pre_mask_z_loss * live_targets).sum() / denominator
     loss = (pre_mask_loss * live_targets).sum() / denominator
@@ -189,7 +188,7 @@ def binary_cross_entropy(
         logits: A float Tensor of shape [batch_size, d0, ..., dN].
         target_labels: An 0/1 int Tensor of the same shape as `logits`.
             The per-example loss will be 0 if the corresponding target is masked.
-        live_targets: Indicates which example should contribute to the loss.
+        live_targets: Indicates which examples should contribute to the loss.
             A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
             contribute to the loss. If None, infer from 0 <= target_labels < 2.
         mask: (deprecated) Used as `live_targets` if `live_targets is None`.
