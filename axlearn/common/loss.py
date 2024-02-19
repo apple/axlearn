@@ -88,7 +88,6 @@ def cross_entropy(
     target_labels: Tensor,
     *,
     live_targets: Optional[Tensor] = None,
-    mask: Optional[Tensor] = None,
     z_loss_scale: float = 0.0,
     label_smoothing: float = 0.0,
     soft_target_labels: Optional[Tensor] = None,
@@ -112,8 +111,6 @@ def cross_entropy(
         live_targets: Indicates which examples should contribute to the loss.
             A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
             contribute to the loss. If None, infer from 0 <= target_labels < num_classes.
-        mask: (deprecated) Used as `live_targets` if `live_targets is None`.
-            Must be None if `live_targets` is specified.
         z_loss_scale: Coefficient for auxilliary z-loss loss term.
         label_smoothing: The factor to control label smoothing.
         soft_target_labels: Optional labels that are already smoothed/in one-hot form. If provided,
@@ -149,11 +146,6 @@ def cross_entropy(
     per_target_loss, per_target_cross_entropy_loss, per_target_z_loss = _stable_cross_entropy(
         logits, targets, z_loss_scale
     )
-    if mask is not None:
-        if live_targets is None:
-            live_targets = mask
-        else:
-            raise ValueError("mask and live_targets must not be specified together")
     if live_targets is None:
         live_targets = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
     live_targets = live_targets.astype(per_target_loss.dtype)
@@ -177,7 +169,6 @@ def binary_cross_entropy(
     *,
     target_labels: Tensor,
     live_targets: Optional[Tensor] = None,
-    mask: Optional[Tensor] = None,
 ) -> Tuple[Tensor, Dict[str, Tensor]]:
     """Compute the binary cross entropy loss between logits and targets.
 
@@ -193,8 +184,6 @@ def binary_cross_entropy(
         live_targets: Indicates which examples should contribute to the loss.
             A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
             contribute to the loss. If None, infer from 0 <= target_labels < 2.
-        mask: (deprecated) Used as `live_targets` if `live_targets is None`.
-            Must be None if `live_targets` is specified.
 
     Returns:
         (loss, all_losses), where
@@ -206,11 +195,6 @@ def binary_cross_entropy(
     if logits.dtype in (jnp.bfloat16, jnp.float16):
         logits = logits.astype(jnp.float32)
     per_target_cross_entropy_loss = sigmoid_cross_entropy_with_logits(logits, target_labels)
-    if mask is not None:
-        if live_targets is None:
-            live_targets = mask
-        else:
-            raise ValueError("mask and live_targets must not be specified together")
     if live_targets is None:
         live_targets = jnp.logical_and(0 <= target_labels, target_labels < 2)
     live_targets = live_targets.astype(per_target_cross_entropy_loss.dtype)
