@@ -111,7 +111,7 @@ def calculate_retrieval_metrics_from_similarity_matrix(
             valid queries.
         top_ks_for_accuracy: The values for k for which to compute accuracy.
         top_ks_for_ndcg: Optional. The values for k for which to compute nDCG.
-            If not None, return nDCG for specified k values.
+            If not None, return nDCG for specified k values with key "ndcg@{k}".
 
     Returns:
         A dict containing all different metrics for text dual encoder model.
