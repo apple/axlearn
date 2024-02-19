@@ -1311,13 +1311,13 @@ class ClassificationMetric(BaseClassificationMetric):
             A float Tensor represents the loss.
         """
         cfg = self.config
-        mask = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        num_examples = mask.sum()
+        live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
+        num_examples = live_targets.sum()
 
         loss, all_losses = cross_entropy(
             logits,
-            labels,
-            mask=mask,
+            target_labels=labels,
+            live_targets=live_targets,
             label_smoothing=cfg.label_smoothing,
             soft_target_labels=soft_labels,
         )
@@ -1379,17 +1379,17 @@ class BinaryClassificationMetric(BaseClassificationMetric):
                 f"Binary classification is only defined for two classes; "
                 f"{cfg.num_classes} were provided"
             )
-        mask = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        num_examples = mask.sum()
+        live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
+        num_examples = live_targets.sum()
         loss, all_losses = binary_cross_entropy(
             logits,
-            labels,
-            mask=mask,
+            target_labels=labels,
+            live_targets=live_targets,
         )
         preds = jnp.where(jnp.greater(nn.sigmoid(logits), cfg.prediction_threshold), 1, 0)
         scores = precision_recall_f_score(
-            y_true=(mask * labels).reshape(-1),
-            y_pred=(mask * preds).reshape(-1),
+            y_true=(live_targets * labels).reshape(-1),
+            y_pred=(live_targets * preds).reshape(-1),
         )
         self.add_summary("precision", scores["precision"])
         self.add_summary("recall", scores["recall"])
@@ -1447,20 +1447,20 @@ class CategoricalHingeLossMetric(BaseClassificationMetric):
 
         one_hot_labels = jax.nn.one_hot(labels, cfg.num_classes)
 
-        pre_mask_loss = categorical_hinge_loss(logits, one_hot_labels)
+        per_target_loss = categorical_hinge_loss(logits, one_hot_labels)
 
-        mask = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        mask = mask.astype(pre_mask_loss.dtype)
-        num_unmasked = mask.sum()
-        denominator = jnp.maximum(1, num_unmasked)
-        loss = (pre_mask_loss * mask).sum() / denominator
+        live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
+        live_targets = live_targets.astype(per_target_loss.dtype)
+        num_live_targets = live_targets.sum()
+        denominator = jnp.maximum(1, num_live_targets)
+        loss = (per_target_loss * live_targets).sum() / denominator
 
         predictions = jnp.argmax(logits, axis=-1)
         accuracy = jnp.equal(predictions, labels).sum() / denominator
 
-        self.add_summary("loss", WeightedScalar(loss, num_unmasked))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_unmasked))
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_unmasked))
+        self.add_summary("loss", WeightedScalar(loss, num_live_targets))
+        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_live_targets))
+        self.add_summary("accuracy", WeightedScalar(accuracy, num_live_targets))
 
         return loss
 

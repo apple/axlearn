@@ -171,13 +171,13 @@ class ModelMetricsTest(TestCase):
         loss, loss_dict = cross_entropy(
             logits=logits[0],
             target_labels=target_labels[0],
-            mask=live_targets[0],
+            live_targets=live_targets[0],
         )
         self.assertEqual(2.0 / 5, summaries["accuracy"].mean)
         self.assertAlmostEqual(loss, summaries["loss"].mean)
         self.assertEqual(5, summaries["loss"].weight)
         self.assertAlmostEqual(jnp.exp(loss), summaries["perplexity"].mean, places=6)
-        per_token_loss = loss_dict["pre_mask_loss"] * live_targets
+        per_token_loss = loss_dict["per_target_loss"] * live_targets
         total_bytes = target_num_bytes.sum()
         bits_per_byte = per_token_loss.sum() / jnp.maximum(1, total_bytes) / jnp.log(2)
         self.assertAlmostEqual(bits_per_byte, summaries["bits_per_byte"].mean)

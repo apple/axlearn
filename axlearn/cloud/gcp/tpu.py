@@ -162,7 +162,11 @@ def _create_legacy_tpu(
                 # Wait for TPU to become healthy.
                 client = cloud_tpu_client.Client(name, project=project, zone=zone)
                 while (health := client.health()) != "HEALTHY":
-                    logging.info("TPU %s is not HEALTHY (%s), waiting until HEALTHY.", name, health)
+                    logging.info(
+                        "TPU %s is not HEALTHY (%s), waiting until HEALTHY.",
+                        name,
+                        health,
+                    )
                     time.sleep(10)
                 logging.info("TPU %s is READY and HEALTHY.", name)
                 # Now check for when boot script is complete.
@@ -190,7 +194,9 @@ def _create_legacy_tpu(
                 # Exponential backoff capped at 512s.
                 backoff_for = 2 ** min(attempt, 9)
                 logging.info(
-                    "Attempt %d to create TPU failed, backoff for %ds.", attempt, backoff_for
+                    "Attempt %d to create TPU failed, backoff for %ds.",
+                    attempt,
+                    backoff_for,
                 )
                 time.sleep(backoff_for)
             try:
@@ -237,7 +243,7 @@ def get_tpu_node_status(name: str, *, node: Dict[str, Any]) -> Dict[str, Union[s
         * "state": The current node state.
         * "num_booted": How many VMs have booted.
     """
-    state = node["state"]
+    state = node.get("state", "UNKNOWN")
     num_booted = 0
     if state == "READY":
         # Check for boot script status.
@@ -375,7 +381,9 @@ def _create_multislice_tpu(
                 # Exponential backoff capped at 512s.
                 backoff_for = 2 ** min(attempt, 9)
                 logging.info(
-                    "Attempt %d to create TPU failed, backoff for %ds.", attempt, backoff_for
+                    "Attempt %d to create TPU failed, backoff for %ds.",
+                    attempt,
+                    backoff_for,
                 )
                 time.sleep(backoff_for)
             try:
@@ -439,7 +447,8 @@ def _create_multislice_tpu(
             # block.
             for _ in range(10):
                 logging.warning(
-                    "QR in unexpected state: %s. Will see if it resolves itself...", state
+                    "QR in unexpected state: %s. Will see if it resolves itself...",
+                    state,
                 )
                 time.sleep(60)
                 node = get_queued_tpu_node(name, resource)
@@ -464,7 +473,7 @@ def get_queued_tpu_node_status(name: str, *, node: Dict[str, Any]) -> Dict[str, 
         * "state": The current node state.
         * "num_booted": How many VMs have booted.
     """
-    state = node["state"]["state"]
+    state = node.get("state", {}).get("state", "UNKNOWN")
     num_booted = 0
     if state == "ACTIVE":
         # Startup script has (in theory) begun running on all nodes in slice.

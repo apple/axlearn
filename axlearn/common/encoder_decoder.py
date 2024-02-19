@@ -157,11 +157,11 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
         loss, loss_dict = cross_entropy(
             logits=logits,
             target_labels=target_labels,
-            mask=live_targets,
+            live_targets=live_targets,
             z_loss_scale=cfg.z_loss_scale,
             label_smoothing=cfg.label_smoothing,
         )
-        per_token_loss = loss_dict["pre_mask_loss"] * live_targets
+        per_token_loss = loss_dict["per_target_loss"] * live_targets
         self.add_summary("loss", WeightedScalar(loss, num_targets))
         self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
         self.add_summary("token_accuracy", WeightedScalar(loss_dict["accuracy"], num_targets))

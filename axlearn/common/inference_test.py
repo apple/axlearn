@@ -45,7 +45,7 @@ from axlearn.common.state_builder import (
     RestoreAndConvertBuilder,
     TensorStoreStateStorageBuilder,
 )
-from axlearn.common.trainer import _TrainerState
+from axlearn.common.trainer import TrainerState
 from axlearn.common.utils import (
     DataPartitionType,
     NestedTensor,
@@ -267,7 +267,7 @@ class InferenceTest(test_utils.TestCase):
                     learner_state = dict(
                         x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32)
                     )
-                return _TrainerState(
+                return TrainerState(
                     prng_key=prng_key,
                     model=params,
                     learner=learner_state,

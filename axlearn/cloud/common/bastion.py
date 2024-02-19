@@ -75,7 +75,6 @@ except ModuleNotFoundError:
     logging.warning("tensorflow_io is not installed -- tf_io may not work with s3://")
 
 from axlearn.cloud.common.cleaner import Cleaner
-from axlearn.cloud.common.job import Job as CloudJob
 from axlearn.cloud.common.scheduler import JobMetadata, ResourceMap, Scheduler
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
@@ -857,66 +856,63 @@ class Bastion(Configurable):
             time.sleep(max(0, cfg.update_interval_seconds - execute_s))
 
 
-class StartBastionJob(CloudJob):
-    """A job that runs the bastion."""
+class BastionDirectory(Configurable):
+    """A directory watched by a Bastion.
+
+    submit_job() writes the job spec to the active job dir watched by the bastion, which will
+    start a process on the bastion VM to run the command when resources are ready. The on-bastion
+    process usually further creates and watches remote VMs.
+
+    cancel_job() writes a job state file to the cancel job dir watched by the bastion, which will
+    terminate the on-bastion process.
+    """
 
     @config_class
-    class Config(CloudJob.Config):
-        """Configures StartBastionJob."""
+    class Config(Configurable.Config):
+        """Configures BastionDirectory."""
 
-        bastion: Required[Bastion.Config] = REQUIRED
-
-    @classmethod
-    def default_config(cls) -> Config:
-        return super().default_config().set(command="")
-
-    def __init__(self, cfg: Config):
-        super().__init__(cfg)
-        self._bastion: Bastion = cfg.bastion.instantiate()
-
-    def _execute(self) -> Any:
-        # Wraps bastion with retries.
-        self._bastion.execute()
-
-
-class SubmitBastionJob(CloudJob):
-    """A job to submit a command to bastion."""
-
-    @config_class
-    class Config(CloudJob.Config):
-        """Configures SubmitBastionJob."""
-
-        # Name of the job. Not to be confused with cfg.name, the bastion name.
-        job_name: Required[str] = REQUIRED
-        # Job spec file local path.
-        job_spec_file: Required[str] = REQUIRED
-        # Output directory used by the bastion. Note that this must be consistent with the output
+        # Directory watched by the bastion. Note that this must be consistent with the output
         # directory used when creating the bastion.
-        bastion_dir: Required[str] = REQUIRED
-
-    @classmethod
-    def default_config(cls):
-        return super().default_config().set(command="")
+        root_dir: Required[str] = REQUIRED
 
     @property
-    def bastion_dir(self):
-        return self.config.bastion_dir
+    def root_dir(self):
+        return self.config.root_dir
 
-    def _job_dir(self):
-        return os.path.join(self.bastion_dir, "jobs")
+    def __str__(self) -> str:
+        return self.root_dir
 
-    def _delete(self):
-        cfg: SubmitBastionJob.Config = self.config
+    @property
+    def logs_dir(self):
+        return os.path.join(self.root_dir, "logs")
+
+    @property
+    def active_job_dir(self):
+        return os.path.join(self.root_dir, "jobs", "active")
+
+    @property
+    def complete_job_dir(self):
+        return os.path.join(self.root_dir, "jobs", "complete")
+
+    @property
+    def job_states_dir(self):
+        return os.path.join(self.root_dir, "jobs", "states")
+
+    @property
+    def user_states_dir(self):
+        return os.path.join(self.root_dir, "jobs", "user_states")
+
+    def cancel_job(self, job_name: str):
         try:
-            jobspec = os.path.join(self._job_dir(), "active", cfg.job_name)
+            jobspec = os.path.join(self.active_job_dir, job_name)
             if not tf_io.gfile.exists(jobspec):
                 raise ValueError(f"Unable to locate jobspec {jobspec}")
             _upload_job_state(
-                cfg.job_name,
+                job_name,
                 JobState.CANCELLING,
-                remote_dir=os.path.join(self._job_dir(), "user_states"),
+                remote_dir=self.user_states_dir,
             )
-            logging.info("Job %s is cancelling.", cfg.job_name)
+            logging.info("Job %s is cancelling.", job_name)
             # Poll for jobspec to be removed.
             while tf_io.gfile.exists(jobspec):
                 logging.info("Waiting for job to stop (which usually takes a few minutes)...")
@@ -925,11 +921,10 @@ class SubmitBastionJob(CloudJob):
         except ValueError as e:
             logging.info("Failed with error: %s -- Has the job been cancelled already?", e)
 
-    def _execute(self):
-        cfg: SubmitBastionJob.Config = self.config
-        dst = os.path.join(self._job_dir(), "active", cfg.job_name)
+    def submit_job(self, job_name: str, *, job_spec_file: str):
+        dst = os.path.join(self.active_job_dir, job_name)
         if tf_io.gfile.exists(dst):
             logging.info("\n\nNote: Job is already running. To restart it, cancel the job first.\n")
         else:
             # Upload the job for bastion to pickup.
-            tf_io.gfile.copy(cfg.job_spec_file, dst)
+            tf_io.gfile.copy(job_spec_file, dst)

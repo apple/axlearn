@@ -17,6 +17,7 @@ from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.gcp.jobs import bastion_vm, launch, tpu_runner
 from axlearn.cloud.gcp.jobs.launch import (
     BaseBastionLaunchJob,
+    BastionDirectory,
     Launcher,
     LaunchTPUJob,
     _get_launcher_or_exit,
@@ -84,28 +85,30 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
             instance_type="test",
             user_id="test_user",
             project_id=None,
+            zone="test_zone",
             name="test_job",
             command="test_command",
             max_tries=1,
             retry_interval=60,
+            bastion_name="test_bastion",
             priority=3,
             output_dir="test-output",
         )
         cfg.set(**kwargs)
+        test_fixture = self
 
-        def dummy_submit_job(name: str, job_spec_file: str = ""):
-            del name
-            if job_spec_file:
+        class FakeBastionDirectory(BastionDirectory):
+            def submit_job(self, job_name: str, *, job_spec_file: str):
+                test_fixture.assertEqual("temp_dir", self.config.root_dir)
                 with open(job_spec_file, "r", encoding="utf-8") as f:
                     spec = deserialize_jobspec(f)
-                    self.assertEqual(spec.name, cfg.name)
-                    self.assertEqual(spec.command, cfg.command)
-                    self.assertEqual(spec.metadata.user_id, cfg.user_id)
-                    self.assertEqual(spec.metadata.project_id, cfg.project_id or "none")
-                    self.assertEqual(spec.metadata.priority, cfg.priority)
-            return mock.MagicMock()
+                    test_fixture.assertEqual(spec.name, cfg.name)
+                    test_fixture.assertEqual(spec.command, cfg.command)
+                    test_fixture.assertEqual(spec.metadata.user_id, cfg.user_id)
+                    test_fixture.assertEqual(spec.metadata.project_id, cfg.project_id or "none")
+                    test_fixture.assertEqual(spec.metadata.priority, cfg.priority)
 
-        return cfg.set(bastion=config_for_function(dummy_submit_job).set(name="test_bastion"))
+        return cfg.set(bastion_dir=FakeBastionDirectory.default_config())
 
     @parameterized.parameters(
         dict(output_dir="", instance_type="test", expected=ValueError("output_dir")),
@@ -118,37 +121,44 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
             cfg.instantiate()
 
     def test_start(self):
-        # Test with defaults.
-        job = self._mock_config().instantiate()
-        job._execute()
-
-        # Test with bundler.
-        mock_bundler = mock.MagicMock()
-        job = self._mock_config(bundler=config_for_function(lambda: mock_bundler)).instantiate()
-        job._execute()
-        self.assertTrue(mock_bundler.bundle.called)
-
-        # Test with invalid project id.
-        project_id = "test_project"
-        patch_fns = mock.patch.multiple(
-            launch.__name__,
-            gcp_settings=mock.Mock(return_value=""),
-            get_user_projects=mock.Mock(return_value=["other_project"]),
+        mock_get_vm_node = mock.patch(
+            f"{launch.__name__}._get_bastion_vm", return_value=dict(status="RUNNING")
         )
-        with patch_fns, self.assertRaisesRegex(ValueError, "other_project"):
-            job = self._mock_config(project_id=project_id).instantiate()
+        mock_bastion_root_dir = mock.patch(
+            f"{launch.__name__}.bastion_root_dir", return_value="temp_dir"
+        )
+        with mock_get_vm_node, mock_bastion_root_dir:
+            # Test with defaults.
+            job = self._mock_config().instantiate()
             job._execute()
 
-        # Test with valid project id.
-        project_id = "test_project"
-        patch_fns = mock.patch.multiple(
-            launch.__name__,
-            gcp_settings=mock.Mock(return_value=""),
-            get_user_projects=mock.Mock(return_value=["test_project"]),
-        )
-        with patch_fns:
-            job = self._mock_config(project_id=project_id).instantiate()
+            # Test with bundler.
+            mock_bundler = mock.MagicMock()
+            job = self._mock_config(bundler=config_for_function(lambda: mock_bundler)).instantiate()
             job._execute()
+            self.assertTrue(mock_bundler.bundle.called)
+
+            # Test with invalid project id.
+            project_id = "test_project"
+            patch_fns = mock.patch.multiple(
+                launch.__name__,
+                gcp_settings=mock.Mock(return_value=""),
+                get_user_projects=mock.Mock(return_value=["other_project"]),
+            )
+            with patch_fns, self.assertRaisesRegex(ValueError, "other_project"):
+                job = self._mock_config(project_id=project_id).instantiate()
+                job._execute()
+
+            # Test with valid project id.
+            project_id = "test_project"
+            patch_fns = mock.patch.multiple(
+                launch.__name__,
+                gcp_settings=mock.Mock(return_value=""),
+                get_user_projects=mock.Mock(return_value=["test_project"]),
+            )
+            with patch_fns:
+                job = self._mock_config(project_id=project_id).instantiate()
+                job._execute()
 
     def test_list(self):
         mock_jobs = {
@@ -198,7 +208,13 @@ class TestBaseBastionLaunchJob(parameterized.TestCase):
                 cleanup_proc=None,
             ),
         }
-        with mock.patch(f"{launch.__name__}.download_job_batch", return_value=(mock_jobs, set())):
+        mock_bastion_root_dir = mock.patch(
+            f"{launch.__name__}.bastion_root_dir", return_value="temp_dir"
+        )
+        mock_download_job_batch = mock.patch(
+            f"{launch.__name__}.download_job_batch", return_value=(mock_jobs, set())
+        )
+        with mock_download_job_batch, mock_bastion_root_dir:
             job = self._mock_config().instantiate()
             out = job._list()
             self.assertEqual(out["jobs"], mock_jobs)
@@ -327,19 +343,16 @@ class TestLaunchTPUJob(TestWithTemporaryCWD):
             # Check bastion flag. If None, we should infer from zone in mock_settings.
             if zone is None:
                 self.assertEqual(
-                    cfg.bastion.name, f"{mock_settings['zone']}-{bastion_vm._SHARED_BASTION_SUFFIX}"
+                    cfg.bastion_name, f"{mock_settings['zone']}-{bastion_vm._SHARED_BASTION_SUFFIX}"
                 )
             else:
-                self.assertEqual(cfg.bastion.name, f"{zone}-{bastion_vm._SHARED_BASTION_SUFFIX}")
+                self.assertEqual(cfg.bastion_name, f"{zone}-{bastion_vm._SHARED_BASTION_SUFFIX}")
 
             # Check output_dir.
             if output_dir is None:
                 self.assertEqual(cfg.output_dir, f"gs://ttl_bucket/axlearn/jobs/{fv.name}")
             else:
                 self.assertEqual(cfg.output_dir, output_dir)
-
-            # Note that the bastion output_dir is not necessarily the same as the job output_dir.
-            self.assertEqual(bastion_vm.output_dir(fv.bastion), cfg.bastion.bastion_dir)
 
         # Make sure command is expected.
         for flag in ["name", "bundler_type", "tpu_type"]:

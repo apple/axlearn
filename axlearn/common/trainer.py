@@ -59,7 +59,7 @@ def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
     return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
 
 
-class _TrainerState(NamedTuple):
+class TrainerState(NamedTuple):
     prng_key: Union[Tensor, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
     learner: Union[NestedTensor, NestedPartitionSpec]
@@ -163,7 +163,7 @@ class SpmdTrainer(Module):
         cfg = self.config
 
         self._step: int = None
-        self._trainer_state: _TrainerState = None
+        self._trainer_state: TrainerState = None
         self._jit_train_step: jax.stages.Wrapped = None
         self._watchdog_stopping = None
         self._watchdog_thread = None
@@ -223,7 +223,7 @@ class SpmdTrainer(Module):
             )
             for name, spec in utils.flatten_items(self._learner_state_partition_specs):
                 self._step_log("Learner state spec: %s=%s", name, spec)
-            self._trainer_state_specs = _TrainerState(
+            self._trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=self._model_param_specs,
                 learner=self._learner_state_partition_specs,
@@ -562,7 +562,7 @@ class SpmdTrainer(Module):
                 1, "tree_structure(model_params)=%s", jax.tree_util.tree_structure(model_params)
             )
             learner_params = self.learner.init(self._opt_params(model_params))
-            return _TrainerState(
+            return TrainerState(
                 prng_key=prng_key,
                 model=model_params,
                 learner=learner_params,
@@ -710,8 +710,8 @@ class SpmdTrainer(Module):
                     )
             if step is not None:
                 self._step = step
-                self._trainer_state = _TrainerState(
-                    **{k: v for k, v in ckpt_state.items() if k in _TrainerState._fields}
+                self._trainer_state = TrainerState(
+                    **{k: v for k, v in ckpt_state.items() if k in TrainerState._fields}
                 )
                 if cfg.save_input_iterator and "input_iter" in ckpt_state:
                     self._input_iter = ckpt_state["input_iter"]
@@ -856,9 +856,9 @@ class SpmdTrainer(Module):
 
     def _train_step(
         self,
-        state: _TrainerState,
+        state: TrainerState,
         input_batch: Dict[str, Any],
-    ) -> Tuple[_TrainerState, NestedTensor]:
+    ) -> Tuple[TrainerState, NestedTensor]:
         # Shard and (possibly) dispatch the input batch.
         input_batch = utils.dispatch_input_batch(
             input_batch, batch_axis_names=self.config.batch_axis_names
@@ -923,7 +923,7 @@ class SpmdTrainer(Module):
             prng_key=learner_key,
             inputs=dict(model_params=opt_params, gradients=grads, state_updates=state_updates),
         )
-        updated_state = _TrainerState(
+        updated_state = TrainerState(
             prng_key=new_prng_key,
             model=updated_model_params,
             learner=learner_output_collection.state_updates,
