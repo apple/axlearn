@@ -472,7 +472,8 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
     def _list(self, output_file: Optional[TextIO] = None) -> Dict[str, Any]:
         """Lists running jobs and their associated TPU resources.
 
-        In addition to outputs provided by `BaseBastionManagedJob._list()`, also returns a dict with:
+        In addition to outputs provided by `BaseBastionManagedJob._list()`, also returns a dict
+        with:
         * running_tpu_infos: The currently-running TPUs.
         * running_tpu_to_job_name: A mapping from TPU name to job name.
         """
