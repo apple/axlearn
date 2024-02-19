@@ -315,63 +315,50 @@ def test_cross_entropy_soft_target_labels():
 
 
 @pytest.mark.parametrize(
-    "preds,targets,expected,live_targets,weights",
+    "preds,targets,expected,weights",
     [
-        ([], [], WeightedScalar(0, 0), "NaN", None),  # No targets.
-        ([jnp.inf], [jnp.nan], WeightedScalar(0, 0), "NaN", None),  # No targets.
+        ([], [], WeightedScalar(0, 0), None),  # No targets.
         (
             [0.0, 1.0, 2.0],
             [jnp.nan, jnp.nan, jnp.nan],
             WeightedScalar(0, 0),
-            "NaN",
-            None,
+            [False, False, False],
         ),  # No targets.
-        ([jnp.inf], [0], WeightedScalar(jnp.inf, 1), "NaN", None),  # inf - 0 is inf.
-        ([jnp.inf], [jnp.inf], WeightedScalar(jnp.nan, 1), "NaN", None),  # inf - inf is nan.
+        ([jnp.inf], [0], WeightedScalar(jnp.inf, 1), None),  # inf - 0 is inf.
+        ([jnp.inf], [jnp.inf], WeightedScalar(jnp.nan, 1), None),  # inf - inf is nan.
         (
             [0.0, 1.0, 2.0, 3.0, 4.0],
             [1.0, 2.0, 3.0, 4.0, 5.0],
             WeightedScalar(1.0, 5),
-            "NaN",
             None,
         ),  # Basic case.
         (
             [0.0, 1.0, 2.0, 3.0, 4.0],
             [2.0, jnp.nan, 2.0, 2.0, jnp.nan],
             WeightedScalar(5.0 / 3.0, 3),
-            "NaN",
-            None,
+            [True, False, True, True, False],
         ),  # Basic case.
         (
             [7, 5, 11],
             [3, 2, 13],
             WeightedScalar(12, 3),
-            [True, False, True],
-            [2, 10, 1],
-        ),  # Test live_targets and weights.
+            [2, 0, 1],
+        ),  # Test non-boolean weights.
     ],
 )
 def test_mean_squared_error(
     preds: Sequence[float],
     targets: Sequence[float],
     expected: WeightedScalar,
-    live_targets: Optional[Sequence[bool]],
     weights: Optional[Sequence[float]],
 ):
     preds = jnp.asarray(preds)
     targets = jnp.asarray(targets)
-    static_argnums = ()
-    if isinstance(live_targets, (list, tuple)):
-        live_targets = jnp.asarray(live_targets)
-    else:
-        static_argnums = (2,)
     if weights is not None:
         weights = jnp.asarray(weights)
 
     # Makes sure compat with jit.
-    actual = jax.jit(mean_squared_error, static_argnums=static_argnums)(
-        preds, targets, live_targets, weights
-    )
+    actual = jax.jit(mean_squared_error)(preds, targets, weights)
     if not (jnp.isnan(actual.mean) and jnp.isnan(expected.mean)):
         chex.assert_trees_all_close(actual.mean, expected.mean)
     chex.assert_trees_all_close(actual.weight, expected.weight)
@@ -386,7 +373,7 @@ def test_l1_loss():
 def test_bilinear_mean_squared_error():
     pred = jnp.arange(16).reshape(4, 4)[None]
     target = (jnp.arange(16) ** 2).reshape(4, 4)[None]
-    actual = bilinear_mean_squared_error(pred, target, mask=None, shape=(1, 2, 2))
+    actual = bilinear_mean_squared_error(pred, target, shape=(1, 2, 2))
     diff = pred - target
     groups = jnp.array([[0, 1, 4, 5], [2, 3, 6, 7], [8, 9, 12, 13], [10, 11, 14, 15]])
     expected = jnp.mean(diff.flatten()[groups].mean(axis=1) ** 2)
