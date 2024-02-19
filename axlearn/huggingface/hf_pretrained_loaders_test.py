@@ -16,7 +16,7 @@ from axlearn.common.layers import set_layer_norm_eps_recursively
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.state_builder import Builder
 from axlearn.common.test_utils import TestCase
-from axlearn.common.trainer import _TrainerState
+from axlearn.common.trainer import TrainerState
 from axlearn.huggingface.hf_pretrained_loaders import (
     auto_model_from_pretrained,
     hf_pretrained_builder_config,
@@ -81,7 +81,7 @@ class TestDeBERTaBuilder(TestCase):
             model = model_cfg.set(name="model").instantiate(parent=None)
 
             model_params = model.initialize_parameters_recursively(jax.random.PRNGKey(0))
-            trainer_state = _TrainerState(
+            trainer_state = TrainerState(
                 prng_key=jax.random.PRNGKey(1),
                 model=model_params,
                 learner=None,
