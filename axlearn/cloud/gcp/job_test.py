@@ -46,7 +46,7 @@ def _private_flags():
 FLAGS = flags.FLAGS
 
 
-class DummyLaunchJob(TPUJob):
+class DummyRemoteTPUJob(TPUJob):
     """A dummy TPU job."""
 
     def _execute(self) -> Union[subprocess.CompletedProcess, subprocess.Popen]:
@@ -79,7 +79,7 @@ class TPUJobTest(TestCase):
         atexit.register(delete_tpu, jobname, credentials=get_credentials())
         project = gcp_settings("project")
         zone = gcp_settings("zone")
-        cfg = DummyLaunchJob.default_config().set(
+        cfg = DummyRemoteTPUJob.default_config().set(
             name=jobname,
             project=project,
             zone=zone,

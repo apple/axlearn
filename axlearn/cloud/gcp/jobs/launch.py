@@ -8,7 +8,7 @@ The launch command provides a few benefits:
 
 The launch flow depends on the launcher being used. Each launcher must define a "matcher" function
 that decides, for a given CLI action (e.g. 'start') and instance type (e.g. 'tpu-v4-8'), whether the
-launcher can be used. See `_LAUNCHERS` for a full list, and `LaunchTPUJob` for an example.
+launcher can be used. See `_LAUNCHERS` for a full list, and `BastionManagedTPUJob` for an example.
 
 Possible actions: [start|stop|list]
 
@@ -133,20 +133,19 @@ class Launcher(NamedTuple):
     description: str
 
 
-# TODO(rpang): rename this class to BaseBastionManagedJob.
-class BaseBastionLaunchJob(Job):
+class BaseBastionManagedJob(Job):
     """A base job definition for jobs managed by a bastion.
 
     It provides functionality to submit, delete, and list bastion jobs, but is agnostic to specific
     resource types. At minimum, subclasses should override `_resources()` to specify resources used
     by the job, which will be used for quota management and scheduling.
 
-    See `LaunchTPUJob` as an example.
+    See `BastionManagedTPUJob` as an example.
     """
 
     @config_class
     class Config(Job.Config):
-        """Configures BaseBastionLaunchJob."""
+        """Configures BaseBastionManagedJob."""
 
         # Where to run the remote job.
         zone: Required[str] = REQUIRED
@@ -403,15 +402,15 @@ class _RunnerModuleType(ModuleType):
 
 
 # TODO(markblee): Add a LaunchCPUJob.
-class LaunchTPUJob(BaseBastionLaunchJob):
+class BastionManagedTPUJob(BaseBastionManagedJob):
     """Launches a TPU job via bastion."""
 
     # Runner module. Used to infer launch flags and launch command.
     _runner: _RunnerModuleType = tpu_runner  # pytype: disable=annotation-type-mismatch
 
     @config_class
-    class Config(BaseBastionLaunchJob.Config):
-        """Configures LaunchTPUJob."""
+    class Config(BaseBastionManagedJob.Config):
+        """Configures BastionManagedTPUJob."""
 
         # Number of TPU slices.
         num_slices: int = 1
@@ -429,7 +428,7 @@ class LaunchTPUJob(BaseBastionLaunchJob):
     def from_flags(cls, fv: flags.FlagValues, *, command: str, action: str, **kwargs) -> Config:
         """Constructs config from flags defined by `define_flags()`.
 
-        In addition to logic defined in `BaseBastionLaunchJob.from_flags()`:
+        In addition to logic defined in `BaseBastionManagedJob.from_flags()`:
         * Ensures "tpu" extras are bundled.
         * Automatically includes flags used by tpu_runner as part of the command.
 
@@ -442,7 +441,7 @@ class LaunchTPUJob(BaseBastionLaunchJob):
         Returns:
             The job config.
         """
-        cfg: LaunchTPUJob.Config = super().from_flags(fv, action=action, **kwargs)
+        cfg: BastionManagedTPUJob.Config = super().from_flags(fv, action=action, **kwargs)
 
         # Construct bundler config.
         if cfg.bundler:
@@ -473,7 +472,8 @@ class LaunchTPUJob(BaseBastionLaunchJob):
     def _list(self, output_file: Optional[TextIO] = None) -> Dict[str, Any]:
         """Lists running jobs and their associated TPU resources.
 
-        In addition to outputs provided by `BaseBastionLaunchJob._list()`, also returns a dict with:
+        In addition to outputs provided by `BaseBastionManagedJob._list()`, also returns a dict
+        with:
         * running_tpu_infos: The currently-running TPUs.
         * running_tpu_to_job_name: A mapping from TPU name to job name.
         """
@@ -534,7 +534,7 @@ class LaunchTPUJob(BaseBastionLaunchJob):
     def _execute(self):
         """Submits the command to bastion.
 
-        In addition to logic defined in `BaseBastionLaunchJob._execute()`, also emits the output
+        In addition to logic defined in `BaseBastionManagedJob._execute()`, also emits the output
         logs for each TPU worker.
         """
         cfg = self.config
@@ -573,7 +573,7 @@ def _match_by_regex(match_regex: Dict[str, str]):
 # Launchers specified here will be tried (in the given order) when launching a given instance type.
 _LAUNCHERS = [
     Launcher(
-        job_cls=LaunchTPUJob,
+        job_cls=BastionManagedTPUJob,
         matcher=config_for_function(_match_by_regex).set(
             match_regex=dict(start=r"tpu-v.+-(\d)+", list=r"tpu.*", stop=r"tpu.*"),
         ),
@@ -628,7 +628,7 @@ def main(_):
             command = shlex.join(sys.argv[i + 1 :])
             break
     cfg = launcher.job_cls.from_flags(FLAGS, command=command, action=action)
-    job: BaseBastionLaunchJob = cfg.instantiate()
+    job: BaseBastionManagedJob = cfg.instantiate()
     if FLAGS.dry_run:
         print(f"Action: {action}\nJob config:\n{job.config}")
         return
