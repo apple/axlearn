@@ -381,7 +381,6 @@ def mean_squared_error(
         A WeightedScalar consisting of the loss and the number of examples that contributed to the
         loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
     """
-    # Not redundant because diff may have different NaN locations than targets.
     diff = (preds - targets) ** 2
     return _weighted_mean(diff, sample_weight=sample_weight, eps=eps)
 
