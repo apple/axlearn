@@ -244,8 +244,6 @@ def test_cross_entropy_live_targets():
     live_targets = jnp.asarray([1, 0, 0])
     assert cross_entropy(logits, targets)[0] > 0.0
     assert jnp.allclose(cross_entropy(logits, targets, live_targets=live_targets)[0], 0.0)
-    # Test legacy mask.
-    assert jnp.allclose(cross_entropy(logits, targets, mask=live_targets)[0], 0.0)
 
 
 # TODO(jbiloki): Convert tf style masking to have attribute _keras_mask
@@ -258,11 +256,6 @@ def test_binary_cross_entropy_live_targets():
     tf_cross_entropy = tf_bce(targets[live_targets > 0], logits[live_targets > 0])
     assert jnp.allclose(
         binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
-        tf_cross_entropy.numpy(),
-    )
-    # Test legacy mask.
-    assert jnp.allclose(
-        binary_cross_entropy(logits, target_labels=targets, mask=live_targets)[0],
         tf_cross_entropy.numpy(),
     )
 
