@@ -22,7 +22,7 @@
 """Optimization modules."""
 import dataclasses
 import re
-from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple, Union
 
 import chex
 import jax
@@ -78,6 +78,24 @@ def chain(*args):
     return PartitionedGradientTransformation(
         init=base.init, update=base.update, partition=partition
     )
+
+
+def named_chain(**kwargs):
+    def init_fn(params):
+        return {k: v.init(params) for k, v in kwargs.items()}
+
+    def update_fn(
+        updates: NestedTensor, state: Dict[str, Any], params: NestedOptParam
+    ) -> Tuple[NestedTensor, optax.EmptyState]:
+        new_state = {}
+        for k, v in kwargs.items():
+            updates, new_state[k] = v.update(updates, state[k], params)
+        return updates, new_state
+
+    def partition_fn(param_spec):
+        return {k: v.partition(param_spec) for k, v in kwargs}
+
+    return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
 @dataclasses.dataclass
@@ -1651,16 +1669,18 @@ def adastar_optimizer(
         return updates2, optax.safe_int32_increment(step)
 
     # Stage 1.
-    tx = [PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)]
+    tx = {
+        "compute_updates": PartitionedGradientTransformation(
+            init=init_fn, update=update_fn, partition=partition_fn
+        )
+    }
     # Interlude.
     if adam_update_transformation is not None:
-        tx.append(adam_update_transformation)
+        tx["transform_updates"] = adam_update_transformation
     # Stage 2.
-    tx.append(
-        PartitionedGradientTransformation(
-            init=lambda _: jnp.zeros([], dtype=jnp.int32),
-            update=update2_fn,
-            partition=lambda _: OptStateSpec(shape=[], dtype=jnp.int32, mesh_axes=PartitionSpec()),
-        )
+    tx["apply_lr_and_wd"] = PartitionedGradientTransformation(
+        init=lambda _: jnp.zeros([], dtype=jnp.int32),
+        update=update2_fn,
+        partition=lambda _: OptStateSpec(shape=[], dtype=jnp.int32, mesh_axes=PartitionSpec()),
     )
-    return chain(*tx)
+    return named_chain(**tx)
