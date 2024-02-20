@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
+from absl.testing import parameterized
 from jax.experimental.pjit import pjit
 
 from axlearn.common.eval_retrieval_test import DummyRetrievalModel
@@ -67,6 +68,7 @@ def _compute_metrics(
     *,
     data_generator,
     top_ks_for_accuracy: List[int],
+    top_ks_for_ndcg: Optional[List[int]] = None,
 ) -> Dict:
     """Mock function that calls forward() function of TextDualEncoderMetricCalculator and
         calculates evaluation metrics.
@@ -75,6 +77,7 @@ def _compute_metrics(
         data_generator: Mock data generator that generates batches of input data and corresponding
             predicted embeddings.
         top_ks_for_accuracy: The values for k for which to compute accuracy.
+        top_ks_for_ndcg: Optional. The values for k for which to compute nDCG.
 
     Returns:
         A dict containing all the calculated metrics.
@@ -94,6 +97,7 @@ def _compute_metrics(
                 left_encoder_name=LEFT_ENCODER_NAME,
                 right_encoder_name=RIGHT_ENCODER_NAME,
                 top_ks_for_accuracy=top_ks_for_accuracy,
+                top_ks_for_ndcg=top_ks_for_ndcg,
             )
             .instantiate(
                 parent=None, model=model, model_param_partition_specs=model_param_partition_specs
@@ -121,9 +125,8 @@ def _compute_metrics(
 
 
 class TextDualEncoderMetricCalculatorTest(TestCase):
-    def test_calculate_metrics(
-        self,
-    ):
+    @parameterized.parameters(dict(top_ks_for_ndcg=[1, 4]), dict(top_ks_for_ndcg=None))
+    def test_calculate_metrics(self, top_ks_for_ndcg):
         query_embeddings = jnp.asarray(
             [
                 [[4, 1]],
@@ -158,6 +161,7 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
         top_ks_for_accuracy = [1, 4]
         summaries = _compute_metrics(
             top_ks_for_accuracy=top_ks_for_accuracy,
+            top_ks_for_ndcg=top_ks_for_ndcg,
             data_generator=dummy_data_generator(
                 query_embeddings,
                 query_paddings,
@@ -178,13 +182,21 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
             query_paddings=query_paddings,
             text_paddings=jnp.reshape(text_positive_paddings, -1),
             top_ks_for_accuracy=top_ks_for_accuracy,
+            top_ks_for_ndcg=top_ks_for_ndcg,
         )
-
         expected_metrics = {
             "avg_rank": (2 + 5 + 1) / 3,
             "retrieval_accuracy@1": 1 / 3,
             "retrieval_accuracy@4": 2 / 3,
         }
+        if top_ks_for_ndcg:
+            # Average of per-query nDCG.
+            expected_metrics.update(
+                {
+                    "ndcg@1": (0 + 0 + 1) / 3,
+                    "ndcg@4": (0.650921 + 0 + 0.6131472) / 3,
+                }
+            )
 
         self.assertNestedAllClose(summaries, expected_metrics)
         self.assertNestedAllClose(summaries_from_similarity_matrix, expected_metrics)
@@ -195,6 +207,7 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
         text_negative_paddings = jnp.zeros((4, 0))
         summaries = _compute_metrics(
             top_ks_for_accuracy=[1, 4],
+            top_ks_for_ndcg=top_ks_for_ndcg,
             data_generator=dummy_data_generator(
                 query_embeddings,
                 query_paddings,
@@ -226,6 +239,7 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
         """
         summaries = _compute_metrics(
             top_ks_for_accuracy=top_ks_for_accuracy,
+            top_ks_for_ndcg=top_ks_for_ndcg,
             data_generator=dummy_data_generator(
                 query_embeddings,
                 query_paddings,
@@ -256,12 +270,20 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
             query_paddings=query_paddings,
             text_paddings=text_paddings,
             top_ks_for_accuracy=top_ks_for_accuracy,
+            top_ks_for_ndcg=top_ks_for_ndcg,
         )
         expected_metrics = {
             "avg_rank": (3 + 8 + 1) / 3,
             "retrieval_accuracy@1": 1 / 3,
             "retrieval_accuracy@7": 2 / 3,
         }
-
+        if top_ks_for_ndcg:
+            # Average of per-query nDCG.
+            expected_metrics.update(
+                {
+                    "ndcg@1": (0 + 0 + 1) / 3,
+                    "ndcg@4": (0.3065736 + 0 + 0.6131472) / 3,
+                }
+            )
         self.assertNestedAllClose(summaries, expected_metrics)
         self.assertNestedAllClose(summaries_from_similarity_matrix, expected_metrics)
