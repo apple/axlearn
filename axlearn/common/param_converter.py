@@ -943,6 +943,8 @@ def _parameters_from_deberta_self_attention(
     params["dropout"] = {}
     params["pos_emb"] = {}
     params["pos_emb_dropout"] = {}
+    params["scale_key"] = {}
+    params["scale_query"] = {}
     if "pos_k_proj" not in params:
         params["pos_k_proj"] = {}
     if "pos_q_proj" not in params:
