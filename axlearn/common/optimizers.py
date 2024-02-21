@@ -93,7 +93,7 @@ def named_chain(**kwargs):
         return updates, new_state
 
     def partition_fn(param_spec):
-        return {k: v.partition(param_spec) for k, v in kwargs}
+        return {k: v.partition(param_spec) for k, v in kwargs.items()}
 
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
