@@ -81,6 +81,8 @@ def chain(*args):
 
 
 def named_chain(**kwargs):
+    kwargs = {k: _to_partitioned_transformation(v) for k, v in kwargs.items()}
+
     def init_fn(params):
         return {k: v.init(params) for k, v in kwargs.items()}
 
