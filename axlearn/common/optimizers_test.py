@@ -1255,6 +1255,84 @@ class OptimizerTest(TestCase):
         test_results = _compute_updates(test_opt)
         self.assertNestedAllClose(base_results, test_results, atol=1e-6, rtol=1e-6)
 
+    @parameterized.parameters(
+        dict(
+            learning_rate=0.01,
+            b1=0.95,
+            b2=0.995,
+            eps_square=1e-30,
+            update_schedule=config_for_function(schedule.cosine_with_linear_warmup).set(
+                peak_lr=1, warmup_steps=100, max_step=1000
+            ),
+            clipping_threshold=1.0,
+            weight_decay=3e-4,
+        ),
+    )
+    def test_adastar_summaries(
+        self,
+        learning_rate,
+        b1,
+        b2,
+        eps_square,
+        update_schedule,
+        clipping_threshold,
+        weight_decay,
+    ):
+        test_opt = adastar_optimizer(
+            learning_rate=learning_rate,
+            # adafactor does not apply smoothing on gradients (but on raw updates).
+            gradient_ema_decay=None,
+            gradient_ema_debias=None,
+            gradient_square_ema_decay=b2,
+            gradient_square_ema_debias=True,
+            eps=0,
+            eps_square=eps_square,
+            # Clipping is applied on raw updates by per-param norm (not global norm).
+            raw_update_clipping_threshold=clipping_threshold,
+            # Smoothing is applied on raw updates.
+            update_ema_decay=b1,
+            # ... but without debiasing (!).
+            update_ema_debias=False,
+            weight_decay=weight_decay,
+            update_schedule=update_schedule,
+        )
+
+        def _compute_updates(opt) -> Tensor:
+            params = dict(
+                layer=VDict(
+                    w=OptParam(
+                        value=jnp.asarray([[0, 10, 2, -3], [1, -3, 2, 4]], dtype=jnp.float32),
+                        factorization_spec=None,
+                        weight_decay_scale=1.0,
+                    )
+                )
+            )
+            state = opt.init(params)
+
+            def compute_loss(param_values):
+                return -jnp.mean(jax.nn.log_softmax(param_values["layer"]["w"])[..., 1])
+
+            param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+            grads = jax.grad(compute_loss)(param_values)
+            updates, _ = opt.update(grads, state=state, params=params)
+            return updates
+
+        context = InvocationContext(
+            name="root",
+            parent=None,
+            module=None,
+            state=None,
+            output_collection=new_output_collection(),
+            is_training=True,
+            prng_key=None,
+        )
+        with set_current_context(context):
+            _compute_updates(test_opt)
+            self.assertContainsSubset(
+                {"learning_rate", "weight_decay_rate", "schedule_scale", "schedule_step"},
+                context.output_collection.summaries,
+            )
+
 
 if __name__ == "__main__":
     absltest.main()

@@ -1665,7 +1665,14 @@ def adastar_optimizer(
         def _update2(u: Tensor, param: OptParam):
             lr_scaled_updates = learning_rate * u
             updates_with_wd = lr_scaled_updates + weight_decay * param.value
-            return -update_schedule(step) * updates_with_wd
+            schedule_scale = update_schedule(step)
+            context = current_context()
+            if context:
+                context.add_summary("schedule_step", step)
+                context.add_summary("schedule_scale", schedule_scale)
+                context.add_summary("learning_rate", learning_rate * schedule_scale)
+                context.add_summary("weight_decay_rate", weight_decay * schedule_scale)
+            return -schedule_scale * updates_with_wd
 
         updates2 = jax.tree_util.tree_map(lambda u, p: _update2(u, param=p), updates, params)
         return updates2, optax.safe_int32_increment(step)
