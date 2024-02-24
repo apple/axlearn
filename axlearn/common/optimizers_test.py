@@ -1307,7 +1307,6 @@ class OptimizerTest(TestCase):
                     )
                 )
             )
-            print(f"params={params}")
             state = opt.init(params)
 
             def compute_loss(param_values):
@@ -1315,7 +1314,6 @@ class OptimizerTest(TestCase):
 
             param_values = jax.tree_util.tree_map(lambda p: p.value, params)
             grads = jax.grad(compute_loss)(param_values)
-            print(f"grads={grads}")
             updates, _ = opt.update(grads, state=state, params=params)
             return updates
 
