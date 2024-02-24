@@ -338,6 +338,31 @@ def scale_by_trust_ratio(
     )
 
 
+def compute_norms(x: NestedTensor, *, summary_suffix: Optional[str] = None) -> NestedTensor:
+    """Computes norm for each leaf tensor of `x` and optionally adds summaries.
+
+    Summaries will be added if `summary_suffix` is not None *and* the current context is not None.
+
+    Args:
+        x: A Nested Tensor, e.g., representing params or gradients. May contain VDict, in which
+            case each entry will be computed separately, therefore the norms of params of a
+            repeated layer will be computed separately.
+        summary_suffix: If not None, adds summaries of name `{path}/{summary_suffix}` of the norms.
+
+    Returns:
+        A NestedTensor with the same structure as `x` and each leaf node representing the norm
+        of the tensor in `x`.
+    """
+    # Use vectorized_tree_map to compute separate norms for each layer in a Repeated.
+    norms = vectorized_tree_map(lambda u: jnp.sqrt(jnp.mean(u**2)), x)
+    context = current_context()
+    if summary_suffix is not None and context is not None:
+        expanded_norms = expand_vdicts(norms)
+        for path, value in flatten_items(expanded_norms):
+            context.add_summary(f"{path}/{summary_suffix}", value)
+    return norms
+
+
 class AddDecayedWeightsState(NamedTuple):
     count: Optional[Tensor]  # Number of steps.
 
