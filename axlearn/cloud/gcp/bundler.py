@@ -48,7 +48,7 @@ Examples (cloudbuild):
 
 import os
 import subprocess
-from typing import Dict
+from typing import Dict, List
 
 from absl import app, flags, logging
 
@@ -72,11 +72,18 @@ class GCSTarBundler(BaseTarBundler):
     TYPE = "gcs"
 
     @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
+    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> "Config":
+        """Converts a spec to a bundler.
+
+        Possible options:
+        - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf_io.
+        """
+        cfg = super().from_spec(spec, fv=fv)
         # Read from settings by default, if available.
-        if ttl_bucket := gcp_settings("ttl_bucket", required=False):
-            cfg.set(remote_dir=f"gs://{ttl_bucket}/axlearn/jobs")
+        if not cfg.remote_dir:
+            ttl_bucket = gcp_settings("ttl_bucket", required=False, fv=fv)
+            if ttl_bucket:
+                cfg.remote_dir = f"gs://{ttl_bucket}/axlearn/jobs"
         return cfg
 
     def _copy_to_local_command(self, *, remote_bundle_id: str, local_bundle_id: str) -> str:

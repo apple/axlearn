@@ -2,6 +2,7 @@
 
 """Tests bundling utilities."""
 
+from absl import flags
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import get_bundler_config
@@ -39,6 +40,7 @@ class RegistryTest(TestCase):
 
     @parameterized.parameters(ArtifactRegistryBundler, CloudBuildBundler)
     def test_get_docker_bundler(self, bundler_cls):
+        flags.FLAGS.mark_as_parsed()
         # Test without settings.
         with mock_gcp_settings(bundler.__name__, settings={}):
             cfg = get_bundler_config(

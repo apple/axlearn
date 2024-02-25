@@ -219,7 +219,9 @@ class BaseBastionManagedJob(Job):
         cfg = super().from_flags(fv, **kwargs)
         # Construct bundler config only for start.
         if action == "start":
-            cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
+            cfg.bundler = get_bundler_config(
+                bundler_type=fv.bundler_type, spec=fv.bundler_spec, fv=fv
+            )
         cfg.bastion_name = fv.bastion
         return cfg
 

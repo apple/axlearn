@@ -6,10 +6,19 @@ import contextlib
 from typing import Any, Dict, Optional, Sequence, Union
 from unittest import mock
 
+from absl import flags
+
 
 @contextlib.contextmanager
 def mock_gcp_settings(module_name: Union[str, Sequence[str]], settings: Dict[str, str]):
-    def gcp_settings(key: str, default: Optional[Any] = None, required: bool = True):
+    def gcp_settings(
+        key: str,
+        default: Optional[Any] = None,
+        required: bool = True,
+        fv: flags.FlagValues = flags.FLAGS,
+    ):
+        if key not in ("project", "zone") and not fv.is_parsed():
+            raise RuntimeError(f"fv must be parsed before gcp_settings is called for key: {key}")
         value = settings.get(key, default)
         if required and value is None:
             raise ValueError(f"{key} is required")

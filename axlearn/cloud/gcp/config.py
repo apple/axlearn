@@ -52,12 +52,12 @@ FLAGS = flags.FLAGS
 CONFIG_NAMESPACE = "gcp"
 
 
-def _flag_values() -> Dict[str, Any]:
-    return FLAGS.flag_values_dict()
-
-
 def gcp_settings(
-    key: str, *, default: Optional[Any] = None, required: bool = True
+    key: str,
+    *,
+    default: Optional[Any] = None,
+    required: bool = True,
+    fv: flags.FlagValues = FLAGS,
 ) -> Optional[str]:
     """Reads a specific value from config file under the "GCP" namespace.
 
@@ -66,20 +66,21 @@ def gcp_settings(
         default: Optional default value to assign, if the field is not set.
             A default is assigned only if the field is None; explicitly falsey values are kept.
         required: Whether we require the field to exist.
+        fv: The flag values, which can override project and zone settings. Must be parsed.
 
     Returns:
         The config value (possibly None if required is False).
 
     Raises:
-        RuntimeError: If FLAGS have not been parsed and the config field value depends on flags.
+        RuntimeError: If `fv` have not been parsed and the config field value depends on flags.
         SystemExit: If a required config could not be read, i.e. the value is None even after
             applying default (if applicable).
     """
-    if key not in ("project", "zone") and not FLAGS.is_parsed():
-        raise RuntimeError(f"FLAGS must be parsed before gcp_settings is called for key: {key}")
+    if key not in ("project", "zone") and not fv.is_parsed():
+        raise RuntimeError(f"fv must be parsed before gcp_settings is called for key: {key}")
     required = required and default is None
     config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=required)
-    flag_values = _flag_values()
+    flag_values = fv.flag_values_dict()
     project = flag_values.get("project", None)
     zone = flag_values.get("zone", None)
     if project and zone:
