@@ -42,7 +42,7 @@ Examples:
 
 import sys
 from functools import partial
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from absl import app, flags, logging
 
