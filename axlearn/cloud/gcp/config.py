@@ -79,7 +79,6 @@ def gcp_settings(
     if key not in ("project", "zone") and not fv.is_parsed():
         raise RuntimeError(f"fv must be parsed before gcp_settings is called for key: {key}")
     required = required and default is None
-    config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=required)
     flag_values = fv.flag_values_dict()
     project = flag_values.get("project", None)
     if key == "project" and project:
@@ -87,6 +86,7 @@ def gcp_settings(
     zone = flag_values.get("zone", None)
     if key == "zone" and zone:
         return zone
+    config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=required)
     if project and zone:
         config_name = _project_config_key(project, zone)
     else:
