@@ -22,7 +22,7 @@
 """Optimization modules."""
 import dataclasses
 import re
-from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 import chex
 import jax
@@ -1459,6 +1459,7 @@ def adastar_optimizer(
     adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
     weight_decay: float = 0,
     update_schedule: schedule.Schedule,
+    add_summaries: Optional[Set[str]] = None,
 ) -> PartitionedGradientTransformation:
     """An optimizer covering both {adamw_decoupled,adafactor}_optimizer (with factored=False).
 
@@ -1529,6 +1530,7 @@ def adastar_optimizer(
             similar to adamw_adamw_decoupled_optimizer and different from adafactor_optimizer.
         update_schedule: an update schedule, which is applied to scale both the learning rate
             and the weight decay.
+        add_summaries: Optional summaries to add. Possible values are `param_norm`.
 
     Returns:
         A PartitionedGradientTransformation representing an Adafactor optimizer.
@@ -1686,6 +1688,10 @@ def adastar_optimizer(
 
     def update2_fn(updates, state: Tensor, params: NestedOptParam):
         step = state
+
+        if add_summaries is not None and "param_norm" in add_summaries:
+            param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+            compute_norms(param_values, summary_suffix="param_norm")
 
         def _update2(u: Tensor, param: OptParam):
             lr_scaled_updates = learning_rate * u

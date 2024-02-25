@@ -1295,6 +1295,7 @@ class OptimizerTest(TestCase):
             update_ema_debias=False,
             weight_decay=weight_decay,
             update_schedule=update_schedule,
+            add_summaries={"param_norm"},
         )
 
         def _compute_updates(opt) -> Tensor:
@@ -1329,7 +1330,16 @@ class OptimizerTest(TestCase):
         with set_current_context(context):
             _compute_updates(test_opt)
             self.assertContainsSubset(
-                {"learning_rate", "weight_decay_rate", "schedule_scale", "schedule_step"},
+                {
+                    "learning_rate",
+                    "weight_decay_rate",
+                    "schedule_scale",
+                    "schedule_step",
+                    # Normalized gradient norms.
+                    *[f"layer/{i}/w/norm" for i in range(2)],
+                    # Parameter norms.
+                    *[f"layer/{i}/w/param_norm" for i in range(2)],
+                },
                 context.output_collection.summaries,
             )
 
