@@ -199,15 +199,19 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
     )
 
 
-def shared_bastion_name(zone: str) -> str:
+def shared_bastion_name(fv: flags.FlagValues) -> str:
     # The zone-namespacing is necessary because of quirks with compute API. Specifically, even if
     # creating VMs within a specific zone, names are global. On the other hand, the list API only
     # returns VMs within a zone, so there's no easy way to check if a shared bastion already exists
     # in another zone.
-    return gcp_settings(  # pytype: disable=bad-return-type
+    zone = fv.zone or gcp_settings("zone", fv=fv)
+    bastion_name = gcp_settings(  # pytype: disable=bad-return-type
         "bastion_name",
         default=f"{zone}-{_SHARED_BASTION_SUFFIX}",
+        fv=fv,
     )
+    # print(f"fv.zone={fv.zone} zone={zone} bastion_name={bastion_name}")
+    return bastion_name
 
 
 def bastion_root_dir(bastion: str) -> str:

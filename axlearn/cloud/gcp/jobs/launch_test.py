@@ -343,10 +343,11 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
             # Check bastion flag. If None, we should infer from zone in mock_settings.
             if zone is None:
                 self.assertEqual(
-                    cfg.bastion_name, f"{mock_settings['zone']}-{bastion_vm._SHARED_BASTION_SUFFIX}"
+                    f"{mock_settings['zone']}-{bastion_vm._SHARED_BASTION_SUFFIX}",
+                    cfg.bastion_name,
                 )
             else:
-                self.assertEqual(cfg.bastion_name, f"{zone}-{bastion_vm._SHARED_BASTION_SUFFIX}")
+                self.assertEqual(f"{zone}-{bastion_vm._SHARED_BASTION_SUFFIX}", cfg.bastion_name)
 
             # Check output_dir.
             if output_dir is None:

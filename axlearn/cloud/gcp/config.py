@@ -82,7 +82,11 @@ def gcp_settings(
     config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=required)
     flag_values = fv.flag_values_dict()
     project = flag_values.get("project", None)
+    if key == "project" and project:
+        return project
     zone = flag_values.get("zone", None)
+    if key == "zone" and zone:
+        return zone
     if project and zone:
         config_name = _project_config_key(project, zone)
     else:

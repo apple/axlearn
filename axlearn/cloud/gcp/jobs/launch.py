@@ -212,17 +212,17 @@ class BaseBastionManagedJob(Job):
         Returns:
             The job config.
         """
-        # Default bastion name depends on the final value of --zone.
-        fv.set_default("bastion", shared_bastion_name(fv.zone))
-        # Default output_dir depends on the final value of --name.
-        fv.set_default("output_dir", f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{fv.name}")
         cfg = super().from_flags(fv, **kwargs)
+        if not cfg.bastion_name:
+            cfg.bastion_name = shared_bastion_name(fv)
+        # Default output_dir depends on the final value of --name.
+        if not cfg.output_dir:
+            cfg.output_dir = f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
         # Construct bundler config only for start.
         if action == "start":
             cfg.bundler = get_bundler_config(
                 bundler_type=fv.bundler_type, spec=fv.bundler_spec, fv=fv
             )
-        cfg.bastion_name = fv.bastion
         return cfg
 
     def __init__(self, cfg: Config):
