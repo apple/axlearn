@@ -144,7 +144,7 @@ class DataflowJob(GCPJob):
         cfg.name = cfg.name or generate_job_name()
 
         # Construct bundler.
-        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
+        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec, fv=fv)
         if not issubclass(cfg.bundler.klass, DockerBundler):
             raise NotImplementedError("Expected a DockerBundler.")
         cfg.bundler.image = cfg.bundler.image or cfg.name
@@ -184,14 +184,14 @@ class DataflowJob(GCPJob):
     ) -> Tuple[Dict[str, Any], List[str]]:
         """Returns a flag dict and a list of flags considered as 'multi-flags'."""
         # Construct dataflow args, providing some defaults.
-        service_account = cfg.service_account or gcp_settings("service_account_email")
+        service_account = cfg.service_account or gcp_settings("service_account_email", fv=fv)
         dataflow_spec = {
             "job_name": cfg.name,
             "project": cfg.project,
             "region": cfg.zone.rsplit("-", 1)[0],
             "worker_machine_type": cfg.vm_type,
             "sdk_container_image": f"{cfg.bundler.repo}/{cfg.bundler.image}:{cfg.name}",
-            "temp_location": f"gs://{gcp_settings('ttl_bucket')}/tmp/{cfg.name}/",
+            "temp_location": f"gs://{gcp_settings('ttl_bucket', fv=fv)}/tmp/{cfg.name}/",
             "service_account_email": service_account,
             "dataflow_service_options": ["enable_secure_boot", "enable_google_cloud_heap_sampling"],
             "experiments": ["use_network_tags=allow-internet-egress", "use_runner_v2"],
@@ -211,7 +211,7 @@ class DataflowJob(GCPJob):
         if "network" not in dataflow_spec and "subnetwork" not in dataflow_spec:
             # Following https://cloud.google.com/dataflow/docs/guides/specifying-networks,
             # only --subnetwork is required, and we use the "complete URL" format.
-            subnetwork = gcp_settings("subnetwork")
+            subnetwork = gcp_settings("subnetwork", fv=fv)
             subnetwork_pat = r"projects/.+/regions/.+/subnetworks/.+"
             if not re.match(subnetwork_pat, subnetwork):
                 raise ValueError(

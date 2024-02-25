@@ -98,10 +98,12 @@ class ArtifactRegistryBundler(DockerBundler):
     TYPE = "artifactregistry"
 
     @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
-        cfg.repo = gcp_settings("docker_repo", required=False)
-        cfg.dockerfile = gcp_settings("default_dockerfile", required=False)
+    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> DockerBundler.Config:
+        cfg = super().from_spec(spec, fv=fv)
+        if not cfg.repo:
+            cfg.repo = gcp_settings("docker_repo", required=False, fv=fv)
+        if not cfg.dockerfile:
+            cfg.dockerfile = gcp_settings("default_dockerfile", required=False, fv=fv)
         return cfg
 
     def _build_and_push(self, *args, **kwargs):
