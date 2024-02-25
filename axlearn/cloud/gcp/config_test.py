@@ -5,6 +5,8 @@
 import os
 from unittest import mock
 
+from absl import flags
+
 from axlearn.cloud.common import config
 from axlearn.cloud.common.config_test import _setup_fake_repo, create_default_config
 from axlearn.cloud.gcp import config as gcp_config
@@ -22,6 +24,11 @@ class ConfigTest(TestWithTemporaryCWD):
 
         temp_dir = os.path.realpath(self._temp_root.name)
         _setup_fake_repo(temp_dir)
+
+        with self.assertRaisesRegex(RuntimeError, expected_regex="FLAGS must be parsed"):
+            gcp_config.gcp_settings("project", required=False)
+
+        flags.FLAGS.mark_as_parsed()
 
         # By default, should fail because no config file exists.
         with self.assertRaises(SystemExit):
