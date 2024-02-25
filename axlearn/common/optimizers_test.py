@@ -1295,7 +1295,6 @@ class OptimizerTest(TestCase):
             update_ema_debias=False,
             weight_decay=weight_decay,
             update_schedule=update_schedule,
-            add_summaries={"param_norm"},
         )
 
         def _compute_updates(opt) -> Tensor:
