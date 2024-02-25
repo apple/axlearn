@@ -22,7 +22,7 @@
 """Optimization modules."""
 import dataclasses
 import re
-from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple, Union
 
 import chex
 import jax
