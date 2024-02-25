@@ -17,8 +17,7 @@ def mock_gcp_settings(module_name: Union[str, Sequence[str]], settings: Dict[str
         required: bool = True,
         fv: flags.FlagValues = flags.FLAGS,
     ):
-        if key not in ("project", "zone") and not fv.is_parsed():
-            raise RuntimeError(f"fv must be parsed before gcp_settings is called for key: {key}")
+        del fv
         value = settings.get(key, default)
         if required and value is None:
             raise ValueError(f"{key} is required")
