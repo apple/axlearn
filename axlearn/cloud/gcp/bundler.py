@@ -72,7 +72,7 @@ class GCSTarBundler(BaseTarBundler):
     TYPE = "gcs"
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> "Config":
+    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> BaseTarBundler.Config:
         """Converts a spec to a bundler.
 
         Possible options:
