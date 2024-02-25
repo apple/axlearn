@@ -3,7 +3,6 @@
 """Tests config utils."""
 
 import os
-from unittest import mock
 
 from absl import flags
 
