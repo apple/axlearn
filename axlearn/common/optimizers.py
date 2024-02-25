@@ -1202,8 +1202,6 @@ def clip_by_block_rms(
     Args:
         threshold: the maximum rms for the gradient of each param vector or matrix.
             If None, does not clip.
-            In either case, norms will be added to summaries of the current context
-            (if a context is set).
         summary_suffix: If not None, adds pre-clip update norms to summaries.
 
     Returns:
