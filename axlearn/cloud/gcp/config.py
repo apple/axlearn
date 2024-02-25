@@ -71,12 +71,12 @@ def gcp_settings(
         The config value (possibly None if required is False).
 
     Raises:
-        RuntimeError: If FLAGS have not been parsed.
+        RuntimeError: If FLAGS have not been parsed and the config field value depends on flags.
         SystemExit: If a required config could not be read, i.e. the value is None even after
             applying default (if applicable).
     """
-    if not FLAGS.is_parsed():
-        raise RuntimeError("FLAGS must be parsed before gcp_settings is called.")
+    if key not in ("project", "zone") and not FLAGS.is_parsed():
+        raise RuntimeError(f"FLAGS must be parsed before gcp_settings is called for key: {key}")
     required = required and default is None
     config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=required)
     flag_values = _flag_values()
