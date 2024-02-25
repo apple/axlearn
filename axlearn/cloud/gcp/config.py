@@ -71,8 +71,9 @@ def gcp_settings(
         The config value (possibly None if required is False).
 
     Raises:
+        RuntimeError: If FLAGS have not been parsed.
         SystemExit: If a required config could not be read, i.e. the value is None even after
-        applying default (if applicable).
+            applying default (if applicable).
     """
     if not FLAGS.is_parsed():
         raise RuntimeError("FLAGS must be parsed before gcp_settings is called.")
