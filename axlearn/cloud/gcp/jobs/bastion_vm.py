@@ -511,7 +511,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     elif action == "history":
         if flag_values.job_name:
             # Print job history.
-            history = _job_history(bastion_name=flag_values.name, job_name=flag_values.job_name)
+            history = _job_history(root_dir=root_dir(), job_name=flag_values.job_name)
         else:
             # Print project history.
             if len(argv) > 2:
