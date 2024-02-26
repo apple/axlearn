@@ -86,6 +86,9 @@ class ConfigTest(TestWithTemporaryCWD):
         flags.DEFINE_string("zone", None, "The zone name.", flag_values=flag_values)
         flag_values.mark_as_parsed()
 
+        self.assertIsNone(gcp_config.default_project())
+        self.assertIsNone(gcp_config.default_zone())
+
         # Create a default config, which should get picked up.
         default_config = create_default_config(temp_dir)
         # Write some values to the config.
@@ -93,9 +96,7 @@ class ConfigTest(TestWithTemporaryCWD):
             str(default_config),
             {
                 gcp_config.CONFIG_NAMESPACE: {
-                    "_active": gcp_config._project_config_key(
-                        project="test-proj", zone="test-zone"
-                    ),
+                    "_active": "test-proj:test-zone",
                     "test-proj:test-zone": {
                         "project": "test-proj",
                         "zone": "test-zone",
@@ -104,6 +105,8 @@ class ConfigTest(TestWithTemporaryCWD):
                 }
             },
         )
+        self.assertEqual("test-proj", gcp_config.default_project())
+        self.assertEqual("test-zone", gcp_config.default_zone())
 
         # We follow the default config.
         self.assertEqual("test-proj", gcp_config.gcp_settings("project", fv=flag_values))

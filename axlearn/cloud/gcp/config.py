@@ -53,7 +53,7 @@ CONFIG_NAMESPACE = "gcp"
 
 
 def _gcp_settings_from_active_config(key: str) -> Optional[str]:
-    config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=True)
+    _, configs = config.load_configs(CONFIG_NAMESPACE, required=False)
     config_name = configs.get("_active", None)
     if not config_name:
         return None
