@@ -126,6 +126,7 @@ from axlearn.cloud.common.bastion import (
     set_runtime_options,
 )
 from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
+from axlearn.cloud.common.job import _with_retry
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.uploader import Uploader, with_interval
@@ -475,7 +476,11 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
                 upload_fn=config_for_function(with_interval).set(upload_fn=_gsutil_rsync),
             ),
         )
-        bastion_cfg.instantiate().execute()
+        _with_retry(
+            lambda: bastion_cfg.instantiate().execute(),
+            interval=60,
+            max_tries=-1,
+        )
     # TODO(markblee): Split out 'internal' commands from user-facing ones.
     elif action == "stop":
         _stop_bastion(flag_values=flag_values)
