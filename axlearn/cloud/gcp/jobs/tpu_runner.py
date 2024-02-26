@@ -182,10 +182,10 @@ class TPURunnerJob(TPUJob):
         cfg.name = cfg.name or generate_job_name()
         cfg.env_vars = {**cfg.env_vars, **parse_kv_flags(fv.env)}
         cfg.output_dir = (
-            cfg.output_dir or f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{cfg.name}"
+            cfg.output_dir or f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{cfg.name}"
         )
         cfg.bundler = with_tpu_extras(
-            get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
+            get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec, fv=fv)
         )
         return cfg
 

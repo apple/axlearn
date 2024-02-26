@@ -129,9 +129,9 @@ class CPURunnerJob(CPUJob):
         cfg = super().from_flags(fv, **kwargs)
         cfg.name = cfg.name or generate_job_name()
         cfg.output_dir = (
-            cfg.output_dir or f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{cfg.name}"
+            cfg.output_dir or f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{cfg.name}"
         )
-        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
+        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec, fv=fv)
         return cfg
 
     def __init__(self, cfg: Config):

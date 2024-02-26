@@ -199,7 +199,7 @@ class Bundler(Configurable):
         return temp_dir
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler."""
         raise NotImplementedError(cls)
 
@@ -293,7 +293,7 @@ class BaseDockerBundler(Bundler):
             )
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler.
 
         Possible options:
@@ -466,7 +466,7 @@ class BaseTarBundler(Bundler):
         editable: bool = False
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler.
 
         Possible options:
@@ -582,7 +582,10 @@ class BaseTarBundler(Bundler):
 
 
 def get_bundler_config(
-    *, bundler_type: str, spec: List[str], fv: flags.FlagValues = FLAGS
+    *,
+    bundler_type: str,
+    spec: List[str],
+    fv: Optional[flags.FlagValues] = None,
 ) -> Bundler.Config:
     """Constructs a bundler config from the given spec.
 
@@ -636,9 +639,9 @@ def main_flags():
 
 
 def main(_):
-    cfg = get_bundler_config(bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec).set(
-        exclude=FLAGS.bundler_exclude
-    )
+    cfg = get_bundler_config(
+        bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec, fv=FLAGS
+    ).set(exclude=FLAGS.bundler_exclude)
     bundler = cfg.instantiate()
     bundler.bundle(FLAGS.name)
 

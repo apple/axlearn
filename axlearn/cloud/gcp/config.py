@@ -55,18 +55,18 @@ CONFIG_NAMESPACE = "gcp"
 def gcp_settings(
     key: str,
     *,
+    fv: Optional[flags.FlagValues] = None,
     default: Optional[Any] = None,
     required: bool = True,
-    fv: flags.FlagValues = FLAGS,
 ) -> Optional[str]:
     """Reads a specific value from config file under the "GCP" namespace.
 
     Args:
         key: The config field.
+        fv: The flag values, which can override project and zone settings. Must be parsed.
         default: Optional default value to assign, if the field is not set.
             A default is assigned only if the field is None; explicitly falsey values are kept.
         required: Whether we require the field to exist.
-        fv: The flag values, which can override project and zone settings. Must be parsed.
 
     Returns:
         The config value (possibly None if required is False).
@@ -76,16 +76,19 @@ def gcp_settings(
         SystemExit: If a required config could not be read, i.e. the value is None even after
             applying default (if applicable).
     """
-    if key not in ("project", "zone") and not fv.is_parsed():
+    if key not in ("project", "zone") and (fv is None or not fv.is_parsed()):
         raise RuntimeError(f"fv must be parsed before gcp_settings is called for key: {key}")
+    if fv is None:
+        project = zone = None
+    else:
+        flag_values = fv.flag_values_dict()
+        project = flag_values.get("project", None)
+        if key == "project" and project:
+            return project
+        zone = flag_values.get("zone", None)
+        if key == "zone" and zone:
+            return zone
     required = required and default is None
-    flag_values = fv.flag_values_dict()
-    project = flag_values.get("project", None)
-    if key == "project" and project:
-        return project
-    zone = flag_values.get("zone", None)
-    if key == "zone" and zone:
-        return zone
     config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=required)
     if project and zone:
         config_name = _project_config_key(project, zone)

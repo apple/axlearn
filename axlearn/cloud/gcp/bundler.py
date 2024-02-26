@@ -48,7 +48,7 @@ Examples (cloudbuild):
 
 import os
 import subprocess
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from absl import app, flags, logging
 
@@ -72,7 +72,7 @@ class GCSTarBundler(BaseTarBundler):
     TYPE = "gcs"
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> BaseTarBundler.Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> BaseTarBundler.Config:
         """Converts a spec to a bundler.
 
         Possible options:
@@ -98,12 +98,10 @@ class ArtifactRegistryBundler(DockerBundler):
     TYPE = "artifactregistry"
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> DockerBundler.Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> DockerBundler.Config:
         cfg = super().from_spec(spec, fv=fv)
-        if not cfg.repo:
-            cfg.repo = gcp_settings("docker_repo", required=False, fv=fv)
-        if not cfg.dockerfile:
-            cfg.dockerfile = gcp_settings("default_dockerfile", required=False, fv=fv)
+        cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
+        cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
         return cfg
 
     def _build_and_push(self, *args, **kwargs):
@@ -122,7 +120,9 @@ class CloudBuildBundler(BaseDockerBundler):
     TYPE = "cloudbuild"
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> BaseDockerBundler.Config:
+    def from_spec(
+        cls, spec: List[str], *, fv: Optional[flags.FlagValues]
+    ) -> BaseDockerBundler.Config:
         cfg = super().from_spec(spec, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)

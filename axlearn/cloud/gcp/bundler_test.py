@@ -25,6 +25,7 @@ class RegistryTest(TestCase):
                     # Make sure parent configs can be set from spec.
                     "external=test_external",
                 ],
+                fv=None,
             )
             self.assertEqual(cfg.remote_dir, "test_bucket")
             self.assertEqual(cfg.external, "test_external")
@@ -34,6 +35,7 @@ class RegistryTest(TestCase):
             cfg = get_bundler_config(
                 bundler_type=GCSTarBundler.TYPE,
                 spec=["external=test_external"],
+                fv=None,
             )
             self.assertEqual(cfg.remote_dir, "gs://default_bucket/axlearn/jobs")
             self.assertEqual(cfg.external, "test_external")
@@ -54,6 +56,7 @@ class RegistryTest(TestCase):
                     "external=test_external",
                     "target=test_target",
                 ],
+                fv=None,
             )
             self.assertEqual(cfg.image, "test_image")
             self.assertEqual(cfg.repo, "test_repo")
@@ -77,6 +80,7 @@ class RegistryTest(TestCase):
                     "external=test_external",
                     "target=test_target",
                 ],
+                fv=None,
             )
             self.assertEqual(cfg.image, "test_image")
             self.assertEqual(cfg.repo, "default_repo")

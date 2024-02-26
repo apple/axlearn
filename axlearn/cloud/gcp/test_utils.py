@@ -13,9 +13,10 @@ from absl import flags
 def mock_gcp_settings(module_name: Union[str, Sequence[str]], settings: Dict[str, str]):
     def gcp_settings(
         key: str,
+        *,
+        fv: Optional[flags.FlagValues] = None,
         default: Optional[Any] = None,
         required: bool = True,
-        fv: flags.FlagValues = flags.FLAGS,
     ):
         del fv
         value = settings.get(key, default)
