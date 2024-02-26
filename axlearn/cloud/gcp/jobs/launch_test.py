@@ -108,7 +108,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                     test_fixture.assertEqual(spec.metadata.project_id, cfg.project_id or "none")
                     test_fixture.assertEqual(spec.metadata.priority, cfg.priority)
 
-        return cfg.set(bastion_dir=FakeBastionDirectory.default_config())
+        return cfg.set(bastion_dir=FakeBastionDirectory.default_config().set(root_dir="temp_dir"))
 
     @parameterized.parameters(
         dict(output_dir="", instance_type="test", expected=ValueError("output_dir")),
@@ -124,10 +124,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
         mock_get_vm_node = mock.patch(
             f"{launch.__name__}._get_bastion_vm", return_value=dict(status="RUNNING")
         )
-        mock_bastion_root_dir = mock.patch(
-            f"{launch.__name__}.bastion_root_dir", return_value="temp_dir"
-        )
-        with mock_get_vm_node, mock_bastion_root_dir:
+        with mock_get_vm_node:
             # Test with defaults.
             job = self._mock_config().instantiate()
             job._execute()
@@ -208,13 +205,10 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                 cleanup_proc=None,
             ),
         }
-        mock_bastion_root_dir = mock.patch(
-            f"{launch.__name__}.bastion_root_dir", return_value="temp_dir"
-        )
         mock_download_job_batch = mock.patch(
             f"{launch.__name__}.download_job_batch", return_value=(mock_jobs, set())
         )
-        with mock_download_job_batch, mock_bastion_root_dir:
+        with mock_download_job_batch:
             job = self._mock_config().instantiate()
             out = job._list()
             self.assertEqual(out["jobs"], mock_jobs)
