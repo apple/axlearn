@@ -130,7 +130,7 @@ from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.uploader import Uploader, with_interval
 from axlearn.cloud.common.utils import configure_logging, parse_action
-from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, docker_command
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
 from axlearn.cloud.gcp.utils import catch_auth, common_flags
@@ -145,8 +145,8 @@ FLAGS = flags.FLAGS
 def _private_flags(flag_values: flags.FlagValues = FLAGS):
     common_flags(flag_values=flag_values)
     bastion_job_flags(flag_values=flag_values)
-    flag_values.set_default("project", gcp_settings("project", required=False))
-    flag_values.set_default("zone", gcp_settings("zone", required=False))
+    flag_values.set_default("project", default_project())
+    flag_values.set_default("zone", default_zone())
 
     flags.DEFINE_string(
         "vm_type", "n2-highmem-128", "Machine spec to boot for VM.", flag_values=flag_values

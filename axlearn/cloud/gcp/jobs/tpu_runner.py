@@ -74,7 +74,7 @@ from axlearn.cloud.common.utils import (
     parse_kv_flags,
 )
 from axlearn.cloud.gcp.bundler import GCSTarBundler, with_tpu_extras
-from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.job import TPUJob, docker_command
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.tpu import (
@@ -104,8 +104,8 @@ _COMMAND_SESSION_NAME = "command"
 def launch_flags(flag_values: flags.FlagValues = FLAGS):
     common_flags(flag_values=flag_values)
     bundler_flags(flag_values=flag_values)
-    flag_values.set_default("project", gcp_settings("project", required=False))
-    flag_values.set_default("zone", gcp_settings("zone", required=False))
+    flag_values.set_default("project", default_project())
+    flag_values.set_default("zone", default_zone())
     flag_values.set_default("bundler_type", GCSTarBundler.TYPE)
     # Note: don't use generate_job_name() here, as the VM may not have $USER.
     flags.DEFINE_string("name", None, "Job name.", flag_values=flag_values)

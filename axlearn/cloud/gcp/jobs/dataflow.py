@@ -96,7 +96,7 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
-from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.job import GCPJob
 from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -107,8 +107,8 @@ FLAGS = flags.FLAGS
 def launch_flags(flag_values: flags.FlagValues = FLAGS):
     common_flags(flag_values=flag_values)
     bundler_flags(flag_values=flag_values)
-    flag_values.set_default("project", gcp_settings("project", required=False))
-    flag_values.set_default("zone", gcp_settings("zone", required=False))
+    flag_values.set_default("project", default_project())
+    flag_values.set_default("zone", default_zone())
     flag_values.set_default("bundler_type", ArtifactRegistryBundler.TYPE)
     # Note: don't use generate_taskname() here, as the VM may not have $USER.
     flags.DEFINE_string("name", None, "Dataflow job name.", flag_values=flag_values)

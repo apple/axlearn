@@ -74,7 +74,7 @@ def default_zone():
 def gcp_settings(
     key: str,
     *,
-    fv: Optional[flags.FlagValues],
+    fv: Optional[flags.FlagValues] = FLAGS,
     default: Optional[Any] = None,
     required: bool = True,
 ) -> Optional[str]:
