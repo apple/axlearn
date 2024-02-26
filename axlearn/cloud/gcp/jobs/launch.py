@@ -629,6 +629,7 @@ def main(_):
             command = shlex.join(sys.argv[i + 1 :])
             break
     cfg = launcher.job_cls.from_flags(FLAGS, command=command, action=action)
+    logging.info("Launcher config:\n%s", cfg)
     job: BaseBastionManagedJob = cfg.instantiate()
     if FLAGS.dry_run:
         print(f"Action: {action}\nJob config:\n{job.config}")
