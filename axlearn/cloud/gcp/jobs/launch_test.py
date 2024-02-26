@@ -297,7 +297,7 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
         mock_settings = {
             "ttl_bucket": "ttl_bucket",
             "permanent_bucket": "permanent_bucket",
-            "zone": "default-zone",
+            "zone": zone or "default-zone",
         }
         patch_settings = mock_gcp_settings(
             [launch.__name__, bastion_vm.__name__, tpu_runner.__name__], settings=mock_settings
@@ -319,7 +319,7 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
             # Check some basic flags.
             self.assertEqual(fv.bastion, None)
             self.assertEqual(fv.name, name or "job-name")
-            self.assertEqual(fv.zone, zone or "default-zone")
+            self.assertEqual(fv.zone, zone)
             self.assertIn("tpu_type", fv)
             self.assertIn("bundler_type", fv)
             self.assertIsNotNone(fv["name"].default)

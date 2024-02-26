@@ -20,8 +20,6 @@ from axlearn.cloud.common.config import CONFIG_DIR, CONFIG_FILE, DEFAULT_CONFIG_
 from axlearn.cloud.common.config_test import create_default_config
 from axlearn.common.test_utils import TestCase, TestWithTemporaryCWD, temp_chdir
 
-FLAGS = flags.FLAGS
-
 
 @contextmanager
 def _fake_dockerfile():
@@ -156,7 +154,7 @@ class RegistryTest(TestCase):
                 "external=test_external",
                 "target=test_target",
             ],
-            fv=FLAGS,
+            fv=flags.FlagValues(),
         )
         self.assertEqual(cfg.image, "test_image")
         self.assertEqual(cfg.repo, "test_repo")
