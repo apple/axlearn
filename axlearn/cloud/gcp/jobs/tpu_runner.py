@@ -550,7 +550,7 @@ def with_tpu_training_defaults(
         TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES=256,
     )
     vertexai_tb_uploader = None
-    if is_vertexai_tensorboard_configured():
+    if is_vertexai_tensorboard_configured(flag_values=flag_values):
         vertexai_tb_uploader = VertexAITensorboardUploader.default_config()
 
     return cfg.set(

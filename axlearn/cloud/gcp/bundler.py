@@ -122,10 +122,10 @@ class CloudBuildBundler(BaseDockerBundler):
     TYPE = "cloudbuild"
 
     @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
-        cfg.repo = gcp_settings("docker_repo", required=False)
-        cfg.dockerfile = gcp_settings("default_dockerfile", required=False)
+    def from_spec(cls, spec: List[str], *, fv: flags.FlagValues) -> BaseDockerBundler.Config:
+        cfg = super().from_spec(spec, fv=fv)
+        cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
+        cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
         return cfg
 
     # pylint: disable-next=no-self-use,unused-argument
