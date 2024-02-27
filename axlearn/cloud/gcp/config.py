@@ -42,7 +42,7 @@ Examples:
 
 import sys
 from functools import partial
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from absl import app, flags, logging
 
@@ -52,17 +52,37 @@ FLAGS = flags.FLAGS
 CONFIG_NAMESPACE = "gcp"
 
 
-def _flag_values() -> Dict[str, Any]:
-    return FLAGS.flag_values_dict()
+def _gcp_settings_from_active_config(key: str) -> Optional[str]:
+    _, configs = config.load_configs(CONFIG_NAMESPACE, required=False)
+    config_name = configs.get("_active", None)
+    if not config_name:
+        return None
+    project_configs = configs.get(config_name, {})
+    if not project_configs:
+        return None
+    return project_configs.get(key, None)
+
+
+def default_project():
+    return _gcp_settings_from_active_config("project")
+
+
+def default_zone():
+    return _gcp_settings_from_active_config("zone")
 
 
 def gcp_settings(
-    key: str, *, default: Optional[Any] = None, required: bool = True
+    key: str,
+    *,
+    fv: Optional[flags.FlagValues] = FLAGS,
+    default: Optional[Any] = None,
+    required: bool = True,
 ) -> Optional[str]:
     """Reads a specific value from config file under the "GCP" namespace.
 
     Args:
         key: The config field.
+        fv: The flag values, which can override project and zone settings. Must be parsed.
         default: Optional default value to assign, if the field is not set.
             A default is assigned only if the field is None; explicitly falsey values are kept.
         required: Whether we require the field to exist.
@@ -71,19 +91,27 @@ def gcp_settings(
         The config value (possibly None if required is False).
 
     Raises:
+        RuntimeError: If `fv` have not been parsed and the config field value depends on flags.
         SystemExit: If a required config could not be read, i.e. the value is None even after
-        applying default (if applicable).
+            applying default (if applicable).
     """
+    if fv is None or not fv.is_parsed():
+        raise RuntimeError(f"fv must be parsed before gcp_settings is called for key: {key}")
+    flag_values = fv.flag_values_dict()
+    project = flag_values.get("project", None)
+    if key == "project" and project:
+        return project
+    zone = flag_values.get("zone", None)
+    if key == "zone" and zone:
+        return zone
     required = required and default is None
     config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=required)
-    flag_values = _flag_values()
-    project = flag_values.get("project", None)
-    zone = flag_values.get("zone", None)
     if project and zone:
         config_name = _project_config_key(project, zone)
     else:
         # Try to infer from active config.
         config_name = configs.get("_active", None)
+        logging.info("Inferring active config: %s", config_name)
     project_configs = configs.get(config_name, {})
     if required and not project_configs:
         # TODO(markblee): Link to docs once available.

@@ -37,6 +37,10 @@ def _mock_gcp_settings():
         mock_gcp_settings(module.__name__, settings=mock_settings)
         for module in [dataflow, bundler, cpu_runner]
     ]
+    mocks += [
+        mock.patch(f"{dataflow.__name__}.default_project", return_value="test_project"),
+        mock.patch(f"{dataflow.__name__}.default_zone", return_value="test_zone"),
+    ]
     with contextlib.ExitStack() as stack:
         for m in mocks:
             stack.enter_context(m)

@@ -56,7 +56,7 @@ from absl import app, flags, logging
 from axlearn.cloud.common.bundler import bundler_flags, get_bundler_config
 from axlearn.cloud.common.utils import configure_logging, generate_job_name, parse_action
 from axlearn.cloud.gcp.bundler import GCSTarBundler
-from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.job import CPUJob
 from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials, running_from_vm
 from axlearn.cloud.gcp.vm import (
@@ -78,8 +78,8 @@ FLAGS = flags.FLAGS
 def launch_flags(flag_values: flags.FlagValues = FLAGS):
     common_flags(flag_values=flag_values)
     bundler_flags(flag_values=flag_values)
-    flag_values.set_default("project", gcp_settings("project", required=False))
-    flag_values.set_default("zone", gcp_settings("zone", required=False))
+    flag_values.set_default("project", default_project())
+    flag_values.set_default("zone", default_zone())
     flag_values.set_default("bundler_type", GCSTarBundler.TYPE)
     # Note: don't use generate_taskname() here, as the VM may not have $USER.
     flags.DEFINE_string("name", None, "Job name.", flag_values=flag_values)
@@ -129,9 +129,9 @@ class CPURunnerJob(CPUJob):
         cfg = super().from_flags(fv, **kwargs)
         cfg.name = cfg.name or generate_job_name()
         cfg.output_dir = (
-            cfg.output_dir or f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{cfg.name}"
+            cfg.output_dir or f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{cfg.name}"
         )
-        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
+        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec, fv=fv)
         return cfg
 
     def __init__(self, cfg: Config):

@@ -6,10 +6,19 @@ import contextlib
 from typing import Any, Dict, Optional, Sequence, Union
 from unittest import mock
 
+from absl import flags
+
 
 @contextlib.contextmanager
 def mock_gcp_settings(module_name: Union[str, Sequence[str]], settings: Dict[str, str]):
-    def gcp_settings(key: str, default: Optional[Any] = None, required: bool = True):
+    def gcp_settings(
+        key: str,
+        *,
+        fv: Optional[flags.FlagValues] = None,
+        default: Optional[Any] = None,
+        required: bool = True,
+    ):
+        del fv
         value = settings.get(key, default)
         if required and value is None:
             raise ValueError(f"{key} is required")

@@ -108,7 +108,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                     test_fixture.assertEqual(spec.metadata.project_id, cfg.project_id or "none")
                     test_fixture.assertEqual(spec.metadata.priority, cfg.priority)
 
-        return cfg.set(bastion_dir=FakeBastionDirectory.default_config())
+        return cfg.set(bastion_dir=FakeBastionDirectory.default_config().set(root_dir="temp_dir"))
 
     @parameterized.parameters(
         dict(output_dir="", instance_type="test", expected=ValueError("output_dir")),
@@ -124,10 +124,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
         mock_get_vm_node = mock.patch(
             f"{launch.__name__}._get_bastion_vm", return_value=dict(status="RUNNING")
         )
-        mock_bastion_root_dir = mock.patch(
-            f"{launch.__name__}.bastion_root_dir", return_value="temp_dir"
-        )
-        with mock_get_vm_node, mock_bastion_root_dir:
+        with mock_get_vm_node:
             # Test with defaults.
             job = self._mock_config().instantiate()
             job._execute()
@@ -208,13 +205,10 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                 cleanup_proc=None,
             ),
         }
-        mock_bastion_root_dir = mock.patch(
-            f"{launch.__name__}.bastion_root_dir", return_value="temp_dir"
-        )
         mock_download_job_batch = mock.patch(
             f"{launch.__name__}.download_job_batch", return_value=(mock_jobs, set())
         )
-        with mock_download_job_batch, mock_bastion_root_dir:
+        with mock_download_job_batch:
             job = self._mock_config().instantiate()
             out = job._list()
             self.assertEqual(out["jobs"], mock_jobs)
@@ -303,7 +297,7 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
         mock_settings = {
             "ttl_bucket": "ttl_bucket",
             "permanent_bucket": "permanent_bucket",
-            "zone": "default-zone",
+            "zone": zone or "default-zone",
         }
         patch_settings = mock_gcp_settings(
             [launch.__name__, bastion_vm.__name__, tpu_runner.__name__], settings=mock_settings
@@ -325,7 +319,7 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
             # Check some basic flags.
             self.assertEqual(fv.bastion, None)
             self.assertEqual(fv.name, name or "job-name")
-            self.assertEqual(fv.zone, zone or "default-zone")
+            self.assertEqual(fv.zone, zone)
             self.assertIn("tpu_type", fv)
             self.assertIn("bundler_type", fv)
             self.assertIsNotNone(fv["name"].default)
@@ -343,10 +337,11 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
             # Check bastion flag. If None, we should infer from zone in mock_settings.
             if zone is None:
                 self.assertEqual(
-                    cfg.bastion_name, f"{mock_settings['zone']}-{bastion_vm._SHARED_BASTION_SUFFIX}"
+                    f"{mock_settings['zone']}-{bastion_vm._SHARED_BASTION_SUFFIX}",
+                    cfg.bastion_name,
                 )
             else:
-                self.assertEqual(cfg.bastion_name, f"{zone}-{bastion_vm._SHARED_BASTION_SUFFIX}")
+                self.assertEqual(f"{zone}-{bastion_vm._SHARED_BASTION_SUFFIX}", cfg.bastion_name)
 
             # Check output_dir.
             if output_dir is None:

@@ -199,7 +199,7 @@ class Bundler(Configurable):
         return temp_dir
 
     @classmethod
-    def from_spec(cls, spec: List[str]) -> Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler."""
         raise NotImplementedError(cls)
 
@@ -293,7 +293,7 @@ class BaseDockerBundler(Bundler):
             )
 
     @classmethod
-    def from_spec(cls, spec: List[str]) -> Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler.
 
         Possible options:
@@ -466,7 +466,7 @@ class BaseTarBundler(Bundler):
         editable: bool = False
 
     @classmethod
-    def from_spec(cls, spec: List[str]) -> Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler.
 
         Possible options:
@@ -581,7 +581,12 @@ class BaseTarBundler(Bundler):
         )
 
 
-def get_bundler_config(*, bundler_type: str, spec: List[str]) -> Bundler.Config:
+def get_bundler_config(
+    *,
+    bundler_type: str,
+    spec: List[str],
+    fv: Optional[flags.FlagValues] = None,
+) -> Bundler.Config:
     """Constructs a bundler config from the given spec.
 
     Bundlers must be registered via `register_bundler`.
@@ -589,12 +594,13 @@ def get_bundler_config(*, bundler_type: str, spec: List[str]) -> Bundler.Config:
     Args:
         bundler_type: Type of bundler class.
         spec: Bundler specs. See the corresponding `from_spec` method of the bundler class.
+        fv: The flag values.
 
     Returns:
         The bundler config.
     """
     if bundler_class := _bundlers.get(bundler_type, None):
-        return bundler_class.from_spec(spec)
+        return bundler_class.from_spec(spec, fv=fv)
     raise NotImplementedError(
         f"Unknown bundler type: {bundler_type}. "
         f"Supported types are {sorted(list(_bundlers.keys()))}"
@@ -633,9 +639,9 @@ def main_flags():
 
 
 def main(_):
-    cfg = get_bundler_config(bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec).set(
-        exclude=FLAGS.bundler_exclude
-    )
+    cfg = get_bundler_config(
+        bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec, fv=FLAGS
+    ).set(exclude=FLAGS.bundler_exclude)
     bundler = cfg.instantiate()
     bundler.bundle(FLAGS.name)
 

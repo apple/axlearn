@@ -5,7 +5,7 @@
 import multiprocessing
 import re
 
-from absl import logging
+from absl import flags, logging
 
 try:
     from google.cloud.aiplatform import initializer
@@ -40,12 +40,12 @@ def _vertexai_experiment_name_from_output_dir(output_dir: str) -> str:
     return experiment_name
 
 
-def is_vertexai_tensorboard_configured() -> bool:
+def is_vertexai_tensorboard_configured(*, flag_values: flags.FlagValues) -> bool:
     """Checks the config to see whether VertexAI Tensorboard should be enabled."""
     return _VERTEXAI_INSTALLED and bool(
-        gcp_config.gcp_settings("vertexai_tensorboard", required=False)
-        and gcp_config.gcp_settings("vertexai_region", required=False)
-        and gcp_config.gcp_settings("project", required=False)
+        gcp_config.gcp_settings("vertexai_tensorboard", required=False, fv=flag_values)
+        and gcp_config.gcp_settings("vertexai_region", required=False, fv=flag_values)
+        and gcp_config.gcp_settings("project", required=False, fv=flag_values)
     )
 
 

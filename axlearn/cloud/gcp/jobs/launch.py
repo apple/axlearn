@@ -212,15 +212,18 @@ class BaseBastionManagedJob(Job):
         Returns:
             The job config.
         """
-        # Default bastion name depends on the final value of --zone.
-        fv.set_default("bastion", shared_bastion_name(fv.zone))
-        # Default output_dir depends on the final value of --name.
-        fv.set_default("output_dir", f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{fv.name}")
         cfg = super().from_flags(fv, **kwargs)
+        if not cfg.bastion_name:
+            cfg.bastion_name = shared_bastion_name(fv)
+        cfg.bastion_dir.root_dir = bastion_root_dir(cfg.bastion_name, fv=fv)
+        # Default output_dir depends on the final value of --name.
+        if not cfg.output_dir:
+            cfg.output_dir = f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
         # Construct bundler config only for start.
         if action == "start":
-            cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
-        cfg.bastion_name = fv.bastion
+            cfg.bundler = get_bundler_config(
+                bundler_type=fv.bundler_type, spec=fv.bundler_spec, fv=fv
+            )
         return cfg
 
     def __init__(self, cfg: Config):
@@ -228,9 +231,7 @@ class BaseBastionManagedJob(Job):
         cfg = self.config
         if not (cfg.instance_type and cfg.output_dir):
             raise ValueError("instance_type, output_dir cannot be empty")
-        self._bastion_dir = cfg.bastion_dir.set(
-            root_dir=bastion_root_dir(cfg.bastion_name)
-        ).instantiate()
+        self._bastion_dir = cfg.bastion_dir.instantiate()
 
     def _delete(self):
         """Submits a delete request to bastion."""
@@ -628,6 +629,7 @@ def main(_):
             command = shlex.join(sys.argv[i + 1 :])
             break
     cfg = launcher.job_cls.from_flags(FLAGS, command=command, action=action)
+    logging.info("Launcher config:\n%s", cfg)
     job: BaseBastionManagedJob = cfg.instantiate()
     if FLAGS.dry_run:
         print(f"Action: {action}\nJob config:\n{job.config}")

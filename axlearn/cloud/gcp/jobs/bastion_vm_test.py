@@ -62,6 +62,7 @@ def _mock_create_config():
         max_tries=1,
         retry_interval=1,
         bundler=config_for_function(lambda: mock_bundler),
+        root_dir="temp_dir",
     )
 
 
@@ -74,10 +75,7 @@ class RemoteBastionJobTest(TestWithTemporaryCWD):
 
         mock_execute = mock.patch.object(job, "_execute_remote_cmd", return_value=None)
         mock_creds = mock.patch.object(job, "_get_job_credentials", return_value=None)
-        mock_output_dir = mock.patch(
-            f"{bastion_vm.__name__}.bastion_root_dir", return_value="temp_dir"
-        )
-        with mock_output_dir, mock_execute, mock_creds, mock_vm(bastion_vm.__name__) as mocks:
+        with mock_execute, mock_creds, mock_vm(bastion_vm.__name__) as mocks:
             job._execute()
             self.assertTrue(mocks["create_vm"].called)
             self.assertIn(cfg.name, mocks["create_vm"].call_args.args)

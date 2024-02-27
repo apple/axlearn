@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from unittest import mock
 
 import toml
+from absl import flags
 from absl.testing import parameterized
 
 from axlearn.cloud.common import bundler, config
@@ -153,6 +154,7 @@ class RegistryTest(TestCase):
                 "external=test_external",
                 "target=test_target",
             ],
+            fv=flags.FlagValues(),
         )
         self.assertEqual(cfg.image, "test_image")
         self.assertEqual(cfg.repo, "test_repo")
