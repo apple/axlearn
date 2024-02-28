@@ -14,7 +14,7 @@ from axlearn.common.base_layer import BaseLayer, ParameterSpec, RematSpec
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 from axlearn.common.layers import RedirectToSharedModule
 from axlearn.common.layers_test import ParentLayer
-from axlearn.common.module import Module, OutputCollection
+from axlearn.common.module import Module, OutputCollection, child_context
 from axlearn.common.module import functional as F
 from axlearn.common.repeat import Repeat, _drop_by_regex
 from axlearn.common.test_utils import TestCase, assert_allclose
@@ -122,6 +122,14 @@ class TestEnsemble(BaseLayer):
         )
         return carry, dict(repeat_layer=forward_state)
 
+    def forward_first_n(self, *, n, carry, forward_state):
+        substate = _get_first_n(n, self.state["repeat_layer"])
+        with child_context("repeat_layer", state=substate):
+            carry, forward_state = self.repeat_layer(
+                carry=carry, forward_state=forward_state["repeat_layer"]
+            )
+            return carry, dict(repeat_layer=forward_state)
+
 
 class RepeatTest(TestCase):
     """Tests repeat layer."""
@@ -130,10 +138,13 @@ class RepeatTest(TestCase):
         dtype=(jnp.float32, jnp.bfloat16),
         remat_spec=(None, RematSpec(prevent_cse=False)),
         drop_output=(None, config_for_function(_drop_by_regex).set(rules=["module_outputs.*"])),
+        num_layers_total=(4, 6),
     )
-    def test_repeat(self, dtype, remat_spec, drop_output):
+    def test_repeat(self, dtype, remat_spec, drop_output, num_layers_total):
         batch_size, num_layers = 14, 4
-        cfg = TestEnsemble.default_config().set(name="test", num_layers=num_layers, dtype=dtype)
+        cfg = TestEnsemble.default_config().set(
+            name="test", num_layers=num_layers_total, dtype=dtype
+        )
         cfg.repeat_layer.set(remat_spec=remat_spec, drop_output=drop_output)
         layer: TestEnsemble = cfg.instantiate(parent=None)
         self.assertEqual(
@@ -144,14 +155,27 @@ class RepeatTest(TestCase):
         logging.info("layer params=%s", layer_params)
 
         input_forward_state = layer.init_forward_state(batch_size)
+        if num_layers_total == num_layers:
+            method = "forward"
+            inputs = dict(
+                carry=jnp.arange(batch_size, dtype=dtype),
+                forward_state=input_forward_state,
+            )
+        else:
+            method = "forward_first_n"
+            input_forward_state = _get_first_n(num_layers, input_forward_state)
+            inputs = dict(
+                carry=jnp.arange(batch_size, dtype=dtype),
+                forward_state=input_forward_state,
+                n=num_layers,
+            )
+
         (carry, output_forward_state), output_collection = F(
             layer,
             prng_key=jax.random.PRNGKey(2),
             state=layer_params,
-            inputs=dict(
-                carry=jnp.arange(batch_size, dtype=dtype),
-                forward_state=input_forward_state,
-            ),
+            inputs=inputs,
+            method=method,
             is_training=True,
             drop_output_collections=(),
         )
@@ -390,6 +414,10 @@ class RepeatTest(TestCase):
             else:
                 # pylint: disable-next=protected-access
                 self.assertSequenceEqual(layer.shared_layer._remat_methods, remat_methods)
+
+
+def _get_first_n(n, tree):
+    return jax.tree_util.tree_map(lambda x: x[:n], tree)
 
 
 if __name__ == "__main__":
