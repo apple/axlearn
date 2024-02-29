@@ -338,6 +338,7 @@ def _process_example(
             erasing_probability=erasing_probability,
             use_whitening=use_whitening,
         )
+        # TODO
         data = {"image": image, "label": example["label"]}
 
         # TODO(xianzhi): move mask generation to model implementation once verified performance.
