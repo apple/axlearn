@@ -283,8 +283,9 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
         output_dir=[None, "test-output"],
         zone=[None, "test-zone"],
         action=["start", "list"],
+        bastion=[None, "test-bastion"],
     )
-    def test_flags(self, name, output_dir, zone, action):
+    def test_flags(self, name, output_dir, zone, action, bastion):
         # Construct flags.
         fv = flags.FlagValues()
         flags.DEFINE_string("instance_type", "test-type", help="test", flag_values=fv)
@@ -314,10 +315,12 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
                 argv.append(f"--output_dir={output_dir}")
             if zone is not None:
                 argv.append(f"--zone={zone}")
+            if bastion is not None:
+                argv.append(f"--bastion={bastion}")
             fv(argv)
 
             # Check some basic flags.
-            self.assertEqual(fv.bastion, None)
+            self.assertEqual(fv.bastion, bastion)
             self.assertEqual(fv.name, name or "job-name")
             self.assertEqual(fv.zone, zone)
             self.assertIn("tpu_type", fv)
@@ -335,7 +338,9 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
                 self.assertIsNone(cfg.bundler)
 
             # Check bastion flag. If None, we should infer from zone in mock_settings.
-            if zone is None:
+            if bastion:
+                self.assertEqual(bastion, cfg.bastion_name)
+            elif zone is None:
                 self.assertEqual(
                     f"{mock_settings['zone']}-{bastion_vm._SHARED_BASTION_SUFFIX}",
                     cfg.bastion_name,

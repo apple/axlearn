@@ -214,7 +214,7 @@ class BaseBastionManagedJob(Job):
         """
         cfg = super().from_flags(fv, **kwargs)
         if not cfg.bastion_name:
-            cfg.bastion_name = shared_bastion_name(fv)
+            cfg.bastion_name = fv.bastion or shared_bastion_name(fv)
         cfg.bastion_dir.root_dir = bastion_root_dir(cfg.bastion_name, fv=fv)
         # Default output_dir depends on the final value of --name.
         if not cfg.output_dir:
@@ -354,7 +354,14 @@ class BaseBastionManagedJob(Job):
             A table which can be passed to `format_table`.
         """
         return dict(
-            headings=["NAME", "USER_ID", "JOB_STATE", "PROJECT_ID", "RESOURCES", "PRIORITY"],
+            headings=[
+                "NAME",
+                "USER_ID",
+                "JOB_STATE",
+                "PROJECT_ID",
+                "RESOURCES",
+                "PRIORITY",
+            ],
             rows=[
                 [
                     job.spec.name,
@@ -516,9 +523,15 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
 
         print(format_table(**jobs_table), file=output_file)
         print("Usage by project:", file=output_file)
-        print(format_table(**self._usage_table(list_info["usage_by_project"])), file=output_file)
+        print(
+            format_table(**self._usage_table(list_info["usage_by_project"])),
+            file=output_file,
+        )
         print("Usage by user:", file=output_file)
-        print(format_table(**self._usage_table(list_info["usage_by_user"])), file=output_file)
+        print(
+            format_table(**self._usage_table(list_info["usage_by_user"])),
+            file=output_file,
+        )
 
         return dict(
             running_tpu_infos=running_tpu_infos,
