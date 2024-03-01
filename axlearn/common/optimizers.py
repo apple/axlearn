@@ -338,6 +338,31 @@ def scale_by_trust_ratio(
     )
 
 
+def _compute_rms_norms(x: NestedTensor, *, summary_suffix: Optional[str] = None) -> NestedTensor:
+    """Computes the RMS norm for each leaf tensor of `x` and optionally adds summaries.
+
+    Summaries will be added if `summary_suffix` is not None *and* the current context is not None.
+
+    Args:
+        x: A Nested Tensor, e.g., representing params or gradients. May contain VDict, in which
+            case each entry will be computed separately, therefore the norms of params of a
+            repeated layer will be computed separately.
+        summary_suffix: If not None, adds summaries of name `{path}/{summary_suffix}` of the norms.
+
+    Returns:
+        A NestedTensor with the same structure as `x` and each leaf node representing the norm
+        of the tensor in `x`.
+    """
+    # Use vectorized_tree_map to compute separate norms for each layer in a Repeated.
+    norms = vectorized_tree_map(lambda u: jnp.sqrt(jnp.mean(u**2)), x)
+    context = current_context()
+    if summary_suffix is not None and context is not None:
+        expanded_norms = expand_vdicts(norms)
+        for path, value in flatten_items(expanded_norms):
+            context.add_summary(f"{path}/{summary_suffix}", value)
+    return norms
+
+
 class AddDecayedWeightsState(NamedTuple):
     count: Optional[Tensor]  # Number of steps.
 
@@ -987,7 +1012,7 @@ def adafactor_optimizer(
     # This basic rescaling is typically combined with one or more of the following
     # transformation (all can be disabled via adafactor's constructor args).
     if clipping_threshold is not None:
-        tx.append(clip_by_block_rms(clipping_threshold))
+        tx.append(clip_by_block_rms(clipping_threshold, summary_suffix="norm"))
     if learning_rate is not None:
         tx.append(scale_by_schedule(scale_from_learning_rate(learning_rate, flip_sign=False)))
     if multiply_by_parameter_scale:
@@ -1164,7 +1189,9 @@ def skip_and_clip_by_global_norm(
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
-def clip_by_block_rms(threshold: Optional[float]) -> PartitionedGradientTransformation:
+def clip_by_block_rms(
+    threshold: Optional[float], *, summary_suffix: Optional[str] = None
+) -> PartitionedGradientTransformation:
     """Clip updates to a max rms for the gradient of each param vector or matrix.
 
     A `block` is here a weight vector (e.g. in a Linear layer) or a weight matrix
@@ -1175,8 +1202,7 @@ def clip_by_block_rms(threshold: Optional[float]) -> PartitionedGradientTransfor
     Args:
         threshold: the maximum rms for the gradient of each param vector or matrix.
             If None, does not clip.
-            In either case, norms will be added to summaries of the current context
-            (if a context is set).
+        summary_suffix: If not None, adds pre-clip update norms to summaries.
 
     Returns:
         An (init_fn, update_fn) tuple.
@@ -1189,33 +1215,17 @@ def clip_by_block_rms(threshold: Optional[float]) -> PartitionedGradientTransfor
     def update_fn(updates, state, params=None):
         del params
 
-        @chex.dataclass
-        class Output:
-            norm: Tensor
-            clipped: Tensor
-
-        def _clip_fn(u):
-            norm = jnp.sqrt(jnp.mean(u**2))
+        def _clip_fn(u, norm):
             if threshold is None:
                 clipped = u
             else:
                 clipped = u / jnp.maximum(1.0, norm / threshold)
-            return Output(norm=norm, clipped=clipped)
+            return clipped
 
+        norms = _compute_rms_norms(updates, summary_suffix=summary_suffix)
         # The only difference from the optax implementation:
         # vectorized_tree_map vs. jax.tree_util.tree_map.
-        outputs = vectorized_tree_map(_clip_fn, updates)
-        context = current_context()
-        if context is not None:
-            norms = jax.tree_util.tree_map(
-                lambda x: x.norm, outputs, is_leaf=lambda x: isinstance(x, Output)
-            )
-            norms = expand_vdicts(norms)
-            for path, value in flatten_items(norms):
-                context.add_summary(f"{path}/norm", value)
-        updates = jax.tree_util.tree_map(
-            lambda x: x.clipped, outputs, is_leaf=lambda x: isinstance(x, Output)
-        )
+        updates = vectorized_tree_map(_clip_fn, updates, norms)
         return updates, state
 
     return PartitionedGradientTransformation(init_fn, update_fn, lambda _: optax.EmptyState())
@@ -1629,7 +1639,9 @@ def adastar_optimizer(
         )
         # Clip raw updates if necessary.
         if raw_update_clipping_threshold is not None:
-            clip_fn = clip_by_block_rms(raw_update_clipping_threshold).update
+            clip_fn = clip_by_block_rms(
+                raw_update_clipping_threshold, summary_suffix="raw_update_norm"
+            ).update
             raw_updates, _ = clip_fn(raw_updates, None, params)
         # Compute smoothed updates.
         smoothed_updates, pps_tree = _split_update_results(
@@ -1661,6 +1673,9 @@ def adastar_optimizer(
 
     def update2_fn(updates, state: Tensor, params: NestedOptParam):
         step = state
+
+        param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+        _compute_rms_norms(param_values, summary_suffix="param_norm")
 
         def _update2(u: Tensor, param: OptParam):
             lr_scaled_updates = learning_rate * u

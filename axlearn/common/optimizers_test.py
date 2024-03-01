@@ -863,7 +863,7 @@ class OptimizerTest(TestCase):
 
     @parameterized.parameters(100.0, 1e-3, None)
     def test_clip_by_block_rms(self, max_norm):
-        clip = clip_by_block_rms(threshold=max_norm)
+        clip = clip_by_block_rms(threshold=max_norm, summary_suffix="norm")
         params = dict(layer=VDict(x=jnp.asarray([[0, 0, 0, 0], [0, 1, 2, -3]], dtype=jnp.float32)))
         state = clip.init(params)
         self.assertEqual(optax.EmptyState, type(state))
@@ -1329,7 +1329,16 @@ class OptimizerTest(TestCase):
         with set_current_context(context):
             _compute_updates(test_opt)
             self.assertContainsSubset(
-                {"learning_rate", "weight_decay_rate", "schedule_scale", "schedule_step"},
+                {
+                    "learning_rate",
+                    "weight_decay_rate",
+                    "schedule_scale",
+                    "schedule_step",
+                    # Raw update norms (after gradient normalization, but before smoothing).
+                    *[f"layer/{i}/w/raw_update_norm" for i in range(2)],
+                    # Parameter norms.
+                    *[f"layer/{i}/w/param_norm" for i in range(2)],
+                },
                 context.output_collection.summaries,
             )
 
