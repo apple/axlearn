@@ -338,8 +338,8 @@ def scale_by_trust_ratio(
     )
 
 
-def _compute_norms(x: NestedTensor, *, summary_suffix: Optional[str] = None) -> NestedTensor:
-    """Computes norm for each leaf tensor of `x` and optionally adds summaries.
+def _compute_rms_norms(x: NestedTensor, *, summary_suffix: Optional[str] = None) -> NestedTensor:
+    """Computes the RMS norm for each leaf tensor of `x` and optionally adds summaries.
 
     Summaries will be added if `summary_suffix` is not None *and* the current context is not None.
 
@@ -1222,7 +1222,7 @@ def clip_by_block_rms(
                 clipped = u / jnp.maximum(1.0, norm / threshold)
             return clipped
 
-        norms = _compute_norms(updates, summary_suffix=summary_suffix)
+        norms = _compute_rms_norms(updates, summary_suffix=summary_suffix)
         # The only difference from the optax implementation:
         # vectorized_tree_map vs. jax.tree_util.tree_map.
         updates = vectorized_tree_map(_clip_fn, updates, norms)
@@ -1675,7 +1675,7 @@ def adastar_optimizer(
         step = state
 
         param_values = jax.tree_util.tree_map(lambda p: p.value, params)
-        _compute_norms(param_values, summary_suffix="param_norm")
+        _compute_rms_norms(param_values, summary_suffix="param_norm")
 
         def _update2(u: Tensor, param: OptParam):
             lr_scaled_updates = learning_rate * u
