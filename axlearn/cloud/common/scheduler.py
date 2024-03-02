@@ -183,7 +183,7 @@ class ResourceLimitCalculator(Configurable):
             project_id: demand for project_id, demand in demands.items() if demand > 0
         }
         while limit > 0 and remaining_demands:
-            # Try to allocate resources in the order of `project_id_order`.
+            # A project is "active" if it has some remaining demand.
             active_quotas = {
                 project_id: quotas.get(project_id, 0)
                 for project_id, demand in remaining_demands.items()
@@ -202,29 +202,36 @@ class ResourceLimitCalculator(Configurable):
                 remaining_demands,
             )
             new_limit = limit
+            # Try to allocate resources in the order of `project_id_order`.
             for project_id in project_id_order:
                 if project_id not in remaining_demands:
                     continue
+                # The limit we can allocate to `project_id` in this round is proportional to
+                # its active quota but no more than `new_limit`. We round the limit, assuming
+                # resources can only be allocated by whole units (like GPUs).
                 available_limit = min(
                     new_limit, round(limit * active_quotas[project_id] / active_quota_sum)
                 )
                 allocation = min(available_limit, remaining_demands[project_id])
-                new_limit -= allocation
                 logging.vlog(
                     2, "Allocating %s (<=%s) to '%s'", allocation, available_limit, project_id
                 )
-                remaining_demands[project_id] -= allocation
                 project_limits[project_id] += allocation
+                new_limit -= allocation
+                remaining_demands[project_id] -= allocation
                 if remaining_demands[project_id] <= 0:
+                    # Remove from `remaining_demands` if the demand is now fully met.
                     del remaining_demands[project_id]
             if new_limit == limit:
+                # In some extreme cases, we have some remaining resources that we cannot fairly
+                # allocate to any project due to rounding.
                 logging.info(
                     "Unallocated limit=%s, project_limits=%s remaining_demands=%s",
                     limit,
                     project_limits,
                     remaining_demands,
                 )
-                break
+                break  # avoid infinite loops.
             limit = new_limit
         return project_limits
 
