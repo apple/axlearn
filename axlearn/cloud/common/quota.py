@@ -2,12 +2,10 @@
 
 """Utilities to retrieve quotas."""
 import re
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import List, Protocol
 
 import toml
-from absl import logging
 from tensorflow import io as tf_io
 
 from axlearn.cloud.common.types import ProjectResourceMap, ResourceMap
