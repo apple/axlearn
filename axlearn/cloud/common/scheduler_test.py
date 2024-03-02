@@ -90,7 +90,7 @@ class ResourceLimitCalculatorTest(absltest.TestCase):
 
     def test_proportional_quotas(self):
         calculator: ResourceLimitCalculator = ResourceLimitCalculator.default_config().instantiate()
-        quotas = {"a": 40, "b": 20, "c": 10}
+        quotas = {"a": 0.4, "b": 0.2, "c": 0.1}
         self.assertDictEqual(
             # Quota will be allocated proportionally.
             {
