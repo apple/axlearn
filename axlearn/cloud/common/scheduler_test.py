@@ -88,6 +88,55 @@ class ProjectJobSorterTest(absltest.TestCase):
 class ResourceLimitCalculatorTest(absltest.TestCase):
     """Tests ResourceLimitCalculator."""
 
+    def test_proportional_quotas(self):
+        calculator: ResourceLimitCalculator = ResourceLimitCalculator.default_config().instantiate()
+        quotas = {"a": 40, "b": 20, "c": 10}
+        self.assertDictEqual(
+            # Quota will be allocated proportionally.
+            {
+                "a": 4,
+                "b": 2,
+                "c": 1,
+            },
+            # `quotas` do not have to add up to `limit`.
+            calculator.calculate(limit=7, quotas=quotas, demands={"a": 100, "b": 100, "c": 100}),
+        )
+        self.assertDictEqual(
+            {
+                "a": 5,  # quota limit is rounded up in this case.
+                "b": 2,
+                "c": 1,
+            },
+            calculator.calculate(limit=8, quotas=quotas, demands={"a": 100, "b": 100, "c": 100}),
+        )
+        self.assertDictEqual(
+            {
+                "a": 5,  # quota limit is rounded up in this case.
+                "b": 3,  # quota limit is rounded up in this case.
+                "c": 1,
+            },
+            calculator.calculate(limit=9, quotas=quotas, demands={"a": 100, "b": 100, "c": 100}),
+        )
+        self.assertDictEqual(
+            {
+                "a": 6,  # quota limit is rounded up in this case.
+                "b": 3,  # quota limit is rounded up in this case.
+                "c": 1,
+            },
+            calculator.calculate(limit=10, quotas=quotas, demands={"a": 100, "b": 100, "c": 100}),
+        )
+
+    def test_unallocated_resources(self):
+        calculator: ResourceLimitCalculator = ResourceLimitCalculator.default_config().instantiate()
+        self.assertDictEqual(
+            {
+                "a": 1,
+                "b": 1,
+                "c": 1,
+            },
+            calculator.calculate(limit=4, quotas={}, demands={"a": 100, "b": 100, "c": 100}),
+        )
+
     def test_extreme_cases(self):
         calculator: ResourceLimitCalculator = ResourceLimitCalculator.default_config().instantiate()
         # Empty demands.
@@ -96,7 +145,7 @@ class ResourceLimitCalculatorTest(absltest.TestCase):
         )
         # Empty quota.
         self.assertDictEqual(
-            {}, calculator.calculate(limit=10, quotas={}, demands={"a": 8, "b": 2})
+            {"a": 8, "b": 2}, calculator.calculate(limit=10, quotas={}, demands={"a": 8, "b": 2})
         )
         # Demand from one project only.
         self.assertDictEqual(
@@ -301,14 +350,14 @@ class TestJobScheduler(parameterized.TestCase):
                 user_id="d",
                 project_id="project2",
                 creation_time=yesterday + timedelta(seconds=4),
-                resources={"v5": 3},
+                resources={"v5": 4},
             ),
             # Should run -- within the 2.5 excess v5 quota.
             "e": JobMetadata(
                 user_id="e",
                 project_id="project3",
                 creation_time=yesterday + timedelta(seconds=5),
-                resources={"v5": 2.5},
+                resources={"v5": 2},
             ),
             # Should run. Even though it has no project, there is excess v3 quota.
             "f": JobMetadata(
