@@ -272,6 +272,8 @@ class BaseDockerBundler(Bundler):
         # Allow git status to be dirty if bundling from source. This is sometimes necessary, e.g.
         # during bundling-time modifications of files.
         allow_dirty: bool = False
+        # Additional image(s) to cache from.
+        cache_from: Optional[Sequence[str]] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -297,18 +299,22 @@ class BaseDockerBundler(Bundler):
         """Converts a spec to a bundler.
 
         Possible options:
-        - dockerfile: The Dockerfile path relative to project root.
         - image: The image name.
         - repo: The docker repo.
+        - dockerfile: The Dockerfile path relative to project root.
+        - target: The build target.
         - platform: The image target platform.
+        - allow_dirty: Whether to ignore dirty git status.
+        - cache_from: A comma-separated list of cache sources.
 
         All other specs are treated as build args.
         """
-        cfg = cls.default_config()
+        cfg: BaseDockerBundler.Config = cls.default_config()
         kwargs = parse_kv_flags(spec, delimiter="=")
+        cache_from = canonicalize_to_list(kwargs.pop("cache_from", None))
         # Non-config specs are treated as build args.
         build_args = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k not in cfg}
-        return cfg.set(build_args=build_args, **kwargs)
+        return cfg.set(build_args=build_args, cache_from=cache_from, **kwargs)
 
     # pylint: disable-next=arguments-renamed
     def id(self, tag: str) -> str:
@@ -434,7 +440,7 @@ class DockerBundler(BaseDockerBundler):
         context: str,
         labels: Dict[str, str],
     ) -> str:
-        cfg = self.config
+        cfg: DockerBundler.Config = self.config
         return docker_push(
             docker_build(
                 dockerfile=dockerfile,
@@ -444,6 +450,7 @@ class DockerBundler(BaseDockerBundler):
                 target=cfg.target,
                 labels=labels,
                 platform=cfg.platform,
+                cache_from=cfg.cache_from,
             )
         )
 
