@@ -146,11 +146,16 @@ class ResourceLimitCalculator(Configurable):
     ) -> Dict[str, float]:
         """Calculates per-project limits on available resources, quotas, and demands.
 
+        We assume that `limit` and `demands` are all integers, reflecting number of resource units,
+        e.g., number of GPUs. The allocations will also be integers.
+
+        TODO(rpang): change the API to take integers.
+
         Args:
             limit: The total amount of available resources.
             quotas: A mapping from project ids to quotas. If a project id is missing, assume
-                quota of 0. Quotas do not have to add up to `limit`. Available resources
-                will be allocated proportional to quotas.
+                quota of 0. Quotas must be non-negative, but do not have to add up to `limit`.
+                Available resources will be allocated proportional to quotas.
             demands: A mapping from project ids to demands. If a project id is missing, assume
                 demand of 0.
 
@@ -160,28 +165,21 @@ class ResourceLimitCalculator(Configurable):
         Raises:
             ValueError: if any quota is negative.
         """
-        total_quota = sum(quotas.values())
-        quota_fractions = {}
         for project_id, quota in quotas.items():
             if quota < 0:
                 raise ValueError(f"Negative quota for {project_id}: {quota}")
-            quota_fractions[project_id] = quota / total_quota
-        for project_id in demands:
-            if project_id not in quota_fractions:
-                quota_fractions[project_id] = 0
-
-        # Sort projects by descending fractions.
-        project_id_order = [
-            project_id
-            for _, project_id in sorted(
-                [(-fraction, project_id) for project_id, fraction in quota_fractions.items()]
-            )
-        ]
 
         project_limits = {project_id: 0 for project_id in demands}
         remaining_demands = {
             project_id: demand for project_id, demand in demands.items() if demand > 0
         }
+        # Below we take a multi-pass approach to distribute `limit` to `project_limits` according
+        # to `quotas` and `demands`. In each pass we compute `active_quotas` according to
+        # `remaining_demands` and allocate resources proportional to quotas, approximately
+        # `min(demand, limit * (active_quota / active_quota_sum))`, to each project.
+        #
+        # As John Peebles pointed out, this is also roughly equivalent to allocating resources in
+        # one pass in the ascending order of `demand / quota`.
         while limit > 0 and remaining_demands:
             # A project is "active" if it has some remaining demand.
             active_quotas = {
@@ -190,7 +188,7 @@ class ResourceLimitCalculator(Configurable):
                 if demand > 0
             }
             active_quota_sum = sum(active_quotas.values())
-            if active_quota_sum <= 0:
+            if active_quota_sum == 0:
                 # When only best-effort quotas remain, allocate limits evenly.
                 active_quotas = {project_id: 1 for project_id in remaining_demands}
                 active_quota_sum = sum(active_quotas.values())
@@ -201,6 +199,23 @@ class ResourceLimitCalculator(Configurable):
                 active_quotas,
                 remaining_demands,
             )
+            # Sort projects by descending quotas.
+            project_id_order = [
+                project_id
+                for _, project_id in sorted(
+                    [(quota, project_id) for project_id, quota in active_quotas.items()],
+                    reverse=True,
+                )
+            ]
+
+            def _allocate(allocation: float, *, project_id: str) -> float:
+                project_limits[project_id] += allocation
+                remaining_demands[project_id] -= allocation
+                if remaining_demands[project_id] <= 0:
+                    # Remove from `remaining_demands` if the demand is now fully met.
+                    del remaining_demands[project_id]
+                return allocation
+
             new_limit = limit
             # Try to allocate resources in the order of `project_id_order`.
             for project_id in project_id_order:
@@ -216,22 +231,10 @@ class ResourceLimitCalculator(Configurable):
                 logging.vlog(
                     2, "Allocating %s (<=%s) to '%s'", allocation, available_limit, project_id
                 )
-                project_limits[project_id] += allocation
-                new_limit -= allocation
-                remaining_demands[project_id] -= allocation
-                if remaining_demands[project_id] <= 0:
-                    # Remove from `remaining_demands` if the demand is now fully met.
-                    del remaining_demands[project_id]
+                new_limit -= _allocate(allocation, project_id=project_id)
             if new_limit == limit:
-                # In some extreme cases, we have some remaining resources that we cannot fairly
-                # allocate to any project due to rounding.
-                logging.info(
-                    "Unallocated limit=%s, project_limits=%s remaining_demands=%s",
-                    limit,
-                    project_limits,
-                    remaining_demands,
-                )
-                break  # avoid infinite loops.
+                # Allocate to the first project.
+                new_limit -= _allocate(limit, project_id=project_id_order[0])
             limit = new_limit
         return project_limits
 

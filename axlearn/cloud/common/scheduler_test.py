@@ -132,7 +132,7 @@ class ResourceLimitCalculatorTest(absltest.TestCase):
             {
                 "a": 1,
                 "b": 1,
-                "c": 1,
+                "c": 2,  # An arbitrary project gets the remaining quota.
             },
             calculator.calculate(limit=4, quotas={}, demands={"a": 100, "b": 100, "c": 100}),
         )
