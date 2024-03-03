@@ -119,6 +119,7 @@ class InferencePipeline(Module):
 
         for batch_index, input_batch in enumerate(self.input.dataset()):
             input_batch, input_batch_str_tensors = pop_string_tensors(input_batch)
+            input_batch = utils.as_numpy_array(input_batch)
             # pylint: disable-next=protected-access
             with method_runner._mesh:
                 global_input_batch = utils.host_to_global_device_array(
