@@ -219,6 +219,7 @@ class BaseGoldenConfigTest(TestCase):
             "update_scale",
             "gradient_scale",
             "learner_update_type",
+            "scale_by_mup_simple",
         }
         settings_dict = per_param_setting_debug_string(
             module=module, config_name=config_name, trainer_config=trainer_config
