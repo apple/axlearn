@@ -180,16 +180,16 @@ class Repeat(BaseLayer):
         if xs is None:
             xs = {}
 
-        # Note, actual `num_layers` might be smaller than `cfg.num_layers` depending on
-        # the invocation context.
-        num_layers = jax.tree_util.tree_reduce(
-            lambda num, x: min(num, x.shape[0]),
-            tree=(self.state, xs),
-            initializer=cfg.num_layers,
-        )
-
         layer_output_collection = new_output_collection()
         with child_context("layer", output_collection=layer_output_collection) as layer_context:
+            # Note, actual `num_layers` might be smaller than `cfg.num_layers` depending on
+            # the invocation context.
+            num_layers = jax.tree_util.tree_reduce(
+                lambda num, x: min(num, x.shape[0]),
+                tree=(layer_context.state, xs),
+                initializer=cfg.num_layers,
+            )
+
             carry, ys = scan_in_context(
                 fn,
                 carry=carry,
