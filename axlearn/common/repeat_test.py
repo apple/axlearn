@@ -18,7 +18,7 @@ from axlearn.common.module import Module, OutputCollection, child_context
 from axlearn.common.module import functional as F
 from axlearn.common.repeat import Repeat, _drop_by_regex
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import PartitionSpec, VDict, get_recursively, shapes
+from axlearn.common.utils import NestedTensor, PartitionSpec, Tensor, VDict, get_recursively, shapes
 
 
 class TestLayer(BaseLayer):
@@ -84,6 +84,13 @@ class TestRepeat(Repeat):
                 layer_state,
             )
         )
+
+    def initialize_parameters_recursively(
+        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+    ) -> NestedTensor:
+        params = super().initialize_parameters_recursively(prng_key=prng_key, prebuilt=prebuilt)
+        params["dummy"] = jnp.ones(1)
+        return params
 
     def forward(self, *, carry, forward_state):
         def fn(carry, forward_state_tn):
