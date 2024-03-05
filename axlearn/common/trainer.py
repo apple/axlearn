@@ -15,6 +15,10 @@ from absl import logging
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 
+# TODO: import for GoodPut
+from ml_goodput_measurement import goodput
+import datetime
+
 from axlearn.common import utils
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
@@ -421,6 +425,14 @@ class SpmdTrainer(Module):
                 num_steps = 0
                 output = None
                 stop_trace_step = None
+                # TODO: specify a run-specific name for GoodPut Logger
+                run_name='{config.run_name}'
+                goodput_logger_name = f'goodput_{run_name}'
+                # TODO: create Goodput Recorder object
+                goodput_recorder = goodput.GoodputRecorder(job_name=run_name, logger_name=goodput_logger_name, logging_enabled=(jax.process_index() == 0))
+                # TODO: record job's overall start time
+                goodput_recorder.record_job_start_time(datetime.datetime.now())
+                print("===========>STARTED RECORDING GOODPUT FOR JOB")
 
                 for input_batch in self._input_iter:
                     logging.log_first_n(
@@ -432,6 +444,11 @@ class SpmdTrainer(Module):
 
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
+
+                    # TODO: record step start time
+                    goodput_recorder.record_step_start_time(self._step)
+                    print("===========>RECORDED GOODPUT RECORDER ON STEP:", self._step)
+
                     output = self._run_step(
                         utils.host_to_global_device_array(input_batch),
                         force_run_evals=force_run_eval_sets_at_max_step
@@ -452,6 +469,11 @@ class SpmdTrainer(Module):
                         break
                 if self.step < cfg.max_step:
                     self._step_log("Reached end of inputs. Stopping")
+
+                # TODO: record job's overall end time
+                goodput_recorder.record_job_end_time(datetime.datetime.now())
+                print("===========>STOPPED RECORDING GOODPUT FOR JOB")
+
             self._step_log("Checkpointer flushed.")
             return output
 

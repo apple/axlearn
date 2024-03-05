@@ -108,8 +108,10 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
     # pytype: disable=annotation-type-mismatch
     cfg: SpmdTrainer.Config = config_map["fuji-7B"]().clone()
     # pytype: enable=annotation-type-mismatch
-    cfg.input.batcher.global_batch_size = 32
+
+    # TODO: made fuji-7B-single even smaller to fit onto v4-8
+    cfg.input.batcher.global_batch_size = 4
     for evaler in cfg.evalers.values():
-        evaler.input.batcher.global_batch_size = 32
+        evaler.input.batcher.global_batch_size = 4
     config_map["fuji-7B-single"] = lambda: cfg
     return config_map
