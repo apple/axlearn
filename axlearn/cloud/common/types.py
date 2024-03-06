@@ -11,15 +11,15 @@ Terminology:
 from typing import Dict, Sequence, Tuple, TypeVar
 
 ResourceType = str
-ResourceAmountType = TypeVar("ResourceAmountType", int, float)
 
 
 # Mapping from resource types to the amount of resources.
 # Can be used to specify quota/limit/demand/usage per resource type.
 #
-# ResourceAmountType should be float when specifying quotas and int when specifying
+# Use ResourceMap[float] when specifying quotas and ResourceMap[int] when specifying
 # limit/demand/usage.
-ResourceMap = Dict[ResourceType, ResourceAmountType]
+_T = TypeVar("_T", int, float)
+ResourceMap = Dict[ResourceType, _T]
 
 
 # Mapping from project ids to resource quota/limit/usage of the project.
