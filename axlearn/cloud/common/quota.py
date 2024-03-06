@@ -18,10 +18,10 @@ class QuotaInfo:
     """Quota information for job scheduling."""
 
     # A mapping from resource type to total resource limits.
-    total_resources: ResourceMap
+    total_resources: ResourceMap[int]
     # A nested mapping. Key is project identifier, value is mapping from resource type to allocated
     # amount of resources.
-    project_resources: ProjectResourceMap
+    project_resources: ProjectResourceMap[int]
 
 
 class QuotaFn(Protocol):
