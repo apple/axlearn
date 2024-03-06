@@ -8,7 +8,7 @@ Terminology:
   than the quota when there is spare capacity.
 """
 
-from typing import Dict, Sequence, Tuple, TypeVar, Union
+from typing import Dict, Sequence, Tuple, TypeVar
 
 ResourceType = str
 ResourceAmountType = TypeVar("ResourceAmountType", int, float)
