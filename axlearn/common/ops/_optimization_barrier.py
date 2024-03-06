@@ -120,9 +120,11 @@ def forward_optimization_barrier_jvp(primals: Tuple, tangents: Tuple) -> Tuple[A
 
 
 @forward_optimization_barrier.def_vmap
-# pylint: disable-next=unused-argument
 def forward_optimization_barrier_vmap(
-    batch_axis_size: int, in_batched: Tuple, pytree: Any
+    # pylint: disable-next=unused-argument
+    batch_axis_size: int,
+    in_batched: Tuple,
+    pytree: Any,
 ) -> Tuple[Any, Any]:
     """VMAP rule for`optimization_barrier`.
 

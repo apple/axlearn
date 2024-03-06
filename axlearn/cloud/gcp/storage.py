@@ -175,4 +175,5 @@ def _retry_crc32cmismatch(fn: Callable):
                 sleep_for,
             )
             time.sleep(sleep_for)
+    # pylint: disable-next=broad-exception-raised
     raise Exception("Attempts exhausted.") from cause

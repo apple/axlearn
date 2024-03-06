@@ -208,6 +208,7 @@ def _int32_binary_search(
     def loop_body(i: int, solution: Tensor) -> Tensor:
         # Loop over the non-sign bits.
         bit = jnp.int32(1 << 30 - i)
+        # pylint: disable-next=unsupported-binary-operation # TODO this might be a real bug?
         predicate_satisfied = predicate(solution | bit)
         solution = solution | jnp.where(predicate_satisfied, jnp.int32(0), bit)
         return solution
