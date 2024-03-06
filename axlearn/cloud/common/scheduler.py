@@ -123,7 +123,7 @@ class ProjectJobSorter(Configurable):
         return job_queue
 
     # pylint: disable-next=no-self-use
-    def _aggregate_resources(self, resource_map: ResourceMap) -> float:
+    def _aggregate_resources(self, resource_map: ResourceMap[int]) -> int:
         """Subclasses can override this method."""
         return sum(resource_map.values())
 
@@ -165,7 +165,7 @@ class ResourceLimitCalculator(Configurable):
             if quota < 0:
                 raise ValueError(f"Negative quota for {project_id}: {quota}")
 
-        project_limits = {project_id: 0 for project_id in demands}
+        project_limits: Dict[str, int] = {project_id: 0 for project_id in demands}
         remaining_demands = {
             project_id: demand for project_id, demand in demands.items() if demand > 0
         }
@@ -204,7 +204,7 @@ class ResourceLimitCalculator(Configurable):
                 )
             ]
 
-            def _allocate(allocation: float, *, project_id: str) -> float:
+            def _allocate(allocation: int, *, project_id: str) -> int:
                 project_limits[project_id] += allocation
                 remaining_demands[project_id] -= allocation
                 if remaining_demands[project_id] <= 0:
@@ -221,7 +221,7 @@ class ResourceLimitCalculator(Configurable):
                 # its active quota but no more than `new_limit`. We round the limit, assuming
                 # resources can only be allocated by whole units (like GPUs).
                 available_limit = min(
-                    new_limit, round(limit * active_quotas[project_id] / active_quota_sum)
+                    new_limit, int(round(limit * active_quotas[project_id] / active_quota_sum))
                 )
                 allocation = min(available_limit, remaining_demands[project_id])
                 logging.vlog(

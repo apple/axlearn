@@ -139,7 +139,7 @@ class TestJobSpec(parameterized.TestCase):
                 user_id="test_id",
                 project_id="test_project",
                 creation_time=datetime.now(),
-                resources={"test": 8.0},
+                resources={"test": 8},
                 priority=1,
             ),
         )
@@ -594,7 +594,7 @@ class BastionTest(parameterized.TestCase):
                         user_id="e",
                         project_id="project3",
                         creation_time=yesterday + timedelta(seconds=2),
-                        resources={"v5": 2.5},
+                        resources={"v5": 2},
                     ),
                 ),
                 state=JobState.CLEANING,
