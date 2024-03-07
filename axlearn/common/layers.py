@@ -315,7 +315,7 @@ class RMSNorm(BaseNormalizationLayer):
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
         cfg = self.config
         return {
-            "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
+            "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=("fsdp",)),
         }
 
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
