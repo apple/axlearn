@@ -22,7 +22,7 @@ from axlearn.experiments.text.gpt.common import STEP_DTYPE, learner_config, mesh
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 
-MODEL_SIZES = ("test", "7B")
+MODEL_SIZES = ("test", "7B", "56B")
 MAX_SEQUENCE_LENGTH = 2048
 
 
@@ -66,8 +66,28 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
                 ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # H100/A100 80G. Maximum per-node batch size = 64, hence need >= 32 nodes.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+            ),
+        )
+    elif model_size == "56B":
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=32,
+                hidden_dim=128 * 32 * 8,
+                num_heads=32,
+            ),
+            learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
+            train_batch_size=4 * 1024 * 1024 // MAX_SEQUENCE_LENGTH,  # 4M tokens.
+            max_step=500_000,  # 2T tokens // 4M tokens/step.
+            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            mesh_rules=(
+                ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16*8)),
+                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=16*8)),
+                (
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
+                    mesh_shape_from_axes(data=-1, fsdp=8*8),
                 ),
             ),
         )
