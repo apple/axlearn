@@ -336,16 +336,21 @@ def get_vm_node(name: str, resource: discovery.Resource) -> Optional[Dict[str, A
     Returns:
         The VM with the given name, or None if it doesn't exist.
     """
-    up_nodes = (
-        resource.instances()
-        .list(
-            project=gcp_settings("project"),
-            zone=gcp_settings("zone"),
+    try:
+        node = (
+            resource.instances()
+            .get(
+                project=gcp_settings("project"),
+                zone=gcp_settings("zone"),
+                instance=name,
+            )
+            .execute()
         )
-        .execute()
-    )
-    nodes = [el for el in up_nodes.get("items", {}) if el.get("name", "").split("/")[-1] == name]
-    return None if not nodes else nodes.pop()
+    except errors.HttpError as e:
+        if e.status_code == 404:
+            return None
+        raise
+    return node
 
 
 def list_disk_images(creds: Credentials) -> List[str]:
