@@ -148,7 +148,11 @@ def delete_vm(name: str, *, credentials: Credentials):
     try:
         response = (
             resource.instances()
-            .delete(project=gcp_settings("project"), zone=gcp_settings("zone"), instance=name)
+            .delete(
+                project=gcp_settings("project"),
+                zone=gcp_settings("zone"),
+                instance=name,
+            )
             .execute()
         )
         while True:
@@ -200,7 +204,9 @@ def list_vm_info(credentials: Credentials) -> List[VmInfo]:
         results.append(
             VmInfo(
                 name=vm["name"],
-                metadata={item["key"]: item["value"] for item in vm["metadata"]["items"]},
+                metadata={
+                    item["key"]: item["value"] for item in vm.get("metadata", {}).get("items", [])
+                },
             )
         )
     return results
