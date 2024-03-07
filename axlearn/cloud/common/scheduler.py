@@ -33,15 +33,13 @@ from axlearn.cloud.common.types import (
 )
 from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
 
-_EPSILON = 1e-3
-
 
 @dataclasses.dataclass
 class JobMetadata:
     user_id: str
     project_id: str
     creation_time: datetime.datetime
-    resources: Dict[ResourceType, float]
+    resources: Dict[ResourceType, int]
     priority: int = 5  # 1 - highest, 5 - lowest
 
 
@@ -80,7 +78,7 @@ class ProjectJobSorter(Configurable):
             # First sort by job priority.
             priority: int
             # Then sort by the aggregate usage of the user across resource types.
-            usage: float
+            usage: int
             # Tie-break by creation time of the next job of the user to be sorted.
             creation_time: datetime.datetime
             # The ID of the next job of the user.
@@ -125,7 +123,7 @@ class ProjectJobSorter(Configurable):
         return job_queue
 
     # pylint: disable-next=no-self-use
-    def _aggregate_resources(self, resource_map: ResourceMap) -> float:
+    def _aggregate_resources(self, resource_map: ResourceMap[int]) -> int:
         """Subclasses can override this method."""
         return sum(resource_map.values())
 
@@ -142,14 +140,12 @@ class ResourceLimitCalculator(Configurable):
     """
 
     def calculate(
-        self, *, limit: float, quotas: Dict[str, float], demands: Dict[str, float]
-    ) -> Dict[str, float]:
+        self, *, limit: int, quotas: Dict[str, float], demands: Dict[str, int]
+    ) -> Dict[str, int]:
         """Calculates per-project limits on available resources, quotas, and demands.
 
         We assume that `limit` and `demands` are all integers, reflecting number of resource units,
         e.g., number of GPUs. The allocations will also be integers.
-
-        TODO(rpang): change the API to take integers.
 
         Args:
             limit: The total amount of available resources.
@@ -169,7 +165,7 @@ class ResourceLimitCalculator(Configurable):
             if quota < 0:
                 raise ValueError(f"Negative quota for {project_id}: {quota}")
 
-        project_limits = {project_id: 0 for project_id in demands}
+        project_limits: Dict[str, int] = {project_id: 0 for project_id in demands}
         remaining_demands = {
             project_id: demand for project_id, demand in demands.items() if demand > 0
         }
@@ -208,7 +204,7 @@ class ResourceLimitCalculator(Configurable):
                 )
             ]
 
-            def _allocate(allocation: float, *, project_id: str) -> float:
+            def _allocate(allocation: int, *, project_id: str) -> int:
                 project_limits[project_id] += allocation
                 remaining_demands[project_id] -= allocation
                 if remaining_demands[project_id] <= 0:
@@ -225,7 +221,7 @@ class ResourceLimitCalculator(Configurable):
                 # its active quota but no more than `new_limit`. We round the limit, assuming
                 # resources can only be allocated by whole units (like GPUs).
                 available_limit = min(
-                    new_limit, round(limit * active_quotas[project_id] / active_quota_sum)
+                    new_limit, int(round(limit * active_quotas[project_id] / active_quota_sum))
                 )
                 allocation = min(available_limit, remaining_demands[project_id])
                 logging.vlog(
@@ -263,7 +259,7 @@ class Scheduler(Configurable):
     @dataclasses.dataclass
     class ScheduleResults:
         # The effective resource limits.
-        project_limits: ProjectResourceMap
+        project_limits: ProjectResourceMap[int]
         # Mapping: project_id -> (job_id -> run_or_not).
         job_verdicts: Dict[str, Dict[str, JobVerdict]]
 
@@ -275,21 +271,24 @@ class Scheduler(Configurable):
     def schedule(
         self,
         *,
-        resource_limits: ResourceMap,
-        project_quotas: ProjectResourceMap,
+        resource_limits: ResourceMap[int],
+        project_quotas: ProjectResourceMap[float],
         project_jobs: ProjectJobs,
     ) -> ScheduleResults:
         """Makes per-job scheduling decisions based on available resources, quotas, and jobs.
 
         Args:
-            resource_limits: A mapping from resource types to the amount of available resources.
-            project_quotas: A mapping from project ids to quotas.
+            resource_limits: A mapping from resource types to the integer amount of available
+                resources.
+            project_quotas: A mapping from project ids to quotas. Quotas do not need to add up to
+                the limits. Resources will be allocated according to the relative proportions
+                between quotas.
             project_jobs: A mapping from project ids to its job queue.
 
         Returns:
             A mapping from project ids to a mapping of job ids to schedule decisions.
         """
-        project_limits: ProjectResourceMap = collections.defaultdict(dict)
+        project_limits: ProjectResourceMap[int] = collections.defaultdict(dict)
         for resource_type, limit in resource_limits.items():
             resource_quotas = {
                 project_id: quota_map.get(resource_type, 0)
@@ -310,8 +309,8 @@ class Scheduler(Configurable):
         job_verdicts = {}
         for project_id, jobs in project_jobs.items():
             job_verdicts[project_id] = {}
-            resource_limits: ResourceMap = project_limits.get(project_id, {})
-            resource_usages: ResourceMap = collections.defaultdict(lambda: 0)
+            resource_limits: ResourceMap[int] = project_limits.get(project_id, {})
+            resource_usages: ResourceMap[int] = collections.defaultdict(lambda: 0)
             for job_id, job_demands in jobs:
                 over_limits = set()
                 for resource_type, demand in job_demands.items():

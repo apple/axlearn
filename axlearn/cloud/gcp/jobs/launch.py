@@ -285,7 +285,7 @@ class BaseBastionManagedJob(Job):
                 usage_by_project=usage_by_project,
             )
 
-    def _resources(self) -> ResourceMap:
+    def _resources(self) -> ResourceMap[int]:
         """Infers resources from instance_type. Can be overridden by subclasses.
 
         Should return a ResourceMap, where keys are resource types and values are resource amounts.
@@ -539,7 +539,7 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
             **list_info,
         )
 
-    def _resources(self) -> ResourceMap:
+    def _resources(self) -> ResourceMap[int]:
         """Defines TPU resources used by the job."""
         cfg = self.config
         tpu_type = self._tpu_type(cfg.instance_type)
