@@ -447,8 +447,15 @@ class JobScheduler(Configurable):
 
         # Construct mock verdicts allowing everything to be scheduled.
         if dry_run:
+            project_usages = defaultdict(
+                lambda: {resource_type: 0 for resource_type in total_resources}
+            )
+            for job_metadata in jobs.values():
+                for resource_type, usage in job_metadata.resources.items():
+                    project_usages[job_metadata.project_id][resource_type] += usage
             schedule_results = Scheduler.ScheduleResults(
                 project_limits=schedule_results.project_limits,
+                project_usages=project_usages,
                 job_verdicts={
                     project_id: {job_name: JobVerdict() for job_name in project_verdicts}
                     for project_id, project_verdicts in schedule_results.job_verdicts.items()
@@ -513,9 +520,9 @@ class JobScheduler(Configurable):
             )
             if merged_verdict.should_run():
                 for resource_type in total_resources:
-                    merged_usages[project_id][resource_type] += job_metadata.resources[
-                        resource_type
-                    ]
+                    merged_usages[project_id][resource_type] += job_metadata.resources.get(
+                        resource_type, 0
+                    )
             merged_verdicts[project_id][job_name] = merged_verdict
         return Scheduler.ScheduleResults(
             project_limits=schedule_results.project_limits,
