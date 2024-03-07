@@ -89,8 +89,14 @@ from axlearn.cloud.gcp.tpu import (
     infer_tpu_version,
     infer_tpu_workers,
     list_tpu_info,
+    tpu_resource,
 )
-from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials
+from axlearn.cloud.gcp.utils import (
+    catch_auth,
+    common_flags,
+    get_credentials,
+    validate_resource_name,
+)
 from axlearn.cloud.gcp.vm import _compute_resource, get_vm_node
 from axlearn.common.config import (
     REQUIRED,
@@ -488,7 +494,7 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
         with open(os.devnull, "w", encoding="utf-8") as f:
             list_info = super()._list(output_file=f)
         running_tpu_infos = {
-            tpu_info.name: tpu_info for tpu_info in list_tpu_info(get_credentials())
+            tpu_info.name: tpu_info for tpu_info in list_tpu_info(tpu_resource(get_credentials()))
         }
         running_tpu_to_job_name = {}
 
@@ -552,6 +558,10 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
         logs for each TPU worker.
         """
         cfg = self.config
+
+        # Job name has a suffix "-{slice_index}" for multi-slice.
+        validate_resource_name(cfg.name if cfg.num_slices == 1 else f"{cfg.name}-{cfg.num_slices}")
+
         super()._execute()
         all_logs = "\n".join(
             [

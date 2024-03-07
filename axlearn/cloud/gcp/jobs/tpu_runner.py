@@ -78,16 +78,16 @@ from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.job import TPUJob, docker_command
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.tpu import (
-    _qrm_resource,
-    _tpu_resource,
-    create_tpu,
-    delete_tpu,
+    create_queued_tpu,
+    delete_queued_tpu,
     format_tpu_info,
     get_queued_tpu_node,
     get_queued_tpu_node_status,
     get_tpu_node,
     infer_tpu_workers,
     list_tpu_info,
+    qrm_resource,
+    tpu_resource,
 )
 from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials, running_from_vm
 from axlearn.cloud.gcp.vertexai_tensorboard import (
@@ -250,9 +250,11 @@ class TPURunnerJob(TPUJob):
         # TODO(markblee,tom_gunter): Delete this when no longer necessary.
         if cfg.num_slices > 1:
             logging.info("Preparing environment on VMs for multislice training...")
+            # We don't use `self._call_qrm_api` here because `get_queued_tpu_node` does not seem to
+            # return 'networkEndpoints'. This is probably acceptable since this call happens once.
             master_tpu_node = get_tpu_node(
                 f"{cfg.name}-0",
-                resource=_tpu_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
+                tpu_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
             )
             coordinator_address = f"{master_tpu_node['networkEndpoints'][0]['ipAddress']}:8080"
             self._execute_remote_cmd(
@@ -290,8 +292,7 @@ class TPURunnerJob(TPUJob):
         # TODO(markblee): We can support killing/restarting a command without recreating the TPU,
         # via killing the screen session, e.g. screen -XS <screen> quit, or killing all processes
         # holding the TPU.
-        credentials = self._get_job_credentials(DEFAULT_TPU_SCOPES)
-        delete_tpu(cfg.name, credentials=credentials)
+        self._call_qrm_api(delete_queued_tpu, cfg.name)
 
         tpu_metadata = {}
         if isinstance(self._bundler, BaseDockerBundler):
@@ -299,11 +300,11 @@ class TPURunnerJob(TPUJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             tpu_metadata["enable_ici_resiliency"] = cfg.enable_tpu_ici_resiliency
 
-        create_tpu(
+        self._call_qrm_api(
+            create_queued_tpu,
             name=cfg.name,
             tpu_type=cfg.tpu_type,
             bundler_type=self._bundler.TYPE,
-            credentials=credentials,
             num_slices=cfg.num_slices,
             service_account=cfg.service_account,
             metadata=tpu_metadata,
@@ -392,22 +393,22 @@ class TPURunnerJob(TPUJob):
         logging.info("Copying outputs from %s...", self._output_dir)
         self._copy_outputs(src=f"{self._output_dir}/*", dst=f"{cfg.output_dir}/output/$HOSTNAME/")
         logging.info("Start deleting TPU %s...", cfg.name)
-        delete_tpu(cfg.name, credentials=self._get_job_credentials(DEFAULT_TPU_SCOPES))
+        self._call_qrm_api(delete_queued_tpu, cfg.name)
         logging.info("Finished deleting %s.", cfg.name)
 
     def _num_workers(self) -> int:
         cfg: TPURunnerJob.Config = self.config
         return infer_tpu_workers(cfg.tpu_type) * cfg.num_slices
 
-    def _call_qrm_api(self, fn, *args, max_tries: int = 2):
+    def _call_qrm_api(self, fn, *args, max_tries: int = 2, **kwargs):
         for i in range(max_tries):
             try:
                 if self._qrm_resource is None:
                     logging.info("Building QRM resource...")
                     credentials = self._get_job_credentials(DEFAULT_TPU_SCOPES)
-                    self._qrm_resource = _qrm_resource(credentials)
+                    self._qrm_resource = qrm_resource(credentials)
 
-                return fn(*args, resource=self._qrm_resource)
+                return fn(*args, resource_qrm=self._qrm_resource, **kwargs)
             except (errors.HttpError, OSError) as e:
                 logging.warning("QRM API %s call failed with: %s", fn.__name__, e)
                 if i < max_tries - 1:
@@ -564,7 +565,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     action = parse_action(argv, options=["start", "stop", "list"])
 
     if action == "list":
-        print(format_tpu_info(list_tpu_info(get_credentials())))
+        print(format_tpu_info(list_tpu_info(tpu_resource(get_credentials()))))
         return
 
     cfg = TPURunnerJob.from_flags(flag_values)

@@ -15,7 +15,7 @@ from googleapiclient import discovery, errors
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import format_table
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.utils import infer_cli_name, is_valid_resource_name
+from axlearn.cloud.gcp.utils import infer_cli_name, validate_resource_name
 
 
 class VMCreationError(RuntimeError):
@@ -54,8 +54,7 @@ def create_vm(
         VMCreationError: If an exeption is raised on the creation request.
         ValueError: If an invalid name is provided.
     """
-    if not is_valid_resource_name(name):
-        raise ValueError(f"{name} is not a valid resource name.")
+    validate_resource_name(name)
     resource = _compute_resource(credentials)
     attempt = 0
     while True:

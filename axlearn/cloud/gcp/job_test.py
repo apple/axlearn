@@ -9,6 +9,7 @@
         --project=my-project --zone=my-zone
 
 """
+
 import atexit
 import contextlib
 import os
@@ -25,7 +26,7 @@ from axlearn.cloud.common.utils import configure_logging, generate_job_name
 from axlearn.cloud.gcp.bundler import GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, TPUJob, _kill_ssh_agent, _start_ssh_agent
-from axlearn.cloud.gcp.tpu import create_tpu, delete_tpu
+from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, qrm_resource
 from axlearn.cloud.gcp.utils import common_flags, get_credentials
 from axlearn.cloud.gcp.vm import create_vm, delete_vm
 from axlearn.common.config import config_class
@@ -53,19 +54,19 @@ class DummyRemoteTPUJob(TPUJob):
         """Provisions a TPU and launches a command."""
         cfg: TPUJob.Config = self.config
         bundle_id = self._bundler.bundle(cfg.name)
-        credentials = get_credentials()
-        create_tpu(
+        resource = qrm_resource(get_credentials())
+        create_queued_tpu(
             cfg.name,
+            resource,
             tpu_type=cfg.tpu_type,
             bundler_type=self._bundler.TYPE,
-            credentials=credentials,
         )
         out = self._execute_remote_cmd(
             f"{self._bundler.install_command(bundle_id)} && {cfg.command}",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        delete_tpu(cfg.name, credentials=credentials)
+        delete_queued_tpu(cfg.name, resource)
         return out[0]
 
 
@@ -76,7 +77,8 @@ class TPUJobTest(TestCase):
 
     def test_execute_from_local(self):
         jobname = generate_job_name()
-        atexit.register(delete_tpu, jobname, credentials=get_credentials())
+        resource = qrm_resource(get_credentials())
+        atexit.register(delete_queued_tpu, jobname, resource)
         project = gcp_settings("project")
         zone = gcp_settings("zone")
         cfg = DummyRemoteTPUJob.default_config().set(

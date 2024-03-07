@@ -13,7 +13,7 @@ from axlearn.cloud.gcp.tpu import (
     QueuedResourceInfo,
     TPUCreationError,
     TpuInfo,
-    _create_multislice_tpu,
+    create_queued_tpu,
     format_queued_resource_info,
     format_tpu_info,
     infer_tpu_cores,
@@ -199,7 +199,7 @@ class TpuUtilsTest(parameterized.TestCase):
             list_blobs=[2, 2, 2],
         ),
     )
-    def test_create_multislice_tpu(self, nodes, list_blobs, expected=None):
+    def test_create_queued_tpu(self, nodes, list_blobs, expected=None):
         module = tpu.__name__
         # Mock sleep to finish instantly.
         mock_sleep = mock.patch(f"{module}.time.sleep")
@@ -207,7 +207,7 @@ class TpuUtilsTest(parameterized.TestCase):
             module,
             get_queued_tpu_node=mock.Mock(side_effect=nodes),
             _execute_create_tpu_request=mock.Mock(),
-            _delete_multislice_tpu=mock.Mock(),
+            delete_queued_tpu=mock.Mock(),
             list_blobs=mock.Mock(side_effect=[list(range(x)) for x in list_blobs]),
         )
         mock_settings = mock_gcp_settings(
@@ -222,9 +222,9 @@ class TpuUtilsTest(parameterized.TestCase):
 
             with ctx:
                 assert infer_tpu_workers("v4-16") == 2
-                _create_multislice_tpu(
+                create_queued_tpu(
                     "test",
+                    mock.Mock(),
                     tpu_type="v4-16",  # 2 workers.
-                    credentials=mock.Mock(),
                     bundler_type="test-bundler",
                 )
