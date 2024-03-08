@@ -337,9 +337,6 @@ class Scheduler(Configurable):
                 job_verdicts[project_id][job_id] = verdict
             project_usages[project_id] = resource_usages
 
-        # Some resources may remain after scheduling jobs within per-project limits due to per-job
-        # demand sizes.
-
         return Scheduler.ScheduleResults(
             project_limits=project_limits,
             project_usages=project_usages,
@@ -420,6 +417,8 @@ class JobScheduler(Configurable):
             project_quotas=project_resources,
             project_jobs=project_jobs,
         )
+        # Some resources may remain after scheduling jobs within per-project limits due to per-job
+        # demand sizes. Try to schedule jobs on the left-over resources.
         schedule_results = self._schedule_leftover_quotas(
             jobs,
             total_resources=total_resources,
