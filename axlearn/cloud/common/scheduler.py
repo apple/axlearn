@@ -246,6 +246,9 @@ class JobVerdict:
     # the project limits.
     over_limits: Optional[Set[ResourceType]] = None
 
+    def __bool__(self):
+        return self.should_run()
+
     def __or__(self, other: Optional["JobVerdict"]) -> Optional["JobVerdict"]:
         return self if self.should_run() else other
 
@@ -519,7 +522,7 @@ class JobScheduler(Configurable):
             merged_verdict = orig_verdict | leftover_schedule_results.job_verdicts["leftover"].get(
                 job_name
             )
-            if merged_verdict.should_run():
+            if merged_verdict:
                 for resource_type in total_resources:
                     merged_usages[project_id][resource_type] += job_metadata.resources.get(
                         resource_type, 0
