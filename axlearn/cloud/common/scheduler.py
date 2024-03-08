@@ -246,6 +246,12 @@ class JobVerdict:
     # the project limits.
     over_limits: Optional[Set[ResourceType]] = None
 
+    def __bool__(self):
+        return self.should_run()
+
+    def __or__(self, other: Optional["JobVerdict"]) -> Optional["JobVerdict"]:
+        return self if self.should_run() else other
+
 
 class Scheduler(Configurable):
     """A job scheduler."""
@@ -260,6 +266,8 @@ class Scheduler(Configurable):
     class ScheduleResults:
         # The effective resource limits.
         project_limits: ProjectResourceMap[int]
+        # The resource usages.
+        project_usages: ProjectResourceMap[int]
         # Mapping: project_id -> (job_id -> run_or_not).
         job_verdicts: Dict[str, Dict[str, JobVerdict]]
 
@@ -306,7 +314,8 @@ class Scheduler(Configurable):
             for project_id, project_limit in resource_limits.items():
                 project_limits[project_id][resource_type] = project_limit
 
-        job_verdicts = {}
+        project_usages: ProjectResourceMap[int] = {}
+        job_verdicts: Dict[str, Dict[str, JobVerdict]] = {}
         for project_id, jobs in project_jobs.items():
             job_verdicts[project_id] = {}
             resource_limits: ResourceMap[int] = project_limits.get(project_id, {})
@@ -326,8 +335,13 @@ class Scheduler(Configurable):
                     for resource_type, demand in job_demands.items():
                         resource_usages[resource_type] += demand
                 job_verdicts[project_id][job_id] = verdict
+            project_usages[project_id] = resource_usages
 
-        return Scheduler.ScheduleResults(project_limits=project_limits, job_verdicts=job_verdicts)
+        return Scheduler.ScheduleResults(
+            project_limits=project_limits,
+            project_usages=project_usages,
+            job_verdicts=job_verdicts,
+        )
 
 
 # TODO(markblee): Consider merging with sorter and scheduler.
@@ -362,6 +376,18 @@ class JobScheduler(Configurable):
     ) -> Scheduler.ScheduleResults:
         """Schedules jobs according to quotas.
 
+        Scheduling is determined in two passes.
+
+        First, we determine per-project resource limits according to total resources and
+        per-project quotas. Then we schedule jobs per project up to its limits.
+
+        Second, (aka "left-over quota scheduling"), if some jobs in `jobs` that are not scheduled
+        to run by the first pass, but they would fit into the unused resources, the jobs will be
+        selected to run in the returned results. Specifically, the jobs across projects will be
+        sorted by `self._sorter` (e.g., according to user id and creation time) and scheduling will
+        be attempted in that order. This scheduling pass does *not* take projects or their quotas
+        into account.
+
         Args:
             jobs: A mapping from {job_name: job_metadata}.
             dry_run: Whether to enable dry-run mode, i.e. everything gets scheduled.
@@ -391,6 +417,13 @@ class JobScheduler(Configurable):
             project_quotas=project_resources,
             project_jobs=project_jobs,
         )
+        # Some resources may remain after scheduling jobs within per-project limits due to per-job
+        # demand sizes. Try to schedule jobs on the left-over resources.
+        schedule_results = self._schedule_leftover_quotas(
+            jobs,
+            total_resources=total_resources,
+            schedule_results=schedule_results,
+        )
 
         # Log the job verdicts.
         # TODO(markblee): Move to util/reuse this block if we have multiple scheduler
@@ -419,11 +452,83 @@ class JobScheduler(Configurable):
 
         # Construct mock verdicts allowing everything to be scheduled.
         if dry_run:
+            project_usages = defaultdict(
+                lambda: {resource_type: 0 for resource_type in total_resources}
+            )
+            for job_metadata in jobs.values():
+                for resource_type, usage in job_metadata.resources.items():
+                    project_usages[job_metadata.project_id][resource_type] += usage
             schedule_results = Scheduler.ScheduleResults(
                 project_limits=schedule_results.project_limits,
+                project_usages=project_usages,
                 job_verdicts={
                     project_id: {job_name: JobVerdict() for job_name in project_verdicts}
                     for project_id, project_verdicts in schedule_results.job_verdicts.items()
                 },
             )
         return schedule_results
+
+    def _schedule_leftover_quotas(
+        self,
+        jobs: Dict[str, JobMetadata],
+        *,
+        total_resources: Dict[ResourceType, int],
+        schedule_results: Scheduler.ScheduleResults,
+    ) -> Scheduler.ScheduleResults:
+        """Schedules the left-over quotas.
+
+        See comments on `schedule` on the behavior of left-over scheduling.
+
+        Args:
+            jobs: The jobs to be scheduled.
+            total_resources: The total amount of resources per type, including resources already
+                allocated to jobs in `schedule_results`.
+            schedule_results: The current scheduling results.
+
+        Returns:
+            Updated scheduling results. Every job scheduled to run in `schedule_results` will
+            continue to be scheduled. Zero or more jobs not scheduled to run `scheduled_results`
+            may be scheduled to run in the updated results.
+        """
+        total_usages = defaultdict(int)
+        for usages in schedule_results.project_usages.values():
+            for resource_type, usage in usages.items():
+                total_usages[resource_type] += usage
+        leftover_resources = {
+            resource_type: total_resources[resource_type] - total_usages[resource_type]
+            for resource_type in total_resources
+        }
+        leftover_jobs = {}
+        for verdicts in schedule_results.job_verdicts.values():
+            for job_name, verdict in verdicts.items():
+                if not verdict.should_run():
+                    leftover_jobs[job_name] = jobs[job_name]
+        # Sort leftover jobs together, without regard to their projects.
+        leftover_job_queue = self._sorter.sort(leftover_jobs)
+        leftover_schedule_results: Scheduler.ScheduleResults = self._scheduler.schedule(
+            resource_limits=leftover_resources,
+            project_quotas={"leftover": {resource_type: 1 for resource_type in total_resources}},
+            project_jobs={"leftover": leftover_job_queue},
+        )
+        merged_verdicts = {}
+        merged_usages = {}
+        for job_name, job_metadata in jobs.items():
+            project_id = job_metadata.project_id
+            if project_id not in merged_verdicts:
+                merged_verdicts[project_id] = {}
+                merged_usages[project_id] = defaultdict(int)
+            orig_verdict = schedule_results.job_verdicts[project_id][job_name]
+            merged_verdict = orig_verdict | leftover_schedule_results.job_verdicts["leftover"].get(
+                job_name
+            )
+            if merged_verdict:
+                for resource_type in total_resources:
+                    merged_usages[project_id][resource_type] += job_metadata.resources.get(
+                        resource_type, 0
+                    )
+            merged_verdicts[project_id][job_name] = merged_verdict
+        return Scheduler.ScheduleResults(
+            project_limits=schedule_results.project_limits,
+            project_usages=merged_usages,
+            job_verdicts=merged_verdicts,
+        )
