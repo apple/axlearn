@@ -246,6 +246,9 @@ class JobVerdict:
     # the project limits.
     over_limits: Optional[Set[ResourceType]] = None
 
+    def __or__(self, other: Optional["JobVerdict"]) -> Optional["JobVerdict"]:
+        return self if self.should_run() else other
+
 
 class Scheduler(Configurable):
     """A job scheduler."""
@@ -498,7 +501,7 @@ class JobScheduler(Configurable):
             for job_name, verdict in verdicts.items():
                 if not verdict.should_run():
                     leftover_jobs[job_name] = jobs[job_name]
-        # Sort leftover jobs together, without regarding to their projects.
+        # Sort leftover jobs together, without regard to their projects.
         leftover_job_queue = self._sorter.sort(leftover_jobs)
         leftover_schedule_results: Scheduler.ScheduleResults = self._scheduler.schedule(
             resource_limits=leftover_resources,
@@ -511,12 +514,10 @@ class JobScheduler(Configurable):
             project_id = job_metadata.project_id
             if project_id not in merged_verdicts:
                 merged_verdicts[project_id] = {}
-                merged_usages[project_id] = {resource_type: 0 for resource_type in total_resources}
+                merged_usages[project_id] = defaultdict(int)
             orig_verdict = schedule_results.job_verdicts[project_id][job_name]
-            merged_verdict = (
-                orig_verdict
-                if orig_verdict.should_run()
-                else leftover_schedule_results.job_verdicts["leftover"][job_name]
+            merged_verdict = orig_verdict | leftover_schedule_results.job_verdicts["leftover"].get(
+                job_name
             )
             if merged_verdict.should_run():
                 for resource_type in total_resources:

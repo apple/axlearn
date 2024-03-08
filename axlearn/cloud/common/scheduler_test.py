@@ -411,10 +411,10 @@ class TestJobScheduler(parameterized.TestCase):
             proj: JobMetadata(
                 user_id=f"user_{proj}",
                 project_id=f"project_{proj}",
-                creation_time=yesterday + timedelta(seconds=1),
+                creation_time=yesterday + timedelta(seconds=-index),
                 resources={"gpu": 5},
             )
-            for proj in ("a", "b", "c")
+            for index, proj in enumerate(["a", "b", "c"])
         }
         results = sched.schedule(jobs)
         # Each project gets 4 GPUs as its resource limit.
@@ -427,8 +427,12 @@ class TestJobScheduler(parameterized.TestCase):
             for project_verdicts in results.job_verdicts.values()
             for job_name, verdict in project_verdicts.items()
         }
-        # Two of the jobs should run, even though every job's demand exceeds the project limit.
-        self.assertEqual(2, sum(verdict.should_run() for verdict in job_verdicts.values()))
+        # Two of the older jobs should run, even though every job's demand exceeds the project
+        # limit.
+        self.assertEqual(
+            {"a": False, "b": True, "c": True},
+            {job_name: verdict.should_run() for job_name, verdict in job_verdicts.items()},
+        )
 
         # Test more complicated scheduling.
         jobs = {}
