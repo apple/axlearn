@@ -22,7 +22,7 @@ from axlearn.experiments.text.gpt.common import STEP_DTYPE, learner_config, mesh
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 
-MODEL_SIZES = ("test", "7B", "56B")
+MODEL_SIZES = ("test", "7B", "65B")
 MAX_SEQUENCE_LENGTH = 2048
 
 
@@ -71,12 +71,12 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
                 ),
             ),
         )
-    elif model_size == "56B":
+    elif model_size == "65B":
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=32,
-                hidden_dim=128 * 32 * 8,
-                num_heads=32,
+                num_layers=80,
+                hidden_dim=8192,
+                num_heads=64,
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             train_batch_size=4 * 1024 * 1024 // MAX_SEQUENCE_LENGTH,  # 4M tokens.
