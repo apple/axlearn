@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests TPU runner job."""
+
 # pylint: disable=protected-access
 import contextlib
 import os
@@ -55,11 +56,10 @@ def mock_tpu(module_name: str, running_from_vm: bool = True):
         ]
 
     mocks = {
-        "create_tpu": mock_create_tpu,
-        "get_tpu_node": mock_get_tpu_node,
+        "create_queued_tpu": mock_create_tpu,
         "get_queued_tpu_node": mock_get_tpu_node,
-        "_tpu_resource": mock_tpu_resource,
-        "delete_tpu": mock_delete_tpu,
+        "tpu_resource": mock_tpu_resource,
+        "delete_queued_tpu": mock_delete_tpu,
         "running_from_vm": mock_running_from_vm,
         "list_tpu_info": mock_list_tpu_info,
     }
@@ -189,11 +189,11 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
             tpu_runner.__name__, running_from_vm
         ) as mocks:
             # Create a dummy TPU.
-            mocks["create_tpu"](cfg.name)
+            mocks["create_queued_tpu"](cfg.name)
             # Issue start command.
             job._start()
-            mocks["delete_tpu"].assert_called()
-            mocks["create_tpu"].assert_called()
+            mocks["delete_queued_tpu"].assert_called()
+            mocks["create_queued_tpu"].assert_called()
             # Bundling should happen if not on VM.
             self.assertEqual(not running_from_vm, job._bundler.bundle.called)
 
@@ -206,11 +206,11 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
 
         with mock_credentials, mock_tpu(tpu_runner.__name__) as mocks, mock_execute as mock_exec:
             # Create a dummy TPU.
-            mocks["create_tpu"](cfg.name)
+            mocks["create_queued_tpu"](cfg.name)
             job._delete()
             # Outputs should be copied. call_args get the args of the last call.
             self.assertIn("gsutil cp", mock_exec.call_args.args[0])
-            self.assertIn(cfg.name, mocks["delete_tpu"].call_args.args)
+            self.assertIn(cfg.name, mocks["delete_queued_tpu"].call_args.args)
 
     def test_get_status(self):
         mocks = [

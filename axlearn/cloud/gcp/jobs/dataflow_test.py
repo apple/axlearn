@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests dataflow launch."""
+
 import contextlib
 from unittest import mock
 
@@ -56,15 +57,6 @@ def _mock_flags():
     return fv
 
 
-def _mock_dataflow(module_name: str):
-    return mock.patch.multiple(
-        module_name,
-        get_credentials=mock.MagicMock(),
-        _dataflow_resource=mock.MagicMock(),
-        _get_dataflow_jobs=mock.MagicMock(),
-    )
-
-
 class DataflowJobTest(TestWithTemporaryCWD):
     def test_from_flags_bundler(self):
         with _mock_gcp_settings():
@@ -91,14 +83,16 @@ class DataflowJobTest(TestWithTemporaryCWD):
             self.assertEqual(settings["project"], dataflow_spec["project"])
             self.assertEqual(settings["zone"], dataflow_spec["region"])
             self.assertEqual(
-                settings["service_account_email"], dataflow_spec["service_account_email"]
+                settings["service_account_email"],
+                dataflow_spec["service_account_email"],
             )
             self.assertEqual(
                 f"{settings['docker_repo']}/test_image:test_name",
                 dataflow_spec["sdk_container_image"],
             )
             self.assertEqual(
-                f"gs://{settings['ttl_bucket']}/tmp/test_name/", dataflow_spec["temp_location"]
+                f"gs://{settings['ttl_bucket']}/tmp/test_name/",
+                dataflow_spec["temp_location"],
             )
             self.assertEqual(
                 f"https://www.googleapis.com/compute/v1/{settings['subnetwork']}",
@@ -112,7 +106,11 @@ class DataflowJobTest(TestWithTemporaryCWD):
             # Test overridding specs (including a multi-flag)
             fv.set_default(
                 "dataflow_spec",
-                ["project=other_project", "temp_location=other_location", "experiments=exp1,exp2"],
+                [
+                    "project=other_project",
+                    "temp_location=other_location",
+                    "experiments=exp1,exp2",
+                ],
             )
             cfg = DataflowJob.from_flags(fv)
             # pylint: disable-next=protected-access

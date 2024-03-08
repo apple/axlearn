@@ -47,6 +47,8 @@ class TestTPUCleaner(parameterized.TestCase):
 
         module_name = tpu_cleaner.__name__
         mocks = [
+            mock.patch(f"{module_name}.qrm_resource", return_value=mock.MagicMock()),
+            mock.patch(f"{module_name}.tpu_resource", return_value=mock.MagicMock()),
             mock.patch(f"{module_name}.get_credentials", side_effect=mock_get_credentials),
             mock.patch(f"{module_name}.list_tpu_info", side_effect=mock_list_tpu_info),
             mock.patch(

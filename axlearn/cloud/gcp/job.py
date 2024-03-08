@@ -4,6 +4,7 @@
 
 Note that these utilities do not handle resource management.
 """
+
 import atexit
 import logging
 import os
@@ -18,7 +19,7 @@ from google.auth.credentials import Credentials
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import subprocess_run
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
-from axlearn.cloud.gcp.tpu import _qrm_resource, _tpu_resource, get_queued_tpu_node, get_tpu_node
+from axlearn.cloud.gcp.tpu import get_queued_tpu_node, get_tpu_node, qrm_resource, tpu_resource
 from axlearn.cloud.gcp.utils import get_credentials, running_from_vm
 from axlearn.common.config import REQUIRED, Required, config_class
 
@@ -53,7 +54,8 @@ class GCPJob(Job):
             The temporary credentials, possibly impersonating `cfg.service_account`.
         """
         return get_credentials(
-            impersonate_account=self.config.service_account, impersonate_scopes=impersonate_scopes
+            impersonate_account=self.config.service_account,
+            impersonate_scopes=impersonate_scopes,
         )
 
 
@@ -92,12 +94,12 @@ class TPUJob(GCPJob):
             if cfg.num_slices > 1:
                 node = get_queued_tpu_node(
                     cfg.name,
-                    _qrm_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
+                    qrm_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
                 )
             else:
                 node = get_tpu_node(
                     cfg.name,
-                    _tpu_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
+                    tpu_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
                 )
             if node is None:
                 raise ValueError(f"Expected TPU {cfg.name} to exist")
