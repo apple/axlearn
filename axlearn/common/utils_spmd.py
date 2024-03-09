@@ -80,5 +80,6 @@ def setup(
                 distributed_coordinator,
                 num_processes=num_processes,
                 process_id=process_id,
+                initialization_timeout=900,
             )
         _jax_distributed_initialized = True
