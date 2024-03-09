@@ -83,11 +83,11 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
             max_step=500_000,  # 2T tokens // 4M tokens/step.
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
-                ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16*8)),
-                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=16*8)),
+                # TODO: Add mesh rules for TPU
+                # requires global batch size to be equal to amount of gpus
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
-                    mesh_shape_from_axes(data=-1, fsdp=8*8),
+                    mesh_shape_from_axes(data=-1, fsdp=32),
                 ),
             ),
         )
