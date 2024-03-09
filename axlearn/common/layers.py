@@ -311,11 +311,12 @@ class RMSNorm(BaseNormalizationLayer):
         eps: float = 1e-8
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
+        param_partition_spec = (("expert", "fsdp", "seq"),)
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
         cfg = self.config
         return {
-            "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
+            "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=cfg.param_partition_spec),
         }
 
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
