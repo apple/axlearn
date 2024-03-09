@@ -141,6 +141,9 @@ class SpmdTrainer(Module):
         # By default, only trace on host 0.
         start_trace_process_indices: Union[Literal["all"], Sequence[int]] = [0]
 
+        # Log the step time for each individual step
+        log_step_time: bool = False
+
         # Prune empty state updates.
         prune_empty_state_updates: bool = True
 
@@ -432,7 +435,9 @@ class SpmdTrainer(Module):
 
                     self._step = self._step + 1
 
-                    step_start_time = time.perf_counter()
+                    if cfg.log_step_time:
+                        step_start_time = time.perf_counter()
+
                     self.vlog(3, "Start step %s", self.step)
                     output = self._run_step(
                         utils.host_to_global_device_array(input_batch),
@@ -442,9 +447,10 @@ class SpmdTrainer(Module):
                     )
                     self.vlog(3, "Done step %s", self.step)
 
-                    step_time = time.perf_counter() - step_start_time
-                    self._step_log("Step %s took %s seconds", self.step, step_time)
-                    self.summary_writer(self.step, {"step_time": step_time})
+                    if cfg.log_step_time:
+                        step_time = time.perf_counter() - step_start_time
+                        self._step_log("Step %s took %s seconds", self.step, step_time)
+                        self.summary_writer(self.step, {"step_time": step_time})
 
                     num_steps += 1
                     if num_steps % 100 == 0:

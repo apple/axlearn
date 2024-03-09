@@ -37,6 +37,7 @@ flags.DEFINE_integer(
     "Used for initializing model parameters and pseudo-random number generation during training.",
 )
 flags.DEFINE_list("trace_at_steps", [], "Step numbers to start a 3-step profile at.")
+flags.DEFINE_bool("log_step_time", False, "Log the time it takes for each step")
 flags.DEFINE_list(
     "eval_trace_at_iters",
     [],
@@ -94,6 +95,7 @@ def get_trainer_config(
     trainer_config.mesh_shape = trainer_config.mesh_shape or (len(jax.devices()), 1)
     trainer_config.mesh_shape = infer_mesh_shape(trainer_config.mesh_shape)
     trainer_config.start_trace_steps = [int(el) for el in flag_values.trace_at_steps]
+    trainer_config.log_step_time = flag_values.log_step_time
     if trainer_config.watchdog_timeout_seconds is None:
         trainer_config.watchdog_timeout_seconds = flag_values.trainer_watchdog_timeout_seconds
 
