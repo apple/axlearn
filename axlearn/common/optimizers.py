@@ -1634,6 +1634,7 @@ def adastar_optimizer(
             return _AdastarUpdateResult(updates=smoothed_updates, pps=new_pps)
 
         # First compute raw updates.
+        _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
         raw_updates, pps_tree = _split_update_results(
             vectorized_tree_map(
                 lambda g, s: _raw_updates(grad=g, pps=s),
@@ -1679,6 +1680,7 @@ def adastar_optimizer(
 
         param_values = jax.tree_util.tree_map(lambda p: p.value, params)
         _compute_rms_norms(param_values, summary_suffix="param_norm")
+        _compute_rms_norms(updates, summary_suffix="update_norm")
 
         def _update2(u: Tensor, param: OptParam):
             lr_scaled_updates = learning_rate * u
