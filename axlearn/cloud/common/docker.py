@@ -5,7 +5,7 @@
 import os
 import pathlib
 import subprocess
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 from absl import logging
 
@@ -22,6 +22,7 @@ def build(
     target: Optional[str] = None,
     labels: Optional[Dict[str, str]] = None,
     platform: Optional[str] = None,
+    cache_from: Optional[Sequence[str]] = None,
 ) -> str:
     """Builds a Dockerfile.
 
@@ -35,12 +36,15 @@ def build(
         labels: Optional image labels. Can be viewed with `docker inspect`.
         platform: Optional target platform for the build output.
             https://docs.docker.com/build/building/multi-platform/
+        cache_from: Optional list of image(s) to cache from.
+            https://docs.docker.com/reference/cli/docker/buildx/build/#cache-from
 
     Returns:
         The image name.
     """
     args = args or {}
     labels = labels or {}
+    cache_from = cache_from or []
 
     # Build command.
     cli_args = ["docker", "build", "-t", image, "-f", dockerfile]
@@ -52,6 +56,8 @@ def build(
         cli_args.extend(["--target", target])
     if platform:
         cli_args.extend(["--platform", platform])
+    for cache_source in cache_from:
+        cli_args.extend(["--cache-from", cache_source])
     cli_args.append(context)
 
     # Execute command.
