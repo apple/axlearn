@@ -574,8 +574,7 @@ class BaseTarBundler(Bundler):
             The command to install the bundle.
         """
         copy_cmd = self._copy_to_local_command(
-            remote_bundle_id=bundle_id,
-            local_bundle_id="axlearn.tar.gz",
+            remote_bundle_id=bundle_id, local_bundle_id="axlearn.tar.gz"
         )
         pip_install_cmd = (
             f"if [[ -f {config.CONFIG_DIR}/requirements.txt ]]; then "
@@ -614,10 +613,10 @@ def get_bundler_config(
     )
 
 
-def bundler_flags(**kwargs):
+def bundler_flags(required: bool = True, **kwargs):
     """Common bundler flags. Keyword args will be forwarded to flag definitions."""
 
-    flags.DEFINE_string("bundler_type", None, "Bundler type.", required=True, **kwargs)
+    flags.DEFINE_string("bundler_type", None, "Bundler type.", required=required, **kwargs)
     flags.DEFINE_multi_string(
         "bundler_spec",
         [],

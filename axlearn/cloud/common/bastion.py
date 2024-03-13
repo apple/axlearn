@@ -44,6 +44,7 @@ Bastion jobs should:
     outputs is desired.
 5. Handle retries internally, if retries are desired.
 """
+
 # pylint: disable=consider-using-with,too-many-branches,too-many-instance-attributes,too-many-lines
 import collections
 import dataclasses
@@ -901,6 +902,17 @@ class BastionDirectory(Configurable):
     @property
     def user_states_dir(self):
         return os.path.join(self.root_dir, "jobs", "user_states")
+
+    def list_jobs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jobs, _ = download_job_batch(
+                spec_dir=self.active_job_dir,
+                state_dir=self.job_states_dir,
+                user_state_dir=self.user_states_dir,
+                local_spec_dir=tmpdir,
+            )
+            jobs: Dict[str, Job] = dict(sorted(jobs.items(), key=lambda kv: kv[0]))
+            return jobs
 
     def cancel_job(self, job_name: str):
         try:

@@ -83,7 +83,7 @@ from absl import app, flags, logging
 from google.auth.credentials import Credentials
 from googleapiclient import discovery, errors
 
-from axlearn.cloud.common.bundler import DockerBundler, bundler_flags, get_bundler_config
+from axlearn.cloud.common.bundler import BaseDockerBundler, DockerBundler, get_bundler_config
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import (
     canonicalize_to_list,
@@ -96,35 +96,15 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
-from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import GCPJob
-from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials
+from axlearn.cloud.gcp.utils import catch_auth, get_credentials
 from axlearn.common.config import REQUIRED, Required, config_class
 
 FLAGS = flags.FLAGS
 
 
-def launch_flags(flag_values: flags.FlagValues = FLAGS):
-    common_flags(flag_values=flag_values)
-    bundler_flags(flag_values=flag_values)
-    flag_values.set_default("project", default_project())
-    flag_values.set_default("zone", default_zone())
-    flag_values.set_default("bundler_type", ArtifactRegistryBundler.TYPE)
-    # Note: don't use generate_taskname() here, as the VM may not have $USER.
-    flags.DEFINE_string("name", None, "Dataflow job name.", flag_values=flag_values)
-    flags.DEFINE_integer("max_tries", 1, "Max attempts to launch the job.", flag_values=flag_values)
-    flags.DEFINE_integer(
-        "retry_interval", 60, "Interval in seconds between tries.", flag_values=flag_values
-    )
-    flags.DEFINE_string("vm_type", "n2-standard-2", "Worker VM type.", flag_values=flag_values)
-    flags.DEFINE_multi_string(
-        "dataflow_spec",
-        [],
-        "Bundler spec provided as key=value.",
-        flag_values=flag_values,
-    )
-
-
+# TODO(markblee): Use CPURunner.
 class DataflowJob(GCPJob):
     """Launches a dataflow job from local."""
 
@@ -139,13 +119,31 @@ class DataflowJob(GCPJob):
         setup_command: Required[str] = REQUIRED
 
     @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("vm_type", "n2-standard-2", "Worker VM type.", **common_kwargs)
+        flags.DEFINE_multi_string(
+            "dataflow_spec",
+            [],
+            "Bundler spec provided as key=value.",
+            **common_kwargs,
+        )
+
+    @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg = super().from_flags(fv, **kwargs)
         cfg.name = cfg.name or generate_job_name()
+        cfg.max_tries = cfg.max_tries or 1
+        cfg.retry_interval = cfg.retry_interval or 60
 
         # Construct bundler.
-        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec, fv=fv)
-        if not issubclass(cfg.bundler.klass, DockerBundler):
+        cfg.bundler = get_bundler_config(
+            bundler_type=fv.bundler_type or ArtifactRegistryBundler.TYPE,
+            spec=fv.bundler_spec,
+            fv=fv,
+        )
+        if not issubclass(cfg.bundler.klass, BaseDockerBundler):
             raise NotImplementedError("Expected a DockerBundler.")
         cfg.bundler.image = cfg.bundler.image or cfg.name
 
@@ -375,6 +373,6 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
 
 
 if __name__ == "__main__":
-    launch_flags()
+    DataflowJob.define_flags(FLAGS)
     configure_logging(logging.INFO)
     app.run(main)

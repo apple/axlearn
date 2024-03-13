@@ -4,12 +4,10 @@
 
 # pylint: disable=protected-access
 import contextlib
-import os
 import tempfile
 from typing import List
 from unittest import mock
 
-import pytest
 from absl import app, flags
 from absl.testing import parameterized
 
@@ -316,12 +314,9 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
         bundler_spec=[None, "find_links=/custom/python/archives"],
     )
     def test_from_flags(self, name, output_dir, bundler_spec):
-        if name is None and os.getenv("USER") is None:
-            pytest.skip(reason="No USER in env.")
-
         # Construct flags.
         fv = flags.FlagValues()
-        tpu_runner.launch_flags(flag_values=fv)
+        tpu_runner.TPURunnerJob.define_flags(fv)
         argv = ["cli"]
         if name is not None:
             argv.append(f"--name={name}")
@@ -336,9 +331,12 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
 
         # Construct config.
         mock_settings = {"ttl_bucket": "ttl_bucket"}
-        with mock_gcp_settings(tpu_runner.__name__, settings=mock_settings), mock_gcp_settings(
-            bundler.__name__, settings=mock_settings
-        ):
+        mock_generate_job_name = mock.patch(
+            f"{tpu_runner.__name__}.generate_job_name", return_value="test-name"
+        )
+        with mock_generate_job_name, mock_gcp_settings(
+            tpu_runner.__name__, settings=mock_settings
+        ), mock_gcp_settings(bundler.__name__, settings=mock_settings):
             cfg = tpu_runner.TPURunnerJob.from_flags(fv)
 
         # If name is not provided, there should be a default.
@@ -385,16 +383,16 @@ def _mock_job(running_from_vm: bool):
 class TPURunnerMainTest(TestWithTemporaryCWD):
     """Tests CLI entrypoint."""
 
-    def test_launch_flags(self):
+    def test_define_flags(self):
         fv = flags.FlagValues()
-        tpu_runner.launch_flags(flag_values=fv)
+        tpu_runner.TPURunnerJob.define_flags(fv)
         # Basic sanity check.
         self.assertEqual(fv["num_slices"].default, 1)
 
     @parameterized.parameters(True, False)
     def test_list(self, running_from_vm):
         fv = flags.FlagValues()
-        tpu_runner.launch_flags(flag_values=fv)
+        tpu_runner.TPURunnerJob.define_flags(fv)
         fv.mark_as_parsed()
 
         # Test that list can be invoked without additional flags.
@@ -404,7 +402,7 @@ class TPURunnerMainTest(TestWithTemporaryCWD):
     @parameterized.parameters(True, False)
     def test_stop(self, running_from_vm):
         fv = flags.FlagValues()
-        tpu_runner.launch_flags(flag_values=fv)
+        tpu_runner.TPURunnerJob.define_flags(fv)
         fv.set_default("name", "test")
         fv.mark_as_parsed()
 
@@ -415,9 +413,8 @@ class TPURunnerMainTest(TestWithTemporaryCWD):
     @parameterized.parameters(True, False)
     def test_start(self, running_from_vm):
         fv = flags.FlagValues()
-        tpu_runner.launch_flags(flag_values=fv)
+        tpu_runner.TPURunnerJob.define_flags(fv)
         fv.mark_as_parsed()
-        self.assertEqual(fv.bundler_type, bundler.GCSTarBundler.TYPE)
 
         with _mock_job(running_from_vm):
             with self.assertRaisesRegex(app.UsageError, "Invalid action"):

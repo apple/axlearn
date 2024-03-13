@@ -54,24 +54,17 @@ import sys
 import tempfile
 from collections import defaultdict
 from datetime import datetime
-from types import ModuleType
-from typing import Any, Callable, Dict, NamedTuple, Optional, TextIO, Tuple, Type, cast
+from typing import Any, Callable, Dict, NamedTuple, Optional, TextIO, Type, cast
 
 import regex as re
 from absl import app, flags, logging
 
 from axlearn.cloud.common.bastion import BastionDirectory
 from axlearn.cloud.common.bastion import Job as BastionJob
-from axlearn.cloud.common.bastion import (
-    JobState,
-    download_job_batch,
-    new_jobspec,
-    serialize_jobspec,
-)
-from axlearn.cloud.common.bundler import bundler_flags, get_bundler_config
+from axlearn.cloud.common.bastion import JobState, new_jobspec, serialize_jobspec
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_user_projects
 from axlearn.cloud.common.scheduler import JobMetadata
-from axlearn.cloud.common.types import ResourceMap, ResourceType
+from axlearn.cloud.common.types import ResourceMap
 from axlearn.cloud.common.utils import (
     configure_logging,
     format_table,
@@ -79,11 +72,16 @@ from axlearn.cloud.common.utils import (
     infer_cli_name,
     parse_action,
 )
-from axlearn.cloud.gcp.bundler import with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import Job
 from axlearn.cloud.gcp.jobs import tpu_runner
 from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, shared_bastion_name
+from axlearn.cloud.gcp.jobs.launch_utils import (
+    jobs_table,
+    match_by_regex,
+    serialized_flags_for_job,
+    usage_table,
+)
 from axlearn.cloud.gcp.tpu import (
     infer_tpu_cores,
     infer_tpu_version,
@@ -91,12 +89,7 @@ from axlearn.cloud.gcp.tpu import (
     list_tpu_info,
     tpu_resource,
 )
-from axlearn.cloud.gcp.utils import (
-    catch_auth,
-    common_flags,
-    get_credentials,
-    validate_resource_name,
-)
+from axlearn.cloud.gcp.utils import catch_auth, get_credentials, validate_resource_name
 from axlearn.cloud.gcp.vm import _compute_resource, get_vm_node
 from axlearn.common.config import (
     REQUIRED,
@@ -143,11 +136,16 @@ class BaseBastionManagedJob(Job):
     """A base job definition for jobs managed by a bastion.
 
     It provides functionality to submit, delete, and list bastion jobs, but is agnostic to specific
-    resource types. At minimum, subclasses should override `_resources()` to specify resources used
-    by the job, which will be used for quota management and scheduling.
+    resource types. At minimum, subclasses should override `runner` and `_resources()` to specify
+    the implementation of the job executed by the bastion, as well as resources used by the job,
+    which will be used for quota management and scheduling.
 
     See `BastionManagedTPUJob` as an example.
     """
+
+    # Runner class, a subclass of Job that runs locally on the bastion.
+    # Used to infer launch flags and launch command.
+    runner: Type[Job]
 
     @config_class
     class Config(Job.Config):
@@ -169,17 +167,20 @@ class BaseBastionManagedJob(Job):
         priority: Required[int] = REQUIRED
         # Output directory for job logs.
         output_dir: Required[str] = REQUIRED
+        # Runner executed by the bastion.
+        runner: Required[Job.Config] = REQUIRED
+
+    @classmethod
+    def validate_runner(cls):
+        if cls.runner is None:
+            raise ValueError(f"A BastionManagedJob should subclass {cls} and define `runner`.")
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         """Defines launch flags on the provided flag_values."""
-        # We specify allow_override=True so that subclasses may redefine common flags without
-        # conflict.
+        cls.validate_runner()
+        super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        common_flags(**common_kwargs)
-        bundler_flags(**common_kwargs)
-        # TODO(markblee): Support configuring an identity provider for --user_id.
-        flags.DEFINE_string("name", generate_job_name(), "Job name.", **common_kwargs)
         flags.DEFINE_string("bastion", None, "Name of bastion VM to use.", **common_kwargs)
         flags.DEFINE_integer(
             "priority",
@@ -187,6 +188,7 @@ class BaseBastionManagedJob(Job):
             "Job priority. Smaller means higher priority.",
             **common_kwargs,
         )
+        # TODO(markblee): Support configuring an identity provider for --user_id.
         flags.DEFINE_string(
             "user_id",
             os.getenv("USER"),
@@ -205,31 +207,40 @@ class BaseBastionManagedJob(Job):
             "If specified, the directory to store outputs (such as logs).",
             **common_kwargs,
         )
+        cls.runner.define_flags(fv)
 
     @classmethod
-    def from_flags(cls, fv: flags.FlagValues, action: str, **kwargs) -> Config:
+    def from_flags(cls, fv: flags.FlagValues, *, command: str, action: str, **kwargs) -> Config:
         """Constructs config from flags defined by `define_flags()`.
 
         Args:
             fv: Flag values (e.g., FLAGS).
+            command: The user-supplied command, i.e. everything after `--` as a string.
             action: Action requested by the user.
             kwargs: Optional key/values to set on the config.
 
         Returns:
             The job config.
         """
-        cfg = super().from_flags(fv, **kwargs)
+        cls.validate_runner()
+        cfg: BaseBastionManagedJob.Config = super().from_flags(fv, **kwargs)
         if not cfg.bastion_name:
             cfg.bastion_name = fv.bastion or shared_bastion_name(fv)
         cfg.bastion_dir.root_dir = bastion_root_dir(cfg.bastion_name, fv=fv)
         # Default output_dir depends on the final value of --name.
         if not cfg.output_dir:
             cfg.output_dir = f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
-        # Construct bundler config only for start.
+        # We use the bundler defined by the runner impl, ensuring that bundling is consistent
+        # between local and bastion.
+        cfg.bundler = None
+        # Construct runner only for start.
         if action == "start":
-            cfg.bundler = get_bundler_config(
-                bundler_type=fv.bundler_type, spec=fv.bundler_spec, fv=fv
-            )
+            cfg.runner = cls.runner.from_flags(fv, command=command)
+            runner_flags = " ".join(serialized_flags_for_job(fv, cls.runner))
+            cfg.command = f"python3 -m {cls.runner.__module__} {action} {runner_flags} -- {command}"
+        else:
+            cfg.runner = None
+            cfg.command = None
         return cfg
 
     def __init__(self, cfg: Config):
@@ -237,7 +248,10 @@ class BaseBastionManagedJob(Job):
         cfg = self.config
         if not (cfg.instance_type and cfg.output_dir):
             raise ValueError("instance_type, output_dir cannot be empty")
-        self._bastion_dir = cfg.bastion_dir.instantiate()
+        self._bastion_dir: BastionDirectory = cfg.bastion_dir.instantiate()
+        self._runner: Optional[Job] = (
+            cfg.runner.set(name="runner").instantiate() if cfg.runner else None
+        )
 
     def _delete(self):
         """Submits a delete request to bastion."""
@@ -258,38 +272,27 @@ class BaseBastionManagedJob(Job):
             * usage_by_project: A dict mapping project_id to (total usage, number of jobs), sorted
                 descending by total usage.
         """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            jobs, _ = download_job_batch(
-                spec_dir=self._bastion_dir.active_job_dir,
-                state_dir=self._bastion_dir.job_states_dir,
-                user_state_dir=self._bastion_dir.user_states_dir,
-                local_spec_dir=tmpdir,
-            )
-            jobs: Dict[str, BastionJob] = dict(sorted(jobs.items(), key=lambda kv: kv[0]))
+        jobs = self._bastion_dir.list_jobs()
 
-            # Maps user_id -> resource_type -> (total_usage, count).
-            usage_by_user = defaultdict(lambda: defaultdict(lambda: [0, 0]))
-            usage_by_project = defaultdict(lambda: defaultdict(lambda: [0, 0]))
-            for job in jobs.values():
-                if job.state == JobState.PENDING:
-                    continue
-                user_id = job.spec.metadata.user_id
-                project_id = job.spec.metadata.project_id
-                resources = job.spec.metadata.resources
-                for resource_type, usage in resources.items():
-                    usage_by_user[user_id][resource_type][0] += usage
-                    usage_by_user[user_id][resource_type][1] += 1
-                    usage_by_project[project_id][resource_type][0] += usage
-                    usage_by_project[project_id][resource_type][1] += 1
+        # Maps user_id -> resource_type -> (total_usage, count).
+        usage_by_user = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+        usage_by_project = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+        for job in jobs.values():
+            if job.state == JobState.PENDING:
+                continue
+            user_id = job.spec.metadata.user_id
+            project_id = job.spec.metadata.project_id
+            resources = job.spec.metadata.resources
+            for resource_type, usage in resources.items():
+                usage_by_user[user_id][resource_type][0] += usage
+                usage_by_user[user_id][resource_type][1] += 1
+                usage_by_project[project_id][resource_type][0] += usage
+                usage_by_project[project_id][resource_type][1] += 1
 
-            print(format_table(**self._jobs_table(jobs)), file=output_file)
-            print(format_table(**self._usage_table(usage_by_project)), file=output_file)
-            print(format_table(**self._usage_table(usage_by_user)), file=output_file)
-            return dict(
-                jobs=jobs,
-                usage_by_user=usage_by_user,
-                usage_by_project=usage_by_project,
-            )
+        print(format_table(**jobs_table(jobs)), file=output_file)
+        print(format_table(**usage_table(usage_by_project)), file=output_file)
+        print(format_table(**usage_table(usage_by_user)), file=output_file)
+        return dict(jobs=jobs, usage_by_user=usage_by_user, usage_by_project=usage_by_project)
 
     def _resources(self) -> ResourceMap[int]:
         """Infers resources from instance_type. Can be overridden by subclasses.
@@ -300,8 +303,9 @@ class BaseBastionManagedJob(Job):
 
     def _execute(self):
         """Submits the command to bastion."""
-        cfg = self.config
+        cfg: BaseBastionManagedJob.Config = self.config
 
+        # TODO(markblee): Fix for GKE.
         bastion_node = _get_bastion_vm(cfg.bastion_name)
         if bastion_node is None or bastion_node.get("status", None) != "RUNNING":
             logging.warning(
@@ -322,8 +326,10 @@ class BaseBastionManagedJob(Job):
                     f"User '{cfg.user_id}' is not a member of the project '{cfg.project_id}'. "
                     f"Instead, user '{cfg.user_id}' is a member of: {user_projects}"
                 )
-        if self._bundler:
-            self._bundler.bundle(cfg.name)
+
+        if self._runner and self._runner.bundler:
+            self._runner.bundler.bundle(cfg.name)
+
         logging.info("Starting run for job name %s", cfg.name)
         with tempfile.NamedTemporaryFile("w") as f:
             logging.info("Command: %s", cfg.command)
@@ -350,77 +356,12 @@ class BaseBastionManagedJob(Job):
             f"--zone={cfg.zone}"
         )
 
-    def _jobs_table(self, jobs: Dict[str, BastionJob]) -> Dict:
-        """Construct tabular jobs info.
 
-        Args:
-            jobs: A mapping from job name to job info.
-
-        Returns:
-            A table which can be passed to `format_table`.
-        """
-        return dict(
-            headings=[
-                "NAME",
-                "USER_ID",
-                "JOB_STATE",
-                "PROJECT_ID",
-                "RESOURCES",
-                "PRIORITY",
-            ],
-            rows=[
-                [
-                    job.spec.name,
-                    job.spec.metadata.user_id,
-                    job.state.name,
-                    job.spec.metadata.project_id,
-                    str(job.spec.metadata.resources),
-                    str(job.spec.metadata.priority),
-                ]
-                for job in jobs.values()
-            ],
-        )
-
-    def _usage_table(self, usage_info: Dict[str, Dict[ResourceType, Tuple[float, int]]]):
-        """Construct tabular usage info.
-
-        Args:
-            usage_info: A mapping from principal to resource type to
-                (total usage, total number of jobs).
-
-        Returns:
-            A table which can be passed to `format_table`.
-        """
-        table = dict(
-            headings=["PRINCIPAL", "RESOURCE", "USAGE", "COUNT"],
-            rows=[
-                [
-                    principal or "unknown",
-                    resource_type,
-                    usage[0],
-                    usage[1],
-                ]
-                for principal, resource_usage in usage_info.items()
-                for resource_type, usage in resource_usage.items()
-            ],
-        )
-        # Sort by usage descending.
-        table["rows"] = sorted(table["rows"], key=lambda v: (v[1], v[2]), reverse=True)
-        return table
-
-
-class _RunnerModuleType(ModuleType):
-    """A Module defining launch_flags."""
-
-    launch_flags: Callable[[flags.FlagValues], None]
-
-
-# TODO(markblee): Add a LaunchCPUJob.
+# TODO(markblee): Add a BastionManagedCPUJob.
 class BastionManagedTPUJob(BaseBastionManagedJob):
     """Launches a TPU job via bastion."""
 
-    # Runner module. Used to infer launch flags and launch command.
-    _runner: _RunnerModuleType = tpu_runner  # pytype: disable=annotation-type-mismatch
+    runner = tpu_runner.TPURunnerJob
 
     @config_class
     class Config(BaseBastionManagedJob.Config):
@@ -433,50 +374,9 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
     def define_flags(cls, fv: flags.FlagValues):
         """Defines launch flags using tpu_runner."""
         super().define_flags(fv)
-        cls._runner.launch_flags(fv)
         fv.set_default("name", generate_job_name())
         fv.set_default("tpu_type", cls._tpu_type(fv.instance_type))
         fv["tpu_type"].help += " (Note: inherited from --instance_type)."
-
-    @classmethod
-    def from_flags(cls, fv: flags.FlagValues, *, command: str, action: str, **kwargs) -> Config:
-        """Constructs config from flags defined by `define_flags()`.
-
-        In addition to logic defined in `BaseBastionManagedJob.from_flags()`:
-        * Ensures "tpu" extras are bundled.
-        * Automatically includes flags used by tpu_runner as part of the command.
-
-        Args:
-            fv: Flag values (e.g., FLAGS).
-            command: The user-supplied command, i.e. everything after `--` as a string.
-            action: Action requested by the user.
-            kwargs: Optional key/values to set on the config.
-
-        Returns:
-            The job config.
-        """
-        cfg: BastionManagedTPUJob.Config = super().from_flags(fv, action=action, **kwargs)
-
-        # Construct bundler config.
-        if cfg.bundler:
-            cfg.bundler = with_tpu_extras(cfg.bundler)
-
-        # Save flags values corresponding to our launch flags.
-        launch_fv = flags.FlagValues()
-        cls._runner.launch_flags(launch_fv)
-
-        # Convert the user-supplied flags into a space-separated string, which is forwarded to the
-        # command executed by bastion. Only flags which are used by the runner are forwarded.
-        filtered = []
-        for _, module_flags in fv.flags_by_module_dict().items():
-            for flag in module_flags:
-                if flag.name in launch_fv and flag.value is not None:
-                    # Multi-flags get serialized with newlines.
-                    filtered.extend(flag.serialize().split("\n"))
-        launch_flags = " ".join(filtered)
-        # Note: command is only used for start.
-        cfg.command = f"python3 -m {cls._runner.__name__} start {launch_flags} -- {command}"
-        return cfg
 
     @classmethod
     def _tpu_type(cls, instance_type: str) -> str:
@@ -499,8 +399,8 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
         running_tpu_to_job_name = {}
 
         # Append TPU state information to the jobs table.
-        jobs_table = self._jobs_table(list_info["jobs"])
-        jobs_table["headings"].append("TPU_STATE")
+        job_info = jobs_table(list_info["jobs"])
+        job_info["headings"].append("TPU_STATE")
         for i, job in enumerate(list_info["jobs"].values()):
             job = cast(BastionJob, job)
 
@@ -525,17 +425,17 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
                 else:
                     tpu_states.add("PENDING")
 
-            jobs_table["rows"][i].append(",".join(tpu_states))
+            job_info["rows"][i].append(",".join(tpu_states))
 
-        print(format_table(**jobs_table), file=output_file)
+        print(format_table(**job_info), file=output_file)
         print("Usage by project:", file=output_file)
         print(
-            format_table(**self._usage_table(list_info["usage_by_project"])),
+            format_table(**usage_table(list_info["usage_by_project"])),
             file=output_file,
         )
         print("Usage by user:", file=output_file)
         print(
-            format_table(**self._usage_table(list_info["usage_by_user"])),
+            format_table(**usage_table(list_info["usage_by_user"])),
             file=output_file,
         )
 
@@ -547,7 +447,7 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
 
     def _resources(self) -> ResourceMap[int]:
         """Defines TPU resources used by the job."""
-        cfg = self.config
+        cfg: BastionManagedTPUJob.Config = self.config
         tpu_type = self._tpu_type(cfg.instance_type)
         return {infer_tpu_version(tpu_type): infer_tpu_cores(tpu_type) * cfg.num_slices}
 
@@ -557,7 +457,7 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
         In addition to logic defined in `BaseBastionManagedJob._execute()`, also emits the output
         logs for each TPU worker.
         """
-        cfg = self.config
+        cfg: BastionManagedTPUJob.Config = self.config
 
         # Job name has a suffix "-{slice_index}" for multi-slice.
         validate_resource_name(cfg.name if cfg.num_slices == 1 else f"{cfg.name}-{cfg.num_slices}")
@@ -575,30 +475,11 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
         )
 
 
-def _match_by_regex(match_regex: Dict[str, str]):
-    """Matches action and instance type by regex.
-
-    For example:
-
-        match_regex={'start': 'pat1', 'list': 'pat2'}
-
-    ... means that the launcher will be used if action is 'start' and --instance_type regex matches
-    'pat1', or if action is 'list' and --instance_type regex matches 'pat2'. The launcher will not
-    be invoked for any other action.
-    """
-
-    def fn(action: str, instance_type: str) -> bool:
-        """Returns True iff the launcher supports the given action and instance_type."""
-        return action in match_regex and bool(re.match(match_regex[action], instance_type))
-
-    return fn
-
-
 # Launchers specified here will be tried (in the given order) when launching a given instance type.
 _LAUNCHERS = [
     Launcher(
         job_cls=BastionManagedTPUJob,
-        matcher=config_for_function(_match_by_regex).set(
+        matcher=config_for_function(match_by_regex).set(
             match_regex=dict(start=r"tpu-v.+-(\d)+", list=r"tpu.*", stop=r"tpu.*"),
         ),
         description=(
