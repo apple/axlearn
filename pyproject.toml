@@ -15,7 +15,7 @@ dependencies = [
     "attrs>=21.3.0",
     "absl-py",
     "chex<0.1.81",  # chex 0.1.81 depends on numpy>=1.25.0.
-    "flax==0.7.4",  # only for checkpoints.
+    "flax==0.8.1",  # only for checkpoints.
     "importlab==0.7",  # breaks pytype on 0.8
     "jax==0.4.25",
     "jaxlib==0.4.25",
