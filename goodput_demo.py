@@ -9,12 +9,17 @@ from google.api import metric_pb2
 from google.cloud import compute_v1
 from google.cloud import monitoring_v3
 
+# An example script to demonstrate using Custom Dashboard in Cloud Monitoring to monitor TPU GoodPut
+
+# Recommend to run this script on a separate machine than your training hardware
+# Demo used the newer version of the package: ml_goodput_measurement==0.0.8
+
+# TODO: In order to obtain the GoodPut throughout a training's life time, consider repeatedly calling GoodPut Calculator
+# and write the results to a persistent data store.
+
 # TODO: fill out your project ID
 PROJECT_ID = "PROJECT ID"
 ZONE = "us-central2-b"
-
-# Recommend to run this script on a separate machine than your ML training machine
-# Demo used the newer version of the package: ml_goodput_measurement==0.0.8
 
 def main():
     # specify the run name you want to query GoodPut from

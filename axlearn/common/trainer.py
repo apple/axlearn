@@ -425,10 +425,10 @@ class SpmdTrainer(Module):
                 output = None
                 stop_trace_step = None
 
-                # TODO: specify a run-specific name for GoodPut Logger
+                # TODO: automatically pick up run_name from job config
                 run_name='test'
                 goodput_logger_name = f'goodput_{run_name}'
-                # TODO: create Goodput Recorder object
+                # Create Goodput Recorder object
                 goodput_recorder = goodput.GoodputRecorder(job_name=run_name, logger_name=goodput_logger_name, logging_enabled=(jax.process_index() == 0))
 
                 for input_batch in self._input_iter:
@@ -442,9 +442,9 @@ class SpmdTrainer(Module):
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
 
-                    # TODO: record step start time
+                    # Record step start time
                     goodput_recorder.record_step_start_time(self._step)
-                    logging.info("===========>RECORDED GOODPUT ON STEP:%s", self._step)
+                    # logging.info("GOODPUT MEASUREMENT: Recorded GoodPut on step:%s", self._step)
 
                     output = self._run_step(
                         utils.host_to_global_device_array(input_batch),
