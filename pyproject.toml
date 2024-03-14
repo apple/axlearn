@@ -82,6 +82,8 @@ gcp = [
     "google-cloud-storage==2.11.0",
     "google-cloud-core==2.3.3",
     "ml-goodput-measurement==0.0.2",
+    "google-cloud-monitoring==2.11.3",
+    "google-cloud-compute==1.6.1",
 ]
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
