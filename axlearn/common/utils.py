@@ -411,7 +411,7 @@ def with_sharding_constraint(x, shardings):
     mesh = jax.experimental.maps.thread_resources.env.physical_mesh  # type: ignore
     if mesh.empty or mesh.size == 1:
         return x
-    return pjit.with_sharding_constraint(x, shardings)
+    return jax.lax.with_sharding_constraint(x, shardings)
 
 
 def replicate_to_local_data(x: NestedTensor) -> NestedTensor:
