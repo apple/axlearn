@@ -14,13 +14,13 @@ requires-python = ">=3.9"
 dependencies = [
     "attrs>=21.3.0",
     "absl-py",
-    "chex<0.1.81",  # chex 0.1.81 depends on numpy>=1.25.0.
+    "chex==0.1.85",  # chex 0.1.81 depends on numpy>=1.25.0.
     "flax==0.8.1",  # only for checkpoints.
     "importlab==0.7",  # breaks pytype on 0.8
     "jax==0.4.25",
     "jaxlib==0.4.25",
     "nltk==3.7",  # for text preprocessing
-    "numpy<1.24",  # needed to pin to < 1.24; tf ragged_tensor depends on deprecated np.object.
+    "numpy==1.25.2",  # needed to pin to < 1.24; tf ragged_tensor depends on deprecated np.object.
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
     "protobuf>=3.20.3",
