@@ -73,6 +73,11 @@ flags.DEFINE_string(
     "Distributed coordinator IP address. Must be None on tpu, otherwise required.",
 )
 flags.DEFINE_integer(
+    "initialization_timeout",
+    None,
+    "Distributed initialization timeout in seconds. If None, uses jax default.",
+)
+flags.DEFINE_integer(
     "num_processes", None, "Total number of hosts (nodes). Must be None on tpu, otherwise required."
 )
 flags.DEFINE_integer(
@@ -89,6 +94,7 @@ def setup():
         num_processes=FLAGS.num_processes,
         process_id=FLAGS.process_id,
         jax_backend=FLAGS.jax_backend,
+        initialization_timeout=FLAGS.initialization_timeout,
     )
 
     if FLAGS.jax_profiler_port is not None:
