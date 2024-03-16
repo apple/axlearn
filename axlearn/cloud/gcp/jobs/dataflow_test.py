@@ -9,16 +9,11 @@ from absl import app, flags
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import DockerBundler
-from axlearn.cloud.gcp import bundler
+from axlearn.cloud.gcp import bundler, job
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.jobs import cpu_runner, dataflow
 from axlearn.cloud.gcp.jobs.cpu_runner_test import mock_vm
-from axlearn.cloud.gcp.jobs.dataflow import (
-    DataflowJob,
-    _docker_bundler_to_flags,
-    launch_flags,
-    main,
-)
+from axlearn.cloud.gcp.jobs.dataflow import DataflowJob, _docker_bundler_to_flags, main
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
@@ -39,8 +34,8 @@ def _mock_gcp_settings():
         for module in [dataflow, bundler, cpu_runner]
     ]
     mocks += [
-        mock.patch(f"{dataflow.__name__}.default_project", return_value="test_project"),
-        mock.patch(f"{dataflow.__name__}.default_zone", return_value="test_zone"),
+        mock.patch(f"{job.__name__}.default_project", return_value="test_project"),
+        mock.patch(f"{job.__name__}.default_zone", return_value="test_zone"),
     ]
     with contextlib.ExitStack() as stack:
         for m in mocks:
@@ -50,7 +45,7 @@ def _mock_gcp_settings():
 
 def _mock_flags():
     fv = flags.FlagValues()
-    launch_flags(flag_values=fv)
+    DataflowJob.define_flags(fv)
     fv.mark_as_parsed()
     fv.set_default("bundler_spec", ["image=test_image"])
     fv.set_default("name", "test_name")
@@ -161,11 +156,10 @@ def _mock_job(running_from_vm: bool, **kwargs):
 class DataflowMainTest(TestWithTemporaryCWD):
     """Tests CLI entrypoint."""
 
-    def test_launch_flags(self):
+    def test_define_flags(self):
         fv = flags.FlagValues()
-        launch_flags(flag_values=fv)
+        DataflowJob.define_flags(fv)
         # Basic sanity check.
-        self.assertEqual(fv["bundler_type"].default, ArtifactRegistryBundler.TYPE)
         self.assertEqual(fv["vm_type"].default, "n2-standard-2")
 
     @parameterized.parameters(True, False)

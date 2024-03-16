@@ -66,7 +66,7 @@ from typing import Dict, Optional, Sequence
 from absl import app, flags, logging
 from googleapiclient import errors
 
-from axlearn.cloud.common.bundler import BaseDockerBundler, bundler_flags, get_bundler_config
+from axlearn.cloud.common.bundler import BaseDockerBundler, get_bundler_config
 from axlearn.cloud.common.utils import (
     configure_logging,
     generate_job_name,
@@ -74,7 +74,7 @@ from axlearn.cloud.common.utils import (
     parse_kv_flags,
 )
 from axlearn.cloud.gcp.bundler import GCSTarBundler, with_tpu_extras
-from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import TPUJob, docker_command
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.tpu import (
@@ -89,7 +89,7 @@ from axlearn.cloud.gcp.tpu import (
     qrm_resource,
     tpu_resource,
 )
-from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials, running_from_vm
+from axlearn.cloud.gcp.utils import catch_auth, get_credentials, running_from_vm
 from axlearn.cloud.gcp.vertexai_tensorboard import (
     VertexAITensorboardUploader,
     is_vertexai_tensorboard_configured,
@@ -99,55 +99,6 @@ from axlearn.common.liveness_monitor import LivenessMonitor
 
 FLAGS = flags.FLAGS
 _COMMAND_SESSION_NAME = "command"
-
-
-def launch_flags(flag_values: flags.FlagValues = FLAGS):
-    common_flags(flag_values=flag_values)
-    bundler_flags(flag_values=flag_values)
-    flag_values.set_default("project", default_project())
-    flag_values.set_default("zone", default_zone())
-    flag_values.set_default("bundler_type", GCSTarBundler.TYPE)
-    # Note: don't use generate_job_name() here, as the VM may not have $USER.
-    flags.DEFINE_string("name", None, "Job name.", flag_values=flag_values)
-    flags.DEFINE_string("tpu_type", None, "Type of TPU to start.", flag_values=flag_values)
-    flags.DEFINE_integer(
-        "num_slices",
-        1,
-        "The number of slices of specified TPU type to start.",
-        flag_values=flag_values,
-    )
-    flags.DEFINE_integer(
-        "max_tries", 10, "Max attempts to launch the job.", flag_values=flag_values
-    )
-    flags.DEFINE_integer(
-        "retry_interval",
-        60,
-        "Interval in seconds between tries.",
-        flag_values=flag_values,
-    )
-    flags.DEFINE_multi_string(
-        "env", [], "Env var in the format key:value.", flag_values=flag_values
-    )
-    flags.DEFINE_string(
-        "output_dir",
-        None,
-        "If specified, the directory to store outputs (such as logs).",
-        flag_values=flag_values,
-    )
-    flags.DEFINE_string(
-        "service_account",
-        None,
-        "If specified, will run job as the service account. "
-        "Otherwise will fallback to application-default credentials.",
-        flag_values=flag_values,
-    )
-    flags.DEFINE_boolean(
-        "enable_tpu_ici_resiliency",
-        None,
-        "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
-        "not all TPU types support this flag.",
-        flag_values=flag_values,
-    )
 
 
 class TPURunnerJob(TPUJob):
@@ -176,16 +127,41 @@ class TPURunnerJob(TPUJob):
         enable_tpu_ici_resiliency: Optional[bool] = None
 
     @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string(
+            "output_dir",
+            None,
+            "If specified, the directory to store outputs (such as logs).",
+            **common_kwargs,
+        )
+        flags.DEFINE_multi_string("env", [], "Env var in the format key:value.", **common_kwargs)
+        flags.DEFINE_boolean(
+            "enable_tpu_ici_resiliency",
+            None,
+            "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
+            "not all TPU types support this flag.",
+            **common_kwargs,
+        )
+
+    @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
-        cfg = super().from_flags(fv, **kwargs)
+        cfg: TPURunnerJob.Config = super().from_flags(fv, **kwargs)
         # NOTE: if running on TPU, name is required as there may not be a $USER.
         cfg.name = cfg.name or generate_job_name()
+        cfg.max_tries = cfg.max_tries or 10
+        cfg.retry_interval = cfg.retry_interval or 60
         cfg.env_vars = {**cfg.env_vars, **parse_kv_flags(fv.env)}
         cfg.output_dir = (
             cfg.output_dir or f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{cfg.name}"
         )
         cfg.bundler = with_tpu_extras(
-            get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec, fv=fv)
+            get_bundler_config(
+                bundler_type=fv.bundler_type or GCSTarBundler.TYPE,
+                spec=fv.bundler_spec,
+                fv=fv,
+            )
         )
         return cfg
 
@@ -594,6 +570,6 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
 
 
 if __name__ == "__main__":
-    launch_flags()
+    TPURunnerJob.define_flags(FLAGS)
     configure_logging(logging.INFO)
     app.run(main)

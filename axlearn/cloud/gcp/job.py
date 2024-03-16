@@ -14,10 +14,12 @@ import shlex
 import subprocess
 from typing import Any, Dict, Optional, Sequence, Union
 
+from absl import flags
 from google.auth.credentials import Credentials
 
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import subprocess_run
+from axlearn.cloud.gcp.config import default_project, default_zone
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.tpu import get_queued_tpu_node, get_tpu_node, qrm_resource, tpu_resource
 from axlearn.cloud.gcp.utils import get_credentials, running_from_vm
@@ -37,6 +39,20 @@ class GCPJob(Job):
         zone: Required[str] = REQUIRED
         # If not none, the current job will be executed as the service account.
         service_account: Optional[str] = None
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("project", default_project(), "The GCP project name.", **common_kwargs)
+        flags.DEFINE_string("zone", default_zone(), "The GCP zone name.", **common_kwargs)
+        flags.DEFINE_string(
+            "service_account",
+            None,
+            "If specified, will run job as the service account. "
+            "Otherwise will fallback to application-default credentials.",
+            **common_kwargs,
+        )
 
     def _get_job_credentials(
         self,
@@ -74,6 +90,12 @@ class TPUJob(GCPJob):
         super().__init__(cfg)
         self._local_home = pathlib.Path.home()
         self._use_iap = None  # Infer from public IP.
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        flags.DEFINE_string("tpu_type", None, "TPU type.", flag_values=fv)
+        flags.DEFINE_integer("num_slices", 1, "Number of slices.", flag_values=fv)
 
     def _ensure_ssh_keys(self):
         """Ensures SSH keys exist, or raises ValueError. Only necessary on remote VM."""
