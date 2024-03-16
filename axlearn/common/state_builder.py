@@ -2,6 +2,7 @@
 
 # pylint: disable=too-many-lines
 """A library to build trainer states, e.g., from checkpoints of other models."""
+
 import copy
 import enum
 import functools
@@ -441,6 +442,7 @@ class BaseConverterFromPretrainedModel(Converter):
             trainer_cfg.mesh_shape = infer_mesh_shape(
                 cfg.mesh_shape or trainer_cfg.mesh_shape or (len(jax.devices()), 1)
             )
+            trainer_cfg.evalers = {}
             trainer = trainer_cfg.instantiate(parent=None)
             # pytype: enable=attribute-error
             source = Builder.State(
