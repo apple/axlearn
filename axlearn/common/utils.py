@@ -7,6 +7,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Common utilities."""
+
 import collections
 import contextlib
 import copy
@@ -34,16 +35,15 @@ from typing import (
     Union,
 )
 
-import flax.struct
 import jax
 import numpy as np
 from absl import logging
-from flax import serialization
 from jax import numpy as jnp
 from jax.experimental import maps, mesh_utils, multihost_utils, pjit
 from jax.sharding import PartitionSpec
 from jax.tree_util import register_pytree_node_class
 
+from axlearn.common import serialization, struct
 from axlearn.common.config import is_named_tuple
 
 # New code should use Nested[XX] instead of NestedXX.
@@ -167,7 +167,7 @@ def tree_paths(
                 (k, visit(v, _concat(prefix=prefix, suffix=k, separator=separator)))
                 for k, v in tree.items()
             )
-        elif isinstance(tree, flax.struct.PyTreeNode):
+        elif isinstance(tree, struct.PyTreeNode):
             # dataclasses.asdict() cannot be used because it recursively converts children to dicts.
             return type(tree)(
                 **visit(
@@ -225,7 +225,7 @@ class VDict(dict):
         return cls(zip(keys, values))
 
 
-# Register VDict as a dict for Flax serialization.
+# Register VDict as a dict for serialization.
 serialization.register_serialization_state(
     VDict,
     # pylint: disable-next=protected-access

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests common utils."""
+
 import dataclasses
 import sys
 from collections import OrderedDict
@@ -8,7 +9,6 @@ from typing import Any, Iterable, NamedTuple, Optional, Sequence, Type
 
 # pylint: disable=no-self-use
 import chex
-import flax.struct
 import jax
 import jaxlib
 import numpy as np
@@ -16,12 +16,11 @@ import pytest
 import tensorflow as tf
 import torch
 from absl.testing import absltest, parameterized
-from flax import serialization
 from jax import numpy as jnp
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
 
-from axlearn.common import learner, optimizers
+from axlearn.common import learner, optimizers, serialization, struct
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import config_class, config_for_function, similar_names
 from axlearn.common.layers import BatchNorm, LayerNorm, Linear
@@ -79,7 +78,7 @@ class Combo(NamedTuple):
 
 
 # pylint: disable-next=abstract-method
-class StructContainer(flax.struct.PyTreeNode):
+class StructContainer(struct.PyTreeNode):
     contents: Any
 
 
@@ -97,13 +96,13 @@ class TreeUtilsTest(TestCase):
             tree_paths(Combo(head=1, tail=Combo(head=2, tail=3))),
         )
 
-        # flax.struct.PyTreeNode.
+        # struct.PyTreeNode.
         self.assertEqual(
             WeightedScalar(mean="mean", weight="weight"),
             tree_paths(WeightedScalar(mean=2, weight=3)),
         )
 
-        # Nested flax.struct.PyTreeNode.
+        # Nested struct.PyTreeNode.
         self.assertEqual(
             StructContainer(WeightedScalar(mean="contents/mean", weight="contents/weight")),
             tree_paths(StructContainer(WeightedScalar(mean=2, weight=3))),
@@ -344,8 +343,6 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(v_state_dict, state_dict)
         new_tree = serialization.from_state_dict(VDict, state=v_state_dict)
         self.assertEqual(new_tree, tree)
-        # Check if `to_bytes` works as expected.
-        self.assertEqual(serialization.to_bytes(state_dict), serialization.to_bytes(tree))
 
     def test_vdict_ref_count(self):
         x = jnp.arange(10)
