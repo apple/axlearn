@@ -1506,7 +1506,7 @@ def adastar_optimizer(
         eps: (float) regularization constant added to the square root of smoothed_gradient_squares.
         eps_square: (float) regularization constant added to gradient_squares.
         raw_update_clipping_threshold: If not None, clips the norms of the raw updates
-            to this value. `raw_update_norm` summaries will be clipped either way.
+            to this value. `raw_update_norm` summaries will be logged either way.
         update_ema_decay: If not None, applies momentum on raw updates (normalized gradients) to
             compute smoothed updates.
         update_ema_debias: Whether to apply bias correction when computing smoothed updates.
