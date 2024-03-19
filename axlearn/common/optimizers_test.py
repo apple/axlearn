@@ -904,6 +904,37 @@ class OptimizerTest(TestCase):
             {"layer/0/x/norm": g_norm[0], "layer/1/x/norm": g_norm[1]}, summaries
         )
 
+    def test_clip_by_block_rms_both_none(self):
+        """Tests clip_clip_by_block_rms(threshold=None, summary_suffix=None)."""
+        clip = clip_by_block_rms(threshold=None, summary_suffix=None)
+        params = dict(layer=VDict(x=jnp.asarray([[0, 0, 0, 0], [0, 1, 2, -3]], dtype=jnp.float32)))
+        state = clip.init(params)
+        self.assertEqual(optax.EmptyState, type(state))
+
+        def loss(params):
+            return -jax.nn.log_softmax(params["layer"]["x"])[:, 1].mean()
+
+        loss, grads = jax.value_and_grad(loss)(params)
+        x_grads = grads["layer"]["x"]
+
+        context = InvocationContext(
+            name="root",
+            parent=None,
+            module=None,
+            state=None,
+            output_collection=new_output_collection(),
+            is_training=True,
+            prng_key=None,
+        )
+        with set_current_context(context):
+            updates, _ = clip.update(grads, state=state, params=params)
+        x_updates = updates["layer"]["x"]
+        # Updates are not clipped.
+        np.testing.assert_allclose(x_updates, x_grads, atol=1e-6)
+        # Also no summaries.
+        summaries = context.output_collection.summaries
+        self.assertEqual({}, summaries)
+
     @parameterized.parameters(100.0, 1e-3)
     def test_scale_by_param_block_rms(self, threshold):
         scale = scale_by_param_block_rms(threshold)
@@ -1265,6 +1296,17 @@ class OptimizerTest(TestCase):
                 peak_lr=1, warmup_steps=100, max_step=1000
             ),
             clipping_threshold=1.0,
+            weight_decay=3e-4,
+        ),
+        dict(
+            learning_rate=0.01,
+            b1=0.95,
+            b2=0.995,
+            eps_square=1e-30,
+            update_schedule=config_for_function(schedule.cosine_with_linear_warmup).set(
+                peak_lr=1, warmup_steps=100, max_step=1000
+            ),
+            clipping_threshold=None,  # no update clipping.
             weight_decay=3e-4,
         ),
     )

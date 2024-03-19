@@ -1215,6 +1215,10 @@ def clip_by_block_rms(
     def update_fn(updates, state, params=None):
         del params
 
+        if threshold is None and summary_suffix is None:
+            # Do not compute norm.
+            return updates, state
+
         def _clip_fn(u, norm):
             if threshold is None:
                 clipped = u
@@ -1502,7 +1506,7 @@ def adastar_optimizer(
         eps: (float) regularization constant added to the square root of smoothed_gradient_squares.
         eps_square: (float) regularization constant added to gradient_squares.
         raw_update_clipping_threshold: If not None, clips the norms of the raw updates
-            to this value.
+            to this value. `raw_update_norm` summaries will be logged either way.
         update_ema_decay: If not None, applies momentum on raw updates (normalized gradients) to
             compute smoothed updates.
         update_ema_debias: Whether to apply bias correction when computing smoothed updates.
@@ -1638,11 +1642,10 @@ def adastar_optimizer(
             )
         )
         # Clip raw updates if necessary.
-        if raw_update_clipping_threshold is not None:
-            clip_fn = clip_by_block_rms(
-                raw_update_clipping_threshold, summary_suffix="raw_update_norm"
-            ).update
-            raw_updates, _ = clip_fn(raw_updates, None, params)
+        clip_fn = clip_by_block_rms(
+            raw_update_clipping_threshold, summary_suffix="raw_update_norm"
+        ).update
+        raw_updates, _ = clip_fn(raw_updates, None, params)
         # Compute smoothed updates.
         smoothed_updates, pps_tree = _split_update_results(
             vectorized_tree_map(
