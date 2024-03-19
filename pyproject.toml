@@ -15,7 +15,6 @@ dependencies = [
     "attrs>=21.3.0",
     "absl-py",
     "chex<0.1.81",  # chex 0.1.81 depends on numpy>=1.25.0.
-    "flax==0.7.4",  # only for checkpoints.
     "importlab==0.7",  # breaks pytype on 0.8
     "jax==0.4.21",
     "jaxlib==0.4.21",
@@ -53,6 +52,7 @@ dev = [
     "einops",
     "evaluate",
     "fairseq==0.12.2",  # test-only; note Apple Silicon start.md instructions parse this specifier '==', please be careful when upgrading.
+    "flax==0.7.4",  # for param converter and adapter
     "isort",  # formatting
     "pre-commit",  # local pre commit hooks
     "pycocotools",  # COCO evaluation tools

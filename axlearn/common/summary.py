@@ -1,12 +1,13 @@
 # Copyright © 2023 Apple Inc.
 
 """Summary objects that can be logged."""
+
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import jax
 import numpy as np
-from flax import struct
 
+from axlearn.common import struct
 from axlearn.common.utils import NestedTensor, Tensor
 
 
