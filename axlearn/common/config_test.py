@@ -6,10 +6,12 @@ import collections
 import copy
 import dataclasses
 import math
+import typing
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import attr
+import attrs
 import numpy as np
 import tensorflow_datasets as tfds
 import wrapt
@@ -401,7 +403,8 @@ class ConfigTest(parameterized.TestCase):
 
         cfg = config.config_for_class(Layer)
         self.assertEqual(
-            f"config_for_class({Layer.__module__}.{Layer.__qualname__})", type(cfg).__name__
+            f"config_for_class({Layer.__module__}.{Layer.__qualname__})",
+            type(cfg).__name__,
         )
         self.assertIsInstance(cfg, config.InstantiableConfig)
         self.assertContainsSubset({"klass", "in_features", "out_features", "bias"}, cfg.keys())
@@ -473,9 +476,16 @@ class ConfigTest(parameterized.TestCase):
             expected=NotImplementedError("param kind POSITIONAL_ONLY"),
         ),
         # Not enough args, will fail when instantiating the config.
-        dict(kwargs=dict(x="x", y="y"), expected=RequiredFieldMissingError("required field .* z")),
+        dict(
+            kwargs=dict(x="x", y="y"),
+            expected=RequiredFieldMissingError("required field .* z"),
+        ),
         # Test configuring a function with `fn` as an arg.
-        dict(fn=lambda fn: fn + 1, kwargs=dict(fn=1), expected=ValueError("'fn' parameter")),
+        dict(
+            fn=lambda fn: fn + 1,
+            kwargs=dict(fn=1),
+            expected=ValueError("'fn' parameter"),
+        ),
         # Test configuring a function with `_` as an arg.
         dict(fn=lambda _: 1, kwargs=dict(x=2), expected=ValueError("'_' parameter")),
     )
@@ -492,6 +502,23 @@ class ConfigTest(parameterized.TestCase):
                 build_and_invoke()
         else:
             self.assertEqual(build_and_invoke(), expected)
+
+    def test_config_for_function_has_type_information(self):
+        """Tests that type information is available when using `config_for_function`."""
+
+        # pylint: disable-next=unused-argument
+        def fn(w: int, x: str, y: Union[int, str], z: Required[float]):
+            pass
+
+        cfg = config.config_for_function(fn)
+        fields = attrs.fields(cfg.__class__)
+        fields_dict = {field.name: field.type for field in fields}
+        self.assertEqual(set(fields_dict.keys()), {"fn", "w", "x", "y", "z"})
+        # collections.abc.Callable is apparently not equal to typing.Callable.
+        # For forward compatibility, we just check the name.
+        self.assertEqual(typing.get_origin(fields_dict["fn"]).__name__, "Callable")
+        del fields_dict["fn"]
+        self.assertEqual(fields_dict, dict(w=int, x=str, y=Union[int, str], z=Required[float]))
 
     def test_to_dict_and_debug_string(self):
         def fn_with_args(*args):
