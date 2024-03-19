@@ -431,6 +431,8 @@ class SpmdTrainer(Module):
                     stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
 
                     self._step = self._step + 1
+
+                    step_start_time = time.perf_counter()
                     self.vlog(3, "Start step %s", self.step)
                     output = self._run_step(
                         utils.host_to_global_device_array(input_batch),
@@ -439,6 +441,11 @@ class SpmdTrainer(Module):
                         else None,
                     )
                     self.vlog(3, "Done step %s", self.step)
+
+                    step_time = time.perf_counter() - step_start_time
+                    self._step_log("Step %s took %s seconds", self.step, step_time)
+                    self.summary_writer(self.step, {"step_time": step_time})
+
                     num_steps += 1
                     if num_steps % 100 == 0:
                         now = time.perf_counter()
