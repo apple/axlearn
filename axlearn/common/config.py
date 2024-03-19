@@ -685,7 +685,7 @@ def _attr_field_from_signature_param(param: inspect.Parameter) -> attr.Attribute
     default_value = param.default
     if default_value is inspect.Parameter.empty:
         default_value = REQUIRED
-    return attr.field(default=default_value)
+    return attr.field(default=default_value, type=param.annotation)
 
 
 def _prepare_args_and_kwargs(
