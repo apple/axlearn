@@ -311,16 +311,12 @@ class RMSNorm(BaseNormalizationLayer):
         eps: float = 1e-8
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
-        trainable: bool = True
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
         cfg = self.config
-        if cfg.trainable:
-            return {
-                "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
-            }
-        else:
-            return {}
+        return {
+            "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
+        }
 
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
         del paddings  # paddings do not affect LayerNorm results
@@ -331,8 +327,7 @@ class RMSNorm(BaseNormalizationLayer):
         moment2 = (x * x).mean(axis=-1, keepdims=True)
         x = x * jax.lax.rsqrt(moment2 + cfg.eps)
         x = x.astype(x_dtype)
-        if cfg.trainable:
-            x = x * self.parameters["scale"]
+        x = x * self.parameters["scale"]
         return x
 
 
