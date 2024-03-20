@@ -77,6 +77,7 @@ except ModuleNotFoundError:
 
 from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.scheduler import JobMetadata, ResourceMap, Scheduler
+from axlearn.cloud.common.types import JobSpec
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
@@ -109,25 +110,6 @@ class JobState(str, enum.Enum):
     CLEANING = "CLEANING"
     # Job is complete.
     COMPLETED = "COMPLETED"
-
-
-@dataclasses.dataclass
-class JobSpec:
-    """Represents a job that is executed by bastion."""
-
-    # Version to handle schema changes.
-    version: int
-    # Name of the job (aka job_name).
-    name: str
-    # Command to run.
-    command: str
-    # Command to run when job completes (either normally or cancelled).
-    cleanup_command: Optional[str]
-    # Environment Variables. Will be merged into os.envrion and applied for both
-    # command and cleanup_command.
-    env_vars: Optional[Dict[str, str]]
-    # Metadata related to a bastion job.
-    metadata: JobMetadata
 
 
 def new_jobspec(
@@ -805,7 +787,7 @@ class Bastion(Configurable):
         jobs_to_clean = {}
         for job_name, job in self._active_jobs.items():
             if job.state in {JobState.PENDING, JobState.COMPLETED}:
-                jobs_to_clean[job_name] = job.spec.metadata.resources
+                jobs_to_clean[job_name] = job.spec
 
         # Note that this may contain PENDING jobs that have not yet started (since they will not be
         # associated with any resources yet).

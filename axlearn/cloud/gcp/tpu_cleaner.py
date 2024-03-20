@@ -10,7 +10,7 @@ from absl import logging
 from googleapiclient import discovery
 
 from axlearn.cloud.common.cleaner import Cleaner
-from axlearn.cloud.common.types import ResourceMap
+from axlearn.cloud.common.types import JobSpec
 from axlearn.cloud.gcp.tpu import (
     TPUDeletionError,
     delete_queued_tpu,
@@ -26,14 +26,14 @@ from axlearn.cloud.gcp.utils import get_credentials
 class TPUCleaner(Cleaner):
     """Cleans up unused TPUs."""
 
-    def sweep(self, jobs: Dict[str, ResourceMap]) -> Sequence[str]:
+    def sweep(self, jobs: Dict[str, JobSpec]) -> Sequence[str]:
         """Removes TPU resources in a non-blocking manner.
 
         Note: If jobs use multiple resources, we only remove the TPU resources.
         Jobs are currently responsible for cleaning other resources.
 
         Args:
-            jobs: A mapping {job_name: resource_map} of jobs to delete.
+            jobs: A mapping {job_name: job_spec} of jobs to delete.
 
         Returns:
             The list of job_names that are no longer associated with any TPUs. The bastion should
@@ -49,7 +49,8 @@ class TPUCleaner(Cleaner):
         }
         already_terminated = []
         need_termination = []
-        for job_name, resources in jobs.items():
+        for job_name, spec in jobs.items():
+            resources = spec.metadata.resources
             tpu_info = running_tpus.get(job_name)
             # The job has no associated TPU -- it's already terminated.
             if tpu_info is None:

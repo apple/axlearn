@@ -25,6 +25,7 @@ from absl import logging
 
 from axlearn.cloud.common.quota import QuotaFn
 from axlearn.cloud.common.types import (
+    JobMetadata,
     JobQueue,
     ProjectJobs,
     ProjectResourceMap,
@@ -32,15 +33,6 @@ from axlearn.cloud.common.types import (
     ResourceType,
 )
 from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
-
-
-@dataclasses.dataclass
-class JobMetadata:
-    user_id: str
-    project_id: str
-    creation_time: datetime.datetime
-    resources: Dict[ResourceType, int]
-    priority: int = 5  # 1 - highest, 5 - lowest
 
 
 class ProjectJobSorter(Configurable):
