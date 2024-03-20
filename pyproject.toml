@@ -177,6 +177,10 @@ load-plugins = [
 line-length = 100
 target-version = ['py38', 'py39']
 
+[tool.ruff]
+line-length = 100
+target-version = 'py39'
+
 [tool.pytest.ini_options]
 addopts = "-rs -s -p no:warnings --junitxml=test-results/testing.xml"
 markers = [
