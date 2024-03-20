@@ -363,6 +363,37 @@ def _compute_rms_norms(x: NestedTensor, *, summary_suffix: Optional[str] = None)
     return norms
 
 
+def _compute_covariance(
+    x: NestedTensor,
+    y: NestedTensor,
+    *,
+    summary_suffix: Optional[str] = None,
+) -> NestedTensor:
+    """Computes the covariance between leaf tensors in `x` and `y` and optionally adds summaries.
+
+    Summaries will be added if `summary_suffix` is not None *and* the current context is not None.
+
+    Args:
+        x: A Nested Tensor, e.g., representing params or gradients. May contain VDict, in which
+            case each entry will be computed separately, therefore the norms of params of a
+            repeated layer will be computed separately.
+        y: A Nested Tensor similar to `x`.
+        summary_suffix: If not None, adds summaries of name `{path}/{summary_suffix}` of the norms.
+
+    Returns:
+        A NestedTensor with the same structure as `x` and each leaf node representing the
+        covariance between the leaf nodes in `x` and `y`.
+    """
+    # Use vectorized_tree_map to compute separate values for each layer in a Repeated.
+    cov = vectorized_tree_map(lambda u, v: jnp.mean(u * v), x, y)
+    context = current_context()
+    if summary_suffix is not None and context is not None:
+        expanded_cov = expand_vdicts(cov)
+        for path, value in flatten_items(expanded_cov):
+            context.add_summary(f"{path}/{summary_suffix}", value)
+    return cov
+
+
 class AddDecayedWeightsState(NamedTuple):
     count: Optional[Tensor]  # Number of steps.
 
@@ -1647,6 +1678,7 @@ def adastar_optimizer(
             raw_update_clipping_threshold, summary_suffix="raw_update_norm"
         ).update
         raw_updates, _ = clip_fn(raw_updates, None, params)
+        _compute_covariance(params, raw_updates, summary_suffix="param_update_cov")
         # Compute smoothed updates.
         smoothed_updates, pps_tree = _split_update_results(
             vectorized_tree_map(
@@ -1680,7 +1712,8 @@ def adastar_optimizer(
 
         param_values = jax.tree_util.tree_map(lambda p: p.value, params)
         _compute_rms_norms(param_values, summary_suffix="param_norm")
-        _compute_rms_norms(updates, summary_suffix="update_norm")
+        # Transformed updates are updates after smoothing and scaling.
+        _compute_rms_norms(updates, summary_suffix="transformed_update_norm")
 
         def _update2(u: Tensor, param: OptParam):
             lr_scaled_updates = learning_rate * u
