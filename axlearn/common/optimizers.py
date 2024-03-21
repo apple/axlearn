@@ -1678,7 +1678,8 @@ def adastar_optimizer(
             raw_update_clipping_threshold, summary_suffix="raw_update_norm"
         ).update
         raw_updates, _ = clip_fn(raw_updates, None, params)
-        _compute_covariance(params, raw_updates, summary_suffix="param_update_cov")
+        param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+        _compute_covariance(param_values, raw_updates, summary_suffix="param_update_cov")
         # Compute smoothed updates.
         smoothed_updates, pps_tree = _split_update_results(
             vectorized_tree_map(
