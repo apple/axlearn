@@ -32,7 +32,7 @@ if [[ "${1:-x}" = "--skip-pre-commit" ]] ; then
 fi
 UNQUOTED_PYTEST_FILES=$(echo $1 |  tr -d "'")
 
-# skip pre-commit on parallel CI because it is run as a separate job
+# Skip pre-commit on parallel CI because it is run as a separate job.
 if [[ "${SKIP_PRECOMMIT:-false}" = "false" ]] ; then
   pre-commit install
   pre-commit run --all-files || exit_if_error $? "pre-commit failed."
