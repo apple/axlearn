@@ -12,7 +12,7 @@ requires-python = ">=3.9"
 # Production dependencies.
 # Every time we upgrade JAX, we should try to bring the rest to the newest versions.
 dependencies = [
-    "attrs>=21.3.0",
+    "attrs>=23.1.0", # We use `type` in `attrs.field`
     "absl-py",
     "chex<0.1.81",  # chex 0.1.81 depends on numpy>=1.25.0.
     "importlab==0.7",  # breaks pytype on 0.8
