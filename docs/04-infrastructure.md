@@ -24,6 +24,8 @@ Please see [below](#control-flow-of-job-submission) for a high-level diagram of 
 
 The following sections guide you through setting up and launching a job via Bastion.
 
+<br>
+
 ### Pre-requisites
 
 We assume you have:
@@ -31,6 +33,8 @@ We assume you have:
 2. A docker repo that can be accessed from Bastion. For the purposes of this doc, we assume this repo lives in [Artifact Registry](https://cloud.google.com/artifact-registry).
 
 We also assume you have "activated" a project config using `axlearn gcp config activate`. This is mainly a convenience so that you do not have to specify mundane flags like `--project` and `--zone` in every command. Please refer to the [CLI docs](03-cli.md) for more details.
+
+<br>
 
 ### Setting Up
 
@@ -100,6 +104,8 @@ Where the bucket name comes from the `permanent_bucket` configured when [prepari
 
 For more details on useful log paths, run `axlearn gcp bastion --help`.
 
+<br>
+
 ### Launching a Job
 
 Once the bastion is up and running, you can submit arbitrary jobs for it to run. These jobs are essentially [`BastionJobSpec`](https://github.com/apple/axlearn/blob/70eb15ffe7285cb97287b8665b91559e4b23726e/axlearn/cloud/gcp/jobs/bastion_vm.py#L235)s serialized as json blobs, typically constructed via Python scripting using the bastion API[1].
@@ -129,6 +135,8 @@ axlearn gcp launch --instance_type=tpu-v4-32 --bastion=$USER-bastion --project_i
 For more details on the launch command, run `axlearn gcp launch --help`.
 
 [1] Refer to [new_jobspec](https://github.com/apple/axlearn/blob/70eb15ffe7285cb97287b8665b91559e4b23726e/axlearn/cloud/gcp/jobs/bastion_vm.py#L250) and [serialize_jobspec](https://github.com/apple/axlearn/blob/70eb15ffe7285cb97287b8665b91559e4b23726e/axlearn/cloud/gcp/jobs/bastion_vm.py#L266) as a starting point.
+
+<br>
 
 ### Control Flow of Job Submission
 ```mermaid

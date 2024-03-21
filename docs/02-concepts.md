@@ -1,7 +1,5 @@
 # Concepts in the AXLearn Library
 
-**This doc is still under construction.**
-
 ## Table of Contents
 
 | Section | Description |
@@ -9,6 +7,8 @@
 | [Config Library](#introduction-to-the-config-library) | The AXLearn Config Library. |
 | [Module Hierarchy](#introduction-to-the-module-hierarchy) | AXLearn Modules and the Invocation Stack. |
 | [SPMD Trainer](#spmd-trainer) | The SPMD Trainer. |
+
+<br>
 
 ## Introduction to the Config Library
 
@@ -58,6 +58,8 @@ stack: StackedTransformerLayer = stack_cfg.instantiate(...)
 The config library will validate that all required fields have been set. If successful, the result will be an instance of the `StackedTransformerLayer` class. One can view `stack_cfg` as an object factory, where `instantiate()` produces unique class instances configured by `stack_cfg`.
 
 Hopefully, this gives some basic intuition about how AXLearn leverages composition for building complex models and experiments. More details on the [config API](#config-apis) below.
+
+<br>
 
 ### Configurable Functions and Classes
 
@@ -112,11 +114,15 @@ stack_cfg = StackedTransformerLayer.default_config().set(
 
 In general, as long as layer implementations abide by the same config APIs, they are interoperable in the config system. For a concrete example of interoperating with third-party libraries, see [`axlearn.huggingface.HfModuleWrapper`](https://github.com/apple/axlearn/blob/68f1200547254d630c2e3c239ff463cd175317cf/axlearn/huggingface/hf_module.py#L69-L108), which wraps Hugging Face Flax modules to be used within AXLearn.
 
+<br>
+
 ### Beyond Machine Learning
 
 Note that while we have provided examples of the config library in the context of neural network layers, **the config library itself is agnostic to ML applications**.
 
 Indeed, many of AXLearn's cloud infrastructure components are also configured in a similar way as the layers above. See the base [`axlearn.cloud.common.Job`](https://github.com/apple/axlearn/blob/c84f50e6cba467ce5c2096d0cba3dce4c73f897a/axlearn/cloud/common/job.py#L16) definition as an example.
+
+<br>
 
 ## Introduction to the Module Hierarchy
 
@@ -189,6 +195,8 @@ class FooModule(Module):
       return z
 ```
 
+<br>
+
 ### Invoking Modules and the InvocationContext
 
 In the spirit of JAX's functional API, `Module`s are themselves stateless.
@@ -228,6 +236,8 @@ As the invocation traverses down the module hierarchy (i.e. as we invoke methods
 
 Note that the `output_collection` is accumulated throughout the entire module hierarchy and returned as an output of the `functional` API alongside the standard function return values. This makes it convenient to return values from arbitrary points in the module hierarchy, and is commonly used to log training-time summaries via `add_summary()`.
 
+<br>
+
 ### BaseLayer
 
 A `BaseLayer` is a type of `Module` with trainable parameters as `Module` states and provides convenience APIs to define such parameters, including how they are partitioned[^1] and initialized.
@@ -255,6 +265,8 @@ In many cases, these parameter specs have already been defined for you in the co
 
 [^1]: See https://jax.readthedocs.io/en/latest/jax.experimental.pjit.html for more information about
 partition specification.
+
+<br>
 
 ## SPMD Trainer
 
@@ -291,6 +303,7 @@ https://github.com/apple/axlearn/blob/c00c632b99e6a2d87ee7ba94f295b39e0871a577/a
 https://github.com/apple/axlearn/blob/c00c632b99e6a2d87ee7ba94f295b39e0871a577/axlearn/common/trainer.py#L420
 https://github.com/apple/axlearn/blob/c00c632b99e6a2d87ee7ba94f295b39e0871a577/axlearn/common/utils.py#L496
 
+<br>
 
 ## Config APIs
 
