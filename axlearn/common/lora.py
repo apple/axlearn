@@ -119,7 +119,6 @@ class LoraLinearAdapter(_BaseLoraAdapter):
             cfg.lora_down.set(
                 input_dim=cfg.input_dim,
                 output_dim=cfg.rank,
-                param_partition_spec=[None, "model"],
                 bias=False,
             ),
         )
@@ -130,7 +129,6 @@ class LoraLinearAdapter(_BaseLoraAdapter):
             cfg.lora_up.set(
                 input_dim=cfg.rank,
                 output_dim=cfg.output_dim,
-                param_partition_spec=["model", None],
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
                         PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
