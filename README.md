@@ -36,3 +36,8 @@ vision, and speech recognition and contains baseline configurations for training
 models.
 
 Please see [Concepts](docs/02-concepts.md) for more details on the core components and design of AXLearn, or [Getting Started](docs/01-start.md) if you want to get your hands dirty.
+
+### All Thanks To Our Contributors:
+<a href="https://github.com/ruomingp/axlearn/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=ruomingp/axlearn" />
+</a>
