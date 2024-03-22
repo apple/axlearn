@@ -165,6 +165,7 @@ class ParameterTest(BaseParamConverterTest):
         batch, dim = 20, 10
         cfg = norm_cls.default_config().set(input_dim=dim)
         layer = cfg.set(name="convert_test").instantiate(parent=None)
+        # pylint: disable-next=superfluous-parens
         hf_layer = torch.nn.LayerNorm(dim, elementwise_affine=(norm_cls == LayerNorm))
 
         inputs = jax.random.uniform(

@@ -568,7 +568,7 @@ class _FakeMultimodalImageInput(Module):
         yield data
 
     def dataset(self):
-        return self.__iter__()
+        return self.__iter__()  # pylint: disable=unnecessary-dunder-call
 
 
 class TestConv2DStateBuilders(TestCase):

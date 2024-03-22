@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for traceback_util.py."""
-# pylint: disable=protected-access,used-before-assignment
+# pylint: disable=protected-access,used-before-assignment,broad-exception-caught,broad-exception-raised
 
 import unittest.mock
 

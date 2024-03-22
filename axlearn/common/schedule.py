@@ -227,7 +227,7 @@ def stepwise(sub: List[Schedule], start_step: List[int]) -> ScheduleFn:
             ).astype(jnp.float32)
             for start, limit in zip(all_start_steps, all_limit_steps)
         ]
-        return sum([value * activation for value, activation in zip(values, activations)])
+        return sum(value * activation for value, activation in zip(values, activations))
 
     return fn
 

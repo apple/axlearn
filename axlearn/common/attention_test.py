@@ -827,7 +827,7 @@ def llama_reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> tor
     https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L55-L60
     """
     ndim = x.ndim
-    assert 0 <= 1 < ndim
+    assert 1 < ndim
     assert freqs_cis.shape == (x.shape[1], x.shape[-1])
     shape = [
         d if i == 1 or i == ndim - 1 else 1  # pylint: disable=consider-using-in

@@ -279,14 +279,13 @@ def _start_ssh_agent():
 
     The ssh-agent is automatically terminated when the program exits.
     """
+    # pylint: disable=line-too-long
     if not os.getenv("SSH_AGENT_PID"):
         logging.info("ssh-agent is not running, starting it now...")
         process = subprocess_run("ssh-agent -s", stdout=subprocess.PIPE, check=True, text=True)
         # Example format:
-        # pylint: disable-next=line-too-long
         # Linux:
         # SSH_AUTH_SOCK=/tmp/ssh-g4aYlFVLLugX/agent.52090; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=52091; export SSH_AGENT_PID;\necho Agent pid 52091;\n
-        # pylint: disable-next=line-too-long
         # Mac:
         # SSH_AUTH_SOCK=/var/folders/j0/blx8mk5j1hlc0k110xsbrxw00000gn/T//ssh-ZAf5XlQX7tWM/agent.7841; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=7842; export SSH_AGENT_PID;\necho Agent pid 7842;\n
         match = re.search(

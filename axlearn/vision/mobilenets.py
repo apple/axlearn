@@ -341,7 +341,7 @@ class MobileNets(BaseModel):
         )
 
         self.vlog(3, f"Building model trunk with {len(cfg.block_defs)} stages...")
-        num_blocks = sum([len(x) for x in cfg.block_defs])
+        num_blocks = sum(len(x) for x in cfg.block_defs)
         # Start counting endpoint index from 1.
         flat_idx, endpoint_idx = 0, 1
         self._stages = []
