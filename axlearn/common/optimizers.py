@@ -1490,7 +1490,7 @@ def adastar_optimizer(
     adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
     weight_decay: float = 0,
     update_schedule: schedule.Schedule,
-    verbosity: int = 1,
+    verbosity: int = 0,
 ) -> PartitionedGradientTransformation:
     """An optimizer covering both {adamw_decoupled,adafactor}_optimizer (with factored=False).
 
