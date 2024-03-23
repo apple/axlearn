@@ -30,7 +30,7 @@ from axlearn.cloud.common.bastion import (
 from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.scheduler import JobMetadata, JobScheduler
 from axlearn.cloud.common.scheduler_test import mock_quota_config
-from axlearn.cloud.common.types import ResourceMap
+from axlearn.cloud.common.types import JobSpec, ResourceMap
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.common.config import config_for_function
 
@@ -757,6 +757,8 @@ class BastionTest(parameterized.TestCase):
                         for job_name in jobs
                     )
                 )
+                for job_spec in jobs.values():
+                    self.assertIsInstance(job_spec, JobSpec)
                 return fully_gced
 
             with mock.patch.object(mock_bastion, "_cleaner") as mock_cleaner:
