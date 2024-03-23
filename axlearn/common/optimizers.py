@@ -386,6 +386,7 @@ def _compute_covariance(
     """Computes the covariance between leaf tensors in `x` and `y` and optionally adds summaries.
 
     Summaries will be added if `summary_suffix` is not None *and* the current context is not None.
+    This function is used in adastar_optimizer() for adding (params, updates) correlation stats.
 
     Args:
         x: A Nested Tensor, e.g., representing params or gradients. May contain VDict, in which
