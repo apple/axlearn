@@ -86,6 +86,7 @@ def setup(
                 coordinator_address=distributed_coordinator,
                 num_processes=num_processes,
                 process_id=process_id,
+                initialization_timeout=900,
             )
 
         jax.distributed.initialize(**init_kwargs)
