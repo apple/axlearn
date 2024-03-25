@@ -274,15 +274,11 @@ def send_signal(popen: subprocess.Popen, sig: int = signal.SIGKILL):
     # If changing this fn, please run the `test_send_signal` test manually.
     try:
         parent = psutil.Process(popen.pid)
-        logging.info(f"Subprocess ID:{popen.pid}")
     except psutil.NoSuchProcess:
-        logging.info("No Such Process.")
         return  # Nothing to do.
     for child in parent.children(recursive=True):
-        logging.info(f"Sending signal to child process:{sig}")
         child.send_signal(sig)
     popen.send_signal(sig)
-    logging.info("Deleting parent processes.")
 
 
 def copy_blobs(from_prefix: str, *, to_prefix: str):

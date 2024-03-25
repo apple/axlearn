@@ -256,7 +256,6 @@ class DataflowJob(GCPJob):
 
             # SIGTERM for kill, SIGINT for ctrl+c, and SIGHUP for screen quit.
             for sig in [signal.SIGTERM, signal.SIGINT, signal.SIGHUP]:
-                logging.info(f'Received signal:{sig}')
                 signal.signal(sig, sig_handler)
 
             handle_popen(proc)
