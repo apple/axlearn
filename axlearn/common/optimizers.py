@@ -373,7 +373,7 @@ def _compute_rms_norms(x: NestedTensor, *, summary_suffix: Optional[str] = None)
     # Use vectorized_tree_map to compute separate norms for each layer in a Repeated.
     norms = vectorized_tree_map(lambda u: jnp.sqrt(jnp.mean(u**2)), x)
     if summary_suffix is not None:
-        _log_per_layer_stats(norms, summary_suffix)
+        _log_per_layer_stats(norms, summary_suffix=summary_suffix)
     return norms
 
 
@@ -402,7 +402,7 @@ def _compute_covariance(
     # Use vectorized_tree_map to compute separate values for each layer in a Repeated.
     cov = vectorized_tree_map(lambda u, v: jnp.mean(u * v), x, y)
     if summary_suffix is not None:
-        _log_per_layer_stats(cov, summary_suffix)
+        _log_per_layer_stats(cov, summary_suffix=summary_suffix)
     return cov
 
 
