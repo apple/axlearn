@@ -46,13 +46,18 @@ def handle_popen(proc: subprocess.Popen):
     Raises:
         RuntimeError: If subprocess returncode != 0.
     """
+    # TODO: there is no mechanism to stop the subprocess if it's stuck
     proc.wait()
     if proc.returncode != 0:
         stdout, stderr = proc.communicate()
         raise RuntimeError(
-            f"Popen command {proc.args} returned non-zero exit code {proc.returncode}:\n"
-            f"stdout={stdout}\n"
-            f"stderr={stderr}"
+            #f"Popen command {proc.args} returned non-zero exit code {proc.returncode}:\n"
+            f"Popen command returned non-zero exit code {proc.returncode}:\n"
+            "==START OF STDERR==\n"
+            f"{stderr}\n"
+            "==END OF STDERR==\n"
+            #f"stdout={stdout}\n"
+            #f"stderr={stderr}"
         )
 
 
@@ -274,11 +279,15 @@ def send_signal(popen: subprocess.Popen, sig: int = signal.SIGKILL):
     # If changing this fn, please run the `test_send_signal` test manually.
     try:
         parent = psutil.Process(popen.pid)
+        logging.info(f"Subprocess ID:{popen.pid}")
     except psutil.NoSuchProcess:
+        logging.info("No Such Process.")
         return  # Nothing to do.
     for child in parent.children(recursive=True):
+        logging.info(f"Sending signal to child process:{sig}")
         child.send_signal(sig)
     popen.send_signal(sig)
+    logging.info("Deleting parent processes.")
 
 
 def copy_blobs(from_prefix: str, *, to_prefix: str):
