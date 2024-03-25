@@ -50,13 +50,9 @@ def handle_popen(proc: subprocess.Popen):
     if proc.returncode != 0:
         stdout, stderr = proc.communicate()
         raise RuntimeError(
-            #f"Popen command {proc.args} returned non-zero exit code {proc.returncode}:\n"
-            f"Popen command returned non-zero exit code {proc.returncode}:\n"
-            "==START OF STDERR==\n"
-            f"{stderr}\n"
-            "==END OF STDERR==\n"
-            #f"stdout={stdout}\n"
-            #f"stderr={stderr}"
+            f"Popen command {proc.args} returned non-zero exit code {proc.returncode}:\n"
+            f"stdout={stdout}\n"
+            f"stderr={stderr}"
         )
 
 

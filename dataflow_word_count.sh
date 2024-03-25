@@ -1,9 +1,9 @@
 # chmod +x dataflow_word_count.sh
 # ./dataflow_word_count.sh
 
-DOCKER_REPO=us-central1-docker.pkg.dev/cool-machine-learning/axlearn
+DOCKER_REPO=us-central1-docker.pkg.dev/{PROJECT_ID}/axlearn
 DOCKER_IMAGE=axlearn-dataflow
-DOCKER_TAG=kinglear
+DOCKER_TAG=test
 
 axlearn gcp dataflow start \
 --bundler_spec=dockerfile=Dockerfile \
