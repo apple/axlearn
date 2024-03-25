@@ -338,7 +338,7 @@ def scale_by_trust_ratio(
     )
 
 
-def _log_per_layer_stats(stats: NestedTensor, summary_suffix: str) -> None:
+def _log_per_layer_stats(stats: NestedTensor, *, summary_suffix: str):
     """Expand the Nested Tensor `stats` and add summaries.
 
     Args:
