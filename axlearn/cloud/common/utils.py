@@ -46,7 +46,6 @@ def handle_popen(proc: subprocess.Popen):
     Raises:
         RuntimeError: If subprocess returncode != 0.
     """
-    # TODO: there is no mechanism to stop the subprocess if it's stuck
     proc.wait()
     if proc.returncode != 0:
         stdout, stderr = proc.communicate()
