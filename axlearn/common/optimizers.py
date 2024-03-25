@@ -344,9 +344,6 @@ def _log_per_layer_stats(stats: NestedTensor, *, summary_suffix: str):
     Args:
         stats: A Nested Tensor, e.g., containing param norms or gradient statistics.
         summary_suffix: Adds summaries of name `{path}/{summary_suffix}`.
-
-    Returns:
-        None.
     """
     context = current_context()
     if context is not None:
