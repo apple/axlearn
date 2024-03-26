@@ -19,6 +19,8 @@ from axlearn.common.module import InvocationContext, new_output_collection, set_
 from axlearn.common.optimizer_base import OptParam, OptStateSpec, PartitionedGradientTransformation
 from axlearn.common.optimizers import (
     ParamEmaState,
+    _compute_covariance,
+    _compute_rms_norms,
     adafactor_optimizer,
     adam_optimizer,
     adamw_decoupled_optimizer,
@@ -1337,6 +1339,7 @@ class OptimizerTest(TestCase):
             update_ema_debias=False,
             weight_decay=weight_decay,
             update_schedule=update_schedule,
+            verbosity=1,
         )
 
         def _compute_updates(opt) -> Tensor:
@@ -1380,9 +1383,53 @@ class OptimizerTest(TestCase):
                     *[f"layer/{i}/w/raw_update_norm" for i in range(2)],
                     # Parameter norms.
                     *[f"layer/{i}/w/param_norm" for i in range(2)],
+                    # Gradient norms.
+                    *[f"layer/{i}/w/raw_grad_norm" for i in range(2)],
+                    # Smoothed update norms.
+                    *[f"layer/{i}/w/smoothed_update_norm" for i in range(2)],
+                    # Correlation between params and their updates
+                    *[f"layer/{i}/w/corr_param_raw_updates" for i in range(2)],
+                    *[f"layer/{i}/w/corr_param_smoothed_updates" for i in range(2)],
                 },
                 context.output_collection.summaries,
             )
+
+    def test_covariance_and_rms(self):
+        p = jnp.asarray([[0, 1, 2, -3], [1, -3, 2, 4]], dtype=jnp.float32)
+        u = jnp.asarray([[1, -1, 1, 0], [-1, -1, -1, 1]], dtype=jnp.float32)
+
+        def _compute_rms(x):
+            return jnp.sqrt(jnp.mean(x**2, axis=-1))
+
+        def _compute_cov(x, y):
+            return jnp.mean(x * y, axis=-1)
+
+        params = dict(
+            layer=VDict(
+                w=OptParam(
+                    value=p,
+                    factorization_spec=None,
+                    weight_decay_scale=1.0,
+                )
+            )
+        )
+        param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+        updates = dict(
+            layer=VDict(
+                w=OptParam(
+                    value=u,
+                    factorization_spec=None,
+                    weight_decay_scale=1.0,
+                )
+            )
+        )
+        update_values = jax.tree_util.tree_map(lambda u: u.value, updates)
+        p_norm = _compute_rms_norms(param_values)
+        u_norm = _compute_rms_norms(update_values)
+        cov = _compute_covariance(param_values, update_values)
+        assert_allclose(p_norm["layer"]["w"], _compute_rms(p))
+        assert_allclose(u_norm["layer"]["w"], _compute_rms(u))
+        assert_allclose(cov["layer"]["w"], _compute_cov(p, u))
 
 
 if __name__ == "__main__":

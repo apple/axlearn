@@ -338,6 +338,20 @@ def scale_by_trust_ratio(
     )
 
 
+def _log_per_layer_stats(stats: NestedTensor, *, summary_suffix: str):
+    """Expand the Nested Tensor `stats` and add summaries.
+
+    Args:
+        stats: A Nested Tensor, e.g., containing param norms or gradient statistics.
+        summary_suffix: Adds summaries of name `{path}/{summary_suffix}`.
+    """
+    context = current_context()
+    if context is not None:
+        expanded_stats = expand_vdicts(stats)
+        for path, value in flatten_items(expanded_stats):
+            context.add_summary(f"{path}/{summary_suffix}", value)
+
+
 def _compute_rms_norms(x: NestedTensor, *, summary_suffix: Optional[str] = None) -> NestedTensor:
     """Computes the RMS norm for each leaf tensor of `x` and optionally adds summaries.
 
@@ -355,12 +369,38 @@ def _compute_rms_norms(x: NestedTensor, *, summary_suffix: Optional[str] = None)
     """
     # Use vectorized_tree_map to compute separate norms for each layer in a Repeated.
     norms = vectorized_tree_map(lambda u: jnp.sqrt(jnp.mean(u**2)), x)
-    context = current_context()
-    if summary_suffix is not None and context is not None:
-        expanded_norms = expand_vdicts(norms)
-        for path, value in flatten_items(expanded_norms):
-            context.add_summary(f"{path}/{summary_suffix}", value)
+    if summary_suffix is not None:
+        _log_per_layer_stats(norms, summary_suffix=summary_suffix)
     return norms
+
+
+def _compute_covariance(
+    x: NestedTensor,
+    y: NestedTensor,
+    *,
+    summary_suffix: Optional[str] = None,
+) -> NestedTensor:
+    """Computes the covariance between leaf tensors in `x` and `y` and optionally adds summaries.
+
+    Summaries will be added if `summary_suffix` is not None *and* the current context is not None.
+    This function is used in adastar_optimizer() for adding (params, updates) correlation stats.
+
+    Args:
+        x: A Nested Tensor, e.g., representing params or gradients. May contain VDict, in which
+            case each entry will be computed separately, therefore the norms of params of a
+            repeated layer will be computed separately.
+        y: A Nested Tensor similar to `x`.
+        summary_suffix: If not None, adds summaries of name `{path}/{summary_suffix}` of the norms.
+
+    Returns:
+        A NestedTensor with the same structure as `x` and each leaf node representing the
+        covariance between the leaf nodes in `x` and `y`.
+    """
+    # Use vectorized_tree_map to compute separate values for each layer in a Repeated.
+    cov = vectorized_tree_map(lambda u, v: jnp.mean(u * v), x, y)
+    if summary_suffix is not None:
+        _log_per_layer_stats(cov, summary_suffix=summary_suffix)
+    return cov
 
 
 class AddDecayedWeightsState(NamedTuple):
@@ -1448,6 +1488,7 @@ def adastar_optimizer(
     adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
     weight_decay: float = 0,
     update_schedule: schedule.Schedule,
+    verbosity: int = 0,
 ) -> PartitionedGradientTransformation:
     """An optimizer covering both {adamw_decoupled,adafactor}_optimizer (with factored=False).
 
@@ -1518,6 +1559,8 @@ def adastar_optimizer(
             similar to adamw_adamw_decoupled_optimizer and different from adafactor_optimizer.
         update_schedule: an update schedule, which is applied to scale both the learning rate
             and the weight decay.
+        verbosity: The verbosity level of summaries. When verbosity > 0, adds update norms and
+            param-update correlation stats to summaries.
 
     Returns:
         A PartitionedGradientTransformation representing an Adafactor optimizer.
@@ -1654,6 +1697,37 @@ def adastar_optimizer(
                 pps_tree,
             )
         )
+        # Add param and update stats to summaries.
+        _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
+        param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+        param_norm = _compute_rms_norms(param_values, summary_suffix="param_norm")
+        # Computing extra stats increases step time. Only adds them to summaries in verbose mode.
+        if verbosity > 0:
+            # Note the covariance and correlation stats might be biased if params and updates do not
+            # have zero mean.
+            raw_update_norm = _compute_rms_norms(raw_updates)
+            smoothed_update_norm = _compute_rms_norms(
+                smoothed_updates,
+                summary_suffix="smoothed_update_norm",
+            )
+            _log_per_layer_stats(
+                vectorized_tree_map(
+                    lambda cov, pn, un: cov / pn / un,
+                    _compute_covariance(param_values, raw_updates),
+                    param_norm,
+                    raw_update_norm,
+                ),
+                summary_suffix="corr_param_raw_updates",
+            )
+            _log_per_layer_stats(
+                vectorized_tree_map(
+                    lambda cov, pn, un: cov / pn / un,
+                    _compute_covariance(param_values, smoothed_updates),
+                    param_norm,
+                    smoothed_update_norm,
+                ),
+                summary_suffix="corr_param_smoothed_updates",
+            )
         return smoothed_updates, _AdastarState(count=incremented_count, pps=pps_tree)
 
     def partition_fn(param_specs):
@@ -1676,9 +1750,6 @@ def adastar_optimizer(
 
     def update2_fn(updates, state: Tensor, params: NestedOptParam):
         step = state
-
-        param_values = jax.tree_util.tree_map(lambda p: p.value, params)
-        _compute_rms_norms(param_values, summary_suffix="param_norm")
 
         def _update2(u: Tensor, param: OptParam):
             lr_scaled_updates = learning_rate * u
