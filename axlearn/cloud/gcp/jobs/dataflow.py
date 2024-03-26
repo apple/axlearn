@@ -243,13 +243,13 @@ class DataflowJob(GCPJob):
             cmd = cfg.command
         else:
             cmd = (
-                "docker run --rm --entrypoint /bin/bash "
+                "docker run --rm --mount type=bind,src=$HOME/.config/gcloud,dst=/root/.config/gcloud --entrypoint /bin/bash "
                 f"{self._bundler.id(cfg.name)} -c '{cfg.command}'"
             )
         cmd = f"{cfg.setup_command} && {cmd}"
         cmd = f"bash -c {shlex.quote(cmd)}"
         logging.info("Executing in subprocess: %s", cmd)
-        with subprocess.Popen(cmd, shell=True, text=True) as proc:
+        with subprocess.Popen(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
             # Attempt to cleanup the process when exiting.
             def sig_handler(sig: int, _):
                 send_signal(proc, sig=sig)
