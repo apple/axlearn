@@ -220,7 +220,7 @@ def bastion_root_dir(bastion: str, *, fv: Optional[flags.FlagValues]) -> str:
     return os.path.join("gs://", gcp_settings("permanent_bucket", fv=fv), bastion)
 
 
-def _gsutil_rsync(
+def _gcloud_storage_rsync(
     *,
     src_dir: str,
     dst_dir: str,
@@ -228,15 +228,18 @@ def _gsutil_rsync(
     interval_s: float = 30,
     timeout_s: float = 5 * 60,
 ):
-    """An upload fn that uses `gsutil rsync`."""
+    """An upload fn that uses `gcloud storage rsync`."""
 
     for i in range(max_tries):
-        # Ensure trailing slash, if not already present, for rsync.
+        # Ensure trailing slash from src, if not already present, for rsync.
         src = os.path.join(src_dir, "")
-        dst = os.path.join(dst_dir, "")
+        # Ensure no trailing slash from dst.
+        dst = dst_dir.rstrip("/")
         # Attempt to sync, raising TimeoutError on timeout.
+        # Using gcloud storage instead of gsutil due to:
+        # https://cloud.google.com/blog/products/storage-data-transfer/new-gcloud-storage-cli-for-your-data-transfers
         proc = subprocess.run(
-            ["gsutil", "-m", "rsync", "-r", src, dst],
+            ["gcloud", "storage", "rsync", "-r", src, dst],
             check=False,
             timeout=timeout_s,
             capture_output=True,
@@ -493,7 +496,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
                 ]
             ),
             uploader=Uploader.default_config().set(
-                upload_fn=config_for_function(with_interval).set(upload_fn=_gsutil_rsync),
+                upload_fn=config_for_function(with_interval).set(upload_fn=_gcloud_storage_rsync),
             ),
         )
         _with_retry(
