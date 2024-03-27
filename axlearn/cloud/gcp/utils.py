@@ -75,7 +75,7 @@ def running_from_vm() -> bool:
     return (out.returncode == 0) and "Metadata-Flavor: Google" in out.stdout
 
 
-def validate_resource_name(name: Optional[str]) -> bool:
+def validate_resource_name(name: Optional[str]):
     """Validates names (e.g. TPUs, VMs, jobs) to ensure compat with GCP.
 
     Reference:
