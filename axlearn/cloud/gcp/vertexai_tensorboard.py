@@ -9,9 +9,10 @@ from absl import flags, logging
 
 try:
     from google.cloud.aiplatform import initializer
-    from google.cloud.aiplatform.tensorboard import uploader, uploader_utils
+    from google.cloud.aiplatform.tensorboard import uploader, uploader_constants, uploader_utils
     from google.cloud.aiplatform.utils import TensorboardClientWithOverride
     from tensorboard.uploader import util
+    from tensorboard.uploader.proto import server_info_pb2
 
     _VERTEXAI_INSTALLED = True
 except (ImportError, ModuleNotFoundError):
@@ -60,6 +61,22 @@ def _start_vertexai_tensorboard(*, project_id: str, region: str, resource_name: 
         blob_storage_bucket,
         blob_storage_folder,
     ) = uploader_utils.get_blob_storage_bucket_and_folder(api_client, resource_name, project_id)
+
+    # Set a smaller default value for max_tensor_request_size, e.g. 64KiB, to flush more frequently.
+    upload_limits = server_info_pb2.UploadLimits()
+    upload_limits.max_tensor_request_size = 64 * (2**10)
+    upload_limits.max_scalar_request_size = uploader_constants.DEFAULT_MAX_SCALAR_REQUEST_SIZE
+    upload_limits.min_scalar_request_interval = (
+        uploader_constants.DEFAULT_MIN_SCALAR_REQUEST_INTERVAL
+    )
+    upload_limits.min_tensor_request_interval = (
+        uploader_constants.DEFAULT_MIN_TENSOR_REQUEST_INTERVAL
+    )
+    upload_limits.max_tensor_point_size = uploader_constants.DEFAULT_MAX_TENSOR_POINT_SIZE
+    upload_limits.min_blob_request_interval = uploader_constants.DEFAULT_MIN_BLOB_REQUEST_INTERVAL
+    upload_limits.max_blob_request_size = uploader_constants.DEFAULT_MAX_BLOB_REQUEST_SIZE
+    upload_limits.max_blob_size = uploader_constants.DEFAULT_MAX_BLOB_SIZE
+
     tb_uploader = uploader.TensorBoardUploader(
         experiment_name=_vertexai_experiment_name_from_output_dir(logdir),
         experiment_display_name=_vertexai_experiment_name_from_output_dir(logdir),
@@ -75,6 +92,7 @@ def _start_vertexai_tensorboard(*, project_id: str, region: str, resource_name: 
         verbosity=0,
         run_name_prefix=None,
         logdir_poll_rate_limiter=util.RateLimiter(interval_secs=30),
+        upload_limits=upload_limits,
     )
     tb_uploader.create_experiment()
     tb_uploader.start_uploading()
