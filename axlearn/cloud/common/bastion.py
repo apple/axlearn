@@ -52,6 +52,7 @@ import enum
 import functools
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -112,6 +113,51 @@ class JobState(str, enum.Enum):
     COMPLETED = "COMPLETED"
 
 
+class ValidationError(ValueError):
+    """Validation failure (e.g. JobSpec deserialization)."""
+
+    pass
+
+
+def _validate_job_metadata(metadata: JobMetadata):
+    """Validates the given metadata."""
+    if not isinstance(metadata.user_id, str):
+        raise ValidationError(f"Expected {metadata.user_id=} to be a string.")
+    if not isinstance(metadata.project_id, str):
+        raise ValidationError(f"Expected {metadata.project_id=} to be a string.")
+    if not isinstance(metadata.resources, dict):
+        raise ValidationError(f"Expected {metadata.resources=} to be a dict.")
+    if not all(isinstance(k, str) and isinstance(v, int) for k, v in metadata.resources.items()):
+        raise ValidationError(f"Expected {metadata.resources=} to have string keys and int values.")
+    if not isinstance(metadata.priority, int):
+        raise ValidationError(f"Expected {metadata.priority=} to be an int.")
+
+
+def _validate_jobspec(jobspec: JobSpec):
+    """Validates the given jobspec.
+
+    Note that type annotations are insufficient as the jobspec can be deserialized from json.
+    """
+    if not isinstance(jobspec.name, str):
+        raise ValidationError(f"Expected {jobspec.name=} to be a string.")
+    if not isinstance(jobspec.command, str):
+        raise ValidationError(f"Expected {jobspec.command=} to be a string.")
+    if not (jobspec.cleanup_command is None or isinstance(jobspec.cleanup_command, str)):
+        raise ValidationError(f"Expected {jobspec.cleanup_command=} to be None or string.")
+
+    # Validate env vars.
+    if not (jobspec.env_vars is None or isinstance(jobspec.env_vars, dict)):
+        raise ValidationError(f"Expected {jobspec.env_vars=} to be None or dict.")
+    if jobspec.env_vars:
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in jobspec.env_vars.items()):
+            raise ValidationError(f"Expected {jobspec.env_vars=} to have string keys and values.")
+
+    # Validate metadata.
+    if not isinstance(jobspec.metadata, JobMetadata):
+        raise ValidationError(f"Expected {jobspec.metadata=} to be JobMetadata.")
+    _validate_job_metadata(jobspec.metadata)
+
+
 def new_jobspec(
     *,
     name: str,
@@ -119,15 +165,19 @@ def new_jobspec(
     metadata: JobMetadata,
     cleanup_command: Optional[str] = None,
     env_vars: Optional[Dict[str, str]] = None,
+    version: int = _LATEST_BASTION_VERSION,
 ) -> JobSpec:
-    return JobSpec(
-        version=_LATEST_BASTION_VERSION,
+    """Constructs a JobSpec with basic schema validation."""
+    jobspec = JobSpec(
+        version=version,
         name=name,
         command=command,
         cleanup_command=cleanup_command,
         env_vars=env_vars,
         metadata=metadata,
     )
+    _validate_jobspec(jobspec)
+    return jobspec
 
 
 def serialize_jobspec(spec: JobSpec, f: Union[str, IO]):
@@ -147,12 +197,12 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
         with open(f, "r", encoding="utf-8") as fd:
             return deserialize_jobspec(fd)
 
-    data = json.load(f)
+    data: dict = json.load(f)
     if data["version"] == _LATEST_BASTION_VERSION:
         data["metadata"]["creation_time"] = datetime.strptime(
             data["metadata"]["creation_time"], "%Y-%m-%d %H:%M:%S.%f"
         )
-        return JobSpec(
+        return new_jobspec(
             version=data["version"],
             name=data["name"],
             command=data["command"],
@@ -160,7 +210,15 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
             env_vars=data.get("env_vars", None),
             metadata=JobMetadata(**data["metadata"]),
         )
-    raise ValueError(f"Unsupported version: {data['version']}")
+    raise ValidationError(f"Unsupported version: {data['version']}")
+
+
+def is_valid_job_name(name: str) -> bool:
+    """Ensures that job name does not contain dots or slashes.
+
+    We use a permissive regex to avoid making assumptions about the underlying compute environment.
+    """
+    return re.fullmatch(r"[^./]+", name) is not None
 
 
 def _download_jobspec(job_name: str, *, remote_dir: str, local_dir: str = _JOB_DIR) -> JobSpec:
@@ -298,7 +356,10 @@ def _listdir(path: str) -> List[str]:
 def _remove(path: str):
     """Wraps tf_io.gfile.remove by catching not found errors."""
     try:
-        tf_io.gfile.remove(path)
+        if tf_io.gfile.isdir(path):
+            tf_io.gfile.rmtree(path)
+        else:
+            tf_io.gfile.remove(path)
     except tf_errors.NotFoundError:
         pass
 
@@ -324,8 +385,23 @@ def download_job_batch(
         A mapping from job name to Job(spec, state), and
         A set of job names whose state originates from user_state_dir.
     """
-    jobspecs = _listdir(spec_dir)
-    user_states = _listdir(user_state_dir)
+    jobspecs = []
+    invalid_jobspecs = []
+    user_states = []
+    invalid_user_states = []
+
+    for job_name in _listdir(spec_dir):
+        if is_valid_job_name(job_name):
+            jobspecs.append(job_name)
+        else:
+            invalid_jobspecs.append(job_name)
+
+    for job_name in _listdir(user_state_dir):
+        if is_valid_job_name(job_name):
+            user_states.append(job_name)
+        else:
+            invalid_user_states.append(job_name)
+
     if verbose:
         logging.info("User states %s", user_states)
 
@@ -367,6 +443,10 @@ def download_job_batch(
                     user_state = user_state_futs[job_name].result()
                 else:
                     user_state = None
+            except ValidationError as e:
+                logging.warning("Job %s failed validation and will be removed: %s", job_name, e)
+                invalid_jobspecs.append(job_name)
+                continue
             except Exception as e:  # pylint: disable=broad-except
                 # TODO(markblee): Distinguish transient vs non-transient errors.
                 logging.warning("Failed to load job %s with error: %s", job_name, e)
@@ -385,6 +465,20 @@ def download_job_batch(
                 # Even if user_state is ignored, we still want to clean it up.
                 jobs_with_user_states.add(job_name)
             jobs[job_name] = Job(spec=spec, state=state, command_proc=None, cleanup_proc=None)
+
+        # Remove invalid jobspecs and user states.
+        if invalid_jobspecs or invalid_user_states:
+            logging.info(
+                "Removing invalid jobspecs: %s and user states: %s",
+                invalid_jobspecs,
+                invalid_user_states,
+            )
+            pool.map(
+                _remove,
+                [os.path.join(spec_dir, job_name) for job_name in invalid_jobspecs]
+                + [os.path.join(user_state_dir, job_name) for job_name in invalid_user_states],
+            )
+
     return jobs, jobs_with_user_states
 
 
@@ -935,6 +1029,8 @@ class BastionDirectory(Configurable):
             logging.info("Failed with error: %s -- Has the job been cancelled already?", e)
 
     def submit_job(self, job_name: str, *, job_spec_file: str):
+        if not is_valid_job_name(job_name):
+            raise ValueError(f"{job_name} is not a valid job name.")
         dst = os.path.join(self.active_job_dir, job_name)
         if tf_io.gfile.exists(dst):
             logging.info("\n\nNote: Job is already running. To restart it, cancel the job first.\n")

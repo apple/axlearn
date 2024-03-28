@@ -3,6 +3,7 @@
 """Tests bastion orchestrator."""
 
 # pylint: disable=no-self-use,protected-access
+# pytype: disable=wrong-arg-types
 import contextlib
 import os
 import subprocess
@@ -20,18 +21,21 @@ from axlearn.cloud.common.bastion import (
     Bastion,
     Job,
     JobState,
+    ValidationError,
     _load_runtime_options,
     _PipedProcess,
+    _validate_jobspec,
     deserialize_jobspec,
     download_job_batch,
+    is_valid_job_name,
     new_jobspec,
     serialize_jobspec,
     set_runtime_options,
 )
 from axlearn.cloud.common.cleaner import Cleaner
-from axlearn.cloud.common.scheduler import JobMetadata, JobScheduler
+from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.scheduler_test import mock_quota_config
-from axlearn.cloud.common.types import JobSpec, ResourceMap
+from axlearn.cloud.common.types import JobMetadata, JobSpec, ResourceMap
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.common.config import config_for_function
 
@@ -103,11 +107,11 @@ class TestDownloadJobBatch(parameterized.TestCase):
             bastion.__name__,
             _download_jobspec=mock.Mock(side_effect=mock_download_jobspec),
             _download_job_state=mock.Mock(side_effect=mock_download_job_state),
+            _listdir=mock.Mock(side_effect=mock_listdir),
+            _remove=mock.DEFAULT,
         )
-        patch_tfio = mock.patch(f"{bastion.__name__}.tf_io.gfile.listdir", side_effect=mock_listdir)
-
         # Ensure that results are in the right order and pairing.
-        with patch_fns, patch_tfio, tempfile.TemporaryDirectory() as tmpdir:
+        with patch_fns as mock_fns, tempfile.TemporaryDirectory() as tmpdir:
             jobs, jobs_with_user_states = download_job_batch(
                 spec_dir=spec_dir,
                 state_dir=state_dir,
@@ -120,6 +124,54 @@ class TestDownloadJobBatch(parameterized.TestCase):
             for job_name, job in jobs.items():
                 self.assertEqual(job.state, expected[job_name])
                 self.assertEqual(job.spec, jobspecs[job_name])
+            # Make sure we do not remove any valid jobspecs.
+            self.assertFalse(mock_fns["_remove"].called)
+
+    @parameterized.parameters(
+        dict(name="test", valid=True),
+        dict(name=".", valid=False),
+        dict(name="..", valid=False),
+        dict(name="test/dir", valid=False),
+    )
+    def test_is_valid_job_name(self, name, valid):
+        self.assertEqual(valid, is_valid_job_name(name))
+
+    def test_invalid_names(self):
+        # Test that we drop invalid names.
+        jobspecs = ["test-job", "test0123_job0123", "test/invalid"]
+        user_states = ["test/invalid_user_state"]
+        valid_jobspecs = [job_name for job_name in jobspecs if is_valid_job_name(job_name)]
+
+        def mock_listdir(d):
+            if d == "FAKE_SPECS":
+                return jobspecs
+            elif d == "FAKE_USER_STATES":
+                return user_states
+            return []
+
+        patch_fns = mock.patch.multiple(
+            bastion.__name__,
+            _listdir=mock.Mock(side_effect=mock_listdir),
+            _download_jobspec=mock.DEFAULT,
+            _download_job_state=mock.DEFAULT,
+            _remove=mock.DEFAULT,
+        )
+        with patch_fns as mock_fns:
+            download_job_batch(
+                spec_dir="FAKE_SPECS",
+                state_dir="FAKE_STATES",
+                user_state_dir="FAKE_USER_STATES",
+                local_spec_dir="FAKE",
+            )
+            downloaded_jobs = []
+            for call_args in mock_fns["_download_jobspec"].call_args_list:
+                # call_args[0] is the positional args.
+                downloaded_jobs.append(call_args[0][0])
+            self.assertSequenceEqual(valid_jobspecs, downloaded_jobs)
+            self.assertContainsSubset(
+                ["FAKE_SPECS/test/invalid", "FAKE_USER_STATES/test/invalid_user_state"],
+                [call_args[0][0] for call_args in mock_fns["_remove"].call_args_list],
+            )
 
 
 class TestJobSpec(parameterized.TestCase):
@@ -150,6 +202,186 @@ class TestJobSpec(parameterized.TestCase):
             for key in test_spec.__dataclass_fields__:
                 self.assertIn(key, deserialized_jobspec.__dict__)
                 self.assertEqual(deserialized_jobspec.__dict__[key], test_spec.__dict__[key])
+
+    @parameterized.parameters(
+        # Test with Nones in place of Optional.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command=None,
+                env_vars=None,
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources={},
+                ),
+            ),
+            expected=None,
+        ),
+        # Test with values in place of Optional.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=None,
+        ),
+        # Test mismatch on child (wrong type on name).
+        dict(
+            x=JobSpec(
+                version=1,
+                name=123,
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("jobspec.name=123 to be a string"),
+        ),
+        # Test mismatch on child (name is None).
+        dict(
+            x=JobSpec(
+                version=1,
+                name=None,
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("jobspec.name=None to be a string"),
+        ),
+        # Test mismatch on grandchild (invalid user_id type).
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id=123,
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("metadata.user_id=123 to be a string"),
+        ),
+        # Test mismatch on grandchild (user_id is None).
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id=None,
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("metadata.user_id=None to be a string"),
+        ),
+        # Invalid type of env var keys.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars={123: "value1"},
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("string keys and values"),
+        ),
+        # Invalid type of env var values.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1=123),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("string keys and values"),
+        ),
+        # Invalid type of resources keys.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources={123: 123},
+                ),
+            ),
+            expected=ValidationError("string keys and int values"),
+        ),
+        # Invalid type of resources values.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1="test"),
+                ),
+            ),
+            expected=ValidationError("string keys and int values"),
+        ),
+    )
+    def test_validate_jobspec(self, x, expected):
+        if isinstance(expected, Exception):
+            ctx = self.assertRaisesRegex(type(expected), str(expected))
+        else:
+            ctx = contextlib.nullcontext()
+        with ctx:
+            _validate_jobspec(x)
 
 
 class TestRuntimeOptions(parameterized.TestCase):
@@ -892,8 +1124,15 @@ class BastionTest(parameterized.TestCase):
 class BastionDirectoryTest(parameterized.TestCase):
     """Tests BastionDirectory."""
 
-    @parameterized.parameters(True, False)
-    def test_submit_job(self, spec_exists):
+    @parameterized.product(
+        job_name=[
+            "test-job",
+            "test0123_job0123",
+            "test/invalid",
+        ],
+        spec_exists=[True, False],
+    )
+    def test_submit_job(self, job_name, spec_exists):
         job_name = "test-job"
         job_spec_file = "spec"
         bastion_dir = (
@@ -910,7 +1149,11 @@ class BastionDirectoryTest(parameterized.TestCase):
             exists=mock.MagicMock(return_value=spec_exists),
             copy=mock.DEFAULT,
         )
-        with patch_tfio as mock_tfio:
+        if is_valid_job_name(job_name):
+            ctx = contextlib.nullcontext()
+        else:
+            ctx = self.assertRaisesRegex(ValueError, "not a valid job name")
+        with ctx, patch_tfio as mock_tfio:
             bastion_dir.submit_job(job_name, job_spec_file=job_spec_file)
             if not spec_exists:
                 mock_tfio["copy"].assert_called_with(
