@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests bastion orchestrator."""
+
 # pylint: disable=no-self-use,protected-access
 import contextlib
 import os
@@ -313,9 +314,11 @@ class BastionTest(parameterized.TestCase):
             copy=mock.DEFAULT,
             remove=mock.DEFAULT,
         )
-        with self._patch_bastion(
-            popen_spec
-        ) as mock_bastion, patch_fns as mock_fns, patch_tfio as mock_tfio:
+        with (
+            self._patch_bastion(popen_spec) as mock_bastion,
+            patch_fns as mock_fns,
+            patch_tfio as mock_tfio,
+        ):
             # Run a couple updates to test transition to PENDING and staying in PENDING.
             for _ in range(2):
                 orig_command_proc = job.command_proc
@@ -617,9 +620,11 @@ class BastionTest(parameterized.TestCase):
             copy=mock.DEFAULT,
             remove=mock.DEFAULT,
         )
-        with self._patch_bastion(
-            popen_spec()
-        ) as mock_bastion, patch_fns as mock_fns, patch_tfio as mock_tfio:
+        with (
+            self._patch_bastion(popen_spec()) as mock_bastion,
+            patch_fns as mock_fns,
+            patch_tfio as mock_tfio,
+        ):
             mock_bastion._active_jobs = active_jobs
             mock_bastion._jobs_with_user_states = jobs_with_user_states
             mock_bastion._update_jobs()
@@ -854,6 +859,34 @@ class BastionTest(parameterized.TestCase):
                 args, kwargs = mock_scheduler.schedule.call_args
                 self.assertSameElements(expect_schedulable, args[0].keys())
                 self.assertEqual({"dry_run": expect_dry_run, "verbosity": expect_verbosity}, kwargs)
+
+    def test_exception(self):
+        patch_signal = mock.patch(f"{bastion.__name__}.send_signal")
+        with patch_signal, self._patch_bastion() as mock_bastion:
+            mock_job = Job(
+                spec=mock.Mock(),
+                state=mock.Mock(),
+                command_proc=mock.Mock(),
+                cleanup_proc=mock.Mock(),
+            )
+
+            def mock_execute():
+                mock_bastion._active_jobs["test"] = mock_job
+                raise ValueError("Mock error")
+
+            with mock.patch.multiple(
+                mock_bastion,
+                _wait_and_close_proc=mock.DEFAULT,
+                _execute=mock.Mock(side_effect=mock_execute),
+            ) as mock_methods:
+                with self.assertRaisesRegex(ValueError, "Mock error"):
+                    mock_bastion.execute()
+                self.assertIn(
+                    mock_job.command_proc, mock_methods["_wait_and_close_proc"].call_args_list[0][0]
+                )
+                self.assertIn(
+                    mock_job.cleanup_proc, mock_methods["_wait_and_close_proc"].call_args_list[1][0]
+                )
 
 
 class BastionDirectoryTest(parameterized.TestCase):

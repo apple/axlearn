@@ -560,6 +560,18 @@ class Bastion(Configurable):
         if os.path.exists(proc.fd.name):
             os.remove(proc.fd.name)
 
+    def _kill_job(self, job: Job):
+        """Terminates any processes with SIGKILL.
+
+        Note that killing these processes does not affect the job state (i.e., this does not cause
+        jobs to be cancelled). This is expected as bastion jobs are typically pre-emptible (see
+        docstring for bastion job requirements).
+        """
+        if job.command_proc is not None:
+            self._wait_and_close_proc(job.command_proc, kill=True)
+        if job.cleanup_proc is not None:
+            self._wait_and_close_proc(job.cleanup_proc, kill=True)
+
     def _sync_jobs(self):
         """Makes the local bastion state consistent with the remote state.
 
@@ -594,10 +606,7 @@ class Bastion(Configurable):
                 job = self._active_jobs[job_name]
                 if job.state != JobState.COMPLETED:
                     logging.warning("Detected orphaned job %s! Killing it...", job.spec.name)
-                    if job.command_proc is not None:
-                        self._wait_and_close_proc(job.command_proc, kill=True)
-                    if job.cleanup_proc is not None:
-                        self._wait_and_close_proc(job.cleanup_proc, kill=True)
+                    self._kill_job(job)
                 logging.info("Removed job %s.", job_name)
                 del self._active_jobs[job_name]
             # Detected updated job: exists in both.
@@ -815,8 +824,7 @@ class Bastion(Configurable):
         logging.info("==End of gc step.")
         logging.info("")
 
-    def execute(self):
-        """Starts the bastion."""
+    def _execute(self):
         cfg: Bastion.Config = self.config
         if os.path.exists(_JOB_DIR):
             shutil.rmtree(_JOB_DIR)
@@ -837,6 +845,17 @@ class Bastion(Configurable):
                     cfg.update_interval_seconds,
                 )
             time.sleep(max(0, cfg.update_interval_seconds - execute_s))
+
+    def execute(self):
+        """Starts the bastion."""
+        try:
+            self._execute()
+        except Exception:
+            logging.error("Caught exception, will cleanup all child jobs.")
+            for job in self._active_jobs.values():
+                self._kill_job(job)
+            self._active_jobs = {}
+            raise  # Re-raise.
 
 
 class BastionDirectory(Configurable):
