@@ -8,7 +8,8 @@ from unittest import mock
 from absl import app, flags
 from absl.testing import parameterized
 
-from axlearn.cloud.common.bundler import DockerBundler
+from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE, BaseDockerBundler, _bundlers
+from axlearn.cloud.common.utils import canonicalize_to_string
 from axlearn.cloud.gcp import bundler, job
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.jobs import cpu_runner, dataflow
@@ -122,25 +123,47 @@ class DataflowJobTest(TestWithTemporaryCWD):
 class UtilsTest(TestWithTemporaryCWD):
     """Tests util functions."""
 
-    def test_docker_bundler_to_flags(self):
-        cfg = DockerBundler.default_config().set(
-            dockerfile="test_dockerfile",
+    @parameterized.parameters(
+        [
+            bundler_klass
+            for bundler_klass in _bundlers.values()
+            if issubclass(bundler_klass, BaseDockerBundler)
+        ]
+    )
+    def test_docker_bundler_to_flags(self, bundler_klass: BaseDockerBundler):
+        cfg = bundler_klass.default_config().set(
             image="test_image",
             repo="test_repo",
-            build_args={"a": "test", "b": 123},
+            dockerfile="test_dockerfile",
+            build_args={"a": "test", "b": "123"},
+            allow_dirty=True,
+            cache_from=("cache1", "cache2"),
         )
-        self.assertEqual(
-            [
-                "--bundler_spec=a=test",
-                "--bundler_spec=b=123",
-                "--bundler_spec=dockerfile=test_dockerfile",
-                "--bundler_spec=image=test_image",
-                "--bundler_spec=platform=linux/amd64",
-                "--bundler_spec=repo=test_repo",
-                "--bundler_type=docker",
-            ],
-            sorted(_docker_bundler_to_flags(cfg)),
+        fv = flags.FlagValues()
+        fv.mark_as_parsed()
+        spec_flags = [
+            "--bundler_spec=a=test",
+            "--bundler_spec=allow_dirty=True",
+            "--bundler_spec=b=123",
+            "--bundler_spec=dockerfile=test_dockerfile",
+            f"--bundler_spec=exclude={canonicalize_to_string(BUNDLE_EXCLUDE)}",
+            "--bundler_spec=image=test_image",
+            "--bundler_spec=platform=linux/amd64",
+            "--bundler_spec=repo=test_repo",
+            "--bundler_spec=cache_from=cache1,cache2",
+        ]
+        all_flags = [f"--bundler_type={bundler_klass.TYPE}"] + spec_flags
+        actual = _docker_bundler_to_flags(cfg, fv=fv)
+        self.assertSameElements(all_flags, actual)
+
+        re_cfg = bundler_klass.from_spec(
+            [x.replace("--bundler_spec=", "") for x in spec_flags], fv=fv
         )
+        for name, value in re_cfg.items():
+            self.assertEqual(
+                canonicalize_to_string(getattr(cfg, name, None)),
+                canonicalize_to_string(value),
+            )
 
 
 @contextlib.contextmanager

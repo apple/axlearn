@@ -77,16 +77,17 @@ import re
 import shlex
 import signal
 import subprocess
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple, cast
 
 from absl import app, flags, logging
 from google.auth.credentials import Credentials
 from googleapiclient import discovery, errors
 
-from axlearn.cloud.common.bundler import BaseDockerBundler, DockerBundler, get_bundler_config
+from axlearn.cloud.common.bundler import BaseDockerBundler, get_bundler_config
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import (
     canonicalize_to_list,
+    canonicalize_to_string,
     configure_logging,
     generate_job_name,
     handle_popen,
@@ -163,7 +164,7 @@ class DataflowJob(GCPJob):
         bundle_cmd = " ".join(
             [
                 f"python3 -m {bundler.__name__} --name={cfg.name}",
-                *_docker_bundler_to_flags(cfg.bundler),
+                *_docker_bundler_to_flags(cfg.bundler, fv=fv),
             ]
         )
 
@@ -261,21 +262,31 @@ class DataflowJob(GCPJob):
             handle_popen(proc)
 
 
-def _docker_bundler_to_flags(cfg: DockerBundler.Config) -> List[str]:
+def _docker_bundler_to_flags(cfg: BaseDockerBundler.Config, *, fv: flags.FlagValues) -> List[str]:
     """Converts docker bundler config to a string of flags."""
     # TODO(markblee): Add a config to_spec() method to mirror from_spec().
-    spec_flags = [
-        f"--bundler_type={cfg.klass.TYPE}",
-        f"--bundler_spec=dockerfile={cfg.dockerfile}",
-        f"--bundler_spec=image={cfg.image}",
-        f"--bundler_spec=repo={cfg.repo}",
-    ]
-    if cfg.target:
-        spec_flags.append(f"--bundler_spec=target={cfg.target}")
-    if cfg.platform:
-        spec_flags.append(f"--bundler_spec=platform={cfg.platform}")
-    spec_flags += [f"--bundler_spec={k}={v}" for k, v in cfg.build_args.items()]
-    return spec_flags
+    specs = []
+    for name, value in cfg.items():
+        if value and isinstance(value, (int, str, bool, Sequence)):
+            specs.append(f"{name}={canonicalize_to_string(value)}")
+        elif value and isinstance(value, dict):
+            specs.extend([f"{k}={v}" for k, v in value.items()])
+        else:
+            logging.info("Skipping %s (%s) when converting bundler config to flags.", name, value)
+
+    # For sanity, reconstruct the bundler from the spec, and warn if mismatch.
+    re_cfg = cast(BaseDockerBundler, cfg.klass).from_spec(specs, fv=fv)
+    for re_name, re_value in re_cfg.items():
+        re_value = canonicalize_to_string(re_value)
+        orig_value = canonicalize_to_string(getattr(cfg, re_name, None))
+        if re_value != orig_value:
+            logging.warning(
+                "Reconstructed config %s has value %s which is different from original: %s",
+                re_name,
+                re_value,
+                orig_value,
+            )
+    return [f"--bundler_type={cfg.klass.TYPE}"] + [f"--bundler_spec={spec}" for spec in specs]
 
 
 def _dataflow_resource(credentials: Credentials):
