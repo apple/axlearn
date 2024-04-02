@@ -2,8 +2,6 @@
 
 """TPU job cleaner, e.g. to be used with BastionJob."""
 
-import functools
-from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Sequence
 
 from absl import logging
@@ -95,8 +93,5 @@ class TPUCleaner(Cleaner):
             except TPUDeletionError as e:
                 logging.warning("Failed to delete TPU %s: %s", tpu_name, e)
 
-        with ThreadPoolExecutor() as pool:
-            pool.map(
-                functools.partial(_delete_tpu_async, resource_qrm=resource_qrm),
-                tpu_names,
-            )
+        for tpu_name in tpu_names:
+            _delete_tpu_async(tpu_name, resource_qrm=resource_qrm)
