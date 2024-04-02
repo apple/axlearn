@@ -167,7 +167,10 @@ class RegistryTest(TestCase):
 class BaseTarBundlerTest(TestWithTemporaryCWD):
     """Tests BaseTarBundler."""
 
-    def test_bundle(self):
+    @parameterized.product(
+        index_url=[None, "url1"],
+    )
+    def test_bundle(self, index_url):
         with tempfile.TemporaryDirectory() as remote_dir:
             # Create dummy file and requirements in CWD.
             (pathlib.Path(self._temp_root.name) / "a" / "b").mkdir(parents=True)
@@ -193,6 +196,7 @@ class BaseTarBundlerTest(TestWithTemporaryCWD):
                 exclude=["test1.txt", "./a/b", "a/c.txt", "f"],
                 extras=["test.whl", "dev"],
                 find_links=["link1", "link2"],
+                index_url=index_url,
             )
             b = cfg.instantiate()
             bundle_name = "test_bundle"
@@ -220,11 +224,13 @@ class BaseTarBundlerTest(TestWithTemporaryCWD):
                 # Make sure requirements has the right contents.
                 f = tar.extractfile(f"{CONFIG_DIR}/requirements.txt")
                 assert f is not None  # Explicit assert so pytype understands.
+                expected_index_url = f"--index-url {index_url}\n" if index_url else ""
                 with f:
                     # fmt: off
                     expected = (
                         "--find-links link1\n"
                         "--find-links link2\n"
+                        f"{expected_index_url}"
                         "test.whl\n"
                         ".[dev]"
                     )

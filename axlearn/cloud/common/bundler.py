@@ -309,6 +309,7 @@ class BaseDockerBundler(Bundler):
 
         All other specs are treated as build args.
         """
+        del fv  # Not used.
         cfg: BaseDockerBundler.Config = cls.default_config()
         kwargs = parse_kv_flags(spec, delimiter="=")
         cache_from = canonicalize_to_list(kwargs.pop("cache_from", None))
@@ -469,6 +470,8 @@ class BaseTarBundler(Bundler):
         remote_dir: Required[str] = REQUIRED
         # Optional list of --find-links to use in pip install.
         find_links: Optional[Union[str, Sequence[str]]] = None
+        # Optional --index-url to use in pip install.
+        index_url: Optional[str] = None
         # Whether to install in editable mode.
         editable: bool = False
 
@@ -479,6 +482,7 @@ class BaseTarBundler(Bundler):
         Possible options:
         - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf_io.
         """
+        del fv  # Not used.
         return cls.default_config().set(**parse_kv_flags(spec, delimiter="="))
 
     def id(self, name: str) -> str:
@@ -496,7 +500,7 @@ class BaseTarBundler(Bundler):
         Returns:
             The remote path.
         """
-        cfg = self.config
+        cfg: BaseTarBundler.Config = self.config
 
         with self._local_dir_context() as temp_dir:
             temp_dir = pathlib.Path(temp_dir)
@@ -518,6 +522,8 @@ class BaseTarBundler(Bundler):
             with requirements.open("w", encoding="utf-8") as f:
                 for find_links in canonicalize_to_list(cfg.find_links):
                     f.write(f"--find-links {find_links}\n")
+                if cfg.index_url:
+                    f.write(f"--index-url {cfg.index_url}\n")
                 pyproject_extras = []
                 for extra in canonicalize_to_list(cfg.extras):
                     # NOTE: .whl can also end with a pyproject section, e.g. axlearn.whl[dev].
