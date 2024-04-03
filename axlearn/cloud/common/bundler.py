@@ -340,6 +340,8 @@ class BaseDockerBundler(Bundler):
 
         # Fail early if git status is dirty.
         if running_from_source() and (status := get_git_status()):
+            # TODO: Temporary fix for a CLI bug. Delete this later.
+            #cfg.allow_dirty = True
             if cfg.allow_dirty:
                 logging.warning("Bundling with local changes:\n%s", status)
             else:
