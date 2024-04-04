@@ -49,9 +49,7 @@ class MetricAccumulator(Configurable):
             self._scalars,
             model_outputs,
         )
-        scalars = self._tree_map(
-            lambda x: x if isinstance(x, WeightedScalar) else tuple(), model_outputs
-        )
+        scalars = self._tree_map(lambda x: x if isinstance(x, Summary) else tuple(), model_outputs)
         if not self._scalars:
             self._scalars = scalars
         else:
@@ -63,5 +61,5 @@ class MetricAccumulator(Configurable):
 
     @staticmethod
     def _tree_map(*args, **kwargs):
-        is_leaf = lambda x: isinstance(x, WeightedScalar)
+        is_leaf = lambda x: isinstance(x, Summary)
         return jax.tree_util.tree_map(*args, **kwargs, is_leaf=is_leaf)
