@@ -33,7 +33,7 @@ class Summary(struct.PyTreeNode):
 
     def value(self) -> Optional[Union[NestedTensor, int, float]]:
         """Returns a value for logging."""
-        raise NotImplementedError()
+        raise NotImplementedError(type(self))
 
     def validate(self):
         """Validates that the summary was constructed with valid data. This is automatically
@@ -42,6 +42,17 @@ class Summary(struct.PyTreeNode):
         Raises:
             Exception: If the summary is invalid.
         """
+
+    def accumulate(self, other: "Summary") -> "Summary":
+        """The default way this summary should be accumulated.
+
+        Args:
+            other: The summary from later in training/eval to accumulate into this summary.
+
+        Returns:
+            A single accumulated summary.
+        """
+        raise NotImplementedError(type(self))
 
 
 class ImageSummary(Summary):
@@ -76,6 +87,9 @@ class ImageSummary(Summary):
         if val.ndim == 3:
             val = val[..., None]
         return val
+
+    def accumulate(self, other: Summary) -> Summary:
+        return self
 
 
 class CallbackSummary(Summary):
@@ -137,3 +151,6 @@ class CallbackSummary(Summary):
             lambda x: np.asarray(x) if isinstance(x, Tensor) else x, self.kwargs
         )
         return self.fn(*args, **kwargs)
+
+    def accumulate(self, other: Summary) -> Summary:
+        return self
