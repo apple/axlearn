@@ -35,29 +35,41 @@ class WeightedScalar(WeightedScalarValue, Summable):
             mean = 0.0
         return WeightedScalar(mean, weight)
 
+    def accumulate(self, other: Summary) -> Summary:
+        if not isinstance(other, WeightedScalar):
+            raise TypeError(f"Expected WeightedScalar, got {type(other)}.")
+        return self + other
+
 
 class MetricAccumulator(Configurable):
     """A MetricAccumulator is used during evaluation to accumulate metrics across batches."""
 
     def __init__(self, cfg: Configurable.Config):
         super().__init__(cfg)
-        self._scalars = {}
+        self._summaries: Dict[str, Any] = {}
 
     def update(self, model_outputs: Dict[str, Any]):
         logging.debug(
             "MetricAccumulator.update: current=%s update=%s",
-            self._scalars,
+            self._summaries,
             model_outputs,
         )
-        scalars = self._tree_map(lambda x: x if isinstance(x, Summary) else tuple(), model_outputs)
-        if not self._scalars:
-            self._scalars = scalars
+        model_outputs = self._tree_map(
+            lambda x: x if isinstance(x, Summary) else None, model_outputs
+        )
+
+        if not self._summaries:
+            # Save all summaries from first nonempty batch.
+            self._summaries = model_outputs
         else:
-            self._scalars = self._tree_map(lambda x, y: x + y, self._scalars, scalars)
-        logging.debug("MetricAccumulator.update: merged=%s", self._scalars)
+            # Accumulate summaries from batches after the first.
+            self._summaries = self._tree_map(
+                lambda x, y: x.accumulate(y), self._summaries, model_outputs
+            )
+        logging.debug("MetricAccumulator.update: merged=%s", self._summaries)
 
     def summaries(self) -> Dict[str, Any]:
-        return self._scalars
+        return self._summaries
 
     @staticmethod
     def _tree_map(*args, **kwargs):
