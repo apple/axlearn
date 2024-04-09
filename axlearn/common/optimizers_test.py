@@ -756,15 +756,27 @@ class OptimizerTest(TestCase):
         else:
             np.testing.assert_allclose(updates, jnp.zeros_like(grads))
 
-    @parameterized.product(max_norm=(None, 100.0, 0.1), drop_norm=(None, 5.0, 0.5))
-    def test_gradient_skipping_and_clipping(self, max_norm, drop_norm):
+    @parameterized.product(
+        max_norm=(None, 100.0, 0.1),
+        drop_norm=(None, 5.0, 0.01),
+        adaptive=(True, False),
+    )
+    def test_gradient_skipping_and_clipping(self, max_norm, drop_norm, adaptive):
         clip = skip_and_clip_by_global_norm(
             inner=_counter(),
             drop_norm=drop_norm,
             max_norm=max_norm,
+            adaptive_drop_norm=adaptive,
         )
         params = jnp.asarray([0, 1, 2, -3], dtype=jnp.float32)
         state = clip.init(params)
+        init_ema = state.grad_norm_ema
+        if drop_norm is None:
+            current_drop_norm = None
+        elif adaptive:
+            current_drop_norm = drop_norm * init_ema
+        else:
+            current_drop_norm = drop_norm
 
         def loss_fn(x):
             return -jax.nn.log_softmax(x)[1]
@@ -775,17 +787,23 @@ class OptimizerTest(TestCase):
 
         g_norm = optax.global_norm(grads)
         updates, state = clip.update(grads, state=state, params=params)
-        if drop_norm is None or g_norm < drop_norm:
+        if drop_norm is None or g_norm < current_drop_norm:
             if max_norm is None or g_norm < max_norm:
                 np.testing.assert_allclose(updates, grads, atol=1e-6)
             else:
                 np.testing.assert_allclose(max_norm, optax.global_norm(updates))
             np.testing.assert_equal(state.nonvalid_count, jnp.zeros([], dtype=jnp.int32))
             np.testing.assert_equal(state.inner_state, jnp.ones([], dtype=jnp.int32))
+            if adaptive:
+                np.testing.assert_equal(state.valid_count, jnp.ones([], dtype=jnp.int32))
+                np.testing.assert_equal(state.grad_norm_ema, g_norm)
         else:
             np.testing.assert_allclose(updates, jnp.zeros_like(grads))
             np.testing.assert_equal(state.nonvalid_count, jnp.ones([], dtype=jnp.int32))
             np.testing.assert_equal(state.inner_state, jnp.zeros([], dtype=jnp.int32))
+            if adaptive:
+                np.testing.assert_equal(state.valid_count, jnp.zeros([], dtype=jnp.int32))
+                np.testing.assert_equal(state.grad_norm_ema, init_ema)
 
     @parameterized.product(
         regularizer_weight=(0.0, 1.0),

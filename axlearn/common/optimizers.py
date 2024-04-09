@@ -1122,7 +1122,9 @@ def clip_by_global_norm(
 class SkipClipState(NamedTuple):
     """State returned by functions in skip_and_clip_by_global_norm()."""
 
+    valid_count: Optional[Union[Tensor, TensorSpec]]
     nonvalid_count: Union[Tensor, TensorSpec]  # Number of non-valid steps.
+    grad_norm_ema: Optional[Union[Tensor, TensorSpec]]  # The moving average of raw gradient norm.
     inner_state: Any  # State of the inner PartitionedGradientTransformation.
 
 
@@ -1131,6 +1133,8 @@ def skip_and_clip_by_global_norm(
     *,
     drop_norm: Optional[float] = None,
     max_norm: Optional[float] = None,
+    adaptive_drop_norm: Optional[bool] = False,
+    grad_norm_ema_decay: float = 0.95,
     eps: float = 1e-8,
 ) -> PartitionedGradientTransformation:
     """Skip updates when global norm >= drop_norm, otherwise clip the global norm.
@@ -1139,6 +1143,10 @@ def skip_and_clip_by_global_norm(
     wrapped gradient transformation `inner`. Note the difference compared to clip_by_global_norm()
     is that this version skips all updates while clip_by_global_norm() still performs parameter
     updates and optimizer state updates.
+
+    Whhen `adaptive_drop_norm` is True, we scale drop_norm proportionally to the moving average of
+    recent gradient norms. This is useful since the gradient norms can initially be large but reduce
+    to a small value during training.
 
     Example usage:
         ```
@@ -1162,6 +1170,8 @@ def skip_and_clip_by_global_norm(
         drop_norm: the threshold to detect abnormal gradients and skip gradient and state updates.
         max_norm: the maximum global gradient norm. If this is set, larger gradients will be scaled
             and clipped.
+        adaptive_drop_norm: whether to scale dro_norm proportionally to the EMA of gradient norms.
+        gradient_norm_ema_decay: the decay factor used to compute EMA of gradient norms.
         eps: a small constant added to scaling factor, i.e. `1/(norm + eps)`.
 
     Returns:
@@ -1170,31 +1180,82 @@ def skip_and_clip_by_global_norm(
     inner = maybe_instantiate(inner)
 
     def init_fn(params):
-        return SkipClipState(
-            nonvalid_count=jnp.zeros([], jnp.int32), inner_state=inner.init(params)
-        )
+        if adaptive_drop_norm:
+            return SkipClipState(
+                valid_count=jnp.zeros([], jnp.int32),
+                nonvalid_count=jnp.zeros([], jnp.int32),
+                # Set initial ema to a positive value so we dont drop gradient for the first step.
+                grad_norm_ema=jnp.ones([], jnp.float32) * 10,
+                inner_state=inner.init(params),
+            )
+        else:
+            return SkipClipState(
+                valid_count=None,
+                nonvalid_count=jnp.zeros([], jnp.int32),
+                grad_norm_ema=None,
+                inner_state=inner.init(params),
+            )
 
     def update_fn(updates, state, params=None):
         inner_state = state.inner_state
+        valid_count = state.valid_count
+        grad_norm_ema = state.grad_norm_ema
+
+        def _moment(val: Tensor, norm_ema: Tensor, count: Tensor) -> Tuple[Tensor, Tensor]:
+            # bias correrction decay
+            # Sec 7.1 https://arxiv.org/pdf/1804.04235.pdf
+            decay = grad_norm_ema_decay
+            decay *= (1 - decay ** (count - 1)) / (1 - decay**count)
+            new_ema = decay * norm_ema + (1 - decay) * val
+            return new_ema
+
+        def _is_valid_step(g_norm: Tensor, drop_norm: float, norm_ema: Optional[Tensor]):
+            if norm_ema is not None:
+                return g_norm < norm_ema * drop_norm
+            else:
+                return g_norm < drop_norm
+
         # Check if every gradient is finite.
         flat_updates = jax.tree_util.tree_flatten(updates)[0]
         is_finite = jnp.all(jnp.array([jnp.all(jnp.isfinite(p)) for p in flat_updates]))
         g_norm = optax.global_norm(updates)
         if drop_norm is not None:
             # Check if gradient norm is abnormal.
-            is_valid_step = jnp.logical_and(is_finite, g_norm < drop_norm)
+            is_valid_step = jnp.logical_and(
+                is_finite,
+                _is_valid_step(g_norm, drop_norm, grad_norm_ema),
+            )
         else:
             is_valid_step = is_finite
+
         # Log useful statistics.
         nonvalid_count = jnp.where(
             is_valid_step,
             state.nonvalid_count,
             optax.safe_int32_increment(state.nonvalid_count),
         )
+        if adaptive_drop_norm:
+            inc_valid_count = jnp.where(
+                is_valid_step,
+                optax.safe_int32_increment(valid_count),
+                valid_count,
+            )
+            new_ema = jnp.where(
+                is_valid_step,
+                _moment(g_norm, grad_norm_ema, inc_valid_count),
+                grad_norm_ema,
+            )
+        else:
+            inc_valid_count = None
+            new_ema = None
         context = current_context()
         if context is not None:
             context.add_summary("gradient_norm", g_norm)
             context.add_summary("nonvalid_count", nonvalid_count)
+            if new_ema is not None:
+                context.add_summary("gradient_norm_ema", new_ema)
+            if inc_valid_count is not None:
+                context.add_summary("valid_count", inc_valid_count)
         # Clip gradients s.t. grad norm <= max_norm.
         clipped_updates = updates
         if max_norm is not None:
@@ -1217,7 +1278,10 @@ def skip_and_clip_by_global_norm(
         )
 
         return final_updates, SkipClipState(
-            nonvalid_count=nonvalid_count, inner_state=final_inner_state
+            valid_count=inc_valid_count,
+            nonvalid_count=nonvalid_count,
+            grad_norm_ema=new_ema,
+            inner_state=final_inner_state,
         )
 
     def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
