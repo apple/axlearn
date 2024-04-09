@@ -113,14 +113,16 @@ def mock_tpu_statuses(
         yield
 
 
-def _mock_config():
+def _mock_config() -> tpu_runner.TPURunnerJob.Config:
     mock_bundler = mock.MagicMock()
     mock_bundler.install_command.return_value = "test_install"
     return tpu_runner.TPURunnerJob.default_config().set(
         name="test-name",
         output_dir="test_output",
-        tpu_type="v4-8",
-        num_slices=2,
+        accelerator=gcp_job.AcceleratorConfig(
+            instance_type="tpu-v4-8",
+            num_replicas=2,
+        ),
         project="test_project",
         zone="test_zone",
         max_tries=1,
@@ -145,14 +147,15 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
     """Tests TPURunnerJob."""
 
     @parameterized.parameters(
-        dict(num_workers=1, tpu_type="v4-8", num_slices=1),
-        dict(num_workers=2, tpu_type="v4-8", num_slices=2),
-        dict(num_workers=2, tpu_type="v4-16", num_slices=1),
-        dict(num_workers=4, tpu_type="v4-16", num_slices=2),
+        dict(num_workers=1, tpu_type="v4-8", num_replicas=1),
+        dict(num_workers=2, tpu_type="v4-8", num_replicas=2),
+        dict(num_workers=2, tpu_type="v4-16", num_replicas=1),
+        dict(num_workers=4, tpu_type="v4-16", num_replicas=2),
     )
-    def test_num_workers(self, num_workers, tpu_type, num_slices):
+    def test_num_workers(self, num_workers, tpu_type, num_replicas):
         cfg = _mock_config()
-        job = cfg.set(command="", tpu_type=tpu_type, num_slices=num_slices).instantiate()
+        cfg.accelerator.set(instance_type=f"tpu-{tpu_type}", num_replicas=num_replicas)
+        job = cfg.instantiate()
         self.assertEqual(num_workers, job._num_workers())
 
     @parameterized.parameters(
@@ -183,9 +186,11 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
         mock_execute = mock.patch.object(job, "_execute_remote_cmd")
         mock_credentials = mock.patch.object(job, "_get_job_credentials")
 
-        with mock_execute, mock_credentials, mock_tpu(
-            tpu_runner.__name__, running_from_vm
-        ) as mocks:
+        with (
+            mock_execute,
+            mock_credentials,
+            mock_tpu(tpu_runner.__name__, running_from_vm) as mocks,
+        ):
             # Create a dummy TPU.
             mocks["create_queued_tpu"](cfg.name)
             # Issue start command.
@@ -292,9 +297,10 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
                 job._execute()
                 mocks["_delete"].assert_called()
 
-            with self.assertRaisesRegex(ValueError, "failed"), mock_status(
-                tpu_runner.TPURunnerJob.Status.FAILED
-            ) as mocks:
+            with (
+                self.assertRaisesRegex(ValueError, "failed"),
+                mock_status(tpu_runner.TPURunnerJob.Status.FAILED) as mocks,
+            ):
                 job._execute()
                 mocks["_delete"].assert_called()
 
@@ -325,18 +331,24 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
         if bundler_spec is not None:
             argv.append(f"--bundler_spec={bundler_spec}")
 
+        # Parsing without instance_type should be OK, e.g. for help/list/stop.
+        fv(argv)
+        argv.append("--instance_type=tpu-v4-8")
+
         # Parse argv.
         fv(argv)
-        assert fv.name == name
+        self.assertEqual(fv.name, name)
 
         # Construct config.
         mock_settings = {"ttl_bucket": "ttl_bucket"}
         mock_generate_job_name = mock.patch(
             f"{tpu_runner.__name__}.generate_job_name", return_value="test-name"
         )
-        with mock_generate_job_name, mock_gcp_settings(
-            tpu_runner.__name__, settings=mock_settings
-        ), mock_gcp_settings(bundler.__name__, settings=mock_settings):
+        with (
+            mock_generate_job_name,
+            mock_gcp_settings(tpu_runner.__name__, settings=mock_settings),
+            mock_gcp_settings(bundler.__name__, settings=mock_settings),
+        ):
             cfg = tpu_runner.TPURunnerJob.from_flags(fv)
 
         # If name is not provided, there should be a default.
@@ -387,7 +399,7 @@ class TPURunnerMainTest(TestWithTemporaryCWD):
         fv = flags.FlagValues()
         tpu_runner.TPURunnerJob.define_flags(fv)
         # Basic sanity check.
-        self.assertEqual(fv["num_slices"].default, 1)
+        self.assertEqual(fv["num_replicas"].default, 1)
 
     @parameterized.parameters(True, False)
     def test_list(self, running_from_vm):
@@ -420,12 +432,12 @@ class TPURunnerMainTest(TestWithTemporaryCWD):
             with self.assertRaisesRegex(app.UsageError, "Invalid action"):
                 tpu_runner.main(["cli"], flag_values=fv)
 
-            with self.assertRaisesRegex(app.UsageError, "tpu_type is required"):
+            with self.assertRaisesRegex(app.UsageError, "instance_type is required"):
                 tpu_runner.main(["cli", "start"], flag_values=fv)
 
             with self.assertRaisesRegex(app.UsageError, "Command is required"):
-                fv.set_default("tpu_type", "v4-8")
+                fv.set_default("instance_type", "tpu-v4-8")
                 tpu_runner.main(["cli", "start"], flag_values=fv)
 
-            fv.set_default("tpu_type", "v4-8")
+            fv.set_default("instance_type", "tpu-v4-8")
             tpu_runner.main(["cli", "start", "--", "test_command"], flag_values=fv)

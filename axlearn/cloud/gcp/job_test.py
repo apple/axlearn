@@ -20,16 +20,19 @@ from unittest import mock
 
 import pytest
 from absl import flags, logging
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 
+from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import configure_logging, generate_job_name
-from axlearn.cloud.gcp.bundler import GCSTarBundler
+from axlearn.cloud.gcp import bundler, job
+from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import CPUJob, TPUJob, _kill_ssh_agent, _start_ssh_agent
-from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, qrm_resource
+from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh_agent
+from axlearn.cloud.gcp.test_utils import mock_gcp_settings
+from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, infer_tpu_type, qrm_resource
 from axlearn.cloud.gcp.utils import common_flags, get_credentials
 from axlearn.cloud.gcp.vm import create_vm, delete_vm
-from axlearn.common.config import config_class
+from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.test_utils import TestCase
 
 
@@ -47,18 +50,18 @@ def _private_flags():
 FLAGS = flags.FLAGS
 
 
-class DummyRemoteTPUJob(TPUJob):
+class DummyRemoteTPUJob(TPUQRMJob):
     """A dummy TPU job."""
 
     def _execute(self) -> Union[subprocess.CompletedProcess, subprocess.Popen]:
         """Provisions a TPU and launches a command."""
-        cfg: TPUJob.Config = self.config
+        cfg: TPUQRMJob.Config = self.config
         bundle_id = self._bundler.bundle(cfg.name)
         resource = qrm_resource(get_credentials())
         create_queued_tpu(
             cfg.name,
             resource,
-            tpu_type=cfg.tpu_type,
+            tpu_type=infer_tpu_type(cfg.accelerator.instance_type),
             bundler_type=self._bundler.TYPE,
         )
         out = self._execute_remote_cmd(
@@ -81,16 +84,16 @@ class TPUJobTest(TestCase):
         atexit.register(delete_queued_tpu, jobname, resource)
         project = gcp_settings("project")
         zone = gcp_settings("zone")
-        cfg = DummyRemoteTPUJob.default_config().set(
+        cfg: DummyRemoteTPUJob.Config = DummyRemoteTPUJob.default_config().set(
             name=jobname,
             project=project,
             zone=zone,
             max_tries=1,
             retry_interval=60,
             bundler=GCSTarBundler.default_config(),
-            tpu_type=FLAGS.tpu_type,
             command="pip list",
         )
+        cfg.accelerator.instance_type = FLAGS.instance_type
         out = cfg.instantiate().execute()
         self.assertIn("axlearn", out.stdout)
 
@@ -175,6 +178,63 @@ class UtilTest(TestCase):
         finally:
             os.environ.clear()
             os.environ.update(old_environ)
+
+
+class TPUGKEJobTest(TestCase):
+    @parameterized.product(
+        reservation=[None, "test"],
+        service_account=[None, "sa"],
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        wrap_bundler=[False, True],
+    )
+    def test_instantiate(self, reservation, service_account, bundler_cls, wrap_bundler):
+        class WrappedBundler(Bundler):
+            @config_class
+            class Config(Bundler.Config):
+                inner: Required[Bundler.Config] = REQUIRED
+
+        mock_settings = {
+            "project": "settings-project",
+            "zone": "settings-zone",
+            "ttl_bucket": "settings-ttl-bucket",
+            "gke_cluster": "settings-cluster",
+            "gke_reservation": "settings-reservation",
+            "k8s_service_account": "settings-account",
+            "docker_repo": "settings-repo",
+            "default_dockerfile": "settings-dockerfile",
+        }
+        with mock_gcp_settings([job.__name__, bundler.__name__], mock_settings):
+            fv = flags.FlagValues()
+            job.TPUGKEJob.define_flags(fv)
+            if reservation:
+                fv.set_default("reservation", reservation)
+            if service_account:
+                fv.set_default("service_account", service_account)
+            fv.mark_as_parsed()
+            cfg = job.TPUGKEJob.from_flags(fv)
+            self.assertEqual(cfg.reservation, reservation or mock_settings["gke_reservation"])
+            self.assertEqual(
+                cfg.service_account,
+                service_account or mock_settings.get("k8s_service_account", "default"),
+            )
+            bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
+            # Should work with wrapped bundlers.
+            if wrap_bundler:
+                bundler_cfg = WrappedBundler.default_config().set(inner=bundler_cfg)
+            # Should be instantiable.
+            cfg.set(
+                bundler=bundler_cfg,
+                project="test-project",
+                zone="test-zone",
+                command="",
+                max_tries=1,
+                retry_interval=1,
+                env_vars={"a": 1},
+                name="test",
+            )
+            cfg.accelerator.instance_type = "tpu-v4-8"
+            gke_job: job.TPUGKEJob = cfg.instantiate()
+            self.assertEqual("v4-8", gke_job._tpu_type)  # pylint: disable=protected-access
 
 
 if __name__ == "__main__":

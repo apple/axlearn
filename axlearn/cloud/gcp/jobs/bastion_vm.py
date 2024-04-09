@@ -102,6 +102,7 @@ On "start" vs "create":
     in pure Python code (as opposed to remote SSH commands).
 
 """
+
 # pylint: disable=consider-using-with,too-many-branches,too-many-instance-attributes,too-many-lines
 import functools
 import json
@@ -135,11 +136,9 @@ from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, docker_command
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
-from axlearn.cloud.gcp.utils import catch_auth, common_flags
+from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, common_flags
 from axlearn.cloud.gcp.vm import create_vm, delete_vm
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
-
-_SHARED_BASTION_SUFFIX = "shared-bastion"
 
 FLAGS = flags.FLAGS
 
@@ -201,15 +200,21 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
     )
 
 
-def shared_bastion_name(fv: Optional[flags.FlagValues]) -> Optional[str]:
+def shared_bastion_name(
+    fv: Optional[flags.FlagValues], gcp_api: Optional[str] = None
+) -> Optional[str]:
     # The zone-namespacing is necessary because of quirks with compute API. Specifically, even if
     # creating VMs within a specific zone, names are global. On the other hand, the list API only
     # returns VMs within a zone, so there's no easy way to check if a shared bastion already exists
     # in another zone.
     zone = gcp_settings("zone", fv=fv)
+    if gcp_api is not None and gcp_api.lower() == GCPAPI.GKE.lower():
+        default = f"{zone}-gke-bastion"
+    else:
+        default = f"{zone}-shared-bastion"
     bastion_name = gcp_settings(  # pytype: disable=bad-return-type
         "bastion_name",
-        default=f"{zone}-{_SHARED_BASTION_SUFFIX}",
+        default=default,
         fv=fv,
     )
     return bastion_name
@@ -318,7 +323,9 @@ class RemoteBastionJob(CPUJob):
         start_cmd = f"""set -o pipefail;
             mkdir -p {_LOG_DIR};
             if [[ -z "$(docker ps -f "name={cfg.name}" -f "status=running" -q )" ]]; then
-                {self._bundler.install_command(image)} 2>&1 | tee -a {setup_log} && {run_cmd};
+                {self._bundler.install_command(image)} 2>&1 | tee -a {setup_log} && \
+                echo "Starting command..." >> {setup_log} && {run_cmd} && \
+                echo "Command started." >> {setup_log};
             else
                 echo "Already started." >> {setup_log};
             fi"""

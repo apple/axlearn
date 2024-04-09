@@ -4,6 +4,7 @@
 
 from unittest import mock
 
+from absl import flags
 from absl.testing import absltest
 from google.cloud.aiplatform import initializer
 from google.cloud.aiplatform.tensorboard import uploader, uploader_utils
@@ -54,7 +55,8 @@ class VertexAITensorboardUploaderTest(absltest.TestCase):
             "project": "fake_project_id",
         }
         with test_utils.mock_gcp_settings(gcp_config.__name__, settings=mock_settings):
-            cfg = VertexAITensorboardUploader.default_config().set(
+            fv = flags.FlagValues()
+            cfg = VertexAITensorboardUploader.from_flags(fv).set(
                 summary_dir="gs://fake/summary_dir"
             )
         tb_uploader = cfg.instantiate()

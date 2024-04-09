@@ -30,8 +30,8 @@ Possible actions: [start|stop|list]
 
 Examples:
 
-    # Simple launch. Everything after -- is treated as the command.
-    axlearn gcp tpu start -- python3 my_script.py
+    # Simple launch on v4-8. Everything after -- is treated as the command.
+    axlearn gcp tpu start --instance_type=tpu-v4-8 -- python3 my_script.py
 
     # Launch with env and retries.
     axlearn gcp tpu start \
@@ -75,18 +75,19 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp.bundler import GCSTarBundler, with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import TPUJob, docker_command
+from axlearn.cloud.gcp.job import TPUQRMJob, docker_command
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.tpu import (
     create_queued_tpu,
     delete_queued_tpu,
-    format_tpu_info,
     get_queued_tpu_node,
     get_queued_tpu_node_status,
     get_tpu_node,
+    infer_tpu_type,
     infer_tpu_workers,
     list_tpu_info,
     qrm_resource,
+    tpu_info_table,
     tpu_resource,
 )
 from axlearn.cloud.gcp.utils import catch_auth, get_credentials, running_from_vm
@@ -101,11 +102,13 @@ FLAGS = flags.FLAGS
 _COMMAND_SESSION_NAME = "command"
 
 
-class TPURunnerJob(TPUJob):
+# TODO(markblee): Use composition instead of inheritance for TPUQRMJob.
+# This can help consolidate TPURunnerJob and CPURunnerJob by switching the inner implementation.
+class TPURunnerJob(TPUQRMJob):
     """Launches and monitors a TPU job."""
 
     @config_class
-    class Config(TPUJob.Config):
+    class Config(TPUQRMJob.Config):
         """Configures TPURunnerJob."""
 
         # Remote output directory. Should be a gs:// path.
@@ -144,6 +147,9 @@ class TPURunnerJob(TPUJob):
             "not all TPU types support this flag.",
             **common_kwargs,
         )
+        # TODO(markblee): Remove these, which are for backwards compat with old client.
+        flags.DEFINE_alias("tpu_type", "instance_type", flag_values=fv)
+        flags.DEFINE_alias("num_slices", "num_replicas", flag_values=fv)
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
@@ -156,14 +162,12 @@ class TPURunnerJob(TPUJob):
         cfg.output_dir = (
             cfg.output_dir or f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{cfg.name}"
         )
-        cfg.bundler = with_tpu_extras(
-            get_bundler_config(
-                bundler_type=fv.bundler_type or GCSTarBundler.TYPE,
-                spec=fv.bundler_spec,
-                fv=fv,
-            )
+        cfg.bundler = get_bundler_config(
+            bundler_type=fv.bundler_type or GCSTarBundler.TYPE,
+            spec=fv.bundler_spec,
+            fv=fv,
         )
-        return cfg
+        return with_tpu_training_defaults(cfg, flag_values=fv)
 
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
@@ -185,6 +189,7 @@ class TPURunnerJob(TPUJob):
         else:
             self._vertexai_tb_uploader = None
         self._qrm_resource = None
+        self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
 
     def _sync_outputs(self, *, session: str, src: str, dst: str, interval_s: int):
         """Starts a screen session to sync outputs to gs."""
@@ -219,12 +224,12 @@ class TPURunnerJob(TPUJob):
     def _prepare_env(self) -> Dict[str, str]:
         """Returns env vars to use in the command."""
         logging.info("Preparing env...")
-        cfg = self.config
+        cfg: TPURunnerJob.Config = self.config
         # Make a copy of env vars.
         env_vars = {**cfg.env_vars}
         # Prepare environment variables for multislice training.
         # TODO(markblee,tom_gunter): Delete this when no longer necessary.
-        if cfg.num_slices > 1:
+        if cfg.accelerator.num_replicas > 1:
             logging.info("Preparing environment on VMs for multislice training...")
             # We don't use `self._call_qrm_api` here because `get_queued_tpu_node` does not seem to
             # return 'networkEndpoints'. This is probably acceptable since this call happens once.
@@ -279,9 +284,9 @@ class TPURunnerJob(TPUJob):
         self._call_qrm_api(
             create_queued_tpu,
             name=cfg.name,
-            tpu_type=cfg.tpu_type,
+            tpu_type=self._tpu_type,
             bundler_type=self._bundler.TYPE,
-            num_slices=cfg.num_slices,
+            num_slices=cfg.accelerator.num_replicas,
             service_account=cfg.service_account,
             metadata=tpu_metadata,
         )
@@ -366,6 +371,9 @@ class TPURunnerJob(TPUJob):
 
     def _delete(self):
         cfg: TPURunnerJob.Config = self.config
+        if self._call_qrm_api(get_queued_tpu_node, cfg.name) is None:
+            logging.info("TPU %s doesn't exist.", cfg.name)
+            return
         logging.info("Copying outputs from %s...", self._output_dir)
         self._copy_outputs(src=f"{self._output_dir}/*", dst=f"{cfg.output_dir}/output/$HOSTNAME/")
         logging.info("Start deleting TPU %s...", cfg.name)
@@ -374,7 +382,7 @@ class TPURunnerJob(TPUJob):
 
     def _num_workers(self) -> int:
         cfg: TPURunnerJob.Config = self.config
-        return infer_tpu_workers(cfg.tpu_type) * cfg.num_slices
+        return infer_tpu_workers(self._tpu_type) * cfg.accelerator.num_replicas
 
     def _call_qrm_api(self, fn, *args, max_tries: int = 2, **kwargs):
         for i in range(max_tries):
@@ -406,7 +414,7 @@ class TPURunnerJob(TPUJob):
         # If no TPU, or TPU not fully booted, return NOT_STARTED.
         num_booted = 0
         node = self._call_qrm_api(get_queued_tpu_node, cfg.name)
-        num_vms = cfg.num_slices * infer_tpu_workers(cfg.tpu_type)
+        num_vms = self._num_workers()
         if node is not None:
             num_booted = get_queued_tpu_node_status(cfg.name, node=node)["num_booted"]
         if num_booted < num_vms:
@@ -512,14 +520,14 @@ class TPURunnerJob(TPUJob):
 
 
 def with_tpu_training_defaults(
-    cfg: TPUJob.Config, *, flag_values: flags.FlagValues
-) -> TPUJob.Config:
+    cfg: TPUQRMJob.Config, *, flag_values: flags.FlagValues
+) -> TPUQRMJob.Config:
     """Configures the job with TPU training defaults."""
     default_env = dict(
         # Use a large refresh to mitigate DNS timeout issues until tf>2.12 upgrade.
         GCS_RESOLVE_REFRESH_SECS=600,
-        TPU_TYPE=flag_values.tpu_type,
-        NUM_TPU_SLICES=flag_values.num_slices,
+        TPU_TYPE=infer_tpu_type(flag_values.instance_type),
+        NUM_TPU_SLICES=flag_values.num_replicas,
         XLA_FLAGS=f"--xla_dump_to=/output/{cfg.name}/xla",
         TF_CPP_MIN_LOG_LEVEL=0,
         # Forces TensorStore to retry failed requests.
@@ -528,11 +536,12 @@ def with_tpu_training_defaults(
     )
     vertexai_tb_uploader = None
     if is_vertexai_tensorboard_configured(flag_values=flag_values):
-        vertexai_tb_uploader = VertexAITensorboardUploader.default_config()
+        vertexai_tb_uploader = VertexAITensorboardUploader.from_flags(flag_values)
 
     return cfg.set(
         env_vars={**default_env, **cfg.env_vars},
         vertexai_tb_uploader=vertexai_tb_uploader,
+        bundler=with_tpu_extras(cfg.bundler),
     )
 
 
@@ -541,28 +550,29 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     action = parse_action(argv, options=["start", "stop", "list"])
 
     if action == "list":
-        print(format_tpu_info(list_tpu_info(tpu_resource(get_credentials()))))
+        print(tpu_info_table(list_tpu_info(tpu_resource(get_credentials()))))
         return
 
-    cfg = TPURunnerJob.from_flags(flag_values)
-
     if action == "start":
-        if not flag_values.tpu_type:
-            raise app.UsageError("--tpu_type is required.")
+        if not flag_values.instance_type:
+            raise app.UsageError("--instance_type is required.")
 
         # Use shlex join so that quoted commands (e.g. 'a && b') retain quotes.
         command = shlex.join(argv[2:])
         if not command:
             raise app.UsageError("Command is required.")
 
-        cfg = with_tpu_training_defaults(cfg, flag_values=flag_values).set(command=command)
-        job: TPURunnerJob = cfg.instantiate()
+        cfg = TPURunnerJob.from_flags(flag_values)
+        job: TPURunnerJob = cfg.set(command=command).instantiate()
         job.execute()
     elif action == "stop":
+        flag_values.set_default("instance_type", "tpu")
+
         if not flag_values.name:
             raise app.UsageError("--name is required.")
 
-        job: TPURunnerJob = cfg.set(command="").instantiate()
+        cfg = TPURunnerJob.from_flags(flag_values)
+        job: TPURunnerJob = cfg.instantiate()
         job._delete()  # pylint: disable=protected-access
     else:
         # Unreachable -- `parse_action` will handle validation.

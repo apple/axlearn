@@ -18,7 +18,8 @@ from googleapiclient import discovery, errors
 from googleapiclient.http import HttpRequest
 
 from axlearn.cloud.common.docker import registry_from_repo
-from axlearn.cloud.common.utils import format_table
+from axlearn.cloud.common.types import ResourceMap
+from axlearn.cloud.common.utils import Table
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.storage import list_blobs
@@ -683,6 +684,7 @@ def infer_tpu_version(tpu_type: str) -> str:
     Raises:
         ValueError: if the TPU version string is unknown.
     """
+    tpu_type = infer_tpu_type(tpu_type)
     tpu_version = tpu_type.rsplit("-", 1)[0]  # split from the last occurance of '-'
     if tpu_version not in _TPU_VERSIONS:
         raise ValueError(f"Unknown TPU version {tpu_version}. Expected one of {_TPU_VERSIONS}")
@@ -724,9 +726,21 @@ def infer_tpu_workers(tpu_type: str) -> int:
     raise NotImplementedError(tpu_type)
 
 
-# TODO(markblee): Dedup with other format_* utils.
-def format_tpu_info(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = None) -> str:
-    """Produce a tabular string view of the TPU infos provided.
+def infer_tpu_type(instance_type: str) -> str:
+    """Infers tpu type (e.g. v4-8) from instance type (e.g. tpu-v4-8 or v4-8)."""
+    if not (instance_type and re.fullmatch(r"(tpu-)?v.+-\d+", instance_type)):
+        raise ValueError(f"Invalid TPU instance: {instance_type}")
+    return instance_type.replace("tpu-", "")
+
+
+def infer_tpu_resources(instance_type: str, num_replicas: int) -> ResourceMap[int]:
+    """Infers resources required by the given instance type and number of replicas."""
+    tpu_type = infer_tpu_type(instance_type)
+    return {infer_tpu_version(tpu_type): infer_tpu_cores(tpu_type) * num_replicas}
+
+
+def tpu_info_table(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = None) -> Table:
+    """Produce a tabular view of the TPU infos provided.
 
     Args:
         tpus: Information on TPUs, e.g. as returned by `list_tpu_info`.
@@ -735,7 +749,7 @@ def format_tpu_info(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = Non
             scripts).
 
     Returns:
-        A table-formatted string.
+        A table that can be printed.
     """
     headings = [field.name for field in dataclasses.fields(TpuInfo)]
     if metadata:
@@ -746,7 +760,7 @@ def format_tpu_info(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = Non
         ]
     else:
         headings.remove("metadata")
-    return format_table(
+    return Table(
         headings=headings,
         rows=[
             [str(v) for k, v in info.__dict__.items() if k in headings]
@@ -755,10 +769,9 @@ def format_tpu_info(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = Non
     )
 
 
-# TODO(markblee): Dedup with other format_* utils.
-def format_queued_resource_info(
+def queued_resource_info_table(
     queued_resources: List[QueuedResourceInfo], metadata: Optional[Sequence[str]] = None
-) -> str:
+) -> Table:
     """Produce a tabular string view of the queued resource infos provided.
 
     Args:
@@ -769,7 +782,7 @@ def format_queued_resource_info(
             scripts).
 
     Returns:
-        A table-formatted string.
+        A table that can be printed.
     """
     headings = [field.name for field in dataclasses.fields(QueuedResourceInfo)]
     if metadata:
@@ -782,7 +795,7 @@ def format_queued_resource_info(
         ]
     else:
         headings.remove("metadata")
-    return format_table(
+    return Table(
         headings=headings,
         rows=[
             [str(v) for k, v in info.__dict__.items() if k in headings]
