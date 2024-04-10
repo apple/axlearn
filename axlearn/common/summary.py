@@ -11,25 +11,11 @@ from axlearn.common import struct
 from axlearn.common.utils import NestedTensor, Tensor
 
 
-# Inheriting from struct.PytreeNode makes this and its subclasses a Flax struct, which is a
-# dataclass that is automatically registered as a PyTree and supports control of what data
-# is part of the dynamic (visible to JIT) values and what data is part of the
-# static auxiliary data.
 class Summary(struct.PyTreeNode):
     """Base class for a summary value.
 
     Subclasses should implement value() and, optionally, validate().
     """
-
-    def __post_init__(self):
-        # Work around jax bug in PJIT where they sometimes indiscriminately instantiate
-        # pytrees with object() field values even if it's not valid.
-        # There is a comment in the jax source indicating that this will be fixed eventually.
-        # https://github.com/google/jax/blob/b81a3e1fd774ebdbc3015f1bc977bfacb5d4b745/jax/_src/pjit.py#L935-L938
-        leaves, _ = jax.tree_util.tree_flatten(self)
-        # pylint: disable-next=unidiomatic-typecheck
-        if not all(type(leaf) == object for leaf in leaves):
-            self.validate()
 
     def value(self) -> Optional[Union[NestedTensor, int, float]]:
         """Returns a value for logging."""

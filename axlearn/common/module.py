@@ -242,6 +242,13 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
             name: The name of the item to add.
             value: The value to add.
         """
+
+        def validate(leaf):
+            if isinstance(leaf, Summary):
+                leaf.validate()
+
+        jax.tree_util.tree_map(validate, value, is_leaf=lambda x: isinstance(x, Summary))
+
         self.output_collection.summaries[name] = value
 
     def add_state_update(self, name: str, value: Tensor):

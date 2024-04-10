@@ -12,6 +12,7 @@ import numpy as np
 from absl.testing import absltest
 from jax import numpy as jnp
 
+from axlearn.common import summary
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import (
     InvocationContext,
@@ -737,6 +738,20 @@ class ScanInContextTest(TestWithTemporaryCWD):
                 },
                 ctx.output_collection.module_outputs["nested"],
             )
+
+    def test_add_summary_validation(self):
+        """Tests validation in `add_summary()`."""
+
+        class MySummary(summary.Summary):
+            val: str
+
+            def validate(self):
+                if self.val == "s":
+                    raise ValueError("not allowed")
+
+        with self._dummy_context() as ctx:
+            with self.assertRaises(ValueError):
+                ctx.add_summary("summary", MySummary("s"))
 
 
 if __name__ == "__main__":

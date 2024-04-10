@@ -1,12 +1,14 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for summary.py"""
+import dataclasses
 import functools
 import os
 import tempfile
 
 import chex
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 import tensorflow as tf
@@ -14,11 +16,17 @@ import wandb
 from jax.experimental.pjit import pjit
 from tensorboard.backend.event_processing import event_accumulator
 
+from axlearn.common import learner, optimizers, trainer_test
+from axlearn.common.config import config_for_function
+from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.summary import CallbackSummary, ImageSummary
 from axlearn.common.summary_writer import SummaryWriter, WandBWriter
 from axlearn.common.test_utils import TestCase
+from axlearn.common.trainer import SpmdTrainer
+from axlearn.common.trainer_test import DummyInput
+from axlearn.common.utils import flatten_items, tree_paths
 
 
 class SummaryTest(TestCase):
@@ -55,6 +63,103 @@ class SummaryTest(TestCase):
             ]
         )
         chex.assert_trees_all_close(logged_grayscale_image / 255, grayscale_image[..., None])
+
+    def test_with_tree_paths(self):
+        """Tests that `ImageSummary` works with `tree_paths()`."""
+        img = jnp.ones((1, 1, 1, 3))
+        s = dict(a=ImageSummary(img), b=ImageSummary(img))
+        self.assertEqual(
+            tree_paths(s), dict(a=ImageSummary("a/_value"), b=ImageSummary("b/_value"))
+        )
+        # Check validation still happens if only some leaves are str.
+        with self.assertRaises(AttributeError):
+            ImageSummary(("asdf", img))
+
+    def test_with_flatten_items(self):
+        """Tests that `ImageSummary` works with `flatten_items()`."""
+        img = jnp.ones((1, 1, 1, 3))
+        s = dict(a=ImageSummary(img), b=ImageSummary(img))
+        self.assertSequenceEqual(flatten_items(s), [("a/_value", img), ("b/_value", img)])
+
+    def test_end_to_end(self):
+        """Tests that `ImageSummary` works with `SpmdTrainer` and `SpmdEvaler` in an end-to-end
+        fashion.
+        """
+        img = jnp.broadcast_to(jnp.array([0.0, 0.5, 1.0]), shape=(1, 1, 3))
+        img = jnp.array([img, img])
+
+        class ImageSummaryModel(trainer_test.DummyModel):
+            def forward(self, *args, **kwargs):
+                self.add_summary("img", ImageSummary(img))
+                return super().forward(*args, **kwargs)
+
+        cfg: SpmdTrainer.Config = SpmdTrainer.default_config().set(name="test_trainer")
+        with tempfile.TemporaryDirectory() as cfg.dir:
+            cfg.mesh_axis_names = ("data", "model")
+            cfg.mesh_shape = (1, 1)
+            cfg.model = ImageSummaryModel.default_config().set(dtype=jnp.float32)
+            cfg.input = trainer_test.DummyInput.default_config()
+            cfg.learner = learner.Learner.default_config().set(
+                optimizer=config_for_function(optimizers.sgd_optimizer).set(
+                    learning_rate=0.1,
+                    decouple_weight_decay=True,
+                    momentum=0.9,
+                    weight_decay=1e-4,
+                )
+            )
+
+            evaler_cfg = SpmdEvaler.default_config()
+            evaler_cfg.input = DummyInput.default_config().set(total_num_batches=2)
+            evaler_cfg.eval_policy.n = 2
+            cfg.evalers = dict(eval_dummy=evaler_cfg)
+            cfg.checkpointer.save_policy.n = 5
+            cfg.max_step = 8
+            trainer: SpmdTrainer = cfg.instantiate(parent=None)
+            trainer.run(prng_key=jax.random.PRNGKey(123))
+
+            @dataclasses.dataclass
+            class Expected:
+                """Information about expected logged image summaries."""
+
+                path: str
+                count: int
+                key: str
+
+                def shape(self):
+                    # The trainer / evaler makes `count` calls to forward().
+                    # Each call to forward logs a batch of two images.
+                    return (self.count, 2, 1, 1, 3)
+
+                def img(self):
+                    return jnp.broadcast_to(img, self.shape())
+
+            expected = [
+                Expected(path=os.path.join(cfg.dir, "summaries", "eval_dummy"), count=4, key="img"),
+                Expected(
+                    path=os.path.join(cfg.dir, "summaries", "train_train"), count=8, key="model/img"
+                ),
+            ]
+
+            for info in expected:
+                ea = event_accumulator.EventAccumulator(info.path)
+                ea.Reload()
+
+                print(ea.tensors.Keys())
+
+                logged_evaler_img = tf.stack(
+                    [
+                        tf.stack(
+                            [
+                                tf.image.decode_image(im)
+                                for im in tf.make_ndarray(event.tensor_proto)[2:]
+                            ]
+                        )
+                        for event in ea.Tensors(info.key)
+                    ]
+                )
+                self.assertEqual(logged_evaler_img.shape, info.shape())
+                # TB uses lossy compression.
+                chex.assert_trees_all_close(logged_evaler_img / 255, info.img(), rtol=0.01)
 
     @pytest.mark.skipif(wandb is None, reason="wandb package not installed.")
     @pytest.mark.skipif("WANDB_API_KEY" not in os.environ, reason="wandb api key not found.")
