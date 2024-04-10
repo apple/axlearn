@@ -128,10 +128,13 @@ class TestDownloadJobBatch(parameterized.TestCase):
             self.assertFalse(mock_fns["_remove"].called)
 
     @parameterized.parameters(
+        dict(name="", valid=False),
         dict(name="test", valid=True),
         dict(name=".", valid=False),
         dict(name="..", valid=False),
         dict(name="test/dir", valid=False),
+        dict(name="..test", valid=True),  # This is a valid file name.
+        dict(name="test.job..", valid=True),  # This is a valid file name.
     )
     def test_is_valid_job_name(self, name, valid):
         self.assertEqual(valid, is_valid_job_name(name))
