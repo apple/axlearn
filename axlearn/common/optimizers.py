@@ -31,7 +31,7 @@ from absl import logging
 from jax import numpy as jnp
 from optax._src import numerics
 
-from axlearn.common import schedule
+from axlearn.common import schedule, struct
 from axlearn.common.base_layer import NestedParameterSpec, ParameterSpec, PartitionSpec
 from axlearn.common.config import ConfigOr, maybe_instantiate
 from axlearn.common.factorized_rms import scale_by_factored_rms
@@ -1566,19 +1566,16 @@ def adastar_optimizer(
         A PartitionedGradientTransformation representing an Adafactor optimizer.
     """
 
-    @chex.dataclass
-    class _AdastarPerParamState:
+    class _AdastarPerParamState(struct.PyTreeNode):
         gradient_ema: Optional[Tensor]
         gradient_square_ema: Tensor
         update_ema: Optional[Tensor]
 
-    @chex.dataclass
-    class _AdastarState:
+    class _AdastarState(struct.PyTreeNode):
         count: Tensor
         pps: Nested[_AdastarPerParamState]
 
-    @chex.dataclass
-    class _AdastarUpdateResult:
+    class _AdastarUpdateResult(struct.PyTreeNode):
         """Opaque container that is not traversed by jax.tree_util.tree_map."""
 
         updates: Tensor  # the update to apply to params.
