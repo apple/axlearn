@@ -71,9 +71,6 @@ class SummaryTest(TestCase):
         self.assertEqual(
             tree_paths(s), dict(a=ImageSummary("a/_value"), b=ImageSummary("b/_value"))
         )
-        # Check validation still happens if only some leaves are str.
-        with self.assertRaises(AttributeError):
-            ImageSummary(("asdf", img))
 
     def test_with_flatten_items(self):
         """Tests that `ImageSummary` works with `flatten_items()`."""
@@ -221,6 +218,7 @@ class SummaryTest(TestCase):
 
     def test_validate(self):
         """Check validate() works in normal conditions."""
-        with self.assertRaises(ValueError):
-            ImageSummary(jax.numpy.ones((1, 1)))
         ImageSummary(jax.numpy.ones((1, 1, 1)))
+        s = ImageSummary(jax.numpy.ones((1, 1)))
+        with self.assertRaises(ValueError):
+            s.validate()
