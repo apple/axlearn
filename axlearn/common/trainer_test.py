@@ -16,7 +16,7 @@ from absl import flags, logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
-from axlearn.common import layers, learner, optimizers, param_init, test_utils, utils
+from axlearn.common import layers, learner, optimizers, param_init, test_utils
 from axlearn.common.base_layer import NestedParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import (
@@ -31,7 +31,7 @@ from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_pol
 from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
-from axlearn.common.trainer import SpmdTrainer, TrainerState, _prune_empty, select_mesh_config
+from axlearn.common.trainer import SpmdTrainer, TrainerState, select_mesh_config
 from axlearn.common.utils import NestedTensor, Tensor, as_tensor, flatten_items, match_regex_rules
 
 FLAGS = flags.FLAGS
@@ -270,35 +270,6 @@ class DummyStateBuilder(TrainerStateBuilder):
 class TrainerTest(test_utils.TestCase):
     """Tests SpmdTrainer."""
 
-    def test_prune_empty_state(self):
-        state = {
-            "state": {
-                "tensor": jnp.array(0),
-                "nested": {
-                    "empty": {},
-                    "not_empty": jnp.array([]),
-                },
-            },
-            "removed": {
-                "nested": {
-                    "deep_nested": {},
-                },
-                "sibling": {
-                    "deep_nested": {},
-                },
-            },
-        }
-        expected = {
-            "state": {
-                "tensor": jnp.array(0),
-                "nested": {
-                    "not_empty": jnp.array([]),
-                },
-            },
-        }
-        actual = _prune_empty(state)
-        self.assertNestedAllClose(expected, actual)
-
     def _trainer_config(self):
         return SpmdTrainer.default_config().set(
             name="base_trainer",
@@ -329,50 +300,10 @@ class TrainerTest(test_utils.TestCase):
             ),
         )
 
-    def test_prune_backwards_compat(self):
-        """Test that pruning is backwards compatible with no pruning."""
-        if not test_utils.is_supported_platform("cpu"):
-            return
-        # Construct a base trainer config.
-        cfg = self._trainer_config().set(mesh_shape=(1, 1))
-        # Instantiate without pruning. We need to explicitly init dummy state in this case for
-        # trainer to run.
-        base_cfg = cfg.set(prune_empty_state_updates=False)
-        base_cfg.model.set(init_dummy_state=True)
-        base_trainer: SpmdTrainer = base_cfg.instantiate(parent=None)
-
-        # Run until first checkpoint.
-        base_trainer.run(prng_key=jax.random.PRNGKey(123))
-        base_state = base_trainer.trainer_state
-
-        # Make sure checkpoint exists.
-        assert os.path.exists(os.path.join(cfg.dir, "trainer_state_tree.txt"))
-        trainer2: SpmdTrainer = cfg.instantiate(parent=None)
-        with trainer2.mesh():
-            self.assertEqual(5, trainer2.restore_checkpoint())
-
-        # Instantiate with pruning and more steps.
-        pruned_cfg = cfg.set(
-            name="pruned_trainer",
-            max_step=12,
-            prune_empty_state_updates=True,
-        )
-        pruned_cfg.model.set(init_dummy_state=False)
-        pruned_trainer = pruned_cfg.instantiate(parent=None)
-
-        # Load initial checkpoint and run until next checkpoint.
-        pruned_trainer.run(prng_key=jax.random.PRNGKey(123))
-        pruned_state = pruned_trainer.trainer_state
-
-        # Model states should have same shapes only after pruning.
-        self.assertNotEqual(
-            utils.shapes(base_state.model),
-            utils.shapes(pruned_state.model),
-        )
-        self.assertEqual(
-            utils.shapes(_prune_empty(base_state.model)),
-            utils.shapes(pruned_state.model),
-        )
+    # Previously there was a test for pruning backwards compatibility with no pruning here.
+    # This has been removed as there appear to be no models in the source tree that
+    # do not use pruning, and keeping this test required maintaining the `prune_empty_state_updates`
+    # config option.
 
     # A similar test exists for evaler.
     # pylint: disable=duplicate-code

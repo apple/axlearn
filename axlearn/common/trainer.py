@@ -21,10 +21,10 @@ from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import Checkpointer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.evaler import SpmdEvaler
-from axlearn.common.learner import Learner, NestedOptParam
-from axlearn.common.module import InvocationContext, Module, clone_context_stack
+from axlearn.common.learner import ForwardOutputs, Learner, NestedOptParam
+from axlearn.common.module import InvocationContext, Module, child_context, clone_context_stack
 from axlearn.common.module import functional as F
-from axlearn.common.module import install_context_stack
+from axlearn.common.module import install_context_stack, new_output_collection
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
@@ -142,6 +142,10 @@ class SpmdTrainer(Module):
         start_trace_process_indices: Union[Literal["all"], Sequence[int]] = [0]
 
         # Prune empty state updates.
+        # Must be set to True.
+        # The configuration option will be removed in a future AXLearn version.
+        # It has not been removed yet to prevent the need for a messy regeneration of large numbers
+        # of golden configs.
         prune_empty_state_updates: bool = True
 
         # Cast float inputs and model parameters to this dtype for the train step.
@@ -161,6 +165,12 @@ class SpmdTrainer(Module):
     ):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+
+        if not cfg.prune_empty_state_updates:
+            raise ValueError(
+                "Setting prune_empty_state_updates to False is no longer supported.\n"
+                "The config option will be removed in a future AXLearn version."
+            )
 
         self._step: int = None
         self._trainer_state: TrainerState = None
@@ -280,12 +290,6 @@ class SpmdTrainer(Module):
             *args,
             **kwargs,
         )
-
-    def _maybe_prune_empty(self, state: NestedTensor) -> NestedTensor:
-        cfg = self.config
-        if cfg.prune_empty_state_updates:
-            state = _prune_empty(state)
-        return state
 
     def mesh(self):
         return jax.sharding.Mesh(self._mesh.devices, self._mesh.axis_names)
@@ -877,52 +881,32 @@ class SpmdTrainer(Module):
             if not value:
                 self.vlog(1, "Skipping gradients on %s", path)
 
-        def _forward(model_parameters_grad, model_parameters_no_grad, forward_input_batch):
-            model_parameters = jax.tree_util.tree_map(
-                lambda compute_grad, pg, png: pg if compute_grad else png,
-                should_compute_gradients,
-                model_parameters_grad,
-                model_parameters_no_grad,
-            )
-            params = train_cast(model_parameters)  # A copy of `model_parameters`.
+        def _forward(*, inputs: NestedTensor, model_params: NestedTensor) -> ForwardOutputs:
+            params = train_cast(model_params)
             params = self.model.apply_parameter_noise_recursively(param_noise_key, params)
-            (loss, aux), model_output_collection = F(
-                self.model,
+            model_output_collection = new_output_collection()
+            with child_context(
+                "model",
+                module=self.model,
                 state=params,
-                is_training=True,
                 prng_key=forward_key,
-                inputs=dict(input_batch=train_cast(forward_input_batch)),
-            )
-            return loss, (aux, model_output_collection)
+                output_collection=model_output_collection,
+            ):
+                loss, aux = self.model(input_batch=train_cast(inputs))
+            return ForwardOutputs(loss=loss, aux=aux, output_collection=model_output_collection)
 
-        # By default `value_and_grad` only computes gradients on the first arg,
-        # `model_parameters_grad`.
-        forward_and_grad = jax.value_and_grad(_forward, has_aux=True)
-        dummy_value = None
-        model_parameters_grad = jax.tree_util.tree_map(
-            lambda compute_gradients, v: v if compute_gradients else dummy_value,
-            should_compute_gradients,
-            state.model,
-        )
-        model_parameters_nograd = jax.tree_util.tree_map(
-            lambda compute_gradients, v: dummy_value if compute_gradients else v,
-            should_compute_gradients,
-            state.model,
-        )
         # `grads` are computed for `model_parameters_grad`.
-        (loss, (forward_aux, forward_output_collection)), grads = forward_and_grad(
-            model_parameters_grad, model_parameters_nograd, input_batch
-        )
         opt_params = self._opt_params(state.model)
-        state_updates = self._maybe_prune_empty(forward_output_collection.state_updates)
-        updated_model_params, learner_output_collection = F(
+        fwd_bwd_outputs, learner_output_collection = F(
             self.learner,
-            method="update",
+            method="forward_and_backward",
             state=state.learner,
             is_training=True,
             prng_key=learner_key,
-            inputs=dict(model_params=opt_params, gradients=grads, state_updates=state_updates),
+            inputs=dict(fn=_forward, opt_params=opt_params, inputs=input_batch),
         )
+        forward_outputs: ForwardOutputs = fwd_bwd_outputs.forward_outputs
+        updated_model_params = fwd_bwd_outputs.backward_outputs.updated_params
         updated_state = TrainerState(
             prng_key=new_prng_key,
             model=updated_model_params,
@@ -930,13 +914,13 @@ class SpmdTrainer(Module):
         )
         # TODO(ruoming): only retrieve summaries when necessary.
         summaries = dict(
-            model=forward_output_collection.summaries,
+            model=forward_outputs.output_collection.summaries,
             learner=learner_output_collection.summaries,
         )
         return updated_state, dict(
             summaries=summaries,
-            loss=loss,
-            aux=forward_aux,
+            loss=forward_outputs.loss,
+            aux=forward_outputs.aux,
         )
 
     def _maybe_stop_or_start_tracing(
