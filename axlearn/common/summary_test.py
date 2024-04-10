@@ -218,7 +218,8 @@ class SummaryTest(TestCase):
 
     def test_validate(self):
         """Check validate() works in normal conditions."""
-        ImageSummary(jax.numpy.ones((1, 1, 1)))
-        s = ImageSummary(jax.numpy.ones((1, 1)))
+        good = ImageSummary(jax.numpy.ones((1, 1, 1)))
+        good.validate()
+        bad = ImageSummary(jax.numpy.ones((1, 1)))
         with self.assertRaises(ValueError):
-            s.validate()
+            bad.validate()
