@@ -52,7 +52,6 @@ import enum
 import functools
 import json
 import os
-import re
 import shlex
 import shutil
 import signal
@@ -214,11 +213,11 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
 
 
 def is_valid_job_name(name: str) -> bool:
-    """Ensures that job name does not contain dots or slashes.
+    """Ensures that job name does not look like a path.
 
     We use a permissive regex to avoid making assumptions about the underlying compute environment.
     """
-    return re.fullmatch(r"[^./]+", name) is not None
+    return bool(name) and ("/" not in name) and (name not in (".", ".."))
 
 
 def _download_jobspec(job_name: str, *, remote_dir: str, local_dir: str = _JOB_DIR) -> JobSpec:
