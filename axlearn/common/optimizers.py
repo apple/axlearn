@@ -1125,6 +1125,9 @@ class SkipClipState(NamedTuple):
     valid_count: Optional[Union[Tensor, TensorSpec]]
     nonvalid_count: Union[Tensor, TensorSpec]  # Number of non-valid steps.
     grad_norm_ema: Optional[Union[Tensor, TensorSpec]]  # The moving average of raw gradient norm.
+    grad_norm_var_ema: Optional[
+        Union[Tensor, TensorSpec]
+    ]  # The moving average of grad norm variance.
     inner_state: Any  # State of the inner PartitionedGradientTransformation.
 
 
@@ -1134,7 +1137,7 @@ def skip_and_clip_by_global_norm(
     drop_norm: Optional[float] = None,
     max_norm: Optional[float] = None,
     adaptive_drop_norm: Optional[bool] = False,
-    grad_norm_ema_decay: float = 0.95,
+    grad_norm_ema_decay: float = 0.99,
     eps: float = 1e-8,
 ) -> PartitionedGradientTransformation:
     """Skip updates when global norm >= drop_norm, otherwise clip the global norm.
@@ -1186,6 +1189,7 @@ def skip_and_clip_by_global_norm(
                 nonvalid_count=jnp.zeros([], jnp.int32),
                 # Set initial ema to a positive value so we dont drop gradient for the first step.
                 grad_norm_ema=jnp.ones([], jnp.float32) * 10,
+                grad_norm_var_ema=jnp.zeros([], jnp.float32),
                 inner_state=inner.init(params),
             )
         else:
@@ -1193,6 +1197,7 @@ def skip_and_clip_by_global_norm(
                 valid_count=None,
                 nonvalid_count=jnp.zeros([], jnp.int32),
                 grad_norm_ema=None,
+                grad_norm_var_ema=None,
                 inner_state=inner.init(params),
             )
 
@@ -1200,14 +1205,21 @@ def skip_and_clip_by_global_norm(
         inner_state = state.inner_state
         valid_count = state.valid_count
         grad_norm_ema = state.grad_norm_ema
+        grad_norm_var_ema = state.grad_norm_var_ema
 
-        def _moment(val: Tensor, norm_ema: Tensor, count: Tensor) -> Tuple[Tensor, Tensor]:
+        def _moment(
+            val: Tensor,
+            norm_ema: Tensor,
+            var_ema: Tensor,
+            count: Tensor,
+        ) -> Tuple[Tensor, Tensor]:
             # bias correrction decay
             # Sec 7.1 https://arxiv.org/pdf/1804.04235.pdf
             decay = grad_norm_ema_decay
             decay *= (1 - decay ** (count - 1)) / (1 - decay**count)
-            new_ema = decay * norm_ema + (1 - decay) * val
-            return new_ema
+            new_norm_ema = decay * norm_ema + (1 - decay) * val
+            new_var_ema = decay * var_ema + (1 - decay) * (val - new_norm_ema) ** 2
+            return new_norm_ema, new_var_ema
 
         def _is_valid_step(g_norm: Tensor, drop_norm: float, norm_ema: Optional[Tensor]):
             if norm_ema is not None:
@@ -1240,20 +1252,23 @@ def skip_and_clip_by_global_norm(
                 optax.safe_int32_increment(valid_count),
                 valid_count,
             )
-            new_ema = jnp.where(
-                is_valid_step,
-                _moment(g_norm, grad_norm_ema, inc_valid_count),
-                grad_norm_ema,
+            new_norm_ema, new_norm_var_ema = _moment(
+                g_norm, grad_norm_ema, grad_norm_var_ema, inc_valid_count
             )
+            new_norm_ema = jnp.where(is_valid_step, new_norm_ema, grad_norm_ema)
+            new_norm_var_ema = jnp.where(is_valid_step, new_norm_var_ema, grad_norm_var_ema)
         else:
             inc_valid_count = None
-            new_ema = None
+            new_norm_ema = None
+            new_norm_var_ema = None
         context = current_context()
         if context is not None:
             context.add_summary("gradient_norm", g_norm)
             context.add_summary("nonvalid_count", nonvalid_count)
-            if new_ema is not None:
-                context.add_summary("gradient_norm_ema", new_ema)
+            if new_norm_ema is not None:
+                context.add_summary("gradient_norm_ema", new_norm_ema)
+            if new_norm_var_ema is not None:
+                context.add_summary("gradient_norm_std_ema", new_norm_var_ema**0.5)
             if inc_valid_count is not None:
                 context.add_summary("valid_count", inc_valid_count)
         # Clip gradients s.t. grad norm <= max_norm.
@@ -1280,7 +1295,8 @@ def skip_and_clip_by_global_norm(
         return final_updates, SkipClipState(
             valid_count=inc_valid_count,
             nonvalid_count=nonvalid_count,
-            grad_norm_ema=new_ema,
+            grad_norm_ema=new_norm_ema,
+            grad_norm_var_ema=new_norm_var_ema,
             inner_state=final_inner_state,
         )
 
@@ -1290,6 +1306,9 @@ def skip_and_clip_by_global_norm(
                 valid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
                 nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
                 grad_norm_ema=OptStateSpec(dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()),
+                grad_norm_var_ema=OptStateSpec(
+                    dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()
+                ),
                 inner_state=inner.partition(param_specs),
             )
         else:
@@ -1297,6 +1316,7 @@ def skip_and_clip_by_global_norm(
                 valid_count=None,
                 nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
                 grad_norm_ema=None,
+                grad_norm_var_ema=None,
                 inner_state=inner.partition(param_specs),
             )
 
