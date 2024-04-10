@@ -1285,10 +1285,20 @@ def skip_and_clip_by_global_norm(
         )
 
     def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
-        return SkipClipState(
-            nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
-            inner_state=inner.partition(param_specs),
-        )
+        if adaptive_drop_norm:
+            return SkipClipState(
+                valid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+                nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+                grad_norm_ema=OptStateSpec(dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()),
+                inner_state=inner.partition(param_specs),
+            )
+        else:
+            return SkipClipState(
+                valid_count=None,
+                nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+                grad_norm_ema=None,
+                inner_state=inner.partition(param_specs),
+            )
 
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
