@@ -144,8 +144,6 @@ class SummaryTest(TestCase):
                 ea = event_accumulator.EventAccumulator(info.path)
                 ea.Reload()
 
-                print(ea.tensors.Keys())
-
                 logged_evaler_img = tf.stack(
                     [
                         tf.stack(
@@ -159,7 +157,7 @@ class SummaryTest(TestCase):
                 )
                 self.assertEqual(logged_evaler_img.shape, info.shape())
                 # TB uses lossy compression.
-                chex.assert_trees_all_close(logged_evaler_img / 255, info.img(), rtol=0.01)
+                self.assertNestedAllClose(logged_evaler_img / 255, info.img(), rtol=0.01, atol=0)
 
     @pytest.mark.skipif(wandb is None, reason="wandb package not installed.")
     @pytest.mark.skipif("WANDB_API_KEY" not in os.environ, reason="wandb api key not found.")
