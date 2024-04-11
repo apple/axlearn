@@ -27,6 +27,7 @@ from axlearn.common.config import (
 )
 from axlearn.common.decoding import (
     BeamSearchOutputs,
+    BrevityPenaltyFn,
     SampleOutputs,
     StopDecodingCondition,
     StopOnSubsequence,
@@ -205,7 +206,7 @@ class DecodingMixin(Module):
         num_decodes: int,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-        brevity_penalty: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
+        brevity_penalty: Optional[BrevityPenaltyFn] = None,
     ) -> BeamSearchOutputs:
         """Perform beam search decoding.
 

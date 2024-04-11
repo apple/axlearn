@@ -13,7 +13,9 @@ import functools
 import sys
 from typing import Any
 
+import chex
 import jax
+import jax.numpy as jnp
 import pytest
 from absl.testing import absltest
 from jax._src.tree_util import prefix_errors
@@ -86,3 +88,66 @@ class StructTest(absltest.TestCase):
             a: int
 
         del Dummy
+
+    def test_chex_tree_leaves_compatibility(self):
+        """Tests that the treedef of a chex.dataclass is the same as a struct.PyTreeNode.
+
+        This is needed to ensure backwards compatibility for serialization / deserialization.
+        """
+        flattened = []
+        for cls in Chex, Struct:
+            instance = cls(
+                field_d=jnp.array(0),
+                field_b=jnp.array(1),
+                field_a=jnp.array(2),
+                field_c=jnp.array(3),
+            )
+            # tree_flatten_with_path is not preserved because Chex does not support this so the
+            # fallback jax implementation with numbered keys gets used.
+            flattened.append(jax.tree_util.tree_leaves(instance))
+        chex.assert_trees_all_equal(*flattened)
+
+    def test_constructor_order(self):
+        """Tests that the constructor called using positional arguments uses the same order
+        the fields were declared in.
+        """
+        expected = Struct(
+            field_b=jnp.array(5),
+            field_a=jnp.array(6),
+            field_d=jnp.array(7),
+            field_c=jnp.array(8),
+        )
+        actual = Struct(
+            jnp.array(5),
+            jnp.array(6),
+            jnp.array(7),
+            jnp.array(8),
+        )
+        self.assertEqual(actual, expected)
+
+    def test_flatten_order(self):
+        """Tests the `flatten_order` argument of `struct.dataclass`."""
+
+        @functools.partial(struct.dataclass, flatten_order=None)
+        class C:
+            field_b: int
+            field_a: int
+
+        result = jax.tree_util.tree_leaves(C(field_b=1, field_a=2))
+        expected = (1, 2)
+        self.assertSequenceEqual(result, expected)
+
+
+@chex.dataclass
+class Chex:
+    field_b: jax.Array
+    field_a: jax.Array
+    field_d: jax.Array
+    field_c: jax.Array
+
+
+class Struct(struct.PyTreeNode):
+    field_b: jax.Array
+    field_a: jax.Array
+    field_d: jax.Array
+    field_c: jax.Array

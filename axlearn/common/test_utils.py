@@ -84,7 +84,7 @@ def is_supported_platform(target_platform: str) -> bool:
     return supported
 
 
-def is_supported_mesh_shape(mesh_shape: Tuple[int, int]) -> bool:
+def is_supported_mesh_shape(mesh_shape: Sequence[int]) -> bool:
     """Checks if a function intended for a mesh shape is compatible with the current device(s)."""
     device_count = jax.device_count()
     supported = device_count == np.prod(mesh_shape)

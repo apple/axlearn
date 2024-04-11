@@ -3,11 +3,14 @@
 """Tests SpmdTrainer."""
 # pylint: disable=no-self-use
 import copy
+import dataclasses
 import os.path
 import shutil
 import tempfile
-from typing import Any, Callable, Dict, Optional, Sequence
+import unittest
+from typing import Any, Callable, Dict, Literal, Optional, Sequence
 
+import chex
 import jax
 import jax.random
 import numpy as np
@@ -16,8 +19,8 @@ from absl import flags, logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
-from axlearn.common import layers, learner, optimizers, param_init, test_utils
-from axlearn.common.base_layer import NestedParameterSpec
+from axlearn.common import layers, learner, optimizers, param_init, struct_test, test_utils
+from axlearn.common.base_layer import NestedParameterSpec, ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import (
     Checkpointer,
@@ -880,6 +883,94 @@ class SelectMeshConfigTest(test_utils.TestCase):
         self.assertEqual(cfg.mesh_shape, (4, 1, 8, 1))
         select_mesh_config(cfg, mesh_selector="gpu-p4d.24xlarge-128")
         self.assertIsNone(cfg.mesh_shape)
+
+
+class CompatibilityTest(test_utils.TestCase):
+    def test_chex_serialization_compatibility(self):
+        """Tests that a chex.dataclass that has been serialized as part of an AXLearn checkpoint
+        can be read back in as a struct.PyTreeNode.
+        """
+
+        class Model(BaseModel):
+            """Model that has struct params for testing."""
+
+            @config_class
+            class Config(BaseModel.Config):
+                kind: Required[Literal["chex", "struct"]] = REQUIRED
+
+            def initialize_parameters_recursively(
+                self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+            ) -> NestedTensor:
+                del prng_key
+                del prebuilt
+                cfg = self.config
+                if cfg.kind == "chex":
+                    param = struct_test.Chex(
+                        field_d=jnp.array(0),
+                        field_b=jnp.array(1),
+                        field_a=jnp.array(2),
+                        field_c=jnp.array(3),
+                    )
+                elif cfg.kind == "struct":
+                    param = struct_test.Struct(
+                        field_d=jnp.array(5),
+                        field_b=jnp.array(6),
+                        field_a=jnp.array(7),
+                        field_c=jnp.array(8),
+                    )
+                else:
+                    raise NotImplementedError
+                return {"param": param}
+
+            def create_parameter_specs_recursively(self) -> NestedParameterSpec:
+                shape_dtype = jax.eval_shape(
+                    lambda: self.initialize_parameters_recursively(jax.random.PRNGKey(0))
+                )
+                return jax.tree_util.tree_map(
+                    lambda x: ParameterSpec(shape=x.shape, dtype=x.dtype), shape_dtype
+                )
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            trainer_cfg = SpmdTrainer.default_config().set(
+                name="tmp",
+                dir=tempdir,
+                model=Model.default_config().set(dtype=jnp.float32),
+                input=DummyInput.default_config(),
+                learner=learner.Learner.default_config().set(
+                    optimizer=config_for_function(optimizers.sgd_optimizer).set(
+                        learning_rate=0.1, decouple_weight_decay=True
+                    )
+                ),
+                mesh_axis_names=("data",),
+                mesh_shape=(1,),
+            )
+            trainer_cfg.checkpointer.save_policy = config_for_function(
+                lambda: lambda *args, **kwargs: True
+            )
+
+            chex_trainer_cfg = trainer_cfg.clone()
+            chex_trainer_cfg.model.kind = "chex"
+            chex_trainer = chex_trainer_cfg.instantiate(parent=None)
+            chex_trainer.init(prng_key=jax.random.PRNGKey(0))
+            # pylint: disable-next=protected-access
+            chex_trainer._step = 0
+            chex_trainer.save_checkpoint({})
+            chex_data = chex_trainer.trainer_state.model["param"]
+
+            struct_trainer_cfg = trainer_cfg.clone()
+            struct_trainer_cfg.model.kind = "struct"
+            struct_trainer = struct_trainer_cfg.instantiate(parent=None)
+            struct_trainer.init(prng_key=jax.random.PRNGKey(0))
+            # Avoid unrelated errors about a prng key mismatch and input iterator mismatch.
+            with unittest.mock.patch("axlearn.common.checkpointer.check_state_structure"):
+                struct_trainer.restore_checkpoint()
+            struct_data = struct_trainer.trainer_state.model["param"]
+
+            self.assertIsInstance(chex_data, struct_test.Chex)
+            self.assertIsInstance(struct_data, struct_test.Struct)
+            chex.assert_trees_all_equal(
+                dataclasses.asdict(chex_data), dataclasses.asdict(struct_data)
+            )
 
 
 if __name__ == "__main__":

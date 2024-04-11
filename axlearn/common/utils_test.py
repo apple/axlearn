@@ -8,7 +8,6 @@ from collections import OrderedDict
 from typing import Any, Iterable, NamedTuple, Optional, Sequence, Type
 
 # pylint: disable=no-self-use
-import chex
 import jax
 import jaxlib
 import numpy as np
@@ -117,14 +116,13 @@ class TreeUtilsTest(TestCase):
             ),
         )
 
-        @chex.dataclass
-        class DataclassCombo:
+        class DataclassCombo(struct.PyTreeNode):
             scalar: int
             dataclass_combo: Any
             none: Type[None]
             nested_tensor: NestedTensor
 
-        # Dataclass.
+        # Nested custom pytree.
         self.assertEqual(
             DataclassCombo(
                 scalar="scalar",
