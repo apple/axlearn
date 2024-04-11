@@ -11,7 +11,7 @@ import tempfile
 from collections import OrderedDict
 from functools import partial
 from tempfile import mkdtemp
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 from unittest.mock import patch
 
 import jax
@@ -27,19 +27,24 @@ from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     InstantiableConfig,
     Required,
+    RequiredFieldValue,
     config_class,
     config_for_function,
 )
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import Learner
+from axlearn.common.module import InvocationContext
 from axlearn.common.module import functional as F
+from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import opt_param_values
 from axlearn.common.param_init import FanAxes, Initializer, Shape
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     NestedTree,
     Tensor,
@@ -708,3 +713,66 @@ def temp_chdir(new_cwd: Union[pathlib.Path, str]):
         yield
     finally:
         os.chdir(old_cwd)
+
+
+L = TypeVar("L", bound=BaseLayer)
+
+
+@contextlib.contextmanager
+def bind_layer(
+    layer: ConfigOr[L],
+    *,
+    is_training: bool = True,
+    prng_key: Optional[jax.random.PRNGKey] = None,
+    state: Optional[Nested[Tensor]] = None,
+) -> Iterator[L]:
+    """Creates a context in which `module` has state initialized using `init_method`.
+
+    This lets you write tests that make calls to a module without needing to call `functional()`
+    yourself.
+
+    It is similar in spirit to FLAX's `module.bind()` although that works differently due to the
+    fact that FLAX state is only associated with an instane of a module, whereas AXLearn state is
+    global.
+
+    Example:
+        ```
+        cfg = Linear.default_config().set(input_dim=5, output_dim=7)
+        with test_utils.bind_layer(cfg) as layer:
+            result = layer(jnp.ones(5))
+        assert result.shape == (7,)
+        ```
+
+    Args:
+        layer: The layer to initialize.
+        is_training: Tell the layer it is in training or not.
+        prng_key: The PRNG key to use. If None, `jax.random.PRNGKey(0)`.
+        state: The state to use. If None, call `initialize_parameters_recursively()` to initialize
+               the state.
+
+    Returns:
+        The Initialized module.
+    """
+    if prng_key is None:
+        prng_key = jax.random.PRNGKey(0)
+
+    init_key, ctx_key = jax.random.split(prng_key)
+    if isinstance(layer, InstantiableConfig):
+        if isinstance(layer, BaseLayer.Config) and isinstance(
+            getattr(layer, "name", None), RequiredFieldValue
+        ):
+            setattr(layer, "name", "tmp")
+        layer = layer.instantiate(parent=None)
+    if state is None:
+        state = layer.initialize_parameters_recursively(prng_key=init_key)
+    ctx = InvocationContext(
+        name="root",
+        parent=None,
+        module=layer,
+        is_training=is_training,
+        prng_key=ctx_key,
+        state=state,
+        output_collection=new_output_collection(),
+    )
+    with set_current_context(ctx):
+        yield layer
