@@ -1400,7 +1400,7 @@ def skip_and_clip_by_global_norm(
             )
         else:
             return SkipClipState(
-                valid_count=None,
+                count=None,
                 nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
                 grad_norm_ema=None,
                 grad_norm_var_ema=None,
