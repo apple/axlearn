@@ -732,7 +732,7 @@ def bind_layer(
     yourself.
 
     It is similar in spirit to FLAX's `module.bind()` although that works differently due to the
-    fact that FLAX state is only associated with an instane of a module, whereas AXLearn state is
+    fact that FLAX state is only associated with an instance of a module, whereas AXLearn state is
     global.
 
     Example:
