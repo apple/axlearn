@@ -32,15 +32,28 @@ from absl import app, flags
 import logging
 import argparse
 import warnings
+import seqio
 
 import axlearn.cloud.gcp.dataflow_utils as df_utils
 import jax
 import pickle
 from flax.serialization import to_state_dict, from_state_dict
 from google.cloud import storage
+import tensorflow as tf
 
 from axlearn.common.inference import InferenceRunner, MethodRunner
 import axlearn.common.launch_trainer as trainer_utils
+from axlearn.common.utils import (
+    DataPartitionType,
+    NestedPartitionSpec,
+    NestedTensor,
+    PartitionSpec,
+    Tensor,
+    TensorSpec,
+)
+from axlearn.common.config import config_for_function
+import axlearn.common.input_tf_data as input_tf_data
+import axlearn.common.input_text as input_text
 
 from typing import Any
 from typing import Dict
@@ -77,15 +90,17 @@ class FlaxModelHandler(ModelHandler[Dict,PredictionResult,Any]):
         inference_runner_cfg = InferenceRunner.config_from_trainer(module_config)
         inference_runner_cfg.init_state_builder.set(dir=FLAGS.trainer_dir)
         inference_runner = InferenceRunner(cfg=inference_runner_cfg,parent=None)
-        logging.info(type(inference_runner))
-        return inference_runner
+
+        # create Method Runner only once
+        method_runner = inference_runner.create_method_runner(method='predict')
+        return method_runner
 
     def run_inference(
         self,
-        batch: Sequence[Dict],
-        model: Any,
+        batch: Sequence[NestedTensor],
+        model: MethodRunner,
         inference_args: Optional[Dict[str, Any]] = None
-    ) -> Iterable[PredictionResult]:
+    ):
         """Runs inferences on a batch of dictionaries.
 
         Args:
@@ -98,23 +113,60 @@ class FlaxModelHandler(ModelHandler[Dict,PredictionResult,Any]):
         """
         # TODO: inference.py ln 289
         logging.info("RUNNING INFERENCE")
-        quit()
-        predictions = []
-        for d in batch:
-            prediction = df_utils.pred_step(model, d)
-            predictions.append(prediction)
-        return [PredictionResult(x, y) for x, y in zip(batch, predictions)]
+        output = model(batch)
+        logging.info(f'OUTPUT: {output}')
 
-def get_examples():
-    """Get pipeline input. Can edit this function to load examples from GCS."""
-    examples = ["This is an example input for inference"]
+        return output
+
+def get_examples2() -> Sequence[NestedTensor]:
+    filenames = ["gs://axlearn-public/tensorflow_datasets/c4/en/3.0.1/c4-validation.tfrecord-00000-of-00008", "gs://axlearn-public/tensorflow_datasets/c4/en/3.0.1/c4-validation.tfrecord-00001-of-00008"]
+    raw_dataset = tf.data.TFRecordDataset(filenames)
+    examples = []
+
+    tokenized_dataset = seqio.preprocessors.tokenize(raw_dataset, output_features={"text": tf.string})
+    print(tokenized_dataset)
+    for example in tokenized_dataset:
+        print(type(example))
+        print(example)
+        examples.append(example)
+    return examples
+
+
+def get_examples() -> Sequence[NestedTensor]:
+    """
+    for raw_record in raw_dataset.take(2):
+        example = tf.train.Example()
+        example.ParseFromString(raw_record.numpy())
+        features = example.features.feature
+        for key, value in features.items():
+            if key == "text":
+                print(key,value)
+                print(value.bytes_list.value)
+        examples.append(example)
+    """
+    source = config_for_function(input_tf_data.tfds_dataset).set(
+        dataset_name="c4",
+        split="train",
+    )
+    processor = config_for_function(input_text.tokenize).set(
+        output_features="text"
+    )
+    ds_fn = input_tf_data.with_processor(
+        source=source,
+        processor=processor,
+        is_training=False,
+    )
+    for example in ds_fn():
+        print(type(example))
+        print(example)
+        examples.append(example)
     return examples
 
 def main(argv=None, save_main_session=True):
     # TODO: parse out unknown args as pipeline options. Currently we're only passing in the exact required flags
 
     pipeline_input = get_examples()
-    logging.info(f"EXAMPLES:{pipeline_input}")
+    quit()
 
     # run pipeline
     # pipeline_options = PipelineOptions(pipeline_args, number_of_worker_harness_threads=1)
