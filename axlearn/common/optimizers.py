@@ -1282,18 +1282,16 @@ def skip_and_clip_by_global_norm(
                 return g_norm < drop_norm, None
             else:
                 thresholds = drop_norm(count=count, mean=norm_ema, stddev=norm_var_ema**0.5)
-                checks = []
                 new_drop_stats = {}
                 is_valid = None
                 for key, val in thresholds.items():
                     less = g_norm < val
                     is_valid = less if is_valid is None else jnp.logical_and(is_valid, less)
                     new_drop_stats[key] = jnp.where(
-                        is_valid,
+                        less,
                         drop_stats[key],
                         optax.safe_int32_increment(drop_stats[key]),
                     )
-                    checks.append(is_valid)
                 return is_valid, new_drop_stats
 
         # Check if every gradient is finite.
@@ -1347,8 +1345,8 @@ def skip_and_clip_by_global_norm(
             if inc_count is not None:
                 context.add_summary("count", inc_count)
             if new_drop_stats is not None:
-                for key, val in new_drop_stats:
-                    context.add_summary(f"count_{key}", val)
+                for key, val in new_drop_stats.items():
+                    context.add_summary(f"count_exceeds_{key}", val)
 
         # Clip gradients s.t. grad norm <= max_norm.
         clipped_updates = updates
