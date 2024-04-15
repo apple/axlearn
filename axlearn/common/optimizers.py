@@ -1153,6 +1153,25 @@ def drop_norm_by_grad_norm_ema(multipliers: Tuple = (20, 40, 100)) -> DropNormTh
     return fn
 
 
+def drop_norm_by_grad_norm_stddev(
+    *,
+    min_count: int = 500,
+    multipliers: Tuple = (20, 40, 100),
+) -> DropNormThresholdFn:
+    """Return drop norm thresholds based on grad norm stddev."""
+
+    def fn(count: Tensor, mean: Tensor, stddev: Tensor) -> Dict[str, Tensor]:
+        # We do not drop norm for the first `min_count` data batches,
+        # otherwise the threshold is `mean + stddev * k` for multiplier `k`.
+        thresholds = {}
+        for v in multipliers:
+            key = f"{v}x_stddev"
+            thresholds[key] = jnp.where(count < min_count, 1e10, mean + stddev * v)
+        return thresholds
+
+    return fn
+
+
 class SkipClipState(NamedTuple):
     """State returned by functions in skip_and_clip_by_global_norm()."""
 

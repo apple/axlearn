@@ -32,6 +32,7 @@ from axlearn.common.optimizers import (
     clip_by_global_norm,
     copy_partition,
     drop_norm_by_grad_norm_ema,
+    drop_norm_by_grad_norm_stddev,
     ema,
     l2_regularizer,
     lion_optimizer,
@@ -764,6 +765,9 @@ class OptimizerTest(TestCase):
             5.0,
             0.01,
             config_for_function(drop_norm_by_grad_norm_ema).set(multipliers=[20, 40]),
+            config_for_function(drop_norm_by_grad_norm_ema).set(multipliers=[0.1, 1]),
+            config_for_function(drop_norm_by_grad_norm_stddev).set(multipliers=[20, 40]),
+            config_for_function(drop_norm_by_grad_norm_stddev).set(multipliers=[0.1, 1]),
         ),
     )
     def test_gradient_skipping_and_clipping(self, max_norm, drop_norm):
