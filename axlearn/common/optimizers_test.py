@@ -31,6 +31,7 @@ from axlearn.common.optimizers import (
     clip_by_block_rms,
     clip_by_global_norm,
     copy_partition,
+    drop_norm_by_grad_norm_ema,
     ema,
     l2_regularizer,
     lion_optimizer,
@@ -758,25 +759,23 @@ class OptimizerTest(TestCase):
 
     @parameterized.product(
         max_norm=(None, 100.0, 0.1),
-        drop_norm=(None, 5.0, 0.01),
-        adaptive=(True, False),
+        drop_norm=(
+            None,
+            5.0,
+            0.01,
+            config_for_function(drop_norm_by_grad_norm_ema).set(multipliers=[20, 40]),
+        ),
     )
-    def test_gradient_skipping_and_clipping(self, max_norm, drop_norm, adaptive):
+    def test_gradient_skipping_and_clipping(self, max_norm, drop_norm):
         clip = skip_and_clip_by_global_norm(
             inner=_counter(),
             drop_norm=drop_norm,
             max_norm=max_norm,
-            adaptive_drop_norm=adaptive,
         )
         params = jnp.asarray([0, 1, 2, -3], dtype=jnp.float32)
         state = clip.init(params)
         init_ema = state.grad_norm_ema
-        if drop_norm is None:
-            current_drop_norm = None
-        elif adaptive:
-            current_drop_norm = drop_norm * init_ema
-        else:
-            current_drop_norm = drop_norm
+        use_adaptive_norm = drop_norm is not None and not isinstance(drop_norm, float)
 
         def loss_fn(x):
             return -jax.nn.log_softmax(x)[1]
@@ -786,23 +785,34 @@ class OptimizerTest(TestCase):
         np.testing.assert_allclose(grads, [0.089629, -0.756364, 0.662272, 0.004462], atol=1e-6)
 
         g_norm = optax.global_norm(grads)
+        if use_adaptive_norm:
+            drop_norm_fn = drop_norm.instantiate()
+            thresholds = drop_norm_fn(
+                count=state.count,
+                mean=state.grad_norm_ema,
+                stddev=state.grad_norm_var_ema**0.5,
+            )
+            is_valid_step = all(g_norm < val for val in thresholds.values())
+        else:
+            is_valid_step = drop_norm is None or g_norm < drop_norm
+
         updates, state = clip.update(grads, state=state, params=params)
-        if drop_norm is None or g_norm < current_drop_norm:
+        if is_valid_step:
             if max_norm is None or g_norm < max_norm:
                 np.testing.assert_allclose(updates, grads, atol=1e-6)
             else:
                 np.testing.assert_allclose(max_norm, optax.global_norm(updates))
             np.testing.assert_equal(state.nonvalid_count, jnp.zeros([], dtype=jnp.int32))
             np.testing.assert_equal(state.inner_state, jnp.ones([], dtype=jnp.int32))
-            if adaptive:
-                np.testing.assert_equal(state.valid_count, jnp.ones([], dtype=jnp.int32))
+            if use_adaptive_norm:
+                np.testing.assert_equal(state.count, jnp.ones([], dtype=jnp.int32))
                 np.testing.assert_equal(state.grad_norm_ema, g_norm)
         else:
             np.testing.assert_allclose(updates, jnp.zeros_like(grads))
             np.testing.assert_equal(state.nonvalid_count, jnp.ones([], dtype=jnp.int32))
             np.testing.assert_equal(state.inner_state, jnp.zeros([], dtype=jnp.int32))
-            if adaptive:
-                np.testing.assert_equal(state.valid_count, jnp.zeros([], dtype=jnp.int32))
+            if use_adaptive_norm:
+                np.testing.assert_equal(state.count, jnp.zeros([], dtype=jnp.int32))
                 np.testing.assert_equal(state.grad_norm_ema, init_ema)
 
     @parameterized.product(
