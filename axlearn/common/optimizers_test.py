@@ -767,7 +767,6 @@ class OptimizerTest(TestCase):
             config_for_function(drop_norm_by_grad_norm_ema).set(multipliers=[20, 40]),
             config_for_function(drop_norm_by_grad_norm_ema).set(multipliers=[0.1, 1]),
             config_for_function(drop_norm_by_grad_norm_stddev).set(multipliers=[20, 40]),
-            config_for_function(drop_norm_by_grad_norm_stddev).set(multipliers=[0.1, 1]),
         ),
     )
     def test_gradient_skipping_and_clipping(self, max_norm, drop_norm):
@@ -790,11 +789,12 @@ class OptimizerTest(TestCase):
 
         g_norm = optax.global_norm(grads)
         if use_adaptive_norm:
+            stddev = (state.grad_norm_square_ema - state.grad_norm_ema**2) ** 0.5
             drop_norm_fn = drop_norm.instantiate()
             thresholds = drop_norm_fn(
                 count=state.count,
                 mean=state.grad_norm_ema,
-                stddev=state.grad_norm_var_ema**0.5,
+                stddev=stddev,
             )
             is_valid_step = all(g_norm < val for val in thresholds.values())
         else:

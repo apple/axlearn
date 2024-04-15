@@ -1178,7 +1178,7 @@ class SkipClipState(NamedTuple):
     count: Optional[Union[Tensor, TensorSpec]]
     nonvalid_count: Union[Tensor, TensorSpec]  # Number of non-valid steps.
     grad_norm_ema: Optional[Union[Tensor, TensorSpec]]  # The moving average of raw gradient norm.
-    grad_norm_var_ema: Optional[
+    grad_norm_square_ema: Optional[
         Union[Tensor, TensorSpec]
     ]  # The moving average of grad norm variance.
     inner_state: Any  # State of the inner PartitionedGradientTransformation.
@@ -1252,7 +1252,7 @@ def skip_and_clip_by_global_norm(
                 # Set initial ema(s) to a positive value so we can avoid dropping norms for the
                 # first step.
                 grad_norm_ema=jnp.ones([], jnp.float32),
-                grad_norm_var_ema=jnp.ones([], jnp.float32),
+                grad_norm_square_ema=jnp.ones([], jnp.float32),
                 inner_state=inner.init(params),
                 drop_stats=drop_stats,
             )
@@ -1262,7 +1262,7 @@ def skip_and_clip_by_global_norm(
                 count=None,
                 nonvalid_count=jnp.zeros([], jnp.int32),
                 grad_norm_ema=None,
-                grad_norm_var_ema=None,
+                grad_norm_square_ema=None,
                 inner_state=inner.init(params),
                 drop_stats=None,
             )
@@ -1271,13 +1271,16 @@ def skip_and_clip_by_global_norm(
         inner_state = state.inner_state
         count = state.count
         grad_norm_ema = state.grad_norm_ema
-        grad_norm_var_ema = state.grad_norm_var_ema
+        grad_norm_square_ema = state.grad_norm_square_ema
         drop_stats = state.drop_stats
+
+        def _stddev(mean: Tensor, mean_square: Tensor):
+            return (mean_square - mean**2) ** 0.5
 
         def _moment(
             val: Tensor,
             norm_ema: Tensor,
-            var_ema: Tensor,
+            norm_square_ema: Tensor,
             count: Tensor,
         ) -> Tuple[Tensor, Tensor]:
             # bias correrction decay
@@ -1285,22 +1288,23 @@ def skip_and_clip_by_global_norm(
             decay = grad_norm_ema_decay
             decay *= (1 - decay ** (count - 1)) / (1 - decay**count)
             new_norm_ema = decay * norm_ema + (1 - decay) * val
-            new_var_ema = decay * var_ema + (1 - decay) * (val - new_norm_ema) ** 2
-            return new_norm_ema, new_var_ema
+            new_square_ema = decay * norm_square_ema + (1 - decay) * (val**2)
+            return new_norm_ema, new_square_ema
 
         def _is_valid_step(
             g_norm: Tensor,
             drop_norm: Union[float, DropNormThresholdFn],
             *,
             norm_ema: Optional[Tensor],
-            norm_var_ema: Optional[Tensor],
+            norm_square_ema: Optional[Tensor],
             count: Optional[Tensor],
             drop_stats: Optional[Dict[str, Tensor]],
         ) -> Tuple[Tensor, Optional[Dict[str, Tensor]]]:
             if isinstance(drop_norm, float):
                 return g_norm < drop_norm, None
             else:
-                thresholds = drop_norm(count=count, mean=norm_ema, stddev=norm_var_ema**0.5)
+                stddev = _stddev(norm_ema, norm_square_ema)
+                thresholds = drop_norm(count=count, mean=norm_ema, stddev=stddev)
                 new_drop_stats = {}
                 is_valid = None
                 for key, val in thresholds.items():
@@ -1323,7 +1327,7 @@ def skip_and_clip_by_global_norm(
                 g_norm,
                 drop_norm,
                 norm_ema=grad_norm_ema,
-                norm_var_ema=grad_norm_var_ema,
+                norm_square_ema=grad_norm_square_ema,
                 count=count,
                 drop_stats=drop_stats,
             )
@@ -1344,23 +1348,27 @@ def skip_and_clip_by_global_norm(
                 optax.safe_int32_increment(count),
                 count,
             )
-            new_norm_ema, new_norm_var_ema = _moment(
-                g_norm, grad_norm_ema, grad_norm_var_ema, inc_count
+            new_norm_ema, new_norm_square_ema = _moment(
+                g_norm, grad_norm_ema, grad_norm_square_ema, inc_count
             )
             new_norm_ema = jnp.where(is_valid_step, new_norm_ema, grad_norm_ema)
-            new_norm_var_ema = jnp.where(is_valid_step, new_norm_var_ema, grad_norm_var_ema)
+            new_norm_square_ema = jnp.where(
+                is_valid_step, new_norm_square_ema, grad_norm_square_ema
+            )
         else:
             inc_count = None
             new_norm_ema = None
-            new_norm_var_ema = None
+            new_norm_square_ema = None
         context = current_context()
         if context is not None:
             context.add_summary("gradient_norm", g_norm)
             context.add_summary("nonvalid_count", nonvalid_count)
             if new_norm_ema is not None:
                 context.add_summary("gradient_norm_ema", new_norm_ema)
-            if new_norm_var_ema is not None:
-                context.add_summary("gradient_norm_std_ema", new_norm_var_ema**0.5)
+            if new_norm_square_ema is not None:
+                context.add_summary(
+                    "gradient_norm_std_ema", _stddev(new_norm_ema, new_norm_square_ema)
+                )
             if inc_count is not None:
                 context.add_summary("count", inc_count)
             if new_drop_stats is not None:
@@ -1392,7 +1400,7 @@ def skip_and_clip_by_global_norm(
             count=inc_count,
             nonvalid_count=nonvalid_count,
             grad_norm_ema=new_norm_ema,
-            grad_norm_var_ema=new_norm_var_ema,
+            grad_norm_square_ema=new_norm_square_ema,
             inner_state=final_inner_state,
             drop_stats=new_drop_stats,
         )
@@ -1409,7 +1417,7 @@ def skip_and_clip_by_global_norm(
                 count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
                 nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
                 grad_norm_ema=OptStateSpec(dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()),
-                grad_norm_var_ema=OptStateSpec(
+                grad_norm_square_ema=OptStateSpec(
                     dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()
                 ),
                 inner_state=inner.partition(param_specs),
@@ -1420,7 +1428,7 @@ def skip_and_clip_by_global_norm(
                 count=None,
                 nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
                 grad_norm_ema=None,
-                grad_norm_var_ema=None,
+                grad_norm_square_ema=None,
                 inner_state=inner.partition(param_specs),
                 drop_stats=None,
             )
