@@ -17,6 +17,13 @@ class BindTest(test_utils.TestCase):
 
     LAYER_CFG = Linear.default_config().set(input_dim=5, output_dim=7)
 
+    def test_bind_module(self):
+        with test_utils.bind_module(
+            self.LAYER_CFG, state={"weight": jnp.ones((5, 7)), "bias": jnp.ones(7)}
+        ) as instantiated_layer:
+            result = instantiated_layer(jnp.ones(5))
+        self.assertNestedAllClose(result, jnp.ones(7) * 6)
+
     @parameterized.parameters(LAYER_CFG, LAYER_CFG.clone(name="tmp").instantiate(parent=None))
     def test_bind_layer(self, layer: ConfigOr[BaseLayer]):
         with test_utils.bind_layer(layer) as instantiated_layer:
