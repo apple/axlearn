@@ -865,7 +865,6 @@ class OptimizerTest(TestCase):
             ckpt.wait_until_finished()
             # Restore it as the new version.
             _, loaded_state = ckpt.restore(step=0, state=state)
-            print("abc123", loaded_state, state)
             self.assertNestedEqual(state, loaded_state)
 
     @parameterized.product(
