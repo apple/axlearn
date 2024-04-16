@@ -3,7 +3,8 @@
 """Tests optimization modules."""
 # pylint: disable=no-self-use,too-many-lines
 import itertools
-from typing import Optional
+import tempfile
+from typing import Any, NamedTuple, Optional, Sequence
 
 import jax
 import numpy as np
@@ -11,9 +12,11 @@ import optax
 from absl import logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
+from jax.experimental import mesh_utils
 
-from axlearn.common import schedule
+from axlearn.common import schedule, test_utils
 from axlearn.common.base_layer import FactorizationSpec, NestedParameterSpec, ParameterSpec
+from axlearn.common.checkpointer import Checkpointer
 from axlearn.common.config import config_for_function
 from axlearn.common.module import InvocationContext, new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam, OptStateSpec, PartitionedGradientTransformation
@@ -89,6 +92,22 @@ def _counter():
     return PartitionedGradientTransformation(
         init=init_fn, update=update_fn, partition=lambda _: optax.EmptyState()
     )
+
+
+def _mesh(mesh_shape: Sequence[int]):
+    devices = mesh_utils.create_device_mesh(mesh_shape)
+    return jax.sharding.Mesh(devices, ("data", "model"))
+
+
+def _checkpointer_config():
+    return Checkpointer.default_config().set(name="test", dir=tempfile.mkdtemp())
+
+
+class OldSkipClipState(NamedTuple):
+    """State of an older version of skip_and_clip_by_global_norm() for testing."""
+
+    nonvalid_count: Tensor  # Number of non-valid steps.
+    inner_state: Any  # State of the inner PartitionedGradientTransformation.
 
 
 class OptimizerTest(TestCase):
@@ -778,7 +797,7 @@ class OptimizerTest(TestCase):
         params = jnp.asarray([0, 1, 2, -3], dtype=jnp.float32)
         state = clip.init(params)
         init_ema = state.grad_norm_ema
-        use_adaptive_norm = drop_norm is not None and not isinstance(drop_norm, float)
+        use_adaptive_norm = drop_norm is not None and not isinstance(drop_norm, (float, int))
 
         def loss_fn(x):
             return -jax.nn.log_softmax(x)[1]
@@ -818,6 +837,36 @@ class OptimizerTest(TestCase):
             if use_adaptive_norm:
                 np.testing.assert_equal(state.count, jnp.zeros([], dtype=jnp.int32))
                 np.testing.assert_equal(state.grad_norm_ema, init_ema)
+
+    def test_gradient_skipping_backward_compatibility(self):
+        clip = skip_and_clip_by_global_norm(
+            inner=_counter(),
+            drop_norm=100,
+            max_norm=1,
+        )
+        params = jnp.asarray([0, 1, 2, -3], dtype=jnp.float32)
+        state = clip.init(params)
+
+        # Create an older version of state, which only has two attributes.
+        prev_state = OldSkipClipState(
+            nonvalid_count=state.nonvalid_count,
+            inner_state=state.inner_state,
+        )
+
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+        with _mesh(mesh_shape):
+            cfg = _checkpointer_config()
+            cfg.save_policy.min_step = 0
+            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            # Save the older version of state.
+            ckpt.save(step=0, state=prev_state)
+            ckpt.wait_until_finished()
+            # Restore it as the new version.
+            _, loaded_state = ckpt.restore(step=0, state=state)
+            print("abc123", loaded_state, state)
+            self.assertNestedEqual(state, loaded_state)
 
     @parameterized.product(
         regularizer_weight=(0.0, 1.0),

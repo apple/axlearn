@@ -1237,7 +1237,7 @@ def skip_and_clip_by_global_norm(
         A new PartitionedGradientTransformation that applies skipping and clipping.
     """
     inner = maybe_instantiate(inner)
-    use_adaptive_drop_norm = drop_norm is not None and not isinstance(drop_norm, float)
+    use_adaptive_drop_norm = drop_norm is not None and not isinstance(drop_norm, (float, int))
     if use_adaptive_drop_norm:
         drop_norm = maybe_instantiate(drop_norm)
 
@@ -1300,7 +1300,7 @@ def skip_and_clip_by_global_norm(
             count: Optional[Tensor],
             drop_stats: Optional[Dict[str, Tensor]],
         ) -> Tuple[Tensor, Optional[Dict[str, Tensor]]]:
-            if isinstance(drop_norm, float):
+            if isinstance(drop_norm, (float, int)):
                 return g_norm < drop_norm, None
             else:
                 stddev = _stddev(norm_ema, norm_square_ema)
