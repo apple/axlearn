@@ -793,6 +793,7 @@ class OptimizerTest(TestCase):
             inner=_counter(),
             drop_norm=drop_norm,
             max_norm=max_norm,
+            grad_norm_ema_decay=0.99,
         )
         params = jnp.asarray([0, 1, 2, -3], dtype=jnp.float32)
         state = clip.init(params)

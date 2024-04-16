@@ -1192,7 +1192,7 @@ def skip_and_clip_by_global_norm(
     *,
     drop_norm: Optional[Union[float, ConfigOr[DropNormThresholdFn]]] = None,
     max_norm: Optional[float] = None,
-    grad_norm_ema_decay: float = 0.99,
+    grad_norm_ema_decay: Optional[float] = None,
     eps: float = 1e-8,
 ) -> PartitionedGradientTransformation:
     """Skip updates when global norm >= drop_norm, otherwise clip the global norm.
@@ -1230,7 +1230,8 @@ def skip_and_clip_by_global_norm(
             based on recent gradient stats.
         max_norm: the maximum global gradient norm. If this is set, larger gradients will be scaled
             and clipped.
-        gradient_norm_ema_decay: the decay factor used to compute EMA of gradient norms.
+        gradient_norm_ema_decay: the decay factor used to compute EMA of gradient norms. This must
+            be set when `drop_norm` is a DropNormThreholdFn.
         eps: a small constant added to scaling factor, i.e. `1/(norm + eps)`.
 
     Returns:
@@ -1240,6 +1241,8 @@ def skip_and_clip_by_global_norm(
     use_adaptive_drop_norm = drop_norm is not None and not isinstance(drop_norm, (float, int))
     if use_adaptive_drop_norm:
         drop_norm = maybe_instantiate(drop_norm)
+    if use_adaptive_drop_norm and grad_norm_ema_decay is None:
+        raise ValueError("grad_norm_ema_decay must be set (e.g. 0.99).")
 
     def init_fn(params):
         if use_adaptive_drop_norm:
