@@ -18,8 +18,8 @@ from jax import numpy as jnp
 from axlearn.common.utils import Tensor
 
 
-# pylint: disable-next=redefined-builtin
 def window_partition_with_window_size(
+    # pylint: disable-next=redefined-builtin
     input: Tensor,
     window_size: int,
 ) -> Tuple[Tensor, Tuple[int, int]]:
@@ -57,8 +57,8 @@ def window_partition_with_window_size(
     return windows, (resized_height, resized_width)
 
 
-# pylint: disable-next=redefined-builtin
 def window_partition_with_num_windows(
+    # pylint: disable-next=redefined-builtin
     input: Tensor,
     num_windows: int,
 ) -> Tuple[Tensor, Tuple[int, int]]:

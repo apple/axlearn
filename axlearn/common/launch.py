@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """A library with common flags to launch a trainer."""
+
 # pylint: disable=wrong-import-position,wrong-import-order
 import os
 import sys
@@ -38,7 +39,7 @@ os.environ["LIBTPU_INIT_ARGS"] = " ".join(libtpu_init_args)
 # Set TF_CPP_MIN_LOG_LEVEL to ignore msg like  "PNG warning: iCCP: known incorrect sRGB profile"
 # Reference: https://stackoverflow.com/questions/35869137/avoid-tensorflow-print-on-standard-error
 # Note: this will disable other TF_CPP info and warnnings.
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 # Import jax before tensorflow else to avoid problems such as:
 # tpu_library_init_fns.inc:98] TpuEmbeddingEngine_ExecutePartitioner not available in this library.
@@ -72,6 +73,11 @@ flags.DEFINE_string(
     "Distributed coordinator IP address. Must be None on tpu, otherwise required.",
 )
 flags.DEFINE_integer(
+    "initialization_timeout",
+    None,
+    "Distributed initialization timeout in seconds. If None, uses jax default.",
+)
+flags.DEFINE_integer(
     "num_processes", None, "Total number of hosts (nodes). Must be None on tpu, otherwise required."
 )
 flags.DEFINE_integer(
@@ -88,6 +94,7 @@ def setup():
         num_processes=FLAGS.num_processes,
         process_id=FLAGS.process_id,
         jax_backend=FLAGS.jax_backend,
+        initialization_timeout=FLAGS.initialization_timeout,
     )
 
     if FLAGS.jax_profiler_port is not None:

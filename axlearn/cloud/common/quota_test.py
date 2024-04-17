@@ -17,8 +17,8 @@ _mock_config = {
         "resource_type2": 8,
     },
     "project_resources": {
-        "team1": {"resource_type1": 0.30000001},
-        "team2": {"resource_type1": 0.60000001, "resource_type2": 1.0},
+        "team1": {"resource_type1": 0.3},
+        "team2": {"resource_type1": 0.6, "resource_type2": 1.0},
     },
     "project_membership": {
         "team1": ["user1"],
@@ -40,8 +40,8 @@ class QuotaUtilsTest(parameterized.TestCase):
                 QuotaInfo(
                     total_resources={"resource_type1": 16, "resource_type2": 8},
                     project_resources={
-                        "team1": {"resource_type1": 4.80000016},
-                        "team2": {"resource_type1": 9.60000016, "resource_type2": 8.0},
+                        "team1": {"resource_type1": 0.3},
+                        "team2": {"resource_type1": 0.6, "resource_type2": 1.0},
                     },
                 ),
                 get_resource_limits(f.name),
@@ -57,8 +57,8 @@ class QuotaUtilsTest(parameterized.TestCase):
                 QuotaInfo(
                     total_resources={"resource_type1": 16, "resource_type2": 8},
                     project_resources={
-                        "team1": {"resource_type1": 12.8},
-                        "team2": {"resource_type1": 9.60000016, "resource_type2": 8.0},
+                        "team1": {"resource_type1": 0.8},
+                        "team2": {"resource_type1": 0.6, "resource_type2": 1.0},
                     },
                 ),
                 get_resource_limits(f.name),
@@ -75,8 +75,8 @@ class QuotaUtilsTest(parameterized.TestCase):
                 QuotaInfo(
                     total_resources={"resource_type1": 16},
                     project_resources={
-                        "team1": {"resource_type1": 4.80000016},
-                        "team2": {"resource_type1": 9.60000016, "resource_type2": 0.0},
+                        "team1": {"resource_type1": 0.3},
+                        "team2": {"resource_type1": 0.6, "resource_type2": 1.0},
                     },
                 ),
                 get_resource_limits(f.name),

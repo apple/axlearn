@@ -171,7 +171,7 @@ def format_table(*, headings: List[str], rows: List[List[str]]) -> str:
         A string formatted as a table, consisting of the provided headings and rows.
     """
     rows = [[h.upper() for h in headings]] + rows
-    max_lens = [max([len(str(row[i])) for row in rows]) for i in range(len(headings))]
+    max_lens = [max(len(str(row[i])) for row in rows) for i in range(len(headings))]
     fmt = "".join([f"{{:<{max_len + 6}}}" for max_len in max_lens])
     return "\n" + "\n".join([fmt.format(*[str(v) for v in row]) for row in rows]) + "\n"
 
@@ -229,9 +229,9 @@ def canonicalize_to_string(v: Union[str, Sequence[str]], *, delimiter: str = ","
     """Converts lists to delimited strings."""
     if not v:
         return ""
-    if not isinstance(v, str):
+    if not isinstance(v, str) and isinstance(v, Sequence):
         v = delimiter.join([elem.strip() for elem in v])
-    return v
+    return str(v)
 
 
 def parse_action(

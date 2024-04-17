@@ -31,7 +31,7 @@ from absl import logging
 from jax import numpy as jnp
 from optax._src import numerics
 
-from axlearn.common import schedule
+from axlearn.common import schedule, struct
 from axlearn.common.base_layer import NestedParameterSpec, ParameterSpec, PartitionSpec
 from axlearn.common.config import ConfigOr, maybe_instantiate
 from axlearn.common.factorized_rms import scale_by_factored_rms
@@ -336,6 +336,71 @@ def scale_by_trust_ratio(
     return with_partition_fn(
         optax.GradientTransformation(init_fn, update_fn), lambda _: optax.ScaleByTrustRatioState()
     )
+
+
+def _log_per_layer_stats(stats: NestedTensor, *, summary_suffix: str):
+    """Expand the Nested Tensor `stats` and add summaries.
+
+    Args:
+        stats: A Nested Tensor, e.g., containing param norms or gradient statistics.
+        summary_suffix: Adds summaries of name `{path}/{summary_suffix}`.
+    """
+    context = current_context()
+    if context is not None:
+        expanded_stats = expand_vdicts(stats)
+        for path, value in flatten_items(expanded_stats):
+            context.add_summary(f"{path}/{summary_suffix}", value)
+
+
+def _compute_rms_norms(x: NestedTensor, *, summary_suffix: Optional[str] = None) -> NestedTensor:
+    """Computes the RMS norm for each leaf tensor of `x` and optionally adds summaries.
+
+    Summaries will be added if `summary_suffix` is not None *and* the current context is not None.
+
+    Args:
+        x: A Nested Tensor, e.g., representing params or gradients. May contain VDict, in which
+            case each entry will be computed separately, therefore the norms of params of a
+            repeated layer will be computed separately.
+        summary_suffix: If not None, adds summaries of name `{path}/{summary_suffix}` of the norms.
+
+    Returns:
+        A NestedTensor with the same structure as `x` and each leaf node representing the norm
+        of the tensor in `x`.
+    """
+    # Use vectorized_tree_map to compute separate norms for each layer in a Repeated.
+    norms = vectorized_tree_map(lambda u: jnp.sqrt(jnp.mean(u**2)), x)
+    if summary_suffix is not None:
+        _log_per_layer_stats(norms, summary_suffix=summary_suffix)
+    return norms
+
+
+def _compute_covariance(
+    x: NestedTensor,
+    y: NestedTensor,
+    *,
+    summary_suffix: Optional[str] = None,
+) -> NestedTensor:
+    """Computes the covariance between leaf tensors in `x` and `y` and optionally adds summaries.
+
+    Summaries will be added if `summary_suffix` is not None *and* the current context is not None.
+    This function is used in adastar_optimizer() for adding (params, updates) correlation stats.
+
+    Args:
+        x: A Nested Tensor, e.g., representing params or gradients. May contain VDict, in which
+            case each entry will be computed separately, therefore the norms of params of a
+            repeated layer will be computed separately.
+        y: A Nested Tensor similar to `x`.
+        summary_suffix: If not None, adds summaries of name `{path}/{summary_suffix}` of the norms.
+
+    Returns:
+        A NestedTensor with the same structure as `x` and each leaf node representing the
+        covariance between the leaf nodes in `x` and `y`.
+    """
+    # Use vectorized_tree_map to compute separate values for each layer in a Repeated.
+    cov = vectorized_tree_map(lambda u, v: jnp.mean(u * v), x, y)
+    if summary_suffix is not None:
+        _log_per_layer_stats(cov, summary_suffix=summary_suffix)
+    return cov
 
 
 class AddDecayedWeightsState(NamedTuple):
@@ -987,7 +1052,7 @@ def adafactor_optimizer(
     # This basic rescaling is typically combined with one or more of the following
     # transformation (all can be disabled via adafactor's constructor args).
     if clipping_threshold is not None:
-        tx.append(clip_by_block_rms(clipping_threshold))
+        tx.append(clip_by_block_rms(clipping_threshold, summary_suffix="norm"))
     if learning_rate is not None:
         tx.append(scale_by_schedule(scale_from_learning_rate(learning_rate, flip_sign=False)))
     if multiply_by_parameter_scale:
@@ -1164,7 +1229,9 @@ def skip_and_clip_by_global_norm(
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
-def clip_by_block_rms(threshold: Optional[float]) -> PartitionedGradientTransformation:
+def clip_by_block_rms(
+    threshold: Optional[float], *, summary_suffix: Optional[str] = None
+) -> PartitionedGradientTransformation:
     """Clip updates to a max rms for the gradient of each param vector or matrix.
 
     A `block` is here a weight vector (e.g. in a Linear layer) or a weight matrix
@@ -1175,8 +1242,7 @@ def clip_by_block_rms(threshold: Optional[float]) -> PartitionedGradientTransfor
     Args:
         threshold: the maximum rms for the gradient of each param vector or matrix.
             If None, does not clip.
-            In either case, norms will be added to summaries of the current context
-            (if a context is set).
+        summary_suffix: If not None, adds pre-clip update norms to summaries.
 
     Returns:
         An (init_fn, update_fn) tuple.
@@ -1189,33 +1255,21 @@ def clip_by_block_rms(threshold: Optional[float]) -> PartitionedGradientTransfor
     def update_fn(updates, state, params=None):
         del params
 
-        @chex.dataclass
-        class Output:
-            norm: Tensor
-            clipped: Tensor
+        if threshold is None and summary_suffix is None:
+            # Do not compute norm.
+            return updates, state
 
-        def _clip_fn(u):
-            norm = jnp.sqrt(jnp.mean(u**2))
+        def _clip_fn(u, norm):
             if threshold is None:
                 clipped = u
             else:
                 clipped = u / jnp.maximum(1.0, norm / threshold)
-            return Output(norm=norm, clipped=clipped)
+            return clipped
 
+        norms = _compute_rms_norms(updates, summary_suffix=summary_suffix)
         # The only difference from the optax implementation:
         # vectorized_tree_map vs. jax.tree_util.tree_map.
-        outputs = vectorized_tree_map(_clip_fn, updates)
-        context = current_context()
-        if context is not None:
-            norms = jax.tree_util.tree_map(
-                lambda x: x.norm, outputs, is_leaf=lambda x: isinstance(x, Output)
-            )
-            norms = expand_vdicts(norms)
-            for path, value in flatten_items(norms):
-                context.add_summary(f"{path}/norm", value)
-        updates = jax.tree_util.tree_map(
-            lambda x: x.clipped, outputs, is_leaf=lambda x: isinstance(x, Output)
-        )
+        updates = vectorized_tree_map(_clip_fn, updates, norms)
         return updates, state
 
     return PartitionedGradientTransformation(init_fn, update_fn, lambda _: optax.EmptyState())
@@ -1434,6 +1488,7 @@ def adastar_optimizer(
     adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
     weight_decay: float = 0,
     update_schedule: schedule.Schedule,
+    verbosity: int = 0,
 ) -> PartitionedGradientTransformation:
     """An optimizer covering both {adamw_decoupled,adafactor}_optimizer (with factored=False).
 
@@ -1492,7 +1547,7 @@ def adastar_optimizer(
         eps: (float) regularization constant added to the square root of smoothed_gradient_squares.
         eps_square: (float) regularization constant added to gradient_squares.
         raw_update_clipping_threshold: If not None, clips the norms of the raw updates
-            to this value.
+            to this value. `raw_update_norm` summaries will be logged either way.
         update_ema_decay: If not None, applies momentum on raw updates (normalized gradients) to
             compute smoothed updates.
         update_ema_debias: Whether to apply bias correction when computing smoothed updates.
@@ -1504,24 +1559,23 @@ def adastar_optimizer(
             similar to adamw_adamw_decoupled_optimizer and different from adafactor_optimizer.
         update_schedule: an update schedule, which is applied to scale both the learning rate
             and the weight decay.
+        verbosity: The verbosity level of summaries. When verbosity > 0, adds update norms and
+            param-update correlation stats to summaries.
 
     Returns:
         A PartitionedGradientTransformation representing an Adafactor optimizer.
     """
 
-    @chex.dataclass
-    class _AdastarPerParamState:
+    class _AdastarPerParamState(struct.PyTreeNode):
         gradient_ema: Optional[Tensor]
         gradient_square_ema: Tensor
         update_ema: Optional[Tensor]
 
-    @chex.dataclass
-    class _AdastarState:
+    class _AdastarState(struct.PyTreeNode):
         count: Tensor
         pps: Nested[_AdastarPerParamState]
 
-    @chex.dataclass
-    class _AdastarUpdateResult:
+    class _AdastarUpdateResult(struct.PyTreeNode):
         """Opaque container that is not traversed by jax.tree_util.tree_map."""
 
         updates: Tensor  # the update to apply to params.
@@ -1628,9 +1682,10 @@ def adastar_optimizer(
             )
         )
         # Clip raw updates if necessary.
-        if raw_update_clipping_threshold is not None:
-            clip_fn = clip_by_block_rms(raw_update_clipping_threshold).update
-            raw_updates, _ = clip_fn(raw_updates, None, params)
+        clip_fn = clip_by_block_rms(
+            raw_update_clipping_threshold, summary_suffix="raw_update_norm"
+        ).update
+        raw_updates, _ = clip_fn(raw_updates, None, params)
         # Compute smoothed updates.
         smoothed_updates, pps_tree = _split_update_results(
             vectorized_tree_map(
@@ -1639,6 +1694,37 @@ def adastar_optimizer(
                 pps_tree,
             )
         )
+        # Add param and update stats to summaries.
+        _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
+        param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+        param_norm = _compute_rms_norms(param_values, summary_suffix="param_norm")
+        # Computing extra stats increases step time. Only adds them to summaries in verbose mode.
+        if verbosity > 0:
+            # Note the covariance and correlation stats might be biased if params and updates do not
+            # have zero mean.
+            raw_update_norm = _compute_rms_norms(raw_updates)
+            smoothed_update_norm = _compute_rms_norms(
+                smoothed_updates,
+                summary_suffix="smoothed_update_norm",
+            )
+            _log_per_layer_stats(
+                vectorized_tree_map(
+                    lambda cov, pn, un: cov / pn / un,
+                    _compute_covariance(param_values, raw_updates),
+                    param_norm,
+                    raw_update_norm,
+                ),
+                summary_suffix="corr_param_raw_updates",
+            )
+            _log_per_layer_stats(
+                vectorized_tree_map(
+                    lambda cov, pn, un: cov / pn / un,
+                    _compute_covariance(param_values, smoothed_updates),
+                    param_norm,
+                    smoothed_update_norm,
+                ),
+                summary_suffix="corr_param_smoothed_updates",
+            )
         return smoothed_updates, _AdastarState(count=incremented_count, pps=pps_tree)
 
     def partition_fn(param_specs):

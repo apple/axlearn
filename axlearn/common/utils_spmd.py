@@ -17,6 +17,7 @@ def setup(
     distributed_coordinator: Optional[str] = None,
     num_processes: Optional[int] = None,
     process_id: Optional[int] = None,
+    initialization_timeout: Optional[int] = None,
 ):
     """Sets up the JAX environment for SPMD.
 
@@ -30,6 +31,8 @@ def setup(
             for `jax_backend != "tpu"`.
         process_id: The process ID (the process rank). Needed only if distributed initialization is
             desired for `jax_backend != "tpu"`.
+        initialization_timeout: The jax distributed initialization timeout in seconds. If None, uses
+            jax default.
 
     Raises:
         ValueError: If any of the following conditions are met:
@@ -45,6 +48,10 @@ def setup(
 
     global _jax_distributed_initialized  # pylint: disable=global-statement
     if not _jax_distributed_initialized:
+        init_kwargs = {}
+        if initialization_timeout is not None:
+            init_kwargs["initialization_timeout"] = initialization_timeout
+
         if jax_backend == "tpu":
             if not (
                 distributed_coordinator is None and num_processes is None and process_id is None
@@ -53,7 +60,6 @@ def setup(
                     "distributed_coordinator, num_processes, and process_id "
                     "should all be None for tpu backend."
                 )
-            jax.distributed.initialize()
         else:
             if distributed_coordinator is None and num_processes is None and process_id is None:
                 logging.info(
@@ -76,9 +82,11 @@ def setup(
                 else:
                     raise ValueError(f"Unknown distributed_coordinator: {distributed_coordinator}")
 
-            jax.distributed.initialize(
-                distributed_coordinator,
+            init_kwargs.update(
+                coordinator_address=distributed_coordinator,
                 num_processes=num_processes,
                 process_id=process_id,
             )
+
+        jax.distributed.initialize(**init_kwargs)
         _jax_distributed_initialized = True

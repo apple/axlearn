@@ -218,7 +218,7 @@ class TestTimeStepEmbedding(parameterized.TestCase):
         batch_size = 5
         output_dim = 512
 
-        timestep = np.random.randint(0, 10, size=(batch_size))
+        timestep = np.random.randint(0, 10, size=batch_size)
         ref_model = RefTimestepEmbedder(
             hidden_size=output_dim, frequency_embedding_size=pos_embed_dim
         )
@@ -253,7 +253,7 @@ class TestLabelEmbedding(parameterized.TestCase):
         num_classes = 1000
         hidden_size = 1152
 
-        label = np.random.randint(0, num_classes, size=(batch_size))
+        label = np.random.randint(0, num_classes, size=batch_size)
         ref_model = RefLabelEmbedder(
             num_classes=num_classes, hidden_size=hidden_size, dropout_prob=class_dropout_prob
         )

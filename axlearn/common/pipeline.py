@@ -11,7 +11,7 @@
 https://arxiv.org/abs/1811.06965
 
 Adapted from:
-https://github.com/tensorflow/lingvo/blob/master/lingvo/jax/layers/pipeline.py
+https://github.com/tensorflow/lingvo/blob/2d46faf8/lingvo/jax/layers/pipeline.py
 
 A pipeline layer consists a stack of N identical sub layers, where
   * The variables are stacked across layers. Each stacked variable has shape [N, ...].

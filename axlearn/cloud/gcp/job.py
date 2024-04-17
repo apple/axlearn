@@ -4,6 +4,7 @@
 
 Note that these utilities do not handle resource management.
 """
+
 import atexit
 import logging
 import os
@@ -13,12 +14,14 @@ import shlex
 import subprocess
 from typing import Any, Dict, Optional, Sequence, Union
 
+from absl import flags
 from google.auth.credentials import Credentials
 
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import subprocess_run
+from axlearn.cloud.gcp.config import default_project, default_zone
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
-from axlearn.cloud.gcp.tpu import _qrm_resource, _tpu_resource, get_queued_tpu_node, get_tpu_node
+from axlearn.cloud.gcp.tpu import get_queued_tpu_node, get_tpu_node, qrm_resource, tpu_resource
 from axlearn.cloud.gcp.utils import get_credentials, running_from_vm
 from axlearn.common.config import REQUIRED, Required, config_class
 
@@ -37,6 +40,20 @@ class GCPJob(Job):
         # If not none, the current job will be executed as the service account.
         service_account: Optional[str] = None
 
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("project", default_project(), "The GCP project name.", **common_kwargs)
+        flags.DEFINE_string("zone", default_zone(), "The GCP zone name.", **common_kwargs)
+        flags.DEFINE_string(
+            "service_account",
+            None,
+            "If specified, will run job as the service account. "
+            "Otherwise will fallback to application-default credentials.",
+            **common_kwargs,
+        )
+
     def _get_job_credentials(
         self,
         impersonate_scopes: Optional[Sequence[str]] = None,
@@ -53,7 +70,8 @@ class GCPJob(Job):
             The temporary credentials, possibly impersonating `cfg.service_account`.
         """
         return get_credentials(
-            impersonate_account=self.config.service_account, impersonate_scopes=impersonate_scopes
+            impersonate_account=self.config.service_account,
+            impersonate_scopes=impersonate_scopes,
         )
 
 
@@ -72,6 +90,12 @@ class TPUJob(GCPJob):
         super().__init__(cfg)
         self._local_home = pathlib.Path.home()
         self._use_iap = None  # Infer from public IP.
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        flags.DEFINE_string("tpu_type", None, "TPU type.", flag_values=fv)
+        flags.DEFINE_integer("num_slices", 1, "Number of slices.", flag_values=fv)
 
     def _ensure_ssh_keys(self):
         """Ensures SSH keys exist, or raises ValueError. Only necessary on remote VM."""
@@ -92,12 +116,12 @@ class TPUJob(GCPJob):
             if cfg.num_slices > 1:
                 node = get_queued_tpu_node(
                     cfg.name,
-                    _qrm_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
+                    qrm_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
                 )
             else:
                 node = get_tpu_node(
                     cfg.name,
-                    _tpu_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
+                    tpu_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
                 )
             if node is None:
                 raise ValueError(f"Expected TPU {cfg.name} to exist")
@@ -255,14 +279,13 @@ def _start_ssh_agent():
 
     The ssh-agent is automatically terminated when the program exits.
     """
+    # pylint: disable=line-too-long
     if not os.getenv("SSH_AGENT_PID"):
         logging.info("ssh-agent is not running, starting it now...")
         process = subprocess_run("ssh-agent -s", stdout=subprocess.PIPE, check=True, text=True)
         # Example format:
-        # pylint: disable-next=line-too-long
         # Linux:
         # SSH_AUTH_SOCK=/tmp/ssh-g4aYlFVLLugX/agent.52090; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=52091; export SSH_AGENT_PID;\necho Agent pid 52091;\n
-        # pylint: disable-next=line-too-long
         # Mac:
         # SSH_AUTH_SOCK=/var/folders/j0/blx8mk5j1hlc0k110xsbrxw00000gn/T//ssh-ZAf5XlQX7tWM/agent.7841; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=7842; export SSH_AGENT_PID;\necho Agent pid 7842;\n
         match = re.search(

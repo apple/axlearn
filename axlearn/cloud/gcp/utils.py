@@ -75,13 +75,20 @@ def running_from_vm() -> bool:
     return (out.returncode == 0) and "Metadata-Flavor: Google" in out.stdout
 
 
-def is_valid_resource_name(name: Optional[str]) -> bool:
+def validate_resource_name(name: Optional[str]):
     """Validates names (e.g. TPUs, VMs, jobs) to ensure compat with GCP.
 
     Reference:
     https://cloud.google.com/compute/docs/naming-resources#resource-name-format
+
+    Raises:
+        ValueError: If name is invalid.
     """
-    return name is not None and re.fullmatch(r"^[a-z]([-a-z0-9]*[a-z0-9])?", name) is not None
+    if name is None or len(name) > 63 or re.fullmatch(r"^[a-z]([-a-z0-9]*[a-z0-9])?", name) is None:
+        raise ValueError(
+            f"{name} is not a valid resource name. Please see "
+            "https://cloud.google.com/compute/docs/naming-resources#resource-name-format."
+        )
 
 
 def catch_auth(fn):

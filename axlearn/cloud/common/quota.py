@@ -2,12 +2,10 @@
 
 """Utilities to retrieve quotas."""
 import re
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import List, Protocol
 
 import toml
-from absl import logging
 from tensorflow import io as tf_io
 
 from axlearn.cloud.common.types import ProjectResourceMap, ResourceMap
@@ -20,10 +18,10 @@ class QuotaInfo:
     """Quota information for job scheduling."""
 
     # A mapping from resource type to total resource limits.
-    total_resources: ResourceMap
-    # A nested mapping. Key is project identifier, value is mapping from resource type to allocated
-    # amount of resources.
-    project_resources: ProjectResourceMap
+    total_resources: ResourceMap[float]
+    # A nested mapping. Key is project identifier, value is mapping from resource type to
+    # per-project resource proportions.
+    project_resources: ProjectResourceMap[float]
 
 
 class QuotaFn(Protocol):
@@ -46,35 +44,11 @@ def get_resource_limits(path: str) -> QuotaInfo:
     with tf_io.gfile.GFile(path, mode="r") as f:
         cfg = toml.loads(f.read())
         if cfg["toml-schema"]["version"] == "1":
-            return _convert_and_validate_resources(
-                QuotaInfo(
-                    total_resources=cfg["total_resources"],
-                    project_resources=cfg["project_resources"],
-                )
+            return QuotaInfo(
+                total_resources=cfg["total_resources"],
+                project_resources=cfg["project_resources"],
             )
         raise ValueError(f"Unsupported schema version {cfg['toml-schema']['version']}")
-
-
-def _convert_and_validate_resources(info: QuotaInfo) -> QuotaInfo:
-    # Project resources are typically expressed as percentages.
-    # Here we convert them to actual values. Conversion happens in-place.
-    total_project_resources = defaultdict(float)
-    for resources in info.project_resources.values():
-        for resource_type, fraction in resources.items():
-            value = fraction * float(info.total_resources.get(resource_type, 0))
-            total_project_resources[resource_type] += value
-            resources[resource_type] = value
-
-    for resource_type, total in total_project_resources.items():
-        limit = info.total_resources.get(resource_type, 0)
-        if total > limit + 0.01:
-            logging.warning(
-                "Sum of %s project resources (%s) exceeds total (%s)",
-                resource_type,
-                total,
-                info.total_resources[resource_type],
-            )
-    return info
 
 
 def get_user_projects(path: str, user_id: str) -> List[str]:

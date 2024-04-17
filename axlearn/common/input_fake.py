@@ -43,7 +43,7 @@ class FakeTextInput(Module):
         return self
 
     def dataset(self):
-        return self.__iter__()
+        return self.__iter__()  # pylint: disable=unnecessary-dunder-call
 
 
 class FakeLmInput(FakeTextInput):

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests CPU runner job."""
+
 # pylint: disable=protected-access
 import contextlib
 import hashlib
@@ -14,15 +15,12 @@ from unittest import mock
 from absl import app, flags
 from absl.testing import parameterized
 
+from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp import job as gcp_job
 from axlearn.cloud.gcp.bundler import GCSTarBundler
 from axlearn.cloud.gcp.jobs import cpu_runner
-from axlearn.cloud.gcp.jobs.cpu_runner import (
-    _COMMAND_SESSION_NAME,
-    CPURunnerJob,
-    launch_flags,
-    main,
-)
+from axlearn.cloud.gcp.jobs.cpu_runner import _COMMAND_SESSION_NAME, CPURunnerJob, main
+from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.cloud.gcp.vm import VmInfo
 from axlearn.common.config import config_for_function
 from axlearn.common.test_utils import TestWithTemporaryCWD
@@ -94,8 +92,8 @@ def _mock_credentials():
 
 
 def _mock_config():
-    bundler = mock.MagicMock()
-    bundler.install_command.return_value = "test_install"
+    b = mock.MagicMock()
+    b.install_command.return_value = "test_install"
     return CPURunnerJob.default_config().set(
         name="test_name",
         output_dir="test_output",
@@ -105,12 +103,57 @@ def _mock_config():
         zone="test_zone",
         max_tries=1,
         retry_interval=60,
-        bundler=config_for_function(lambda: bundler),
+        bundler=config_for_function(lambda: b),
     )
 
 
 class CPURunnerJobTest(TestWithTemporaryCWD):
     """Tests CPURunnerJob."""
+
+    @parameterized.product(
+        name=[None, "test-name"],
+        output_dir=[None, "test-output"],
+    )
+    def test_from_flags(self, name, output_dir):
+        # Construct flags.
+        fv = flags.FlagValues()
+        CPURunnerJob.define_flags(fv)
+        argv = ["cli"]
+        if name is not None:
+            argv.append(f"--name={name}")
+        if output_dir is not None:
+            argv.append(f"--output_dir={output_dir}")
+
+        # Parse argv.
+        fv(argv)
+        assert fv.name == name
+
+        # Construct config.
+        mock_settings = {"ttl_bucket": "ttl_bucket"}
+        mock_generate_job_name = mock.patch(
+            f"{cpu_runner.__name__}.generate_job_name", return_value="test-name"
+        )
+        with mock_generate_job_name, mock_gcp_settings(
+            cpu_runner.__name__, settings=mock_settings
+        ), mock_gcp_settings(bundler.__name__, settings=mock_settings):
+            cfg = CPURunnerJob.from_flags(fv)
+
+        self.assertIsInstance(cfg.bundler, GCSTarBundler.Config)
+
+        # If name is not provided, there should be a default.
+        if name is None:
+            self.assertIsNotNone(cfg.name)
+        else:
+            self.assertEqual(name, cfg.name)
+
+        # If output_dir is not provided, it should use the right name.
+        if output_dir is None:
+            self.assertEqual(f"gs://ttl_bucket/axlearn/jobs/{cfg.name}", cfg.output_dir)
+        else:
+            self.assertEqual(output_dir, cfg.output_dir)
+
+        # It should be instantiable.
+        cfg.set(command="").instantiate()
 
     def test_start(self):
         cfg = _mock_config()
@@ -122,9 +165,9 @@ class CPURunnerJobTest(TestWithTemporaryCWD):
             job._start()
             mocks["create_vm"].assert_called()
             # Bundling should happen outside of start.
-            job._bundler.bundle.assert_not_called()
+            job.bundler.bundle.assert_not_called()
             # Install should happen at run_command, not start.
-            job._bundler.install_command.assert_not_called()
+            job.bundler.install_command.assert_not_called()
 
     @parameterized.parameters(True, False)
     def test_delete(self, retain_vm):
@@ -178,7 +221,7 @@ class CPURunnerJobTest(TestWithTemporaryCWD):
         with mock_execute, _mock_credentials(), mock_vm(cpu_runner.__name__):
             job._run_command()
             # Install should happen at run_command.
-            job._bundler.install_command.assert_called()
+            job.bundler.install_command.assert_called()
 
     @parameterized.parameters("SUCCESS", None)
     def test_get_status(self, status):
@@ -200,7 +243,7 @@ class CPURunnerJobTest(TestWithTemporaryCWD):
         def execute_command(cmd, **kwargs):
             del kwargs
             # Don't bother running the mocked install_command.
-            if cmd == job._bundler.install_command():
+            if cmd == job.bundler.install_command():
                 return None
             self.assertIn(
                 # Use a stable hash for consistent runs.
@@ -278,9 +321,9 @@ def _mock_job(running_from_vm: bool):
 class CPURunnerMainTest(TestWithTemporaryCWD):
     """Tests CLI entrypoint."""
 
-    def test_launch_flags(self):
+    def test_define_flags(self):
         fv = flags.FlagValues()
-        launch_flags(flag_values=fv)
+        CPURunnerJob.define_flags(fv)
         # Basic sanity check.
         self.assertEqual(fv["vm_type"].default, "n2-standard-16")
 
@@ -299,9 +342,8 @@ class CPURunnerMainTest(TestWithTemporaryCWD):
     @parameterized.parameters(True, False)
     def test_start(self, running_from_vm):
         fv = flags.FlagValues()
-        launch_flags(flag_values=fv)
+        CPURunnerJob.define_flags(fv)
         fv.mark_as_parsed()
-        self.assertEqual(fv.bundler_type, GCSTarBundler.TYPE)
 
         with _mock_job(running_from_vm) as mock_job:
             with self.assertRaisesRegex(app.UsageError, "Invalid action"):
@@ -313,4 +355,4 @@ class CPURunnerMainTest(TestWithTemporaryCWD):
             main(["cli", "start", "--", "test_command"], flag_values=fv)
             if not running_from_vm:
                 # Bundling should happen if running locally.
-                mock_job._bundler.bundle.assert_called()
+                mock_job.bundler.bundle.assert_called()

@@ -4,11 +4,11 @@
 
 from typing import Callable, Optional, Tuple
 
-import chex
 import jax
 import jax.numpy as jnp
 import optax
 
+from axlearn.common import struct
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
@@ -120,8 +120,7 @@ class CTCPrefixMerger(PrefixMerger):
         return jax.vmap(jax.vmap(_update_seq))(tokens, state)
 
 
-@chex.dataclass
-class DecodeOutputs:
+class DecodeOutputs(struct.PyTreeNode):
     """Output of decoding."""
 
     # Raw decode output sequences. May contain blank and/or repeated tokens.
@@ -168,7 +167,7 @@ class CTCDecoderModel(BaseModel):
         cfg = self.config
         self._add_child("lm_head", cfg.lm_head.set(input_dim=cfg.dim, output_dim=cfg.vocab_size))
 
-    def predict(self, input_batch: Nested[Tensor]) -> Nested[Tensor]:
+    def predict(self, input_batch: Nested[Tensor]) -> Tensor:
         """Computes logits.
 
         Args:
@@ -317,7 +316,7 @@ class CTCDecoderModel(BaseModel):
             ValueError: If max_decode_len is not None.
         """
         cfg: CTCDecoderModel.Config = self.config
-        paddings = input_batch["paddings"]
+        paddings: Tensor = input_batch["paddings"]
         # Add 1 so we can drop EOS while ensuring decodes can be up to `num_frames`.
         max_decode_len = paddings.shape[-1] + 1
         beam_search_outputs = beam_search_decode(
@@ -358,7 +357,7 @@ class CTCDecoderModel(BaseModel):
             See `beam_search_decode`.
         """
         cfg: CTCDecoderModel.Config = self.config
-        paddings = input_batch["paddings"]
+        paddings: Tensor = input_batch["paddings"]
         # Add 1 so we can drop EOS while ensuring decodes can be up to `num_frames`.
         max_decode_len = paddings.shape[-1] + 1
         sample_decode_outputs = sample_decode(
@@ -397,7 +396,7 @@ class CTCDecoderModel(BaseModel):
                 scores: A Tensor of shape [batch_size, 1].
         """
         cfg: CTCDecoderModel.Config = self.config
-        paddings = input_batch["paddings"]
+        paddings: Tensor = input_batch["paddings"]
         # [batch_size, num_frames, vocab_size].
         logits = self.predict(input_batch)
         # [batch, 1, num_frames].

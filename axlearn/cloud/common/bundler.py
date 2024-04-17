@@ -272,6 +272,8 @@ class BaseDockerBundler(Bundler):
         # Allow git status to be dirty if bundling from source. This is sometimes necessary, e.g.
         # during bundling-time modifications of files.
         allow_dirty: bool = False
+        # Additional image(s) to cache from.
+        cache_from: Optional[Sequence[str]] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -297,18 +299,23 @@ class BaseDockerBundler(Bundler):
         """Converts a spec to a bundler.
 
         Possible options:
-        - dockerfile: The Dockerfile path relative to project root.
         - image: The image name.
         - repo: The docker repo.
+        - dockerfile: The Dockerfile path relative to project root.
+        - target: The build target.
         - platform: The image target platform.
+        - allow_dirty: Whether to ignore dirty git status.
+        - cache_from: A comma-separated list of cache sources.
 
         All other specs are treated as build args.
         """
-        cfg = cls.default_config()
+        del fv  # Not used.
+        cfg: BaseDockerBundler.Config = cls.default_config()
         kwargs = parse_kv_flags(spec, delimiter="=")
+        cache_from = canonicalize_to_list(kwargs.pop("cache_from", None))
         # Non-config specs are treated as build args.
         build_args = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k not in cfg}
-        return cfg.set(build_args=build_args, **kwargs)
+        return cfg.set(build_args=build_args, cache_from=cache_from, **kwargs)
 
     # pylint: disable-next=arguments-renamed
     def id(self, tag: str) -> str:
@@ -434,7 +441,7 @@ class DockerBundler(BaseDockerBundler):
         context: str,
         labels: Dict[str, str],
     ) -> str:
-        cfg = self.config
+        cfg: DockerBundler.Config = self.config
         return docker_push(
             docker_build(
                 dockerfile=dockerfile,
@@ -444,6 +451,7 @@ class DockerBundler(BaseDockerBundler):
                 target=cfg.target,
                 labels=labels,
                 platform=cfg.platform,
+                cache_from=cfg.cache_from,
             )
         )
 
@@ -462,6 +470,8 @@ class BaseTarBundler(Bundler):
         remote_dir: Required[str] = REQUIRED
         # Optional list of --find-links to use in pip install.
         find_links: Optional[Union[str, Sequence[str]]] = None
+        # Optional --index-url to use in pip install.
+        index_url: Optional[str] = None
         # Whether to install in editable mode.
         editable: bool = False
 
@@ -472,6 +482,7 @@ class BaseTarBundler(Bundler):
         Possible options:
         - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf_io.
         """
+        del fv  # Not used.
         return cls.default_config().set(**parse_kv_flags(spec, delimiter="="))
 
     def id(self, name: str) -> str:
@@ -489,7 +500,7 @@ class BaseTarBundler(Bundler):
         Returns:
             The remote path.
         """
-        cfg = self.config
+        cfg: BaseTarBundler.Config = self.config
 
         with self._local_dir_context() as temp_dir:
             temp_dir = pathlib.Path(temp_dir)
@@ -511,6 +522,8 @@ class BaseTarBundler(Bundler):
             with requirements.open("w", encoding="utf-8") as f:
                 for find_links in canonicalize_to_list(cfg.find_links):
                     f.write(f"--find-links {find_links}\n")
+                if cfg.index_url:
+                    f.write(f"--index-url {cfg.index_url}\n")
                 pyproject_extras = []
                 for extra in canonicalize_to_list(cfg.extras):
                     # NOTE: .whl can also end with a pyproject section, e.g. axlearn.whl[dev].
@@ -567,8 +580,7 @@ class BaseTarBundler(Bundler):
             The command to install the bundle.
         """
         copy_cmd = self._copy_to_local_command(
-            remote_bundle_id=bundle_id,
-            local_bundle_id="axlearn.tar.gz",
+            remote_bundle_id=bundle_id, local_bundle_id="axlearn.tar.gz"
         )
         pip_install_cmd = (
             f"if [[ -f {config.CONFIG_DIR}/requirements.txt ]]; then "
@@ -607,10 +619,10 @@ def get_bundler_config(
     )
 
 
-def bundler_flags(**kwargs):
+def bundler_flags(required: bool = True, **kwargs):
     """Common bundler flags. Keyword args will be forwarded to flag definitions."""
 
-    flags.DEFINE_string("bundler_type", None, "Bundler type.", required=True, **kwargs)
+    flags.DEFINE_string("bundler_type", None, "Bundler type.", required=required, **kwargs)
     flags.DEFINE_multi_string(
         "bundler_spec",
         [],

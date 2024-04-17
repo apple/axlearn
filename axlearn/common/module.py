@@ -54,7 +54,7 @@ from axlearn.common import traceback_util
 from axlearn.common.config import REQUIRED, Configurable, Required, RequiredFieldValue, config_class
 from axlearn.common.summary import Summary
 from axlearn.common.traceback_util import annotate_stack, no_stack_summary
-from axlearn.common.utils import NestedTensor, Tensor, partial_with_fn_metadata, prune_tree
+from axlearn.common.utils import Nested, NestedTensor, Tensor, partial_with_fn_metadata, prune_tree
 
 
 def _generate_seed_from_name(name: str) -> np.int64:
@@ -234,7 +234,7 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
     def add_summary(
         self,
         name: str,
-        value: Union[Summable, Tensor],
+        value: Nested[Union[Summary, Tensor]],
     ):
         """Adds the named value to the `OutputCollection.summaries`.
 
@@ -242,6 +242,13 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
             name: The name of the item to add.
             value: The value to add.
         """
+
+        def validate(leaf):
+            if isinstance(leaf, Summary):
+                leaf.validate()
+
+        jax.tree_util.tree_map(validate, value, is_leaf=lambda x: isinstance(x, Summary))
+
         self.output_collection.summaries[name] = value
 
     def add_state_update(self, name: str, value: Tensor):

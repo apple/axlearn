@@ -4,14 +4,15 @@
 # pylint: disable=protected-access
 import contextlib
 import threading
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import chex
 import jax.random
 import numpy as np
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
+from axlearn.common import summary, test_utils
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import (
     InvocationContext,
@@ -30,9 +31,9 @@ from axlearn.common.module import (
     scan_in_context,
     set_current_context,
 )
-from axlearn.common.summary import ImageSummary
+from axlearn.common.summary import ImageSummary, Summary
 from axlearn.common.test_utils import TestWithTemporaryCWD
-from axlearn.common.utils import match_regex_rules
+from axlearn.common.utils import Nested, match_regex_rules
 
 
 class OutputCollectionTest(absltest.TestCase):
@@ -90,7 +91,7 @@ def new_test_module(name: str) -> TestModule:
     return TestModule.default_config().set(name=name).instantiate(parent=None)
 
 
-class InvocationContextTest(absltest.TestCase):
+class InvocationContextTest(test_utils.TestCase):
     def test_context_output_collection(self):
         context = InvocationContext(
             name="root",
@@ -200,6 +201,41 @@ class InvocationContextTest(absltest.TestCase):
         with set_current_context(context1):
             context2 = context1.add_child("context2", module=module2, state={"x": 2})
             self.assertEqual(context2.prng_key, None)
+
+    class MySummary(summary.Summary):
+        val: str
+
+        def validate(self):
+            if self.val == "s":
+                raise ValueError("not allowed")
+
+    @parameterized.parameters(
+        [MySummary("s"), True],
+        [dict(a=3, b=MySummary("s")), True],
+        [dict(a=3, b=MySummary("t")), False],
+        [dict(a=MySummary("t"), b=MySummary("s")), True],
+        [dict(a=MySummary("t"), b=MySummary("r")), False],
+    )
+    def test_add_summary_validation(
+        self, value: Nested[Union[Summary, Tensor]], should_raise: bool
+    ):
+        """Tests validation in `add_summary("summary", value)`."""
+        module1 = new_test_module("test1")
+        ctx = InvocationContext(
+            name="context1",
+            parent=None,
+            module=module1,
+            prng_key=None,
+            is_training=True,
+            state={"x": 1},
+            output_collection=new_output_collection(),
+        )
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(set_current_context(ctx))
+            if should_raise:
+                stack.enter_context(self.assertRaises(ValueError))
+            ctx.add_summary("summary", value)
 
 
 class NestedModule(Module):

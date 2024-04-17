@@ -2,8 +2,9 @@
 
 """Base Encoder-Decoder model interface."""
 
-from typing import Callable, Dict, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
+from axlearn.common import decoding
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class
@@ -95,7 +96,7 @@ class BaseEncoderDecoderModel(BaseModel):
         input_batch: Dict[str, Tensor],
         max_sequence_length: int,
         num_decodes: int,
-        brevity_penalty: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
+        brevity_penalty: Optional[decoding.BrevityPenaltyFn] = None,
     ) -> BeamSearchOutputs:
         """Performs beam search decoding given prefix prompt.
 

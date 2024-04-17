@@ -88,6 +88,55 @@ class ProjectJobSorterTest(absltest.TestCase):
 class ResourceLimitCalculatorTest(absltest.TestCase):
     """Tests ResourceLimitCalculator."""
 
+    def test_proportional_quotas(self):
+        calculator: ResourceLimitCalculator = ResourceLimitCalculator.default_config().instantiate()
+        quotas = {"a": 0.4, "b": 0.2, "c": 0.1}
+        self.assertDictEqual(
+            # Quota will be allocated proportionally.
+            {
+                "a": 4,
+                "b": 2,
+                "c": 1,
+            },
+            # `quotas` do not have to add up to `limit`.
+            calculator.calculate(limit=7, quotas=quotas, demands={"a": 100, "b": 100, "c": 100}),
+        )
+        self.assertDictEqual(
+            {
+                "a": 5,  # quota limit is rounded up in this case.
+                "b": 2,
+                "c": 1,
+            },
+            calculator.calculate(limit=8, quotas=quotas, demands={"a": 100, "b": 100, "c": 100}),
+        )
+        self.assertDictEqual(
+            {
+                "a": 5,  # quota limit is rounded up in this case.
+                "b": 3,  # quota limit is rounded up in this case.
+                "c": 1,
+            },
+            calculator.calculate(limit=9, quotas=quotas, demands={"a": 100, "b": 100, "c": 100}),
+        )
+        self.assertDictEqual(
+            {
+                "a": 6,  # quota limit is rounded up in this case.
+                "b": 3,  # quota limit is rounded up in this case.
+                "c": 1,
+            },
+            calculator.calculate(limit=10, quotas=quotas, demands={"a": 100, "b": 100, "c": 100}),
+        )
+
+    def test_unallocated_resources(self):
+        calculator: ResourceLimitCalculator = ResourceLimitCalculator.default_config().instantiate()
+        self.assertDictEqual(
+            {
+                "a": 1,
+                "b": 1,
+                "c": 2,  # An arbitrary project gets the remaining quota.
+            },
+            calculator.calculate(limit=4, quotas={}, demands={"a": 100, "b": 100, "c": 100}),
+        )
+
     def test_extreme_cases(self):
         calculator: ResourceLimitCalculator = ResourceLimitCalculator.default_config().instantiate()
         # Empty demands.
@@ -96,7 +145,7 @@ class ResourceLimitCalculatorTest(absltest.TestCase):
         )
         # Empty quota.
         self.assertDictEqual(
-            {}, calculator.calculate(limit=10, quotas={}, demands={"a": 8, "b": 2})
+            {"a": 8, "b": 2}, calculator.calculate(limit=10, quotas={}, demands={"a": 8, "b": 2})
         )
         # Demand from one project only.
         self.assertDictEqual(
@@ -301,14 +350,14 @@ class TestJobScheduler(parameterized.TestCase):
                 user_id="d",
                 project_id="project2",
                 creation_time=yesterday + timedelta(seconds=4),
-                resources={"v5": 3},
+                resources={"v5": 4},
             ),
             # Should run -- within the 2.5 excess v5 quota.
             "e": JobMetadata(
                 user_id="e",
                 project_id="project3",
                 creation_time=yesterday + timedelta(seconds=5),
-                resources={"v5": 2.5},
+                resources={"v5": 2},
             ),
             # Should run. Even though it has no project, there is excess v3 quota.
             "f": JobMetadata(
@@ -335,4 +384,127 @@ class TestJobScheduler(parameterized.TestCase):
         self.assertEqual(
             expected,
             {job_name: job_verdict.should_run() for job_name, job_verdict in job_verdicts.items()},
+        )
+
+    def test_leftover(self):
+        quota_info = QuotaInfo(
+            total_resources={"gpu": 12},
+            project_resources={
+                "project_a": {"gpu": 1},
+                "project_b": {"gpu": 1},
+                "project_c": {"gpu": 1},
+            },
+        )
+        cfg = JobScheduler.default_config().set(
+            quota=config_for_function(lambda: lambda *args: quota_info),
+        )
+
+        # Test initialization.
+        sched: JobScheduler = cfg.instantiate()
+        # pylint: disable-next=protected-access
+        self.assertEqual(sched._quota(), quota_info)
+
+        yesterday = datetime.now() - timedelta(days=1)
+
+        # Test basic left-over scheduling.
+        jobs = {
+            proj: JobMetadata(
+                user_id=f"user_{proj}",
+                project_id=f"project_{proj}",
+                creation_time=yesterday + timedelta(seconds=-index),
+                resources={"gpu": 5},
+            )
+            for index, proj in enumerate(["a", "b", "c"])
+        }
+        results = sched.schedule(jobs)
+        # Each project gets 4 GPUs as its resource limit.
+        self.assertEqual(
+            {f"project_{proj}": {"gpu": 4} for proj in ("a", "b", "c")},
+            results.project_limits,
+        )
+        job_verdicts: Dict[str, JobVerdict] = {
+            job_name: verdict
+            for project_verdicts in results.job_verdicts.values()
+            for job_name, verdict in project_verdicts.items()
+        }
+        # Two of the older jobs should run, even though every job's demand exceeds the project
+        # limit.
+        self.assertEqual(
+            {"a": False, "b": True, "c": True},
+            {job_name: verdict.should_run() for job_name, verdict in job_verdicts.items()},
+        )
+
+        # Test more complicated scheduling.
+        jobs = {}
+        creation_time = {
+            "a1": 1,
+            "a2": 13,
+            "a3": 21,
+            "b1": 2,
+            "b2": 11,
+            "b3": 22,
+            "c1": 3,
+            "c2": 12,
+            "c3": 23,
+        }
+        for proj in ("a", "b", "c"):
+            # Each project has three jobs, with demand of 1, 5, 4 gpus each.
+            jobs.update(
+                {
+                    f"{proj}1": JobMetadata(
+                        user_id=f"user_{proj}",
+                        project_id=f"project_{proj}",
+                        creation_time=yesterday + timedelta(seconds=creation_time[f"{proj}1"]),
+                        resources={"gpu": 1},
+                    ),
+                    f"{proj}2": JobMetadata(
+                        user_id=f"user_{proj}",
+                        project_id=f"project_{proj}",
+                        creation_time=yesterday + timedelta(seconds=creation_time[f"{proj}2"]),
+                        resources={"gpu": 5},
+                    ),
+                    f"{proj}3": JobMetadata(
+                        user_id=f"user_{proj}",
+                        project_id=f"project_{proj}",
+                        creation_time=yesterday + timedelta(seconds=creation_time[f"{proj}3"]),
+                        resources={"gpu": 4},
+                    ),
+                }
+            )
+        results = sched.schedule(jobs)
+
+        # Get verdicts by job name.
+        job_verdicts: Dict[str, JobVerdict] = {
+            job_name: verdict
+            for project_verdicts in results.job_verdicts.values()
+            for job_name, verdict in project_verdicts.items()
+        }
+        expected = {
+            # The first job of each project will get scheduled.
+            "a1": True,
+            "b1": True,
+            "c1": True,
+            # Only "b2" will get scheduled since it's older than "a2" and "c2".
+            "a2": False,
+            "b2": True,
+            "c2": False,
+            # Only "a3" will get scheduled since it can fit into the last gpu ("a2" cannot) and
+            # it's older than "b3" and "c3".
+            "a3": True,
+            "b3": False,
+            "c3": False,
+        }
+        self.assertEqual(
+            expected,
+            {job_name: job_verdict.should_run() for job_name, job_verdict in job_verdicts.items()},
+        )
+        self.assertEqual(
+            # Each project gets 4 GPUs according to their quotas.
+            {"project_a": {"gpu": 4}, "project_b": {"gpu": 4}, "project_c": {"gpu": 4}},
+            results.project_limits,
+        )
+        self.assertEqual(
+            # Actual usages can be higher than the limits due to left-over scheduling.
+            {"project_a": {"gpu": 5}, "project_b": {"gpu": 6}, "project_c": {"gpu": 1}},
+            results.project_usages,
         )

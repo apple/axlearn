@@ -138,13 +138,19 @@ class CloudBuildBundler(BaseDockerBundler):
         context: str,
         labels: Dict[str, str],
     ):
-        cfg = self.config
+        cfg: CloudBuildBundler.Config = self.config
+        logging.info("CloudBuild build args: %s", args)
         build_args = "\n".join(
-            [f'    "--build-arg", "{key}={value}",' for key, value in args.items()]
+            [f'"--build-arg", "{k.strip().upper()}={v.strip()}",' for k, v in args.items()]
         )
-        labels = "\n".join([f'    "--label", "{key}={value}",' for key, value in labels.items()])
-        build_target = f'    "--target", "{cfg.target}",' if cfg.target else ""
-        build_platform = f'    "--platform", "{cfg.platform}",' if cfg.platform else ""
+        labels = "\n".join([f'"--label", "{k.strip()}={v.strip()}",' for k, v in labels.items()])
+        build_target = f'"--target", "{cfg.target}",' if cfg.target else ""
+        build_platform = f'"--platform", "{cfg.platform}",' if cfg.platform else ""
+        cache_from = (
+            "\n".join([f'"--cache-from", "{cache_source}",' for cache_source in cfg.cache_from])
+            if cfg.cache_from
+            else ""
+        )
         cloudbuild_yaml = f"""
 steps:
 - name: "gcr.io/cloud-builders/docker"
@@ -153,6 +159,7 @@ steps:
     "-f", "{os.path.relpath(dockerfile, context)}",
     "-t", "{image}",
     "--cache-from", "{image}",
+    {cache_from}
     {build_target}
     {build_platform}
     {build_args}
@@ -182,7 +189,7 @@ options:
             context,
         ]
         logging.info("Running %s", cmd)
-        print(subprocess.run(cmd, check=False))
+        print(subprocess.run(cmd, check=True))
         return image
 
 

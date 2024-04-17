@@ -126,6 +126,7 @@ from axlearn.cloud.common.bastion import (
     set_runtime_options,
 )
 from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
+from axlearn.cloud.common.cleaner import CompositeCleaner, UnschedulableCleaner
 from axlearn.cloud.common.job import _with_retry
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
@@ -219,7 +220,7 @@ def bastion_root_dir(bastion: str, *, fv: Optional[flags.FlagValues]) -> str:
     return os.path.join("gs://", gcp_settings("permanent_bucket", fv=fv), bastion)
 
 
-def _gsutil_rsync(
+def _gcloud_storage_rsync(
     *,
     src_dir: str,
     dst_dir: str,
@@ -227,15 +228,18 @@ def _gsutil_rsync(
     interval_s: float = 30,
     timeout_s: float = 5 * 60,
 ):
-    """An upload fn that uses `gsutil rsync`."""
+    """An upload fn that uses `gcloud storage rsync`."""
 
     for i in range(max_tries):
-        # Ensure trailing slash, if not already present, for rsync.
+        # Ensure trailing slash from src, if not already present, for rsync.
         src = os.path.join(src_dir, "")
-        dst = os.path.join(dst_dir, "")
+        # Ensure no trailing slash from dst.
+        dst = dst_dir.rstrip("/")
         # Attempt to sync, raising TimeoutError on timeout.
+        # Using gcloud storage instead of gsutil due to:
+        # https://cloud.google.com/blog/products/storage-data-transfer/new-gcloud-storage-cli-for-your-data-transfers
         proc = subprocess.run(
-            ["gsutil", "-m", "rsync", "-r", src, dst],
+            ["gcloud", "storage", "rsync", "-r", src, dst],
             check=False,
             timeout=timeout_s,
             capture_output=True,
@@ -418,9 +422,7 @@ def _maybe_delete_child_jobs(flag_values: flags.FlagValues):
         logging.info("Will terminate the following jobs:\n%s", "\n".join(jobs.keys()))
         logging.info("Continue? [y/n]")
         if input().lower() == "y":
-            jobs_to_terminate = {
-                job.spec.name: job.spec.metadata.resources for job in jobs.values()
-            }
+            jobs_to_terminate = {job.spec.name: job.spec for job in jobs.values()}
             # Delete all TPUs with an associated bastion job.
             while jobs_to_terminate:
                 logging.info("Issuing a sweep...")
@@ -481,14 +483,20 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         _maybe_delete_child_jobs(flag_values=flag_values)
     elif action == "start":
         # Start the bastion. This should run on the bastion itself.
+        scheduler_cfg = JobScheduler.default_config().set(
+            quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file()),
+        )
         bastion_cfg = Bastion.default_config().set(
             output_dir=root_dir(),
-            scheduler=JobScheduler.default_config().set(
-                quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file()),
+            scheduler=scheduler_cfg,
+            cleaner=CompositeCleaner.default_config().set(
+                cleaners=[
+                    TPUCleaner.default_config(),
+                    UnschedulableCleaner.default_config().set(scheduler=scheduler_cfg),
+                ]
             ),
-            cleaner=TPUCleaner.default_config(),
             uploader=Uploader.default_config().set(
-                upload_fn=config_for_function(with_interval).set(upload_fn=_gsutil_rsync),
+                upload_fn=config_for_function(with_interval).set(upload_fn=_gcloud_storage_rsync),
             ),
         )
         _with_retry(

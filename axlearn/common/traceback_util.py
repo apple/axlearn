@@ -145,8 +145,8 @@ class _InContextException(Exception):
                 return fn(*args, **kwargs)
             except Exception as e:
                 try:
-                    raise Exception()  # pylint: disable=raise-missing-from
-                except Exception as local:
+                    raise Exception()  # pylint: disable=raise-missing-from,broad-exception-raised
+                except Exception as local:  # pylint: disable=broad-exception-caught
                     tb = local.__traceback__
                 # We now walk through the stack above the current call to check if we are the
                 # outermost in_context_exception_wrapper. If so, we generate the stack summary.

@@ -23,6 +23,7 @@ evalers['eval_train'].input.processor.input_key: 'image'
 evalers['eval_train'].input.processor.num_parallel_calls: 1024
 evalers['eval_train'].input.processor.randaug_magnitude: 10
 evalers['eval_train'].input.processor.randaug_num_layers: 2
+evalers['eval_train'].input.processor.use_whitening: True
 evalers['eval_train'].input.source.dataset_name: 'imagenet2012'
 evalers['eval_train'].input.source.download: False
 evalers['eval_train'].input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
@@ -53,6 +54,7 @@ evalers['eval_validation'].input.processor.input_key: 'image'
 evalers['eval_validation'].input.processor.num_parallel_calls: 1024
 evalers['eval_validation'].input.processor.randaug_magnitude: 10
 evalers['eval_validation'].input.processor.randaug_num_layers: 2
+evalers['eval_validation'].input.processor.use_whitening: True
 evalers['eval_validation'].input.source.dataset_name: 'imagenet2012'
 evalers['eval_validation'].input.source.download: False
 evalers['eval_validation'].input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
@@ -79,6 +81,7 @@ input.processor.input_key: 'image'
 input.processor.num_parallel_calls: 1024
 input.processor.randaug_magnitude: 10
 input.processor.randaug_num_layers: 2
+input.processor.use_whitening: True
 input.source.dataset_name: 'imagenet2012'
 input.source.download: False
 input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'

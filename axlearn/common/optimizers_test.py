@@ -19,6 +19,8 @@ from axlearn.common.module import InvocationContext, new_output_collection, set_
 from axlearn.common.optimizer_base import OptParam, OptStateSpec, PartitionedGradientTransformation
 from axlearn.common.optimizers import (
     ParamEmaState,
+    _compute_covariance,
+    _compute_rms_norms,
     adafactor_optimizer,
     adam_optimizer,
     adamw_decoupled_optimizer,
@@ -863,7 +865,7 @@ class OptimizerTest(TestCase):
 
     @parameterized.parameters(100.0, 1e-3, None)
     def test_clip_by_block_rms(self, max_norm):
-        clip = clip_by_block_rms(threshold=max_norm)
+        clip = clip_by_block_rms(threshold=max_norm, summary_suffix="norm")
         params = dict(layer=VDict(x=jnp.asarray([[0, 0, 0, 0], [0, 1, 2, -3]], dtype=jnp.float32)))
         state = clip.init(params)
         self.assertEqual(optax.EmptyState, type(state))
@@ -903,6 +905,37 @@ class OptimizerTest(TestCase):
         self.assertNestedAllClose(
             {"layer/0/x/norm": g_norm[0], "layer/1/x/norm": g_norm[1]}, summaries
         )
+
+    def test_clip_by_block_rms_both_none(self):
+        """Tests clip_clip_by_block_rms(threshold=None, summary_suffix=None)."""
+        clip = clip_by_block_rms(threshold=None, summary_suffix=None)
+        params = dict(layer=VDict(x=jnp.asarray([[0, 0, 0, 0], [0, 1, 2, -3]], dtype=jnp.float32)))
+        state = clip.init(params)
+        self.assertEqual(optax.EmptyState, type(state))
+
+        def loss(params):
+            return -jax.nn.log_softmax(params["layer"]["x"])[:, 1].mean()
+
+        loss, grads = jax.value_and_grad(loss)(params)
+        x_grads = grads["layer"]["x"]
+
+        context = InvocationContext(
+            name="root",
+            parent=None,
+            module=None,
+            state=None,
+            output_collection=new_output_collection(),
+            is_training=True,
+            prng_key=None,
+        )
+        with set_current_context(context):
+            updates, _ = clip.update(grads, state=state, params=params)
+        x_updates = updates["layer"]["x"]
+        # Updates are not clipped.
+        np.testing.assert_allclose(x_updates, x_grads, atol=1e-6)
+        # Also no summaries.
+        summaries = context.output_collection.summaries
+        self.assertEqual({}, summaries)
 
     @parameterized.parameters(100.0, 1e-3)
     def test_scale_by_param_block_rms(self, threshold):
@@ -1267,6 +1300,17 @@ class OptimizerTest(TestCase):
             clipping_threshold=1.0,
             weight_decay=3e-4,
         ),
+        dict(
+            learning_rate=0.01,
+            b1=0.95,
+            b2=0.995,
+            eps_square=1e-30,
+            update_schedule=config_for_function(schedule.cosine_with_linear_warmup).set(
+                peak_lr=1, warmup_steps=100, max_step=1000
+            ),
+            clipping_threshold=None,  # no update clipping.
+            weight_decay=3e-4,
+        ),
     )
     def test_adastar_summaries(
         self,
@@ -1295,6 +1339,7 @@ class OptimizerTest(TestCase):
             update_ema_debias=False,
             weight_decay=weight_decay,
             update_schedule=update_schedule,
+            verbosity=1,
         )
 
         def _compute_updates(opt) -> Tensor:
@@ -1329,9 +1374,62 @@ class OptimizerTest(TestCase):
         with set_current_context(context):
             _compute_updates(test_opt)
             self.assertContainsSubset(
-                {"learning_rate", "weight_decay_rate", "schedule_scale", "schedule_step"},
+                {
+                    "learning_rate",
+                    "weight_decay_rate",
+                    "schedule_scale",
+                    "schedule_step",
+                    # Raw update norms (after gradient normalization, but before smoothing).
+                    *[f"layer/{i}/w/raw_update_norm" for i in range(2)],
+                    # Parameter norms.
+                    *[f"layer/{i}/w/param_norm" for i in range(2)],
+                    # Gradient norms.
+                    *[f"layer/{i}/w/raw_grad_norm" for i in range(2)],
+                    # Smoothed update norms.
+                    *[f"layer/{i}/w/smoothed_update_norm" for i in range(2)],
+                    # Correlation between params and their updates
+                    *[f"layer/{i}/w/corr_param_raw_updates" for i in range(2)],
+                    *[f"layer/{i}/w/corr_param_smoothed_updates" for i in range(2)],
+                },
                 context.output_collection.summaries,
             )
+
+    def test_covariance_and_rms(self):
+        p = jnp.asarray([[0, 1, 2, -3], [1, -3, 2, 4]], dtype=jnp.float32)
+        u = jnp.asarray([[1, -1, 1, 0], [-1, -1, -1, 1]], dtype=jnp.float32)
+
+        def _compute_rms(x):
+            return jnp.sqrt(jnp.mean(x**2, axis=-1))
+
+        def _compute_cov(x, y):
+            return jnp.mean(x * y, axis=-1)
+
+        params = dict(
+            layer=VDict(
+                w=OptParam(
+                    value=p,
+                    factorization_spec=None,
+                    weight_decay_scale=1.0,
+                )
+            )
+        )
+        param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+        updates = dict(
+            layer=VDict(
+                w=OptParam(
+                    value=u,
+                    factorization_spec=None,
+                    weight_decay_scale=1.0,
+                )
+            )
+        )
+        update_values = jax.tree_util.tree_map(lambda u: u.value, updates)
+        p_norm = _compute_rms_norms(param_values)
+        u_norm = _compute_rms_norms(update_values)
+        cov = _compute_covariance(param_values, update_values)
+        assert_allclose(p_norm["layer"]["w"], _compute_rms(p))
+        assert_allclose(u_norm["layer"]["w"], _compute_rms(u))
+        assert_allclose(cov["layer"]["w"], _compute_cov(p, u))
 
 
 if __name__ == "__main__":
