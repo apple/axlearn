@@ -1180,13 +1180,14 @@ class ModelStateScopeConverterTest(TestCase):
 class EmaParamsConverterTest(TestCase):
     """Tests EmaParamsConverter."""
 
-    @parameterized.parameters(True, False)
+    @parameterized.parameters(["with_target_ema", "with_learner_no_ema", "with_no_learner"])
     def test_ema_params_converter(self, target_ema):
         _, source_state = _create_dummy_state(jax.random.PRNGKey(0), use_ema=True)
         target_state = clone_tree(source_state)
-        if not target_ema:
-            # Removes target_state learner state.
+        if target_ema == "with_no_learner":
             target_state.trainer_state = target_state.trainer_state._replace(learner=None)
+        elif target_ema == "with_learner_no_ema":
+            del target_state.trainer_state.learner["ema"]
 
         converter = (
             EmaParamsConverter.default_config()
@@ -1215,7 +1216,7 @@ class EmaParamsConverterTest(TestCase):
             source_state.trainer_state.learner["ema"].ema,
         )
 
-        if target_ema:
+        if target_ema == "with_target_ema":
             self.assertNestedAllClose(
                 output_state.trainer_state.learner["ema"],
                 source_state.trainer_state.learner["ema"],
