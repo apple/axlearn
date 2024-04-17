@@ -42,6 +42,7 @@ from axlearn.common.utils import (
     tree_paths,
 )
 
+from jax.sharding import PartitionSpec
 
 class UpdateType(enum.Enum):
     """UpdateType specifies which update types are allowed for the parameter.
@@ -443,6 +444,55 @@ def _mask_tree(tree: dict, *, keep: dict) -> dict:
         tree,
     )
 
+class AccumulatedLearner(Learner):
+    @config_class
+    class Config(Learner.Config):
+        """Configures Learner."""
+        microbatches: Required[int] = REQUIRED  # The optimizer config.
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+
+    def forward_and_backward(
+        self, *, fn: ForwardFn, inputs: NestedTensor, opt_params: NestedOptParam
+    ) -> ForwardBackwardOutputs:
+        should_compute_gradients = self.should_update_with_optimizers(opt_params)
+        model_params = jax.tree_util.tree_map(lambda opt_param: opt_param.value, opt_params)
+
+        # create evenly sized accumulation microbatches, keep sequence dimension as it is.
+        inputs = jax.tree_map(lambda x: x.reshape(self.microbatches,  -1, *x.shape[1:]), inputs)
+        inputs = jax.tree_util.tree_map(
+            lambda x: jax.lax.with_sharding_constraint(x, PartitionSpec(None, 'data', *([None for _ in range(len(x.shape) - 2)]))), inputs
+        )
+
+        def _copy_zero(model_tree):
+            return jax.tree_map(lambda x: jnp.full_like(x, 0), model_tree)
+
+        def run_microbatch(gradient_buffer, microbatch):
+
+            forward_outputs, microbatch_gradients = _value_and_grad(
+                fn,
+                model_params=model_params,
+                inputs=microbatch,
+                should_compute_gradients=should_compute_gradients,
+            )
+
+            # accumulate gradients
+            gradient_buffer = jax.tree_map(lambda x, y: x + y, microbatch_gradients, gradient_buffer)
+            return forward_outputs, gradient_buffer
+
+        gradient_buffer = _copy_zero(opt_params)
+        gradient_buffer, forward_outputs = jax.lax.scan(run_microbatch, gradient_buffer, inputs)
+        
+        updated_params = self.update(
+            model_params=opt_params,
+            gradients=gradient_buffer,
+            state_updates=forward_outputs.output_collection.state_updates,
+        )
+        return ForwardBackwardOutputs(
+            forward_outputs=forward_outputs,
+            backward_outputs=BackwardOutputs(updated_params=updated_params),
+        )
 
 class CompositeLearner(BaseLearner):
     """The composite learner supports different sub learners on different subset of parameters.

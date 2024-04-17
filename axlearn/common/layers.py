@@ -324,6 +324,7 @@ class RMSNorm(BaseNormalizationLayer):
         }
 
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
+        x = with_sharding_constraint(x, PartitionSpec('data', 'model', None))
         del paddings  # paddings do not affect LayerNorm results
         cfg = self.config
         x_dtype = x.dtype
@@ -333,6 +334,7 @@ class RMSNorm(BaseNormalizationLayer):
         x = x * jax.lax.rsqrt(moment2 + cfg.eps)
         x = x.astype(x_dtype)
         x = x * self.parameters["scale"]
+        x = with_sharding_constraint(x, PartitionSpec('data', 'model', None))
         return x
 
 
@@ -1255,8 +1257,13 @@ class Embedding(BaseLayer):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        x = with_sharding_constraint(x, PartitionSpec('data', None))
         emb = self.parameters["weight"]
-        return emb[x]
+        # return emb[x]
+        emb = with_sharding_constraint(emb, PartitionSpec('model', None))
+        activation = emb[x]
+        activation = with_sharding_constraint(activation, PartitionSpec('data', None, None))
+        return activation
 
     def attend(self, x: Tensor) -> Tensor:
         """Apply query array 'x' to the embedding weight array.

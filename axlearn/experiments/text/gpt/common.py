@@ -45,7 +45,7 @@ from axlearn.common.config import (
     maybe_instantiate,
     maybe_set_config,
 )
-from axlearn.common.decoder import Decoder
+from axlearn.common.decoder import Decoder, LmHead
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.evaler import BaseMetricCalculator, ModelSummaryAccumulator, SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
@@ -54,7 +54,7 @@ from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, 
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.summary_writer import BaseWriter
 from axlearn.common.trainer import MeshShape, SpmdTrainer
-from axlearn.common.utils import get_data_dir
+from axlearn.common.utils import get_data_dir, DataPartitionType
 from axlearn.experiments.text.common import DataMixtureComponent, tfds_text_source
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
@@ -251,6 +251,7 @@ def model_config(
         vocab_size=vocab_size,
         emb=emb_cfg,
         dropout_rate=dropout_rate,
+        lm_head=LmHead.default_config().set(dtype=jnp.bfloat16)
     )
     # Model.
     model_param_init = DefaultInitializer.default_config().set(
@@ -267,16 +268,23 @@ def model_config(
         batch_axis_names=batch_axis_names,
         seq_axis_names="seq",
     )
-    cfg.dtype = jnp.float32
+    # cfg.dtype = jnp.float32
+    cfg.dtype = jnp.bfloat16
     # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(
         cfg.decoder.transformer.layer,
         batch_axis_names=batch_axis_names,
-        fsdp_axis_names=("expert", "fsdp", "seq"),
+        fsdp_axis_names=("data"),
         tp_axis_names="model",
         seq_axis_names=("seq",),
     )
-    cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
+
+    tp_axis_names='model'
+    fsdp_axis_names='data'
+    cfg.decoder.emb.token_emb.param_partition_spec = (tp_axis_names, fsdp_axis_names) # shard vocab
+    cfg.decoder.lm_head.param_partition_spec = (tp_axis_names, fsdp_axis_names) # shard vocab
+
+    # cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
     set_bias_recursively(cfg, False)
     set_norm_recursively(cfg, normalization)
     cfg.z_loss_scale = z_loss_scale
@@ -318,6 +326,7 @@ def learner_config(
             ),
         ]
     )
+    # return learner.AccumulatedLearner.default_config().set(optimizer=optimizer_cfg)
     return learner.Learner.default_config().set(optimizer=optimizer_cfg)
 
 
@@ -496,6 +505,7 @@ def get_trainer_config_fn(
     train_batch_size: int,
     mesh_shape: Sequence[int],
     train_input_source: InstantiableConfig[input_tf_data.BuildDatasetFn],
+    input_partition_type: DataPartitionType,
     evalers: Dict[str, SpmdEvaler.Config],
     mesh_axis_names: Sequence[str] = MESH_AXIS_NAMES,
     mesh_rules: Optional[Sequence[Tuple[str, Optional[MeshShape]]]] = None,
@@ -548,6 +558,7 @@ def get_trainer_config_fn(
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
         )
+        cfg.input_partition_type = input_partition_type
         cfg.evalers = {}
         for name, evaler_cfg in evalers.items():
             evaler_cfg.input.batcher.set(global_batch_size=eval_batch_size or train_batch_size)
