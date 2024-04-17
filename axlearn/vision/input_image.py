@@ -319,7 +319,6 @@ def _process_example(
     randaug_magnitude: int = 10,
     randaug_exclude_ops: Optional[List[str]] = None,
     erasing_probability: Optional[float] = None,
-    use_whitening: bool = True,
     mask_window_size: Optional[int] = None,
     num_masking_patches: Optional[int] = None,
     input_key: str = "image",
@@ -336,7 +335,6 @@ def _process_example(
             randaug_magnitude=randaug_magnitude,
             randaug_exclude_ops=randaug_exclude_ops,
             erasing_probability=erasing_probability,
-            use_whitening=use_whitening,
         )
         data = {"image": image, "label": example["label"]}
 
