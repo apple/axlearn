@@ -21,7 +21,7 @@ class BindTest(test_utils.TestCase):
         with test_utils.bind_module(
             self.LAYER_CFG, state={"weight": jnp.ones((5, 7)), "bias": jnp.ones(7)}
         ) as instantiated_layer:
-            result = instantiated_layer(jnp.ones(5))
+            result = instantiated_layer(jnp.ones(5))  # pylint:disable=not-callable
         self.assertNestedAllClose(result, jnp.ones(7) * 6)
 
     @parameterized.parameters(LAYER_CFG, LAYER_CFG.clone(name="tmp").instantiate(parent=None))
