@@ -180,9 +180,9 @@ def main(argv=None, save_main_session=True):
 
     with pipeline as p:
         (p
-        | "Create Pipeline Input" >> beam.Create(pipeline_input)
-        | "Run Inference" >> RunInference(CustomModelHandler())
-        | "Print Output" >> beam.Map(print)
+        | "CreateInput" >> beam.Create(pipeline_input)
+        | "RunInference" >> RunInference(CustomModelHandler())
+        | "PrintOutput" >> beam.Map(print)
         )
 
 if __name__ == "__main__":
