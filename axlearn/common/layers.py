@@ -334,7 +334,7 @@ class RMSNorm(BaseNormalizationLayer):
         x = x * jax.lax.rsqrt(moment2 + cfg.eps)
         x = x.astype(x_dtype)
         x = x * self.parameters["scale"]
-        x = with_sharding_constraint(x, PartitionSpec('data', 'model', None))
+        x = with_sharding_constraint(x, PartitionSpec('data', None, None))
         return x
 
 

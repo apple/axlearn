@@ -19,6 +19,7 @@ from axlearn.common.attention import (
     GroupedQueryAttention,
     MultiheadAttention,
     RepeatedTransformerLayer,
+    StackedTransformerLayer,
     RoFormerQKVLinear,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
@@ -33,6 +34,7 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 # TODO: apoorvgu I do not like this DataPartitionType
 from axlearn.common.utils import DataPartitionType
+import jax
 
 MODEL_SIZES = ("test", "7B", "70B")
 
@@ -58,6 +60,7 @@ MAX_SEQUENCE_LENGTH = {
     Version.V3: 8192,
 }
 
+TRN_MODEL_AXIS_SIZE=8
 
 ROPE_THETA = {
     Version.V1: 1e4,
@@ -145,7 +148,9 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             input_partition_type=DataPartitionType.DATA,
-            train_batch_size=4 * 1024 * 1024 // max_sequence_length,  # 4M tokens.
+            # 1 batch per DP shard
+            train_batch_size=int(jax.device_count()/TRN_MODEL_AXIS_SIZE),
+            max_sequence_length=max_sequence_length,
             max_step=500_000,  # 2T tokens // 4M tokens/step.
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -172,7 +177,7 @@ def get_trainer_kwargs(
                 ),
                 (   
                     "neuron-(trn1.32xlarge|trn1n.32xlarge)-(32|64|256|512|1024)",
-                    mesh_shape_from_axes(data=-1, model=8),
+                    mesh_shape_from_axes(data=-1, model=TRN_MODEL_AXIS_SIZE),
                 ),
             ),
         )
@@ -269,7 +274,7 @@ def model_config(
         hidden_dim=hidden_dim,
         num_heads=num_heads,
         vocab_size=vocab_size,
-        stack_cfg=RepeatedTransformerLayer.default_config(),
+        stack_cfg=StackedTransformerLayer.default_config(),
         activation_fn=activation_fn,
         ffn_dim=ffn_dim,
         normalization=RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),
