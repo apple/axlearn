@@ -1,4 +1,4 @@
-"""An Apache Beam example pipeline to run batch inference jobs.
+"""An Apache Beam example pipeline to run batch inference jobs with a HuggingFace model.
 
 
 """
