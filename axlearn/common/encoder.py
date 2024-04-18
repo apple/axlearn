@@ -385,6 +385,8 @@ class EncoderModel(BaseModel):
                     representing different parts of the input.
                     Values should be in the range [0, type_vocab_size).
                     If unspecified and type embedding is used, defaults to 0 for all positions.
+                soft_labels: An optional float Tensor for soft labels (e.g. in distillation)
+                    if available.
             return_aux: whether to return auxiliary outputs.
 
         Returns:
@@ -395,11 +397,16 @@ class EncoderModel(BaseModel):
             if return_aux is True, or an empty dict otherwise.
         """
         target_labels: Tensor = input_batch["target_labels"]
+        soft_labels = input_batch.get("soft_labels", None)
         predictions = self.predict(input_batch)
         loss = None
         if "head" in self.children:
             with child_context("head_loss", module=self.head):
-                loss = self.head.loss(logits=predictions["logits"], target_labels=target_labels)
+                loss = self.head.loss(
+                    logits=predictions["logits"],
+                    target_labels=target_labels,
+                    soft_labels=soft_labels,
+                )
         return loss, predictions if return_aux else {}
 
     def predict(self, input_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
