@@ -67,6 +67,10 @@ class LogMelFrontend(BaseLayer):
         hop_size_ms: Required[float] = REQUIRED
         # Optional output transformation. See `normalize_by_mean_std` for an example.
         output_transformation: Optional[InstantiableConfig[Callable[[Tensor], Tensor]]] = None
+        # Floor of melfilter bank energy to prevent log(0).
+        # Set to 1.0 for backwards-compatibility. Recommend to set to 1e-6 or smaller to capture
+        # low-energy signals.
+        mel_floor: Required[float] = REQUIRED
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -99,6 +103,7 @@ class LogMelFrontend(BaseLayer):
             lower_edge_hertz=125.0,
             upper_edge_hertz=7600.0,
         )
+        self._mel_floor = self.config.mel_floor
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
         """Computes log-mel spectrogram features.
@@ -122,7 +127,11 @@ class LogMelFrontend(BaseLayer):
         # FFT.
         spectrogram = magnitude_spectrogram(frames, fft_size=self._fft_size)
         # Convert to log-mel. [batch, num_frames, num_filters].
-        outputs = linear_to_log_mel_spectrogram(spectrogram, weight_matrix=self._filterbank)
+        outputs = linear_to_log_mel_spectrogram(
+            spectrogram,
+            weight_matrix=self._filterbank,
+            mel_floor=self._mel_floor,
+        )
         if self._output_transformation is not None:
             outputs = self._output_transformation(outputs)
         # To identify padding frames, apply the framer to the input padding.
