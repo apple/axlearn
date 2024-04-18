@@ -9,7 +9,7 @@
 
 import dataclasses
 import enum
-from typing import Callable, Mapping, Optional, Protocol, Sequence, Tuple
+from typing import Callable, Mapping, Optional, Protocol, Sequence, Tuple, NamedTuple
 
 import jax
 import optax
@@ -95,8 +95,8 @@ def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
     return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
 
 
-@dataclasses.dataclass
-class ForwardOutputs:
+
+class ForwardOutputs(NamedTuple):
     loss: Tensor
     aux: NestedTensor
     output_collection: OutputCollection
@@ -460,7 +460,7 @@ class AccumulatedLearner(Learner):
         model_params = jax.tree_util.tree_map(lambda opt_param: opt_param.value, opt_params)
 
         # create evenly sized accumulation microbatches, keep sequence dimension as it is.
-        inputs = jax.tree_map(lambda x: x.reshape(self.microbatches,  -1, *x.shape[1:]), inputs)
+        inputs = jax.tree_map(lambda x: x.reshape(self.config.microbatches,  -1, *x.shape[1:]), inputs)
         inputs = jax.tree_util.tree_map(
             lambda x: jax.lax.with_sharding_constraint(x, PartitionSpec(None, 'data', *([None for _ in range(len(x.shape) - 2)]))), inputs
         )
@@ -479,11 +479,10 @@ class AccumulatedLearner(Learner):
 
             # accumulate gradients
             gradient_buffer = jax.tree_map(lambda x, y: x + y, microbatch_gradients, gradient_buffer)
-            return forward_outputs, gradient_buffer
+            return gradient_buffer, forward_outputs
 
         gradient_buffer = _copy_zero(opt_params)
         gradient_buffer, forward_outputs = jax.lax.scan(run_microbatch, gradient_buffer, inputs)
-        
         updated_params = self.update(
             model_params=opt_params,
             gradients=gradient_buffer,

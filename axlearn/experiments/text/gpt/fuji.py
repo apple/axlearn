@@ -61,6 +61,7 @@ MAX_SEQUENCE_LENGTH = {
 }
 
 TRN_MODEL_AXIS_SIZE=8
+GRADIENT_ACCUMULATION_MICROBATCHES=8
 
 ROPE_THETA = {
     Version.V1: 1e4,
@@ -148,8 +149,8 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             input_partition_type=DataPartitionType.DATA,
-            # 1 batch per DP shard
-            train_batch_size=int(jax.device_count()/TRN_MODEL_AXIS_SIZE),
+            # 1 batch per DP replica
+            train_batch_size=int((jax.device_count()/TRN_MODEL_AXIS_SIZE)*GRADIENT_ACCUMULATION_MICROBATCHES),
             max_sequence_length=max_sequence_length,
             max_step=500_000,  # 2T tokens // 4M tokens/step.
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
@@ -215,6 +216,7 @@ def get_trainer_kwargs(
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
     trainer_kwargs["learner_cfg"] = learner_config(
         max_step=trainer_kwargs["max_step"],
+        gradient_accumulation_microbatches=GRADIENT_ACCUMULATION_MICROBATCHES,
         **trainer_kwargs.pop("learner_kwargs"),
     )
     # pylint: enable=use-dict-literal
