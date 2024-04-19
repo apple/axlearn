@@ -385,8 +385,9 @@ class EncoderModel(BaseModel):
                     representing different parts of the input.
                     Values should be in the range [0, type_vocab_size).
                     If unspecified and type embedding is used, defaults to 0 for all positions.
-                soft_labels: An optional float Tensor for soft labels (e.g. in distillation)
-                    if available.
+                soft_labels: An optional Tensor of labels that are already smoothed/in one-hot
+                    form. If provided, target_labels are typically used for inferring the mask
+                    during loss calculation.
             return_aux: whether to return auxiliary outputs.
 
         Returns:
