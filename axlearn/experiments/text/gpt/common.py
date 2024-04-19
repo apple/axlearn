@@ -324,6 +324,7 @@ def learner_config(
                 weight_decay=weight_decay,
                 weight_decay_per_param_scale=None,
                 adam_update_transformation=None,
+                mu_dtype=jnp.float32,
             ),
         ]
     )

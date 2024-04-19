@@ -328,9 +328,13 @@ def make_segment_mask(*, source_segments: Tensor, target_segments: Tensor) -> Te
         value at [..., i, j] = 0 if target_segments[..., i] == source_segments[..., j], or -inf
         otherwise.
     """
-    target_segments = jnp.expand_dims(target_segments, -1)
-    source_segments = jnp.expand_dims(source_segments, -2)
-    res = (jax.lax.ne(source_segments, target_segments) * NEG_INF)[:, None, ...]
+    # target_segments = jnp.expand_dims(target_segments, -1)
+    # source_segments = jnp.expand_dims(source_segments, -2)
+    # res = (jax.lax.ne(source_segments, target_segments) * NEG_INF)[:, None, ...]
+    target_segments = jnp.asarray(target_segments, dtype=jnp.bfloat16)[:, None]
+    source_segments = jnp.asarray(source_segments, dtype=jnp.bfloat16)[..., None]
+    #res = jnp.asarray((jax.lax.eq(source_segments, target_segments))[:, None, ...], dtype=jnp.bfloat16)
+    res = jnp.asarray((jax.lax.ne(source_segments, target_segments) * NEG_INF)[:, None, ...], dtype=jnp.bfloat16)
     return res
 
 
@@ -3860,7 +3864,8 @@ class CausalAttentionLogitBiasLayer(AttentionLogitBiasLayer):
     def forward(self, *, segment_ids: Tensor, positions: Tensor) -> Tensor:
         """Refer to AttentionLogitBiasLayer.forward for docstring."""
         # Note: padding tokens are not explicitly masked.
-        causal_bias = (positions[:, None, :, None] < positions[:, None, None, :]) * NEG_INF
+        # causal_bias = (positions[:, None, :, None] < positions[:, None, None, :]) * NEG_INF
+        causal_bias = jnp.asarray((positions[:, None, :, None] < positions[:, None, None, :]) * NEG_INF, dtype=jnp.bfloat16)
         return apply_attention_logit_biases(
             causal_bias, make_segment_mask(source_segments=segment_ids, target_segments=segment_ids)
         )
