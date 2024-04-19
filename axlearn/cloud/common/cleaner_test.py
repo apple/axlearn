@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Tests for cleaner.py."""
+
 import datetime
 from typing import Dict, Sequence
 
@@ -64,12 +65,14 @@ class UnschedulableCleanerTest(parameterized.TestCase):
             }
 
         quota = QuotaInfo(
-            total_resources={
-                "gcp1:a2-ultragpu-8g": 148.000001,
-                "aws_5:p5.48xlarge": 1e-06,
-                "aws_2:g5.12xlarge": 5.000001,
-                "aws_4:p5.48xlarge": 8.000001,
-            },
+            total_resources=[
+                {
+                    "gcp1:a2-ultragpu-8g": 148.000001,
+                    "aws_5:p5.48xlarge": 1e-06,
+                    "aws_2:g5.12xlarge": 5.000001,
+                    "aws_4:p5.48xlarge": 8.000001,
+                }
+            ],
             project_resources={
                 "fm-proj-lm-pretrain": {
                     "gcp1:a2-ultragpu-8g": 400,

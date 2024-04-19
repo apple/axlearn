@@ -7,29 +7,12 @@ Terminology:
 - limit: The maximum amount of resources that can be used by a project. The limit can be higher
   than the quota when there is spare capacity.
 """
+
 import dataclasses
 import datetime
 from typing import Dict, Optional, Sequence, Tuple, TypeVar
 
 ResourceType = str
-
-# Mapping from resource types to the amount of resources.
-# Can be used to specify quota/limit/demand/usage per resource type.
-#
-# Use ResourceMap[float] when specifying quotas and ResourceMap[int] when specifying
-# limit/demand/usage.
-_T = TypeVar("_T", int, float)
-ResourceMap = Dict[ResourceType, _T]
-
-# Mapping from project ids to resource quota/limit/usage of the project.
-ProjectResourceMap = Dict[str, ResourceMap]
-
-# A sequence of (job_id, resource_demand) pairs. The higher priority jobs are listed before the
-# lower priority ones.
-JobQueue = Sequence[Tuple[str, ResourceMap[int]]]
-
-# A mapping from project ids to its job queue.
-ProjectJobs = Dict[str, JobQueue]
 
 
 @dataclasses.dataclass
@@ -60,3 +43,22 @@ class JobSpec:
     env_vars: Optional[Dict[str, str]]
     # Metadata related to a bastion job.
     metadata: JobMetadata
+
+
+# Mapping from resource types to the amount of resources.
+# Can be used to specify quota/limit/demand/usage per resource type.
+#
+# Use ResourceMap[float] when specifying quotas and ResourceMap[int] when specifying
+# limit/demand/usage.
+_T = TypeVar("_T", int, float)
+ResourceMap = Dict[ResourceType, _T]
+
+# Mapping from project ids to resource quota/limit/usage of the project.
+ProjectResourceMap = Dict[str, ResourceMap]
+
+# A sequence of (job_id, job_metadata) pairs. The higher priority jobs are listed before the
+# lower priority ones.
+JobQueue = Sequence[Tuple[str, JobMetadata]]
+
+# A mapping from project ids to its job queue.
+ProjectJobs = Dict[str, JobQueue]
