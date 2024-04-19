@@ -2,7 +2,7 @@
 
 """Decoder layers."""
 import contextlib
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Callable, Dict, Optional, Sequence, Tuple, Union
 
 import jax
 from jax import numpy as jnp
@@ -443,6 +443,10 @@ class Decoder(DecodingMixin, BaseLayer):
         )
         # The logit modifier to apply. If None, does not modify logits.
         output_logits_modifier: Optional[ConfigOr[logit_modifiers.LogitsToLogitsFn]] = None
+        # Adds summary of RMS norms of the specified values. Supported value are:
+        # - "outputs": outputs of Transformer.
+        # - "norm_outputs": outputs of the final normalization layer.
+        add_value_rms_norm_summary: Optional[Sequence[str]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -461,6 +465,10 @@ class Decoder(DecodingMixin, BaseLayer):
                 "lm_head", cfg.lm_head.set(vocab_size=cfg.vocab_size, embedding_dim=cfg.dim)
             )
         self._output_logits_modifier = maybe_instantiate(cfg.output_logits_modifier)
+        if cfg.add_value_rms_norm_summary is not None:
+            for value in cfg.add_value_rms_norm_summary:
+                if value not in ["outputs", "norm_outputs"]:
+                    raise NotImplementedError(f"add_value_rms_norm_summary: {value}")
 
     def _forward_for_mode(
         self,
@@ -502,9 +510,16 @@ class Decoder(DecodingMixin, BaseLayer):
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
+        cfg = self.config
+        summary_list = cfg.add_value_rms_norm_summary
         x = x.data
+        if summary_list is not None and "outputs" in summary_list:
+            self._report_rms_norm(x, "outputs")
+
         if "output_norm" in self.children:
             x = self.output_norm(x)
+            if summary_list is not None and "norm_outputs" in summary_list:
+                self._report_rms_norm(x, "norm_outputs")
         x = self.output_dropout(x)
         if "lm_head" in self.children:
             logits = self.lm_head(x)
@@ -515,6 +530,10 @@ class Decoder(DecodingMixin, BaseLayer):
         logits = with_sharding_constraint(logits, PartitionSpec(*self.config.logits_partition_spec))
         # TODO(markblee): Rename to just "transformer". "transformer_state" is a bit redundant.
         return dict(transformer_state=transformer_state), dict(logits=logits, hidden_states=x)
+
+    def _report_rms_norm(self, x: Tensor, tensor_name: str):
+        rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
+        self.add_summary(f"rms_norm/{tensor_name}", rms_norm)
 
     def forward(
         self,

@@ -1436,6 +1436,11 @@ class MultiheadAttention(BaseLayer):
         key_scale: BaseScaleQK.Config = ScaleKey.default_config()
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = None
+        # Adds summary of the specified values. Supported value are:
+        # - "entropy": attention entropy.
+        # - "context": output rms of the context projection.
+        # - "o_proj_outputs": output rms of the o-projection.
+        add_value_summary: Optional[Sequence[str]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1534,6 +1539,9 @@ class MultiheadAttention(BaseLayer):
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
+
+        cfg = self.config
+        summary_list = cfg.add_value_summary
         q_proj = self._remat_name(q_proj, "q_proj")
         k_proj = self._remat_name(k_proj, "k_proj")
         v_proj = self._remat_name(v_proj, "v_proj")
@@ -1551,10 +1559,31 @@ class MultiheadAttention(BaseLayer):
         )
         self.vlog(3, "atten.prob=%s", probs[0, 0, 0, :])
         self.vlog(3, "atten.context=%s", context.sum())
+        if summary_list is not None and "context" in summary_list:
+            self._report_rms_norm(context, "context")
+        if summary_list is not None and "entropy" in summary_list:
+            self._report_entropy(probs)
+
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
+        if summary_list is not None and "o_proj_outputs" in summary_list:
+            self._report_rms_norm(outputs, "o_proj_outputs")
         return dict(i_proj=i_proj_state), self.Output(data=outputs, probs=probs)
+
+    def _report_rms_norm(self, x: Tensor, tensor_name: str):
+        rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
+        self.add_summary(f"rms_norm/{tensor_name}", rms_norm)
+
+    def _report_entropy(self, prob: Tensor):
+        p = prob.astype(jnp.float32)
+        plogp = jnp.where(
+            p == 0,
+            jnp.zeros_like(p),
+            -p * jnp.log(p),
+        )
+        entropy = jnp.sum(plogp, axis=-1).mean()
+        self.add_summary("attention_entropy", entropy)
 
     def _compute_attention(
         self,
@@ -2358,6 +2387,8 @@ class TransformerFeedForwardLayer(BaseLayer):
         add_dead_neuron_summary: Optional[bool] = None
 
         # Adds summary of RMS norms of the specified values. Supported value are:
+        # - "inputs": inputs of the layer.
+        # - "linear1_outputs": outputs of linear1.
         # - "linear2_outputs": outputs of linear2.
         add_value_rms_norm_summary: Sequence[str] = []
 
@@ -2406,7 +2437,7 @@ class TransformerFeedForwardLayer(BaseLayer):
 
         self._add_child("stochastic_depth", cfg.stochastic_depth)
         for value in cfg.add_value_rms_norm_summary:
-            if value != "linear2_outputs":
+            if value not in ["inputs", "linear1_outputs", "linear2_outputs"]:
                 raise NotImplementedError(f"add_value_rms_norm_summary: {value}")
 
     def forward(self, inputs: Tensor) -> Tensor:
@@ -2416,9 +2447,11 @@ class TransformerFeedForwardLayer(BaseLayer):
             """Applies linear2, optionally logging RMS norm of the output."""
             x = self.linear2(x)
             if "linear2_outputs" in cfg.add_value_rms_norm_summary:
-                rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
-                self.add_summary("rms_norm/linear2_outputs", rms_norm)
+                self._report_rms_norm(x, "linear2_outputs")
             return x
+
+        if "inputs" in cfg.add_value_rms_norm_summary:
+            self._report_rms_norm(inputs, "inputs")
 
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
@@ -2484,10 +2517,20 @@ class TransformerFeedForwardLayer(BaseLayer):
                 for i, activation in enumerate(cfg.activation)
             ]
             assert len(activations) == 2, cfg.activation
+            if "linear1_outputs" in cfg.add_value_rms_norm_summary:
+                self._report_rms_norm(activations[0], "linear1_0_outputs")
+                self._report_rms_norm(activations[1], "linear1_1_outputs")
             return activations[0] * activations[1]
         else:
             x = self.linear1(x)
-            return self._get_activation(x, activation_fn_name=cfg.activation)
+            x = self._get_activation(x, activation_fn_name=cfg.activation)
+            if "linear1_outputs" in cfg.add_value_rms_norm_summary:
+                self._report_rms_norm(x, "linear1_outputs")
+            return x
+
+    def _report_rms_norm(self, x: Tensor, tensor_name: str):
+        rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
+        self.add_summary(f"rms_norm/{tensor_name}", rms_norm)
 
     def _get_activation(self, x: Tensor, activation_fn_name: str) -> Tensor:
         """Applies activation function on 'x' and optionally counts the number of dead neurons.
