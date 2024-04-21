@@ -333,10 +333,6 @@ class TPURunnerJob(TPUQRMJob):
     def _run_command(self):
         """Launches the command on the TPU-VMs."""
         cfg: TPURunnerJob.Config = self.config
-        # Install the bundle.
-        self._install_bundle()
-        # Prepare command environment variables.
-        env_vars = self._prepare_env()
         # Start syncing run log to GS.
         # TODO(markblee): Sync XLA logs.
         self._sync_outputs(
@@ -345,6 +341,10 @@ class TPURunnerJob(TPUQRMJob):
             dst=f"{cfg.output_dir}/output/$HOSTNAME/",
             interval_s=60,
         )
+        # Install the bundle.
+        self._install_bundle()
+        # Prepare command environment variables.
+        env_vars = self._prepare_env()
         # Possibly wrap with docker run.
         cmd = self._wrap(cfg.command, env=env_vars)
         # Set env vars, run the command and pipe outputs to run log.
