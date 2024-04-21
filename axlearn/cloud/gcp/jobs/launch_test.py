@@ -11,7 +11,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import JobState as BastionJobState
-from axlearn.cloud.common.bastion import deserialize_jobspec, new_jobspec
+from axlearn.cloud.common.bastion import JobStatus, deserialize_jobspec, new_jobspec
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.gcp import bundler
@@ -160,7 +160,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         resources={"v4": 8},
                     ),
                 ),
-                state=BastionJobState.PENDING,
+                state=BastionJobState(status=JobStatus.PENDING),
                 command_proc=None,
                 cleanup_proc=None,
             ),
@@ -175,7 +175,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         resources={"v4": 8, "v5": 16},
                     ),
                 ),
-                state=BastionJobState.ACTIVE,
+                state=BastionJobState(status=JobStatus.ACTIVE),
                 command_proc=None,
                 cleanup_proc=None,
             ),
@@ -190,7 +190,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         resources={"v4": 16},
                     ),
                 ),
-                state=BastionJobState.ACTIVE,
+                state=BastionJobState(status=JobStatus.ACTIVE),
                 command_proc=None,
                 cleanup_proc=None,
             ),
@@ -214,7 +214,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         [
                             "test_job0",
                             "test_user",
-                            BastionJobState.PENDING,
+                            JobStatus.PENDING,
                             "test_project",
                             "{'v4': 8}",
                             "5",
@@ -222,7 +222,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         [
                             "test_job1",
                             "test_user1",
-                            BastionJobState.ACTIVE,
+                            JobStatus.ACTIVE,
                             "test_project",
                             "{'v4': 8, 'v5': 16}",
                             "5",
@@ -230,7 +230,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         [
                             "test_job2",
                             "test_user1",
-                            BastionJobState.ACTIVE,
+                            JobStatus.ACTIVE,
                             "test_project1",
                             "{'v4': 16}",
                             "5",

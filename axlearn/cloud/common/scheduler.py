@@ -326,7 +326,7 @@ class TierScheduler(BaseScheduler):
                 tier_usages = traverse_tiers(
                     dict(enumerate(resource_limits)), job_metadata.resources
                 )
-                final_tier = max(tier_usages.keys())
+                final_tier = max((0, *tier_usages.keys()))
                 # In the backward pass, we greedily acquire resources from the lowest-priority tier
                 # first, since the job will ultimately be scheduled on the lowest-priority tier.
                 tier_usages = traverse_tiers(

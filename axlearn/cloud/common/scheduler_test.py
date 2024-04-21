@@ -468,6 +468,19 @@ class TierSchedulerTest(parameterized.TestCase):
             expected_verdicts={"a1": True, "b1": True, "b2": True},
             expected_tiers={"a1": 2, "b1": 0, "b2": 1},
         ),
+        # Test scheduling jobs with no demands.
+        dict(
+            project_jobs={
+                "a": (("a1", _mock_job_metadata({})),),
+                "b": (
+                    ("b1", _mock_job_metadata({"v4": 2})),
+                    ("b2", _mock_job_metadata({})),
+                ),
+            },
+            expected_project_limits={"a": {}, "b": {"v4": 2}},
+            expected_verdicts={"a1": True, "b1": True, "b2": True},
+            expected_tiers={"a1": 0, "b1": 0, "b2": 0},
+        ),
     )
     def test_schedule(
         self,

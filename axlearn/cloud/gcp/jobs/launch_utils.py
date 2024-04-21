@@ -59,7 +59,7 @@ def jobs_table(jobs: Dict[str, BastionJob]) -> Dict[str, Any]:
             [
                 job.spec.name,
                 job.spec.metadata.user_id,
-                job.state.name,
+                job.state.status.name,
                 job.spec.metadata.project_id,
                 str(job.spec.metadata.resources),
                 str(job.spec.metadata.priority),
