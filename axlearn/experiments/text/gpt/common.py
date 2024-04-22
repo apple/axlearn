@@ -268,7 +268,6 @@ def model_config(
         batch_axis_names=batch_axis_names,
         seq_axis_names="seq",
     )
-    # cfg.dtype = jnp.float32
     cfg.dtype = jnp.bfloat16
     # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(
@@ -284,7 +283,6 @@ def model_config(
     cfg.decoder.emb.token_emb.param_partition_spec = (tp_axis_names, fsdp_axis_names) # shard vocab
     cfg.decoder.lm_head.param_partition_spec = (tp_axis_names, fsdp_axis_names) # shard vocab
 
-    # cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
     set_bias_recursively(cfg, False)
     set_norm_recursively(cfg, normalization)
     cfg.z_loss_scale = z_loss_scale

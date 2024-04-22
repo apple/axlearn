@@ -1003,27 +1003,3 @@ def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str
         logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh)
         if mesh is not REQUIRED:
             trainer_config.mesh_shape = mesh
-
-def create_named_sharding_optimizer(tensor_spec, mesh):
-    zero1=True
-    if isinstance(tensor_spec, TensorSpec):
-        if tensor_spec.mesh_axes == (None,):
-            return NamedSharding(mesh, PartitionSpec(None))
-        else:
-            if len(tensor_spec.mesh_axes) > len(tensor_spec.shape):
-                adjusted_mesh_axes = tensor_spec.mesh_axes[1:]
-            else:
-                adjusted_mesh_axes = tensor_spec.mesh_axes
-            if zero1:
-                adjusted_mesh_axes = tuple('data' if axis == 'fsdp' else axis for axis in adjusted_mesh_axes)
-            partition_spec = PartitionSpec(*adjusted_mesh_axes)
-            return NamedSharding(mesh, partition_spec)
-    return tensor_spec
-
-def create_named_sharding(param_spec, mesh):
-    if isinstance(param_spec, PartitionSpec):
-        return (
-            mesh,
-            param_spec
-        )
-    return param_spec

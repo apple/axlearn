@@ -792,7 +792,7 @@ def batch(
             f"global_batch_size ({global_batch_size}) must be divisible by "
             f"number of JAX processes (data feeds) ({num_data_feeds})."
         )
-    # per_feed_batch_size = global_batch_size // num_data_feeds
+
     per_feed_batch_size = global_batch_size
 
     if repeat is not None and (not isinstance(repeat, int) or repeat <= 0):
