@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
 set -e
+# Add lscpu to check the CPU arch.
+lscpu
 
 # Install the package (necessary for CLI tests).
 # Requirements should already be cached in the docker image.
