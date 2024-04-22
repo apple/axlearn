@@ -138,6 +138,8 @@ def get_trainer_kwargs(
             mesh_shape=mesh_shape_from_axes(data=-1),
         )
     elif model_size == "7B":
+        import os
+        DP_DEGREE = (int(os.getenv('SLURM_JOB_NUM_NODES'))*32)//TRN_MODEL_AXIS_SIZE
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=32,
@@ -179,7 +181,7 @@ def get_trainer_kwargs(
                 ),
                 (   
                     "neuron-(trn1.32xlarge|trn1n.32xlarge)-(32|64|256|512|1024)",
-                    mesh_shape_from_axes(data=-1, model=TRN_MODEL_AXIS_SIZE),
+                    mesh_shape_from_axes(data=DP_DEGREE, model=TRN_MODEL_AXIS_SIZE),
                 ),
             ),
         )
