@@ -143,7 +143,7 @@ class CTCDecoderModel(BaseModel):
     CTC maps continuous sequences (e.g. speech embeddings) to "labelings", sequences over a finite
     vocab (with size `vocab_size`). The vocab does not have to contain EOS.
     Output sequences should be no longer than input sequences, and may possibly be shorter (e.g.
-    after removing repeated tokens and/or "blanks", represented by `blank_token_id`).
+    after removing repeated tokens and/or "blanks", represented by `blank_id`).
 
     Reference:
     https://dl.acm.org/doi/10.1145/1143844.1143891
@@ -160,7 +160,7 @@ class CTCDecoderModel(BaseModel):
         # Layer to map hidden state to vocab logits.
         lm_head: BaseLayer.Config = Linear.default_config()
         # Blank token ID.
-        blank_token_id: int = 0
+        blank_id: int = 0
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -221,7 +221,7 @@ class CTCDecoderModel(BaseModel):
             logit_paddings=paddings,
             labels=target_labels,
             label_paddings=target_paddings,
-            blank_id=cfg.blank_token_id,
+            blank_id=cfg.blank_id,
         )
 
         # Drop examples with targets longer than inputs.
@@ -403,7 +403,7 @@ class CTCDecoderModel(BaseModel):
         sequences = jnp.argmax(logits, axis=-1)[:, None, :]
         # Remove repeats and blanks.
         # We make the assumption that the trailing padding positions have 0 as the argmax index.
-        outputs = _map_label_sequences(inputs=sequences, blank_id=cfg.blank_token_id, pad_id=0)
+        outputs = _map_label_sequences(inputs=sequences, blank_id=cfg.blank_id, pad_id=0)
 
         # [batch_size, num_frames, vocab_size].
         log_probs = jax.nn.log_softmax(logits, axis=-1)
@@ -429,7 +429,7 @@ class CTCDecoderModel(BaseModel):
         if scores.ndim == 3:
             scores = (scores[..., :-1] * live_mask).sum(axis=-1)
         # Remove repeats and blanks.
-        outputs = _map_label_sequences(inputs=sequences, blank_id=cfg.blank_token_id, pad_id=0)
+        outputs = _map_label_sequences(inputs=sequences, blank_id=cfg.blank_id, pad_id=0)
         return DecodeOutputs(
             raw_sequences=sequences,
             sequences=outputs["sequences"],
