@@ -7,7 +7,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests quantization layers and metrics."""
-# pylint: disable=no-self-use
+# pylint: disable=no-self-use,wrong-import-position,missing-module-docstring
 from typing import List
 
 import jax
@@ -16,6 +16,9 @@ import numpy as np
 import torch
 from absl.testing import absltest, parameterized
 from fairseq.modules import GumbelVectorQuantizer as fairseq_gumbel_vq
+
+# pylint: disable-next=protected-access
+from jax._src import prng as prng_interal
 
 from axlearn.common import schedule
 from axlearn.common.module import functional as F
@@ -45,9 +48,10 @@ _CODE_BOOK = jnp.array(
 
 
 def _create_prngkeyarray(key_data: List[int]) -> Tensor:
-    # pylint: disable-next=protected-access
-    return jax._src.prng.PRNGKeyArrayImpl(  # pytype: disable=module-attr
-        impl=jax.random.default_prng_impl(), key_data=jnp.array(key_data, dtype=jnp.uint32)
+    # TODO(xuan-zou): upgrade to more recent jax.random.key API and fix tests
+    # when prng_interal.PRNGKeyArray is fully deprecated.
+    return prng_interal.PRNGKeyArray(  # pytype: disable=module-attr
+        impl=prng_interal.threefry_prng_impl, key_data=jnp.array(key_data, dtype=jnp.uint32)
     )
 
 
@@ -208,6 +212,7 @@ class RandomVectorQuantizerTest(TestCase):
             ),
             shapes(layer_params),
         )
+        # pylint: disable-next=protected-access
         with prng_impl("threefry2x32"):
             proj_key = _create_prngkeyarray([3077990774, 2166202870])
             codebook_key = _create_prngkeyarray([791337683, 1373966058])
