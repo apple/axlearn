@@ -42,5 +42,11 @@ if [[ "${SKIP_PRECOMMIT:-false}" = "false" ]] ; then
   pytype -j auto . || exit_if_error $? "pytype failed."
 fi
 download_assets
-pytest --durations=10 -n auto -v -m "not (gs_login or tpu or high_cpu or fp64)" ${UNQUOTED_PYTEST_FILES} || exit_if_error $? "pytest failed."
-JAX_ENABLE_X64=1 pytest -n auto -v -m "fp64" || exit_if_error $? "pytest failed."
+
+# TODO(kelvin-zou): add back once we have jax CPU compile issue resolved.
+IGNORE=(
+    "--ignore=axlearn/experiments/aot_test.py"
+)
+
+pytest ${IGNORE[@]} --durations=10 -n auto -v -m "not (gs_login or tpu or high_cpu or fp64)" ${UNQUOTED_PYTEST_FILES} || exit_if_error $? "pytest failed."
+JAX_ENABLE_X64=1 pytest ${IGNORE[@]} -n auto -v -m "fp64" || exit_if_error $? "pytest failed."
