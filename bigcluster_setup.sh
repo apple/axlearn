@@ -26,5 +26,9 @@ echo "instance_id:$INSTANCE_ID hostname:$(hostname)"
 echo "runtime versions"
 sudo apt list | grep neuron | grep installed
 
-echo "compiler versions"
-pip list | grep neuron
+echo "==============================================="
+echo "Dependency versions"
+echo "==============================================="
+apt list | grep neuron
+pip freeze | grep neuron
+echo "==============================================="

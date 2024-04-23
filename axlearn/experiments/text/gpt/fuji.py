@@ -34,6 +34,7 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.common.utils import DataPartitionType
 import jax
+import os
 
 MODEL_SIZES = ("test", "7B", "70B")
 
@@ -88,6 +89,8 @@ TOTAL_TOKENS = {
     },
 }
 
+# Adjust Neuron compiler flags for gradient accumulation
+os.environ["NEURON_CC_FLAGS"] += " --internal-hlo2tensorizer-options='--verify-hlo --num-concat-graphs=" + str(GRADIENT_ACCUMULATION_MICROBATCHES) + '\''
 
 def get_trainer_kwargs(
     model_size: str,
@@ -96,6 +99,7 @@ def get_trainer_kwargs(
     version: Version,
     flash_attention: bool = False,
 ) -> Dict[str, Any]:
+
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 4 * (1024**2)  # 4M tokens.
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch

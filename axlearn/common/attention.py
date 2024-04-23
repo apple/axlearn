@@ -3851,7 +3851,6 @@ class CausalAttentionLogitBiasLayer(AttentionLogitBiasLayer):
     def forward(self, *, segment_ids: Tensor, positions: Tensor) -> Tensor:
         """Refer to AttentionLogitBiasLayer.forward for docstring."""
         # Note: padding tokens are not explicitly masked.
-        # causal_bias = (positions[:, None, :, None] < positions[:, None, None, :]) * NEG_INF
         segment_ids = jnp.asarray(segment_ids, dtype=jnp.bfloat16)
         causal_bias = jnp.asarray((positions[:, None, :, None] < positions[:, None, None, :]) * NEG_INF, dtype=jnp.bfloat16)
         return apply_attention_logit_biases(
