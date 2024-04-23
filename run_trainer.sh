@@ -42,7 +42,6 @@ num_nodes=$(echo "$nodes" | wc -l)
 neuron_rt_root_comm_id=$(echo "$nodes" | head -n 1):5552
 process_idx=$(echo "$nodes" | grep -n "$SLURMD_NODENAME" | cut -d: -f1)
 devices_per_node=32
-export JAX_DISTRIBUTED_COORDINATOR_ADDRESS=$coordinator_address
 export NEURON_RT_ROOT_COMM_ID=$neuron_rt_root_comm_id
 export NEURON_PJRT_PROCESSES_NUM_DEVICES=$(printf '%s,' $(seq 1 $num_nodes | xargs -I {} echo $devices_per_node) | sed 's/,$//')
 export NEURON_PJRT_PROCESS_INDEX=$((process_idx - 1))
