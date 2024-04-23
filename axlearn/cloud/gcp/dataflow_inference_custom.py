@@ -178,11 +178,13 @@ def parse_flags(argv):
     known_args, pipeline_args = parser.parse_known_args(argv[1:])
     return pipeline_args
 
-def main(args):
+def main(args, save_main_session:True):
     pipeline_input = get_examples()
 
     # run pipeline
     pipeline_options = PipelineOptions(args)
+    pipeline_options.view_as(SetupOptions).save_main_session = save_main_session
+
     pipeline = beam.Pipeline(options=pipeline_options)
 
     with pipeline as p:
