@@ -49,7 +49,7 @@ $ axlearn gcp dataflow start \
     --bundler_spec=target=dataflow \
     --bundler_spec=allow_dirty=True \
     --dataflow_spec=runner=DataflowRunner \
-    --dataflow_spec=dataflow_service_options="worker_accelerator=type:nvidia-a100-80gb;count:1;install-nvidia-driver" \
+    --dataflow_spec=dataflow_service_options="worker_accelerator=type:nvidia-l4;count:1;install-nvidia-driver" \
     -- "'python3 -m axlearn.cloud.gcp.dataflow_inference_custom \
         --module=text.gpt.c4_trainer \
         --config=fuji-7B-single \
@@ -64,10 +64,12 @@ $
 
 
 from absl import app, flags
+from absl.flags import argparse_flags
 import logging
 import argparse
 import warnings
 import jax
+import sys
 import tensorflow as tf
 
 from axlearn.common.inference import InferenceRunner, MethodRunner
@@ -87,6 +89,7 @@ from typing import Dict
 from typing import Iterable
 from typing import Optional
 from typing import Sequence
+
 
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions
@@ -166,17 +169,21 @@ def get_examples() -> Sequence[NestedTensor]:
 
     return example_list
 
+def parse_flags(argv):
+    """Parse out arguments in addition to the defined absl flags (can be found in axlearn/common/launch_trainer.py).
+    Addition arguments are returned to the 'main' function by 'app.run'.
+    """
+    parser = argparse_flags.ArgumentParser(description='Parser to parse additional arguments other than defiend ABSL flags.')
+    # Assume all remaining unknown arguments are Dataflow Pipeline options
+    known_args, pipeline_args = parser.parse_known_args(argv[1:])
+    return pipeline_args
 
-def main(argv=None, save_main_session=True):
-
-
+def main(args):
     pipeline_input = get_examples()
 
-    # TODO: parse out unknown args as pipeline options. Currently we're only passing in the exact required flags
     # run pipeline
-    # pipeline_options = PipelineOptions(pipeline_args, number_of_worker_harness_threads=1)
-
-    pipeline = beam.Pipeline()
+    pipeline_options = PipelineOptions(args)
+    pipeline = beam.Pipeline(options=pipeline_options)
 
     with pipeline as p:
         (p
@@ -187,4 +194,4 @@ def main(argv=None, save_main_session=True):
 
 if __name__ == "__main__":
     logging.getLogger().setLevel(logging.INFO)
-    app.run(main)
+    app.run(main, flags_parser=parse_flags)
