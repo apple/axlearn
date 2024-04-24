@@ -1,6 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
-"""Tests feature pyramind network implementations."""
+"""Tests feature pyramid network implementations."""
 import jax.numpy as jnp
 import jax.random
 import numpy as np

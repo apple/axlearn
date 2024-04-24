@@ -582,7 +582,7 @@ def default_pad_example_fn(element_spec: Any) -> Any:
 
 
 def _infer_cardinality(dataset: tf.data.Dataset) -> int:
-    """Returns the size of the dataset, by counting examples if neccessary."""
+    """Returns the size of the dataset, by counting examples if necessary."""
     num_examples = dataset.cardinality()
     if num_examples != tf.data.UNKNOWN_CARDINALITY:
         return num_examples

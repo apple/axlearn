@@ -250,7 +250,7 @@ class BaseMetricCalculator(Module):
         )
 
     def formatted_metric_name(self, metric_name):
-        """Prepand the prefix to the metric_name."""
+        """Prepend the prefix to the metric_name."""
         if self.config.prefix is not None:
             return f"{self.config.prefix}/{metric_name}"
         else:

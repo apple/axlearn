@@ -595,7 +595,7 @@ class CTCDecoderModelTest(TestCase):
         )
         self._check_summary(
             summaries,
-            "input_stats/frame_packing_effiency",
+            "input_stats/frame_packing_efficiency",
             WeightedScalar(num_valid_frames / paddings.size, paddings.size),
         )
 

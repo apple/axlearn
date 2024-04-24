@@ -1085,7 +1085,7 @@ class Conv1D(BaseLayer):
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
-        # Check lhs_dilation and padding setting compatiablity.
+        # Check lhs_dilation and padding setting compatibility.
         if cfg.lhs_dilation is not None and cfg.lhs_dilation != 1 and isinstance(cfg.padding, str):
             raise ValueError("String padding is not supported for LHS dilation.")
 

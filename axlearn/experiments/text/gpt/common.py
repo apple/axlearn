@@ -137,7 +137,7 @@ def mesh_shape_from_axes(
     """Builds a 5D logical mesh from the provided spec.
 
     Args:
-        data: For data-paralellism. Expect model state to be fully replicated over this axis.
+        data: For data-parallelism. Expect model state to be fully replicated over this axis.
             Useful for e.g. multi-slice/granule partitioning with slow networking between granules.
         expert: Designed to be used for partitioning "experts" in mixture-of-expert models.
             E.g. <https://arxiv.org/abs/2006.16668>.

@@ -191,7 +191,7 @@ class TestDownloadJobBatch(parameterized.TestCase):
     def test_invalid_membership(self):
         # Test that we drop jobs where the user is not a member of the specified quota project id.
         user_ids = ["a", "b", "c"]
-        project_ids = ["proj1", "proj2", "proj3", "non_existant_proj"]
+        project_ids = ["proj1", "proj2", "proj3", "non_existent_proj"]
         jobspecs = {
             str(i): JobSpec(
                 version=0,
@@ -211,7 +211,7 @@ class TestDownloadJobBatch(parameterized.TestCase):
             name
             for name, job_spec in jobspecs.items()
             if job_spec.metadata.project_id == "proj3"
-            or job_spec.metadata.project_id != "non_existant_proj"
+            or job_spec.metadata.project_id != "non_existent_proj"
             and job_spec.metadata.user_id in project_membership[job_spec.metadata.project_id]
         ]
 

@@ -246,7 +246,7 @@ class WandBWriter(BaseWriter):
 
     Note:
         This utility does not support restarts gracefully.
-        If the job is pre-empted, the logger will create a new run.
+        If the job is preempted, the logger will create a new run.
 
     TODO(adesai22): Add support for restarts.
     """

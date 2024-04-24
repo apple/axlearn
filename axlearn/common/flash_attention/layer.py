@@ -104,7 +104,7 @@ class FlashAttention(GroupedQueryAttention):
     ) -> Tuple[Tensor, Tensor]:
         cfg = self.config
 
-        # Repeats key/value heads dim if neccessary.
+        # Repeats key/value heads dim if necessary.
         k_proj = self._repeat_kv_heads(k_proj)
         v_proj = self._repeat_kv_heads(v_proj)
 

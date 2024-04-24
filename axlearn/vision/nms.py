@@ -150,7 +150,7 @@ def non_max_suppression_padded(
         are zero).
       * Boxes with higher scores can be used to suppress boxes with lower scores.
 
-    The overal design of the algorithm is to handle boxes tile-by-tile:
+    The overall design of the algorithm is to handle boxes tile-by-tile:
 
     boxes = boxes.pad_to_multiply_of(tile_size)
     num_tiles = len(boxes) // tile_size

@@ -246,7 +246,7 @@ class GKERunnerJob(GCPJob):
             SUSPENDED: JobSet is suspended.
             STARTUPPOLICYCOMPLETED: JobSet completed StartupPolicy.
             READY: JobSet is ready (all Jobs are ready).
-            SUCCEEDED: JobSet succeeded (all Jobs suceeded). Typically also manifests as COMPLETED.
+            SUCCEEDED: JobSet succeeded (all Jobs succeeded). Typically also manifests as COMPLETED.
             RESCHEDULED: Job was rescheduled onto a different tier.
         """
 

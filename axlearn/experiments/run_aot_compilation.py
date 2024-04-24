@@ -60,7 +60,7 @@ def _compile_and_dump_programs(
         print(program.as_text())
         print(f"== Cost analysis {program_name} ==")
         print(program.cost_analysis())
-        print(f"== Memeory analysis {program_name} ==")
+        print(f"== Memory analysis {program_name} ==")
         print(program.memory_analysis())
 
         # Serialization does not work for CPU devices:

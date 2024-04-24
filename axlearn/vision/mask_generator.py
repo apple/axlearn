@@ -42,7 +42,7 @@ class MaskingGenerator:
 
         Args:
             input_size: an int tuple that represents (height, width) of the patchified target.
-            num_masking_patches: the number of paches to be masked.
+            num_masking_patches: the number of patches to be masked.
             num_attempts: the max number of attempts for one mask generation trial.
             min_mask_patches: the min number of patches for one masking area.
             max_mask_patches: the max number of patches for one masking area. If None, sets to
@@ -128,7 +128,7 @@ class MaskingGenerator:
         mask = np.zeros(shape=self.get_shape(), dtype=np.int32)
         mask_count = 0
         # pylint: disable=no-else-break,unbalanced-tuple-unpacking
-        # Keeps selecting one new random area if mask_count does not reach num_masking_pathces.
+        # Keeps selecting one new random area if mask_count does not reach num_masking_patches.
         # TODO(xianzhi): consider consolidating the while and the if/else logics.
         while mask_count < self.num_masking_patches:
             max_mask_patches = self.num_masking_patches - mask_count

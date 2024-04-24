@@ -225,7 +225,7 @@ class BaseASRDecoderModel(BaseModel):
             "input_stats/average_source_length": WeightedScalar(
                 jnp.mean(source_lengths), batch_size
             ),
-            "input_stats/frame_packing_effiency": WeightedScalar(
+            "input_stats/frame_packing_efficiency": WeightedScalar(
                 jnp.sum(source_lengths) / num_source_elements, num_source_elements
             ),
         }
@@ -298,7 +298,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
             "input_stats/average_source_length": WeightedScalar(
                 num_valid_frames / total_example_weights, total_example_weights
             ),
-            "input_stats/frame_packing_effiency": WeightedScalar(
+            "input_stats/frame_packing_efficiency": WeightedScalar(
                 num_valid_frames / num_total_frames, num_total_frames
             ),
         }

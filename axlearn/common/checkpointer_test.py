@@ -679,7 +679,7 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                         validation=CheckpointValidationType.EXACT_UP_TO_DTYPE,
                     )
 
-                # Succesfully restores with different dtypes.
+                # Successfully restores with different dtypes.
                 restored_state = restore_state()
                 self.assertNestedEqual(
                     restored_state,

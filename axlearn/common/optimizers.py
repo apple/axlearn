@@ -273,7 +273,7 @@ def per_param_scale_by_rms(*, min_scale: float = 1e-4) -> Callable[[NestedOptPar
     """Computes per-parameter scales with its Root-Mean-Square (RMS).
 
     Args:
-        min_scale: The minimum scale for each paramter.
+        min_scale: The minimum scale for each parameter.
 
     Returns:
         A function that computes per-parameter scales given a NestedOptParam tree. The returned
@@ -1202,7 +1202,7 @@ def skip_and_clip_by_global_norm(
     is that this version skips all updates while clip_by_global_norm() still performs parameter
     updates and optimizer state updates.
 
-    When drop_norm is a DropNormThreholdFn, the drop norm will be calculated based on the moving
+    When drop_norm is a DropNormThresholdFn, the drop norm will be calculated based on the moving
     stats of recent gradient norms. This is useful since the gradient norms can initially be large
     but reduce to a small value during training.
 
@@ -1226,12 +1226,12 @@ def skip_and_clip_by_global_norm(
     Args:
         inner: the PartitionedGradientTransformation we wrapped over, e.g. adamw_optimizer().
         drop_norm: the threshold to detect abnormal gradients and skip gradient and state updates.
-            When this is a DropNormThreholdFn, the actual drop norm will be calcuated dynamically
+            When this is a DropNormThresholdFn, the actual drop norm will be calculated dynamically
             based on recent gradient stats.
         max_norm: the maximum global gradient norm. If this is set, larger gradients will be scaled
             and clipped.
         gradient_norm_ema_decay: the decay factor used to compute EMA of gradient norms. This must
-            be set when `drop_norm` is a DropNormThreholdFn.
+            be set when `drop_norm` is a DropNormThresholdFn.
         eps: a small constant added to scaling factor, i.e. `1/(norm + eps)`.
 
     Returns:
@@ -1707,7 +1707,7 @@ def adastar_optimizer(
         # Stage 1.
         smoothed_gradients = ema(gradients, gradient_ema_decay, gradient_ema_debias)
         smoothed_gradient_squares = ema(
-            gradients ** 2 + eps_square, gradient_square_ema_decay, gradient_sqare_ema_debias)
+            gradients ** 2 + eps_square, gradient_square_ema_decay, gradient_square_ema_debias)
         # Normalized gradients.
         raw_updates = smoothed_gradients / ((smoothed_gradient_squares) ** 0.5 + eps)
         clipped_updates = clip(scaled_gradients, raw_update_clipping_threshold)
