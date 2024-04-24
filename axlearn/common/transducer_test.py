@@ -399,6 +399,7 @@ class AlignmentTest(TestWithTemporaryCWD, tf.test.TestCase):
         cfg = Transducer.default_config().set(
             name="transducer", input_dim=input_dim, vocab_size=vocab_size
         )
+        cfg.logits_to_log_probs.blank_id = 0
         layer = cfg.instantiate(parent=None)
         prng_key, init_key = jax.random.split(prng_key)
         layer_params = layer.initialize_parameters_recursively(init_key)
