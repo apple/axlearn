@@ -141,7 +141,6 @@ def get_trainer_kwargs(
             mesh_shape=mesh_shape_from_axes(data=-1),
         )
     elif model_size == "7B":
-        import os
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=32,

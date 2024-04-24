@@ -41,12 +41,9 @@ nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
 num_nodes=$(echo "$nodes" | wc -l)
 process_idx=$(echo "$nodes" | grep -n "$SLURMD_NODENAME" | cut -d: -f1)
 devices_per_node=32
-
-# MASTER_ADDR=${HOSTS[0]}
 MASTER_ADDR=$(echo "$nodes" | head -n 1)
 MASTER_PORT=41000
-JAX_COOARDINATOR_PORT=41001
-
+JAX_COORDINATOR_PORT=41001
 export NEURON_RT_ROOT_COMM_ID="${MASTER_ADDR}:${MASTER_PORT}"
 export NEURON_PJRT_PROCESSES_NUM_DEVICES=$(printf '%s,' $(seq 1 $num_nodes | xargs -I {} echo $devices_per_node) | sed 's/,$//')
 export NEURON_PJRT_PROCESS_INDEX=$((process_idx - 1))
@@ -63,5 +60,5 @@ python3 -m axlearn.common.launch_trainer_main \
     --module=text.gpt.c4_trainer --config=fuji-7B \
     --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR \
     --jax_backend=neuron --mesh_selector=neuron-trn1.32xlarge-64 \
-    --distributed_coordinator=$MASTER_ADDR:$JAX_COOARDINATOR_PORT --num_processes=$num_nodes \
+    --distributed_coordinator=$MASTER_ADDR:$JAX_COORDINATOR_PORT --num_processes=$num_nodes \
     --process_id=$NEURON_PJRT_PROCESS_INDEX
