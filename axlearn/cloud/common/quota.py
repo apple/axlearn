@@ -1,10 +1,9 @@
 # Copyright © 2023 Apple Inc.
 
 """Utilities to retrieve quotas."""
-
 import re
 from dataclasses import dataclass
-from typing import List, Protocol, Sequence
+from typing import List, Protocol
 
 import toml
 from tensorflow import io as tf_io
@@ -18,12 +17,8 @@ QUOTA_CONFIG_PATH = "project-quotas/project-quotas.config"
 class QuotaInfo:
     """Quota information for job scheduling."""
 
-    # A sequence of mappings from resource type to total resource limits.
-    # Each element in the sequence represents a scheduling tier, where a higher priority/SLO tier is
-    # listed before a lower priority/SLO tier.
-    # A job can be scheduled with resources across multiple tiers with an SLO corresponding to the
-    # lowest-SLO tier used for the job.
-    total_resources: Sequence[ResourceMap[float]]
+    # A mapping from resource type to total resource limits.
+    total_resources: ResourceMap[float]
     # A nested mapping. Key is project identifier, value is mapping from resource type to
     # per-project resource proportions.
     project_resources: ProjectResourceMap[float]
@@ -49,11 +44,8 @@ def get_resource_limits(path: str) -> QuotaInfo:
     with tf_io.gfile.GFile(path, mode="r") as f:
         cfg = toml.loads(f.read())
         if cfg["toml-schema"]["version"] == "1":
-            total_resources = cfg["total_resources"]
-            if not isinstance(total_resources, Sequence):
-                total_resources = [total_resources]
             return QuotaInfo(
-                total_resources=total_resources,
+                total_resources=cfg["total_resources"],
                 project_resources=cfg["project_resources"],
             )
         raise ValueError(f"Unsupported schema version {cfg['toml-schema']['version']}")

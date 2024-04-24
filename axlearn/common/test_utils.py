@@ -36,7 +36,7 @@ from axlearn.common.config import (
 )
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import Learner
-from axlearn.common.module import InvocationContext, Module, current_context
+from axlearn.common.module import InvocationContext
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam
@@ -716,62 +716,6 @@ def temp_chdir(new_cwd: Union[pathlib.Path, str]):
 
 
 L = TypeVar("L", bound=BaseLayer)
-M = TypeVar("M", bound=Module)
-
-
-@contextlib.contextmanager
-def bind_module(
-    module: ConfigOr[M],
-    *,
-    is_training: bool = True,
-    prng_key: Optional[jax.random.PRNGKey] = None,
-    state: Nested[Tensor],
-) -> Iterator[M]:
-    """Creates a context in which `module` has `state`.`
-
-    This lets you write tests that make calls to a module without needing to call `functional()`
-    yourself.
-
-    It is similar in spirit to FLAX's `module.bind()` although that works differently due to the
-    fact that FLAX state is only associated with an instance of a module, whereas AXLearn state is
-    global.
-
-    Example:
-        ```
-        cfg = MyModule.default_config()
-        with test_utils.bind_layer(cfg) as module:
-            result = module.do_something(some_args)
-        ```
-
-    Args:
-        module: The module to create a context for.
-        is_training: Tell the module it is in training or not.
-        prng_key: The PRNG key to use. If None, `jax.random.PRNGKey(0)`.
-        state: The state to use.
-
-    Returns:
-        The initialized module.
-    """
-    if prng_key is None:
-        prng_key = jax.random.PRNGKey(0)
-
-    if isinstance(module, InstantiableConfig):
-        if isinstance(module, Module.Config) and isinstance(
-            getattr(module, "name", None), RequiredFieldValue
-        ):
-            setattr(module, "name", "tmp")
-        module = module.instantiate(parent=None)
-    ctx = InvocationContext(
-        name="root",
-        parent=None,
-        module=module,
-        is_training=is_training,
-        prng_key=prng_key,
-        state=state,
-        output_collection=new_output_collection(),
-    )
-    with set_current_context(ctx):
-        yield module
 
 
 @contextlib.contextmanager
@@ -782,11 +726,14 @@ def bind_layer(
     prng_key: Optional[jax.random.PRNGKey] = None,
     state: Optional[Nested[Tensor]] = None,
 ) -> Iterator[L]:
-    """Creates a context in which `layer` has state initialized using
-    `initialize_parameters_recursively`.
+    """Creates a context in which `module` has state initialized using `init_method`.
 
-    The only difference between this and `bind_module()` is this calls
-    `initialize_parameters_recursively`.
+    This lets you write tests that make calls to a module without needing to call `functional()`
+    yourself.
+
+    It is similar in spirit to FLAX's `module.bind()` although that works differently due to the
+    fact that FLAX state is only associated with an instance of a module, whereas AXLearn state is
+    global.
 
     Example:
         ```
@@ -810,9 +757,22 @@ def bind_layer(
         prng_key = jax.random.PRNGKey(0)
 
     init_key, ctx_key = jax.random.split(prng_key)
-
-    with bind_module(layer, is_training=is_training, prng_key=ctx_key, state={}) as instance:
-        if state is None:
-            state = instance.initialize_parameters_recursively(prng_key=init_key)
-        current_context().state = state
-        yield instance
+    if isinstance(layer, InstantiableConfig):
+        if isinstance(layer, BaseLayer.Config) and isinstance(
+            getattr(layer, "name", None), RequiredFieldValue
+        ):
+            setattr(layer, "name", "tmp")
+        layer = layer.instantiate(parent=None)
+    if state is None:
+        state = layer.initialize_parameters_recursively(prng_key=init_key)
+    ctx = InvocationContext(
+        name="root",
+        parent=None,
+        module=layer,
+        is_training=is_training,
+        prng_key=ctx_key,
+        state=state,
+        output_collection=new_output_collection(),
+    )
+    with set_current_context(ctx):
+        yield layer

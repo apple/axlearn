@@ -5,6 +5,7 @@
 from typing import Optional
 
 import jax.numpy as jnp
+import numpy as np
 
 from axlearn.common.utils import Tensor
 
@@ -76,9 +77,9 @@ def pairwise_iou(
     p_iou = jnp.where(intersections > 0.0, intersections / unions, 0.0)
 
     if paddings_a is None:
-        paddings_a = jnp.zeros(boxes_a.shape[:-1], dtype=bool)
+        paddings_a = jnp.zeros(boxes_a.shape[:-1], dtype=np.bool)
     if paddings_b is None:
-        paddings_b = jnp.zeros(boxes_b.shape[:-1], dtype=bool)
+        paddings_b = jnp.zeros(boxes_b.shape[:-1], dtype=np.bool)
     fill_loc = paddings_a[..., None] | paddings_b[..., None, :]
 
     return jnp.where(fill_loc, fill_value, p_iou)
@@ -112,9 +113,9 @@ def pairwise_ioa(
     p_iou = jnp.where(intersections > 0.0, intersections / area_a, 0.0)
 
     if paddings_a is None:
-        paddings_a = jnp.zeros(boxes_a.shape[:-1], dtype=bool)
+        paddings_a = jnp.zeros(boxes_a.shape[:-1], dtype=np.bool)
     if paddings_b is None:
-        paddings_b = jnp.zeros(boxes_b.shape[:-1], dtype=bool)
+        paddings_b = jnp.zeros(boxes_b.shape[:-1], dtype=np.bool)
     fill_loc = paddings_a[..., None] | paddings_b[..., None, :]
 
     return jnp.where(fill_loc, fill_value, p_iou)
@@ -173,9 +174,9 @@ def elementwise_iou(
     e_iou = jnp.where(intersections > 0.0, intersections / unions, 0.0)
 
     if paddings_a is None:
-        paddings_a = jnp.zeros(boxes_a.shape[:-1], dtype=bool)
+        paddings_a = jnp.zeros(boxes_a.shape[:-1], dtype=np.bool)
     if paddings_b is None:
-        paddings_b = jnp.zeros(boxes_b.shape[:-1], dtype=bool)
+        paddings_b = jnp.zeros(boxes_b.shape[:-1], dtype=np.bool)
     fill_loc = paddings_a | paddings_b
 
     return jnp.where(fill_loc, fill_value, e_iou)

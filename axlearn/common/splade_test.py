@@ -96,9 +96,9 @@ class SpladePoolingTest(TestCase):
             torch_paddings = torch.ones((inputs.shape[:-1]))
             axlearn_paddings = None
         else:
-            torch_paddings = torch.from_numpy(paddings.astype(float))
+            torch_paddings = torch.from_numpy(paddings.astype(np.float))
             # axlearn_paddings = True means padded tokens.
-            axlearn_paddings = jnp.asarray((1 - paddings).astype(bool))
+            axlearn_paddings = jnp.asarray((1 - paddings).astype(np.bool))
 
         # Reference output.
         ref_output, ref_model_params = self.ref_splade_implementation(

@@ -16,10 +16,10 @@ class CocoToolsTest(parameterized.TestCase, tf.test.TestCase):
     def test_export_detections_to_coco(self):
         image_ids = ["first", "second"]
         detections_boxes = [
-            np.array([[100, 100, 200, 200]], float),
-            np.array([[50, 50, 100, 100]], float),
+            np.array([[100, 100, 200, 200]], np.float),
+            np.array([[50, 50, 100, 100]], np.float),
         ]
-        detections_scores = [np.array([0.8], float), np.array([0.7], float)]
+        detections_scores = [np.array([0.8], np.float), np.array([0.7], np.float)]
         detections_classes = [np.array([1], np.int32), np.array([1], np.int32)]
         predictions = {
             "source_id": np.expand_dims(image_ids, axis=0),

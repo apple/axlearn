@@ -177,8 +177,8 @@ def spearman_corrcoef(x: Tensor, y: Tensor, *, eps: float = 1e-8, mask: Optional
             )
 
         # Replace masked elements with -inf so they will be ranked lowest
-        x = jnp.where(mask != 0, x, -jnp.inf)
-        y = jnp.where(mask != 0, y, -jnp.inf)
+        x = jnp.where(mask != 0, x, jnp.NINF)
+        y = jnp.where(mask != 0, y, jnp.NINF)
 
     ranked_x = _rankdata(x)
     ranked_y = _rankdata(y)

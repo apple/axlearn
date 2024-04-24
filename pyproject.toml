@@ -13,13 +13,13 @@ requires-python = ">=3.9"
 # Every time we upgrade JAX, we should try to bring the rest to the newest versions.
 dependencies = [
     "attrs>=23.1.0", # We use `type` in `attrs.field`
-    "absl-py==1.4.0",  # breaks axlearn.cli.utils_test on 2.1.0
-    "chex==0.1.86",  # chex 0.1.86 is required for jax 0.4.25.
+    "absl-py",
+    "chex<0.1.81",  # chex 0.1.81 depends on numpy>=1.25.0.
     "importlab==0.7",  # breaks pytype on 0.8
-    "jax==0.4.25",
-    "jaxlib==0.4.25",
+    "jax==0.4.21",
+    "jaxlib==0.4.21",
     "nltk==3.7",  # for text preprocessing
-    "numpy==1.26.4",  # verified with tensorflow 2.14 RaggedTensor
+    "numpy<1.24",  # needed to pin to < 1.24; tf ragged_tensor depends on deprecated np.object.
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
     "protobuf>=3.20.3",
@@ -53,7 +53,7 @@ dev = [
     "einops",
     "evaluate",
     "fairseq==0.12.2",  # test-only; note Apple Silicon start.md instructions parse this specifier '==', please be careful when upgrading.
-    "flax==0.8.2",  # for param converter and adapter
+    "flax==0.7.4",  # for param converter and adapter
     "isort",  # formatting
     "pre-commit",  # local pre commit hooks
     "pycocotools",  # COCO evaluation tools
@@ -89,7 +89,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.4.25",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.4.21",  # must be >=0.4.19 for compat with v5p.
 ]
 # Vertex AI tensorboard.
 vertexai_tensorboard = [

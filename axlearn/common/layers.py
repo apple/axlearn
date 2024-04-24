@@ -570,7 +570,7 @@ class Linear(BaseLayer):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
-        output = jnp.einsum("...d,dh->...h", x, self.parameters["weight"])
+        output = x @ self.parameters["weight"]
         if cfg.bias:
             output += self.parameters["bias"]
         return self._maybe_shard(output)

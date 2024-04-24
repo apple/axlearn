@@ -39,7 +39,7 @@ import jax
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
-from jax.experimental import maps, mesh_utils, multihost_utils
+from jax.experimental import maps, mesh_utils, multihost_utils, pjit
 from jax.sharding import PartitionSpec
 from jax.tree_util import register_pytree_node_class
 
@@ -411,7 +411,7 @@ def with_sharding_constraint(x, shardings):
     mesh = jax.experimental.maps.thread_resources.env.physical_mesh  # type: ignore
     if mesh.empty or mesh.size == 1:
         return x
-    return jax.lax.with_sharding_constraint(x, shardings)
+    return pjit.with_sharding_constraint(x, shardings)
 
 
 def replicate_to_local_data(x: NestedTensor) -> NestedTensor:

@@ -17,27 +17,24 @@ def speech_input(
     max_len: int,
     input_key: str = "speech",
     normalize_by_scale: Optional[float] = None,
-    truncate: bool = False,
 ) -> input_tf_data.DatasetToDatasetFn:
     """Speech-only input processor for converting audio into fixed length sequences.
 
     1. If `normalize_by_scale` is not None, normalize inputs keyed at `input_key`.
-    2. Filter out empty examples and examples that would otherwise be truncated if
-        truncate is False.
+    2. Filter out empty examples or examples that would otherwise be truncated.
     3. Apply padding and truncation. This also injects `paddings`, where padding positions are
         indicated by 1's.
 
     Args:
-        max_len: Maximum sequence length. Examples exceeding `max_len` will be filtered if truncate
-            is False, truncated to max_len if truncate is True.
+        max_len: Maximum sequence length. Examples exceeding `max_len` will always be filtered, s.t.
+            speech is not truncated.
         input_key: Key in each example corresponding to the audio inputs.
         normalize_by_scale: If not None, normalize the speech by dividing by this scale.
-        truncate: Whether to allow speech to be truncated.
 
     Returns:
         A DatasetToDatasetFn.
         * Each input example is a dict containing `input_key` with float Tensor values (and possibly
-            other keys) of shape [audio_len];
+            other keys);
         * Each output example contains "inputs" corresponding to `input_key` with values possibly
             padded, truncated, and (optionally) normalized, as well as "paddings", a 0/1 int Tensor
             with 1's at padding positions. All other keys besides `input_key` will be kept
@@ -58,10 +55,8 @@ def speech_input(
     processors = []
     if normalize_by_scale:
         processors.append(_normalize_by_scale(input_key=input_key, scale=normalize_by_scale))
-    # Filter inputs that are too short, and inputs that would otherwise be truncated
-    # if truncate=False.
-    filter_max_len = None if truncate else max_len
-    processors.append(_filter_by_length(input_key=input_key, min_len=1, max_len=filter_max_len))
+    # Filter inputs that are too short or would otherwise be truncated.
+    processors.append(_filter_by_length(input_key=input_key, min_len=1, max_len=max_len))
     return input_tf_data.chain(*processors, segments_to_paddings)
 
 

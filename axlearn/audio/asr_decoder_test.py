@@ -310,12 +310,12 @@ class CTCDecoderModelTest(TestCase):
     """Tests CTCDecoderModel."""
 
     @parameterized.parameters([0, 1])
-    def test_predict(self, blank_id):
+    def test_predict(self, blank_token_id):
         dim, vocab_size = 6, 8
         cfg = CTCDecoderModel.default_config().set(
             dim=dim,
             vocab_size=vocab_size,
-            blank_id=blank_id,
+            blank_token_id=blank_token_id,
         )
         # Initialize layer parameters.
         layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
@@ -362,12 +362,12 @@ class CTCDecoderModelTest(TestCase):
         self.assertTrue(jnp.all(jnp.logical_not(outputs_at_padding)))
 
     @parameterized.parameters([0, 1])
-    def test_forward(self, blank_id):
+    def test_forward(self, blank_token_id):
         dim, vocab_size = 16, 20
         cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
             dim=dim,
             vocab_size=vocab_size,
-            blank_id=blank_id,
+            blank_token_id=blank_token_id,
         )
         # Initialize layer parameters.
         layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
@@ -434,7 +434,7 @@ class CTCDecoderModelTest(TestCase):
             targets=ref_target_labels,
             input_lengths=as_torch_tensor(input_lengths),
             target_lengths=as_torch_tensor(target_lengths),
-            blank=cfg.blank_id,
+            blank=cfg.blank_token_id,
             reduction="none",
             zero_infinity=True,
         )
@@ -445,25 +445,25 @@ class CTCDecoderModelTest(TestCase):
         assert_allclose(ref_per_example_loss, aux_outputs["per_example_loss"] * per_example_weight)
         assert_allclose(np.sum(ref_per_example_loss) / np.sum(per_example_weight), loss)
 
-    def _check_paddings(self, outputs: DecodeOutputs, *, blank_id: int):
+    def _check_paddings(self, outputs: DecodeOutputs, *, blank_token_id: int):
         # Padding positions should correspond to pad_id.
         self.assertTrue(jnp.all(outputs.sequences * outputs.paddings == 0))
         # Other positions should not contain pad_id or blanks.
         self.assertTrue(jnp.all((outputs.sequences != 0) | outputs.paddings))
-        if blank_id != 0:
-            self.assertTrue(jnp.all((outputs.sequences != blank_id) | outputs.paddings))
+        if blank_token_id != 0:
+            self.assertTrue(jnp.all((outputs.sequences != blank_token_id) | outputs.paddings))
 
     @parameterized.product(
         num_decodes=[1, 3],
         vocab_size=[5, 20],
-        blank_id=[0, 1],
+        blank_token_id=[0, 1],
         logits_modifier=[top_k_logits(1), config_for_function(top_k_logits).set(k=1)],
     )
-    def test_greedy_decode(self, num_decodes, vocab_size, blank_id, logits_modifier):
+    def test_greedy_decode(self, num_decodes, vocab_size, blank_token_id, logits_modifier):
         cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
             dim=6,
             vocab_size=vocab_size,
-            blank_id=blank_id,
+            blank_token_id=blank_token_id,
         )
 
         # Initialize layer parameters.
@@ -525,7 +525,7 @@ class CTCDecoderModelTest(TestCase):
 
         # Sequences have shape [batch_size, max_seq_len].
         ref_raw_sequences = jnp.argmax(ref_log_probs, axis=-1)
-        ref_outputs = _map_label_sequences(ref_raw_sequences, blank_id=cfg.blank_id)
+        ref_outputs = _map_label_sequences(ref_raw_sequences, blank_id=cfg.blank_token_id)
         ref_sequences, ref_paddings = ref_outputs["sequences"], ref_outputs["paddings"]
 
         # Mask out padding/EOS tokens.
@@ -549,25 +549,25 @@ class CTCDecoderModelTest(TestCase):
         self.assertNestedEqual(ref_paddings, sample_decode_outputs.paddings[:, 0, :])
         self.assertNestedEqual(ref_scores, sample_decode_outputs.scores[:, 0])
 
-        self._check_paddings(sample_decode_outputs, blank_id=cfg.blank_id)
+        self._check_paddings(sample_decode_outputs, blank_token_id=cfg.blank_token_id)
 
         # Greedy decode output should match.
         self.assertNestedEqual(ref_sequences, greedy_decode_outputs.sequences[:, 0, :])
         self.assertNestedEqual(ref_paddings, greedy_decode_outputs.paddings[:, 0, :])
         self.assertNestedEqual(ref_scores, greedy_decode_outputs.scores[:, 0])
 
-        self._check_paddings(greedy_decode_outputs, blank_id=cfg.blank_id)
+        self._check_paddings(greedy_decode_outputs, blank_token_id=cfg.blank_token_id)
 
     @parameterized.product(
         num_decodes=[1, 3],
         vocab_size=[5, 20],
-        blank_id=[0, 1],
+        blank_token_id=[0, 1],
     )
-    def test_beam_search_decode(self, num_decodes, vocab_size, blank_id):
+    def test_beam_search_decode(self, num_decodes, vocab_size, blank_token_id):
         cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
             dim=6,
             vocab_size=vocab_size,
-            blank_id=blank_id,
+            blank_token_id=blank_token_id,
         )
         # Initialize layer parameters.
         layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
@@ -609,7 +609,7 @@ class CTCDecoderModelTest(TestCase):
         )
         # Check that beams are sorted descending by score.
         self.assertTrue(jnp.all(jnp.diff(beam_search_outputs.scores, axis=-1) <= 0))
-        self._check_paddings(beam_search_outputs, blank_id=cfg.blank_id)
+        self._check_paddings(beam_search_outputs, blank_token_id=cfg.blank_token_id)
 
         # Greedy decode.
         greedy_outputs: DecodeOutputs = jit_method(
@@ -720,7 +720,7 @@ class CTCDecoderModelTest(TestCase):
             prng_key=decode_key,
             method="beam_search_decode",
             num_decodes=num_decodes,
-            prefix_merger=CTCPrefixMerger(blank_id=cfg.blank_id),
+            prefix_merger=CTCPrefixMerger(blank_id=cfg.blank_token_id),
         )
         self.assertNestedEqual(
             jnp.array(
