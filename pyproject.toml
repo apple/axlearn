@@ -13,7 +13,7 @@ requires-python = ">=3.9"
 # Every time we upgrade JAX, we should try to bring the rest to the newest versions.
 dependencies = [
     "attrs>=23.1.0", # We use `type` in `attrs.field`
-    "absl-py==1.4.0",  # breaks axlearn.cli.utils_test on 2.1.0
+    "absl-py==2.1.0",
     "chex==0.1.86",  # chex 0.1.86 is required for jax 0.4.25.
     "importlab==0.7",  # breaks pytype on 0.8
     "jax==0.4.25",
