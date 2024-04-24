@@ -61,7 +61,7 @@ from absl import app, flags, logging
 
 from axlearn.cloud.common.bastion import BastionDirectory
 from axlearn.cloud.common.bastion import Job as BastionJob
-from axlearn.cloud.common.bastion import JobState, new_jobspec, serialize_jobspec
+from axlearn.cloud.common.bastion import JobStatus, new_jobspec, serialize_jobspec
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_user_projects
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.common.types import ResourceMap
@@ -278,7 +278,7 @@ class BaseBastionManagedJob(Job):
         usage_by_user = defaultdict(lambda: defaultdict(lambda: [0, 0]))
         usage_by_project = defaultdict(lambda: defaultdict(lambda: [0, 0]))
         for job in jobs.values():
-            if job.state == JobState.PENDING:
+            if job.state.status == JobStatus.PENDING:
                 continue
             user_id = job.spec.metadata.user_id
             project_id = job.spec.metadata.project_id

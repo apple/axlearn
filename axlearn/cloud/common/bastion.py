@@ -97,7 +97,7 @@ def bastion_job_flags(flag_values: flags.FlagValues = FLAGS):
 
 
 # Subclass str to be JSON serializable: https://stackoverflow.com/a/51976841
-class JobState(str, enum.Enum):
+class JobStatus(str, enum.Enum):
     """See Bastion._update_job for state handling."""
 
     # Job is queued. Any running command will be forcefully terminated.
@@ -254,6 +254,8 @@ def _piped_popen(cmd: str, f: str, *, env_vars: Optional[Dict[str, str]] = None)
         # Inject supplied env.
         env_vars_copy.update(env_vars)
 
+    # Ensure that all env var values are strings.
+    env_vars_copy = {k: str(v) for k, v in env_vars_copy.items()}
     popen = subprocess.Popen(
         shlex.split(cmd), stdout=fd, stderr=subprocess.STDOUT, env=env_vars_copy
     )
@@ -280,7 +282,29 @@ def _catch_with_error_log(fn, *args, **kwargs) -> Any:
 
 
 @dataclasses.dataclass
+class JobState:
+    """Bastion job state.
+
+    Attributes:
+        status: Job status.
+        metadata: Additional metadata.
+    """
+
+    status: JobStatus
+    metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass
 class Job:
+    """A bastion job.
+
+    Attributes:
+        spec: Job spec.
+        state: Job state.
+        command_proc: Optional process for the main command.
+        cleanup_proc: Optional process for the cleanup command.
+    """
+
     spec: JobSpec
     state: JobState
     # *_proc can be None prior to commands being started.
@@ -293,24 +317,29 @@ def _download_job_state(job_name: str, *, remote_dir: str) -> JobState:
     remote_file = os.path.join(remote_dir, job_name)
     try:
         # Note: tf_io.gfile.GFile seems to hit libcurl errors with ThreadPoolExecutor.
-        with tempfile.NamedTemporaryFile("r+") as f:
-            tf_io.gfile.copy(remote_file, f.name, overwrite=True)
-            state = f.read().strip().upper()
-            return JobState[state]
+        with tf_io.gfile.GFile(remote_file, mode="r") as f:
+            contents = f.read()
+            try:
+                state = json.loads(contents)
+            except json.JSONDecodeError:
+                # For backwards compatibility, interpret as status.
+                state = dict(status=contents)
+            state["status"] = JobStatus[state["status"].strip().upper()]
+            return JobState(**state)
     except tf_errors.NotFoundError:
         # No job state, defaults to PENDING.
-        return JobState.PENDING
+        return JobState(status=JobStatus.PENDING)
 
 
 def _upload_job_state(job_name: str, state: JobState, *, remote_dir: str, verbose: bool = True):
     """Uploads job state to gs path."""
     remote_file = os.path.join(remote_dir, job_name)
-    logging.log_if(logging.INFO, "Writing %s to %s.", verbose, state.name, remote_file)
+    logging.log_if(logging.INFO, "Writing %s to %s.", verbose, state.status.name, remote_file)
     with tf_io.gfile.GFile(remote_file, mode="w") as f:
-        f.write(state.name)
+        json.dump(dataclasses.asdict(state), f)
 
 
-def _start_command(job: Job, *, remote_log_dir: str):
+def _start_command(job: Job, *, remote_log_dir: str, env_vars: dict):
     """Starts the given job.spec.command and sets `job.command_proc`."""
     if job.command_proc is not None:
         return  # Already running.
@@ -322,7 +351,9 @@ def _start_command(job: Job, *, remote_log_dir: str):
     except tf_errors.NotFoundError:
         pass
     # Pipe all outputs to the local _LOG_DIR.
-    job.command_proc = _piped_popen(job.spec.command, local_log, env_vars=job.spec.env_vars)
+    job.command_proc = _piped_popen(
+        job.spec.command, local_log, env_vars={**env_vars, **(job.spec.env_vars or {})}
+    )
     logging.info("Started command for the job %s: %s", job.spec.name, job.spec.command)
 
 
@@ -423,13 +454,15 @@ def download_job_batch(
         wait(spec_futs.values())
         wait(job_state_futs.values())
         wait(user_state_futs.values())
-        # Construct Jobs for each spec. The state of the job depends on the following:
+        # Construct Jobs for each spec. The status of the job depends on the following:
         # 1. User state must be CANCELLING. We ignore other user states, e.g., a user should not be
         #     able to bypass scheduling by initiating a state change to ACTIVE.
         # 2. Job state must not be CLEANING/COMPLETED, since it doesn't make sense to progress
         #     backwards to CANCELLING.
+        # 3. We ignore any user supplied metadata, e.g., a user should not be able to influence
+        #     scheduling tiers.
         #
-        # If these conditions are met, we pick the user state; otherwise, we keep job state.
+        # If these conditions are met, we pick the user status; otherwise, we keep job status.
         # We also keep track of which jobs have a user state (whether it was used or not), so that
         # we can handle the appropriate cleanup in the update step.
         jobs = {}
@@ -452,11 +485,12 @@ def download_job_batch(
                 continue
 
             if user_state is not None:
-                if user_state == JobState.CANCELLING and state not in (
-                    JobState.CLEANING,
-                    JobState.COMPLETED,
+                if user_state.status == JobStatus.CANCELLING and state.status not in (
+                    JobStatus.CLEANING,
+                    JobStatus.COMPLETED,
                 ):
-                    state = user_state
+                    # Only copy the status, not the metadata.
+                    state.status = user_state.status
                 else:
                     logging.warning(
                         "User state (%s) ignored for job %s (%s).", user_state, job_name, state
@@ -555,7 +589,7 @@ class Bastion(Configurable):
 
         # Instantiate children.
         self._scheduler: JobScheduler = cfg.scheduler.instantiate()
-        self._cleaner = cfg.cleaner.instantiate()
+        self._cleaner: Cleaner = cfg.cleaner.instantiate()
         self._uploader = cfg.uploader.set(src_dir=_LOG_DIR, dst_dir=self._log_dir).instantiate()
 
     def _append_to_job_history(self, job: Job, msg: str):
@@ -571,7 +605,7 @@ class Bastion(Configurable):
             job_verdicts = schedule_results.job_verdicts.get(project_id, {})
             verdicts = []
             for job_id, verdict in job_verdicts.items():
-                verdicts.append((job_id, verdict.should_run()))
+                verdicts.append((job_id, verdict.should_run(), verdict.metadata))
             verdicts = sorted(verdicts)
             previous_verdicts = self._project_history_previous_verdicts.get(project_id)
             if previous_verdicts == verdicts:
@@ -584,7 +618,7 @@ class Bastion(Configurable):
             queued_jobs = []
             for job_id, verdict in job_verdicts.items():
                 if verdict.should_run():
-                    running_jobs.append(job_id)
+                    running_jobs.append((job_id, verdict.metadata))
                     job_metadata = jobs[job_id]
                     for resource_type, demand in job_metadata.resources.items():
                         project_usage[resource_type] += demand
@@ -607,8 +641,8 @@ class Bastion(Configurable):
                 f.write(f"Effective limits: {resource_str(limits)}\n")
                 f.write(f"Usage: {resource_str(project_usage)}\n")
                 f.write("Running jobs:\n")
-                for job_id in running_jobs:
-                    f.write(f"  {job_id}\n")
+                for job_id, metadata in running_jobs:
+                    f.write(f"  {job_id} ({metadata})\n")
                 f.write("Queued jobs:\n")
                 for job_id in queued_jobs:
                     f.write(f"  {job_id}\n")
@@ -697,7 +731,7 @@ class Bastion(Configurable):
             # Detected removed job: exists locally, but not in remote.
             elif job_name not in active_jobs:
                 job = self._active_jobs[job_name]
-                if job.state != JobState.COMPLETED:
+                if job.state.status != JobStatus.COMPLETED:
                     logging.warning("Detected orphaned job %s! Killing it...", job.spec.name)
                     self._kill_job(job)
                 logging.info("Removed job %s.", job_name)
@@ -725,7 +759,7 @@ class Bastion(Configurable):
         1. A jobspec must still exist in the remote job dir.
         2. self._active_jobs must be unmodified, besides modifying `job` itself.
         """
-        if job.state == JobState.PENDING:
+        if job.state.status == JobStatus.PENDING:
             # Forcefully terminate the command proc and fd, if they exist, and sync logs to remote.
             # The forceful termination is similar to the behavior when bastion itself is pre-empted.
             #
@@ -741,16 +775,14 @@ class Bastion(Configurable):
                 job.command_proc = None
                 logging.info("Job is pre-empted: %s", job.spec.name)
 
-            job.state = JobState.PENDING
-
-        elif job.state == JobState.ACTIVE:
+        elif job.state.status == JobStatus.ACTIVE:
             # Run the command if not already started. We attempt to run every time, in case bastion
             # got pre-empted.
             if job.command_proc is None:
                 self._append_to_job_history(
                     job, f"ACTIVE: start process command: {job.spec.command}"
                 )
-            _start_command(job, remote_log_dir=self._log_dir)
+            _start_command(job, remote_log_dir=self._log_dir, env_vars=job.state.metadata)
             assert job.command_proc is not None
 
             # If command is completed, move to CLEANING. Otherwise, it's still RUNNING.
@@ -761,9 +793,9 @@ class Bastion(Configurable):
                     job.spec.name,
                     job.command_proc.popen.returncode,
                 )
-                job.state = JobState.CLEANING
+                job.state.status = JobStatus.CLEANING
 
-        elif job.state == JobState.CANCELLING:
+        elif job.state.status == JobStatus.CANCELLING:
             # If job is still running, terminate it. We stay in CANCELLING until it has fully
             # exited, after which we move to CLEANING.
             if job.command_proc is not None and not _is_proc_complete(job.command_proc):
@@ -772,9 +804,9 @@ class Bastion(Configurable):
                 job.command_proc.popen.terminate()
             else:
                 self._append_to_job_history(job, "CLEANING: process terminated")
-                job.state = JobState.CLEANING
+                job.state.status = JobStatus.CLEANING
 
-        elif job.state == JobState.CLEANING:
+        elif job.state.status == JobStatus.CLEANING:
             # If command exists, it must be fully stopped.
             assert job.command_proc is None or _is_proc_complete(job.command_proc)
 
@@ -800,9 +832,9 @@ class Bastion(Configurable):
                     self._wait_and_close_proc(job.cleanup_proc)
                     job.cleanup_proc = None
 
-                job.state = JobState.COMPLETED
+                job.state.status = JobStatus.COMPLETED
 
-        elif job.state == JobState.COMPLETED:
+        elif job.state.status == JobStatus.COMPLETED:
             # Copy the jobspec to "complete" dir.
             local_jobspec = os.path.join(_JOB_DIR, job.spec.name)
             if os.path.exists(local_jobspec):
@@ -838,7 +870,7 @@ class Bastion(Configurable):
         # Identify jobs which are schedulable.
         schedulable_jobs = {}
         for job_name, job in self._active_jobs.items():
-            if job.state in {JobState.PENDING, JobState.ACTIVE}:
+            if job.state.status in {JobStatus.PENDING, JobStatus.ACTIVE}:
                 schedulable_jobs[job_name] = job.spec.metadata
 
         # Decide which jobs to resume/pre-empt.
@@ -854,10 +886,39 @@ class Bastion(Configurable):
         self._append_to_project_history(schedulable_jobs, schedule_results)
         for verdicts in schedule_results.job_verdicts.values():
             for job_name, verdict in verdicts.items():
-                if verdict.should_run():  # Resume/keep running.
-                    self._active_jobs[job_name].state = JobState.ACTIVE
-                else:  # Pre-empt/stay queued.
-                    self._active_jobs[job_name].state = JobState.PENDING
+                job = self._active_jobs[job_name]
+                assert job.state.status in {JobStatus.PENDING, JobStatus.ACTIVE}
+
+                if verdict:
+                    old_tier = job.state.metadata.get("tier")
+                    new_tier = verdict.metadata.get("tier")
+                    changed_tiers = old_tier != new_tier
+
+                    # Resume if not running, or keep running if scheduling tier did not change.
+                    if job.state.status == JobStatus.PENDING or not changed_tiers:
+                        job.state.status = JobStatus.ACTIVE
+                    else:
+                        # Job changed scheduling tiers, and must be restarted on the new tier.
+                        # NOTE: this can possibly lead to thrashing of jobs that frequently switch
+                        # tiers. One option is track per-job tier changes and hold off on promoting
+                        # low priority to high priority if it was demoted recently.
+                        # TODO(markblee): Add instrumentation to track frequency of tier changes to
+                        # see whether this is necessary.
+                        assert job.state.status == JobStatus.ACTIVE and changed_tiers
+                        self._append_to_job_history(
+                            job, f"Restarting at a different tier from {old_tier} to {new_tier}"
+                        )
+                        job.state.status = JobStatus.PENDING
+                else:
+                    # Pre-empt/stay queued.
+                    if job.command_proc is not None and _is_proc_complete(job.command_proc):
+                        # As a slight optimization, we avoid pre-empting ACTIVE jobs that are
+                        # complete, since we can directly transition to CLEANING.
+                        job.state.status = JobStatus.ACTIVE
+                    else:
+                        job.state.status = JobStatus.PENDING
+
+                job.state.metadata = verdict.metadata
 
         # TODO(markblee): Parallelize this.
         for job_name, job in self._active_jobs.items():
@@ -888,7 +949,7 @@ class Bastion(Configurable):
         # Identify jobs which are idle (i.e., can be garbage collected).
         jobs_to_clean = {}
         for job_name, job in self._active_jobs.items():
-            if job.state in {JobState.PENDING, JobState.COMPLETED}:
+            if job.state.status in {JobStatus.PENDING, JobStatus.COMPLETED}:
                 jobs_to_clean[job_name] = job.spec
 
         # Note that this may contain PENDING jobs that have not yet started (since they will not be
@@ -908,7 +969,7 @@ class Bastion(Configurable):
         cleaned_completed = [
             job_name
             for job_name in cleaned
-            if self._active_jobs[job_name].state == JobState.COMPLETED
+            if self._active_jobs[job_name].state.status == JobStatus.COMPLETED
         ]
         logging.info("Fully cleaned COMPLETED jobs: %s", cleaned_completed)
         with ThreadPoolExecutor() as pool:
@@ -1015,7 +1076,7 @@ class BastionDirectory(Configurable):
                 raise ValueError(f"Unable to locate jobspec {jobspec}")
             _upload_job_state(
                 job_name,
-                JobState.CANCELLING,
+                JobState(status=JobStatus.CANCELLING),
                 remote_dir=self.user_states_dir,
             )
             logging.info("Job %s is cancelling.", job_name)
