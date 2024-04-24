@@ -53,13 +53,13 @@ def setup(
         if initialization_timeout is not None:
             init_kwargs["initialization_timeout"] = initialization_timeout
 
-        if jax_backend == "tpu" or jax_backend=="neuron":
+        if jax_backend == "tpu":
             if not (
                 distributed_coordinator is None and num_processes is None and process_id is None
             ):
                 raise ValueError(
                     "distributed_coordinator, num_processes, and process_id "
-                    "should all be None for tpu or neuron backend."
+                    "should all be None for tpu backend."
                 )
         else:
             if distributed_coordinator is None and num_processes is None and process_id is None:
