@@ -186,7 +186,7 @@ class TestDecoder(TestCase):
 
             decoder_logits = layer_output(decoder_state, decoder)
             flash_decoder_logits = layer_output(flash_decoder_state, flash_decoder)
-            np.testing.assert_allclose(decoder_logits, flash_decoder_logits)
+            assert_allclose(decoder_logits, flash_decoder_logits)
 
     @parameterized.parameters(None, 0.0, 0.2)
     def test_dropout_rate(self, output_dropout_rate):

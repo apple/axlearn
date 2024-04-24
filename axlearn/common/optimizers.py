@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple, U
 import chex
 import jax
 import optax
+import typing_extensions
 from absl import logging
 from jax import numpy as jnp
 from optax._src import numerics
@@ -1119,18 +1120,79 @@ def clip_by_global_norm(
     )
 
 
+class DropNormThresholdFn(typing_extensions.Protocol):
+    """Protocol for drop norm threshold function."""
+
+    def __call__(self, *, count: Tensor, mean: Tensor, stddev: Tensor) -> Dict[str, Tensor]:
+        """Returns the drop_norm thresholds given the gradient norm stats.
+
+        Args:
+            count: the number of training steps.
+            mean: the running average of gradient norms.
+            stdev: the running average of gradient norm variance.
+
+        Returns:
+            A dict where keys represent threshold names and values are scalar tensors representing
+            threshold values. The names are used only for drop norm summaries. Gradients will be
+            dropped if the norm exceeds any of the thresholds.
+        """
+
+
+def drop_norm_by_grad_norm_ema(multipliers: Tuple = (20, 40, 100)) -> DropNormThresholdFn:
+    """Return drop norm thresholds which are multiples of grad norm ema."""
+
+    def fn(count: Tensor, mean: Tensor, stddev: Tensor) -> Dict[str, Tensor]:
+        del count
+        del stddev
+        thresholds = {}
+        for v in multipliers:
+            key = f"{v}x_mean"
+            thresholds[key] = mean * v
+        return thresholds
+
+    return fn
+
+
+def drop_norm_by_grad_norm_stddev(
+    *,
+    min_count: int = 500,
+    multipliers: Tuple = (20, 40, 100),
+) -> DropNormThresholdFn:
+    """Return drop norm thresholds based on grad norm stddev."""
+
+    def fn(count: Tensor, mean: Tensor, stddev: Tensor) -> Dict[str, Tensor]:
+        # We do not drop norm for the first `min_count` data batches,
+        # otherwise the threshold is `mean + stddev * k` for multiplier `k`.
+        thresholds = {}
+        for v in multipliers:
+            key = f"{v}x_stddev"
+            thresholds[key] = jnp.where(count < min_count, 1e10, mean + stddev * v)
+        return thresholds
+
+    return fn
+
+
 class SkipClipState(NamedTuple):
     """State returned by functions in skip_and_clip_by_global_norm()."""
 
+    count: Optional[Union[Tensor, TensorSpec]]
     nonvalid_count: Union[Tensor, TensorSpec]  # Number of non-valid steps.
+    grad_norm_ema: Optional[Union[Tensor, TensorSpec]]  # The moving average of raw gradient norm.
+    grad_norm_square_ema: Optional[
+        Union[Tensor, TensorSpec]
+    ]  # The moving average of grad norm variance.
     inner_state: Any  # State of the inner PartitionedGradientTransformation.
+    drop_stats: Optional[
+        Dict[str, Union[Tensor, TensorSpec]]
+    ]  # A dict to keep the counts when the grad norm exceeds thresholds.
 
 
 def skip_and_clip_by_global_norm(
     inner: ConfigOr[PartitionedGradientTransformation],
     *,
-    drop_norm: Optional[float] = None,
+    drop_norm: Optional[Union[float, ConfigOr[DropNormThresholdFn]]] = None,
     max_norm: Optional[float] = None,
+    grad_norm_ema_decay: Optional[float] = None,
     eps: float = 1e-8,
 ) -> PartitionedGradientTransformation:
     """Skip updates when global norm >= drop_norm, otherwise clip the global norm.
@@ -1139,6 +1201,10 @@ def skip_and_clip_by_global_norm(
     wrapped gradient transformation `inner`. Note the difference compared to clip_by_global_norm()
     is that this version skips all updates while clip_by_global_norm() still performs parameter
     updates and optimizer state updates.
+
+    When drop_norm is a DropNormThreholdFn, the drop norm will be calculated based on the moving
+    stats of recent gradient norms. This is useful since the gradient norms can initially be large
+    but reduce to a small value during training.
 
     Example usage:
         ```
@@ -1160,41 +1226,158 @@ def skip_and_clip_by_global_norm(
     Args:
         inner: the PartitionedGradientTransformation we wrapped over, e.g. adamw_optimizer().
         drop_norm: the threshold to detect abnormal gradients and skip gradient and state updates.
+            When this is a DropNormThreholdFn, the actual drop norm will be calcuated dynamically
+            based on recent gradient stats.
         max_norm: the maximum global gradient norm. If this is set, larger gradients will be scaled
             and clipped.
+        gradient_norm_ema_decay: the decay factor used to compute EMA of gradient norms. This must
+            be set when `drop_norm` is a DropNormThreholdFn.
         eps: a small constant added to scaling factor, i.e. `1/(norm + eps)`.
 
     Returns:
         A new PartitionedGradientTransformation that applies skipping and clipping.
     """
     inner = maybe_instantiate(inner)
+    use_adaptive_drop_norm = drop_norm is not None and not isinstance(drop_norm, (float, int))
+    if use_adaptive_drop_norm:
+        drop_norm = maybe_instantiate(drop_norm)
+    if use_adaptive_drop_norm and grad_norm_ema_decay is None:
+        raise ValueError("grad_norm_ema_decay must be set (e.g. 0.99).")
 
     def init_fn(params):
-        return SkipClipState(
-            nonvalid_count=jnp.zeros([], jnp.int32), inner_state=inner.init(params)
-        )
+        if use_adaptive_drop_norm:
+            one = jnp.ones([], jnp.float32)
+            dict_thresholds = drop_norm(count=one, mean=one, stddev=one)
+            drop_stats = {k: jnp.zeros([], jnp.int32) for k in dict_thresholds}
+            return SkipClipState(
+                count=jnp.zeros([], jnp.int32),
+                nonvalid_count=jnp.zeros([], jnp.int32),
+                # Set initial ema(s) to a positive value so we can avoid dropping norms for the
+                # first step.
+                grad_norm_ema=jnp.ones([], jnp.float32),
+                grad_norm_square_ema=jnp.ones([], jnp.float32),
+                inner_state=inner.init(params),
+                drop_stats=drop_stats,
+            )
+        else:
+            # Backward compatible when drop_norm is float or is not set.
+            return SkipClipState(
+                count=None,
+                nonvalid_count=jnp.zeros([], jnp.int32),
+                grad_norm_ema=None,
+                grad_norm_square_ema=None,
+                inner_state=inner.init(params),
+                drop_stats=None,
+            )
 
     def update_fn(updates, state, params=None):
         inner_state = state.inner_state
+        count = state.count
+        grad_norm_ema = state.grad_norm_ema
+        grad_norm_square_ema = state.grad_norm_square_ema
+        drop_stats = state.drop_stats
+
+        def _stddev(mean: Tensor, mean_square: Tensor):
+            return (mean_square - mean**2) ** 0.5
+
+        def _moment(
+            val: Tensor,
+            norm_ema: Tensor,
+            norm_square_ema: Tensor,
+            count: Tensor,
+        ) -> Tuple[Tensor, Tensor]:
+            # bias correrction decay
+            # Sec 7.1 https://arxiv.org/pdf/1804.04235.pdf
+            decay = grad_norm_ema_decay
+            decay *= (1 - decay ** (count - 1)) / (1 - decay**count)
+            new_norm_ema = decay * norm_ema + (1 - decay) * val
+            new_square_ema = decay * norm_square_ema + (1 - decay) * (val**2)
+            return new_norm_ema, new_square_ema
+
+        def _is_valid_step(
+            g_norm: Tensor,
+            drop_norm: Union[float, DropNormThresholdFn],
+            *,
+            norm_ema: Optional[Tensor],
+            norm_square_ema: Optional[Tensor],
+            count: Optional[Tensor],
+            drop_stats: Optional[Dict[str, Tensor]],
+        ) -> Tuple[Tensor, Optional[Dict[str, Tensor]]]:
+            if isinstance(drop_norm, (float, int)):
+                return g_norm < drop_norm, None
+            else:
+                stddev = _stddev(norm_ema, norm_square_ema)
+                thresholds = drop_norm(count=count, mean=norm_ema, stddev=stddev)
+                new_drop_stats = {}
+                is_valid = None
+                for key, val in thresholds.items():
+                    less = g_norm < val
+                    is_valid = less if is_valid is None else jnp.logical_and(is_valid, less)
+                    new_drop_stats[key] = jnp.where(
+                        less,
+                        drop_stats[key],
+                        optax.safe_int32_increment(drop_stats[key]),
+                    )
+                return is_valid, new_drop_stats
+
         # Check if every gradient is finite.
         flat_updates = jax.tree_util.tree_flatten(updates)[0]
         is_finite = jnp.all(jnp.array([jnp.all(jnp.isfinite(p)) for p in flat_updates]))
         g_norm = optax.global_norm(updates)
         if drop_norm is not None:
             # Check if gradient norm is abnormal.
-            is_valid_step = jnp.logical_and(is_finite, g_norm < drop_norm)
+            is_valid_step, new_drop_stats = _is_valid_step(
+                g_norm,
+                drop_norm,
+                norm_ema=grad_norm_ema,
+                norm_square_ema=grad_norm_square_ema,
+                count=count,
+                drop_stats=drop_stats,
+            )
+            is_valid_step = jnp.logical_and(is_finite, is_valid_step)
         else:
             is_valid_step = is_finite
+            new_drop_stats = None
+
         # Log useful statistics.
         nonvalid_count = jnp.where(
             is_valid_step,
             state.nonvalid_count,
             optax.safe_int32_increment(state.nonvalid_count),
         )
+        if use_adaptive_drop_norm:
+            inc_count = jnp.where(
+                is_valid_step,
+                optax.safe_int32_increment(count),
+                count,
+            )
+            new_norm_ema, new_norm_square_ema = _moment(
+                g_norm, grad_norm_ema, grad_norm_square_ema, inc_count
+            )
+            new_norm_ema = jnp.where(is_valid_step, new_norm_ema, grad_norm_ema)
+            new_norm_square_ema = jnp.where(
+                is_valid_step, new_norm_square_ema, grad_norm_square_ema
+            )
+        else:
+            inc_count = None
+            new_norm_ema = None
+            new_norm_square_ema = None
         context = current_context()
         if context is not None:
             context.add_summary("gradient_norm", g_norm)
             context.add_summary("nonvalid_count", nonvalid_count)
+            if new_norm_ema is not None:
+                context.add_summary("gradient_norm_ema", new_norm_ema)
+            if new_norm_square_ema is not None:
+                context.add_summary(
+                    "gradient_norm_std_ema", _stddev(new_norm_ema, new_norm_square_ema)
+                )
+            if inc_count is not None:
+                context.add_summary("count", inc_count)
+            if new_drop_stats is not None:
+                for key, val in new_drop_stats.items():
+                    context.add_summary(f"count_exceeds_{key}", val)
+
         # Clip gradients s.t. grad norm <= max_norm.
         clipped_updates = updates
         if max_norm is not None:
@@ -1217,14 +1400,41 @@ def skip_and_clip_by_global_norm(
         )
 
         return final_updates, SkipClipState(
-            nonvalid_count=nonvalid_count, inner_state=final_inner_state
+            count=inc_count,
+            nonvalid_count=nonvalid_count,
+            grad_norm_ema=new_norm_ema,
+            grad_norm_square_ema=new_norm_square_ema,
+            inner_state=final_inner_state,
+            drop_stats=new_drop_stats,
         )
 
     def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
-        return SkipClipState(
-            nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
-            inner_state=inner.partition(param_specs),
-        )
+        if use_adaptive_drop_norm:
+            one = jnp.ones([], jnp.float32)
+            dict_thresholds = drop_norm(count=one, mean=one, stddev=one)
+            drop_stats = {
+                k: OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec())
+                for k in dict_thresholds
+            }
+            return SkipClipState(
+                count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+                nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+                grad_norm_ema=OptStateSpec(dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()),
+                grad_norm_square_ema=OptStateSpec(
+                    dtype=jnp.float32, shape=[], mesh_axes=PartitionSpec()
+                ),
+                inner_state=inner.partition(param_specs),
+                drop_stats=drop_stats,
+            )
+        else:
+            return SkipClipState(
+                count=None,
+                nonvalid_count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+                grad_norm_ema=None,
+                grad_norm_square_ema=None,
+                inner_state=inner.partition(param_specs),
+                drop_stats=None,
+            )
 
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 

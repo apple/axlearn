@@ -14,6 +14,7 @@ import jax
 import jax.numpy as jnp
 from jax.experimental import checkify
 from jax.experimental.sparse import BCOO
+from jax.scipy.integrate import trapezoid
 
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.utils import Tensor
@@ -283,7 +284,7 @@ def _compute_area_under_the_curve(
     samples. 'Args' and 'Returns' are the same with function binary_classification_roc_auc_score.
     """
     x, y = roc_curve(y_true, y_score, sample_weight=sample_weight)
-    area = jnp.trapz(y, x)
+    area = trapezoid(y, x)
     return area
 
 

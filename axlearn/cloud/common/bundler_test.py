@@ -270,18 +270,19 @@ class DockerBundlerTest(TestWithTemporaryCWD):
         target=[None, "test-target"],
     )
     def test_build_and_push(self, platform, target):
-        def mock_build(**kwargs):
+        def mock_build_fn(**kwargs):
             # All build args should be strings.
             self.assertTrue(all(isinstance(x, str) for x in kwargs["args"].values()))
             self.assertEqual(kwargs["target"], target)
             self.assertEqual(kwargs["platform"], platform)
 
+        mock_build = mock.Mock(side_effect=mock_build_fn)
         with mock.patch.multiple(
             bundler.__name__,
             running_from_source=mock.Mock(return_value=False),
             get_git_status=mock.Mock(return_value=""),
             docker_push=mock.Mock(return_value=123),
-            docker_build=mock.Mock(side_effect=mock_build),
+            docker_build=mock_build,
         ):
             _create_dummy_config(self._temp_root.name)
 
@@ -289,19 +290,23 @@ class DockerBundlerTest(TestWithTemporaryCWD):
             build_args = dict(a="a,b", b=("a", "b"), c=["a", "b"])
 
             with _fake_dockerfile() as dockerfile:
-                b = (
-                    DockerBundler.default_config()
-                    .set(
-                        image="test",
-                        repo="FAKE_REPO",
-                        dockerfile=str(dockerfile),
-                        build_args=build_args,
-                        platform=platform,
-                        target=target,
-                    )
-                    .instantiate()
+                cfg = DockerBundler.default_config().set(
+                    image="test",
+                    repo="FAKE_REPO",
+                    dockerfile=str(dockerfile),
+                    build_args=build_args,
+                    platform=platform,
+                    target=target,
                 )
+                b = cfg.instantiate()
                 self.assertEqual(b.bundle("FAKE_TAG"), 123)
+                self.assertEqual(mock_build.call_count, 1)
+
+                # Test skip bundle.
+                b = cfg.set(skip_bundle=True).instantiate()
+                self.assertEqual(b.bundle("FAKE_TAG"), "FAKE_REPO/test:FAKE_TAG")
+                # Build should not be called.
+                self.assertEqual(mock_build.call_count, 1)
 
     @parameterized.product(running_from_source=[True, False], allow_dirty=[False, True])
     @mock.patch(f"{bundler.__name__}.get_git_branch", return_value="FAKE_BRANCH")

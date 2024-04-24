@@ -76,7 +76,7 @@ except ModuleNotFoundError:
     logging.warning("tensorflow_io is not installed -- tf_io may not work with s3://")
 
 from axlearn.cloud.common.cleaner import Cleaner
-from axlearn.cloud.common.scheduler import JobMetadata, ResourceMap, Scheduler
+from axlearn.cloud.common.scheduler import BaseScheduler, JobMetadata, JobScheduler, ResourceMap
 from axlearn.cloud.common.types import JobSpec
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
@@ -513,7 +513,7 @@ class Bastion(Configurable):
         # Interval to sync and run jobs.
         update_interval_seconds: float = 30
         # Scheduler to decide whether to start/pre-empt jobs.
-        scheduler: Required[Scheduler.Config] = REQUIRED
+        scheduler: Required[JobScheduler.Config] = REQUIRED
         # Cleaner to deprovision idle resources.
         cleaner: Required[Cleaner.Config] = REQUIRED
         # Utility to sync logs to output_dir.
@@ -554,7 +554,7 @@ class Bastion(Configurable):
         self._runtime_options = {}
 
         # Instantiate children.
-        self._scheduler = cfg.scheduler.instantiate()
+        self._scheduler: JobScheduler = cfg.scheduler.instantiate()
         self._cleaner = cfg.cleaner.instantiate()
         self._uploader = cfg.uploader.set(src_dir=_LOG_DIR, dst_dir=self._log_dir).instantiate()
 
@@ -564,7 +564,7 @@ class Bastion(Configurable):
             f.write(f"{curr_time} {msg}\n")
 
     def _append_to_project_history(
-        self, jobs: Dict[str, JobMetadata], schedule_results: Scheduler.ScheduleResults
+        self, jobs: Dict[str, JobMetadata], schedule_results: BaseScheduler.ScheduleResults
     ):
         now = datetime.now(timezone.utc)
         for project_id, limits in schedule_results.project_limits.items():
@@ -846,7 +846,7 @@ class Bastion(Configurable):
             "scheduler",
             defaults={"dry_run": False, "verbosity": 0},
         )
-        schedule_results: Scheduler.ScheduleResults = self._scheduler.schedule(
+        schedule_results: BaseScheduler.ScheduleResults = self._scheduler.schedule(
             schedulable_jobs,
             dry_run=schedule_options["dry_run"],
             verbosity=schedule_options["verbosity"],
