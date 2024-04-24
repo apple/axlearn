@@ -485,7 +485,7 @@ class AccumulatedLearner(Learner):
         gradient_buffer, forward_outputs = jax.lax.scan(run_microbatch, gradient_buffer, inputs)
 
         # Average gradients
-        gradient_buffer = jax.tree_map(lambda x, y: x / y, gradient_buffer, self.config.microbatches)
+        gradient_buffer = jax.tree_map(lambda x: x / self.config.microbatches, gradient_buffer)
 
         updated_params = self.update(
             model_params=opt_params,
