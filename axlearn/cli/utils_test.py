@@ -8,14 +8,14 @@ from typing import List, Tuple
 from unittest import mock
 
 import pytest
-from absl.flags import argparse_flags
+from absl.flags import FlagValues, argparse_flags
 from absl.testing import parameterized
 
 from axlearn.cli.utils import CommandGroup, CommandType, _insert_flags, absl_main
 
 
 def _parse(argv: List[str]) -> argparse_flags.argparse.Namespace:
-    kwargs = dict(inherited_absl_flags={})
+    kwargs = dict(inherited_absl_flags=FlagValues())
     root = CommandGroup("root", argv=argv, **kwargs)
     root.add_flag("--root", undefok=True, action="store_true")
     root.add_flag("--root_default", undefok=True, default="some_value")
