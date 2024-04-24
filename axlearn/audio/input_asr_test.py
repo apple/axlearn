@@ -51,6 +51,25 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
             ],
         ),
         dict(
+            # Test a basic case with truncation.
+            max_len=2,
+            truncate=True,
+            expected=[
+                {
+                    "inputs": tf.constant([-29515.0, 0]),
+                    "paddings": tf.constant([0, 1]),
+                },
+                {
+                    "inputs": tf.constant([14620.0, -21206.0]),
+                    "paddings": tf.constant([0, 0]),
+                },
+                {
+                    "inputs": tf.constant([-3954.0, -15555.0]),
+                    "paddings": tf.constant([0, 0]),
+                },
+            ],
+        ),
+        dict(
             # Test a basic case with normalization.
             max_len=5,
             scale=2**15,
@@ -90,6 +109,7 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
         self,
         max_len: int,
         expected: Dict[str, Any],
+        truncate: bool = False,
         input_key: str = "speech",
         scale: Optional[float] = None,
     ):
@@ -97,6 +117,7 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
             max_len=max_len,
             input_key=input_key,
             normalize_by_scale=scale,
+            truncate=truncate,
         )
         # Use a fake speech source with only speech inputs.
         source = input_tf_data.with_processor(

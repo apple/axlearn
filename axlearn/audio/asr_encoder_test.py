@@ -36,7 +36,7 @@ class SpeechFeatureLayerTest(TestCase):
 
         cfg: SpeechFeatureLayer.Config = SpeechFeatureLayer.default_config().set(
             output_dim=output_dim,
-            # Slightly higher diff without fp64 from conv subsampler on jax 0.4.21.
+            # Slightly higher diff without fp64 from conv subsampler on jax>=0.4.21.
             dtype=jnp.float64,
         )
         cfg.frontend.set(
