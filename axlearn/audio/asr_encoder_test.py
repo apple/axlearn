@@ -44,6 +44,7 @@ class SpeechFeatureLayerTest(TestCase):
             sample_rate=sample_rate,
             frame_size_ms=frame_size_ms,
             hop_size_ms=hop_size_ms,
+            mel_floor=1e-6,
         )
         cfg.augmenter.freq_mask_sampler.set(max_num_masks=2, max_mask_length=27)
         cfg.augmenter.time_mask_sampler.set(max_num_masks_ratio=0.05, max_mask_length=10)
@@ -194,6 +195,7 @@ class ASREncoderTest(TestCase):
             sample_rate=sample_rate,
             frame_size_ms=frame_size_ms,
             hop_size_ms=hop_size_ms,
+            mel_floor=1e-6,
         )
         if use_augmenter:
             cfg.feature.augmenter.freq_mask_sampler.set(max_num_masks=2, max_mask_length=27)
