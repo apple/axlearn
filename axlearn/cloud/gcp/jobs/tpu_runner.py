@@ -57,6 +57,7 @@ Examples:
 # - Monitor idle core duration and automatically terminate.
 
 import enum
+import os
 import pathlib
 import shlex
 import subprocess
@@ -176,7 +177,9 @@ class TPURunnerJob(TPUQRMJob):
         self._output_dir = pathlib.Path("/output") / cfg.name
         # Per-process status file.
         self._status_file = self._output_dir / "status"
+        # Local run log.
         self._run_log = self._output_dir / "run.log"
+
         if cfg.monitor:
             self._monitor: LivenessMonitor = cfg.monitor.instantiate()
         else:
@@ -281,6 +284,16 @@ class TPURunnerJob(TPUQRMJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             tpu_metadata["enable_ici_resiliency"] = cfg.enable_tpu_ici_resiliency
 
+        # If running from bastion, a scheduling tier will be specified in env.
+        # Tier "0" corresponds to reserved; otherwise we use preemptible.
+        # If running locally for testing, we leave as None to respect the `reserved_tpu` configured
+        # in the settings file.
+        reserved = None
+        tier = os.environ.get("BASTION_TIER", None)
+        if tier is not None:
+            reserved = str(tier) == "0"
+            logging.info("Found tier=%s in env. Using reserved=%s", tier, reserved)
+
         self._call_qrm_api(
             create_queued_tpu,
             name=cfg.name,
@@ -289,6 +302,7 @@ class TPURunnerJob(TPUQRMJob):
             num_slices=cfg.accelerator.num_replicas,
             service_account=cfg.service_account,
             metadata=tpu_metadata,
+            reserved=reserved,
         )
 
     class Status(enum.Enum):

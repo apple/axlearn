@@ -5,7 +5,7 @@
 # pylint: disable=protected-access
 import contextlib
 import tempfile
-from typing import List
+from typing import List, Optional
 from unittest import mock
 
 from absl import app, flags
@@ -57,6 +57,7 @@ def mock_tpu(module_name: str, running_from_vm: bool = True):
         "create_queued_tpu": mock_create_tpu,
         "get_queued_tpu_node": mock_get_tpu_node,
         "tpu_resource": mock_tpu_resource,
+        "qrm_resource": mock_tpu_resource,
         "delete_queued_tpu": mock_delete_tpu,
         "running_from_vm": mock_running_from_vm,
         "list_tpu_info": mock_list_tpu_info,
@@ -178,15 +179,28 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
         self.assertIn("-e TEST_ENV", cmd)
         self.assertIn(cfg.command, cmd)
 
-    @parameterized.parameters(True, False)
-    def test_start(self, running_from_vm):
+    @parameterized.parameters(
+        [
+            dict(running_from_vm=True, env={"BASTION_TIER": "0"}, expect_reserved=True),
+            dict(running_from_vm=True, env={"BASTION_TIER": "1"}, expect_reserved=False),
+            dict(running_from_vm=False, expect_reserved=None),
+        ]
+    )
+    def test_start(
+        self,
+        running_from_vm: bool,
+        expect_reserved: bool,
+        env: Optional[dict] = None,
+    ):
         cfg = _mock_config()
         job = cfg.set(command="").instantiate()
 
         mock_execute = mock.patch.object(job, "_execute_remote_cmd")
         mock_credentials = mock.patch.object(job, "_get_job_credentials")
+        mock_env = mock.patch.dict("os.environ", env or {})
 
         with (
+            mock_env,
             mock_execute,
             mock_credentials,
             mock_tpu(tpu_runner.__name__, running_from_vm) as mocks,
@@ -197,6 +211,8 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
             job._start()
             mocks["delete_queued_tpu"].assert_called()
             mocks["create_queued_tpu"].assert_called()
+            # TPU should be created with the right reservation.
+            self.assertEqual(expect_reserved, mocks["create_queued_tpu"].call_args[1]["reserved"])
             # Bundling should happen if not on VM.
             self.assertEqual(not running_from_vm, job._bundler.bundle.called)
 

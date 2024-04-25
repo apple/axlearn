@@ -444,8 +444,14 @@ class TPUGKEJob(GKEJob):
                 )
             )
 
-        if cfg.reservation:
+        # If running from bastion, a scheduling tier will be specified in env.
+        # Tier "0" corresponds to reserved; otherwise we use preemptible.
+        tier = os.environ.get("BASTION_TIER", None)
+        if tier == "0" and cfg.reservation:
+            logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
+        else:
+            selector.update({"cloud.google.com/gke-spot": "true"})
 
         return dict(
             metadata=dict(annotations=annotations),

@@ -15,7 +15,7 @@ import contextlib
 import os
 import subprocess
 import sys
-from typing import Union
+from typing import Optional, Type, Union
 from unittest import mock
 
 import pytest
@@ -181,6 +181,39 @@ class UtilTest(TestCase):
 
 
 class TPUGKEJobTest(TestCase):
+    @property
+    def _mock_settings(self):
+        return {
+            "project": "settings-project",
+            "zone": "settings-zone",
+            "ttl_bucket": "settings-ttl-bucket",
+            "gke_cluster": "settings-cluster",
+            "gke_reservation": "settings-reservation",
+            "k8s_service_account": "settings-account",
+            "docker_repo": "settings-repo",
+            "default_dockerfile": "settings-dockerfile",
+        }
+
+    @contextlib.contextmanager
+    def _job_config(
+        self,
+        bundler_cls: Type[Bundler],
+        reservation: Optional[str] = None,
+        service_account: Optional[str] = None,
+    ):
+        with mock_gcp_settings([job.__name__, bundler.__name__], self._mock_settings):
+            fv = flags.FlagValues()
+            job.TPUGKEJob.define_flags(fv)
+            if reservation:
+                fv.set_default("reservation", reservation)
+            if service_account:
+                fv.set_default("service_account", service_account)
+            fv.mark_as_parsed()
+            cfg = job.TPUGKEJob.from_flags(fv)
+            cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
+            cfg.accelerator.instance_type = "tpu-v4-8"
+            yield cfg
+
     @parameterized.product(
         reservation=[None, "test"],
         service_account=[None, "sa"],
@@ -193,37 +226,19 @@ class TPUGKEJobTest(TestCase):
             class Config(Bundler.Config):
                 inner: Required[Bundler.Config] = REQUIRED
 
-        mock_settings = {
-            "project": "settings-project",
-            "zone": "settings-zone",
-            "ttl_bucket": "settings-ttl-bucket",
-            "gke_cluster": "settings-cluster",
-            "gke_reservation": "settings-reservation",
-            "k8s_service_account": "settings-account",
-            "docker_repo": "settings-repo",
-            "default_dockerfile": "settings-dockerfile",
-        }
-        with mock_gcp_settings([job.__name__, bundler.__name__], mock_settings):
-            fv = flags.FlagValues()
-            job.TPUGKEJob.define_flags(fv)
-            if reservation:
-                fv.set_default("reservation", reservation)
-            if service_account:
-                fv.set_default("service_account", service_account)
-            fv.mark_as_parsed()
-            cfg = job.TPUGKEJob.from_flags(fv)
-            self.assertEqual(cfg.reservation, reservation or mock_settings["gke_reservation"])
+        with self._job_config(
+            bundler_cls, reservation=reservation, service_account=service_account
+        ) as cfg:
+            self.assertEqual(cfg.reservation, reservation or self._mock_settings["gke_reservation"])
             self.assertEqual(
                 cfg.service_account,
-                service_account or mock_settings.get("k8s_service_account", "default"),
+                service_account or self._mock_settings.get("k8s_service_account", "default"),
             )
-            bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             # Should work with wrapped bundlers.
             if wrap_bundler:
-                bundler_cfg = WrappedBundler.default_config().set(inner=bundler_cfg)
+                cfg.bundler = WrappedBundler.default_config().set(inner=cfg.bundler)
             # Should be instantiable.
             cfg.set(
-                bundler=bundler_cfg,
                 project="test-project",
                 zone="test-zone",
                 command="",
@@ -232,9 +247,40 @@ class TPUGKEJobTest(TestCase):
                 env_vars={"a": 1},
                 name="test",
             )
-            cfg.accelerator.instance_type = "tpu-v4-8"
             gke_job: job.TPUGKEJob = cfg.instantiate()
             self.assertEqual("v4-8", gke_job._tpu_type)  # pylint: disable=protected-access
+
+    @parameterized.product(
+        [
+            dict(env={}, reservation=None, expect_reserved=False),
+            dict(env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False),
+            dict(env={"BASTION_TIER": "0"}, reservation="test-reservation", expect_reserved=True),
+            dict(env={"BASTION_TIER": "1"}, reservation="test-reservation", expect_reserved=False),
+            dict(env={}, reservation="test-reservation", expect_reserved=False),
+        ],
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+    )
+    def test_build_pod(
+        self,
+        bundler_cls,
+        expect_reserved: bool,
+        env: Optional[dict] = None,
+        reservation: Optional[str] = None,
+    ):
+        with mock.patch.dict("os.environ", env), self._job_config(bundler_cls) as cfg:
+            gke_job: job.TPUGKEJob = cfg.set(reservation=reservation, name="test").instantiate()
+            # pylint: disable-next=protected-access
+            pod_spec = gke_job._build_pod()["spec"]
+            node_selector = pod_spec["nodeSelector"]
+            # The reservation should be used only if scheduled as tier 0.
+            if expect_reserved:
+                self.assertEqual(
+                    reservation, node_selector.get("cloud.google.com/reservation-name", None)
+                )
+                self.assertNotIn("cloud.google.com/gke-spot", node_selector)
+            else:
+                self.assertEqual("true", node_selector.get("cloud.google.com/gke-spot", None))
+                self.assertNotIn("cloud.google.com/reservation-name", node_selector)
 
 
 if __name__ == "__main__":
