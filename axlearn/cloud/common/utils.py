@@ -2,13 +2,14 @@
 
 """General-purpose utilities."""
 
+import dataclasses
 import logging as pylogging
 import os
 import shlex
 import signal
 import subprocess
 import uuid
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 import pkg_resources
 import psutil
@@ -311,3 +312,64 @@ def merge(base: dict, overrides: dict):
     for k, v in overrides.items():
         base[k] = merge(base.get(k), v)
     return base
+
+
+_Row = List[Any]
+
+
+@dataclasses.dataclass(repr=False)
+class Table:
+    """A table which can be pretty-printed."""
+
+    headings: _Row
+    rows: List[_Row]
+
+    def __post_init__(self):
+        if not isinstance(self.headings, Sequence):
+            raise ValueError(f"Expected headings to be a sequence: {self.headings}")
+        if not isinstance(self.rows, Sequence):
+            raise ValueError(f"Expected rows to be a sequence: {self.rows}")
+        for row in self.rows:
+            self._check_row(row)
+
+    def _check_row(self, row: _Row):
+        if not isinstance(row, Sequence):
+            raise ValueError(f"Expected row to be a sequence: {row}")
+        if len(self.headings) != len(row):
+            raise ValueError(f"Expected row to have {len(self.headings)} columns.")
+
+    def add_row(self, row: _Row):
+        """Adds a row to the table."""
+        self._check_row(row)
+        self.rows.append(row)
+
+    def add_col(self, key: str, col: List[Any]):
+        """Adds a named column to the table. The name will be added as a heading."""
+        col = list(col)
+        if not self.rows:
+            self.headings.append(key)
+            self.rows = col
+        elif len(self.rows) != len(col):
+            raise ValueError(f"Expected column to have {len(self.rows)} rows.")
+        else:
+            self.headings.append(key)
+            for i, row in enumerate(self.rows):
+                row.append(col[i])
+
+    def get_col(self, *keys: str) -> List[_Row]:
+        """Gets one or more named columns from the table."""
+        idx = [self.headings.index(k) for k in keys]
+        return [[row[i] for i in idx] for row in self.rows]
+
+    def sort(self, key: Callable[[_Row], Any], reverse: bool = False):
+        """Sorts the table. Heading remains unchanged."""
+        self.rows.sort(key=key, reverse=reverse)
+
+    def __eq__(self, other: Any) -> bool:
+        return (
+            isinstance(other, Table) and other.headings == self.headings and other.rows == self.rows
+        )
+
+    def __repr__(self) -> str:
+        """Formats the table for printing."""
+        return format_table(headings=self.headings, rows=self.rows)

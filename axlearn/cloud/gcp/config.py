@@ -40,13 +40,14 @@ Examples:
 
 """
 
+import subprocess
 import sys
-from functools import partial
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from absl import app, flags, logging
 
-from axlearn.cloud.common import config
+from axlearn.cloud.common import config, utils
+from axlearn.cloud.gcp.utils import running_from_k8s
 
 FLAGS = flags.FLAGS
 CONFIG_NAMESPACE = "gcp"
@@ -143,6 +144,45 @@ def _project_config_key(project: str, zone: str) -> str:
     return f"{project}:{zone}"
 
 
+def main(argv: Sequence[str], *, namespace: str = CONFIG_NAMESPACE, fv: flags.FlagValues = FLAGS):
+    """The entrypoint for `gcp config` commands.
+
+    It wraps the common `config.main` implementation by making it k8s aware. In particular, when
+    switching configs, it's often necessary to also switch the kube context.
+    """
+    # Handle all CLI actions as usual.
+    config.main(argv, namespace=namespace, fv=fv)
+
+    try:
+        # If the user ran `config activate`, we further switch the kube context.
+        action = utils.parse_action(argv, options=["activate"])
+        assert action == "activate"
+        if not running_from_k8s():
+            # If the active config has a cluster configured, attempt to obtain credentials and
+            # switch kube context. This will allow using kubectl to interact with the right cluster.
+            cluster = gcp_settings("gke_cluster", fv=fv, required=False)
+            project = gcp_settings("project", fv=fv)
+            zone = gcp_settings("zone", fv=fv)
+            region = zone.rsplit("-", 1)[0]  # pytype: disable=attribute-error
+            if cluster is not None:
+                logging.info(
+                    "Detected cluster %s for this config. Will attempt to switch cluster contexts.",
+                    cluster,
+                )
+                try:
+                    utils.subprocess_run(
+                        "gcloud container clusters get-credentials "
+                        f"{cluster} --region {region} --project {project}"
+                    )
+                except subprocess.CalledProcessError:
+                    logging.warning("Failed to switch cluster contexts.")
+    except app.UsageError:
+        # If the user did not run `config activate`, `parse_action` will surface this as
+        # `UsageError`. To avoid this, we can specify the universe of options in `parse_action`, but
+        # that may become out of sync with `config.main`.
+        pass
+
+
 if __name__ == "__main__":
     config.config_flags()
-    app.run(partial(config.main, namespace=CONFIG_NAMESPACE, fv=FLAGS))
+    app.run(main)

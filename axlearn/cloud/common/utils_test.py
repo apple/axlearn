@@ -189,3 +189,73 @@ class UtilsTest(TestWithTemporaryCWD):
     )
     def test_merge(self, base, overrides, expected):
         self.assertEqual(expected, utils.merge(base, overrides))
+
+
+class TestTable(parameterized.TestCase):
+    """Tests table utils."""
+
+    @parameterized.parameters(
+        dict(headings="a", rows=[1, 2, 3], expected=ValueError("sequence")),
+        dict(headings=["a", "b", "c"], rows=1, expected=ValueError("sequence")),
+        dict(headings=["a", "b", "c"], rows=[1, 2, 3], expected=ValueError("sequence")),
+        dict(headings=["a", "b", "c"], rows=[[1, 2]], expected=ValueError("3 columns")),
+        dict(headings=["a", "b", "c"], rows=[[1, 2, 3]], expected=None),  # OK.
+    )
+    def test_init(self, headings, rows, expected):
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                utils.Table(headings=headings, rows=rows)
+        else:
+            utils.Table(headings=headings, rows=rows)
+
+    def test_add_row(self):
+        table = utils.Table(headings=["a", "b", "c"], rows=[])
+        table.add_row([1, 2, 3])
+        # fmt: off
+        self.assertEqual(
+            (
+                "\n"
+                "A      B      C      \n"
+                "1      2      3      \n"
+            ),
+            str(table),
+        )
+        # fmt: on
+        with self.assertRaisesRegex(ValueError, "3 columns"):
+            table.add_row([1, 2])
+
+    def test_add_col(self):
+        table = utils.Table(headings=["a", "b", "c"], rows=[[1, 2, 3]])
+        table.add_col("d", [4])
+        # fmt: off
+        self.assertEqual(
+            (
+                "\n"
+                "A      B      C      D      \n"
+                "1      2      3      4      \n"
+            ),
+            str(table),
+        )
+        # fmt: on
+        with self.assertRaisesRegex(ValueError, "1 row"):
+            table.add_col("e", [5, 6])
+
+    def test_get_col(self):
+        table = utils.Table(headings=["a", "b"], rows=[[1, 2], [3, 4]])
+        self.assertEqual([[1], [3]], table.get_col("a"))
+        self.assertEqual([[1, 2], [3, 4]], table.get_col("a", "b"))
+        with self.assertRaisesRegex(ValueError, ""):
+            table.get_col("c")
+
+    def test_sort(self):
+        table = utils.Table(headings=["a", "b"], rows=[[1, 4], [3, 2]])
+        table.sort(key=lambda row: row[-1])
+        self.assertEqual(
+            utils.Table(headings=["a", "b"], rows=[[3, 2], [1, 4]]),
+            table,
+        )
+        table.sort(key=lambda row: row[-1], reverse=True)
+        self.assertEqual(
+            utils.Table(headings=["a", "b"], rows=[[1, 4], [3, 2]]),
+            table,
+        )

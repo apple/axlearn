@@ -110,11 +110,11 @@ class VertexAITensorboardUploader(Configurable):
         self._uploader_proc = None
 
     @classmethod
-    def default_config(cls) -> Config:
+    def from_flags(cls, fv: flags.FlagValues):
         cfg = super().default_config()
-        instance_id = gcp_config.gcp_settings(key="vertexai_tensorboard")
-        region = gcp_config.gcp_settings(key="vertexai_region")
-        project_id = gcp_config.gcp_settings(key="project")
+        instance_id = gcp_config.gcp_settings(key="vertexai_tensorboard", fv=fv)
+        region = gcp_config.gcp_settings(key="vertexai_region", fv=fv)
+        project_id = gcp_config.gcp_settings(key="project", fv=fv)
         return cfg.set(instance_id=instance_id, region=region, project_id=project_id)
 
     def upload(self):
