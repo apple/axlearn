@@ -1,0 +1,77 @@
+apiVersion: kubeflow.org/v2beta1
+kind: MPIJob
+metadata:
+  name: mpi-jax-train
+spec:
+  slotsPerWorker: 1
+  runPolicy:
+    cleanPodPolicy: Running
+    backoffLimit: 20
+  mpiReplicaSpecs:
+    Launcher:
+      replicas: 1
+      template:
+         spec:
+           containers:
+           - image: <aws-account-id>.dkr.ecr.us-east-2.amazonaws.com/axlearn_neuronx:latest
+             name: mpitest
+             imagePullPolicy: Always
+             env:
+               - name: POD_UID
+                 valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.uid
+             command:
+             - mpirun
+             - --allow-run-as-root
+             - -np
+             - "64"
+             - -bind-to
+             - none
+             - -map-by
+             - slot
+             - -x
+             - POD_UID
+             - -wdir
+             - /neuron/axlearn/
+             - /neuron/launch_training.sh
+           initContainers:
+           - name: wait-hostfilename
+             image: <aws-account-id>.dkr.ecr.us-east-2.amazonaws.com/axlearn_neuronx:latest
+             command:
+             - bash
+             - -cx
+             - "[[ $(cat /etc/mpi/discover_hosts.sh | wc -l) != 1 ]] && (date; echo Ready; cat /etc/mpi/discover_hosts.sh) || (date; echo 'not ready ...'; sleep 10; exit 1) && while read host; do while ! ssh $host echo $host ; do date; echo \"Pod $host is not up ...\"; sleep 10; done; date; echo \"Pod $host is ready\"; done <<< \"$(/etc/mpi/discover_hosts.sh)\""
+             volumeMounts:
+             - mountPath: /etc/mpi
+               name: mpi-job-config
+             - mountPath: /root/.ssh
+               name: ssh-auth
+
+    Worker:
+      replicas: 64
+      template:
+        spec:
+          containers:
+          - image: <aws-account-id>.dkr.ecr.us-east-2.amazonaws.com/axlearn_neuronx:latest
+            name: mpitest
+            imagePullPolicy: Always
+            resources:
+              limits:
+                aws.amazon.com/neuron: "16"
+                vpc.amazonaws.com/efa: "16"
+              requests:
+                aws.amazon.com/neuron: "16"
+                vpc.amazonaws.com/efa: "16"
+            volumeMounts:
+            - name: persistent-storage
+              mountPath: /shared
+            - name: dshm
+              mountPath: /dev/shm
+          volumes:
+          - name: persistent-storage
+            persistentVolumeClaim:
+              claimName: fsx-claim
+          - name: dshm
+            emptyDir:
+              medium: Memory
