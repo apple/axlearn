@@ -22,9 +22,10 @@ from axlearn.common.decoding import (
     flatten_decoding_dim,
     sample_decode,
 )
-from axlearn.common.layers import Linear
+from axlearn.common.layers import Embedding, Linear
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.module import Module
+from axlearn.common.rnn import BaseRNNCell, LSTMCell
 from axlearn.common.utils import Nested, Tensor
 
 
@@ -476,3 +477,70 @@ def _map_label_sequences(inputs: Tensor, *, blank_id: int = 0, pad_id: int = 0) 
     if pad_id != 0:
         sequences = jnp.where(paddings, pad_id, sequences)
     return dict(sequences=sequences, paddings=paddings, lengths=lens)
+
+
+class RNNPredictionNetwork(BaseLayer):
+    """RNN prediction network internal language model."""
+
+    @config_class
+    class Config(BaseLayer.Config):
+        """Configs RNNPredictionNetwork."""
+
+        # Vocab size.
+        vocab_size: Required[int] = REQUIRED
+        # The embedding dim.
+        emb_dim: Required[int] = REQUIRED
+        # The output dim.
+        output_dim: Required[int] = REQUIRED
+
+        # Embedding lookup layer.
+        embedding: Embedding.Config = Embedding.default_config()
+        # RNN cell of the internal LM. Defaults to a 1 layer LSTM.
+        rnn_cell: BaseRNNCell.Config = LSTMCell.default_config()
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._add_child(
+            "embedding", cfg.embedding.set(num_embeddings=cfg.vocab_size, dim=cfg.emb_dim)
+        )
+        self._add_child("rnn", cfg.rnn_cell.set(input_dim=cfg.emb_dim, output_dim=cfg.output_dim))
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        """Computes prediction network output from the inputs.
+
+        Args:
+            inputs: An int Tensor of shape [batch_size, num_labels]. Valid tokens are in the range
+                [0, vocab_size). Out-of-range token ids are clamped to the bounds of the array.
+                See https://jax.readthedocs.io/en/latest/notebooks/Common_Gotchas_in_JAX.html
+                #out-of-bounds-indexing.
+
+        Returns:
+            A Tensor of shape [batch_size, num_labels, output_dim].
+        """
+        time_major_outputs = self.rnn(
+            time_major_inputs=jnp.transpose(self.embedding(x=inputs), [1, 0, 2])
+        )
+        return jnp.transpose(time_major_outputs, [1, 0, 2])
+
+    def init_step_states(self, *, batch_size: int) -> Nested[Tensor]:
+        """Returns the prediction network initial step states, to be used by `extend_step`."""
+        return self.rnn.init_step_states(batch_size=batch_size)
+
+    def extend_step(
+        self,
+        *,
+        inputs: Tensor,
+        step_states: Nested[Tensor],
+    ) -> Tuple[Nested[Tensor], Tensor]:
+        """Computes prediction network outputs and RNN state updates for one step.
+
+        Args:
+            inputs: An int Tensor of shape [batch_size, num_labels].
+            step_states: The step states returned by `init_step_states` or `extend_step`.
+
+        Returns:
+            (updated_step_states, outputs), where `outputs` is a Tensor of shape
+                [batch_size, output_dim].
+        """
+        return self.rnn.extend_step(inputs=self.embedding(x=inputs), step_states=step_states)
