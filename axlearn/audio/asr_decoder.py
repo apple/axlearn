@@ -512,10 +512,11 @@ class RNNPredictionNetwork(BaseLayer):
         Args:
             inputs: An int Tensor of shape [batch_size, num_labels]. Valid tokens are in the range
                 [0, vocab_size). Out-of-range token ids are clamped to the bounds of the array.
-            See https://jax.readthedocs.io/en/latest/notebooks/Common_Gotchas_in_JAX.html
-            #out-of-bounds-indexing.
+                See https://jax.readthedocs.io/en/latest/notebooks/Common_Gotchas_in_JAX.html
+                #out-of-bounds-indexing.
 
-        Returns: A Tensor of shape [batch_size, num_labels, output_dim].
+        Returns:
+            A Tensor of shape [batch_size, num_labels, output_dim].
         """
         time_major_outputs = self.rnn(
             time_major_inputs=jnp.transpose(self.embedding(x=inputs), [1, 0, 2])
