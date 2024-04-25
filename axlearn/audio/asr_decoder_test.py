@@ -16,6 +16,7 @@ from axlearn.audio.asr_decoder import (
     CTCDecoderModel,
     CTCPrefixMerger,
     DecodeOutputs,
+    RNNPredictionNetwork,
     _is_valid_ctc_seq,
     _map_label_sequences,
 )
@@ -836,3 +837,30 @@ class CTCDecoderModelTest(TestCase):
             ),
         )
         self.assertNestedEqual(outputs.scores, jnp.array([[28, 28], [36, 36]]))
+
+
+class RNNPredictionNetworkTest(TestCase):
+    def test_forward(self):
+        batch_size, seq_len, vocab_size, output_dim = 2, 8, 5, 3
+        # Tests that out-of-range token ids (-1, -2, 6, 10) work.
+        inputs = jnp.array([[3, 3, 2, 4, 3, -1, -1, -2], [2, 1, 3, 3, 3, 10, 6, -1]])
+        layer: RNNPredictionNetwork = (
+            RNNPredictionNetwork.default_config()
+            .set(
+                name="test",
+                vocab_size=vocab_size,
+                emb_dim=2,
+                output_dim=output_dim,
+            )
+            .instantiate(parent=None)
+        )
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(1))
+        forward_outputs, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),  # not used.
+            state=layer_params,
+            inputs=dict(inputs=inputs),
+        )
+        # Tests that `time_major_inputs` axis order is correctly handled.
+        self.assertSequenceEqual(forward_outputs.shape, (batch_size, seq_len, output_dim))
