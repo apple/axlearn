@@ -557,13 +557,13 @@ def apply_mlm_mask_combinatorial_ngram(
     return lambda ds: ds.map(process_example_fn, num_parallel_calls=tf.data.AUTOTUNE).unbatch()
 
 
-# pylint: disable-next=redefined-outer-name
 def text_to_mlm_input(
     *,
     is_training: bool,
     sentence_piece_vocab: InstantiableConfig,
     normalization: InstantiableConfig,
     max_len: int,
+    # pylint: disable-next=redefined-outer-name
     apply_mlm_mask: InstantiableConfig,
     shuffle_buffer_size: int,
     mask_token: str = "[MASK]",

@@ -865,7 +865,7 @@ class StopOnSubsequence:
                 "Zero length stopping seqs are not supported. "
                 f"Zero length seqs at indices {indices}."
             )
-        self.longest = max([len(el) for el in stopping_seqs])
+        self.longest = max(len(el) for el in stopping_seqs)
         self.targets = jnp.stack(
             [
                 jnp.pad(jnp.array(el), (self.longest - len(el), 0), constant_values=pad_value)

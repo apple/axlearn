@@ -1177,7 +1177,7 @@ def create_device_mesh(
         return build_standard_mesh(mesh_shape, devices=devices)
 
     ici_mesh_shape = mesh_shape
-    num_granules = max([getattr(el, attr) for el in devices.flatten()]) + 1
+    num_granules = max(getattr(el, attr) for el in devices.flatten()) + 1
 
     # Return standard mesh if on GPU with incompatible multi-slice/granule mesh.
     if device_platform == "gpu" and ici_mesh_shape[0] % num_granules != 0:

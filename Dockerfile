@@ -47,8 +47,10 @@ COPY . .
 
 # Defaults to an empty string, i.e. run pytest against all files.
 ARG PYTEST_FILES=''
+# Defaults to empty string, i.e. do NOT skip precommit
+ARG SKIP_PRECOMMIT=''
 # `exit 1` fails the build.
-RUN ./run_tests.sh "${PYTEST_FILES}"
+RUN ./run_tests.sh $SKIP_PRECOMMIT "${PYTEST_FILES}"
 
 ################################################################################
 # Bastion container spec.                                                      #

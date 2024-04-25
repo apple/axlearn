@@ -254,7 +254,7 @@ class SimpleFPN(BaseLayer):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
-        self.backbone_level = int(min([l for l in cfg.input_dims.keys() if l.isdigit()]))
+        self.backbone_level = int(min(l for l in cfg.input_dims.keys() if l.isdigit()))
         assert self.backbone_level >= cfg.min_level
 
         backbone_dim = cfg.input_dims[str(self.backbone_level)]

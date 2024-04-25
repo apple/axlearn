@@ -9,8 +9,8 @@
 """A generic repeat layer.
 
 Adapted from:
-https://github.com/tensorflow/lingvo/blob/master/lingvo/core/repeat_layer.py
-https://github.com/tensorflow/lingvo/blob/master/lingvo/jax/layers/repeats.py
+https://github.com/tensorflow/lingvo/blob/2d46faf8/lingvo/core/repeat_layer.py
+https://github.com/tensorflow/lingvo/blob/2d46faf8/lingvo/jax/layers/repeats.py
 
 A repeat layer consists a stack of N identical sub layers, where
   * The variables are stacked across layers. Each stacked variable has shape [N, ...].
