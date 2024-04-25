@@ -139,6 +139,7 @@ def get_trainer_kwargs(
             eval_every_n_steps=1500,
             save_every_n_steps=500,
             mesh_shape=mesh_shape_from_axes(data=-1),
+            eval_batch_size=int(jax.device_count()/TRN_MODEL_AXIS_SIZE),
         )
     elif model_size == "7B":
         trainer_kwargs = dict(
@@ -185,6 +186,8 @@ def get_trainer_kwargs(
                     mesh_shape_from_axes(data=-1, model=TRN_MODEL_AXIS_SIZE),
                 ),
             ),
+            eval_batch_size=int(jax.device_count()/TRN_MODEL_AXIS_SIZE),
+            eval_every_n_steps=5000,
         )
     elif model_size == "70B":
         trainer_kwargs = dict(
