@@ -587,7 +587,9 @@ class CTCDecoderModelTest(TestCase):
 
         # Sequences have shape [batch_size, max_seq_len].
         ref_raw_sequences = jnp.argmax(ref_log_probs, axis=-1)
-        ref_outputs = _map_label_sequences(ref_raw_sequences, blank_id=cfg.blank_id)
+        ref_outputs = _map_label_sequences(
+            ref_raw_sequences, remove_repeats=True, blank_id=cfg.blank_id
+        )
         ref_sequences, ref_paddings = ref_outputs["sequences"], ref_outputs["paddings"]
 
         # Mask out padding/EOS tokens.
