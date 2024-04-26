@@ -780,9 +780,15 @@ class Bastion(Configurable):
             # got pre-empted.
             if job.command_proc is None:
                 self._append_to_job_history(
-                    job, f"ACTIVE: start process command: {job.spec.command}"
+                    job,
+                    f"ACTIVE: start process command: {job.spec.command} "
+                    f"with metadata: {job.state.metadata}",
                 )
-            _start_command(job, remote_log_dir=self._log_dir, env_vars=job.state.metadata)
+            _start_command(
+                job,
+                remote_log_dir=self._log_dir,
+                env_vars={f"BASTION_{k.upper()}": v for k, v in job.state.metadata.items()},
+            )
             assert job.command_proc is not None
 
             # If command is completed, move to CLEANING. Otherwise, it's still RUNNING.

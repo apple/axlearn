@@ -5,6 +5,7 @@
 # pylint: disable=no-self-use,protected-access
 # pytype: disable=wrong-arg-types
 import contextlib
+import copy
 import os
 import subprocess
 import tempfile
@@ -724,7 +725,7 @@ class BastionTest(parameterized.TestCase):
             # Command should be started on the first update.
             self.assertIsNotNone(updated_job.command_proc)
             # Scheduling metadata should be set.
-            self.assertEqual({"tier": 1}, updated_job.command_proc.popen.env)
+            self.assertEqual({"BASTION_TIER": 1}, updated_job.command_proc.popen.env)
 
             # Log should be downloaded if it exists.
             download_call = mock.call(
@@ -821,7 +822,7 @@ class BastionTest(parameterized.TestCase):
                         resources={"v3": 2},  # Fits within the v3 budget in project2.
                     ),
                 ),
-                state=JobState(status=JobStatus.PENDING),
+                state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
                 command_proc=mock_proc("command"),
                 cleanup_proc=None,  # No cleanup_proc for ACTIVE jobs.
             ),
@@ -899,6 +900,8 @@ class BastionTest(parameterized.TestCase):
                 cleanup_proc=mock_proc("cleanup", cleanup_poll=1),  # Should have cleanup_proc.
             ),
         }
+        # Copy original jobs, since updates happen in-place.
+        orig_jobs = copy.deepcopy(active_jobs)
         # Pretend that only 'cleaning_cancel' came from a user state.
         jobs_with_user_states = {"cleaning_cancel"}
 
@@ -924,7 +927,7 @@ class BastionTest(parameterized.TestCase):
             mock_bastion._update_jobs()
 
             # Ensure _active_jobs membership stays same.
-            self.assertEqual(mock_bastion._active_jobs.keys(), active_jobs.keys())
+            self.assertEqual(mock_bastion._active_jobs.keys(), orig_jobs.keys())
 
             # Note that scheduling metadata is also part of the state.
             expected_states = {
@@ -973,26 +976,23 @@ class BastionTest(parameterized.TestCase):
 
                 # For jobs that went from ACTIVE to PENDING, expect kill() to have been called.
                 if (
-                    active_jobs[job.spec.name].state.status == JobStatus.ACTIVE
+                    orig_jobs[job.spec.name].state.status == JobStatus.ACTIVE
                     and job.state.status == JobStatus.PENDING
                 ):
                     mock_fns["send_signal"].assert_called()
                     self.assertFalse(
-                        active_jobs[
+                        orig_jobs[
                             job.spec.name
                         ].command_proc.popen.terminate.called  # pytype: disable=attribute-error
                     )
 
                 # For jobs that went from PENDING to ACTIVE, expect command to have been invoked
-                # with BASTION_STATE_DIR in the env.
+                # with "tier" in the env.
                 if (
-                    active_jobs[job.spec.name].state.status == JobStatus.PENDING
+                    orig_jobs[job.spec.name].state.status == JobStatus.PENDING
                     and job.state.status == JobStatus.ACTIVE
                 ):
-                    self.assertIn("BASTION_STATE_DIR", job.command_proc.popen.env)
-                    self.assertEqual(
-                        job.command_proc.popen.env["BASTION_STATE_DIR"], mock_bastion._state_dir
-                    )
+                    self.assertIn("BASTION_TIER", job.command_proc.popen.env)
 
             for job_name in active_jobs:
                 history_file = os.path.join(mock_bastion._job_history_dir, job_name)

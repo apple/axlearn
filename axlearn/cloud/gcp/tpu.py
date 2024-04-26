@@ -292,6 +292,7 @@ def create_queued_tpu(
     num_slices: int = 1,
     metadata: Optional[Dict[str, str]] = None,
     service_account: Optional[str] = None,
+    reserved: Optional[bool] = None,
 ):
     """Create TPU (using QRM API).
 
@@ -303,6 +304,7 @@ def create_queued_tpu(
         num_slices: The number of slices of type tpu_type to start.
         metadata: Optional metadata for the instance.
         service_account: Service account to execute the TPU creation.
+        reserved: Whether to use reserved or preemptible quota. If None, infers from `gcp_settings`.
 
     Raises:
         TPUCreationError: If an exeption is raised on the creation request.
@@ -341,6 +343,7 @@ def create_queued_tpu(
                             metadata=metadata,
                             service_account=service_account,
                         ),
+                        reserved=reserved,
                     ),
                 )
                 _execute_create_tpu_request(request)
@@ -596,10 +599,20 @@ def _tpu_body(
     return body
 
 
-def _qrm_body(name: str, *, num_slices: int, tpu_body: Dict[str, Any]) -> Dict[str, Any]:
+def _qrm_body(
+    name: str, *, num_slices: int, tpu_body: Dict[str, Any], reserved: Optional[bool] = None
+) -> Dict[str, Any]:
     """Create configuration object for starting a multislice TPU.
 
     Reference: https://cloud.google.com/tpu/docs/queued-resources
+
+    Args:
+        name: QRM node name (will be suffixed if num_slices > 1).
+        num_slices: Number of TPU slices.
+        reserved: Whether to use reserved or preemptible quota. If None, infers from `gcp_settings`.
+
+    Returns:
+        The QRM request body.
     """
     node_spec = {
         "parent": f"projects/{gcp_settings('project')}/locations/{gcp_settings('zone')}",
@@ -614,12 +627,19 @@ def _qrm_body(name: str, *, num_slices: int, tpu_body: Dict[str, Any]) -> Dict[s
             "node_count": num_slices,
             "node_id_prefix": name,
         }
+    if reserved is None:
+        reserved = gcp_settings("reserved_tpu")
     body = {
-        "guaranteed": {"reserved": gcp_settings("reserved_tpu")},
         "tpu": {
             "node_spec": [node_spec],  # List, but only a single node spec is supported right now.
         },
     }
+    if reserved:
+        # https://cloud.google.com/tpu/docs/queued-resources#request_a_queued_resource_using_reserved_quota
+        body["guaranteed"] = {"reserved": True}
+    else:
+        # https://cloud.google.com/tpu/docs/queued-resources#request_a_preemptible_queued_resource
+        body["best_effort"] = {}
     return body
 
 
