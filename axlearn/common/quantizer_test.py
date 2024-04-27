@@ -48,10 +48,9 @@ _CODE_BOOK = jnp.array(
 
 
 def _create_prngkeyarray(key_data: List[int]) -> Tensor:
-    # TODO(xuan-zou): upgrade to more recent jax.random.key API and fix tests
-    # when prng_interal.PRNGKeyArray is fully deprecated.
-    return prng_interal.PRNGKeyArray(  # pytype: disable=module-attr
-        impl=prng_interal.threefry_prng_impl, key_data=jnp.array(key_data, dtype=jnp.uint32)
+    return jax.random.wrap_key_data(
+        jnp.array(key_data, dtype=jnp.uint32),
+        impl=prng_interal.threefry_prng_impl,
     )
 
 
