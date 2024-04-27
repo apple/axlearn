@@ -80,9 +80,9 @@ gcp = [
     "kubernetes",
     "google-api-core==2.17.1",
     "google-api-python-client==2.109.0",
-    "google-auth==2.23.0",
+    "google-auth==2.29.0",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
-    "google-cloud-storage==2.11.0",
+    "google-cloud-storage==2.16.0",
     "google-cloud-core==2.3.3",
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
 ]
@@ -104,7 +104,7 @@ vertexai_tensorboard = [
 ]
 # Dataflow dependencies.
 dataflow = [
-    "apache-beam==2.52.0",
+    "apache-beam==2.55.1",
     "apache-beam[gcp]",
     "google-apitools",  # for beam pipeline
     "orjson==3.9.10",
