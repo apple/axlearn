@@ -55,6 +55,7 @@ class UtilsTest(TestCase):
             ),
             blank_id=0,
             pad_id=0,
+            remove_repeats=True,
         ),
         dict(
             inputs=jnp.asarray(
@@ -80,15 +81,75 @@ class UtilsTest(TestCase):
             ),
             blank_id=0,
             pad_id=-1,
+            remove_repeats=True,
+        ),
+        dict(
+            inputs=jnp.asarray(
+                [
+                    [[0, 3, 3, 3, 0, 0, 2, 2, 2, 3], [2, 2, 1, 0, 0, 0, 0, 0, 0, 0]],
+                    [[2, 0, 2, 2, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+                ]
+            ),
+            expected=dict(
+                sequences=jnp.asarray(
+                    [
+                        [[3, 3, 3, 2, 2, 2, 3, 0, 0, 0], [2, 2, 1, 0, 0, 0, 0, 0, 0, 0]],
+                        [[2, 2, 2, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+                    ],
+                ),
+                paddings=jnp.asarray(
+                    [
+                        [[0, 0, 0, 0, 0, 0, 0, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1, 1, 1, 1]],
+                        [[0, 0, 0, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]],
+                    ]
+                ),
+                lengths=jnp.asarray([[[7], [3]], [[3], [0]]]),
+            ),
+            blank_id=0,
+            pad_id=0,
+            remove_repeats=False,
+        ),
+        dict(
+            inputs=jnp.asarray(
+                [
+                    [[0, 3, 3, 3, 0, 0, 2, 2, 2, 3], [2, 2, 1, 0, 0, 0, -1, -1, -1, -1]],
+                    [[2, 0, 2, 2, 1, 1, -1, -1, -1, -1], [3, 1, 3, 1, 3, 1, -1, -1, -1, -1]],
+                ]
+            ),
+            expected=dict(
+                sequences=jnp.asarray(
+                    [
+                        [[0, 0, 0, 2, 2, 2, -1, -1, -1, -1], [2, 2, 1, 0, 0, 0, -1, -1, -1, -1]],
+                        [[2, 0, 2, 2, 1, 1, -1, -1, -1, -1], [1, 1, 1, -1, -1, -1, -1, -1, -1, -1]],
+                    ],
+                ),
+                paddings=jnp.asarray(
+                    [
+                        [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]],
+                        [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1, 1, 1, 1]],
+                    ]
+                ),
+                lengths=jnp.asarray([[[6], [6]], [[6], [3]]]),
+            ),
+            blank_id=3,
+            pad_id=-1,
+            remove_repeats=False,
         ),
     )
     def test_map_label_sequences(
-        self, inputs: Tensor, expected: Nested[Tensor], blank_id: int, pad_id: int
+        self,
+        inputs: Tensor,
+        expected: Nested[Tensor],
+        blank_id: int,
+        pad_id: int,
+        remove_repeats: bool,
     ):
-        jit_fn = jax.jit(_map_label_sequences, static_argnames=("blank_id", "pad_id"))
+        jit_fn = jax.jit(
+            _map_label_sequences, static_argnames=("blank_id", "pad_id", "remove_repeats")
+        )
         self.assertNestedEqual(
             expected,
-            jit_fn(inputs, blank_id=blank_id, pad_id=pad_id),
+            jit_fn(inputs, blank_id=blank_id, pad_id=pad_id, remove_repeats=remove_repeats),
         )
 
 
@@ -526,7 +587,9 @@ class CTCDecoderModelTest(TestCase):
 
         # Sequences have shape [batch_size, max_seq_len].
         ref_raw_sequences = jnp.argmax(ref_log_probs, axis=-1)
-        ref_outputs = _map_label_sequences(ref_raw_sequences, blank_id=cfg.blank_id)
+        ref_outputs = _map_label_sequences(
+            ref_raw_sequences, remove_repeats=True, blank_id=cfg.blank_id
+        )
         ref_sequences, ref_paddings = ref_outputs["sequences"], ref_outputs["paddings"]
 
         # Mask out padding/EOS tokens.

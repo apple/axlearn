@@ -87,7 +87,9 @@ class CTCPrefixMerger(PrefixMerger):
         If the initial prefix is non-empty, we produce state equivalent to initializing from an
         empty prefix and invoking `update` token-by-token until the end of the initial prefix.
         """
-        outputs = _map_label_sequences(tokens, blank_id=self._blank_id, pad_id=-1)
+        outputs = _map_label_sequences(
+            tokens, remove_repeats=True, blank_id=self._blank_id, pad_id=-1
+        )
         # Compute last tokens.
         last_token = jnp.take_along_axis(outputs["sequences"], outputs["lengths"] - 1, axis=-1)
         return dict(
@@ -404,7 +406,9 @@ class CTCDecoderModel(BaseModel):
         sequences = jnp.argmax(logits, axis=-1)[:, None, :]
         # Remove repeats and blanks.
         # We make the assumption that the trailing padding positions have 0 as the argmax index.
-        outputs = _map_label_sequences(inputs=sequences, blank_id=cfg.blank_id, pad_id=0)
+        outputs = _map_label_sequences(
+            inputs=sequences, remove_repeats=True, blank_id=cfg.blank_id, pad_id=0
+        )
 
         # [batch_size, num_frames, vocab_size].
         log_probs = jax.nn.log_softmax(logits, axis=-1)
@@ -430,7 +434,9 @@ class CTCDecoderModel(BaseModel):
         if scores.ndim == 3:
             scores = (scores[..., :-1] * live_mask).sum(axis=-1)
         # Remove repeats and blanks.
-        outputs = _map_label_sequences(inputs=sequences, blank_id=cfg.blank_id, pad_id=0)
+        outputs = _map_label_sequences(
+            inputs=sequences, remove_repeats=True, blank_id=cfg.blank_id, pad_id=0
+        )
         return DecodeOutputs(
             raw_sequences=sequences,
             sequences=outputs["sequences"],
@@ -439,11 +445,18 @@ class CTCDecoderModel(BaseModel):
         )
 
 
-def _map_label_sequences(inputs: Tensor, *, blank_id: int = 0, pad_id: int = 0) -> Nested[Tensor]:
-    """Removes blanks, paddings, and repeats from the input sequences, as seen in CTC.
+def _map_label_sequences(
+    inputs: Tensor, *, remove_repeats: bool, blank_id: int = 0, pad_id: int = 0
+) -> Nested[Tensor]:
+    """Removes blanks, paddings, and repeats from the input sequences, as used in CTC or RNN-T.
+
+    Note that unless pad_id is the same as blank_id, pad_id should not be in the range of the vocab.
+    We use pad_id to infer padding positions in the inputs.
 
     Args:
         inputs: An int Tensor of shape [..., max_decode_len] containing decoded sequences.
+        remove_repeats: A boolean indicating whether we remove repeats or not. It is True for CTC,
+            False for RNN-T.
         blank_id: Token ID corresponding to blanks.
         pad_id: Token ID corresponding to paddings.
 
@@ -454,20 +467,24 @@ def _map_label_sequences(inputs: Tensor, *, blank_id: int = 0, pad_id: int = 0) 
             lengths: A Tensor of shape [..., 1] containing the length of each sequence.
     """
     max_decode_len = inputs.shape[-1]
-
-    # Identify points at which curr != prev, excluding blanks and paddings.
-    # `indicators` will have shape [batch_size, num_decodes, max_decode_len], and have a value
-    # of 1 in positions corresponding to inputs we intend to keep (i.e., the token is not blank
-    # or padding, and is different from the previous token).
-    y = jnp.concatenate([jnp.full(inputs.shape[:-1] + (1,), pad_id), inputs], axis=-1)
-    indicators = (y[..., 1:] != y[..., :-1]) & (inputs != blank_id) & (inputs != pad_id)
+    # Identify points at which the token is a valid label token to keep.
+    # `indicators` has shape [batch_size, num_decodes, max_decode_len], and has a value of 1
+    # in positions corresponding to inputs we intend to keep,
+    # i.e., the token is not blank or padding.
+    indicators = (inputs != blank_id) & (inputs != pad_id)
+    if remove_repeats:
+        # Identify points at which curr != prev.
+        # I.e., the token is not blank or padding, and is different from the previous token.
+        y = jnp.concatenate([jnp.full(inputs.shape[:-1] + (1,), pad_id), inputs], axis=-1)
+        indicators = (y[..., 1:] != y[..., :-1]) & indicators
 
     # Compute lengths of final sequences. [..., 1].
     lens = jnp.sum(indicators, axis=-1, keepdims=True, dtype=inputs.dtype)
 
     # Compute sequences by left-justifying the tokens-to-keep. Under jit, we use a dispatch matrix
-    # of shape [batch_size, num_decodes, max_decode_len, max_decode_len]. dispatch[..., i, j] == 1
-    # means token i goes to position j. dispatch[..., i, :] == 0 means we drop token i.
+    # of shape [batch_size, num_decodes, max_decode_len, max_decode_len].
+    # dispatch[..., from, to] == 1 means inputs[:, :, from] is put at sequences[:, :, to].
+    # dispatch[..., i, :] == 0 means we drop token i in the inputs.
     # [batch_size, num_decodes, max_decode_len, max_decode_len].
     dispatch = jax.nn.one_hot(
         jnp.cumsum(indicators, axis=-1) * indicators - 1, max_decode_len, dtype=inputs.dtype
