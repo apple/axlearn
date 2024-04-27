@@ -22,14 +22,14 @@ from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.layers import Linear, MultiLinear
 from axlearn.common.module import Module, child_context, new_output_collection
 from axlearn.common.repeat import Repeat
-from axlearn.common.utils import NestedTensor, Tensor, VDict, get_or_none, split_prng_key
+from axlearn.common.utils import Nested, Tensor, VDict, get_or_none, split_prng_key
 
 
 class BaseRNNCell(BaseLayer):
     """An abstract class to define the common interface of all RNN cell layers, including:
 
     * All subclasses must have `input_dim` and `output_dim` in its Config;
-    * The common method signature for `init_step_states()` and `extend_step()`.
+    * The common method signature for `init_states()` and `extend_step()`.
     * A common implementation for `forward()`.
     """
 
@@ -43,45 +43,45 @@ class BaseRNNCell(BaseLayer):
         cfg = self.config
         return cfg.output_dim if cfg.output_dim is not None else cfg.input_dim
 
-    def init_step_states(self, *, batch_size: int) -> NestedTensor:
-        """Returns the initial step states, to be used by `extend_step`."""
+    def init_states(self, *, batch_size: int) -> Nested[Tensor]:
+        """Returns the initial states, to be used by `extend_step`."""
         raise NotImplementedError(type(self))
 
     def extend_step(
         self,
         *,
-        inputs: NestedTensor,
-        step_states: NestedTensor,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+        cached_states: Nested[Tensor],
+        data: Tensor,
+    ) -> Tuple[Nested[Tensor], Tensor]:
         """Computes the outputs and state updates for one step.
 
         Args:
-            inputs: The inputs for the current step, often a Tensor of shape
-                [batch_size, input_dim].
-            step_states: The step states returned by `init_step_states` or `extend_step`.
+            cached_states: A NestedTensor returned by `init_states()` or `extend_step()`.
+            data: A Tensor of shape [batch_size, input_dim], the inputs for the current step.
 
         Returns:
-            (updated_step_states, outputs), where `outputs` are usually a Tensor of shape
-            [batch_size, output_dim].
+            (updated_cached_states, outputs), where:
+            `updated_cached_states` represents the new cached states incorporating `data`;
+            `outputs` is a Tensor of shape [batch_size, output_dim].
         """
         raise NotImplementedError(type(self))
 
-    def forward(self, time_major_inputs: NestedTensor) -> NestedTensor:
+    def forward(self, time_major_inputs: Tensor) -> Tensor:
         """Computes RNN outputs given full-sequence inputs.
 
-        For incremental computation, use init_step_states() and extend_step().
+        For incremental computation, use init_states() and extend_step().
 
         Args:
             time_major_inputs: The sequence inputs, often a Tensor of shape
                 [seq_len, batch_size, input_dim].
 
         Returns:
-            The outputs, usually a Tensor of shape [seq_len, batch_size, output_dim].
+            A Tensor of shape [seq_len, batch_size, output_dim].
         """
         batch_size = self._batch_size(time_major_inputs)
         seq_len = self._seq_len(time_major_inputs)
-        with child_context("init_step_states", module=self):
-            step_states = self.init_step_states(batch_size=batch_size)
+        with child_context("init_states", module=self):
+            initial_states = self.init_states(batch_size=batch_size)
 
         context = self.get_invocation_context()
 
@@ -95,27 +95,27 @@ class BaseRNNCell(BaseLayer):
                 prng_key=prng_key_i,
                 output_collection=output_collection_i,
             ):
-                next_step_states, y_i = self.extend_step(inputs=x_i, step_states=carry_i)
-            return next_step_states, dict(y_i=y_i, output_collection=output_collection_i)
+                next_states, y_i = self.extend_step(cached_states=carry_i, data=x_i)
+            return next_states, dict(y_i=y_i, output_collection=output_collection_i)
 
-        final_step_states, scan_ys = jax.lax.scan(
+        final_states, scan_ys = jax.lax.scan(
             scan_fn,
-            init=step_states,
+            init=initial_states,
             xs=(split_prng_key(context.prng_key, seq_len).keys, time_major_inputs),
         )
 
         output_collection = context.output_collection
         output_collection.update(scan_ys["output_collection"])
-        self.add_module_output("final_step_states", final_step_states)
+        self.add_module_output("final_states", final_states)
         return scan_ys["y_i"]
 
     # pylint: disable-next=no-self-use
-    def _batch_size(self, inputs: NestedTensor) -> int:
+    def _batch_size(self, inputs: Tensor) -> int:
         """Infers batch size from `inputs`."""
         raise NotImplementedError(type(self))
 
     # pylint: disable-next=no-self-use
-    def _seq_len(self, inputs: NestedTensor) -> int:
+    def _seq_len(self, inputs: Tensor) -> int:
         """Infers sequence length from `inputs`."""
         raise NotImplementedError(type(self))
 
@@ -175,7 +175,7 @@ class LSTMCell(BaseRNNCell):
         if cfg.norm is not None:
             self._add_child("norm", cfg.norm.set(input_dim=self.hidden_dim))
 
-    def init_step_states(self, *, batch_size: int) -> NestedTensor:
+    def init_states(self, *, batch_size: int) -> Nested[Tensor]:
         cfg = self.config
         # Using the naming convention of:
         # https://github.com/tensorflow/lingvo/blob/06553f297bbc38eb369503a421d07515d114cbb4/lingvo/core/rnn_cell.py#L223.
@@ -188,23 +188,23 @@ class LSTMCell(BaseRNNCell):
     def extend_step(
         self,
         *,
-        inputs: Tensor,
-        step_states: NestedTensor,
-    ) -> Tuple[NestedTensor, Tensor]:
+        cached_states: Nested[Tensor],
+        data: Tensor,
+    ) -> Tuple[Nested[Tensor], Tensor]:
         cfg = self.config
         # [batch_size, input_dim + output_dim].
-        inputs_and_m = jnp.concatenate([inputs, step_states["m"]], axis=-1)
+        inputs_and_m = jnp.concatenate([data, cached_states["m"]], axis=-1)
         # [batch_size, 4, hidden_dim].
         input_proj = self.input_proj(inputs_and_m)
         if "norm" in self.children:
             input_proj = self.norm(input_proj)
-        assert input_proj.shape == (inputs.shape[0], 4, self.hidden_dim)
+        assert input_proj.shape == (data.shape[0], 4, self.hidden_dim)
         # The "input, forget, gate, output" gates, each of shape [batch, hidden_dim].
         proj_i, proj_f, proj_g, proj_o = [
             gate.squeeze(axis=-2) for gate in jnp.split(input_proj, indices_or_sections=4, axis=-2)
         ]
         # [batch, hidden_dim].
-        old_c = step_states["c"]
+        old_c = cached_states["c"]
         new_c = jax.nn.sigmoid(proj_f) * old_c + jax.nn.sigmoid(proj_g) * jax.nn.tanh(proj_i)
         if cfg.max_cell_value is not None:
             new_c = jnp.clip(new_c, a_min=-cfg.max_cell_value, a_max=cfg.max_cell_value)
@@ -218,13 +218,13 @@ class LSTMCell(BaseRNNCell):
         return dict(m=new_m, c=new_c), new_m
 
     # pylint: disable-next=no-self-use
-    def _batch_size(self, inputs: NestedTensor) -> int:
+    def _batch_size(self, inputs: Tensor) -> int:
         assert isinstance(inputs, Tensor)
         assert inputs.ndim == 3, inputs.shape
         return inputs.shape[1]
 
     # pylint: disable-next=no-self-use
-    def _seq_len(self, inputs: NestedTensor) -> int:
+    def _seq_len(self, inputs: Tensor) -> int:
         assert isinstance(inputs, Tensor)
         assert inputs.ndim == 3, inputs.shape
         return inputs.shape[0]
@@ -272,8 +272,8 @@ class StackedRNNLayer(BaseRNNCell):
         self,
         prng_key: Tensor,
         *,
-        prebuilt: Optional[NestedTensor] = None,
-    ) -> NestedTensor:
+        prebuilt: Optional[Nested[Tensor]] = None,
+    ) -> Nested[Tensor]:
         cfg = self.config  # type: StackedRNNLayer.Config
         prng_key = split_prng_key(prng_key, len(cfg.layers))
         state = {}
@@ -284,41 +284,41 @@ class StackedRNNLayer(BaseRNNCell):
             )
         return state
 
-    def init_step_states(self, *, batch_size: int) -> List[NestedTensor]:
+    def init_states(self, *, batch_size: int) -> List[Nested[Tensor]]:
         """Returns a list of initial step states from all layers."""
-        states_list = [layer.init_step_states(batch_size=batch_size) for layer in self._layers]
+        states_list = [layer.init_states(batch_size=batch_size) for layer in self._layers]
         return states_list
 
     def extend_step(
         self,
         *,
-        inputs: NestedTensor,
-        step_states: List[NestedTensor],
-    ) -> Tuple[List[NestedTensor], Tensor]:
+        cached_states: List[Nested[Tensor]],
+        data: Tensor,
+    ) -> Tuple[List[Nested[Tensor]], Tensor]:
         """Computes the outputs and all layers state updates for one step.
 
         Args:
-            inputs: The inputs for the current step, often a Tensor of shape
-                [batch_size, input_dim].
-            step_states: The list of step states from all layers returned by `init_step_states`
+            cached_states: A list of cached states from all layers returned by `init_states`
                 or `extend_step`.
+            data: A Tensor of shape [batch_size, input_dim], the inputs for the current step.
 
         Returns:
-            (updated_step_states, outputs), where `outputs` are usually a Tensor of shape
-            [batch_size, output_dim], and updated_step_states is a list of states from all layers.
+            (updated_step_states, outputs), where:
+            `updated_step_states` is a list of states from all layers;
+             `outputs` is a Tensor of shape [batch_size, output_dim].
         """
-        outputs = inputs
+        outputs = data
         updated_states_list = []
         for i, layer in enumerate(self._layers):
-            states, outputs = layer.extend_step(inputs=outputs, step_states=step_states[i])
+            states, outputs = layer.extend_step(cached_states=cached_states[i], data=outputs)
             updated_states_list.append(states)
         return updated_states_list, outputs
 
-    def _batch_size(self, inputs: NestedTensor) -> int:
+    def _batch_size(self, inputs: Tensor) -> int:
         # pylint: disable-next=protected-access
         return self._layers[0]._batch_size(inputs=inputs)
 
-    def _seq_len(self, inputs: NestedTensor) -> int:
+    def _seq_len(self, inputs: Tensor) -> int:
         # pylint: disable-next=protected-access
         return self._layers[0]._seq_len(inputs=inputs)
 
@@ -338,11 +338,11 @@ class StackedRNNLayer(BaseRNNCell):
 class _RNNRepeat(Repeat):
     """A Repeat layer with layer = children class of BaseRNNCell."""
 
-    def init_step_states(self, *, batch_size: int) -> NestedTensor:
-        """Returns the initial step states of all layers."""
+    def init_states(self, *, batch_size: int) -> Nested[Tensor]:
+        """Returns the initial states of all layers."""
 
         def layer_fn(_):
-            return VDict(self.layer.init_step_states(batch_size=batch_size))
+            return VDict(self.layer.init_states(batch_size=batch_size))
 
         cfg = self.config
         return jax.vmap(layer_fn)(jnp.empty(cfg.num_layers))
@@ -350,15 +350,14 @@ class _RNNRepeat(Repeat):
     def extend_step(
         self,
         *,
-        inputs: NestedTensor,
-        step_states: NestedTensor,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+        cached_states: Nested[Tensor],
+        data: Tensor,
+    ) -> Tuple[Nested[Tensor], Tensor]:
         """Computes the outputs and state updates for one step for all layers.
 
         Args:
-            inputs: The inputs for the current step, often a Tensor of shape
-                [batch_size, input_dim].
-            step_states: The step states returned by `init_step_states` or `extend_step`.
+            cached_states: A NestedTensor returned by `init_states()` or `extend_step()`.
+            data: A Tensor of shape [batch_size, input_dim], the inputs for the current step.
 
         Returns:
             (updated_step_states, outputs), where `outputs` are usually a Tensor of shape
@@ -367,11 +366,11 @@ class _RNNRepeat(Repeat):
 
         def layer_fn(carry, x_i):
             updated_layer_states, layer_outputs = self.layer.extend_step(
-                inputs=carry, step_states=x_i
+                cached_states=x_i, data=carry
             )
             return layer_outputs, VDict(updated_layer_states)
 
-        repeat_outputs: Repeat.Output = self._run(layer_fn, carry=inputs, xs=step_states)
+        repeat_outputs: Repeat.Output = self._run(layer_fn, carry=data, xs=cached_states)
         return repeat_outputs.ys, repeat_outputs.carry
 
 
@@ -400,11 +399,11 @@ class RepeatedRNNLayer(BaseRNNCell):
         )
         self._add_child("repeat", repeat_cfg)
 
-    def _batch_size(self, inputs: NestedTensor) -> int:
+    def _batch_size(self, inputs: Tensor) -> int:
         # pylint: disable-next=protected-access
         return self.repeat.layer._batch_size(inputs)
 
-    def _seq_len(self, inputs: NestedTensor) -> int:
+    def _seq_len(self, inputs: Tensor) -> int:
         # pylint: disable-next=protected-access
         return self.repeat.layer._seq_len(inputs)
 
@@ -412,8 +411,8 @@ class RepeatedRNNLayer(BaseRNNCell):
         self,
         prng_key: Tensor,
         *,
-        prebuilt: Optional[NestedTensor] = None,
-    ) -> NestedTensor:
+        prebuilt: Optional[Nested[Tensor]] = None,
+    ) -> Nested[Tensor]:
         # We need to call self.repeat.initialize_parameters_recursively() with the same prng_key
         # to ensure initialization parity with StackedRNNLayer.
         return dict(
@@ -422,24 +421,22 @@ class RepeatedRNNLayer(BaseRNNCell):
             )
         )
 
-    def init_step_states(self, *, batch_size: int) -> NestedTensor:
-        return self.repeat.init_step_states(batch_size=batch_size)
+    def init_states(self, *, batch_size: int) -> Nested[Tensor]:
+        return self.repeat.init_states(batch_size=batch_size)
 
     def extend_step(
         self,
         *,
-        inputs: NestedTensor,
-        step_states: NestedTensor,
-    ) -> Tuple[NestedTensor, NestedTensor]:
-        return self.repeat.extend_step(inputs=inputs, step_states=step_states)
+        cached_states: Nested[Tensor],
+        data: Tensor,
+    ) -> Tuple[Nested[Tensor], Tensor]:
+        return self.repeat.extend_step(cached_states=cached_states, data=data)
 
 
 class IdentityCell(BaseRNNCell):
     """Identity RNN cell."""
 
-    Config = BaseRNNCell.Config
-
-    def __init__(self, cfg: Config, *, parent: Module):
+    def __init__(self, cfg: BaseRNNCell.Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         if cfg.output_dim and cfg.output_dim != cfg.input_dim:
@@ -450,23 +447,26 @@ class IdentityCell(BaseRNNCell):
                 )
             )
 
-    def init_step_states(self, *, batch_size: int) -> NestedTensor:
-        """Returns the initial step states, to be used by `extend_step`."""
+    def init_states(self, *, batch_size: int) -> Nested[Tensor]:
+        """Returns the initial states, to be used by `extend_step`."""
         return {}
 
     def extend_step(
-        self, *, inputs: Tensor, step_states: NestedTensor
-    ) -> Tuple[NestedTensor, Tensor]:
+        self,
+        *,
+        cached_states: Nested[Tensor],
+        data: Tensor,
+    ) -> Tuple[Nested[Tensor], Tensor]:
         new_states = {}
-        outputs = inputs
+        outputs = data
         return new_states, outputs
 
-    def _batch_size(self, inputs: NestedTensor) -> int:
+    def _batch_size(self, inputs: Tensor) -> int:
         assert isinstance(inputs, Tensor)
         assert inputs.ndim == 3, inputs.shape
         return inputs.shape[1]
 
-    def _seq_len(self, inputs: NestedTensor) -> int:
+    def _seq_len(self, inputs: Tensor) -> int:
         assert isinstance(inputs, Tensor)
         assert inputs.ndim == 3, inputs.shape
         return inputs.shape[0]
