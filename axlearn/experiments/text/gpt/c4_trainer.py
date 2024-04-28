@@ -8,7 +8,7 @@
         --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE --jax_backend=cpu
 
     GS_ROOT=gs://my-bucket; \
-    CONFIG=fuji-7B; \
+    CONFIG=fuji-7B-v2; \
     INSTANCE_TYPE=tpu-v4-1024; \
     NUM_TPU_SLICES=1; \
     EXP=$(echo "text-gpt-c4-${CONFIG}-$(date +%F-%H%M)" | tr '[:upper:]' '[:lower:]'); \
@@ -32,7 +32,7 @@ pip install -e .
 XLA_FLAGS=--xla_dump_to=/tmp/xla_dump; \
 mkdir -p /tmp/test_trainer; \
 python3 -m axlearn.common.launch_trainer_main \
-  --module=text.gpt.c4_trainer --config=fuji-7B-single \
+  --module=text.gpt.c4_trainer --config=fuji-7B-v2-single \
   --trainer_dir=/tmp/test_trainer --data_dir=gs://axlearn-public/tensorflow_datasets \
   --jax_backend=gpu
 """
@@ -93,23 +93,28 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
     )
 
     config_map = {}
-    for model_size in fuji.MODEL_SIZES:
-        config_name = make_config_name(arch=arch, model_size=model_size)
-        kwargs = fuji.get_trainer_kwargs(model_size, vocab_size=vocab_size)
-        # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
-        config_map[config_name] = get_trainer_config_fn(
-            train_input_source=train_input_source.clone(
-                max_sequence_length=kwargs.pop("max_sequence_length", fuji.MAX_SEQUENCE_LENGTH),
-            ),
-            evalers=evaler_config_dict(_eval_input_sources()),
-            **kwargs,
-        )
-    # Make a variant of fuji-7B that can run on a single machine with 8 80G GPUs.
-    # pytype: disable=annotation-type-mismatch
-    cfg: SpmdTrainer.Config = config_map["fuji-7B"]().clone()
-    # pytype: enable=annotation-type-mismatch
-    cfg.input.batcher.global_batch_size = 32
-    for evaler in cfg.evalers.values():
-        evaler.input.batcher.global_batch_size = 32
-    config_map["fuji-7B-single"] = lambda: cfg
+    for version in fuji.Version:
+        for model_size in fuji.MODEL_SIZES:
+            config_name = make_config_name(arch=arch, model_size=model_size, version=f"v{version.value}")
+            kwargs = fuji.get_trainer_kwargs(model_size, vocab_size=vocab_size, version=version)
+            # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
+            config_map[config_name] = get_trainer_config_fn(
+                train_input_source=train_input_source.clone(
+                    max_sequence_length=kwargs.pop("max_sequence_length"),
+                ),
+                evalers=evaler_config_dict(_eval_input_sources()),
+                **kwargs,
+            )
+            if model_size == "7B":
+                # Make a variant of the 7B config that can run on a single machine with 8 80G GPUs.
+                # p5.48xlarge 8x1: step time: 1.1s.
+                # pytype: disable=annotation-type-mismatch
+                cfg: SpmdTrainer.Config = config_map[config_name]().clone()
+                # pytype: enable=annotation-type-mismatch
+
+                # The original config was supposed to run on 64 machines.
+                cfg.input.batcher.global_batch_size //= 64
+                for evaler in cfg.evalers.values():
+                    evaler.input.batcher.global_batch_size //= 64
+                config_map[f"{config_name}-single"] = lambda: cfg
     return config_map

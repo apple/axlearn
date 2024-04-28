@@ -6,7 +6,7 @@ Architecture names follow Apple varieties: fuji, gala, honeycrisp, etc.
 
 The fuji models are set up to imitate LLaMA-1 (https://arxiv.org/abs/2302.13971).
 """
-
+import enum
 from typing import Any, Dict, Optional, Union
 
 from axlearn.common import causal_lm, config
@@ -23,11 +23,35 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 
 MODEL_SIZES = ("test", "7B")
-MAX_SEQUENCE_LENGTH = 2048
 
 
-def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
+class Version(enum.Enum):
+    V1 = 1
+    V2 = 2
+    V3 = 3
+
+
+# Mapping from Fuji versions to maximum sequence lengths.
+MAX_SEQUENCE_LENGTH = {
+    Version.V1: 2048,
+    Version.V2: 4096,
+    Version.V3: 8192,
+}
+
+TOTAL_TOKENS = {
+    Version.V1: 2 * (1024**4),  # 2T tokens
+    Version.V2: 2 * (1024**4),  # 2T tokens
+    Version.V3: 15 * (1024**4),  # 15T tokens
+}
+
+
+def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) -> Dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
+    tokens_per_batch = 4 * (1024**2)  # 4M tokens.
+    max_step = TOTAL_TOKENS[version] // tokens_per_batch
+    max_sequence_length = MAX_SEQUENCE_LENGTH[version]
+    train_batch_size = tokens_per_batch // max_sequence_length
+
     # dict() is more readable here.
     # pylint: disable=use-dict-literal
     if model_size == "test":
@@ -56,8 +80,9 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
                 num_heads=32,
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
-            train_batch_size=4 * 1024 * 1024 // MAX_SEQUENCE_LENGTH,  # 4M tokens.
-            max_step=500_000,  # 2T tokens // 4M tokens/step.
+            max_sequence_length=max_sequence_length,
+            train_batch_size=train_batch_size,
+            max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
                 # tpu-v4. step time: 3.03s.
@@ -65,6 +90,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
                 # tpu-v5e. step time: TBD.
                 ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # H100/A100 80G. Maximum per-node batch size = 64, hence need >= 32 nodes.
+                # p5.48xlarge 8x64. v1 step time: 1.54s.
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),

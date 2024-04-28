@@ -25,7 +25,9 @@ evalers['train'].input.processor.fn: 'axlearn.common.input_tf_data.identity'
 evalers['train'].input.source.dataset_name: 'c4/en:3.0.1'
 evalers['train'].input.source.fn: 'axlearn.experiments.text.gpt.common.tfds_input'
 evalers['train'].input.source.is_training: False
-evalers['train'].input.source.max_sequence_length: 2048
+evalers['train'].input.source.max_sequence_length[<Version.V1: 1>]: 2048
+evalers['train'].input.source.max_sequence_length[<Version.V2: 2>]: 4096
+evalers['train'].input.source.max_sequence_length[<Version.V3: 3>]: 8192
 evalers['train'].input.source.replace_newlines_with: '\n'
 evalers['train'].input.source.split: 'train[:8192]'
 evalers['train'].input.source.train_shuffle_buffer_size: 16384
@@ -51,7 +53,9 @@ evalers['validation'].input.processor.fn: 'axlearn.common.input_tf_data.identity
 evalers['validation'].input.source.dataset_name: 'c4/en:3.0.1'
 evalers['validation'].input.source.fn: 'axlearn.experiments.text.gpt.common.tfds_input'
 evalers['validation'].input.source.is_training: False
-evalers['validation'].input.source.max_sequence_length: 2048
+evalers['validation'].input.source.max_sequence_length[<Version.V1: 1>]: 2048
+evalers['validation'].input.source.max_sequence_length[<Version.V2: 2>]: 4096
+evalers['validation'].input.source.max_sequence_length[<Version.V3: 3>]: 8192
 evalers['validation'].input.source.replace_newlines_with: '\n'
 evalers['validation'].input.source.split: 'validation'
 evalers['validation'].input.source.train_shuffle_buffer_size: 16384
@@ -99,12 +103,12 @@ learner.optimizer.args[1].learning_rate: 0.0003
 learner.optimizer.args[1].update_schedule.alpha: 0.1
 learner.optimizer.args[1].update_schedule.begin_value: 0.0
 learner.optimizer.args[1].update_schedule.fn: 'axlearn.common.schedule.cosine_with_linear_warmup'
-learner.optimizer.args[1].update_schedule.max_step: 500000
+learner.optimizer.args[1].update_schedule.max_step: 524288
 learner.optimizer.args[1].update_schedule.peak_lr: 1.0
 learner.optimizer.args[1].update_schedule.warmup_steps: 2000
 learner.optimizer.args[1].weight_decay: 0.1
 learner.optimizer.fn: 'axlearn.common.optimizers.chain'
-max_step: 500000
+max_step: 524288
 mesh_axis_names[0]: 'data'
 mesh_axis_names[1]: 'expert'
 mesh_axis_names[2]: 'fsdp'

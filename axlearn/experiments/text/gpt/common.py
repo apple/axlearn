@@ -444,7 +444,7 @@ def evaler_config_dict(
     return evalers
 
 
-def make_config_name(arch: str, model_size: str) -> str:
+def make_config_name(arch: str, model_size: str, version: Optional[str] = None) -> str:
     """Makes config name string as a function of architecture and model-size.
 
     Useful to keep config names synced with fine-tuning configs.
@@ -452,11 +452,15 @@ def make_config_name(arch: str, model_size: str) -> str:
     Args:
         arch: The architecture of the model.
         model_size: The number of transformer parameters (not including vocab embeddings).
+        version: An optional version string.
 
     Returns:
-        f"{arch}-{model_size}".
+        f"{arch}-{model_size}" or f"{arch}-{model_size}-{version}".
     """
-    return f"{arch}-{model_size}"
+    name = f"{arch}-{model_size}"
+    if version:
+        name += f"-{version}"
+    return name
 
 
 def get_trainer_config_fn(
