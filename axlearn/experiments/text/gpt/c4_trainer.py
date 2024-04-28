@@ -36,7 +36,7 @@ python3 -m axlearn.common.launch_trainer_main \
   --trainer_dir=/tmp/test_trainer --data_dir=gs://axlearn-public/tensorflow_datasets \
   --jax_backend=gpu
 """
-
+import functools
 from typing import Dict
 
 from axlearn.common.config import InstantiableConfig, config_for_function
@@ -111,15 +111,21 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                 **kwargs,
             )
             if model_size == "7B":
-                # Make a variant of the 7B config that can run on a single machine with 8 80G GPUs.
-                # p5.48xlarge 8x1: step time: 1.1s.
-                # pytype: disable=annotation-type-mismatch
-                cfg: SpmdTrainer.Config = config_map[config_name]().clone()
-                # pytype: enable=annotation-type-mismatch
 
-                # The original config was supposed to run on 64 machines.
-                cfg.input.batcher.global_batch_size //= 64
-                for evaler in cfg.evalers.values():
-                    evaler.input.batcher.global_batch_size //= 64
-                config_map[f"{config_name}-single"] = lambda: cfg
+                def make_single_host_config(base_config_name: str):
+                    # Make a variant of the 7B config that can run on a single machine with 8 80G GPUs.
+                    # p5.48xlarge 8x1: step time: 1.1s.
+                    # pytype: disable=annotation-type-mismatch
+                    cfg: SpmdTrainer.Config = config_map[base_config_name]().clone()
+                    # pytype: enable=annotation-type-mismatch
+
+                    # The original config was supposed to run on 64 machines.
+                    cfg.input.batcher.global_batch_size //= 64
+                    for evaler in cfg.evalers.values():
+                        evaler.input.batcher.global_batch_size //= 64
+                    return cfg
+
+                config_map[f"{config_name}-single"] = functools.partial(
+                    make_single_host_config, config_name
+                )
     return config_map

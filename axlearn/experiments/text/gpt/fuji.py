@@ -38,6 +38,7 @@ MAX_SEQUENCE_LENGTH = {
     Version.V3: 8192,
 }
 
+# Mapping from Fuji versions to total number of tokens used in training.
 TOTAL_TOKENS = {
     Version.V1: 2 * (1024**4),  # 2T tokens
     Version.V2: 2 * (1024**4),  # 2T tokens
