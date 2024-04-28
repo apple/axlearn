@@ -125,7 +125,7 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                         evaler.input.batcher.global_batch_size //= 64
                     return cfg
 
-                config_map[f"{config_name}-single"] = functools.partial(
+                config_map[f"{config_name}-single-host"] = functools.partial(
                     make_single_host_config, config_name
                 )
     return config_map
