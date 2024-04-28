@@ -7,10 +7,15 @@
         --module=text.gpt.c4_trainer --config=fuji-test \
         --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE --jax_backend=cpu
 
+    GS_ROOT=gs://public-permanent-us-west4-0rxn; \
+    ZONE=us-west4-a; \
+    INSTANCE_TYPE=tpu-v5litepod-256; \
+    NUM_TPU_SLICES=4;
     GS_ROOT=gs://my-bucket; \
-    CONFIG=fuji-7B; \
+    ZONE=my-zone; \
     INSTANCE_TYPE=tpu-v4-1024; \
-    NUM_TPU_SLICES=1; \
+    NUM_TPU_SLICES=1;
+    CONFIG=fuji-7B; \
     EXP=$(echo "text-gpt-c4-${CONFIG}-$(date +%F-%H%M)" | tr '[:upper:]' '[:lower:]'); \
     OUTPUT_DIR=$GS_ROOT/$USER/experiments/$EXP; \
     axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NUM_TPU_SLICES} \
