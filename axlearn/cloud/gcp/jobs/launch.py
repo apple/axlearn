@@ -397,15 +397,12 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
         )
 
         super()._execute()
-        all_logs = "\n".join(
-            [
-                f'gsutil cat "{cfg.output_dir}/output/*-{i}/run.log"'
-                for i in range(infer_tpu_workers(infer_tpu_type(cfg.instance_type)))
-            ]
-        )
+        num_workers = infer_tpu_workers(infer_tpu_type(cfg.instance_type))
+        worker_log = f'gsutil cat "{cfg.output_dir}/output/*-0/run.log"'
         print(
             "\nNote that the job may take a few minutes to start. "
-            f"Once started, view TPU log outputs with:\n{all_logs}\n"
+            f"Once started, view TPU log outputs with:\n{worker_log}\n"
+            f"Replace `*-0` with `*-{{idx}}` where idx is between [0, {num_workers})."
         )
 
 
@@ -467,23 +464,27 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
     def _execute(self):
         """Submits the command to bastion."""
         cfg: BastionManagedGKEJob.Config = self.config
-        if cfg.instance_type.startswith("tpu"):
-            num_workers = infer_tpu_workers(infer_tpu_type(cfg.instance_type))
-            validate_k8s_name(cfg.name, num_workers=num_workers)
-
         super()._execute()
-        # TODO(markblee): add the logs command.
-        all_logs = "\n".join(
-            [
-                f"{infer_cli_name()} gcp logs --name={cfg.name} --worker={i}"
-                for i in range(num_workers)
-            ]
-        )
         print(
             "\nView running pods with:\nkubectl get pods\n"
-            "\nNote that the job may take a few minutes to start. "
-            f"Once started, view TPU log outputs with:\n{all_logs}\n"
+            "\nNote that the job may take a few minutes to start."
         )
+        try:
+            num_workers = infer_tpu_workers(infer_tpu_type(cfg.instance_type))
+        except ValueError:
+            logging.warning(
+                "Failed to infer number of workers for instance_type: %s.", cfg.instance_type
+            )
+            num_workers = None
+        if num_workers is not None:
+            validate_k8s_name(cfg.name, num_workers=num_workers)
+            # TODO(markblee): add the logs command.
+            worker_log = f"{infer_cli_name()} gcp logs --name={cfg.name} --worker=0"
+            print(
+                f"Once started, view TPU log outputs with:\n{worker_log}\n"
+                "Replace `--worker=0` with `--worker={idx}` "
+                f"where idx is between [0, {num_workers})."
+            )
 
 
 # Launchers specified here will be tried (in the given order) when launching a given instance type.
