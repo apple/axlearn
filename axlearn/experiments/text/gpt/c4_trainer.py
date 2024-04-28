@@ -118,10 +118,20 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                 **kwargs,
             )
             if model_size == "7B":
+                # The 7B models are usually trained on 64 machines with 8 GPUs each.
 
-                def make_single_host_config(base_config_name: str):
-                    # Make a variant of the 7B config that can run on a single machine with 8 80G GPUs.
-                    # p5.48xlarge 8x1: step time: 1.1s.
+                def make_single_host_config(base_config_name: str) -> SpmdTrainer.Config:
+                    """Make a single-host variant of the base config.
+
+                    p5.48xlarge 8x1: step time: 1.1s.
+
+                    Args:
+                        base_config_name: The multi-host config name.
+
+                    Returns:
+                        A trainer config that can run on a single host.
+                    """
+
                     # pytype: disable=annotation-type-mismatch
                     cfg: SpmdTrainer.Config = config_map[base_config_name]().clone()
                     # pytype: enable=annotation-type-mismatch

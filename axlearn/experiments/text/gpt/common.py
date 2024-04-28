@@ -159,7 +159,6 @@ def model_config(
     *,
     hidden_dim: int,
     num_heads: int,
-    num_kv_heads: Optional[int],
     num_layers: int,
     vocab_size: int,
     activation_fn: Union[str, Sequence[str]],
@@ -180,7 +179,6 @@ def model_config(
     Args:
         hidden_dim: The Transformer layer input/output dim.
         num_heads: The number of attention heads.
-        num_kv_heads: The optional number of KV heads. If not None, enables grouped query attention.
         num_layers: The number of Transformer Layers.
         vocab_size: The vocabulary size.
         activation_fn: The activation function used for the feed-forward network.

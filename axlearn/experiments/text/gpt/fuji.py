@@ -167,7 +167,6 @@ def model_config(
         num_layers=num_layers,
         hidden_dim=hidden_dim,
         num_heads=num_heads,
-        num_kv_heads=num_kv_heads,
         vocab_size=vocab_size,
         stack_cfg=RepeatedTransformerLayer.default_config(),
         activation_fn=activation_fn,
