@@ -53,20 +53,21 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-# A sentencepiece vocab generated from c4/en:3.0.1.
-# See bpe_32k.json for the sentencepiece settings.
-_SENTENCEPIECE_MODEL_NAME = "bpe_32k_c4.model"
+# Sentencepiece vocabs generated from c4/en:3.0.1.
+# See bpe_{32k,128k}.json for the sentencepiece settings.
+_SENTENCEPIECE_MODEL_NAME = {
+    32 * 1024: "bpe_32k_c4.model",
+    128 * 1024: "bpe_128k_c4.model",
+}
 
 
-def _eval_input_sources(*, max_sequence_length: int) -> Dict[str, InstantiableConfig]:
+def _eval_input_sources(*, vocab_cfg: InstantiableConfig, max_sequence_length: int) -> Dict[str, InstantiableConfig]:
     return {
         name: config_for_function(tfds_input).set(
             dataset_name="c4/en:3.0.1",
             split=split,
             is_training=False,
-            vocab_cfg=config_for_function(vocab).set(
-                sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME
-            ),
+            vocab_cfg=vocab_cfg,
             max_sequence_length=max_sequence_length,
         )
         for name, split in (("train", "train[:8192]"), ("validation", "validation"))
@@ -76,7 +77,6 @@ def _eval_input_sources(*, max_sequence_length: int) -> Dict[str, InstantiableCo
 def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
     arch = "fuji"
-    vocab_size = 32_768
     train_data_mixture_components = [
         DataMixtureComponent(
             name="c4/en:3.0.1",
@@ -85,15 +85,17 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
             weight=1.0,
         ),
     ]
-    vocab_cfg = config_for_function(vocab).set(sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME)
-    train_input_source = config_for_function(mixture_train_input_source).set(
-        data_mixture_components=train_data_mixture_components,
-        vocab_cfg=vocab_cfg,
-        preprocessor=config_for_function(lm_text_preprocessor).set(max_padding_fraction=0.5),
-    )
 
     config_map = {}
     for version in fuji.Version:
+        vocab_size = fuji.VOCAB_SIZE[version]
+        vocab_cfg = config_for_function(vocab).set(
+            sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME[vocab_size])
+        train_input_source = config_for_function(mixture_train_input_source).set(
+            data_mixture_components=train_data_mixture_components,
+            vocab_cfg=vocab_cfg,
+            preprocessor=config_for_function(lm_text_preprocessor).set(max_padding_fraction=0.5),
+        )
         for model_size in fuji.MODEL_SIZES:
             config_name = make_config_name(
                 arch=arch, model_size=model_size, version=f"v{version.value}"
@@ -106,7 +108,7 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                     max_sequence_length=max_sequence_length
                 ),
                 evalers=evaler_config_dict(
-                    _eval_input_sources(max_sequence_length=max_sequence_length)
+                    _eval_input_sources(vocab_cfg=vocab_cfg, max_sequence_length=max_sequence_length),
                 ),
                 **kwargs,
             )

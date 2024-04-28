@@ -30,7 +30,7 @@ evalers['train'].input.source.replace_newlines_with: '\n'
 evalers['train'].input.source.split: 'train[:8192]'
 evalers['train'].input.source.train_shuffle_buffer_size: 16384
 evalers['train'].input.source.vocab_cfg.fn: 'axlearn.experiments.text.common.vocab'
-evalers['train'].input.source.vocab_cfg.sentencepiece_model_name: 'bpe_32k_c4.model'
+evalers['train'].input.source.vocab_cfg.sentencepiece_model_name: 'bpe_128k_c4.model'
 evalers['train'].klass: 'axlearn.common.evaler.SpmdEvaler'
 evalers['train'].metric_calculator.klass: 'axlearn.common.evaler.ModelSummaryAccumulator'
 evalers['train'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
@@ -56,7 +56,7 @@ evalers['validation'].input.source.replace_newlines_with: '\n'
 evalers['validation'].input.source.split: 'validation'
 evalers['validation'].input.source.train_shuffle_buffer_size: 16384
 evalers['validation'].input.source.vocab_cfg.fn: 'axlearn.experiments.text.common.vocab'
-evalers['validation'].input.source.vocab_cfg.sentencepiece_model_name: 'bpe_32k_c4.model'
+evalers['validation'].input.source.vocab_cfg.sentencepiece_model_name: 'bpe_128k_c4.model'
 evalers['validation'].klass: 'axlearn.common.evaler.SpmdEvaler'
 evalers['validation'].metric_calculator.klass: 'axlearn.common.evaler.ModelSummaryAccumulator'
 evalers['validation'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
@@ -83,7 +83,7 @@ input.source.preprocessor.shuffle_buffer_size: 8192
 input.source.preprocessor.window_size: 128
 input.source.replace_newlines_with: '<n>'
 input.source.vocab_cfg.fn: 'axlearn.experiments.text.common.vocab'
-input.source.vocab_cfg.sentencepiece_model_name: 'bpe_32k_c4.model'
+input.source.vocab_cfg.sentencepiece_model_name: 'bpe_128k_c4.model'
 klass: 'axlearn.common.trainer.SpmdTrainer'
 learner.ema.fn: 'axlearn.common.optimizers.param_ema'
 learner.enable_per_variable_summaries: False
@@ -207,8 +207,9 @@ model.decoder.transformer.layer.remat_spec['policy'].names_which_can_be_saved[2]
 model.decoder.transformer.layer.remat_spec['policy'].names_which_can_be_saved[3]: 'MultiheadAttention.context'
 model.decoder.transformer.layer.remat_spec['policy'].names_which_can_be_saved[4]: 'MultiheadAttention.o_proj'
 model.decoder.transformer.layer.self_attention.attention.dropout.klass: 'axlearn.common.layers.Dropout'
+model.decoder.transformer.layer.self_attention.attention.input_linear.cache_dtype: 'jax.numpy.bfloat16'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.cache_dtype: 'jax.numpy.bfloat16'
-model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.klass: 'axlearn.common.attention.FusedQKVLinear'
+model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.klass: 'axlearn.common.attention.FusedGroupedQKVLinear'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.bias: False
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.klass: 'axlearn.common.attention.MultiheadInputLinear'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.param_partition_spec[0][0]: 'expert'
@@ -216,6 +217,7 @@ model.decoder.transformer.layer.self_attention.attention.input_linear.input_line
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.param_partition_spec[0][2]: 'seq'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.param_partition_spec[1]: 'model'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.param_partition_spec[2]: None
+model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.num_kv_heads: 8
 model.decoder.transformer.layer.self_attention.attention.input_linear.klass: 'axlearn.common.attention.RoFormerQKVLinear'
 model.decoder.transformer.layer.self_attention.attention.input_linear.rope_pos_emb_layer.klass: 'axlearn.common.attention.RoFormerSinusoidalPositionalEmbedding'
 model.decoder.transformer.layer.self_attention.attention.input_linear.rope_pos_emb_layer.theta: 10000.0
@@ -243,7 +245,7 @@ model.decoder.transformer.num_layers: 32
 model.decoder.transformer.repeat.drop_output.fn: 'axlearn.common.repeat._drop_by_regex'
 model.decoder.transformer.repeat.drop_output.rules[0]: 'module_outputs.*'
 model.decoder.transformer.repeat.klass: 'axlearn.common.attention._TransformerRepeat'
-model.decoder.vocab_size: 32768
+model.decoder.vocab_size: 131072
 model.dtype: 'jax.numpy.float32'
 model.klass: 'axlearn.common.causal_lm.Model'
 model.param_init.init_by_param_name['.*weight$'].distribution: 'normal'

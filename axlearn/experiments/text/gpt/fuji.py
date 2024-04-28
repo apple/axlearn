@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Union
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
     CausalAttentionLogitBiasLayer,
+    FusedGroupedQKVLinear,
     FusedQKVLinear,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
@@ -29,6 +30,14 @@ class Version(enum.Enum):
     V1 = 1
     V2 = 2
     V3 = 3
+
+
+# Mapping from Fuji versions to vocab sizes.
+VOCAB_SIZE = {
+    Version.V1: 32 * 1024,
+    Version.V2: 32 * 1024,
+    Version.V3: 128 * 1024,
+}
 
 
 # Mapping from Fuji versions to maximum sequence lengths.
@@ -53,6 +62,11 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
 
+    # Whether to use grouped query attention.
+    num_kv_heads = None
+    if version == Version.V3:
+        num_kv_heads = 8
+
     # dict() is more readable here.
     # pylint: disable=use-dict-literal
     if model_size == "test":
@@ -62,6 +76,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 hidden_dim=8,
                 ffn_dim=scaled_hidden_dim(scale=8 / 3, round_up_to_multiples_of=16),
                 num_heads=4,
+                num_kv_heads=2,
                 vocab_size=32,
             ),
             learner_kwargs=dict(
@@ -79,6 +94,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 num_layers=32,
                 hidden_dim=128 * 32,
                 num_heads=32,
+                num_kv_heads=num_kv_heads,
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -116,6 +132,7 @@ def model_config(
     num_layers: int,
     hidden_dim: int,
     num_heads: int,
+    num_kv_heads: Optional[int],
     vocab_size: int,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
@@ -126,6 +143,7 @@ def model_config(
         num_layers: The number of Transformer Layers.
         hidden_dim: The Transformer layer input/output dim.
         num_heads: The number of attention heads.
+        num_kv_heads: The optional number of KV heads. If not None, enables grouped query attention.
         vocab_size: The vocabulary size.
         dropout_rate: The dropout rate applied throughout the model.
             Defaults to 0.0 (i.e. no dropout).
@@ -139,10 +157,17 @@ def model_config(
     activation_fn = ("nn.silu", "linear")
     if ffn_dim is None:
         ffn_dim = scaled_hidden_dim(scale=8 / 3, round_up_to_multiples_of=256)
+    if num_kv_heads:
+        atten_input_linear = FusedGroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+    else:
+        atten_input_linear = FusedQKVLinear.default_config()
+    atten_input_linear.cache_dtype = STEP_DTYPE
+
     cfg = common_model_config(
         num_layers=num_layers,
         hidden_dim=hidden_dim,
         num_heads=num_heads,
+        num_kv_heads=num_kv_heads,
         vocab_size=vocab_size,
         stack_cfg=RepeatedTransformerLayer.default_config(),
         activation_fn=activation_fn,
@@ -153,7 +178,8 @@ def model_config(
         attention_mask=CausalAttentionLogitBiasLayer.default_config(),
         # RoPE embeddings: https://arxiv.org/abs/2104.09864.
         attention_qkv_linear=RoFormerQKVLinear.default_config().set(
-            input_linear=FusedQKVLinear.default_config().set(cache_dtype=STEP_DTYPE),
+            cache_dtype=STEP_DTYPE,
+            input_linear=atten_input_linear,
             rotary_value=False,
         ),
     )
