@@ -61,7 +61,9 @@ _SENTENCEPIECE_MODEL_NAME = {
 }
 
 
-def _eval_input_sources(*, vocab_cfg: InstantiableConfig, max_sequence_length: int) -> Dict[str, InstantiableConfig]:
+def _eval_input_sources(
+    *, vocab_cfg: InstantiableConfig, max_sequence_length: int
+) -> Dict[str, InstantiableConfig]:
     return {
         name: config_for_function(tfds_input).set(
             dataset_name="c4/en:3.0.1",
@@ -90,7 +92,8 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
     for version in fuji.Version:
         vocab_size = fuji.VOCAB_SIZE[version]
         vocab_cfg = config_for_function(vocab).set(
-            sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME[vocab_size])
+            sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME[vocab_size]
+        )
         train_input_source = config_for_function(mixture_train_input_source).set(
             data_mixture_components=train_data_mixture_components,
             vocab_cfg=vocab_cfg,
@@ -108,7 +111,9 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                     max_sequence_length=max_sequence_length
                 ),
                 evalers=evaler_config_dict(
-                    _eval_input_sources(vocab_cfg=vocab_cfg, max_sequence_length=max_sequence_length),
+                    _eval_input_sources(
+                        vocab_cfg=vocab_cfg, max_sequence_length=max_sequence_length
+                    ),
                 ),
                 **kwargs,
             )
