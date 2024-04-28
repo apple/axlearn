@@ -58,7 +58,7 @@ from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 _SENTENCEPIECE_MODEL_NAME = "bpe_32k_c4.model"
 
 
-def _eval_input_sources() -> Dict[str, InstantiableConfig]:
+def _eval_input_sources(*, max_sequence_length: int) -> Dict[str, InstantiableConfig]:
     return {
         name: config_for_function(tfds_input).set(
             dataset_name="c4/en:3.0.1",
@@ -67,7 +67,7 @@ def _eval_input_sources() -> Dict[str, InstantiableConfig]:
             vocab_cfg=config_for_function(vocab).set(
                 sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME
             ),
-            max_sequence_length=fuji.MAX_SEQUENCE_LENGTH,
+            max_sequence_length=max_sequence_length,
         )
         for name, split in (("train", "train[:8192]"), ("validation", "validation"))
     }
@@ -95,14 +95,19 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
     config_map = {}
     for version in fuji.Version:
         for model_size in fuji.MODEL_SIZES:
-            config_name = make_config_name(arch=arch, model_size=model_size, version=f"v{version.value}")
+            config_name = make_config_name(
+                arch=arch, model_size=model_size, version=f"v{version.value}"
+            )
             kwargs = fuji.get_trainer_kwargs(model_size, vocab_size=vocab_size, version=version)
+            max_sequence_length = kwargs.pop("max_sequence_length")
             # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
             config_map[config_name] = get_trainer_config_fn(
                 train_input_source=train_input_source.clone(
-                    max_sequence_length=kwargs.pop("max_sequence_length"),
+                    max_sequence_length=max_sequence_length
                 ),
-                evalers=evaler_config_dict(_eval_input_sources()),
+                evalers=evaler_config_dict(
+                    _eval_input_sources(max_sequence_length=max_sequence_length)
+                ),
                 **kwargs,
             )
             if model_size == "7B":

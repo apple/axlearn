@@ -25,9 +25,7 @@ evalers['train'].input.processor.fn: 'axlearn.common.input_tf_data.identity'
 evalers['train'].input.source.dataset_name: 'c4/en:3.0.1'
 evalers['train'].input.source.fn: 'axlearn.experiments.text.gpt.common.tfds_input'
 evalers['train'].input.source.is_training: False
-evalers['train'].input.source.max_sequence_length[<Version.V1: 1>]: 2048
-evalers['train'].input.source.max_sequence_length[<Version.V2: 2>]: 4096
-evalers['train'].input.source.max_sequence_length[<Version.V3: 3>]: 8192
+evalers['train'].input.source.max_sequence_length: 64
 evalers['train'].input.source.replace_newlines_with: '\n'
 evalers['train'].input.source.split: 'train[:8192]'
 evalers['train'].input.source.train_shuffle_buffer_size: 16384
@@ -53,9 +51,7 @@ evalers['validation'].input.processor.fn: 'axlearn.common.input_tf_data.identity
 evalers['validation'].input.source.dataset_name: 'c4/en:3.0.1'
 evalers['validation'].input.source.fn: 'axlearn.experiments.text.gpt.common.tfds_input'
 evalers['validation'].input.source.is_training: False
-evalers['validation'].input.source.max_sequence_length[<Version.V1: 1>]: 2048
-evalers['validation'].input.source.max_sequence_length[<Version.V2: 2>]: 4096
-evalers['validation'].input.source.max_sequence_length[<Version.V3: 3>]: 8192
+evalers['validation'].input.source.max_sequence_length: 64
 evalers['validation'].input.source.replace_newlines_with: '\n'
 evalers['validation'].input.source.split: 'validation'
 evalers['validation'].input.source.train_shuffle_buffer_size: 16384
