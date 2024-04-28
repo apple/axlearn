@@ -328,12 +328,6 @@ class SubmitBastionJob(BaseSubmitBastionJob):
     class Config(BaseSubmitBastionJob.Config):
         zone: Required[str] = REQUIRED
 
-    @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
-        cfg = super().from_flags(fv, **kwargs)
-        cfg.zone = fv.zone
-        return cfg
-
     def _execute(self):
         cfg: SubmitBastionJob.Config = self.config
         node = get_vm_node(cfg.name, _compute_resource(get_credentials()))
