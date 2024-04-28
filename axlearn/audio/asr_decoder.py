@@ -557,7 +557,7 @@ class RNNPredictionNetwork(BaseLayer):
             data: An int Tensor of shape [batch_size, num_labels].
 
         Returns:
-            (updated_step_states, outputs), where `outputs` is a Tensor of shape
+            (updated_cached_states, outputs), where `outputs` is a Tensor of shape
                 [batch_size, output_dim].
         """
         return self.rnn.extend_step(inputs=self.embedding(x=data), cached_states=cached_states)

@@ -46,7 +46,7 @@ class LSTMTest(TestCase):
         else:
             self.assertIn("output_proj", layer_params)
 
-        # Create the initial step states.
+        # Create the initial states.
         init_states, _ = F(
             layer,
             is_training=True,
@@ -138,7 +138,7 @@ class StackedRNNTest(TestCase):
             expected_param_shapes["norm"] = dict(scale=(num_layers, dim), bias=(num_layers, dim))
         self.assertEqual(dict(repeat=dict(layer=expected_param_shapes)), shapes(layer_params))
 
-        # Create the initial step states.
+        # Create the initial states.
         init_states, _ = F(
             layer,
             is_training=True,
@@ -258,7 +258,7 @@ class StackedRNNTest(TestCase):
             expected_param_shapes[f"layer{i}"] = layer_shapes
         self.assertEqual(expected_param_shapes, shapes(layer_params))
 
-        # Create the initial step states.
+        # Create the initial states.
         init_states, _ = F(
             layer,
             is_training=True,

@@ -303,8 +303,8 @@ class StackedRNNLayer(BaseRNNCell):
             data: A Tensor of shape [batch_size, input_dim], the inputs for the current step.
 
         Returns:
-            (updated_step_states, outputs), where:
-            `updated_step_states` is a list of states from all layers;
+            (updated_cached_states, outputs), where:
+            `updated_cached_states` is a list of states from all layers;
              `outputs` is a Tensor of shape [batch_size, output_dim].
         """
         outputs = data
@@ -360,7 +360,7 @@ class _RNNRepeat(Repeat):
             data: A Tensor of shape [batch_size, input_dim], the inputs for the current step.
 
         Returns:
-            (updated_step_states, outputs), where `outputs` are usually a Tensor of shape
+            (updated_cached_states, outputs), where `outputs` are usually a Tensor of shape
             [batch_size, output_dim].
         """
 
