@@ -4,13 +4,13 @@ Examples:
 
     # BPE on c4.
     VOCAB=bpe_32k; \
-    axlearn gcp vm start --name=$USER-axlearn-train-spm --vm_type=n2-highmem-64 --retain_vm -- \
+    axlearn gcp vm start --name=$USER-axlearn-train-spm --vm_type=n2-highmem-128 --retain_vm -- \
     python3 -m axlearn.experiments.text.train_spm \
         --input_dataset_name=c4/en:3.0.1 \
         --data_dir=gs://${BUCKET}/tensorflow_datasets \
         --spm_config_file=axlearn/data/tokenizers/sentencepiece/${VOCAB}.json \
         --model_name=${VOCAB}_c4 \
-        --max_train_examples=10000000 \
+        --max_train_examples=1000000 \
         --output_dir=gs://${BUCKET}/tensorflow_datasets/tokenizers/sentencepiece
 
 Note: SentencePiece training runs on CPU and typically consumes a lot of memory.
