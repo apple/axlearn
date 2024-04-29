@@ -2,13 +2,16 @@
 
 Examples:
 
-    # axlearn GPT on c4 ("fuji").
+    # BPE on c4.
+    VOCAB=bpe_32k; \
+    axlearn gcp vm start --name=$USER-axlearn-train-spm --retain_vm -- \
     python3 -m axlearn.experiments.text.train_spm \
         --input_dataset_name=c4/en:3.0.1 \
-        --data_dir=gs://public-permanent-us-central2-0rxn/tensorflow_datasets \
-        --spm_config_file=axlearn/data/tokenizers/sentencepiece/bpe_32k.json \
-        --model_name=bpe_32k_c4 \
-        --max_train_examples=10000000
+        --data_dir=gs://${BUCKET}/tensorflow_datasets \
+        --spm_config_file=axlearn/data/tokenizers/sentencepiece/${VOCAB}.json \
+        --model_name=${VOCAB}_c4 \
+        --max_train_examples=10000000 && \
+    gsutil cp ${VOCAB}_c4* gs://${BUCKET}/tensorflow_datasets/tokenizers/sentencepiece/
 
 Note: SentencePiece training runs on CPU and typically consumes a lot of memory.
 This depends on the corpus size and sentence length, but you'll probably want to use a highmem
