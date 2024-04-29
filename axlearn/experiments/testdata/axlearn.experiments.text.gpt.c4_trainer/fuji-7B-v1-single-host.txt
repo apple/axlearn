@@ -99,12 +99,12 @@ learner.optimizer.args[1].learning_rate: 0.0003
 learner.optimizer.args[1].update_schedule.alpha: 0.1
 learner.optimizer.args[1].update_schedule.begin_value: 0.0
 learner.optimizer.args[1].update_schedule.fn: 'axlearn.common.schedule.cosine_with_linear_warmup'
-learner.optimizer.args[1].update_schedule.max_step: 524288
+learner.optimizer.args[1].update_schedule.max_step: 262144
 learner.optimizer.args[1].update_schedule.peak_lr: 1.0
 learner.optimizer.args[1].update_schedule.warmup_steps: 2000
 learner.optimizer.args[1].weight_decay: 0.1
 learner.optimizer.fn: 'axlearn.common.optimizers.chain'
-max_step: 524288
+max_step: 262144
 mesh_axis_names[0]: 'data'
 mesh_axis_names[1]: 'expert'
 mesh_axis_names[2]: 'fsdp'
