@@ -47,6 +47,14 @@ MAX_SEQUENCE_LENGTH = {
     Version.V3: 8192,
 }
 
+
+ROPE_THETA = {
+    Version.V1: 1e4,
+    Version.V2: 1e4,
+    Version.V3: 5e5,
+}
+
+
 # Mapping from Fuji versions to total number of tokens used in training.
 TOTAL_TOKENS = {
     Version.V1: 1 * (1024**4),  # 1T tokens
@@ -67,6 +75,8 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
     if version == Version.V3:
         num_kv_heads = 8
 
+    rope_theta = ROPE_THETA[version]
+
     # dict() is more readable here.
     # pylint: disable=use-dict-literal
     if model_size == "test":
@@ -78,6 +88,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 num_heads=4,
                 num_kv_heads=2,
                 vocab_size=32,
+                rope_theta=rope_theta,
             ),
             learner_kwargs=dict(
                 peak_lr=6e-4,
@@ -95,6 +106,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 hidden_dim=128 * 32,
                 num_heads=32,
                 num_kv_heads=num_kv_heads,
+                rope_theta=rope_theta,
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -134,6 +146,7 @@ def model_config(
     num_heads: int,
     num_kv_heads: Optional[int],
     vocab_size: int,
+    rope_theta: float,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
 ) -> causal_lm.Model.Config:
@@ -145,6 +158,7 @@ def model_config(
         num_heads: The number of attention heads.
         num_kv_heads: The optional number of KV heads. If not None, enables grouped query attention.
         vocab_size: The vocabulary size.
+        rope_theta: The theta value used for RoPE positional embeddings.
         dropout_rate: The dropout rate applied throughout the model.
             Defaults to 0.0 (i.e. no dropout).
         ffn_dim: The feed-forward dimension or config function.
@@ -162,6 +176,13 @@ def model_config(
     else:
         atten_input_linear = FusedQKVLinear.default_config()
     atten_input_linear.cache_dtype = STEP_DTYPE
+    # RoPE embeddings: https://arxiv.org/abs/2104.09864.
+    atten_qkv_linear = RoFormerQKVLinear.default_config().set(
+        cache_dtype=STEP_DTYPE,
+        input_linear=atten_input_linear,
+        rotary_value=False,
+    )
+    atten_qkv_linear.rope_pos_emb_layer.theta = rope_theta
 
     cfg = common_model_config(
         num_layers=num_layers,
@@ -175,11 +196,6 @@ def model_config(
         dropout_rate=dropout_rate,
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
         attention_mask=CausalAttentionLogitBiasLayer.default_config(),
-        # RoPE embeddings: https://arxiv.org/abs/2104.09864.
-        attention_qkv_linear=RoFormerQKVLinear.default_config().set(
-            cache_dtype=STEP_DTYPE,
-            input_linear=atten_input_linear,
-            rotary_value=False,
-        ),
+        attention_qkv_linear=atten_qkv_linear,
     )
     return cfg

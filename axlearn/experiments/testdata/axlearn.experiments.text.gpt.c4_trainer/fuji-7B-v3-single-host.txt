@@ -220,7 +220,7 @@ model.decoder.transformer.layer.self_attention.attention.input_linear.input_line
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.num_kv_heads: 8
 model.decoder.transformer.layer.self_attention.attention.input_linear.klass: 'axlearn.common.attention.RoFormerQKVLinear'
 model.decoder.transformer.layer.self_attention.attention.input_linear.rope_pos_emb_layer.klass: 'axlearn.common.attention.RoFormerSinusoidalPositionalEmbedding'
-model.decoder.transformer.layer.self_attention.attention.input_linear.rope_pos_emb_layer.theta: 10000.0
+model.decoder.transformer.layer.self_attention.attention.input_linear.rope_pos_emb_layer.theta: 500000.0
 model.decoder.transformer.layer.self_attention.attention.input_linear.rotary_value: False
 model.decoder.transformer.layer.self_attention.attention.key_scale.klass: 'axlearn.common.attention.ScaleKey'
 model.decoder.transformer.layer.self_attention.attention.klass: 'axlearn.common.attention.MultiheadAttention'
