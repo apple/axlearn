@@ -123,7 +123,7 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                 def make_single_host_config(base_config_name: str) -> SpmdTrainer.Config:
                     """Make a single-host variant of the base config.
 
-                    p5.48xlarge 8x1: step time: 1.1s.
+                    p5.48xlarge 8x1: step time: 1.1s for v1, 1.54s for v2.
 
                     Args:
                         base_config_name: The multi-host config name.
