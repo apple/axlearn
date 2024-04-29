@@ -4,14 +4,14 @@ Examples:
 
     # BPE on c4.
     VOCAB=bpe_32k; \
-    axlearn gcp vm start --name=$USER-axlearn-train-spm --retain_vm -- \
+    axlearn gcp vm start --name=$USER-axlearn-train-spm --vm_type=n2-highmem-64 --retain_vm -- \
     python3 -m axlearn.experiments.text.train_spm \
         --input_dataset_name=c4/en:3.0.1 \
         --data_dir=gs://${BUCKET}/tensorflow_datasets \
         --spm_config_file=axlearn/data/tokenizers/sentencepiece/${VOCAB}.json \
         --model_name=${VOCAB}_c4 \
-        --max_train_examples=10000000 && \
-    gsutil cp ${VOCAB}_c4* gs://${BUCKET}/tensorflow_datasets/tokenizers/sentencepiece/
+        --max_train_examples=10000000 \
+        --output_dir=gs://${BUCKET}/tensorflow_datasets/tokenizers/sentencepiece
 
 Note: SentencePiece training runs on CPU and typically consumes a lot of memory.
 This depends on the corpus size and sentence length, but you'll probably want to use a highmem
@@ -44,6 +44,7 @@ from typing import Any, Dict, Iterator, Optional
 import sentencepiece as spm
 import seqio
 import tensorflow as tf
+import tensorflow_io as tf_io
 from absl import app, flags, logging
 
 from axlearn.common import input_tf_data
@@ -87,6 +88,12 @@ def _private_flags():
         None,
         "Name of SentencePiece model to generate."
         "Defaults to `FLAGS.spm_config_file` if not provided.",
+    )
+    flags.DEFINE_string(
+        "output_dir",
+        None,
+        "The output directory. "
+        "If None, uses {FLAGS.data_dir}/tokenizers/sentencepience."
     )
 
 
@@ -178,6 +185,12 @@ def main(_):
         logging.info("Query: %s", query)
         logging.info("Encoded IDs: %s", ids)
         logging.info("Decoded: %s", vocab.decode(ids))
+    # Copy the files to the output dir.
+    output_dir = FLAGS.output_dir or os.path.join(FLAGS.data_dir, "tokenizers", "sentencepiece")
+    for vocab_file in tf_io.gfile.glob(f"{model_name}*"):
+        output_file = os.path.join(output_dir, vocab_file)
+        logging.info("Copying %s to %s", vocab_file, output_file)
+        tf_io.gfile.copy(vocab_file, output_file)
 
 
 if __name__ == "__main__":
