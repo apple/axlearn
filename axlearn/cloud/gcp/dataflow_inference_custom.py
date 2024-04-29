@@ -78,14 +78,15 @@ import axlearn.common.input_fake as input_fake
 import axlearn.common.launch_trainer as trainer_utils
 from axlearn.common.inference import InferenceRunner, MethodRunner
 from axlearn.common.utils import NestedTensor
+from axlearn.common.trainer import SpmdTrainer
 
 warnings.filterwarnings("ignore")
 
-FLAGS = flags.FLAGS
-
-
 class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
     """Defines how to load a model and run inference"""
+    def __init__(self, trainer_config: SpmdTrainer.Config, trainer_dir):
+        self.trainer_config = trainer_config
+        self.trainer_dir = trainer_dir
 
     def load_model(self) -> MethodRunner:
         """Loads a pre-trained model in the desired type (MethodRunner in this case).
@@ -94,12 +95,13 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
         Returns:
           An instance of MethodRunner.
         """
-        # get Trainer Config from flag values
-        module_config = trainer_utils.get_trainer_config(flag_values=FLAGS)
 
         # get InferenceRunner Config from Trainer Config and instantiate InferenceRunner
-        inference_runner_cfg = InferenceRunner.config_from_trainer(module_config)
-        inference_runner_cfg.init_state_builder.set(dir=FLAGS.trainer_dir)
+        logging.info(f"Load model, trainer config type:{type(self.trainer_config)}")
+        inference_runner_cfg = InferenceRunner.config_from_trainer(self.trainer_config)
+        inference_runner_cfg.init_state_builder.set(dir=self.trainer_dir)
+        logging.info(f"Load model, inference runner config model type:{type(inference_runner_cfg.model)}")
+        logging.info(f"Load model, inference runner config type:{type(inference_runner_cfg)}")
         inference_runner = InferenceRunner(cfg=inference_runner_cfg, parent=None)
 
         # create Method Runner only once
@@ -161,7 +163,7 @@ def parse_flags(argv):
     Addition arguments are returned to the 'main' function by 'app.run'.
     """
     parser = argparse_flags.ArgumentParser(
-        description="Parser to parse additional arguments other than defiend ABSL flags."
+        description="Parser to parse additional arguments other than defined ABSL flags."
     )
     # Assume all remaining unknown arguments are Dataflow Pipeline options
     _, pipeline_args = parser.parse_known_args(argv[1:])
@@ -169,23 +171,29 @@ def parse_flags(argv):
 
 
 def main(args, save_main_session=True, pickler="cloudpickle"):
-    pipeline_input = get_examples()
+    FLAGS = flags.FLAGS
 
     # The default pickler is dill and cannot pickle absl FlagValues. Use cloudpickle instead.
     args.append(f"--pickle_library={pickler}")
     if save_main_session:
         args.append("--save_main_session")
 
+    # get pipeline input
+    pipeline_input = get_examples()
+
     # run pipeline
     pipeline_options = PipelineOptions(args)
 
     pipeline = beam.Pipeline(options=pipeline_options)
 
+    module_config = trainer_utils.get_trainer_config(flag_values=FLAGS)
+    logging.info(f"Main module config type:{type(module_config)}")
+
     with pipeline as p:
         (
             p
             | "CreateInput" >> beam.Create(pipeline_input)
-            | "RunInference" >> RunInference(CustomModelHandler())
+            | "RunInference" >> RunInference(CustomModelHandler(trainer_config=module_config, trainer_dir=FLAGS.trainer_dir))
             | "PrintOutput" >> beam.Map(print)
         )
 
