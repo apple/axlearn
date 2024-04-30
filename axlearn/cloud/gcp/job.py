@@ -33,7 +33,12 @@ from axlearn.cloud.gcp.tpu import (
     qrm_resource,
     tpu_resource,
 )
-from axlearn.cloud.gcp.utils import custom_jobset_kwargs, get_credentials, running_from_vm
+from axlearn.cloud.gcp.utils import (
+    custom_jobset_kwargs,
+    delete_k8s_jobset,
+    get_credentials,
+    running_from_vm,
+)
 from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -528,6 +533,12 @@ class TPUGKEJob(GKEJob):
                 ],
             ),
         )
+
+    def _delete(self):
+        cfg: TPUGKEJob.Config = self.config
+        # Issues a delete request for the JobSet and proactively delete its descendants. This is not
+        # fully blocking; after the call returns there can be a delay before everything is deleted.
+        delete_k8s_jobset(cfg.name, namespace=cfg.namespace)
 
     def _execute(self) -> Any:
         """Submits a JobSet to the cluster."""

@@ -23,6 +23,7 @@ Example:
 """
 
 import enum
+import os
 import sys
 import time
 from typing import Optional, Sequence, Type, cast
@@ -53,6 +54,19 @@ from axlearn.cloud.gcp.vertexai_tensorboard import VertexAITensorboardUploader
 from axlearn.common.config import REQUIRED, Required, config_class
 
 FLAGS = flags.FLAGS
+
+
+def _infer_reservation(jobset_spec: dict) -> Optional[str]:
+    """Infers reservation given a jobset spec."""
+    try:
+        for job in jobset_spec["replicatedJobs"]:
+            node_selector = job["template"]["spec"]["template"]["spec"]["nodeSelector"]
+            # If any job has a reservation selector, return it.
+            if reservation := node_selector.get("cloud.google.com/reservation-name", None):
+                return reservation
+    except (TypeError, KeyError):
+        logging.warning("Failed to infer reservation.")
+    return None
 
 
 class GKERunnerJob(GCPJob):
@@ -177,6 +191,7 @@ class GKERunnerJob(GCPJob):
             STARTUPPOLICYCOMPLETED: JobSet completed StartupPolicy.
             READY: JobSet is ready (all Jobs are ready).
             SUCCEEDED: JobSet succeeded (all Jobs suceeded). Typically also manifests as COMPLETED.
+            RESCHEDULED: Job was rescheduled onto a different tier.
         """
 
         UNKNOWN = "UNKNOWN"
@@ -188,6 +203,7 @@ class GKERunnerJob(GCPJob):
         STARTUPPOLICYCOMPLETED = "STARTUPPOLICYCOMPLETED"
         READY = "READY"
         SUCCEEDED = "SUCCEEDED"
+        RESCHEDULED = "RESCHEDULED"
 
     def _get_status(self) -> Status:
         cfg: GKERunnerJob.Config = self.config
@@ -197,6 +213,17 @@ class GKERunnerJob(GCPJob):
                 namespace=cfg.inner.namespace,
                 **custom_jobset_kwargs(),
             )
+            tier = os.environ.get("BASTION_TIER", 0)
+            reservation = _infer_reservation(resp["spec"])
+            # If tier does not match reservation, we need to restart the jobset.
+            if (str(tier) == "0") != (reservation is not None):
+                logging.info(
+                    "Bastion tier is %s but reservation is %s. Jobset will be recreated.",
+                    tier,
+                    reservation,
+                )
+                return GKERunnerJob.Status.RESCHEDULED
+
             # According to stogner@google.com, it's possible for "conditions" to be missing until
             # the overall jobset has completed. However, if the jobset does complete, "conditions"
             # should be a reliable indicator of overall completion status.
@@ -249,8 +276,8 @@ class GKERunnerJob(GCPJob):
         return GKERunnerJob.Status.UNKNOWN
 
     def _delete(self):
-        cfg: GKERunnerJob.Config = self.config
-        delete_k8s_jobset(cfg.name, namespace=cfg.inner.namespace)
+        # TODO(markblee): Make delete a public method.
+        self._inner._delete()  # pylint: disable=protected-access
 
     def _execute(self):
         cfg: GKERunnerJob.Config = self.config
@@ -267,6 +294,9 @@ class GKERunnerJob(GCPJob):
             }:
                 logging.info("Task %s exited with status: %s.", cfg.name, status)
                 return
+            elif status == GKERunnerJob.Status.RESCHEDULED:
+                logging.info("Jobset does not match scheduling tier. Deleting the jobset...")
+                self._delete()
             elif status == GKERunnerJob.Status.NOT_STARTED:
                 logging.info("Task does not exist. Submitting it now...")
                 # Only bundle on first start, not if we're resuming monitoring.
@@ -279,7 +309,7 @@ class GKERunnerJob(GCPJob):
                 if self._tb_uploader:
                     self._tb_uploader.upload()
                 logging.info("Task %s has status: %s", cfg.name, status)
-                time.sleep(cfg.status_interval_seconds)
+            time.sleep(cfg.status_interval_seconds)
 
 
 class TPUGKERunnerJob(GKERunnerJob):
