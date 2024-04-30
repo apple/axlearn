@@ -1569,6 +1569,10 @@ class MultiheadAttention(BaseLayer):
         outputs = self._remat_name(o_proj, "o_proj")
         if summary_list is not None and "o_proj_outputs" in summary_list:
             self._report_rms_norm(outputs, "o_proj_outputs")
+            self.add_summary(
+                "max_abs/o_proj_outputs",
+                jnp.max(jnp.abs(outputs)),
+            )
         return dict(i_proj=i_proj_state), self.Output(data=outputs, probs=probs)
 
     def _report_rms_norm(self, x: Tensor, tensor_name: str):
@@ -2448,6 +2452,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             x = self.linear2(x)
             if "linear2_outputs" in cfg.add_value_rms_norm_summary:
                 self._report_rms_norm(x, "linear2_outputs")
+                self.add_summary("max_abs/linear2_outputs", jnp.max(jnp.abs(x)))
             return x
 
         if "inputs" in cfg.add_value_rms_norm_summary:
