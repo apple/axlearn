@@ -2,9 +2,12 @@
 
 """Utilities to set up the 'fuji' GPT model trainer configs.
 
-Architecture names follow Apple varieties: fuji, gala, honeycrisp, etc.
+Architecture names follow apple varieties: fuji, gala, honeycrisp, etc.
 
-The fuji models are set up to imitate LLaMA-1 (https://arxiv.org/abs/2302.13971).
+The fuji models are set up to imitate LLaMA models:
+* LLaMA: https://arxiv.org/abs/2302.13971
+* LLaMA 2: https://arxiv.org/abs/2307.09288
+* LLaMA 3: https://github.com/meta-llama/llama3
 """
 import enum
 from typing import Any, Dict, Optional, Union
