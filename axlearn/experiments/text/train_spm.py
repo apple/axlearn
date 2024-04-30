@@ -190,7 +190,7 @@ def main(_):
     for vocab_file in tf.io.gfile.glob(f"{model_name}*"):
         output_file = os.path.join(output_dir, os.path.basename(vocab_file))
         logging.info("Copying %s to %s", vocab_file, output_file)
-        tf.io.gfile.copy(vocab_file, output_file)
+        tf.io.gfile.copy(vocab_file, output_file, overwrite=True)
 
 
 if __name__ == "__main__":
