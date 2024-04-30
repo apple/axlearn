@@ -3,8 +3,8 @@
 Examples:
 
     # BPE on c4.
-    VOCAB=bpe_32k; \
-    axlearn gcp vm start --name=$USER-axlearn-train-spm-32k \
+    VOCAB=bpe_128k; \
+    axlearn gcp vm start --name=$USER-axlearn-train-spm-128k \
         --vm_type=n2-highmem-128 --retain_vm -- \
     python3 -m axlearn.experiments.text.train_spm \
         --input_dataset_name=c4/en:3.0.1 \
