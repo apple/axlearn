@@ -2,9 +2,12 @@
 
 """Utilities to set up the 'fuji' GPT model trainer configs.
 
-Architecture names follow Apple varieties: fuji, gala, honeycrisp, etc.
+Architecture names follow apple varieties: fuji, gala, honeycrisp, etc.
 
-The fuji models are set up to imitate LLaMA-1 (https://arxiv.org/abs/2302.13971).
+The fuji models are set up to imitate LLaMA models:
+* LLaMA: https://arxiv.org/abs/2302.13971
+* LLaMA 2: https://arxiv.org/abs/2307.09288
+* LLaMA 3: https://github.com/meta-llama/llama3
 """
 import enum
 from typing import Any, Dict, Optional, Union
@@ -114,12 +117,19 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
-                # tpu-v4. step time: 3.03s.
+                # Step time:
+                # v1 on tpu-v4-1024 (512 chips):        3.03s
+                # v1 on gpu-p5.48xlarge-256 (32 nodes): 2.44s
+                # v1 on gpu-p5.48xlarge-512 (64 nodes): 1.54s
+                #
+                # tpu-v4.
                 ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
-                # tpu-v5e. step time: TBD.
+                # tpu-v5e.
                 ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=16)),
-                # H100/A100 80G. Maximum per-node batch size = 64, hence need >= 32 nodes.
-                # p5.48xlarge 8x64. v1 step time: 1.54s.
+                # H100/A100 80G.
+                # Maximum per-node batch size = 64, hence need >= 32 nodes.
+                # Without sequence sharding, the maximum number of devices <= batch_size,
+                # so at most 512 GPUs (64 nodes) for training 7B-v3.
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
