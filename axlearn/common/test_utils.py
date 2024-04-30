@@ -242,7 +242,12 @@ class TestCase(parameterized.TestCase):
 class TrainerConfigTestCase(TestCase):
     """Base class for testing trainer configs."""
 
-    def _test_with_trainer_config(self, trainer_config, mesh_size: Optional[Dict[str, int]] = None, dtype: Optional[jnp.dtype] = None):
+    def _test_with_trainer_config(
+        self,
+        trainer_config,
+        mesh_size: Optional[Dict[str, int]] = None,
+        dtype: Optional[jnp.dtype] = None,
+    ):
         with jax.checking_leaks(), set_data_dir("FAKE"):
             if mesh_size is None:
                 mesh_size = {}
