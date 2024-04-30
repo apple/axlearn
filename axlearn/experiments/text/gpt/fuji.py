@@ -121,7 +121,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 # v1 on tpu-v4-1024 (512 chips):        3.03s
                 # v1 on gpu-p5.48xlarge-256 (32 nodes): 2.44s
                 # v1 on gpu-p5.48xlarge-512 (64 nodes): 1.54s
-
+                #
                 # tpu-v4.
                 ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e.
