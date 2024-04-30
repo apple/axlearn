@@ -242,7 +242,7 @@ class TestCase(parameterized.TestCase):
 class TrainerConfigTestCase(TestCase):
     """Base class for testing trainer configs."""
 
-    def _test_with_trainer_config(self, trainer_config, mesh_size: Optional[Dict[str, int]] = None):
+    def _test_with_trainer_config(self, trainer_config, mesh_size: Optional[Dict[str, int]] = None, dtype: Optional[jnp.dtype] = None):
         with jax.checking_leaks(), set_data_dir("FAKE"):
             if mesh_size is None:
                 mesh_size = {}
@@ -251,10 +251,14 @@ class TrainerConfigTestCase(TestCase):
             cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
             cfg.mesh_shape = cfg.mesh_shape or (len(jax.devices()), 1)
             cfg.max_step = 3
+            if dtype is not None:
+                cfg.train_dtype = dtype
             for evaler_cfg in cfg.evalers.values():
                 if getattr(evaler_cfg.eval_policy, "fn", None) is eval_every_n_steps_policy:
                     evaler_cfg.eval_policy.n = 2
                 evaler_cfg.vlog = max(evaler_cfg.vlog or 0, 3)
+                if dtype is not None:
+                    evaler_cfg.eval_dtype = dtype
             if getattr(cfg.checkpointer.save_policy, "fn", None) is every_n_steps_policy:
                 cfg.checkpointer.save_policy.n = 2
             logging.info("_test_with_trainer_config: %s", trainer_config)
