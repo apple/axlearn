@@ -1562,7 +1562,7 @@ class MultiheadAttention(BaseLayer):
         if summary_list is not None and "context" in summary_list:
             self._report_rms_norm(context, "context")
         if summary_list is not None and "entropy" in summary_list:
-            self._report_entropy(probs)
+            self._report_entropy(q_proj, k_proj, attention_logit_biases)
 
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
@@ -1579,8 +1579,12 @@ class MultiheadAttention(BaseLayer):
         rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
         self.add_summary(f"rms_norm/{tensor_name}", rms_norm)
 
-    def _report_entropy(self, prob: Tensor):
-        p = prob.astype(jnp.float32)
+    def _report_entropy(self, q_proj, k_proj, attention_logit_biases):
+        logits = self._compute_logits(q_proj, k_proj)
+        logits = self._cap_logits(logits)
+        logits = apply_attention_logit_biases(logits, attention_logit_biases)
+        logits = logits.astype(jnp.float32)
+        p = jax.nn.softmax(logits, axis=-1)
         plogp = jnp.where(
             p == 0,
             jnp.zeros_like(p),
@@ -2451,8 +2455,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             """Applies linear2, optionally logging RMS norm of the output."""
             x = self.linear2(x)
             if "linear2_outputs" in cfg.add_value_rms_norm_summary:
-                self._report_rms_norm(x, "linear2_outputs")
-                self.add_summary("max_abs/linear2_outputs", jnp.max(jnp.abs(x)))
+                self._report_stats(inputs, x, "linear2_outputs")
             return x
 
         if "inputs" in cfg.add_value_rms_norm_summary:
@@ -2536,6 +2539,16 @@ class TransformerFeedForwardLayer(BaseLayer):
     def _report_rms_norm(self, x: Tensor, tensor_name: str):
         rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
         self.add_summary(f"rms_norm/{tensor_name}", rms_norm)
+
+    def _report_stats(self, inputs: Tensor, x: Tensor, tensor_name: str):
+        x = x.astype(jnp.float32)
+        inputs = inputs.astype(jnp.float32)
+        x_rms = (x**2.0).mean() ** 0.5
+        input_rms = (inputs**2.0).mean() ** 0.5
+        corr = (x * inputs).mean() / (x_rms + 1e-8) / (input_rms + 1e-8)
+        self.add_summary(f"rms_norm/{tensor_name}", x_rms)
+        self.add_summary(f"in_out_correlation/{tensor_name}", corr)
+        self.add_summary(f"max_abs/{tensor_name}", jnp.max(jnp.abs(x)))
 
     def _get_activation(self, x: Tensor, activation_fn_name: str) -> Tensor:
         """Applies activation function on 'x' and optionally counts the number of dead neurons.
