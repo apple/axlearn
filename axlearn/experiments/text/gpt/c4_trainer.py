@@ -118,12 +118,13 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                 **kwargs,
             )
             if model_size == "7B":
-                # The 7B models are usually trained on 64 machines with 8 GPUs each.
 
                 def make_single_host_config(base_config_name: str) -> SpmdTrainer.Config:
                     """Make a single-host variant of the base config.
 
-                    p5.48xlarge 8x1: step time: 1.1s for v1, 1.54s for v2.
+                    p5.48xlarge 8x1 step time:
+                    8K tokens per GPU: 1.1s for v1, 1.54s for v2.
+                    16K tokens per GPU: 2.03s for v1.
 
                     Args:
                         base_config_name: The multi-host config name.
