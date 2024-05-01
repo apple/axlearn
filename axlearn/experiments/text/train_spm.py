@@ -92,8 +92,7 @@ def _private_flags():
     flags.DEFINE_string(
         "output_dir",
         None,
-        "The output directory. "
-        "If None, uses {FLAGS.data_dir}/tokenizers/sentencepience."
+        "The output directory. If None, uses {FLAGS.data_dir}/tokenizers/sentencepience.",
     )
 
 
