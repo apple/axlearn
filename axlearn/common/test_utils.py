@@ -251,10 +251,20 @@ class TrainerConfigTestCase(TestCase):
             cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
             cfg.mesh_shape = cfg.mesh_shape or (len(jax.devices()), 1)
             cfg.max_step = 3
+
+            # TODO(kelvin-zou): Remove this once bfloat16 bug on CPU is fixed.
+            if jax.devices()[0].platform == "cpu":
+                if cfg.train_dtype == jnp.bfloat16:
+                    cfg.train_dtype = jnp.float32
+                for evaler_cfg in cfg.evalers.values():
+                    if evaler_cfg.eval_dtype == jnp.bfloat16:
+                        evaler_cfg.eval_dtype = jnp.float32
+
             for evaler_cfg in cfg.evalers.values():
                 if getattr(evaler_cfg.eval_policy, "fn", None) is eval_every_n_steps_policy:
                     evaler_cfg.eval_policy.n = 2
                 evaler_cfg.vlog = max(evaler_cfg.vlog or 0, 3)
+
             if getattr(cfg.checkpointer.save_policy, "fn", None) is every_n_steps_policy:
                 cfg.checkpointer.save_policy.n = 2
             logging.info("_test_with_trainer_config: %s", trainer_config)
