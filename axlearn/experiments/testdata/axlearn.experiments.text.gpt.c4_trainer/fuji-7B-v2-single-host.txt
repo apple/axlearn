@@ -16,7 +16,7 @@ evalers['train'].eval_policy.fn: 'axlearn.common.evaler.every_n_steps_policy'
 evalers['train'].eval_policy.min_step: 1
 evalers['train'].eval_policy.n: 5000
 evalers['train'].input.batcher.fn: 'axlearn.common.input_tf_data.batch'
-evalers['train'].input.batcher.global_batch_size: 16
+evalers['train'].input.batcher.global_batch_size: 32
 evalers['train'].input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
 evalers['train'].input.batcher.prefetch_buffer_size: -1
 evalers['train'].input.is_training: False
@@ -42,7 +42,7 @@ evalers['validation'].eval_policy.fn: 'axlearn.common.evaler.every_n_steps_polic
 evalers['validation'].eval_policy.min_step: 1
 evalers['validation'].eval_policy.n: 5000
 evalers['validation'].input.batcher.fn: 'axlearn.common.input_tf_data.batch'
-evalers['validation'].input.batcher.global_batch_size: 16
+evalers['validation'].input.batcher.global_batch_size: 32
 evalers['validation'].input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
 evalers['validation'].input.batcher.prefetch_buffer_size: -1
 evalers['validation'].input.is_training: False
@@ -64,7 +64,7 @@ evalers['validation'].metric_calculator.model_method: 'forward'
 evalers['validation'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
 evalers['validation'].summary_writer.write_every_n_steps: 1
 input.batcher.fn: 'axlearn.common.input_tf_data.batch'
-input.batcher.global_batch_size: 16
+input.batcher.global_batch_size: 32
 input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
 input.batcher.prefetch_buffer_size: -1
 input.is_training: True
