@@ -2537,8 +2537,11 @@ class TransformerFeedForwardLayer(BaseLayer):
             return x
 
     def _report_rms_norm(self, x: Tensor, tensor_name: str):
-        rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
+        x = x.astype(jnp.float32)
+        rms_norm = (x**2.0).mean() ** 0.5
+        max_abs = jnp.max(jnp.abs(x))
         self.add_summary(f"rms_norm/{tensor_name}", rms_norm)
+        self.add_summary(f"max_abs/{tensor_name}", max_abs)
 
     def _report_stats(self, inputs: Tensor, x: Tensor, tensor_name: str):
         x = x.astype(jnp.float32)
@@ -2568,7 +2571,9 @@ class TransformerFeedForwardLayer(BaseLayer):
             elif activation_fn_name in ["nn.silu", "nn.sigmoid"]:
                 # nn.silu(jnp.array(-10.)) = -0.00045398
                 # nn.sigmoid(jnp.array(-10.)) = 4.5397872e-05
-                threshold = -10.0
+                # nn.silu(jnp.array(-9.)) = -0.00111055118
+                # nn.sigmoid(jnp.array(-9)) = 0.00012339457
+                threshold = -9.0
             elif activation_fn_name in ["nn.relu", "squared_relu"]:
                 threshold = 0
             else:
