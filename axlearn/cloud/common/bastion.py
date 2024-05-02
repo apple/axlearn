@@ -378,7 +378,7 @@ def _start_command(job: Job, *, remote_log_dir: str, env_vars: dict):
     remote_log = os.path.join(remote_log_dir, job.spec.name)
     local_log = os.path.join(_LOG_DIR, job.spec.name)
     try:
-        tf_io.gfile.copy(remote_log, local_log, overwrite=True)
+        _download(remote_log, local_log)
     except tf_errors.NotFoundError:
         pass
     # Pipe all outputs to the local _LOG_DIR.
