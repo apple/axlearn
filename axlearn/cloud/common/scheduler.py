@@ -223,6 +223,25 @@ def _compute_total_limits(resource_limits: Sequence[ResourceMap[int]]) -> Resour
     return total_limits
 
 
+def _demote_unschedulable_jobs(jobs: JobQueue, *, limits: ResourceMap[int]) -> JobQueue:
+    schedulable = []
+    unschedulable = []
+    for job_name, job_metadata in jobs:
+        resources = job_metadata.resources
+        is_schedulable = True
+        for resource_type, demand in resources.items():
+            if demand > limits.get(resource_type, 0):
+                is_schedulable = False
+                break
+        if is_schedulable:
+            schedulable.append((job_name, job_metadata))
+        else:
+            logging.info("Unschedulable job: %s: %s", job_name, job_metadata)
+            unschedulable.append((job_name, job_metadata))
+    # Put unscheduable jobs after the schedable ones.
+    return schedulable + unschedulable
+
+
 class TierScheduler(BaseScheduler):
     """A scheduler which greedily assigns jobs to tiers.
 
@@ -274,7 +293,9 @@ class TierScheduler(BaseScheduler):
         project_usages = collections.defaultdict(lambda: collections.defaultdict(int))
         # Maps project_id -> deque of (job_id, job_metadata).
         project_jobs: Dict[str, collections.deque[Tuple[str, JobMetadata]]] = {
-            project_id: collections.deque(sorted_jobs)
+            project_id: collections.deque(
+                _demote_unschedulable_jobs(sorted_jobs, limits=remaining_limits)
+            )
             for project_id, sorted_jobs in project_jobs.items()
         }
 

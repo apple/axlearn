@@ -481,6 +481,24 @@ class TierSchedulerTest(parameterized.TestCase):
             expected_verdicts={"a1": True, "b1": True, "b2": True},
             expected_tiers={"a1": 0, "b1": 0, "b2": 0},
         ),
+        # Test a case where some resource types are invalid.
+        dict(
+            project_jobs={
+                "a": (
+                    ("a1", _mock_job_metadata({"v4": 5})),
+                    ("a2", _mock_job_metadata({"v4": 10})),
+                ),
+                "b": (
+                    # b1 is unscheduable due to its demand on "unknown", but it will not prevent
+                    # b2 from being scheduled.
+                    ("b1", _mock_job_metadata({"unknown": 1})),
+                    ("b2", _mock_job_metadata({"v4": 1})),
+                ),
+            },
+            expected_project_limits={"a": {"v4": 5}, "b": {"unknown": 0, "v4": 1}},
+            expected_verdicts={"a1": True, "a2": False, "b1": False, "b2": True},
+            expected_tiers={"a1": 0, "a2": None, "b1": None, "b2": 0},
+        ),
     )
     def test_schedule(
         self,
