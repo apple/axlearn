@@ -96,6 +96,38 @@ def bastion_job_flags(flag_values: flags.FlagValues = FLAGS):
     flags.DEFINE_string("spec", None, "Path to a job spec.", flag_values=flag_values)
 
 
+# The following functions, `_download`, `_readfile`, `_listdir`, and `_remove`, can be patched to
+# support alternative storages that cannot be accessed via gfile.
+#
+# TODO(ruoming): refactor them to a `BastionDirStorage` class.
+def _download(path: str, local_file: str):
+    tf_io.gfile.copy(path, local_file, overwrite=True)
+
+
+def _readfile(path: str) -> str:
+    with tf_io.gfile.GFile(path, mode="r") as f:
+        return f.read()
+
+
+def _listdir(path: str) -> List[str]:
+    """Wraps tf_io.gfile.listdir by returning empty list if dir is not found."""
+    try:
+        return tf_io.gfile.listdir(path)
+    except tf_errors.NotFoundError:
+        return []
+
+
+def _remove(path: str):
+    """Wraps tf_io.gfile.remove by catching not found errors."""
+    try:
+        if tf_io.gfile.isdir(path):
+            tf_io.gfile.rmtree(path)
+        else:
+            tf_io.gfile.remove(path)
+    except tf_errors.NotFoundError:
+        pass
+
+
 # Subclass str to be JSON serializable: https://stackoverflow.com/a/51976841
 class JobStatus(str, enum.Enum):
     """See Bastion._update_job for state handling."""
@@ -224,7 +256,7 @@ def _download_jobspec(job_name: str, *, remote_dir: str, local_dir: str = _JOB_D
     """Loads jobspec from gs path."""
     remote_file = os.path.join(remote_dir, job_name)
     local_file = os.path.join(local_dir, job_name)
-    tf_io.gfile.copy(remote_file, local_file, overwrite=True)
+    _download(remote_file, local_file)
     return deserialize_jobspec(local_file)
 
 
@@ -317,15 +349,14 @@ def _download_job_state(job_name: str, *, remote_dir: str) -> JobState:
     remote_file = os.path.join(remote_dir, job_name)
     try:
         # Note: tf_io.gfile.GFile seems to hit libcurl errors with ThreadPoolExecutor.
-        with tf_io.gfile.GFile(remote_file, mode="r") as f:
-            contents = f.read()
-            try:
-                state = json.loads(contents)
-            except json.JSONDecodeError:
-                # For backwards compatibility, interpret as status.
-                state = dict(status=contents)
-            state["status"] = JobStatus[state["status"].strip().upper()]
-            return JobState(**state)
+        contents = _readfile(remote_file)
+        try:
+            state = json.loads(contents)
+        except json.JSONDecodeError:
+            # For backwards compatibility, interpret as status.
+            state = dict(status=contents)
+        state["status"] = JobStatus[state["status"].strip().upper()]
+        return JobState(**state)
     except tf_errors.NotFoundError:
         # No job state, defaults to PENDING.
         return JobState(status=JobStatus.PENDING)
@@ -375,25 +406,6 @@ def _start_cleanup_command(job: Job):
         )
 
 
-def _listdir(path: str) -> List[str]:
-    """Wraps tf_io.gfile.listdir by returning empty list if dir is not found."""
-    try:
-        return tf_io.gfile.listdir(path)
-    except tf_errors.NotFoundError:
-        return []
-
-
-def _remove(path: str):
-    """Wraps tf_io.gfile.remove by catching not found errors."""
-    try:
-        if tf_io.gfile.isdir(path):
-            tf_io.gfile.rmtree(path)
-        else:
-            tf_io.gfile.remove(path)
-    except tf_errors.NotFoundError:
-        pass
-
-
 def download_job_batch(
     *,
     spec_dir: str,
@@ -401,6 +413,7 @@ def download_job_batch(
     user_state_dir: str,
     local_spec_dir: str = _JOB_DIR,
     verbose: bool = False,
+    remove_invalid_job_specs: bool = False,
 ) -> Tuple[Dict[str, Job], Set[str]]:
     """Downloads a batch of jobs.
 
@@ -410,6 +423,7 @@ def download_job_batch(
         user_state_dir: Directory to look for user states.
         local_spec_dir: Directory to store downloaded job specs.
         verbose: Verbose logging.
+        remove_invalid_job_specs: Whether to remove invalid job specs.
 
     Returns:
         A mapping from job name to Job(spec, state), and
@@ -500,7 +514,7 @@ def download_job_batch(
             jobs[job_name] = Job(spec=spec, state=state, command_proc=None, cleanup_proc=None)
 
         # Remove invalid jobspecs and user states.
-        if invalid_jobspecs or invalid_user_states:
+        if remove_invalid_job_specs and (invalid_jobspecs or invalid_user_states):
             logging.info(
                 "Removing invalid jobspecs: %s and user states: %s",
                 invalid_jobspecs,
@@ -718,6 +732,7 @@ class Bastion(Configurable):
             state_dir=self._state_dir,
             user_state_dir=self._user_state_dir,
             verbose=True,
+            remove_invalid_job_specs=True,
         )
         self._jobs_with_user_states = jobs_with_user_states
         # Iterate over unique job names.
@@ -1071,6 +1086,7 @@ class BastionDirectory(Configurable):
                 state_dir=self.job_states_dir,
                 user_state_dir=self.user_states_dir,
                 local_spec_dir=tmpdir,
+                remove_invalid_job_specs=False,
             )
             jobs: Dict[str, Job] = dict(sorted(jobs.items(), key=lambda kv: kv[0]))
             return jobs

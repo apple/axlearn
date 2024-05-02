@@ -124,6 +124,7 @@ class TestDownloadJobBatch(parameterized.TestCase):
                 state_dir=state_dir,
                 user_state_dir=user_state_dir,
                 local_spec_dir=tmpdir,
+                remove_invalid_job_specs=True,
             )
             self.assertSameElements(expected.keys(), jobs.keys())
             # "job_test1" is the only valid user state, but we still cleanup the others.
@@ -172,6 +173,7 @@ class TestDownloadJobBatch(parameterized.TestCase):
                 state_dir="FAKE_STATES",
                 user_state_dir="FAKE_USER_STATES",
                 local_spec_dir="FAKE",
+                remove_invalid_job_specs=True,
             )
             downloaded_jobs = []
             for call_args in mock_fns["_download_jobspec"].call_args_list:

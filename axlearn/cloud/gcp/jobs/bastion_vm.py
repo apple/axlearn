@@ -425,6 +425,7 @@ def _maybe_delete_child_jobs(flag_values: flags.FlagValues):
             state_dir=f"{bastion_dir}/jobs/states",
             user_state_dir=f"{bastion_dir}/jobs/user_states",
             local_spec_dir=tmpdir,
+            remove_invalid_job_specs=False,
         )
         logging.info("Will terminate the following jobs:\n%s", "\n".join(jobs.keys()))
         logging.info("Continue? [y/n]")
