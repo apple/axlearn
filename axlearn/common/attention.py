@@ -2551,9 +2551,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             elif activation_fn_name in ["nn.silu", "nn.sigmoid"]:
                 # nn.silu(jnp.array(-10.)) = -0.00045398
                 # nn.sigmoid(jnp.array(-10.)) = 4.5397872e-05
-                # nn.silu(jnp.array(-9.)) = -0.00111055118
-                # nn.sigmoid(jnp.array(-9)) = 0.00012339457
-                threshold = -9.0
+                threshold = -10.0
             elif activation_fn_name in ["nn.relu", "squared_relu"]:
                 threshold = 0
             else:
