@@ -540,24 +540,24 @@ class RNNPredictionNetwork(BaseLayer):
         )
         return jnp.transpose(time_major_outputs, [1, 0, 2])
 
-    def init_step_states(self, *, batch_size: int) -> Nested[Tensor]:
+    def init_states(self, *, batch_size: int) -> Nested[Tensor]:
         """Returns the prediction network initial step states, to be used by `extend_step`."""
-        return self.rnn.init_step_states(batch_size=batch_size)
+        return self.rnn.init_states(batch_size=batch_size)
 
     def extend_step(
         self,
         *,
-        inputs: Tensor,
-        step_states: Nested[Tensor],
+        cached_states: Nested[Tensor],
+        data: Tensor,
     ) -> Tuple[Nested[Tensor], Tensor]:
         """Computes prediction network outputs and RNN state updates for one step.
 
         Args:
-            inputs: An int Tensor of shape [batch_size, num_labels].
-            step_states: The step states returned by `init_step_states` or `extend_step`.
+            cached_states: A NestedTensor returned by `init_states` or `extend_step`.
+            data: An int Tensor of shape [batch_size, num_labels].
 
         Returns:
-            (updated_step_states, outputs), where `outputs` is a Tensor of shape
+            (updated_cached_states, outputs), where `outputs` is a Tensor of shape
                 [batch_size, output_dim].
         """
-        return self.rnn.extend_step(inputs=self.embedding(x=inputs), step_states=step_states)
+        return self.rnn.extend_step(inputs=self.embedding(x=data), cached_states=cached_states)
