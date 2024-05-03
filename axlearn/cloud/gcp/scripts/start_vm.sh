@@ -8,6 +8,34 @@
 
 echo "=== AXLearn start_vm.sh ==="
 
+# Setup logs.
+BASE_LOG_ROOT="/output/logs"
+mkdir -p ${BASE_LOG_ROOT}
+chmod -R 776 ${BASE_LOG_ROOT}
+SETUP_LOG_PATH="${BASE_LOG_ROOT}/setup.log"
+
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') : $1" >> ${SETUP_LOG_PATH}
+}
+
+# Exit on error.
+# Try to set label:boot_status = `failed` and  upload the logs file to GCS when exit.
+set -e
+trap 'echo "Bootstrap failed." >> ${SETUP_LOG_PATH}; \
+      gcloud storage cp ${SETUP_LOG_PATH} "${GS_JOB_PATH}/logs/setup_log-$(hostname)"; \
+      gcloud compute instances add-labels ${JOB_NAME} --labels=boot_status=failed --zone ${ZONE}; \
+      exit 1' ERR
+
+# Ensure that gcloud is installed.
+while [[ ! -x $(which gcloud) ]]
+do
+  log "gcloud not found, installing..."
+  # Install google-cloud-sdk via apt.
+  echo "deb https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+  apt-get update && apt-get -y install google-cloud-sdk
+  sleep 1
+done
+
 # Get env-vars
 get_metadata() {
   curl http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1 -H "Metadata-Flavor: Google"
@@ -19,19 +47,18 @@ ZONE=$(get_metadata zone)
 DOCKER_REGISTRY=$(get_metadata docker_registry)
 BUNDLER_TYPE=$(get_metadata bundler_type)
 
-# Setup logs.
-BASE_LOG_ROOT="/output/logs"
-mkdir -p ${BASE_LOG_ROOT}
-chmod -R 776 ${BASE_LOG_ROOT}
-SETUP_LOG_PATH="${BASE_LOG_ROOT}/setup.log"
+if [[ -z ${BUCKET} || -z ${JOB_NAME} || -z ${ZONE} || -z ${DOCKER_REGISTRY} || -z ${BUNDLER_TYPE} ]]; then
+  log "Required metadata is missing. Exiting."
+  false
+fi
 
-echo "Using bundler type: ${BUNDLER_TYPE}" >> ${SETUP_LOG_PATH}
+log "Using bundler type: ${BUNDLER_TYPE}"
 
 tar_bundlers=("tar" "gcs")
 docker_bundlers=("docker" "artifactregistry" "cloudbuild")
 
 if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
-  echo "Running tar bundler setup..." >> ${SETUP_LOG_PATH}
+  log "Running tar bundler setup..."
 
   until apt install lsof; do
     # We want lsof so we can monitor when the lock & lock-frontend are available.
@@ -41,7 +68,7 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
   # Block until lock & lock-frontend are available.
   while [[ ! -z $(lsof /var/lib/dpkg/lock-frontend) || ! -z $(lsof /var/lib/dpkg/lock) ]]
   do
-    echo "Waiting for dpkg locks to release."
+    log "Waiting for dpkg locks to release."
     sleep 1
   done
 
@@ -69,7 +96,7 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
     echo 'source /opt/conda/etc/profile.d/conda.sh && conda activate py310' >> ~/.profile
   }
   install_py310 >> ${SETUP_LOG_PATH} 2>&1
-  echo "Using python3: $(which python3)" >> ${SETUP_LOG_PATH} 2>&1
+  log "Using python3: $(which python3)"
 
   # Install bundle.
   install_bundle() {
@@ -85,27 +112,17 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
   popd
 fi
 
-# Ensure that gcloud is installed.
-while [[ ! -x $(which gcloud) ]]
-do
-  echo "gcloud not found, installing..." >> ${SETUP_LOG_PATH}
-  # Install google-cloud-sdk via apt.
-  echo "deb https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
-  apt-get update && apt-get -y install google-cloud-sdk
-  sleep 1
-done
-
 # Run after gcloud is guaranteed to be available.
 if [[ " ${docker_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
-  echo "Running docker bundler setup..." >> ${SETUP_LOG_PATH}
+  log "Running docker bundler setup..."
 
   while [[ ! -x $(which docker) ]]
   do
-    echo "docker not found, installing..." >> ${SETUP_LOG_PATH}
+    log "docker not found, installing..."
     apt-get update && apt-get -y install docker.io >> ${SETUP_LOG_PATH} 2>&1
     sleep 1
   done
-  echo "Using docker version: $(docker --version)" >> ${SETUP_LOG_PATH} 2>&1
+  log "Using docker version: $(docker --version)"
   # Docker auth.
   yes | gcloud auth configure-docker ${DOCKER_REGISTRY} >> ${SETUP_LOG_PATH} 2>&1
 fi
@@ -116,4 +133,4 @@ gcloud compute instances add-labels "${JOB_NAME}" \
   --zone ${ZONE} >> ${SETUP_LOG_PATH} 2>&1
 
 # Copy logs.
-gsutil cp ${SETUP_LOG_PATH} "${GS_JOB_PATH}/logs/setup_log-$(hostname)"
+gcloud storage cp ${SETUP_LOG_PATH} "${GS_JOB_PATH}/logs/setup_log-$(hostname)"
