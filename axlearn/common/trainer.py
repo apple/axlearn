@@ -2,12 +2,25 @@
 
 """Defines SpmdTrainer, a trainer that supports partitioning of computation and data with GSPMD."""
 import contextlib
+import functools
 import itertools
 import math
 import os.path
 import threading
 import time
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Set, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+)
 
 import jax
 import tensorflow as tf
@@ -31,6 +44,7 @@ from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.utils import (
     MeshShape,
+    Nested,
     NestedPartitionSpec,
     NestedTensor,
     PartitionSpec,
@@ -174,7 +188,6 @@ class SpmdTrainer(Module):
 
         self._step: int = None
         self._trainer_state: TrainerState = None
-        self._jit_train_step: jax.stages.Wrapped = None
         self._watchdog_stopping = None
         self._watchdog_thread = None
 
@@ -419,6 +432,9 @@ class SpmdTrainer(Module):
             if not self._prepare_training(prng_key):
                 return None
 
+            train_step_without_summaries = self._pjit_train_step(return_summaries=False)
+            train_step_with_summaries = self._pjit_train_step(return_summaries=True)
+
             with self.checkpointer:
                 logging.info("Starting loop...")
                 start_time = time.perf_counter()
@@ -436,11 +452,17 @@ class SpmdTrainer(Module):
 
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
+                    if self.summary_writer.writing_at_step(self.step):
+                        train_step = train_step_with_summaries
+                    else:
+                        train_step = train_step_without_summaries
+                    force_run_evals = (
+                        force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
+                    )
                     output = self._run_step(
                         utils.host_to_global_device_array(input_batch),
-                        force_run_evals=force_run_eval_sets_at_max_step
-                        if self.step >= cfg.max_step
-                        else None,
+                        train_step=train_step,
+                        force_run_evals=force_run_evals,
                     )
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
@@ -649,7 +671,6 @@ class SpmdTrainer(Module):
             self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
             return False
 
-        self._jit_train_step = self._pjit_train_step()
         return True
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
@@ -755,7 +776,11 @@ class SpmdTrainer(Module):
         return built_state
 
     def _run_step(
-        self, input_batch: NestedTensor, *, force_run_evals: Optional[Set[str]] = None
+        self,
+        input_batch: NestedTensor,
+        *,
+        train_step: Callable[[TrainerState, Nested[Tensor]], Tuple[TrainerState, Nested[Tensor]]],
+        force_run_evals: Optional[Set[str]] = None,
     ) -> NestedTensor:
         """Runs a single training step.
 
@@ -773,7 +798,7 @@ class SpmdTrainer(Module):
         with jax.profiler.StepTraceAnnotation("train", step_num=self.step):
             # Note(Jan 2022):
             # pjit currently requires all parameters to be specified as positional args.
-            self._trainer_state, outputs = self._jit_train_step(self._trainer_state, input_batch)
+            self._trainer_state, outputs = train_step(self._trainer_state, input_batch)
 
         if self.step % 100 == 0 or 0 <= self.step <= 5:
             self._step_log(
@@ -823,9 +848,9 @@ class SpmdTrainer(Module):
             evaler_summaries[evaler_name] = summaries
         return evaler_summaries
 
-    def _pjit_train_step(self) -> jax.stages.Wrapped:
+    def _pjit_train_step(self, *, return_summaries: bool) -> jax.stages.Wrapped:
         return pjit(
-            self._train_step,
+            functools.partial(self._train_step, return_summaries=return_summaries),
             in_shardings=(
                 self._trainer_state_partition_specs,
                 self._train_step_input_partition_specs(),
@@ -862,6 +887,8 @@ class SpmdTrainer(Module):
         self,
         state: TrainerState,
         input_batch: Dict[str, Any],
+        *,
+        return_summaries: bool,
     ) -> Tuple[TrainerState, NestedTensor]:
         # Shard and (possibly) dispatch the input batch.
         input_batch = utils.dispatch_input_batch(
@@ -912,11 +939,10 @@ class SpmdTrainer(Module):
             model=updated_model_params,
             learner=learner_output_collection.state_updates,
         )
-        # TODO(ruoming): only retrieve summaries when necessary.
-        summaries = dict(
-            model=forward_outputs.output_collection.summaries,
-            learner=learner_output_collection.summaries,
-        )
+        summaries = {}
+        if return_summaries:
+            summaries["model"] = forward_outputs.output_collection.summaries
+            summaries["learner"] = learner_output_collection.summaries
         return updated_state, dict(
             summaries=summaries,
             loss=forward_outputs.loss,

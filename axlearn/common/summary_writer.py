@@ -60,6 +60,10 @@ class BaseWriter(Module):
         """
         raise NotImplementedError
 
+    def writing_at_step(self, step: int) -> bool:
+        """Returns whether to write summaries at `step`."""
+        raise NotImplementedError(type(self))
+
     # We adapt the args and kwargs from base Module to arguments specific to summary writer,
     # and drop the method argument since the caller does not decide which method to call.
     # pylint: disable=arguments-differ
@@ -70,7 +74,7 @@ class BaseWriter(Module):
             step: The step.
             values: The values to log.
         """
-        raise NotImplementedError
+        raise NotImplementedError(type(self))
 
 
 class CompositeWriter(BaseWriter):
@@ -103,6 +107,13 @@ class CompositeWriter(BaseWriter):
         for writer in self._writers:
             writer.log_config(config, step=step)
 
+    def writing_at_step(self, step: int) -> bool:
+        """Returns whether to write summaries at `step`."""
+        writing = False
+        for writer in self._writers:
+            writing = writing or writer.writing_at_step(step)
+        return writing
+
     def __call__(self, step: int, values: Dict[str, Any]):
         writer: BaseWriter
         for writer in self._writers:
@@ -114,6 +125,10 @@ class NoOpWriter(BaseWriter):
 
     def log_config(self, config: ConfigBase, step: int = 0):
         pass
+
+    def writing_at_step(self, step: int) -> bool:
+        """Returns whether to write summaries at `step`."""
+        return False
 
     def __call__(self, step: int, values: Dict[str, Any]):
         pass
@@ -151,9 +166,12 @@ class SummaryWriter(BaseWriter):
                 if len(parts) == 2:
                     tf_summary.text(f"trainer_config/{parts[0]}", parts[1], step=step)
 
+    def writing_at_step(self, step: int) -> bool:
+        return step % self.config.write_every_n_steps == 0
+
     def __call__(self, step: int, values: Dict[str, Any]):
         cfg = self.config
-        if step % cfg.write_every_n_steps != 0:
+        if not self.writing_at_step(step):
             return
         with self.summary_writer.as_default(step=step):
 
@@ -312,10 +330,13 @@ class WandBWriter(BaseWriter):
         assert wandb.run is not None, "A wandb run must be initialized."
         wandb.config.update(fmt(config.to_dict()), allow_val_change=True)
 
+    def writing_at_step(self, step: int) -> bool:
+        return step % self.config.write_every_n_steps == 0
+
     @processor_zero_only
     def __call__(self, step: int, values: Dict[str, Any]):
         cfg = self.config
-        if step % cfg.write_every_n_steps != 0:
+        if not self.writing_at_step(step):
             return
 
         def convert(path: str, value: Any):
