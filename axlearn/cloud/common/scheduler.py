@@ -336,7 +336,7 @@ class TierScheduler(BaseScheduler):
 
         job_verdicts = collections.defaultdict(dict)
         while not project_queue.empty() and remaining_limits:
-            *_, project_id = project_queue.get()
+            project_usage_ratio, _, project_id = project_queue.get()
             job_id, job_metadata = project_jobs[project_id].popleft()
 
             # Admit the highest priority job within the project.
@@ -364,6 +364,8 @@ class TierScheduler(BaseScheduler):
                         if remaining_limits[resource_type] <= 0:
                             del remaining_limits[resource_type]
                         project_usages[project_id][resource_type] += usage
+
+            logging.info("Schedule %s(%s)/%s: %s", project_id, project_usage_ratio, job_id, verdict)
 
             job_verdicts[project_id][job_id] = verdict
             if project_jobs[project_id]:
