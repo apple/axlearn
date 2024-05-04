@@ -2,7 +2,6 @@
 
 """Defines SpmdTrainer, a trainer that supports partitioning of computation and data with GSPMD."""
 import contextlib
-import functools
 import itertools
 import math
 import os.path
@@ -436,11 +435,7 @@ class SpmdTrainer(Module):
             if not self._prepare_training(prng_key):
                 return None
 
-            train_step_with_summaries = self._pjit_train_step(return_summaries=True)
-            train_step_without_summaries = None
-            if cfg.enable_train_step_without_summaries:
-                train_step_without_summaries = self._pjit_train_step(return_summaries=False)
-
+            train_step = self._pjit_train_step()
             with self.checkpointer:
                 logging.info("Starting loop...")
                 start_time = time.perf_counter()
@@ -458,25 +453,25 @@ class SpmdTrainer(Module):
 
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
-                    if train_step_without_summaries is None or self.summary_writer.writing_at_step(
-                        self.step
-                    ):
-                        train_step = train_step_with_summaries
-                    else:
+                    return_summaries = (
+                        not cfg.enable_train_step_without_summaries
+                    ) or self.summary_writer.writing_at_step(self.step)
+                    if not return_summaries:
                         logging.log_first_n(
                             logging.INFO,
                             "Running train step without summaries at step %s",
                             3,
                             self.step,
                         )
-                        train_step = train_step_without_summaries
 
                     force_run_evals = (
                         force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
                     )
                     output = self._run_step(
                         utils.host_to_global_device_array(input_batch),
-                        train_step=train_step,
+                        train_step=lambda *args, return_summaries=return_summaries: train_step(
+                            *args, return_summaries
+                        ),
                         force_run_evals=force_run_evals,
                     )
                     self.vlog(3, "Done step %s", self.step)
@@ -863,9 +858,9 @@ class SpmdTrainer(Module):
             evaler_summaries[evaler_name] = summaries
         return evaler_summaries
 
-    def _pjit_train_step(self, *, return_summaries: bool) -> jax.stages.Wrapped:
+    def _pjit_train_step(self) -> jax.stages.Wrapped:
         return pjit(
-            functools.partial(self._train_step, return_summaries=return_summaries),
+            self._train_step,
             in_shardings=(
                 self._trainer_state_partition_specs,
                 self._train_step_input_partition_specs(),
@@ -879,6 +874,7 @@ class SpmdTrainer(Module):
                 ),
             ),
             donate_argnums=(0,),  # donate the state
+            static_argnums=(2,),  # return_summaries
         )
 
     def compile_train_step(self) -> jax.stages.Compiled:
@@ -894,16 +890,15 @@ class SpmdTrainer(Module):
                 ),
                 self.input.dataset().element_spec,
             )
-            jit_train_step = self._pjit_train_step(return_summaries=True)
-            lowered_train_step = jit_train_step.lower(trainer_state_specs, input_batch_specs)
+            jit_train_step = self._pjit_train_step()
+            lowered_train_step = jit_train_step.lower(trainer_state_specs, input_batch_specs, True)
             return lowered_train_step.compile()
 
     def _train_step(
         self,
         state: TrainerState,
         input_batch: Dict[str, Any],
-        *,
-        return_summaries: bool,
+        return_summaries: bool = True,
     ) -> Tuple[TrainerState, NestedTensor]:
         # Shard and (possibly) dispatch the input batch.
         input_batch = utils.dispatch_input_batch(
