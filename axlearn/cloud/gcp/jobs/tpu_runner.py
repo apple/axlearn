@@ -259,8 +259,8 @@ class TPURunnerJob(TPUQRMJob):
         pip_freeze_cmd = self._wrap("python3 -m pip freeze")
         self._execute_remote_cmd(
             f"set -o pipefail; mkdir -p {self._output_dir}; "
-            f"sleep $((1 + $RANDOM % 30)) && {install_cmd} && {pip_freeze_cmd} | "
-            f"tee -a {self._run_log}",
+            f"sleep $((1 + $RANDOM % 30)) && "
+            f"({install_cmd} && {pip_freeze_cmd}) 2>&1 | tee -a {self._run_log}",
             shell=True,
         )
         logging.info("Done installing bundle.")
