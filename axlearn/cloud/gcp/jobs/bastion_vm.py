@@ -249,6 +249,9 @@ def _gcloud_storage_rsync(
             timeout=timeout_s,
             capture_output=True,
             text=True,
+            # Avoid "No space left on device":
+            # https://cloud.google.com/knowledge/kb/error-message-while-running-the-command-gsutil-rsync-000004577
+            env={"TMPDIR": src},
         )
         if proc.returncode == 0:
             return
