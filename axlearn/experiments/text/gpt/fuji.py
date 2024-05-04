@@ -115,7 +115,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
             max_sequence_length=max_sequence_length,
             train_batch_size=train_batch_size,
             max_step=max_step,
-            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
                 # Step time:
                 # v1 on tpu-v4-1024 (512 chips):        3.03s
@@ -126,6 +126,8 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e.
                 ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=16)),
+                # tpu-v5p.
+                ("tpu-v5p-(512|1024)", mesh_shape_from_axes(data=-1, fsdp=8)),
                 # H100/A100 80G.
                 # Maximum per-node batch size = 64, hence need >= 32 nodes.
                 # Without sequence sharding, the maximum number of devices <= batch_size,
