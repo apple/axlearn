@@ -251,7 +251,7 @@ def _gcloud_storage_rsync(
             text=True,
             # Avoid "No space left on device":
             # https://cloud.google.com/knowledge/kb/error-message-while-running-the-command-gsutil-rsync-000004577
-            env={"TMPDIR": src},
+            env={"TMPDIR": f"{_LOG_DIR}/rsync"},
         )
         if proc.returncode == 0:
             return
@@ -324,7 +324,7 @@ class RemoteBastionJob(CPUJob):
         # idempotent. Setup outputs are piped to setup_log.
         setup_log = os.path.join(_LOG_DIR, "setup.log")
         start_cmd = f"""set -o pipefail;
-            mkdir -p {_LOG_DIR};
+            mkdir -p {_LOG_DIR}/rsync;
             if [[ -z "$(docker ps -f "name={cfg.name}" -f "status=running" -q )" ]]; then
                 {self._bundler.install_command(image)} 2>&1 | tee -a {setup_log} && \
                 echo "Starting command..." >> {setup_log} && {run_cmd} && \
