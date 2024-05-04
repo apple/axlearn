@@ -69,7 +69,7 @@ Examples:
 To test changes to bastion:
 
     # 1. Build a custom image.
-    axlearn gcp bundle --bundler_type=docker \
+    axlearn gcp bundle --bundler_type=artifactregistry \
         --name=$USER-bastion \
         --bundler_spec=image=base \
         --bundler_spec=dockerfile=Dockerfile \
