@@ -102,6 +102,8 @@ def create_vm(
                     "(which usually takes a few minutes)",
                     name,
                 )
+            elif status == "BOOT_FAILED":
+                raise VMCreationError("Fail to boot VM.")
             else:
                 logging.info("VM %s showing %s, waiting for RUNNING.", name, status)
             time.sleep(10)
@@ -119,6 +121,7 @@ def get_vm_node_status(node: Dict[str, Any]) -> str:
 
         On top of regular VM statuses, this also returns:
         * BOOTED: VM is RUNNING + finished booting.
+        * BOOT_FAILED: VM is RUNNING but fails to boot.
         * UNKNOWN: VM is missing a status.
     """
     status = node.get("status", "UNKNOWN")
@@ -126,6 +129,8 @@ def get_vm_node_status(node: Dict[str, Any]) -> str:
         # Check boot status.
         if node["labels"].get("boot_status", None) == "done":
             return "BOOTED"
+        if node["labels"].get("boot_status", None) == "failed":
+            return "BOOT_FAILED"
     return status
 
 
