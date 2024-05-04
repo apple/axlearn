@@ -196,7 +196,7 @@ class TPURunnerJob(TPUQRMJob):
 
     def _sync_outputs(self, *, session: str, src: str, dst: str, interval_s: int):
         """Starts a screen session to sync outputs to gs."""
-        logging.info("Starting log sync...")
+        logging.info("Starting log sync %s -> %s...", src, dst)
         self._execute_remote_cmd(
             f"while true; do gsutil -m rsync -r {src} {dst}; sleep {interval_s}; done",
             detached_session=session,
@@ -259,8 +259,8 @@ class TPURunnerJob(TPUQRMJob):
         pip_freeze_cmd = self._wrap("python3 -m pip freeze")
         self._execute_remote_cmd(
             f"set -o pipefail; mkdir -p {self._output_dir}; "
-            f"sleep $((1 + $RANDOM % 30)) && {install_cmd} && {pip_freeze_cmd} | "
-            f"tee -a {self._run_log}",
+            f"sleep $((1 + $RANDOM % 30)) && "
+            f"({install_cmd} && {pip_freeze_cmd}) 2>&1 | tee -a {self._run_log}",
             shell=True,
         )
         logging.info("Done installing bundle.")
@@ -333,10 +333,6 @@ class TPURunnerJob(TPUQRMJob):
     def _run_command(self):
         """Launches the command on the TPU-VMs."""
         cfg: TPURunnerJob.Config = self.config
-        # Install the bundle.
-        self._install_bundle()
-        # Prepare command environment variables.
-        env_vars = self._prepare_env()
         # Start syncing run log to GS.
         # TODO(markblee): Sync XLA logs.
         self._sync_outputs(
@@ -345,6 +341,10 @@ class TPURunnerJob(TPUQRMJob):
             dst=f"{cfg.output_dir}/output/$HOSTNAME/",
             interval_s=60,
         )
+        # Install the bundle.
+        self._install_bundle()
+        # Prepare command environment variables.
+        env_vars = self._prepare_env()
         # Possibly wrap with docker run.
         cmd = self._wrap(cfg.command, env=env_vars)
         # Set env vars, run the command and pipe outputs to run log.

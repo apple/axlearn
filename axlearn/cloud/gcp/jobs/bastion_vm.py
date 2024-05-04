@@ -69,7 +69,7 @@ Examples:
 To test changes to bastion:
 
     # 1. Build a custom image.
-    axlearn gcp bundle --bundler_type=docker \
+    axlearn gcp bundle --bundler_type=artifactregistry \
         --name=$USER-bastion \
         --bundler_spec=image=base \
         --bundler_spec=dockerfile=Dockerfile \
@@ -141,6 +141,9 @@ from axlearn.cloud.gcp.vm import create_vm, delete_vm
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 
 FLAGS = flags.FLAGS
+
+
+_RSYNC_DIR = os.path.join(_LOG_DIR, "..", "rsync")
 
 
 def _private_flags(flag_values: flags.FlagValues = FLAGS):
@@ -249,6 +252,9 @@ def _gcloud_storage_rsync(
             timeout=timeout_s,
             capture_output=True,
             text=True,
+            # Avoid "No space left on device":
+            # https://cloud.google.com/knowledge/kb/error-message-while-running-the-command-gsutil-rsync-000004577
+            env={"TMPDIR": _RSYNC_DIR},
         )
         if proc.returncode == 0:
             return
@@ -321,7 +327,7 @@ class RemoteBastionJob(CPUJob):
         # idempotent. Setup outputs are piped to setup_log.
         setup_log = os.path.join(_LOG_DIR, "setup.log")
         start_cmd = f"""set -o pipefail;
-            mkdir -p {_LOG_DIR};
+            mkdir -p {_LOG_DIR}; mkdir -p {_RSYNC_DIR};
             if [[ -z "$(docker ps -f "name={cfg.name}" -f "status=running" -q )" ]]; then
                 {self._bundler.install_command(image)} 2>&1 | tee -a {setup_log} && \
                 echo "Starting command..." >> {setup_log} && {run_cmd} && \
