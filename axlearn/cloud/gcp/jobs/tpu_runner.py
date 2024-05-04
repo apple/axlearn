@@ -196,7 +196,7 @@ class TPURunnerJob(TPUQRMJob):
 
     def _sync_outputs(self, *, session: str, src: str, dst: str, interval_s: int):
         """Starts a screen session to sync outputs to gs."""
-        logging.info("Starting log sync...")
+        logging.info("Starting log sync %s -> %s...", src, dst)
         self._execute_remote_cmd(
             f"while true; do gsutil -m rsync -r {src} {dst}; sleep {interval_s}; done",
             detached_session=session,
