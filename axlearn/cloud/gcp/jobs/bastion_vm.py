@@ -143,6 +143,9 @@ from axlearn.common.config import REQUIRED, Required, config_class, config_for_f
 FLAGS = flags.FLAGS
 
 
+_RSYNC_DIR = os.path.join(_LOG_DIR, "..", "rsync")
+
+
 def _private_flags(flag_values: flags.FlagValues = FLAGS):
     common_flags(flag_values=flag_values)
     bastion_job_flags(flag_values=flag_values)
@@ -251,7 +254,7 @@ def _gcloud_storage_rsync(
             text=True,
             # Avoid "No space left on device":
             # https://cloud.google.com/knowledge/kb/error-message-while-running-the-command-gsutil-rsync-000004577
-            env={"TMPDIR": f"{_LOG_DIR}/rsync"},
+            env={"TMPDIR": _RSYNC_DIR},
         )
         if proc.returncode == 0:
             return
@@ -324,7 +327,7 @@ class RemoteBastionJob(CPUJob):
         # idempotent. Setup outputs are piped to setup_log.
         setup_log = os.path.join(_LOG_DIR, "setup.log")
         start_cmd = f"""set -o pipefail;
-            mkdir -p {_LOG_DIR}/rsync;
+            mkdir -p {_LOG_DIR}; mkdir -p {_RSYNC_DIR};
             if [[ -z "$(docker ps -f "name={cfg.name}" -f "status=running" -q )" ]]; then
                 {self._bundler.install_command(image)} 2>&1 | tee -a {setup_log} && \
                 echo "Starting command..." >> {setup_log} && {run_cmd} && \
