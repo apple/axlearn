@@ -170,7 +170,6 @@ class SummaryWriter(BaseWriter):
         return step % self.config.write_every_n_steps == 0
 
     def __call__(self, step: int, values: Dict[str, Any]):
-        cfg = self.config
         if not self.writing_at_step(step):
             return
         with self.summary_writer.as_default(step=step):
