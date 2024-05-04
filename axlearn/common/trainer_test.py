@@ -311,22 +311,24 @@ class TrainerTest(test_utils.TestCase):
     # A similar test exists for evaler.
     # pylint: disable=duplicate-code
     @parameterized.parameters(
-        {"platform": "cpu", "mesh_shape": (1, 1), "step_dtype": None},
+        {"platform": "cpu", "mesh_shape": (1, 1)},
         {"platform": "cpu", "mesh_shape": (1, 1), "step_dtype": jnp.bfloat16},
-        {"platform": "cpu", "mesh_shape": (1, 1), "step_dtype": None, "ema_decay": 0.99},
-        {"platform": "cpu", "mesh_shape": (1, 1), "step_dtype": None, "start_trace_steps": (1, 5)},
         {"platform": "tpu", "mesh_shape": (8, 1), "step_dtype": jnp.bfloat16},
         {"platform": "tpu", "mesh_shape": (2, 4), "step_dtype": jnp.float32},
+        {"platform": "cpu", "mesh_shape": (1, 1), "ema_decay": 0.99},
+        {"platform": "cpu", "mesh_shape": (1, 1), "start_trace_steps": (1, 5)},
+        {"platform": "cpu", "mesh_shape": (1, 1), "enable_train_step_without_summaries": True},
     )
     # pylint: enable=duplicate-code
     def test_trainer(
         self,
         platform,
         mesh_shape,
-        step_dtype,
         *,
+        step_dtype=None,
         ema_decay=None,
         start_trace_steps=tuple(),
+        enable_train_step_without_summaries=None,
     ):
         if not test_utils.is_supported_platform(platform):
             return
@@ -348,6 +350,9 @@ class TrainerTest(test_utils.TestCase):
             cfg.learner.ema.decay = ema_decay
         if start_trace_steps:
             cfg.start_trace_steps = start_trace_steps
+        if enable_train_step_without_summaries:
+            cfg.enable_train_step_without_summaries = enable_train_step_without_summaries
+            cfg.summary_writer.write_every_n_steps = 2
         evaler_cfg = SpmdEvaler.default_config().set(
             input=DummyInput.default_config().set(total_num_batches=2),
             eval_dtype=step_dtype,
@@ -368,11 +373,10 @@ class TrainerTest(test_utils.TestCase):
         # Check we did the compute in step_dtype.
         self.assertEqual(output_a["loss"].dtype, step_dtype or cfg.model.dtype)
         # Check that we also did the eval step in step_dtype.
-        self.assertEqual(
-            len(
-                [el for el in trainer.model.predict_dtypes if el == (step_dtype or cfg.model.dtype)]
-            ),
-            2,  # Once for the train step trace, once for the eval_step trace.
+        self.assertLen(
+            [el for el in trainer.model.predict_dtypes if el == (step_dtype or cfg.model.dtype)],
+            # Once/twice for the train step trace, once for the eval_step trace.
+            3 if enable_train_step_without_summaries else 2,
         )
         with open(os.path.join(cfg.dir, "trainer_state_tree.txt"), encoding="utf-8") as f:
             self.assertStartsWith(f.read(), "PyTreeDef(CustomNode(namedtuple[TrainerState], [*, ")
@@ -395,15 +399,6 @@ class TrainerTest(test_utils.TestCase):
         # Since we will be resuming from the checkpoint at step 10, a different prng_key doesn't
         # matter.
         output_b = trainer.run(prng_key=jax.random.PRNGKey(456))
-        # Check we did the training compute in step_dtype.
-        self.assertEqual(output_b["loss"].dtype, step_dtype or cfg.model.dtype)
-        # Check that we also did the eval step in step_dtype.
-        self.assertEqual(
-            len(
-                [el for el in trainer.model.predict_dtypes if el == (step_dtype or cfg.model.dtype)]
-            ),
-            2,  # Once for the train step trace, once for the eval_step trace.
-        )
         # The prng_key per step is deterministic.
         np.testing.assert_array_equal(output_a["aux"]["prng_key"], output_b["aux"]["prng_key"])
 

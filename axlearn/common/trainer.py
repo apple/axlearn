@@ -170,6 +170,10 @@ class SpmdTrainer(Module):
         # increment within this interval.
         watchdog_timeout_seconds: Optional[float] = None
 
+        # If True, compile an alternative version of train_step without returning summaries to be
+        # used on steps that do not require summaries.
+        enable_train_step_without_summaries: Optional[bool] = None
+
     def __init__(
         self,
         cfg: Config,
@@ -432,8 +436,10 @@ class SpmdTrainer(Module):
             if not self._prepare_training(prng_key):
                 return None
 
-            train_step_without_summaries = self._pjit_train_step(return_summaries=False)
             train_step_with_summaries = self._pjit_train_step(return_summaries=True)
+            train_step_without_summaries = None
+            if cfg.enable_train_step_without_summaries:
+                train_step_without_summaries = self._pjit_train_step(return_summaries=False)
 
             with self.checkpointer:
                 logging.info("Starting loop...")
@@ -452,10 +458,19 @@ class SpmdTrainer(Module):
 
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
-                    if self.summary_writer.writing_at_step(self.step):
+                    if train_step_without_summaries is None or self.summary_writer.writing_at_step(
+                        self.step
+                    ):
                         train_step = train_step_with_summaries
                     else:
+                        logging.log_first_n(
+                            logging.INFO,
+                            "Running train step without summaries at step %s",
+                            3,
+                            self.step,
+                        )
                         train_step = train_step_without_summaries
+
                     force_run_evals = (
                         force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
                     )
