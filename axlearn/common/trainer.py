@@ -879,7 +879,7 @@ class SpmdTrainer(Module):
                 ),
                 self.input.dataset().element_spec,
             )
-            jit_train_step = self._pjit_train_step()
+            jit_train_step = self._pjit_train_step(return_summaries=True)
             lowered_train_step = jit_train_step.lower(trainer_state_specs, input_batch_specs)
             return lowered_train_step.compile()
 
