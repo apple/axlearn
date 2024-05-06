@@ -122,9 +122,12 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                 def make_single_host_config(base_config_name: str) -> SpmdTrainer.Config:
                     """Make a single-host variant of the base config.
 
-                    p5.48xlarge 8x1 step time:
-                    8K tokens per GPU: 1.1s for v1, 1.54s for v2.
-                    16K tokens per GPU: 2.03s for v1.
+                    gpu-p5.48xlarge 8x1 step time:
+                    128K tokens per batch: 2.03s for v1.
+                    64K tokens per batch:  1.1s for v1, 1.54s for v2.
+
+                    tpu-v5litepod-32 step time:
+                    128K tokens per batch: 1.93s for v1.
 
                     Args:
                         base_config_name: The multi-host config name.
