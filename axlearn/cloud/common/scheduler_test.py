@@ -623,7 +623,7 @@ class TestJobScheduler(parameterized.TestCase):
                 resources={"v3": 2},
             ),
         }
-        results = sched.schedule(jobs, dry_run=dry_run)
+        results = sched.schedule(jobs, dry_run=dry_run, verbosity=1)
 
         # Get verdicts by job name.
         job_verdicts: Dict[str, JobVerdict] = {
