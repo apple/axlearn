@@ -159,6 +159,7 @@ class BaseScheduler(Configurable):
         resource_limits: Sequence[ResourceMap[int]],
         project_quotas: ProjectResourceMap[float],
         project_jobs: ProjectJobs,
+        verbosity: int = 0,
     ) -> ScheduleResults:
         """Makes per-job scheduling decisions based on available resources, quotas, and jobs.
 
@@ -167,6 +168,7 @@ class BaseScheduler(Configurable):
                 available resources.
             project_quotas: A mapping from project ids to quotas.
             project_jobs: A mapping from project ids to its job queue.
+            verbosity: The logging verbosity.
 
         Returns:
             Scheduling results consisting of:
@@ -275,6 +277,7 @@ class TierScheduler(BaseScheduler):
         resource_limits: Sequence[ResourceMap[int]],
         project_quotas: ProjectResourceMap,
         project_jobs: ProjectJobs,
+        verbosity: int = 0,
     ) -> BaseScheduler.ScheduleResults:
         """See `BaseScheduler.schedule` for details."""
         if not isinstance(resource_limits, Sequence):
@@ -365,7 +368,10 @@ class TierScheduler(BaseScheduler):
                             del remaining_limits[resource_type]
                         project_usages[project_id][resource_type] += usage
 
-            logging.info("Schedule %s(%s)/%s: %s", project_id, project_usage_ratio, job_id, verdict)
+            if verbosity > 0:
+                logging.info(
+                    "Schedule %s(%s)/%s: %s", project_id, project_usage_ratio, job_id, verdict
+                )
 
             job_verdicts[project_id][job_id] = verdict
             if project_jobs[project_id]:
@@ -448,6 +454,7 @@ class JobScheduler(Configurable):
             resource_limits=resource_limits,
             project_quotas=project_quotas,
             project_jobs=project_jobs,
+            verbosity=verbosity,
         )
 
         # Log the job verdicts.
