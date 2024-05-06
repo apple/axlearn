@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Utilities for writing summaries."""
+
 import contextlib
 import numbers
 import os
@@ -124,15 +125,29 @@ class SummaryWriter(BaseWriter):
 
     @config_class
     class Config(BaseWriter.Config):
-        """Configures SummaryWriter."""
+        """Configures SummaryWriter.
 
-        write_every_n_steps: int = 1  # Writes summary every N steps.
+        See also: https://www.tensorflow.org/api_docs/python/tf/summary/create_file_writer
+
+        Attributes:
+            write_every_n_steps: Writes summary every N steps.
+            max_queue: Configures maximum number of summaries before flush.
+                If None, uses the `tf_summary` default (10).
+            flush_ms: Largest interval between flushes in milliseconds.
+                If None, uses the `tf_summary` default (120,000, i.e. 2 minutes).
+        """
+
+        write_every_n_steps: int = 1
+        max_queue: Optional[int] = None
+        flush_ms: Optional[float] = None
 
     def __init__(self, cfg: BaseWriter.Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
-        cfg = self.config
+        cfg: SummaryWriter.Config = self.config
         self.summary_writer: tf_summary.SummaryWriter = (
-            tf_summary.create_file_writer(cfg.dir)
+            tf_summary.create_file_writer(
+                cfg.dir, max_queue=cfg.max_queue, flush_millis=cfg.flush_ms
+            )
             if jax.process_index() == 0
             else tf_summary.create_noop_writer()
         )
@@ -155,6 +170,7 @@ class SummaryWriter(BaseWriter):
         cfg = self.config
         if step % cfg.write_every_n_steps != 0:
             return
+
         with self.summary_writer.as_default(step=step):
 
             def write(path: str, value: jax.Array):
