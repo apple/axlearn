@@ -24,6 +24,7 @@ from axlearn.common.decoding import (
 )
 from axlearn.common.layers import Embedding, Linear
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
 from axlearn.common.rnn import BaseRNNCell, LSTMCell
 from axlearn.common.utils import Nested, Tensor
@@ -140,7 +141,77 @@ class DecodeOutputs(struct.PyTreeNode):
     scores: Tensor
 
 
-class CTCDecoderModel(BaseModel):
+class BaseASRDecoderModel(BaseModel):
+    """ASR decoder model base."""
+
+    @config_class
+    class Config(BaseModel.Config):
+        """Configures BaseASRDecoderModel."""
+
+        # Dimensionality of inputs.
+        input_dim: Required[int] = REQUIRED
+        # The vocab size.
+        vocab_size: Required[int] = REQUIRED
+
+    def forward(
+        self,
+        input_batch: Nested[Tensor],
+    ) -> Tuple[Tensor, Nested[Tensor]]:
+        """Computes decoder loss.
+
+        Args:
+            input_batch: A dict containing:
+                inputs: A Tensor of shape [batch_size, num_frames, dim] of encoder outputs.
+                paddings: A 0/1 Tensor of shape [batch_size, num_frames]. 1's represent paddings.
+                target_labels: An int Tensor of shape [batch_size, num_labels].
+                target: A dictionary with input_ids as key, and an int Tensor of shape
+                    [batch_size, num_labels] as value.
+
+            For both target_labels and target["input_ids"], values should be in the range
+                [0, vocab_size). Out-of-range values are excluded from the loss calculation
+                (e.g., paddings and EOS can be represented this way).
+
+        Returns:
+            A tuple (loss, aux_outputs):
+                loss: A scalar loss value.
+                aux_outputs: A dict containing:
+                    per_example_loss: A float Tensor of shape [batch_size].
+                    per_example_weight: A float Tensor of shape [batch_size].
+        """
+        raise NotImplementedError(type(self))
+
+    def _compute_target_paddings(
+        self,
+        input_batch: Nested[Tensor],
+    ) -> Tensor:
+        """Computes target paddings and other input statistics.
+
+        Args:
+            input_batch: See forward method signature.
+
+        Returns:
+            target_paddings: A 0/1 Tensor of shape [batch_size, num_labels].
+        """
+        cfg = self.config
+        target_labels: Tensor = input_batch["target_labels"]
+        # Infer target_paddings from out-of-range labels.
+        target_paddings = jnp.logical_or(cfg.vocab_size <= target_labels, target_labels < 0)
+
+        batch_size = target_labels.shape[0]
+        target_lengths = jnp.sum(1 - target_paddings, axis=-1)
+        self.add_summary(
+            "input_stats/average_target_length",
+            WeightedScalar(jnp.mean(target_lengths), batch_size),
+        )
+        source_lengths = jnp.sum(1 - input_batch["paddings"], axis=-1)
+        self.add_summary(
+            "input_stats/average_source_length",
+            WeightedScalar(jnp.mean(source_lengths), batch_size),
+        )
+        return target_paddings
+
+
+class CTCDecoderModel(BaseASRDecoderModel):
     """CTC decoder model.
 
     CTC maps continuous sequences (e.g. speech embeddings) to "labelings", sequences over a finite
@@ -153,13 +224,9 @@ class CTCDecoderModel(BaseModel):
     """
 
     @config_class
-    class Config(BaseModel.Config):
+    class Config(BaseASRDecoderModel.Config):
         """Configures CTCDecoderModel."""
 
-        # Dimensionality of inputs.
-        dim: Required[int] = REQUIRED
-        # The vocab size.
-        vocab_size: Required[int] = REQUIRED
         # Layer to map hidden state to vocab logits.
         lm_head: BaseLayer.Config = Linear.default_config()
         # Blank token ID.
@@ -168,7 +235,9 @@ class CTCDecoderModel(BaseModel):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        self._add_child("lm_head", cfg.lm_head.set(input_dim=cfg.dim, output_dim=cfg.vocab_size))
+        self._add_child(
+            "lm_head", cfg.lm_head.set(input_dim=cfg.input_dim, output_dim=cfg.vocab_size)
+        )
 
     def predict(self, input_batch: Nested[Tensor]) -> Tensor:
         """Computes logits.
@@ -211,11 +280,9 @@ class CTCDecoderModel(BaseModel):
                     per_example_weight: A float Tensor of shape [batch_size].
         """
         cfg: CTCDecoderModel.Config = self.config
+        target_paddings: Tensor = self._compute_target_paddings(input_batch)
         paddings: Tensor = input_batch["paddings"]
         target_labels: Tensor = input_batch["target_labels"]
-
-        # Infer target_paddings from out-of-range labels.
-        target_paddings = jnp.logical_or(cfg.vocab_size <= target_labels, target_labels < 0)
 
         # Compute CTC loss.
         logits = self.predict(input_batch)
@@ -238,6 +305,15 @@ class CTCDecoderModel(BaseModel):
             per_example_weight.sum(), 1
         )
         aux_outputs = dict(per_example_weight=per_example_weight, per_example_loss=per_example_loss)
+        # Add summaries.
+        self.add_summary(
+            "loss/example_weight",
+            WeightedScalar(jnp.mean(per_example_weight), per_example_weight.shape[0]),
+        )
+        self.add_summary(
+            "loss/ctc_loss",
+            WeightedScalar(loss, jnp.maximum(1, per_example_weight.sum())),
+        )
         return loss, aux_outputs
 
     def _tokens_to_scores(
