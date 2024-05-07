@@ -314,16 +314,18 @@ class BaseLayerTest(TestCase):
                 self.assertEqual(orig_path, noisy_path)
                 self.assertNestedAllClose(jnp.zeros_like(orig_value), noisy_value)
 
-    def test_tensor_stats(self):
+    @parameterized.parameters(False, True)
+    def test_tensor_stats(self, inline_child_summaries: bool):
         test_layer: TestLayer = (
             TestLayer.default_config()
             .set(
                 name="test",
                 tensor_stats=CompositeTensorStats.default_config().set(
-                    stats={
-                        "rms_norm": TensorRMSNorm.default_config(),
-                        "max_abs": TensorMaxAbs.default_config(),
-                    }
+                    tensor_stats={
+                        "norm": TensorRMSNorm.default_config(),
+                        "max": TensorMaxAbs.default_config(),
+                    },
+                    inline_child_summaries=inline_child_summaries,
                 ),
             )
             .instantiate(parent=None)
@@ -339,13 +341,22 @@ class BaseLayerTest(TestCase):
             prng_key=prng_key,
             state=layer_params,
         )
-        self.assertNestedAllClose(
-            {
-                "x": {"rms_norm": 9.327524, "max_abs": 26.052944},
-                "y": {"rms_norm": 9.23187, "max_abs": 26.109497},
-            },
-            output_collections.summaries["tensor_stats"],
-        )
+        if inline_child_summaries:
+            self.assertNestedAllClose(
+                {
+                    "x": {"rms_norm": 9.327524, "max_abs": 26.052944},
+                    "y": {"rms_norm": 9.231870, "max_abs": 26.109497},
+                },
+                output_collections.summaries["tensor_stats"],
+            )
+        else:
+            self.assertNestedAllClose(
+                {
+                    "x": {"norm": {"rms_norm": 9.327524}, "max": {"max_abs": 26.052944}},
+                    "y": {"norm": {"rms_norm": 9.231870}, "max": {"max_abs": 26.109497}},
+                },
+                output_collections.summaries["tensor_stats"],
+            )
 
     @parameterized.parameters(None, (jnp.array([0, 10, 5, 7]),), (jnp.array([0, 0, 0, 0]),))
     def test_activation_summary(self, lengths):

@@ -140,23 +140,36 @@ class CompositeTensorStats(TensorStats):
 
     @config_class
     class Config(TensorStats.Config):
-        stats: Dict[str, TensorStats.Config] = {}
+        tensor_stats: Dict[str, TensorStats.Config] = {}
+
+        # Whether to inline child summaries.
+        #
+        # Suppose tensor_stats = {"foo": TensorRMSNorm.default_config()},
+        # if inline_child_summaries=False, the summaries will be {"foo": {"rms_norm": norm}};
+        # if inline_child_summaries=True, the summaries will be {"rms_norm": norm}.
+        inline_child_summaries: bool = False
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._child_stats = {}
-        for child_stats_name, child_stats_cfg in cfg.stats.items():
+        for child_stats_name, child_stats_cfg in cfg.tensor_stats.items():
             self._child_stats[child_stats_name] = self._add_child(child_stats_name, child_stats_cfg)
 
     def add_stats(self, name: str, value: Nested[Tensor]):
+        cfg = self.config
         for child_name, child_stats in self._child_stats.items():
             output_collection = new_output_collection()
             with child_context(child_name, output_collection=output_collection):
                 child_stats.add_stats(name, value)
-            self.get_invocation_context().output_collection.summaries.update(
-                output_collection.summaries
-            )
+            if cfg.inline_child_summaries:
+                self.get_invocation_context().output_collection.summaries.update(
+                    output_collection.summaries
+                )
+            else:
+                self.get_invocation_context().output_collection.summaries[
+                    child_name
+                ] = output_collection.summaries
 
 
 class TensorRMSNorm(TensorStats):
