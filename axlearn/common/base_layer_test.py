@@ -22,6 +22,7 @@ from axlearn.common.base_layer import (
     ParameterNoise,
     ParameterSpec,
     RematSpec,
+    TensorRMSNorm,
     no_remat,
 )
 from axlearn.common.config import config_class
@@ -51,9 +52,11 @@ class TestLayer(BaseLayer):
 
     def forward(self, x):
         self.add_summary("x", x)
+        self._add_tensor_stats("x", x)
         self.add_state_update("moving_mean", 0.1 * x + 0.9 * self.state["moving_mean"])
         y = x - self.state["moving_mean"]
         self.add_module_output("forward", y)
+        self._add_tensor_stats("y", y)
         return y
 
 
@@ -308,6 +311,30 @@ class BaseLayerTest(TestCase):
             ):
                 self.assertEqual(orig_path, noisy_path)
                 self.assertNestedAllClose(jnp.zeros_like(orig_value), noisy_value)
+
+    def test_tensor_stats(self):
+        test_layer: TestLayer = (
+            TestLayer.default_config()
+            .set(
+                name="test",
+                tensor_stats=TensorRMSNorm.default_config(),
+            )
+            .instantiate(parent=None)
+        )
+        data_key, init_key, prng_key = jax.random.split(jax.random.PRNGKey(567), num=3)
+        batch_size = 4
+        inputs = jax.random.normal(key=data_key, shape=[batch_size, 3, 2, 4]) * 10.0
+        layer_params = test_layer.initialize_parameters_recursively(prng_key=init_key)
+        _, output_collections = F(
+            test_layer,
+            inputs=dict(x=inputs),
+            is_training=True,
+            prng_key=prng_key,
+            state=layer_params,
+        )
+        self.assertCountEqual(["x", "stats_x", "stats_y"], output_collections.summaries.keys())
+        self.assertNestedAllClose({"rmsnorm": 9.327524}, output_collections.summaries["stats_x"])
+        self.assertNestedAllClose({"rmsnorm": 9.23187}, output_collections.summaries["stats_y"])
 
     @parameterized.parameters(None, (jnp.array([0, 10, 5, 7]),), (jnp.array([0, 0, 0, 0]),))
     def test_activation_summary(self, lengths):

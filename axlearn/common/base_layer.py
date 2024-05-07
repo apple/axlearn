@@ -16,6 +16,7 @@ from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, child_context, current_context, new_output_collection
 from axlearn.common.param_init import DefaultInitializer, FanAxes
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     PartitionSpec,
     Tensor,
@@ -126,6 +127,19 @@ class ParameterNoise(Configurable):
         raise NotImplementedError(self)
 
 
+class TensorStats(Module):
+    def __call__(self, name: str, value: Nested[Tensor]):
+        self._compute(name, value)
+
+    def _compute(self, name: str, value: Nested[Tensor]):
+        raise NotImplementedError(type(self))
+
+
+class TensorRMSNorm(TensorStats):
+    def _compute(self, name: str, value: Nested[Tensor]):
+        self.add_summary("rmsnorm", (value**2.0).mean().astype(jnp.float32) ** 0.5)
+
+
 class BaseLayer(Module):
     """A base class for layer implementations."""
 
@@ -161,6 +175,9 @@ class BaseLayer(Module):
         # before applying the parent layer's noise (if any).
         param_noise: Optional[ParameterNoise.Config] = None
 
+        # If not None, adds stats about the tensors given in the `_add_tensor_stats` calls.
+        tensor_stats: Optional[TensorStats.Config] = None
+
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg, parent=parent)
         cfg: BaseLayer.Config = self.config
@@ -175,6 +192,8 @@ class BaseLayer(Module):
             self._param_noise = cfg.param_noise.instantiate()
         else:
             self._param_noise = None
+        if cfg.tensor_stats is not None:
+            self._add_child("tensor_stats", cfg.tensor_stats)
         self._remat_methods = []  # List[str]. Used for testing.
 
     def _methods_to_wrap_for_auto_child_context(self) -> Dict[str, Callable]:
@@ -296,6 +315,8 @@ class BaseLayer(Module):
                     parameter_spec=spec,
                 )
         for name, child in self._children.items():
+            if not isinstance(child, BaseLayer):
+                continue
             assert name not in params
             prng_key, child_key = jax.random.split(prng_key)
             params[name] = child.initialize_parameters_recursively(
@@ -396,10 +417,17 @@ class BaseLayer(Module):
     def parameters(self):
         return self.state
 
+    def _add_tensor_stats(self, name: str, value: Nested[Tensor]):
+        if "tensor_stats" in self.children:
+            with child_context(f"stats_{name}", module=self.tensor_stats):
+                self.tensor_stats(name, value)
+
     def _add_activation_summary(
         self, *, name: str, activations: Tensor, activation_paddings: Optional[Tensor] = None
     ):
         """Add activation summaries.
+
+        TODO(ruoming): use cfg.tensor_stats to represent activation summaries.
 
         Args:
             name: Activation name.
