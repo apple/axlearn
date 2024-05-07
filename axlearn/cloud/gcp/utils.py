@@ -99,17 +99,17 @@ def validate_resource_name(name: Optional[str]):
         )
 
 
-def validate_k8s_name(name: str, num_workers: int):
+def validate_k8s_name(name: str, *, num_workers: int, num_replicas: int):
     """Validates k8s name (e.g. TPUs, VMs, jobs) to ensure compat with GKE.
 
     Raises:
         ValueError: If name is invalid.
     """
     # K8s job name cannot exceed 63 chars. By default, GKE jobset also appends a suffix
-    # "-job-<host id>-<hash>" to each pod. The hash is typically 5 chars long.
+    # "-job-<replica_id>-<host id>-<hash>" to each pod. The hash is typically 5 chars long.
     # https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set
     max_length = 63
-    job_name = f"{name}-job-{num_workers}-abcde"
+    job_name = f"{name}-job-{num_replicas}-{num_workers}-abcde"
     if (excess := len(job_name) - max_length) > 0:
         raise ValueError(f"Job name {job_name} exceeds max ({max_length}) by {excess} chars.")
 
