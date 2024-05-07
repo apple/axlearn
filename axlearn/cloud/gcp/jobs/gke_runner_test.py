@@ -4,7 +4,7 @@
 
 # pylint: disable=no-self-use,protected-access
 import contextlib
-from typing import Iterator, Type, Union
+from typing import Iterator, Optional, Sequence, Type, Union
 from unittest import mock
 
 import kubernetes as k8s
@@ -14,8 +14,27 @@ from absl.testing import parameterized
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp.jobs import gke_runner
 from axlearn.cloud.gcp.jobs.bastion_vm_test import _mock_job
-from axlearn.cloud.gcp.jobs.gke_runner import _get_runner_or_exit
+from axlearn.cloud.gcp.jobs.gke_runner import _get_runner_or_exit, _infer_reservation
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
+
+
+def _mock_replicated_jobs(reservations: Sequence[str]):
+    return [
+        {
+            "template": {
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "nodeSelector": {"cloud.google.com/reservation-name": reservation}
+                            if reservation != "spot"
+                            else {"cloud.google.com/gke-spot": "true"}
+                        },
+                    },
+                }
+            }
+        }
+        for reservation in reservations
+    ]
 
 
 class TPUGKERunnerJobTest(parameterized.TestCase):
@@ -75,6 +94,27 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             job: gke_runner.TPUGKERunnerJob = cfg.set(command="").instantiate()
             with mock.patch.object(job, "_get_status", return_value=status):
                 job._execute()
+
+    @parameterized.parameters(
+        dict(
+            status=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"])),
+            expected="test-reservation",
+        ),
+        dict(
+            status=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
+            expected=None,
+        ),
+        dict(
+            status=dict(replicatedJobs=_mock_replicated_jobs(["spot", "test-reservation"])),
+            expected="test-reservation",
+        ),
+        dict(
+            status=dict(replicatedJobs=[{"template": {}}]),
+            expected=None,
+        ),
+    )
+    def test_infer_reservation(self, status: dict, expected: Optional[str] = None):
+        self.assertEqual(expected, _infer_reservation(status))
 
     @parameterized.parameters(
         # Conditions is set, so we use it.
@@ -177,8 +217,47 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             num_slices=2,
             expected=gke_runner.GKERunnerJob.Status.PENDING,
         ),
+        # Jobset reservation and bastion tier do not match.
+        dict(
+            tier="1",
+            status={},
+            spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"])),
+            num_slices=2,
+            expected=gke_runner.GKERunnerJob.Status.RESCHEDULED,
+        ),
+        # Jobset reservation and bastion tier do not match.
+        dict(
+            tier="1",
+            status={},
+            spec=dict(replicatedJobs=_mock_replicated_jobs(["spot", "test-reservation"])),
+            num_slices=2,
+            expected=gke_runner.GKERunnerJob.Status.RESCHEDULED,
+        ),
+        # Jobset reservation and bastion tier do not match.
+        dict(
+            tier="0",
+            status={},
+            spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
+            num_slices=2,
+            expected=gke_runner.GKERunnerJob.Status.RESCHEDULED,
+        ),
+        # Missing reservation / invalid spec will be treated as spot.
+        dict(
+            tier="0",
+            status={},
+            spec=dict(replicatedJobs=[{"template": {}}]),
+            num_slices=2,
+            expected=gke_runner.GKERunnerJob.Status.RESCHEDULED,
+        ),
     )
-    def test_get_status(self, status, num_slices, expected):
+    def test_get_status(
+        self,
+        status: dict,
+        num_slices: int,
+        expected: gke_runner.GKERunnerJob.Status,
+        tier: Optional[str] = None,
+        spec: Optional[dict] = None,
+    ):
         with self._job_config("test-name", "test-cluster", "test-sa") as (cfg, _):
             cfg.inner.accelerator.set(instance_type="v4-8", num_replicas=num_slices)
             cfg.bundler.set(image="test")
@@ -187,11 +266,14 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             if isinstance(status, Exception):
                 mock_get_status = mock.Mock(side_effect=status)
             else:
-                mock_get_status = mock.Mock(return_value=dict(status=status))
+                mock_get_status = mock.Mock(return_value=dict(status=status, spec=spec))
 
-            with mock.patch(
-                "kubernetes.client.CustomObjectsApi",
-                return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
+            with (
+                mock.patch.dict("os.environ", {"BASTION_TIER": tier}),
+                mock.patch(
+                    "kubernetes.client.CustomObjectsApi",
+                    return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
+                ),
             ):
                 self.assertEqual(expected, job._get_status())
 
