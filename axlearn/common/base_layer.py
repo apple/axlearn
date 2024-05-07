@@ -136,7 +136,7 @@ class TensorStats(Module):
 
 
 class CompositeTensorStats(TensorStats):
-    """A TensorStats consists of multiple child TensorStats."""
+    """A TensorStats consisting of multiple child TensorStats."""
 
     @config_class
     class Config(TensorStats.Config):
@@ -366,6 +366,8 @@ class BaseLayer(Module):
                 )
         for name, child in self._children.items():
             if not isinstance(child, BaseLayer):
+                # `child` is not a BaseLayer and does not have parameters, e.g., it can be an
+                # instance of TensorStats.
                 continue
             assert name not in params
             prng_key, child_key = jax.random.split(prng_key)
