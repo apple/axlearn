@@ -16,6 +16,7 @@ from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, child_context, current_context, new_output_collection
 from axlearn.common.param_init import DefaultInitializer, FanAxes
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     PartitionSpec,
     Tensor,
@@ -126,6 +127,61 @@ class ParameterNoise(Configurable):
         raise NotImplementedError(self)
 
 
+class TensorStats(Module):
+    """An abstract Module to add summaries about the given Tensors."""
+
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        """Subclasses must implement this method."""
+        raise NotImplementedError(type(self))
+
+
+class CompositeTensorStats(TensorStats):
+    """A TensorStats consisting of multiple child TensorStats."""
+
+    @config_class
+    class Config(TensorStats.Config):
+        tensor_stats: Dict[str, TensorStats.Config] = {}
+
+        # Whether to inline child summaries.
+        #
+        # Suppose tensor_stats = {"foo": TensorRMSNorm.default_config()},
+        # if inline_child_summaries=False, the summaries will be {"foo": {"rms_norm": norm}};
+        # if inline_child_summaries=True, the summaries will be {"rms_norm": norm}.
+        inline_child_summaries: bool = False
+
+    def __init__(self, cfg: Config, *, parent: Optional["Module"]):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._child_stats = {}
+        for child_stats_name, child_stats_cfg in cfg.tensor_stats.items():
+            self._child_stats[child_stats_name] = self._add_child(child_stats_name, child_stats_cfg)
+
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        cfg = self.config
+        for child_name, child_stats in self._child_stats.items():
+            output_collection = new_output_collection()
+            with child_context(child_name, output_collection=output_collection):
+                child_stats.add_stats(name, value)
+            if cfg.inline_child_summaries:
+                self.get_invocation_context().output_collection.summaries.update(
+                    output_collection.summaries
+                )
+            else:
+                self.get_invocation_context().output_collection.summaries[
+                    child_name
+                ] = output_collection.summaries
+
+
+class TensorRMSNorm(TensorStats):
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        self.add_summary("rms_norm", (value**2.0).mean().astype(jnp.float32) ** 0.5)
+
+
+class TensorMaxAbs(TensorStats):
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        self.add_summary("max_abs", jnp.abs(value).max().astype(jnp.float32))
+
+
 class BaseLayer(Module):
     """A base class for layer implementations."""
 
@@ -161,6 +217,17 @@ class BaseLayer(Module):
         # before applying the parent layer's noise (if any).
         param_noise: Optional[ParameterNoise.Config] = None
 
+        # If not None, adds stats about the tensors given in the `_add_tensor_stats` calls.
+        #
+        # The tensor_stats abstraction allows users to compute stats (e.g., mean, RMS norm, max abs)
+        # on tensors such as layer inputs/outputs and add them to summaries.
+        #
+        # The abstraction decouples which tensors to collect stats on, which will be controlled by
+        # the layer implementation via `_add_tensor_stats(name, value)` calls, vs. how to compute
+        # and report the stats, which will be controlled by `Config.tensor_stats` and configured
+        # on a per-experiment basis.
+        tensor_stats: Optional[TensorStats.Config] = None
+
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg, parent=parent)
         cfg: BaseLayer.Config = self.config
@@ -175,6 +242,8 @@ class BaseLayer(Module):
             self._param_noise = cfg.param_noise.instantiate()
         else:
             self._param_noise = None
+        if cfg.tensor_stats is not None:
+            self._add_child("tensor_stats", cfg.tensor_stats)
         self._remat_methods = []  # List[str]. Used for testing.
 
     def _methods_to_wrap_for_auto_child_context(self) -> Dict[str, Callable]:
@@ -296,6 +365,10 @@ class BaseLayer(Module):
                     parameter_spec=spec,
                 )
         for name, child in self._children.items():
+            if not isinstance(child, BaseLayer):
+                # `child` is not a BaseLayer and does not have parameters, e.g., it can be an
+                # instance of TensorStats.
+                continue
             assert name not in params
             prng_key, child_key = jax.random.split(prng_key)
             params[name] = child.initialize_parameters_recursively(
@@ -396,10 +469,34 @@ class BaseLayer(Module):
     def parameters(self):
         return self.state
 
+    def _add_tensor_stats(self, name: str, value: Nested[Tensor]):
+        """Adds tensor stats about `value`.
+
+        Suppose `self.tensor_stats` adds some summaries about `value`, e.g.,
+            self.add_summary("mean", jnp.mean(value))
+
+        The "mean" summary will show up under path f"{self.path()}/tensor_stats/{name}/mean".
+
+        Args:
+            name: The name for the `value`. E.g., "inputs".
+            value: A Tensor or a Nested[Tensor].
+        """
+        if "tensor_stats" in self.children:
+            output_collection = new_output_collection()
+            with child_context("tensor_stats", output_collection=output_collection):
+                with child_context(name, module=self.tensor_stats):
+                    self.tensor_stats.add_stats(name, value)
+            layer_summaries = self.get_invocation_context().output_collection.summaries
+            if "tensor_stats" not in layer_summaries:
+                layer_summaries["tensor_stats"] = {}
+            layer_summaries["tensor_stats"][name] = output_collection.summaries[name]
+
     def _add_activation_summary(
         self, *, name: str, activations: Tensor, activation_paddings: Optional[Tensor] = None
     ):
         """Add activation summaries.
+
+        TODO(ruoming): use cfg.tensor_stats to represent activation summaries.
 
         Args:
             name: Activation name.

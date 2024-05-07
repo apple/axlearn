@@ -18,10 +18,13 @@ from jax import numpy as jnp
 from axlearn.common import param_init, utils
 from axlearn.common.base_layer import (
     BaseLayer,
+    CompositeTensorStats,
     NestedTensor,
     ParameterNoise,
     ParameterSpec,
     RematSpec,
+    TensorMaxAbs,
+    TensorRMSNorm,
     no_remat,
 )
 from axlearn.common.config import config_class
@@ -51,9 +54,11 @@ class TestLayer(BaseLayer):
 
     def forward(self, x):
         self.add_summary("x", x)
+        self._add_tensor_stats("x", x)
         self.add_state_update("moving_mean", 0.1 * x + 0.9 * self.state["moving_mean"])
         y = x - self.state["moving_mean"]
         self.add_module_output("forward", y)
+        self._add_tensor_stats("y", y)
         return y
 
 
@@ -308,6 +313,50 @@ class BaseLayerTest(TestCase):
             ):
                 self.assertEqual(orig_path, noisy_path)
                 self.assertNestedAllClose(jnp.zeros_like(orig_value), noisy_value)
+
+    @parameterized.parameters(False, True)
+    def test_tensor_stats(self, inline_child_summaries: bool):
+        test_layer: TestLayer = (
+            TestLayer.default_config()
+            .set(
+                name="test",
+                tensor_stats=CompositeTensorStats.default_config().set(
+                    tensor_stats={
+                        "norm": TensorRMSNorm.default_config(),
+                        "max": TensorMaxAbs.default_config(),
+                    },
+                    inline_child_summaries=inline_child_summaries,
+                ),
+            )
+            .instantiate(parent=None)
+        )
+        data_key, init_key, prng_key = jax.random.split(jax.random.PRNGKey(567), num=3)
+        batch_size = 4
+        inputs = jax.random.normal(key=data_key, shape=[batch_size, 3, 2, 4]) * 10.0
+        layer_params = test_layer.initialize_parameters_recursively(prng_key=init_key)
+        _, output_collections = F(
+            test_layer,
+            inputs=dict(x=inputs),
+            is_training=True,
+            prng_key=prng_key,
+            state=layer_params,
+        )
+        if inline_child_summaries:
+            self.assertNestedAllClose(
+                {
+                    "x": {"rms_norm": 9.327524, "max_abs": 26.052944},
+                    "y": {"rms_norm": 9.231870, "max_abs": 26.109497},
+                },
+                output_collections.summaries["tensor_stats"],
+            )
+        else:
+            self.assertNestedAllClose(
+                {
+                    "x": {"norm": {"rms_norm": 9.327524}, "max": {"max_abs": 26.052944}},
+                    "y": {"norm": {"rms_norm": 9.231870}, "max": {"max_abs": 26.109497}},
+                },
+                output_collections.summaries["tensor_stats"],
+            )
 
     @parameterized.parameters(None, (jnp.array([0, 10, 5, 7]),), (jnp.array([0, 0, 0, 0]),))
     def test_activation_summary(self, lengths):
