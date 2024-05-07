@@ -218,6 +218,14 @@ class BaseLayer(Module):
         param_noise: Optional[ParameterNoise.Config] = None
 
         # If not None, adds stats about the tensors given in the `_add_tensor_stats` calls.
+        #
+        # The tensor_stats abstraction allows users to compute stats (e.g., mean, RMS norm, max abs)
+        # on tensors such as layer inputs/outputs and add them to summaries.
+        #
+        # The abstraction decouples which tensors to collect stats on, which will be controlled by
+        # the layer implementation via `_add_tensor_stats(name, value)` calls, vs. how to compute
+        # and report the stats, which will be controlled by `Config.tensor_stats` and configured
+        # on a per-experiment basis.
         tensor_stats: Optional[TensorStats.Config] = None
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
