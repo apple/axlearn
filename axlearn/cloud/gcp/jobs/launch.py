@@ -477,7 +477,7 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
             )
             num_workers = None
         if num_workers is not None:
-            validate_k8s_name(cfg.name, num_workers=num_workers)
+            validate_k8s_name(cfg.name, num_workers=num_workers, num_replicas=cfg.num_replicas)
             # TODO(markblee): add the logs command.
             worker_log = f"{infer_cli_name()} gcp logs --name={cfg.name} --worker=0"
             print(
