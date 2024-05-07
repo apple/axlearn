@@ -128,16 +128,45 @@ class ParameterNoise(Configurable):
 
 
 class TensorStats(Module):
-    def __call__(self, name: str, value: Nested[Tensor]):
-        self._compute(name, value)
+    """An abstract Module to add summaries about the given Tensors."""
 
-    def _compute(self, name: str, value: Nested[Tensor]):
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        """Subclasses must implement this method."""
         raise NotImplementedError(type(self))
 
 
+class CompositeTensorStats(TensorStats):
+    """A TensorStats consists of multiple child TensorStats."""
+
+    @config_class
+    class Config(TensorStats.Config):
+        stats: Dict[str, TensorStats.Config] = {}
+
+    def __init__(self, cfg: Config, *, parent: Optional["Module"]):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._child_stats = {}
+        for child_stats_name, child_stats_cfg in cfg.stats.items():
+            self._child_stats[child_stats_name] = self._add_child(child_stats_name, child_stats_cfg)
+
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        for child_name, child_stats in self._child_stats.items():
+            output_collection = new_output_collection()
+            with child_context(child_name, output_collection=output_collection):
+                child_stats.add_stats(name, value)
+            self.get_invocation_context().output_collection.summaries.update(
+                output_collection.summaries
+            )
+
+
 class TensorRMSNorm(TensorStats):
-    def _compute(self, name: str, value: Nested[Tensor]):
-        self.add_summary("rmsnorm", (value**2.0).mean().astype(jnp.float32) ** 0.5)
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        self.add_summary("rms_norm", (value**2.0).mean().astype(jnp.float32) ** 0.5)
+
+
+class TensorMaxAbs(TensorStats):
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        self.add_summary("max_abs", jnp.abs(value).max().astype(jnp.float32))
 
 
 class BaseLayer(Module):
@@ -418,9 +447,26 @@ class BaseLayer(Module):
         return self.state
 
     def _add_tensor_stats(self, name: str, value: Nested[Tensor]):
+        """Adds tensor stats about `value`.
+
+        Suppose `self.tensor_stats` adds some summaries about `value`, e.g.,
+            self.add_summary("mean", jnp.mean(value))
+
+        The "mean" summary will show up under path f"{self.path()}/tensor_stats/{name}/mean".
+
+        Args:
+            name: The name for the `value`. E.g., "inputs".
+            value: A Tensor or a Nested[Tensor].
+        """
         if "tensor_stats" in self.children:
-            with child_context(f"stats_{name}", module=self.tensor_stats):
-                self.tensor_stats(name, value)
+            output_collection = new_output_collection()
+            with child_context("tensor_stats", output_collection=output_collection):
+                with child_context(name, module=self.tensor_stats):
+                    self.tensor_stats.add_stats(name, value)
+            layer_summaries = self.get_invocation_context().output_collection.summaries
+            if "tensor_stats" not in layer_summaries:
+                layer_summaries["tensor_stats"] = {}
+            layer_summaries["tensor_stats"][name] = output_collection.summaries[name]
 
     def _add_activation_summary(
         self, *, name: str, activations: Tensor, activation_paddings: Optional[Tensor] = None

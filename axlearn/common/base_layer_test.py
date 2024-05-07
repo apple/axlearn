@@ -18,10 +18,12 @@ from jax import numpy as jnp
 from axlearn.common import param_init, utils
 from axlearn.common.base_layer import (
     BaseLayer,
+    CompositeTensorStats,
     NestedTensor,
     ParameterNoise,
     ParameterSpec,
     RematSpec,
+    TensorMaxAbs,
     TensorRMSNorm,
     no_remat,
 )
@@ -317,7 +319,12 @@ class BaseLayerTest(TestCase):
             TestLayer.default_config()
             .set(
                 name="test",
-                tensor_stats=TensorRMSNorm.default_config(),
+                tensor_stats=CompositeTensorStats.default_config().set(
+                    stats={
+                        "rms_norm": TensorRMSNorm.default_config(),
+                        "max_abs": TensorMaxAbs.default_config(),
+                    }
+                ),
             )
             .instantiate(parent=None)
         )
@@ -332,9 +339,13 @@ class BaseLayerTest(TestCase):
             prng_key=prng_key,
             state=layer_params,
         )
-        self.assertCountEqual(["x", "stats_x", "stats_y"], output_collections.summaries.keys())
-        self.assertNestedAllClose({"rmsnorm": 9.327524}, output_collections.summaries["stats_x"])
-        self.assertNestedAllClose({"rmsnorm": 9.23187}, output_collections.summaries["stats_y"])
+        self.assertNestedAllClose(
+            {
+                "x": {"rms_norm": 9.327524, "max_abs": 26.052944},
+                "y": {"rms_norm": 9.23187, "max_abs": 26.109497},
+            },
+            output_collections.summaries["tensor_stats"],
+        )
 
     @parameterized.parameters(None, (jnp.array([0, 10, 5, 7]),), (jnp.array([0, 0, 0, 0]),))
     def test_activation_summary(self, lengths):
