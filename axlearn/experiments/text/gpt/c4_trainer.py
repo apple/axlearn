@@ -158,7 +158,8 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                 def make_simple_test_config(
                     base_config_name: str,
                     batch_size: int = 32,
-                    eval_every_n_steps: int = 2000,
+                    eval_every_n_steps: int = 1500,
+                    save_every_n_steps: int = 500,
                     max_step: int = 3000,
                 ) -> SpmdTrainer.Config:
                     """Make a variant of fuji-test of the test config
@@ -190,7 +191,7 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                     cfg.mesh_shape = mesh_shape_from_axes(data=-1, fsdp=4)
                     cfg.summary_writer.write_every_n_steps = eval_every_n_steps
                     cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(
-                        n=eval_every_n_steps
+                        n=save_every_n_steps
                     )
                     return cfg
 
