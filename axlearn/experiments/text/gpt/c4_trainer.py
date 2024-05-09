@@ -39,9 +39,7 @@ python3 -m axlearn.common.launch_trainer_main \
 import functools
 from typing import Dict
 
-from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import InstantiableConfig, config_for_function
-from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.input_lm import lm_text_preprocessor
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
@@ -50,7 +48,6 @@ from axlearn.experiments.text.gpt.common import (
     evaler_config_dict,
     get_trainer_config_fn,
     make_config_name,
-    mesh_shape_from_axes,
     mixture_train_input_source,
     tfds_input,
 )
@@ -151,52 +148,6 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
 
                 config_map[f"{config_name}-single-host"] = functools.partial(
                     make_single_host_config, config_name
-                )
-
-            if model_size == "test":
-
-                def make_simple_test_config(
-                    base_config_name: str,
-                    batch_size: int = 32,
-                    eval_every_n_steps: int = 1500,
-                    save_every_n_steps: int = 500,
-                    max_step: int = 3000,
-                ) -> SpmdTrainer.Config:
-                    """Make a variant of fuji-test of the test config
-                    that terminates early and saves checkpoints frequently.
-
-                    Args:
-                        base_config_name: The test config name.
-                        batch_size: The global batch size for training inputs.
-                        eval_every_n_steps: How often to run evaluation.
-                        max_step: The maximum number of training steps.
-
-                    Returns:
-                        A trainer config that can run for a short period of time.
-                    """
-
-                    # pytype: disable=annotation-type-mismatch
-                    cfg: SpmdTrainer.Config = config_map[base_config_name]().clone()
-                    # pytype: enable=annotation-type-mismatch
-
-                    cfg.input.batcher.global_batch_size = batch_size
-                    for evaler in cfg.evalers.values():
-                        evaler.input.batcher.global_batch_size = batch_size
-                        evaler.set(
-                            eval_policy=config_for_function(eval_every_n_steps_policy).set(
-                                n=eval_every_n_steps
-                            )
-                        )
-                    cfg.max_step = max_step
-                    cfg.mesh_shape = mesh_shape_from_axes(data=-1, fsdp=4)
-                    cfg.summary_writer.write_every_n_steps = eval_every_n_steps
-                    cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(
-                        n=save_every_n_steps
-                    )
-                    return cfg
-
-                config_map[f"{config_name}-simple"] = functools.partial(
-                    make_simple_test_config, config_name
                 )
 
     return config_map

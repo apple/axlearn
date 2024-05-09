@@ -26,7 +26,7 @@ from axlearn.experiments.text.gpt.common import STEP_DTYPE, learner_config, mesh
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 
-MODEL_SIZES = ("test", "7B")
+MODEL_SIZES = ("test", "7B", "simple")
 
 
 class Version(enum.Enum):
@@ -139,6 +139,29 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
             ),
+        )
+    elif model_size == "simple":
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=4,
+                hidden_dim=8,
+                ffn_dim=scaled_hidden_dim(scale=8 / 3, round_up_to_multiples_of=16),
+                num_heads=4,
+                num_kv_heads=2,
+                vocab_size=32,
+                rope_theta=rope_theta,
+            ),
+            learner_kwargs=dict(
+                peak_lr=6e-4,
+                weight_decay=0.01,
+            ),
+            max_sequence_length=64,
+            train_batch_size=32,
+            eval_batch_size=32,
+            max_step=3000,
+            eval_every_n_steps=1500,
+            save_every_n_steps=500,
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=4),
         )
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
