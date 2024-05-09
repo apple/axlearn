@@ -449,6 +449,10 @@ class BaseLayer(Module):
         cfg = self.config
         params = type(params)(**params)  # Make a copy of `params`.
         for name, child in self._children.items():
+            if not isinstance(child, BaseLayer):
+                # `child` is not a BaseLayer and does not have parameters, e.g., it can be an
+                # instance of TensorStats.
+                continue
             prng_key, child_key = jax.random.split(prng_key)
             params[name] = child.apply_parameter_noise_recursively(child_key, params[name])
         if cfg.param_noise is not None:
