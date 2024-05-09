@@ -53,6 +53,7 @@ from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 from axlearn.common import ops, param_init
 from axlearn.common.base_layer import (
     BaseLayer,
+    DefaultTensorStats,
     FactorizationSpec,
     NestedParameterSpec,
     ParameterSpec,
@@ -1467,6 +1468,8 @@ class MultiheadAttention(BaseLayer):
             for value in cfg.add_value_summary:
                 if value not in ["o_proj_outputs"]:
                     raise NotImplementedError(f"add_value_summary: {value}")
+            if cfg.tensor_stats is None:
+                self._add_child("tensor_stats", DefaultTensorStats.default_config())
 
     def output_dim(self):
         cfg = self.config
@@ -1567,17 +1570,8 @@ class MultiheadAttention(BaseLayer):
         cfg = self.config
         summary_list = cfg.add_value_summary
         if summary_list is not None and "o_proj_outputs" in summary_list:
-            self._report_tensor_stats(outputs, "o_proj_outputs")
+            self._add_tensor_stats("o_proj_outputs", outputs)
         return dict(i_proj=i_proj_state), self.Output(data=outputs, probs=probs)
-
-    def _report_tensor_stats(self, x: Tensor, tensor_name: str, cast_fp32: bool = False):
-        # Cast to fp32 before reduction
-        if cast_fp32:
-            x = x.astype(jnp.float32)
-        rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
-        max_abs = jnp.max(jnp.abs(x)).astype(jnp.float32)
-        self.add_summary(f"rms_norm/{tensor_name}", rms_norm)
-        self.add_summary(f"max_abs/{tensor_name}", max_abs)
 
     def _compute_attention(
         self,
@@ -2384,6 +2378,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         # - "inputs": inputs of the layer.
         # - "linear1_outputs": outputs of linear1.
         # - "linear2_outputs": outputs of linear2.
+        # TODO: rename this to `add_value_summary` for consistency with other layers.
         add_value_rms_norm_summary: Sequence[str] = []
 
     def __init__(self, cfg: Config, *, parent: Module):
@@ -2433,6 +2428,8 @@ class TransformerFeedForwardLayer(BaseLayer):
         for value in cfg.add_value_rms_norm_summary:
             if value not in ["inputs", "linear1_outputs", "linear2_outputs"]:
                 raise NotImplementedError(f"add_value_rms_norm_summary: {value}")
+        if cfg.tensor_stats is None:
+            self._add_child("tensor_stats", DefaultTensorStats.default_config())
 
     def forward(self, inputs: Tensor) -> Tensor:
         cfg = self.config
@@ -2441,11 +2438,11 @@ class TransformerFeedForwardLayer(BaseLayer):
             """Applies linear2, optionally logging RMS norm of the output."""
             x = self.linear2(x)
             if "linear2_outputs" in cfg.add_value_rms_norm_summary:
-                self._report_tensor_stats(x, "linear2_outputs")
+                self._add_tensor_stats("linear2_outputs", x)
             return x
 
         if "inputs" in cfg.add_value_rms_norm_summary:
-            self._report_tensor_stats(inputs, "inputs")
+            self._add_tensor_stats("inputs", inputs)
 
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
@@ -2513,25 +2510,16 @@ class TransformerFeedForwardLayer(BaseLayer):
             assert len(activations) == 2, cfg.activation
             outputs = activations[0] * activations[1]
             if "linear1_outputs" in cfg.add_value_rms_norm_summary:
-                self._report_tensor_stats(activations[0], "linear1_0_outputs")
-                self._report_tensor_stats(activations[1], "linear1_1_outputs")
-                self._report_tensor_stats(outputs, "linear1_outputs")
+                self._add_tensor_stats("linear1_0_outputs", activations[0])
+                self._add_tensor_stats("linear1_1_outputs", activations[1])
+                self._add_tensor_stats("linear1_outputs", outputs)
             return outputs
         else:
             x = self.linear1(x)
             x = self._get_activation(x, activation_fn_name=cfg.activation)
             if "linear1_outputs" in cfg.add_value_rms_norm_summary:
-                self._report_tensor_stats(x, "linear1_outputs")
+                self._add_tensor_stats("linear1_outputs", x)
             return x
-
-    def _report_tensor_stats(self, x: Tensor, tensor_name: str, cast_fp32: bool = False):
-        # Cast to fp32 before reduction.
-        if cast_fp32:
-            x = x.astype(jnp.float32)
-        rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
-        max_abs = jnp.max(jnp.abs(x)).astype(jnp.float32)
-        self.add_summary(f"rms_norm/{tensor_name}", rms_norm)
-        self.add_summary(f"max_abs/{tensor_name}", max_abs)
 
     def _get_activation(self, x: Tensor, activation_fn_name: str) -> Tensor:
         """Applies activation function on 'x' and optionally counts the number of dead neurons.

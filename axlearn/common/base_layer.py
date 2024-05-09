@@ -182,6 +182,18 @@ class TensorMaxAbs(TensorStats):
         self.add_summary("max_abs", jnp.abs(value).max().astype(jnp.float32))
 
 
+class DefaultTensorStats(CompositeTensorStats):
+    """Default tensor stats that compute RMS norm and max value."""
+
+    @config_class
+    class Config(CompositeTensorStats.Config):
+        tensor_stats: Dict[str, TensorStats.Config] = {
+            "norm": TensorRMSNorm.default_config(),
+            "max": TensorMaxAbs.default_config(),
+        }
+        inline_child_summaries: bool = True
+
+
 class BaseLayer(Module):
     """A base class for layer implementations."""
 
@@ -339,6 +351,10 @@ class BaseLayer(Module):
                 param_spec = dataclasses.replace(param_spec, dtype=self.dtype())
             specs[name] = param_spec
         for name, child in self._children.items():
+            if not isinstance(child, BaseLayer):
+                # `child` is not a BaseLayer and does not have parameters, e.g., it can be an
+                # instance of TensorStats.
+                continue
             assert name not in specs
             specs[name] = child.create_parameter_specs_recursively()
         return specs

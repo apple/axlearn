@@ -4,7 +4,7 @@
 # pylint: disable=no-self-use,too-many-branches
 import contextlib
 import unittest
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 from unittest import mock
 
 import chex
@@ -223,6 +223,53 @@ class TestDecoder(TestCase):
             layer_test.output_dropout.config.rate,
             dropout_rate if output_dropout_rate is None else output_dropout_rate,
         )
+
+    @parameterized.parameters(
+        dict(value_summary=["outputs"]),
+        dict(value_summary=["norm_outputs"]),
+        dict(value_summary=["final_outputs"], expected_raise_regex="add_value_summary"),
+    )
+    def test_value_summary(self, value_summary: List[str], *, expected_raise_regex=None):
+        hidden_dim = 12
+        num_heads = 4
+        vocab_size = 24
+        source_length = 11
+
+        decoder = gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=1,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+            activation_function="nn.relu",
+            max_position_embeddings=source_length,
+        )
+        decoder = decoder.set(add_value_summary=value_summary)
+        if expected_raise_regex is not None:
+            with self.assertRaisesRegex(NotImplementedError, expected_raise_regex):
+                layer = decoder.set(name="decoder").instantiate(parent=None)
+            return
+        layer = decoder.set(name="decoder").instantiate(parent=None)
+        layer_state = layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        inputs = jax.random.randint(
+            jax.random.PRNGKey(1), minval=1, maxval=vocab_size, shape=(3, source_length)
+        )
+
+        _, output_collection = functional(
+            layer,
+            inputs=dict(input_ids=inputs),
+            state=layer_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+        )
+        print("abc123", output_collection)
+        if "tensor_stats" in output_collection.summaries:
+            output_stats = output_collection.summaries["tensor_stats"]
+        else:
+            output_stats = {}
+        for k in value_summary:
+            assert k in output_stats
 
     @parameterized.product(
         use_cross_attention=[False, True],
