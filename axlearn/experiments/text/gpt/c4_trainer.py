@@ -149,5 +149,4 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                 config_map[f"{config_name}-single-host"] = functools.partial(
                     make_single_host_config, config_name
                 )
-
     return config_map
