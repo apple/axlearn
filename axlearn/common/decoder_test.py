@@ -263,7 +263,6 @@ class TestDecoder(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(2),
         )
-        print("abc123", output_collection)
         if "tensor_stats" in output_collection.summaries:
             output_stats = output_collection.summaries["tensor_stats"]
         else:
