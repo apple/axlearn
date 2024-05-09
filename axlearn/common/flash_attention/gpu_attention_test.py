@@ -182,7 +182,7 @@ def test_bwd_against_ref(
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("bias_type", ["none", "vector"])
 @pytest.mark.skipif(jax.devices()[0].platform != "gpu", reason="Test only runs on GPU.")
-def test_triton_against_pallas_ref(
+def test_mha_against_pallas_ref(
     batch_size: int,
     num_heads: int,
     seq_len: int,
@@ -216,10 +216,10 @@ def test_triton_against_pallas_ref(
     def fn(q, k, v):
         return mha_reference(q, k, v, bias=segment_ids, causal=causal, softmax_scale=sm_scale).sum()
 
-    def ref2_fn(q, k, v):
+    def ref_fn(q, k, v):
         return pallas_mha(q, k, v, segment_ids=segment_ids, causal=causal, sm_scale=sm_scale).sum()
 
     # Compare gradients.
     jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v)
-    jax_ref_grads = jax.grad(ref2_fn, argnums=(0, 1, 2))(q, k, v)
+    jax_ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v)
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05, rtol=1e-5)
