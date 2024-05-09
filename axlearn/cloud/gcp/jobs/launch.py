@@ -418,12 +418,14 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
             project: Used for load_kube_config.
             zone: Used to infer total quota.
             cluster: K8s cluster.
+            num_replicas: Number of replicas.
         """
 
         namespace: str = "default"
         project: Required[str] = REQUIRED
         zone: Required[str] = REQUIRED
         cluster: Required[str] = REQUIRED
+        num_replicas: int = 1
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
