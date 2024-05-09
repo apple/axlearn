@@ -21,6 +21,7 @@ As well as the original paper: https://arxiv.org/abs/2205.14135
 Due to the caveats mentioned in the above link, we make several simplifying assumptions:
 * Sequence length is a multiple of block size (128).
 * No dropout is applied.
+* 4-d bias tensor is supported.
 * Currently only tested on A100/H100.
 """
 # pylint: disable=wrong-import-position,missing-param-doc,differing-param-doc
