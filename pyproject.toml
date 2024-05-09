@@ -110,6 +110,12 @@ dataflow = [
     "orjson==3.9.10",
 ]
 
+triton = [
+    "matplotlib",
+    "triton==2.1.0",
+    "pytest",
+]
+
 [tool.flit.module]
 # This defines the import name. https://flit.pypa.io/en/stable/pyproject_toml.html#module-section
 name = "axlearn"

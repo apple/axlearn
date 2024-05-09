@@ -25,13 +25,38 @@ def mha_reference(
     causal: bool = False,
     softmax_scale: float = 1.0,
 ) -> Tensor:
-    """Reference multi-headed attention implementation."""
+    """Reference multi-headed attention implementation.
+
+    Args:
+        q: query tensor with shape [batch_size, seq_len, num_heads, per_head_dim]
+        k: key tensor with shape [batch_size, seq_len, num_heads, per_head_dim]
+        v: value tensor with shape [batch_size, seq_len, num_heads, per_head_dim]
+        bias: bias tensor with shape [batch_size, num_heads, seq_len, seq_len] for matrix bias,
+                and [batch_size, seq_len] for vector bias.
+        causal: whether the attention is causal.
+        softmax_scale: a scalar value applied to the logits before softmax.
+        bias_type: the type of bias to apply. "matrix" for matrix bias, "vector" for additive bias.
+
+    Returns:
+        A tensor with shape [batch_size, seq_len, num_heads, per_head_dim].
+    """
     # We apply the scale factor before the attention biases.
     q *= softmax_scale
     logits = jnp.einsum("btnh,bsnh->bnts", q, k)
 
+    # Check if we need to build a segment id mask.
     if bias is not None:
-        logits += bias.astype(logits.dtype)
+        # matrix bias, shape [batch_size, ..., seq_len, seq_len]
+        if bias.ndim >= 3:
+            logits += bias.astype(logits.dtype)
+        else:  # vector bias, shape [batch_size, seq_len]
+            target_segment_ids = jnp.expand_dims(bias, -1)
+            source_segment_ids = jnp.expand_dims(bias, -2)
+            # Target [b..., t] + Source [b..., s] -> [b..., t, s]
+            # [b, 1, ..., t, s] where the value at [..., i, j] = false if
+            # target_segments[..., i] == source_segments[..., j], or true otherwise.
+            mask = jax.lax.ne(source_segment_ids, target_segment_ids)[:, None, ...]
+            logits = jnp.where(mask, NEG_INF, logits)
 
     if causal:
         mask_shape = (q.shape[1], k.shape[1])
