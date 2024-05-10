@@ -67,7 +67,13 @@ from axlearn.common.attention import (
     sinusoidal_positional_embeddings,
     xl_attention_logits,
 )
-from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec, RematSpec
+from axlearn.common.base_layer import (
+    BaseLayer,
+    DefaultTensorStats,
+    FactorizationSpec,
+    ParameterSpec,
+    RematSpec,
+)
 from axlearn.common.config import (
     InstantiableConfig,
     UnknownFieldError,
@@ -1517,11 +1523,7 @@ class ScaleKeyTest(TestCase):
 class MultiheadAttentionTest(TestCase):
     """Tests MultiheadAttention, GroupedQueryAttention, and associated layers."""
 
-    @parameterized.parameters(
-        dict(value_summary=["o_proj_outputs"]),
-        dict(value_summary=["final_outputs"], expected_raise_regex="add_value_summary"),
-    )
-    def test_add_value_summary(self, value_summary: List[str], *, expected_raise_regex=None):
+    def test_add_tensor_stats(self):
         model_dim = 12
         num_heads = 4
         cfg = attention.MultiheadAttention.default_config().set(
@@ -1530,12 +1532,8 @@ class MultiheadAttentionTest(TestCase):
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=num_heads,
-            add_value_summary=value_summary,
+            tensor_stats=DefaultTensorStats.default_config(),
         )
-        if expected_raise_regex is not None:
-            with self.assertRaisesRegex(NotImplementedError, expected_raise_regex):
-                layer = cfg.instantiate(parent=None)
-            return
         layer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
 
@@ -1557,7 +1555,8 @@ class MultiheadAttentionTest(TestCase):
             output_stats = output_collection.summaries["tensor_stats"]
         else:
             output_stats = {}
-        for k in value_summary:
+        expected_stats = ["o_proj_outputs"]
+        for k in expected_stats:
             assert k in output_stats
 
     def test_invalid_key_value_combinations_raise(self):
@@ -2584,6 +2583,7 @@ class TransformerFeedForwardLayerTest(TestCase):
             input_dim=dim,
             hidden_dim=dim * 4,
             add_value_rms_norm_summary=rms_norm_summary,
+            tensor_stats=DefaultTensorStats.default_config(),
         )
         if expected_raise_regex is not None:
             with self.assertRaisesRegex(NotImplementedError, expected_raise_regex):

@@ -2,7 +2,7 @@
 
 """Decoder layers."""
 import contextlib
-from typing import Callable, Dict, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import jax
 from jax import numpy as jnp
@@ -16,7 +16,7 @@ from axlearn.common.attention import (
     ForwardMode,
     StackedTransformerLayer,
 )
-from axlearn.common.base_layer import BaseLayer, DefaultTensorStats, ParameterSpec
+from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -443,10 +443,6 @@ class Decoder(DecodingMixin, BaseLayer):
         )
         # The logit modifier to apply. If None, does not modify logits.
         output_logits_modifier: Optional[ConfigOr[logit_modifiers.LogitsToLogitsFn]] = None
-        # Adds summary of the specified values. Supported value are:
-        # - "outputs": outputs of Transformer.
-        # - "norm_outputs": outputs of the final normalization layer.
-        add_value_summary: Optional[Sequence[str]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -465,12 +461,6 @@ class Decoder(DecodingMixin, BaseLayer):
                 "lm_head", cfg.lm_head.set(vocab_size=cfg.vocab_size, embedding_dim=cfg.dim)
             )
         self._output_logits_modifier = maybe_instantiate(cfg.output_logits_modifier)
-        if cfg.add_value_summary is not None:
-            for value in cfg.add_value_summary:
-                if value not in ["outputs", "norm_outputs"]:
-                    raise NotImplementedError(f"add_value_summary: {value}")
-            if cfg.tensor_stats is None:
-                self._add_child("tensor_stats", DefaultTensorStats.default_config())
 
     def _forward_for_mode(
         self,
@@ -512,16 +502,12 @@ class Decoder(DecodingMixin, BaseLayer):
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
-        cfg = self.config
-        summary_list = cfg.add_value_summary
         x = x.data
-        if summary_list is not None and "outputs" in summary_list:
-            self._add_tensor_stats("outputs", x)
+        self._add_tensor_stats("outputs", x)
 
         if "output_norm" in self.children:
             x = self.output_norm(x)
-            if summary_list is not None and "norm_outputs" in summary_list:
-                self._add_tensor_stats("norm_outputs", x)
+            self._add_tensor_stats("norm_outputs", x)
         x = self.output_dropout(x)
         if "lm_head" in self.children:
             logits = self.lm_head(x)

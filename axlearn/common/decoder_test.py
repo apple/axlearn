@@ -4,7 +4,7 @@
 # pylint: disable=no-self-use,too-many-branches
 import contextlib
 import unittest
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 from unittest import mock
 
 import chex
@@ -26,7 +26,7 @@ from axlearn.common.attention import (
     TransformerAttentionLayer,
     TransformerLayer,
 )
-from axlearn.common.base_layer import RematSpec
+from axlearn.common.base_layer import DefaultTensorStats, RematSpec
 from axlearn.common.causal_lm import gpt_decoder_config
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.decoder import Decoder, LmHead, _segment_ids_from_causal_input_ids
@@ -224,12 +224,7 @@ class TestDecoder(TestCase):
             dropout_rate if output_dropout_rate is None else output_dropout_rate,
         )
 
-    @parameterized.parameters(
-        dict(value_summary=["outputs"]),
-        dict(value_summary=["norm_outputs"]),
-        dict(value_summary=["final_outputs"], expected_raise_regex="add_value_summary"),
-    )
-    def test_value_summary(self, value_summary: List[str], *, expected_raise_regex=None):
+    def test_add_tensor_stats(self):
         hidden_dim = 12
         num_heads = 4
         vocab_size = 24
@@ -244,11 +239,7 @@ class TestDecoder(TestCase):
             activation_function="nn.relu",
             max_position_embeddings=source_length,
         )
-        decoder = decoder.set(add_value_summary=value_summary)
-        if expected_raise_regex is not None:
-            with self.assertRaisesRegex(NotImplementedError, expected_raise_regex):
-                layer = decoder.set(name="decoder").instantiate(parent=None)
-            return
+        decoder = decoder.set(tensor_stats=DefaultTensorStats.default_config())
         layer = decoder.set(name="decoder").instantiate(parent=None)
         layer_state = layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
 
@@ -267,7 +258,8 @@ class TestDecoder(TestCase):
             output_stats = output_collection.summaries["tensor_stats"]
         else:
             output_stats = {}
-        for k in value_summary:
+        expected_stats = ["outputs", "norm_outputs"]
+        for k in expected_stats:
             assert k in output_stats
 
     @parameterized.product(

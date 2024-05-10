@@ -53,7 +53,6 @@ from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 from axlearn.common import ops, param_init
 from axlearn.common.base_layer import (
     BaseLayer,
-    DefaultTensorStats,
     FactorizationSpec,
     NestedParameterSpec,
     ParameterSpec,
@@ -1437,9 +1436,6 @@ class MultiheadAttention(BaseLayer):
         key_scale: BaseScaleQK.Config = ScaleKey.default_config()
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = None
-        # Adds summary of the specified values. Supported value are:
-        # - "o_proj_outputs": output rms of the o-projection.
-        add_value_summary: Optional[Sequence[str]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1464,12 +1460,6 @@ class MultiheadAttention(BaseLayer):
         self._add_child("scale_query", cfg.query_scale.set(per_head_dim=self.per_head_dim()))
         # Add key scaling layer.
         self._add_child("scale_key", cfg.key_scale.set(per_head_dim=self.per_head_dim()))
-        if cfg.add_value_summary is not None:
-            for value in cfg.add_value_summary:
-                if value not in ["o_proj_outputs"]:
-                    raise NotImplementedError(f"add_value_summary: {value}")
-            if cfg.tensor_stats is None:
-                self._add_child("tensor_stats", DefaultTensorStats.default_config())
 
     def output_dim(self):
         cfg = self.config
@@ -1566,11 +1556,7 @@ class MultiheadAttention(BaseLayer):
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
-
-        cfg = self.config
-        summary_list = cfg.add_value_summary
-        if summary_list is not None and "o_proj_outputs" in summary_list:
-            self._add_tensor_stats("o_proj_outputs", outputs)
+        self._add_tensor_stats("o_proj_outputs", outputs)
         return dict(i_proj=i_proj_state), self.Output(data=outputs, probs=probs)
 
     def _compute_attention(
@@ -2378,7 +2364,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         # - "inputs": inputs of the layer.
         # - "linear1_outputs": outputs of linear1.
         # - "linear2_outputs": outputs of linear2.
-        # TODO: rename this to `add_value_summary` for consistency with other layers.
+        # TODO: deprecate this feature since we use TensorStats.
         add_value_rms_norm_summary: Sequence[str] = []
 
     def __init__(self, cfg: Config, *, parent: Module):
@@ -2425,11 +2411,11 @@ class TransformerFeedForwardLayer(BaseLayer):
             raise NotImplementedError(cfg.structure)
 
         self._add_child("stochastic_depth", cfg.stochastic_depth)
+        # TODO: deprecate this check since we will use TensorStats to handle what
+        # tensors are logged.
         for value in cfg.add_value_rms_norm_summary:
             if value not in ["inputs", "linear1_outputs", "linear2_outputs"]:
                 raise NotImplementedError(f"add_value_rms_norm_summary: {value}")
-        if cfg.tensor_stats is None:
-            self._add_child("tensor_stats", DefaultTensorStats.default_config())
 
     def forward(self, inputs: Tensor) -> Tensor:
         cfg = self.config
@@ -2437,12 +2423,10 @@ class TransformerFeedForwardLayer(BaseLayer):
         def _linear2(x):
             """Applies linear2, optionally logging RMS norm of the output."""
             x = self.linear2(x)
-            if "linear2_outputs" in cfg.add_value_rms_norm_summary:
-                self._add_tensor_stats("linear2_outputs", x)
+            self._add_tensor_stats("linear2_outputs", x)
             return x
 
-        if "inputs" in cfg.add_value_rms_norm_summary:
-            self._add_tensor_stats("inputs", inputs)
+        self._add_tensor_stats("inputs", inputs)
 
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
@@ -2509,16 +2493,14 @@ class TransformerFeedForwardLayer(BaseLayer):
             ]
             assert len(activations) == 2, cfg.activation
             outputs = activations[0] * activations[1]
-            if "linear1_outputs" in cfg.add_value_rms_norm_summary:
-                self._add_tensor_stats("linear1_0_outputs", activations[0])
-                self._add_tensor_stats("linear1_1_outputs", activations[1])
-                self._add_tensor_stats("linear1_outputs", outputs)
+            self._add_tensor_stats("linear1_0_outputs", activations[0])
+            self._add_tensor_stats("linear1_1_outputs", activations[1])
+            self._add_tensor_stats("linear1_outputs", outputs)
             return outputs
         else:
             x = self.linear1(x)
             x = self._get_activation(x, activation_fn_name=cfg.activation)
-            if "linear1_outputs" in cfg.add_value_rms_norm_summary:
-                self._add_tensor_stats("linear1_outputs", x)
+            self._add_tensor_stats("linear1_outputs", x)
             return x
 
     def _get_activation(self, x: Tensor, activation_fn_name: str) -> Tensor:
