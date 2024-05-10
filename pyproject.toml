@@ -16,8 +16,8 @@ dependencies = [
     "absl-py==2.1.0",
     "chex==0.1.86",  # chex 0.1.86 is required for jax 0.4.25.
     "importlab==0.7",  # breaks pytype on 0.8
-    "jax==0.4.27",
-    "jaxlib==0.4.27",
+    "jax==0.4.28",
+    "jaxlib==0.4.28",
     "nltk==3.7",  # for text preprocessing
     "numpy==1.26.4",  # verified with tensorflow 2.14 RaggedTensor
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -90,7 +90,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.4.27",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.4.28",  # must be >=0.4.19 for compat with v5p.
 ]
 # Vertex AI tensorboard.
 vertexai_tensorboard = [
