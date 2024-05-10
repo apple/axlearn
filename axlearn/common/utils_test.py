@@ -450,6 +450,8 @@ class TreeUtilsTest(TestCase):
             split_keys = split_prng_key(original_key, 10)
             self.assertIsInstance(split_keys, StackedKeyArray)
             if prng_impl_type == "threefry2x32":
+                # Only the "threefry" implementation ensures invariance under "vmap".
+                # See https://github.com/google/jax/pull/20094.
                 self.assertNestedAllClose(batch(fn)(split_keys), base_results)
 
             # Splitting the keys again is a no-op.
