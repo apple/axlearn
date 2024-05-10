@@ -2364,7 +2364,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         # - "inputs": inputs of the layer.
         # - "linear1_outputs": outputs of linear1.
         # - "linear2_outputs": outputs of linear2.
-        # TODO: deprecate this feature since we use TensorStats.
+        # TODO(tlei3): deprecate this feature since we use TensorStats.
         add_value_rms_norm_summary: Sequence[str] = []
 
     def __init__(self, cfg: Config, *, parent: Module):
@@ -2411,7 +2411,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             raise NotImplementedError(cfg.structure)
 
         self._add_child("stochastic_depth", cfg.stochastic_depth)
-        # TODO: deprecate this check since we will use TensorStats to handle what
+        # TODO(tlei3): deprecate this check since we will use TensorStats to handle what
         # tensors are logged.
         for value in cfg.add_value_rms_norm_summary:
             if value not in ["inputs", "linear1_outputs", "linear2_outputs"]:
