@@ -295,6 +295,7 @@ class BaseLayerTest(TestCase):
     def test_apply_parameter_noise_recursively(self, param_noise_cfg):
         test_module: TestLayer = (
             TestLayer.default_config()
+            .set(tensor_stats=TensorRMSNorm.default_config())
             .set(name="test", param_noise=param_noise_cfg)
             .instantiate(parent=None)
         )
@@ -596,6 +597,7 @@ class ComputeFanAxesTest(TestCase):
 
     def test_fan_axes_in_create_parameter_specs_recursively(self):
         layer_cfg = self.BatchedCustomFanLayer.default_config().set(name="test")
+        layer_cfg = layer_cfg.set(tensor_stats=TensorRMSNorm.default_config())
         layer = layer_cfg.instantiate(parent=None)
         specs = layer.create_parameter_specs_recursively()
         self.assertEqual(
