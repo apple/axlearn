@@ -122,7 +122,6 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
                 f,
             )
 
-
     trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
     prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
     return trainer.run(prng_key)
