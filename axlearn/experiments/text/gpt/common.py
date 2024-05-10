@@ -251,7 +251,7 @@ def model_config(
         vocab_size=vocab_size,
         emb=emb_cfg,
         dropout_rate=dropout_rate,
-        lm_head=LmHead.default_config().set(dtype=jnp.bfloat16)
+        lm_head=LmHead.default_config()
     )
     # Model.
     model_param_init = DefaultInitializer.default_config().set(
@@ -268,7 +268,7 @@ def model_config(
         batch_axis_names=batch_axis_names,
         seq_axis_names="seq",
     )
-    cfg.dtype = jnp.bfloat16
+    cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(
         cfg.decoder.transformer.layer,
@@ -299,7 +299,8 @@ def learner_config(
     b1: float = 0.9,
     b2: float = 0.95,
     eps: float = 1e-8,
-    gradient_accumulation_microbatches: int = 1
+    gradient_accumulation_microbatches: int = 1,
+    metrics_accumulation_key_ops: Dict = {}
 ) -> learner.Learner.Config:
     """Build learner using the AdamW optimizer and a cosine lr schedule with linear warmup."""
     update_schedule = config_for_function(schedule.cosine_with_linear_warmup).set(
@@ -327,7 +328,7 @@ def learner_config(
         ]
     )
     if gradient_accumulation_microbatches > 1:
-        return learner.AccumulatedLearner.default_config().set(optimizer=optimizer_cfg, microbatches=gradient_accumulation_microbatches)
+        return learner.AccumulatedLearner.default_config().set(optimizer=optimizer_cfg, microbatches=gradient_accumulation_microbatches, metrics_accumulation_key_ops=metrics_accumulation_key_ops)
     else:
         return learner.Learner.default_config().set(optimizer=optimizer_cfg)
 

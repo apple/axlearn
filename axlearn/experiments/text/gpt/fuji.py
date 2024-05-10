@@ -33,6 +33,7 @@ from axlearn.experiments.text.gpt.common import (
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.common.utils import DataPartitionType
+from axlearn.common.learner import GeometricMeanStrategy, AddStrategy
 import jax
 import os
 
@@ -90,7 +91,11 @@ TOTAL_TOKENS = {
 }
 
 # Adjust Neuron compiler flags for gradient accumulation
-os.environ["NEURON_CC_FLAGS"] += " --internal-hlo2tensorizer-options='--verify-hlo --num-concat-graphs=" + str(GRADIENT_ACCUMULATION_MICROBATCHES) + '\''
+if jax.default_backend() == 'neuron':
+    if GRADIENT_ACCUMULATION_MICROBATCHES > 1:
+        os.environ["NEURON_CC_FLAGS"] += " --internal-hlo2tensorizer-options='--verify-hlo --num-concat-graphs=" + str(GRADIENT_ACCUMULATION_MICROBATCHES) + '\''
+    else:
+        os.environ["NEURON_CC_FLAGS"] += " --internal-hlo2tensorizer-options='--verify-hlo'"
 
 def get_trainer_kwargs(
     model_size: str,
@@ -224,6 +229,7 @@ def get_trainer_kwargs(
     trainer_kwargs["learner_cfg"] = learner_config(
         max_step=trainer_kwargs["max_step"],
         gradient_accumulation_microbatches=GRADIENT_ACCUMULATION_MICROBATCHES,
+        metrics_accumulation_key_ops={".output_collection.summaries['bits_per_byte'].mean": AddStrategy},
         **trainer_kwargs.pop("learner_kwargs"),
     )
     # pylint: enable=use-dict-literal
