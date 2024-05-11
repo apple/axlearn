@@ -26,7 +26,7 @@ from axlearn.common.attention import (
     TransformerAttentionLayer,
     TransformerLayer,
 )
-from axlearn.common.base_layer import RematSpec
+from axlearn.common.base_layer import DefaultTensorStats, RematSpec
 from axlearn.common.causal_lm import gpt_decoder_config
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.decoder import Decoder, LmHead, _segment_ids_from_causal_input_ids
@@ -223,6 +223,44 @@ class TestDecoder(TestCase):
             layer_test.output_dropout.config.rate,
             dropout_rate if output_dropout_rate is None else output_dropout_rate,
         )
+
+    def test_add_tensor_stats(self):
+        hidden_dim = 12
+        num_heads = 4
+        vocab_size = 24
+        source_length = 11
+
+        decoder = gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=1,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+            activation_function="nn.relu",
+            max_position_embeddings=source_length,
+        )
+        decoder = decoder.set(tensor_stats=DefaultTensorStats.default_config())
+        layer = decoder.set(name="decoder").instantiate(parent=None)
+        layer_state = layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        inputs = jax.random.randint(
+            jax.random.PRNGKey(1), minval=1, maxval=vocab_size, shape=(3, source_length)
+        )
+
+        _, output_collection = functional(
+            layer,
+            inputs=dict(input_ids=inputs),
+            state=layer_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+        )
+        if "tensor_stats" in output_collection.summaries:
+            output_stats = output_collection.summaries["tensor_stats"]
+        else:
+            output_stats = {}
+        expected_stats = ["outputs", "norm_outputs"]
+        for k in expected_stats:
+            assert k in output_stats
 
     @parameterized.product(
         use_cross_attention=[False, True],

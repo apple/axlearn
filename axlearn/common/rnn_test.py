@@ -13,7 +13,7 @@ from axlearn.common.module import functional as F
 from axlearn.common.param_init import GaussianInitializer
 from axlearn.common.rnn import LSTMCell, RepeatedRNNLayer, StackedRNNLayer
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import shapes
+from axlearn.common.utils import VDict, shapes
 
 
 class LSTMTest(TestCase):
@@ -381,7 +381,17 @@ class StackedRNNTest(TestCase):
         )
         init_key, data_key, prng_key = jax.random.split(jax.random.PRNGKey(567), num=3)
         stack_params = stack_layer.initialize_parameters_recursively(prng_key=init_key)
-        repeat_params = repeat_layer.initialize_parameters_recursively(prng_key=init_key)
+        # Convert `stack_params` to params for `repeat_layer`.
+        repeat_params = {
+            "repeat": VDict(
+                {
+                    "layer": jax.tree_util.tree_map(
+                        lambda *xs: jnp.stack(xs),
+                        *stack_params.values(),
+                    )
+                }
+            )
+        }
         inputs = jax.random.normal(data_key, [seq_len, batch_size, input_dim]) * 100.0
         stack_outputs, stack_collections = F(
             stack_layer,

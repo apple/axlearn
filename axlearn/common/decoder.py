@@ -503,8 +503,11 @@ class Decoder(DecodingMixin, BaseLayer):
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
         x = x.data
+        self._add_tensor_stats("outputs", x)
+
         if "output_norm" in self.children:
             x = self.output_norm(x)
+            self._add_tensor_stats("norm_outputs", x)
         x = self.output_dropout(x)
         if "lm_head" in self.children:
             logits = self.lm_head(x)

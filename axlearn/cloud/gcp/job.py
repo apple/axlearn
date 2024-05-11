@@ -341,10 +341,16 @@ class TPUGKEJob(GKEJob):
             reservation: If specified, the TPU reservation name. This is not necessarily specific to
                 GKE and can be the same as e.g. the QRM reservation.
                 https://cloud.google.com/sdk/gcloud/reference/alpha/compute/tpus/reservations/list
+            enable_tpu_ici_resiliency: Whether to enable TPU ICI resiliency.
+                If True, the job will persist through some types of network failure, but with
+                degraded performance.
+                If None, we leave it to GCP to determine whether it's appropriate for the requested
+                TPU topology.
         """
 
         accelerator: AcceleratorConfig = AcceleratorConfig()
         reservation: Optional[str] = None
+        enable_tpu_ici_resiliency: Optional[bool] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -352,6 +358,13 @@ class TPUGKEJob(GKEJob):
         common_kwargs = dict(flag_values=fv, allow_override=True)
         accelerator_flags(**common_kwargs)
         flags.DEFINE_string("reservation", None, "TPU reservation.", **common_kwargs)
+        flags.DEFINE_boolean(
+            "enable_tpu_ici_resiliency",
+            None,
+            "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
+            "not all TPU types support this flag.",
+            **common_kwargs,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
@@ -391,6 +404,10 @@ class TPUGKEJob(GKEJob):
                 ),
             )
 
+        env_vars = {**cfg.env_vars}
+        if cfg.enable_tpu_ici_resiliency is not None:
+            env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
+
         return dict(
             name=cfg.name,
             image=self._bundler.id(cfg.name),
@@ -406,7 +423,7 @@ class TPUGKEJob(GKEJob):
             command=["bash", "-c", cfg.command],
             resources=dict(limits={"google.com/tpu": system.chips_per_vm}),
             # Env var values should always be strings.
-            env=[dict(name=k, value=str(v)) for k, v in cfg.env_vars.items()],
+            env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
             volumeMounts=volume_mounts,
         )
 
@@ -457,6 +474,15 @@ class TPUGKEJob(GKEJob):
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         else:
             selector.update({"cloud.google.com/gke-spot": "true"})
+
+        if cfg.enable_tpu_ici_resiliency is not None:
+            selector.update(
+                {
+                    "cloud.google.com/gke-tpu-ici-resiliency": str(
+                        cfg.enable_tpu_ici_resiliency
+                    ).lower()
+                }
+            )
 
         return dict(
             metadata=dict(annotations=annotations),
