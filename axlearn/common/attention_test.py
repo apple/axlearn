@@ -67,7 +67,13 @@ from axlearn.common.attention import (
     sinusoidal_positional_embeddings,
     xl_attention_logits,
 )
-from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec, RematSpec
+from axlearn.common.base_layer import (
+    BaseLayer,
+    DefaultTensorStats,
+    FactorizationSpec,
+    ParameterSpec,
+    RematSpec,
+)
 from axlearn.common.config import (
     InstantiableConfig,
     UnknownFieldError,
@@ -1517,6 +1523,42 @@ class ScaleKeyTest(TestCase):
 class MultiheadAttentionTest(TestCase):
     """Tests MultiheadAttention, GroupedQueryAttention, and associated layers."""
 
+    def test_add_tensor_stats(self):
+        model_dim = 12
+        num_heads = 4
+        cfg = attention.MultiheadAttention.default_config().set(
+            name="attn",
+            query_dim=12,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            tensor_stats=DefaultTensorStats.default_config(),
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        batch_size, src_len, tgt_len = 2, 6, 6
+        rng = np.random.default_rng(seed=123)
+        query = jnp.asarray(rng.random([batch_size, tgt_len, model_dim]))
+        key = jnp.asarray(rng.random([batch_size, src_len, model_dim]))
+        value = jnp.asarray(rng.random([batch_size, src_len, model_dim]))
+        attention_logit_biases = jnp.ones([batch_size, tgt_len, src_len]) * NEG_INF
+        x = dict(query=query, key=key, value=value, attention_logit_biases=attention_logit_biases)
+        _, output_collection = F(
+            layer,
+            inputs=x,
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        if "tensor_stats" in output_collection.summaries:
+            output_stats = output_collection.summaries["tensor_stats"]
+        else:
+            output_stats = {}
+        expected_stats = ["o_proj_outputs"]
+        for k in expected_stats:
+            assert k in output_stats
+
     def test_invalid_key_value_combinations_raise(self):
         model_dim = 12
         num_heads = 4
@@ -2541,6 +2583,7 @@ class TransformerFeedForwardLayerTest(TestCase):
             input_dim=dim,
             hidden_dim=dim * 4,
             add_value_rms_norm_summary=rms_norm_summary,
+            tensor_stats=DefaultTensorStats.default_config(),
         )
         if expected_raise_regex is not None:
             with self.assertRaisesRegex(NotImplementedError, expected_raise_regex):
@@ -2558,10 +2601,12 @@ class TransformerFeedForwardLayerTest(TestCase):
         )
         self.assertSequenceEqual(x.shape, y.shape)
         self.assertNestedAllClose(2.663487, jnp.sum(y))
-        self.assertSetEqual(
-            set(k for k in output_collection.summaries.keys() if k.startswith("rms_norm/")),
-            set(f"rms_norm/{k}" for k in rms_norm_summary),
-        )
+        if "tensor_stats" in output_collection.summaries:
+            output_stats = output_collection.summaries["tensor_stats"]
+        else:
+            output_stats = {}
+        for k in rms_norm_summary:
+            assert k in output_stats
 
     @parameterized.parameters(
         dict(activation_fn="nn.relu"),
