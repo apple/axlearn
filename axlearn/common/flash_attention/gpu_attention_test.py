@@ -68,6 +68,8 @@ def test_fwd_against_ref(
         bias = jnp.concatenate([segment_left, segment_right], axis=-1)
     else:
         bias = None
+    # Make sure that it is running on GPU.
+    assert str(q.devices()) == "{cuda(id=0)}"
 
     if use_fwd:
 
@@ -141,8 +143,9 @@ def test_bwd_against_ref(
         bias = jnp.concatenate([segment_left, segment_right], axis=-1)
     else:
         bias = None
+    # Make sure that it is running on GPU.
+    assert str(q.devices()) == "{cuda(id=0)}"
 
-    assert str(q.device()) == "cuda:0"
     sm_scale = q.shape[-1] ** -0.5
 
     # Compare outputs.
@@ -199,8 +202,9 @@ def test_mha_against_pallas_ref(
     v = jax.random.normal(
         jax.random.PRNGKey(2), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
     )
+    # Make sure that it is running on GPU.
+    assert str(q.devices()) == "{cuda(id=0)}"
 
-    assert str(q.device()) == "cuda:0"
     sm_scale = q.shape[-1] ** -0.5
     if bias_type == "vector":
         segment_left = jnp.ones((batch_size, seq_len // 2), dtype=jnp.int32)

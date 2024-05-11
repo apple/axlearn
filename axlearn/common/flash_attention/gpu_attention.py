@@ -283,8 +283,7 @@ def flash_attention(
             bias_block_spec,  # bias
         ],
         out_specs=pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
-        num_warps=num_warps_,
-        num_stages=num_stages_,
+        compiler_params=dict(triton=dict(num_warps=num_warps_, num_stages=num_stages_)),
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
@@ -339,7 +338,7 @@ def _mha_forward(
     if num_warps_ is None:
         num_warps_ = 4 if head_dim <= 64 else 8
     num_stages_ = num_stages
-    if num_stages is None:
+    if num_stages_ is None:
         num_stages_ = 2 if head_dim <= 64 else 1
     kernel = functools.partial(
         _mha_forward_kernel,
@@ -370,8 +369,7 @@ def _mha_forward(
             pl.BlockSpec(lambda _, j, k: (j, k, 0), (None, None, seq_len)),
             pl.BlockSpec(lambda _, j, k: (j, k, 0), (None, None, seq_len)),
         ],
-        num_warps=num_warps_,
-        num_stages=num_stages_,
+        compiler_params=dict(triton=dict(num_warps=num_warps_, num_stages=num_stages_)),
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
@@ -435,8 +433,7 @@ def _preprocess_backward(
             pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
             pl.BlockSpec(lambda _, j, k: (j, k, 0), (None, None, seq_len)),
         ],
-        num_warps=4,
-        num_stages=3,
+        compiler_params=dict(triton=dict(num_warps=4, num_stages=3)),
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
@@ -659,8 +656,7 @@ def _mha_backward(
             name="mha_backward",
             debug=debug,
             interpret=interpret,
-            num_warps=num_warps,
-            num_stages=1,
+            compiler_params=dict(triton=dict(num_warps=num_warps, num_stages=1)),
             input_output_aliases=input_output_aliases,
         )(q, k, v, b, out, do_scaled, l, m, delta, dq)
     else:

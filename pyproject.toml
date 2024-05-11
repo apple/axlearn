@@ -109,8 +109,8 @@ dataflow = [
     "google-apitools",  # for beam pipeline
     "orjson==3.9.10",
 ]
-# Triton kernel dependency.
-triton = [
+# GPU custom kernel dependency.
+gpu = [
     "triton==2.1.0",
 ]
 
