@@ -61,10 +61,6 @@ class BaseFrontend(BaseLayer):
         frame_size_ms: Required[float] = REQUIRED
         # Hop size in ms.
         hop_size_ms: Required[float] = REQUIRED
-        # Floor of melfilter bank energy to prevent log(0).
-        # Recommend to set to 1e-6 or smaller to capture
-        # low-energy signals.
-        mel_floor: Required[float] = REQUIRED
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -79,7 +75,6 @@ class BaseFrontend(BaseLayer):
 
         self._frame_size = int(frame_size)
         self._hop_size = int(hop_size)
-        self._mel_floor = cfg.mel_floor
 
 
 class LogMelFrontend(BaseFrontend):
@@ -97,6 +92,10 @@ class LogMelFrontend(BaseFrontend):
         output_dim: int = 1
         # Optional output transformation. See `normalize_by_mean_std` for an example.
         output_transformation: Optional[InstantiableConfig[Callable[[Tensor], Tensor]]] = None
+        # Floor of melfilter bank energy to prevent log(0).
+        # Recommend to set to 1e-6 or smaller to capture
+        # low-energy signals.
+        mel_floor: Required[float] = REQUIRED
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -120,6 +119,7 @@ class LogMelFrontend(BaseFrontend):
             lower_edge_hertz=125.0,
             upper_edge_hertz=7600.0,
         )
+        self._mel_floor = cfg.mel_floor
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
         """Computes log-mel spectrogram features.
