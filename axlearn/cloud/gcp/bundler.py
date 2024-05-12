@@ -151,7 +151,8 @@ class CloudBuildBundler(BaseDockerBundler):
             if cfg.cache_from
             else ""
         )
-        latest_tag = f"{cfg.repo}/build:latest"
+        image_path, image_tag = image.rsplit(":", maxsplit=1)
+        latest_tag = f"{image_path}:latest"
         cloudbuild_yaml = f"""
 steps:
 - name: "gcr.io/cloud-builders/docker"
@@ -159,7 +160,6 @@ steps:
     "build",
     "-f", "{os.path.relpath(dockerfile, context)}",
     "-t", "{image}",
-    "-t", "{cfg.repo}/build:latest",
     "--cache-from", "{image}",
     "--cache-from", "{latest_tag}",
     {cache_from}
@@ -174,6 +174,7 @@ steps:
 timeout: 3600s
 images:
 - "{image}"
+- "{latest_tag}"
 options:
   logging: CLOUD_LOGGING_ONLY
         """
