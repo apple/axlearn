@@ -126,8 +126,6 @@ class CloudBuildBundler(BaseDockerBundler):
         cfg = super().from_spec(spec, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
-        if not cfg.cache_from:
-            cfg.cache_from = ["default"]
         return cfg
 
     # pylint: disable-next=no-self-use,unused-argument
