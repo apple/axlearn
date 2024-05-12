@@ -160,6 +160,7 @@ steps:
     "build",
     "-f", "{os.path.relpath(dockerfile, context)}",
     "-t", "{image}",
+    "-t", "{latest_tag}",
     "--cache-from", "{image}",
     "--cache-from", "{latest_tag}",
     {cache_from}
