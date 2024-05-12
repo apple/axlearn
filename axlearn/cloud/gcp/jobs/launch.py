@@ -330,12 +330,12 @@ class BaseBastionManagedJob(Job):
             self._bastion_dir.submit_job(cfg.name, job_spec_file=f.name)
         gcp_api = "gke" if "gke" in cfg.bastion_name else "qrm"
         print(
-            "\nView bastion outputs with:\n"
+            "\nView bastion outputs with: (if not found, check job and project history)\n"
             f"gsutil cat {os.path.join(self._bastion_dir.logs_dir, cfg.name)}\n"
             f"\nStop/cancel the job with: (you may need to add --gcp_api=gke)\n"
             f"{infer_cli_name()} gcp launch stop "
             f"--name={cfg.name} --bastion={cfg.bastion_name} --instance_type={cfg.instance_type} "
-            f"--zone={cfg.zone} --gcp_api={gcp_api}"
+            f"--zone={cfg.zone} --gcp_api={gcp_api}\n"
             "\nCheck job history with:\n"
             f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone}"
             f"--job_name={cfg.name}"
