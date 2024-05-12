@@ -84,6 +84,7 @@ from axlearn.common.param_init import (
     constant_initializer,
 )
 from axlearn.common.pipeline import Pipeline
+from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.repeat import Repeat
 from axlearn.common.utils import (
     NestedTensor,
@@ -426,14 +427,14 @@ class SinusoidalPositionalEmbedding(BaseLayer):
         )
 
 
-class BaseMultiheadLinear(BaseLayer):
+class BaseMultiheadLinear(DenseGeneralBaseLayer):
     """The linear layer used for multi-head attention.
 
     It uses einsum for efficient computation on TPU to avoid reshaping.
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(DenseGeneralBaseLayer.Config):
         """Configures BaseMultiheadLinear."""
 
         model_dim: Required[int] = REQUIRED  # Feature dim.
@@ -461,9 +462,15 @@ class BaseMultiheadLinear(BaseLayer):
             params["bias"] = self._bias_spec
         return params
 
+    @property
+    def _einsum_expr(self):
+        raise NotImplementedError(type(self))
+
     def forward(self, inputs: Tensor) -> Tensor:
         params = self.parameters
-        outputs = jnp.einsum(self._einsum_expr, inputs, params["weight"])
+        outputs = self.einsum_maybe_quantized(
+            self._einsum_expr, activation=inputs, kernel=params["weight"]
+        )
         return outputs + params.get("bias", 0)
 
     def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
@@ -932,7 +939,9 @@ class FusedQKVLinear(BaseQKVLinear):
                 # N.B. this branch (with just the query inputs) is required in
                 # order to get the best step time on TPU for self-attention.
                 inputs = query  # [batch, target_length, target_dim].
-                proj = jnp.einsum("btd,pdnh->pbtnh", inputs, params["weight"])
+                proj = self.qkv_proj.einsum_maybe_quantized(
+                    "btd,pdnh->pbtnh", activation=inputs, kernel=params["weight"]
+                )
             elif key is not None and value is not None:
                 # Compute cross attention but with same target/source shapes.
                 assert (
@@ -941,7 +950,9 @@ class FusedQKVLinear(BaseQKVLinear):
                 inputs = jnp.stack(
                     [query, key, value], axis=0
                 )  # [q/k/v, batch, target, model_dim].
-                proj = jnp.einsum("pbtd,pdnh->pbtnh", inputs, params["weight"])
+                proj = self.qkv_proj.einsum_maybe_quantized(
+                    "pbtd,pdnh->pbtnh", activation=inputs, kernel=params["weight"]
+                )
             else:
                 raise ValueError("Key and value should be either both None or both set.")
             if self.qkv_proj.config.bias:
