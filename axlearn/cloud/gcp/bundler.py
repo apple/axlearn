@@ -172,16 +172,6 @@ steps:
   ]
   env:
   - "DOCKER_BUILDKIT=1"
-- name: "gcr.io/cloud-builders/docker"
-  args: [
-    "push",
-    "{image}",
-  ]
-- name: "gcr.io/cloud-builders/docker"
-  args: [
-    "push",
-    "{latest_tag}",
-  ]
 timeout: 3600s
 images:
 - "{image}"
