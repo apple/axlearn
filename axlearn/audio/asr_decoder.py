@@ -2,7 +2,7 @@
 
 """ASR decoder layers."""
 
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -196,19 +196,30 @@ class BaseASRDecoderModel(BaseModel):
         target_labels: Tensor = input_batch["target_labels"]
         # Infer target_paddings from out-of-range labels.
         target_paddings = jnp.logical_or(cfg.vocab_size <= target_labels, target_labels < 0)
+        return target_paddings
 
+    def _input_stats_summary(
+        self, input_batch: Nested[Tensor]
+    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
+        target_labels: Tensor = input_batch["target_labels"]
+        target_paddings = self._compute_target_paddings(target_labels)
         batch_size = target_labels.shape[0]
         target_lengths = jnp.sum(1 - target_paddings, axis=-1)
-        self.add_summary(
-            "input_stats/average_target_length",
-            WeightedScalar(jnp.mean(target_lengths), batch_size),
-        )
         source_lengths = jnp.sum(1 - input_batch["paddings"], axis=-1)
-        self.add_summary(
-            "input_stats/average_source_length",
-            WeightedScalar(jnp.mean(source_lengths), batch_size),
-        )
-        return target_paddings
+        # pytype: disable=attribute-error
+        ret_dict = {
+            "input_stats/average_target_length": WeightedScalar(
+                jnp.mean(target_lengths), batch_size
+            ),
+            "input_stats/average_source_length": WeightedScalar(
+                jnp.mean(source_lengths), batch_size
+            ),
+            "input_stats/frame_packing_effiency": WeightedScalar(
+                jnp.sum(source_lengths) / input_batch["paddings"].size, input_batch["paddings"].size
+            ),
+        }
+        # pytype: enable=attribute-error
+        return ret_dict
 
 
 class CTCDecoderModel(BaseASRDecoderModel):
@@ -256,6 +267,64 @@ class CTCDecoderModel(BaseASRDecoderModel):
         paddings = input_batch["paddings"]
         logits = self.lm_head(inputs)
         return logits * (1 - paddings[..., None])
+
+    def _input_stats_summary(
+        self, input_batch: Nested[Tensor], per_example_weight: Tensor
+    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
+        paddings = input_batch["paddings"]
+        target_paddings = self._compute_target_paddings(input_batch)
+        valid_frame_mask = (1.0 - paddings) * per_example_weight[:, None]
+        valid_label_mask = (1.0 - target_paddings) * per_example_weight[:, None]
+        num_valid_frames = jnp.sum(valid_frame_mask)
+        num_valid_labels = jnp.sum(valid_label_mask)
+        num_valid_examples = jnp.maximum(per_example_weight.sum(), 1.0)
+        # pytype: disable=attribute-error
+        ret_dict = {
+            "input_stats/average_target_length": WeightedScalar(
+                num_valid_labels / num_valid_examples, num_valid_examples
+            ),
+            "input_stats/average_source_length": WeightedScalar(
+                num_valid_frames / num_valid_examples, num_valid_examples
+            ),
+            "input_stats/frame_packing_effiency": WeightedScalar(
+                num_valid_frames / input_batch["paddings"].size, input_batch["paddings"].size
+            ),
+        }
+        # pytype: enable=attribute-error
+        return ret_dict
+
+    def _loss_summary(
+        self,
+        *,
+        total_ctc_loss: Tensor,
+        per_example_weight: Tensor,
+        paddings: Tensor,
+        target_paddings: Tensor,
+    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
+        valid_frame_mask = (1.0 - paddings) * per_example_weight[:, None]
+        valid_label_mask = (1.0 - target_paddings) * per_example_weight[:, None]
+
+        num_valid_frames = jnp.sum(valid_frame_mask)
+        num_valid_labels = jnp.sum(valid_label_mask)
+        per_frame_loss = total_ctc_loss / num_valid_frames
+        per_label_loss = total_ctc_loss / num_valid_labels
+        batch_size = per_example_weight.shape[0]
+
+        ret_dict = {}
+        # 1. loss/example_weight
+        ret_dict["loss/example_weight"] = WeightedScalar(jnp.mean(per_example_weight), batch_size)
+        # 2. loss/ctc_loss
+        ret_dict["loss/ctc_loss"] = WeightedScalar(
+            total_ctc_loss / jnp.maximum(per_example_weight.sum(), 1),
+            jnp.maximum(per_example_weight.sum(), 1),
+        )
+        # 3. loss/invalid_seq_percent, per_frame_ctc_loss, per_label_ctc_loss
+        invalid_example_percent = 1.0 - jnp.sum(per_example_weight) / batch_size
+        ret_dict["loss/invalid_seq_percent"] = invalid_example_percent
+        ret_dict["loss/per_frame_ctc_loss"] = WeightedScalar(per_frame_loss, num_valid_frames)
+        ret_dict["loss/per_label_ctc_loss"] = WeightedScalar(per_label_loss, num_valid_labels)
+
+        return ret_dict
 
     def forward(
         self,
@@ -306,14 +375,19 @@ class CTCDecoderModel(BaseASRDecoderModel):
         )
         aux_outputs = dict(per_example_weight=per_example_weight, per_example_loss=per_example_loss)
         # Add summaries.
-        self.add_summary(
-            "loss/example_weight",
-            WeightedScalar(jnp.mean(per_example_weight), per_example_weight.shape[0]),
+        summary = self._input_stats_summary(
+            input_batch=input_batch, per_example_weight=per_example_weight
         )
-        self.add_summary(
-            "loss/ctc_loss",
-            WeightedScalar(loss, jnp.maximum(1, per_example_weight.sum())),
+        summary.update(
+            self._loss_summary(
+                total_ctc_loss=jnp.sum(per_example_loss * per_example_weight),
+                per_example_weight=per_example_weight,
+                paddings=paddings,
+                target_paddings=target_paddings,
+            )
         )
+        for name, value in summary.items():
+            self.add_summary(name, value)
         return loss, aux_outputs
 
     def _tokens_to_scores(
