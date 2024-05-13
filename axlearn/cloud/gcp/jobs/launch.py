@@ -337,10 +337,10 @@ class BaseBastionManagedJob(Job):
             f"--name={cfg.name} --bastion={cfg.bastion_name} --instance_type={cfg.instance_type} "
             f"--zone={cfg.zone} --gcp_api={gcp_api}\n"
             "\nCheck job history with:\n"
-            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone}"
+            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
             f"--job_name={cfg.name}"
             "\nCheck project history with:\n"
-            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone}"
+            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
             f"{cfg.project_id or ''}"
         )
 
