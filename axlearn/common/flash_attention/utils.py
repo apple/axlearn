@@ -9,13 +9,6 @@ import jax.numpy as jnp
 from absl import logging
 from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes
 
-try:
-    import transformer_engine.jax as te
-
-    _IS_TRANSFORMER_ENGINE_INSTALLED = True
-except ModuleNotFoundError as e:
-    _IS_TRANSFORMER_ENGINE_INSTALLED = False
-
 from axlearn.common.attention import NEG_INF
 from axlearn.common.flash_attention.tpu_attention import flash_attention as tpu_flash_attention
 from axlearn.common.utils import Tensor
@@ -106,11 +99,14 @@ def flash_attention_implementation(
         NotImplementedError: If implementation for the backend is not available.
     """
     if backend == "gpu":
-        # TODO(kelvin-zou): Update to raw te library over flax library.
-        # TODO(kelvin-zou): Support bias in the future.
-        if _IS_TRANSFORMER_ENGINE_INSTALLED:
-            logging.info("transformer_engine.jax is installed.")
+        try:
+            # pylint: disable-next=import-outside-toplevel
+            import transformer_engine.jax as te
 
+            logging.info("Using TE flash-attention implementation.")
+
+            # TODO(kelvin-zou): Update to raw te library over flax library.
+            # TODO(kelvin-zou): Support bias in the future.
             def jit_attn(query, key, value, _):
                 _, _, q_heads, per_head_dim = query.shape
                 _, _, kv_heads, _ = key.shape
@@ -128,16 +124,20 @@ def flash_attention_implementation(
                     scale_factor=softmax_scale,
                     transpose_batch_sequence=False,
                 )
-                return te_flash_attention.apply({}, query, key, value)
+                context = te_flash_attention.apply({}, query, key, value)
+                return context
 
-        # Lazy import GPU flash-attention to avoid file-level dependency on jax-triton.
-        else:  # Fall back to triton based flash attention.
+        except ModuleNotFoundError:
+            logging.warning("TE flash-attention implementation not found.")
+            # Lazy import GPU flash-attention to avoid file-level dependency on jax-triton.
+            # Fall back to triton based flash attention.
+
             # pylint: disable-next=import-outside-toplevel
             from axlearn.common.flash_attention.gpu_attention import (
                 flash_attention as gpu_flash_attention,
             )
 
-            logging.info("transformer_engine.jax is not installed, fall back to triton.")
+            logging.info("Using Triton flash-attention implementation.")
 
             # shard_map-decorated function needs to be jitted.
             @jax.jit
