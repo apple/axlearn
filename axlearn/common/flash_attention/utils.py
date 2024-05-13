@@ -12,7 +12,6 @@ from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes
 try:
     import transformer_engine.jax as te
 
-    print("transformer_engine.jax is installed.")
     _IS_TRANSFORMER_ENGINE_INSTALLED = True
 except ModuleNotFoundError as e:
     _IS_TRANSFORMER_ENGINE_INSTALLED = False
@@ -110,6 +109,7 @@ def flash_attention_implementation(
         # TODO(kelvin-zou): Update to raw te library over flax library.
         # TODO(kelvin-zou): Support bias in the future.
         if _IS_TRANSFORMER_ENGINE_INSTALLED:
+            logging.info("transformer_engine.jax is installed.")
 
             def jit_attn(query, key, value, _):
                 _, _, q_heads, per_head_dim = query.shape
@@ -136,6 +136,8 @@ def flash_attention_implementation(
             from axlearn.common.flash_attention.gpu_attention import (
                 flash_attention as gpu_flash_attention,
             )
+
+            logging.info("transformer_engine.jax is not installed, fall back to triton.")
 
             # shard_map-decorated function needs to be jitted.
             @jax.jit
