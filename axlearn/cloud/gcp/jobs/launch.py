@@ -332,7 +332,7 @@ class BaseBastionManagedJob(Job):
         print(
             "\nView bastion outputs with: (if not found, check job and project history)\n"
             f"gsutil cat {os.path.join(self._bastion_dir.logs_dir, cfg.name)}\n"
-            f"\nStop/cancel the job with: (you may need to add --gcp_api=gke)\n"
+            f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "
             f"--name={cfg.name} --bastion={cfg.bastion_name} --instance_type={cfg.instance_type} "
             f"--zone={cfg.zone} --gcp_api={gcp_api}\n"
