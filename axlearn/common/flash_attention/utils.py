@@ -128,8 +128,7 @@ def flash_attention_implementation(
                     scale_factor=softmax_scale,
                     transpose_batch_sequence=False,
                 )
-                context = te_flash_attention.apply({}, query, key, value)
-                return context
+                return te_flash_attention.apply({}, query, key, value)
 
         # Lazy import GPU flash-attention to avoid file-level dependency on jax-triton.
         else:  # Fall back to triton based flash attention.
