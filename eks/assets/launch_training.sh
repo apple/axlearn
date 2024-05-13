@@ -45,7 +45,7 @@ DATA_DIR=gs://axlearn-public/tensorflow_datasets
 python3 -m axlearn.common.launch_trainer_main \
     --module=text.gpt.c4_trainer --config=fuji-7B \
     --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR \
-    --jax_backend=neuron --mesh_selector=neuron-trn1n.32xlarge-64 \
+    --jax_backend=neuron --mesh_selector=neuron-trn1n.32xlarge-2048 \
     --distributed_coordinator=$COORDINATOR_ADDRESS \
     --num_processes=$OMPI_COMM_WORLD_SIZE \
     --process_id=$OMPI_COMM_WORLD_RANK 2>&1 | tee ${OUTPUT_DIR}/${PMIX_HOSTNAME}.log

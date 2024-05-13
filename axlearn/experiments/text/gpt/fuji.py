@@ -187,7 +187,7 @@ def get_trainer_kwargs(
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
                 (   
-                    "neuron-(trn1.32xlarge|trn1n.32xlarge)-(32|64|256|512|1024)",
+                    "neuron-(trn1.32xlarge|trn1n.32xlarge)-(32|64|256|512|1024|2048)",
                     mesh_shape_from_axes(data=-1, model=TRN_MODEL_AXIS_SIZE),
                 ),
             ),
