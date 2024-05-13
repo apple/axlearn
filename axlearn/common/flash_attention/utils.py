@@ -9,6 +9,14 @@ import jax.numpy as jnp
 from absl import logging
 from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes
 
+try:
+    import transformer_engine.jax as te
+
+    print("transformer_engine.jax is installed.")
+    _IS_TRANSFORMER_ENGINE_INSTALLED = True
+except ModuleNotFoundError as e:
+    _IS_TRANSFORMER_ENGINE_INSTALLED = False
+
 from axlearn.common.attention import NEG_INF
 from axlearn.common.flash_attention.tpu_attention import flash_attention as tpu_flash_attention
 from axlearn.common.utils import Tensor
@@ -99,18 +107,43 @@ def flash_attention_implementation(
         NotImplementedError: If implementation for the backend is not available.
     """
     if backend == "gpu":
-        # Lazy import GPU flash-attention to avoid file-level dependency on jax-triton.
-        # pylint: disable-next=import-outside-toplevel
-        from axlearn.common.flash_attention.gpu_attention import (
-            flash_attention as gpu_flash_attention,
-        )
+        # TODO(kelvin-zou): Update to raw te library over flax library.
+        # TODO(kelvin-zou): Support bias in the future.
+        if _IS_TRANSFORMER_ENGINE_INSTALLED:
 
-        # shard_map-decorated function needs to be jitted.
-        @jax.jit
-        def jit_attn(query, key, value, bias):
-            return gpu_flash_attention(
-                query, key, value, bias=bias, causal=causal, softmax_scale=softmax_scale
+            def jit_attn(query, key, value, _):
+                _, _, q_heads, per_head_dim = query.shape
+                _, _, kv_heads, _ = key.shape
+                te_flash_attention = te.flax.DotProductAttention(
+                    head_dim=per_head_dim,
+                    num_attention_heads=q_heads,
+                    num_gqa_groups=kv_heads,
+                    attn_mask_type="causal" if causal else "no_mask",
+                    attn_bias_type="no_bias",
+                    attention_dropout=0.0,
+                    dropout_rng_name="dropout",
+                    dtype=query.dtype,
+                    float32_logits=True,
+                    qkv_layout="BSHD_BSHD_BSHD",
+                    scale_factor=softmax_scale,
+                    transpose_batch_sequence=False,
+                )
+                context = te_flash_attention.apply({}, query, key, value)
+                return context
+
+        # Lazy import GPU flash-attention to avoid file-level dependency on jax-triton.
+        else:  # Fall back to triton based flash attention.
+            # pylint: disable-next=import-outside-toplevel
+            from axlearn.common.flash_attention.gpu_attention import (
+                flash_attention as gpu_flash_attention,
             )
+
+            # shard_map-decorated function needs to be jitted.
+            @jax.jit
+            def jit_attn(query, key, value, bias):
+                return gpu_flash_attention(
+                    query, key, value, bias=bias, causal=causal, softmax_scale=softmax_scale
+                )
 
         return jit_attn
 

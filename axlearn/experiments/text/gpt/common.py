@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 import tensorflow as tf
+from jax.sharding import PartitionSpec
 
 from axlearn.common import (
     base_model,
@@ -32,7 +33,9 @@ from axlearn.common.attention import (
     BaseQKVLinear,
     CausalAttentionLogitBiasLayer,
     FusedQKVLinear,
+    GroupedQueryAttention,
     RepeatedTransformerLayer,
+    TransformerAttentionLayer,
     TransformerLayer,
     build_remat_spec,
     set_double_shard_weights_config,
@@ -49,6 +52,7 @@ from axlearn.common.decoder import Decoder
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.evaler import BaseMetricCalculator, ModelSummaryAccumulator, SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
+from axlearn.common.flash_attention.layer import FlashAttention as AxlearnFlashAttention
 from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, set_norm_recursively
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.summary_writer import BaseWriter
@@ -79,6 +83,38 @@ def scaled_hidden_dim(scale: float, *, round_up_to_multiples_of: int = 256) -> F
         scale=scale,
         round_up_to_multiples_of=round_up_to_multiples_of,
     )
+
+
+class FlashAttention(AxlearnFlashAttention):
+    """FlashAttention layer class.
+    Args:
+        AxlearnFlashAttention: a single-point flash attention layer config.
+    Returns:
+        Config: a partitioned flash attention layer config.
+    """
+
+    @classmethod
+    def default_config(cls) -> AxlearnFlashAttention.Config:
+        """A default config for the FlashAttention layer.
+        Args:
+            cls: a AxlearnFlashAttention config class
+        Returns:
+            FlashAttention.Config: a distributed Flash Attention config.
+        """
+        cfg: FlashAttention.Config = super().default_config()
+        cfg = cfg.set(
+            causal=True,
+            mha_dim_to_partition_spec={
+                "btnh": PartitionSpec(("data", "expert", "fsdp"), None, ("seq", "model"), None),
+                "bsnh": PartitionSpec(("data", "expert", "fsdp"), None, ("seq", "model"), None),
+                "bnts": PartitionSpec(("data", "expert", "fsdp"), None, None, None),
+            },
+            output_dim_to_partition_spec={
+                "btnh": PartitionSpec(("data", "expert", "fsdp"), "seq", "model", None),
+                "bnts": PartitionSpec(("data", "expert", "fsdp"), "model", "seq", None),
+            },
+        )
+        return cfg
 
 
 def tfds_input(
@@ -173,6 +209,7 @@ def model_config(
     ffn_structure: str = "prenorm",
     atten_structure: str = "prenorm",
     atten_logit_cap: Optional[float] = None,
+    flash_attention: bool = False,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -209,11 +246,23 @@ def model_config(
     layer_cfg.feed_forward.hidden_dim = ffn_dim
     layer_cfg.feed_forward.structure = ffn_structure
     # Attention.
-    layer_cfg.self_attention.attention.num_heads = num_heads
-    if attention_qkv_linear is not None:
-        layer_cfg.self_attention.attention.input_linear = attention_qkv_linear
-    layer_cfg.self_attention.structure = atten_structure
-    layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
+    if flash_attention:
+        attention_layer = FlashAttention.default_config()
+        attention_mask = None
+    else:
+        attention_layer = GroupedQueryAttention.default_config()
+
+    attention_layer_cfg = TransformerAttentionLayer.default_config().set(
+        attention=attention_layer.set(
+            # Use q/k-norm in keeping with:
+            # <https://arxiv.org/abs/2309.14322>
+            num_heads=num_heads,
+            input_linear=attention_qkv_linear,
+            atten_logit_cap=atten_logit_cap,
+        ),
+        structure=atten_structure,
+    )
+    layer_cfg.self_attention = attention_layer_cfg
     if stack_cfg.klass is RepeatedTransformerLayer:
         # Enable remat to reduce memory usage for larger models.
         layer_cfg.remat_spec = build_remat_spec(stack_cfg)

@@ -66,7 +66,9 @@ TOTAL_TOKENS = {
 }
 
 
-def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) -> Dict[str, Any]:
+def get_trainer_kwargs(
+    model_size: str, *, vocab_size: int, version: Version, flash_attention: bool = False
+) -> Dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 4 * (1024**2)  # 4M tokens.
     max_step = TOTAL_TOKENS[version] // tokens_per_batch
@@ -92,6 +94,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 num_kv_heads=2,
                 vocab_size=32,
                 rope_theta=rope_theta,
+                flash_attention=flash_attention,
             ),
             learner_kwargs=dict(
                 peak_lr=6e-4,
@@ -110,6 +113,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 num_heads=32,
                 num_kv_heads=num_kv_heads,
                 rope_theta=rope_theta,
+                flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -163,6 +167,7 @@ def model_config(
     rope_theta: float,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
+    flash_attention: bool = False,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -211,5 +216,6 @@ def model_config(
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
         attention_mask=CausalAttentionLogitBiasLayer.default_config(),
         attention_qkv_linear=atten_qkv_linear,
+        flash_attention=flash_attention,
     )
     return cfg
