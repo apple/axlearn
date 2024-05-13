@@ -855,7 +855,9 @@ def scan_in_context(
 
         return carry_i, dict(y_i=y_i, output_collection=output_collection_i)
 
-    carry, scan_ys = jax.lax.scan(scan_fn, init=carry, xs=xs, unroll=8)
+    # Enable unrolling on GPU to improve communication interleaving.
+    unroll = 8 if jax.devices()[0].platform == "gpu" else 1
+    carry, scan_ys = jax.lax.scan(scan_fn, init=carry, xs=xs, unroll=unroll)
     ctx.output_collection.update(scan_ys.pop("output_collection"))
 
     return carry, scan_ys["y_i"]
