@@ -278,15 +278,15 @@ class CTCDecoderModel(BaseASRDecoderModel):
         valid_label_mask = (1.0 - target_paddings) * per_example_weight[:, None]
         num_valid_frames = jnp.sum(valid_frame_mask)
         num_valid_labels = jnp.sum(valid_label_mask)
-        num_valid_examples = jnp.maximum(per_example_weight.sum(), 1.0)
+        total_example_weights = jnp.maximum(per_example_weight.sum(), 1.0)
         # pytype: disable=attribute-error
         num_total_frames = jnp.maximum(input_batch["paddings"].size, 1)
         ret_dict = {
             "input_stats/average_target_length": WeightedScalar(
-                num_valid_labels / num_valid_examples, num_valid_examples
+                num_valid_labels / total_example_weights, total_example_weights
             ),
             "input_stats/average_source_length": WeightedScalar(
-                num_valid_frames / num_valid_examples, num_valid_examples
+                num_valid_frames / total_example_weights, total_example_weights
             ),
             "input_stats/frame_packing_effiency": WeightedScalar(
                 num_valid_frames / num_total_frames, num_total_frames
@@ -306,8 +306,8 @@ class CTCDecoderModel(BaseASRDecoderModel):
         valid_frame_mask = (1.0 - paddings) * per_example_weight[:, None]
         valid_label_mask = (1.0 - target_paddings) * per_example_weight[:, None]
 
-        num_valid_frames = jnp.sum(valid_frame_mask)
-        num_valid_labels = jnp.sum(valid_label_mask)
+        num_valid_frames = jnp.maximum(jnp.sum(valid_frame_mask), 1.0)
+        num_valid_labels = jnp.maximum(jnp.sum(valid_label_mask), 1.0)
         per_frame_loss = total_ctc_loss / num_valid_frames
         per_label_loss = total_ctc_loss / num_valid_labels
         batch_size = jnp.maximum(per_example_weight.shape[0], 1.0)
