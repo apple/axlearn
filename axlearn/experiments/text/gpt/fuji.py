@@ -103,7 +103,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
             max_step=3000,
             eval_every_n_steps=1500,
             save_every_n_steps=500,
-            mesh_shape=mesh_shape_from_axes(),  # cpu
+            mesh_shape=mesh_shape_from_axes(data=-1),
         )
     elif model_size == "7B":
         trainer_kwargs = dict(
