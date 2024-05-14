@@ -204,7 +204,7 @@ class BaseASRDecoderModel(BaseModel):
         target_labels: Tensor = input_batch["target_labels"]
         target_paddings = self._compute_target_paddings(target_labels)
         batch_size = jnp.maximum(target_labels.shape[0], 1)
-        num_source_elements = jnp.maximum(input_batch["paddings"].size, 1)
+        num_source_elements = jnp.maximum(input_batch["paddings"].size, 1)  # type: ignore
         target_lengths = jnp.sum(1 - target_paddings, axis=-1)
         source_lengths = jnp.sum(1 - input_batch["paddings"], axis=-1)
         # pytype: disable=attribute-error
@@ -280,6 +280,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         num_valid_labels = jnp.sum(valid_label_mask)
         num_valid_examples = jnp.maximum(per_example_weight.sum(), 1.0)
         # pytype: disable=attribute-error
+        num_total_frames = jnp.maximum(input_batch["paddings"].size, 1)
         ret_dict = {
             "input_stats/average_target_length": WeightedScalar(
                 num_valid_labels / num_valid_examples, num_valid_examples
@@ -288,7 +289,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
                 num_valid_frames / num_valid_examples, num_valid_examples
             ),
             "input_stats/frame_packing_effiency": WeightedScalar(
-                num_valid_frames / input_batch["paddings"].size, input_batch["paddings"].size
+                num_valid_frames / num_total_frames, num_total_frames
             ),
         }
         # pytype: enable=attribute-error
