@@ -6,6 +6,7 @@
 # pytype: disable=wrong-arg-types
 import contextlib
 import copy
+import itertools
 import os
 import subprocess
 import tempfile
@@ -13,13 +14,14 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Sequence
 from unittest import mock
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common import bastion
 from axlearn.cloud.common.bastion import (
     _JOB_DIR,
     _LOG_DIR,
     Bastion,
+    BastionDirectory,
     Job,
     JobState,
     JobStatus,
@@ -37,6 +39,7 @@ from axlearn.cloud.common.bastion import (
     set_runtime_options,
 )
 from axlearn.cloud.common.cleaner import Cleaner
+from axlearn.cloud.common.quota import UserQuotaInfo
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.scheduler_test import mock_quota_config
 from axlearn.cloud.common.types import JobMetadata, JobSpec, ResourceMap
@@ -185,6 +188,72 @@ class TestDownloadJobBatch(parameterized.TestCase):
                 [call_args[0][0] for call_args in mock_fns["_remove"].call_args_list],
             )
 
+    def test_invalid_membership(self):
+        # Test that we drop jobs where the user is not a member of the specified quota project id.
+        user_ids = ["a", "b", "c"]
+        project_ids = ["proj1", "proj2", "proj3", "non_existant_proj"]
+        jobspecs = {
+            str(i): JobSpec(
+                version=0,
+                name=str(i),
+                command="",
+                cleanup_command=None,
+                env_vars=None,
+                metadata=JobMetadata(
+                    user_id=user_id, project_id=project_id, creation_time=None, resources={}
+                ),
+            )
+            for i, (user_id, project_id) in enumerate(itertools.product(user_ids, project_ids))
+        }
+        user_states = []
+        project_membership = dict(proj1=["a", "b"], proj2=["a"], proj3=[".*"])
+        valid_jobspecs = [
+            name
+            for name, job_spec in jobspecs.items()
+            if job_spec.metadata.project_id == "proj3"
+            or job_spec.metadata.project_id != "non_existant_proj"
+            and job_spec.metadata.user_id in project_membership[job_spec.metadata.project_id]
+        ]
+
+        def mock_listdir(d):
+            if d == "FAKE_SPECS":
+                return list(jobspecs.keys())
+            elif d == "FAKE_USER_STATES":
+                return user_states
+            return []
+
+        def mock_download_jobspec(job_name, **kwargs):
+            del kwargs
+            return jobspecs[job_name]
+
+        mocked_download = mock.Mock(side_effect=mock_download_jobspec)
+
+        patch_fns = mock.patch.multiple(
+            bastion.__name__,
+            _listdir=mock.Mock(side_effect=mock_listdir),
+            _download_jobspec=mocked_download,
+            _download_job_state=mock.DEFAULT,
+            _remove=mock.DEFAULT,
+        )
+        with patch_fns as mock_fns:
+            returned_jobs, _ = download_job_batch(
+                spec_dir="FAKE_SPECS",
+                state_dir="FAKE_STATES",
+                user_state_dir="FAKE_USER_STATES",
+                local_spec_dir="FAKE",
+                remove_invalid_job_specs=True,
+                quota=lambda: UserQuotaInfo(
+                    total_resources=None,
+                    project_resources=None,
+                    project_membership=project_membership,
+                ),
+            )
+            self.assertSequenceEqual(valid_jobspecs, list(returned_jobs.keys()))
+            self.assertContainsSubset(
+                [f"FAKE_SPECS/{i}" for i in jobspecs if i not in valid_jobspecs],
+                [call_args[0][0] for call_args in mock_fns["_remove"].call_args_list],
+            )
+
 
 class TestJobSpec(parameterized.TestCase):
     """Tests job specs."""
@@ -203,7 +272,8 @@ class TestJobSpec(parameterized.TestCase):
             metadata=JobMetadata(
                 user_id="test_id",
                 project_id="test_project",
-                creation_time=datetime.now(),
+                # Make sure str timestamp isn't truncated even when some numbers are 0.
+                creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
                 resources={"test": 8},
                 priority=1,
             ),
@@ -530,16 +600,59 @@ class BastionTest(parameterized.TestCase):
                 stack.enter_context(m)
 
             cfg = Bastion.default_config().set(
-                scheduler=JobScheduler.default_config().set(
-                    quota=config_for_function(mock_quota_config)
-                ),
+                scheduler=JobScheduler.default_config(),
                 cleaner=NoOpCleaner.default_config(),
                 uploader=Uploader.default_config().set(
                     upload_fn=config_for_function(lambda: noop_upload_fn)
                 ),
                 output_dir=tmpdir,
+                quota=config_for_function(mock_quota_config),
             )
             yield cfg.instantiate()
+
+    def test_sync_jobs(self):
+        """Tests downloading jobspecs."""
+
+        with self._patch_bastion() as mock_bastion:
+            os.makedirs(mock_bastion._active_dir, exist_ok=True)
+            os.makedirs(_JOB_DIR, exist_ok=True)
+            # Create some jobspecs to download.
+            specs = [
+                new_jobspec(
+                    name="job1",
+                    command="",
+                    metadata=JobMetadata(
+                        user_id="user1",
+                        project_id="project1",
+                        creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
+                        resources={"test": 8},
+                    ),
+                ),
+                new_jobspec(
+                    name="job2",
+                    command="",
+                    metadata=JobMetadata(
+                        user_id="user2",
+                        project_id="project1",
+                        creation_time=datetime(1900, 1, 1, 0, 0, 0, 1),
+                        resources={"test": 8},
+                    ),
+                ),
+            ]
+            # Write them to the Bastion submission directory.
+            for spec in specs:
+                with tempfile.NamedTemporaryFile("w") as f:
+                    serialize_jobspec(spec, f)
+                    bastion_dir = (
+                        BastionDirectory.default_config()
+                        .set(root_dir=mock_bastion._output_dir)
+                        .instantiate()
+                    )
+                    bastion_dir.submit_job(spec.name, job_spec_file=f.name)
+            # Download the jobspecs.
+            mock_bastion._sync_jobs()
+            # Confirm expected jobs were downloaded.
+            self.assertSequenceEqual(list(mock_bastion._active_jobs), ["job1"])
 
     @parameterized.product(
         [
@@ -1270,3 +1383,7 @@ class BastionDirectoryTest(parameterized.TestCase):
                     JobState(status=JobStatus.CANCELLING),
                     remote_dir=bastion_dir.user_states_dir,
                 )
+
+
+if __name__ == "__main__":
+    absltest.main()

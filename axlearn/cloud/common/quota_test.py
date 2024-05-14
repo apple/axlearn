@@ -47,7 +47,7 @@ class QuotaUtilsTest(parameterized.TestCase):
                         "team2": {"resource_type1": 0.6, "resource_type2": 1.0},
                     },
                 ),
-                get_resource_limits(f.name),
+                get_resource_limits(f.name).quota_info(),
             )
 
         # Test a case where the totals don't add up.
@@ -64,7 +64,7 @@ class QuotaUtilsTest(parameterized.TestCase):
                         "team2": {"resource_type1": 0.6, "resource_type2": 1.0},
                     },
                 ),
-                get_resource_limits(f.name),
+                get_resource_limits(f.name).quota_info(),
             )
 
         # Test a case where the set of resource types changed.
@@ -83,7 +83,7 @@ class QuotaUtilsTest(parameterized.TestCase):
                         "team2": {"resource_type1": 0.6, "resource_type2": 1.0},
                     },
                 ),
-                get_resource_limits(f.name),
+                get_resource_limits(f.name).quota_info(),
             )
 
         # Implicitly we have 1 tier.
@@ -107,12 +107,26 @@ class QuotaUtilsTest(parameterized.TestCase):
                 get_resource_limits(f.name).total_resources,
             )
 
+        # Test that it returns user project membership
+        with tempfile.NamedTemporaryFile("r+") as f:
+            toml.dump(_mock_config, f)
+            f.seek(0)
+            self.assertEqual(
+                {
+                    "team1": ["user1"],
+                    "team2": ["user[12]"],
+                    "team3": [".*"],
+                },
+                get_resource_limits(f.name).project_membership,
+            )
+
     @parameterized.parameters(
         dict(user="user1", expected=["team1", "team2", "team3"]),
         dict(user="user2", expected=["team2", "team3"]),
         dict(user="user12", expected=["team3"]),
     )
     def test_get_user_projects(self, user: str, expected: Sequence[str]):
+        """Tests `get_user_projects()` and `UserQuotaInfo.user_projects()`."""
         with tempfile.NamedTemporaryFile("r+") as f:
             toml.dump(_mock_config, f)
             f.seek(0)
