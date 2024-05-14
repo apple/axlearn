@@ -161,18 +161,21 @@ def parse_flags(argv):
     parser = argparse_flags.ArgumentParser(
         description="Parser to parse additional arguments other than defined ABSL flags."
     )
+    parser.add_argument("--save_main_session", default=True)
+
+    # The default pickler is dill and cannot pickle absl FlagValues. Use cloudpickle instead.
+    parser.add_argument("--pickle_library", default="cloudpickle")
+
     # Assume all remaining unknown arguments are Dataflow Pipeline options
-    _, pipeline_args = parser.parse_known_args(argv[1:])
+    known_args , pipeline_args = parser.parse_known_args(argv[1:])
+    if known_args.save_main_session is True:
+        pipeline_args.append("--save_main_session")
+    pipeline_args.append(f"--pickle_library={known_args.pickle_library}")
     return pipeline_args
 
 
-def main(args, save_main_session=True, pickler="cloudpickle"):
+def main(args):
     FLAGS = flags.FLAGS
-
-    # The default pickler is dill and cannot pickle absl FlagValues. Use cloudpickle instead.
-    args.append(f"--pickle_library={pickler}")
-    if save_main_session:
-        args.append("--save_main_session")
 
     # get pipeline input
     pipeline_input = get_examples()
