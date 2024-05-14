@@ -45,9 +45,9 @@ $ axlearn gcp dataflow start \
 """
 
 
+import copy
 import logging
 import warnings
-import copy
 from typing import Any, Dict, Optional, Sequence
 
 import apache_beam as beam
@@ -61,12 +61,13 @@ import axlearn.common.input_fake as input_fake
 import axlearn.common.launch_trainer as trainer_utils
 from axlearn.common.inference import InferenceRunner, MethodRunner
 from axlearn.common.utils import NestedTensor
-from axlearn.common.trainer import SpmdTrainer
 
 warnings.filterwarnings("ignore")
 
+
 class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
     """Defines how to load a model and run inference"""
+
     def __init__(self, flag_dict):
         self._flag_dict = flag_dict
 
@@ -122,7 +123,7 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
         Returns:
           A list of type MethodRunner.Output.
         """
-        logging.info("RUNNING INFERENCE")
+        logging.info("Running Inference...")
         output_list = []
         for el in batch:
             output_list.append(model(el))
