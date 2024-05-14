@@ -281,7 +281,7 @@ def send_signal(popen: subprocess.Popen, sig: int = signal.SIGKILL):
         try:
             child.send_signal(sig)
         except psutil.NoSuchProcess:
-            pass  # Ignore NoSuchProcess exception and continue with the next child
+            pass  # Ignore NoSuchProcess exception and continue with the next child.
     popen.send_signal(sig)
 
 
