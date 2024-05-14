@@ -198,12 +198,13 @@ class BaseASRDecoderModel(BaseModel):
         target_paddings = jnp.logical_or(cfg.vocab_size <= target_labels, target_labels < 0)
         return target_paddings
 
-    def _input_stats_summary(
+    def _input_stats_summaries(
         self, input_batch: Nested[Tensor]
     ) -> Dict[str, Union[WeightedScalar, Tensor]]:
         target_labels: Tensor = input_batch["target_labels"]
         target_paddings = self._compute_target_paddings(target_labels)
-        batch_size = target_labels.shape[0]
+        batch_size = jnp.maximum(target_labels.shape[0], 1)
+        num_source_elements = jnp.maximum(input_batch["paddings"].size, 1)
         target_lengths = jnp.sum(1 - target_paddings, axis=-1)
         source_lengths = jnp.sum(1 - input_batch["paddings"], axis=-1)
         # pytype: disable=attribute-error
@@ -215,7 +216,7 @@ class BaseASRDecoderModel(BaseModel):
                 jnp.mean(source_lengths), batch_size
             ),
             "input_stats/frame_packing_effiency": WeightedScalar(
-                jnp.sum(source_lengths) / input_batch["paddings"].size, input_batch["paddings"].size
+                jnp.sum(source_lengths) / num_source_elements, num_source_elements
             ),
         }
         # pytype: enable=attribute-error
@@ -268,7 +269,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         logits = self.lm_head(inputs)
         return logits * (1 - paddings[..., None])
 
-    def _input_stats_summary(
+    def _input_stats_summaries(
         self, input_batch: Nested[Tensor], per_example_weight: Tensor
     ) -> Dict[str, Union[WeightedScalar, Tensor]]:
         paddings = input_batch["paddings"]
@@ -293,7 +294,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         # pytype: enable=attribute-error
         return ret_dict
 
-    def _loss_summary(
+    def _loss_summaries(
         self,
         *,
         total_ctc_loss: Tensor,
@@ -308,7 +309,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         num_valid_labels = jnp.sum(valid_label_mask)
         per_frame_loss = total_ctc_loss / num_valid_frames
         per_label_loss = total_ctc_loss / num_valid_labels
-        batch_size = per_example_weight.shape[0]
+        batch_size = jnp.maximum(per_example_weight.shape[0], 1.0)
 
         ret_dict = {}
         # 1. loss/example_weight
@@ -375,11 +376,11 @@ class CTCDecoderModel(BaseASRDecoderModel):
         )
         aux_outputs = dict(per_example_weight=per_example_weight, per_example_loss=per_example_loss)
         # Add summaries.
-        summary = self._input_stats_summary(
+        summary = self._input_stats_summaries(
             input_batch=input_batch, per_example_weight=per_example_weight
         )
         summary.update(
-            self._loss_summary(
+            self._loss_summaries(
                 total_ctc_loss=jnp.sum(per_example_loss * per_example_weight),
                 per_example_weight=per_example_weight,
                 paddings=paddings,
