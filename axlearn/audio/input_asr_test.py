@@ -15,9 +15,7 @@ from axlearn.common import input_fake, input_tf_data
 from axlearn.common.config import config_for_class, config_for_function
 from axlearn.common.test_utils import TestCase
 
-tokenizers_dir = os.path.join(
-    os.path.dirname(__file__), "../experiments/testdata/tokenizers/sentencepiece"
-)
+tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers/sentencepiece")
 
 
 class SpeechInputTest(TestCase, tf.test.TestCase):
