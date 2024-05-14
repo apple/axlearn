@@ -18,7 +18,7 @@ from axlearn.common.config import InstantiableConfig, config_for_class, config_f
 from axlearn.common.input_text import TOKEN_TYPE_IDS, add_token_type_ids, strip_accents, tokenize
 from axlearn.common.vocabulary_bpe import BPEVocabulary
 
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
+tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers")
 _SENTENCEPIECE_DIR = os.path.join(tokenizers_dir, "sentencepiece")
 _BPE_DIR = os.path.join(tokenizers_dir, "bpe")
 _T5_VOCAB_FILE = os.path.join(_SENTENCEPIECE_DIR, "t5-base")
