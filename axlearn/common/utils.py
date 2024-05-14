@@ -499,19 +499,29 @@ def complete_partition_spec_tree(
     return jax.tree_util.tree_unflatten(treedef, axes)
 
 
-def input_partition_spec() -> PartitionSpec:
-    """Returns partition spec for the input batch.
+class DataPartitionType(Enum):
+    # Data are fully partitioned across all devices.
+    FULL = "full"
+    # Data are fully replicated across all devices.
+    REPLICATED = "replicated"
+    # Data are partially partitioned across data axis
+    DATA = "data"
 
+
+def input_partition_spec(partition: DataPartitionType = DataPartitionType.FULL) -> PartitionSpec:
+    """Returns partition spec for the input batch.
     We partition the inputs along all axes. For example, if the mesh has shape (64, 4) and axis
     names of ("data", "model"), the partition spec will be (("data", "model"), None...) so that the
     batch axis of every global tensor will be partitioned 256 (= 64 * 4) ways.
-
     Must be called within the context of a Mesh.
     """
-    mesh = maps.thread_resources.env.physical_mesh
-    return PartitionSpec(
-        mesh.axis_names,
-    )
+    if partition == DataPartitionType.FULL:
+        mesh = maps.thread_resources.env.physical_mesh
+        return PartitionSpec(
+            mesh.axis_names,
+        )
+    elif partition == DataPartitionType.DATA:
+        return PartitionSpec("data")
 
 
 # Key associated with per-example dataset dispatch index tensor, indicating which logical
@@ -549,19 +559,14 @@ def dispatch_input_batch(
     return input_batch
 
 
-class DataPartitionType(Enum):
-    # Data are fully partitioned across all devices.
-    FULL = "full"
-    # Data are fully replicated across all devices.
-    REPLICATED = "replicated"
-
-
 def data_partition_type_to_spec(partition: DataPartitionType) -> PartitionSpec:
     """Returns a PartitionSpec for the given partition type."""
     if partition == DataPartitionType.FULL:
-        return input_partition_spec()
+        return input_partition_spec(partition)
     elif partition == DataPartitionType.REPLICATED:
         return None
+    elif partition == DataPartitionType.DATA:
+        return input_partition_spec(partition)
     else:
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
@@ -606,10 +611,26 @@ def host_to_global_device_array(
         # Replicate `x` to every local device.
         return [jax.device_put(x, device) for device in local_devices]
 
+    def put_to_devices_data_partitioned(x: Tensor) -> List[Tensor]:
+        # data is sharded across the rank of data axis
+        data_axis = mesh.axis_names.index("data")
+        data_dimension = mesh.device_ids.shape[data_axis]
+
+        if x.shape[0] % data_dimension != 0:
+            raise ValueError(f"({x.shape}) cannot be sharded across {data_dimension} data axis.")
+
+        sharding = jax.sharding.NamedSharding(mesh, partition_spec)
+        return [
+            jax.device_put(x[index] if isinstance(x[index], np.ndarray) else x[index].numpy(), d)
+            for d, index in sharding.addressable_devices_indices_map(x.shape).items()
+        ]
+
     if partition == DataPartitionType.FULL:
         put_to_devices = put_to_devices_fully_partitioned
     elif partition == DataPartitionType.REPLICATED:
         put_to_devices = put_to_devices_replicated
+    elif partition == DataPartitionType.DATA:
+        put_to_devices = put_to_devices_data_partitioned
     else:
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
@@ -623,6 +644,8 @@ def host_to_global_device_array(
         if partition == DataPartitionType.FULL:
             global_batch_size = x.shape[0] * jax.process_count()
         elif partition == DataPartitionType.REPLICATED:
+            global_batch_size = x.shape[0]
+        elif partition == DataPartitionType.DATA:
             global_batch_size = x.shape[0]
         else:
             raise NotImplementedError(f"Unsupported partition: {partition}")
