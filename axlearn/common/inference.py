@@ -217,7 +217,6 @@ class InferenceRunner(Module):
 
         # Create child objects within mesh-context.
         with self.mesh():
-            logging.info(f"InferenceRunner cfg.model type:{type(cfg.model)}")
             self._add_child("model", cfg.model)
             self._model_param_specs = self.model.create_parameter_specs_recursively()
             self._model_param_specs = self._inference_cast(self._model_param_specs)

@@ -19,22 +19,6 @@ $ axlearn gcp dataflow start \
     --bundler_spec=image=${DOCKER_IMAGE} \
     --bundler_spec=target=dataflow \
     --bundler_spec=allow_dirty=True \
-    --dataflow_spec=runner=DirectRunner \
-    -- "'python3 -m axlearn.cloud.gcp.dataflow_inference_custom \
-        --module=text.gpt.c4_trainer \
-        --config=fuji-7B-single \
-        --trainer_dir='gs://.../checkpoints/step_xxx' \
-        '"
-
-To launch the job locally and run on GCP Dataflow:
-$ DOCKER_REPO=
-$ DOCKER_IMAGE=
-$ axlearn gcp dataflow start \
-    --bundler_spec=dockerfile=Dockerfile \
-    --bundler_spec=repo=${DOCKER_REPO} \
-    --bundler_spec=image=${DOCKER_IMAGE} \
-    --bundler_spec=target=dataflow \
-    --bundler_spec=allow_dirty=True \
     --dataflow_spec=runner=DataflowRunner \
     -- "'python3 -m axlearn.cloud.gcp.dataflow_inference_custom \
         --module=text.gpt.c4_trainer \
@@ -43,8 +27,6 @@ $ axlearn gcp dataflow start \
         '"
 
 To use GPUs for your job:
-$ DOCKER_REPO=
-$ DOCKER_IMAGE=
 $ axlearn gcp dataflow start \
     --bundler_spec=dockerfile=Dockerfile \
     --bundler_spec=repo=${DOCKER_REPO} \
@@ -65,6 +47,7 @@ $ axlearn gcp dataflow start \
 
 import logging
 import warnings
+import copy
 from typing import Any, Dict, Optional, Sequence
 
 import apache_beam as beam
@@ -84,9 +67,20 @@ warnings.filterwarnings("ignore")
 
 class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
     """Defines how to load a model and run inference"""
-    def __init__(self, trainer_config: SpmdTrainer.Config, trainer_dir):
-        self.trainer_config = trainer_config
-        self.trainer_dir = trainer_dir
+    def __init__(self, flag_dict):
+        self._flag_dict = flag_dict
+
+    def _flag_values_from_dict(self, flag_values: dict) -> flags.FlagValues:
+        # Avoid mutating global FLAGS.
+        fv = copy.deepcopy(flags.FLAGS)
+        for k, v in flag_values.items():
+            try:
+                fv.set_default(k, v)
+            except flags._exceptions.UnrecognizedFlagError:
+                # Ignore unrecognized flags from other modules
+                pass
+        fv.mark_as_parsed()
+        return fv
 
     def load_model(self) -> MethodRunner:
         """Loads a pre-trained model in the desired type (MethodRunner in this case).
@@ -95,13 +89,14 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
         Returns:
           An instance of MethodRunner.
         """
+        # construct absl FlagValues from dict
+        flag_values = self._flag_values_from_dict(self._flag_dict)
+
+        module_config = trainer_utils.get_trainer_config(flag_values=flag_values)
 
         # get InferenceRunner Config from Trainer Config and instantiate InferenceRunner
-        logging.info(f"Load model, trainer config type:{type(self.trainer_config)}")
-        inference_runner_cfg = InferenceRunner.config_from_trainer(self.trainer_config)
-        inference_runner_cfg.init_state_builder.set(dir=self.trainer_dir)
-        logging.info(f"Load model, inference runner config model type:{type(inference_runner_cfg.model)}")
-        logging.info(f"Load model, inference runner config type:{type(inference_runner_cfg)}")
+        inference_runner_cfg = InferenceRunner.config_from_trainer(module_config)
+        inference_runner_cfg.init_state_builder.set(dir=flag_values.trainer_dir)
         inference_runner = InferenceRunner(cfg=inference_runner_cfg, parent=None)
 
         # create Method Runner only once
@@ -186,14 +181,11 @@ def main(args, save_main_session=True, pickler="cloudpickle"):
 
     pipeline = beam.Pipeline(options=pipeline_options)
 
-    module_config = trainer_utils.get_trainer_config(flag_values=FLAGS)
-    logging.info(f"Main module config type:{type(module_config)}")
-
     with pipeline as p:
         (
             p
             | "CreateInput" >> beam.Create(pipeline_input)
-            | "RunInference" >> RunInference(CustomModelHandler(trainer_config=module_config, trainer_dir=FLAGS.trainer_dir))
+            | "RunInference" >> RunInference(CustomModelHandler(FLAGS.flag_values_dict()))
             | "PrintOutput" >> beam.Map(print)
         )
 
