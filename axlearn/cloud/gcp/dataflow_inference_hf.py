@@ -63,7 +63,7 @@ class PostProcessor(beam.DoFn):
         print("-" * 80)
 
 
-def main():
+def main(argv=None):
     # Create a model handler
     model_handler = HuggingFaceModelHandlerKeyedTensor(
         model_uri="stevhliu/my_awesome_eli5_mlm_model",
@@ -83,8 +83,9 @@ def main():
     ]
 
     tokenizer = AutoTokenizer.from_pretrained("stevhliu/my_awesome_eli5_mlm_model")
+    pipeline_options = PipelineOptions(["--save_main_session"])
 
-    with beam.Pipeline() as beam_pipeline:
+    with beam.Pipeline(options=pipeline_options) as beam_pipeline:
         tokenized_examples = (
             beam_pipeline
             | "CreateExamples" >> beam.Create(text)

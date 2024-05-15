@@ -131,6 +131,11 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
         return output_list
 
 
+class PostProcessFn(beam.DoFn):
+    def process(self, element):
+        logging.info(f"Inference finished. Output type: {type(element)}")
+        yield None
+
 def get_examples() -> Sequence[NestedTensor]:
     """Returns a list of fake input. You can edit this function to return your desired input.
     Fake input: https://github.com/apple/axlearn/blob/main/axlearn/common/input_fake.py#L49
@@ -143,7 +148,7 @@ def get_examples() -> Sequence[NestedTensor]:
     cfg = input_fake.FakeLmInput.default_config()
     cfg.is_training = False
     cfg.global_batch_size = 1
-    cfg.total_num_batches = 1
+    cfg.total_num_batches = 3
 
     fake_input = input_fake.FakeLmInput(cfg)
     example_list = []
@@ -167,7 +172,7 @@ def parse_flags(argv):
     parser.add_argument("--pickle_library", default="cloudpickle")
 
     # Assume all remaining unknown arguments are Dataflow Pipeline options
-    known_args , pipeline_args = parser.parse_known_args(argv[1:])
+    known_args, pipeline_args = parser.parse_known_args(argv[1:])
     if known_args.save_main_session is True:
         pipeline_args.append("--save_main_session")
     pipeline_args.append(f"--pickle_library={known_args.pickle_library}")
@@ -190,7 +195,7 @@ def main(args):
             p
             | "CreateInput" >> beam.Create(pipeline_input)
             | "RunInference" >> RunInference(CustomModelHandler(FLAGS.flag_values_dict()))
-            | "PrintOutput" >> beam.Map(print)
+            | "PrintOutput" >> beam.ParDo(PostProcessFn())
         )
 
 
