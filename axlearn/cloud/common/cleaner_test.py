@@ -8,7 +8,12 @@ from typing import Dict, Sequence
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bastion import new_jobspec
-from axlearn.cloud.common.cleaner import Cleaner, CompositeCleaner, UnschedulableCleaner
+from axlearn.cloud.common.cleaner import (
+    AggregationType,
+    Cleaner,
+    CompositeCleaner,
+    UnschedulableCleaner,
+)
 from axlearn.cloud.common.quota import QuotaInfo
 from axlearn.cloud.common.scheduler import JobMetadata, JobScheduler
 from axlearn.cloud.common.types import JobSpec
@@ -27,15 +32,29 @@ class MockCleaner(Cleaner):
 
 
 class CompositeCleanerTest(parameterized.TestCase):
-    def test_sweep(self):
+    @parameterized.named_parameters(
+        ("Union", AggregationType.UNION, ["a", "b"]),
+        ("Intersection", AggregationType.INTERSECTION, []),
+    )
+    def test_sweep(self, aggregation_type, expected_result):
         cleaner_a = MockCleaner.default_config().set(names=["a"])
         cleaner_b = MockCleaner.default_config().set(names=["b"])
-        cfg = CompositeCleaner.default_config().set(cleaners=[cleaner_a, cleaner_b])
+        cfg = CompositeCleaner.default_config().set(
+            cleaners=[cleaner_a, cleaner_b], aggregation=aggregation_type
+        )
         cleaner = cfg.instantiate()
 
         jobs = {"a": None, "b": None, "c": None}
         result = cleaner.sweep(jobs)
-        self.assertSequenceEqual(sorted(result), ["a", "b"])
+        self.assertSequenceEqual(sorted(result), expected_result)
+
+    def test_sweep_no_cleaners(self):
+        cfg = CompositeCleaner.default_config().set(cleaners=[])
+        cleaner = cfg.instantiate()
+
+        jobs = {"a": None, "b": None, "c": None}
+        with self.assertRaises(ValueError):
+            cleaner.sweep(jobs)
 
 
 class UnschedulableCleanerTest(parameterized.TestCase):

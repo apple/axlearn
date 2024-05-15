@@ -2,6 +2,7 @@
 
 """Utilities to clean resources."""
 
+from enum import Enum
 from typing import Dict, Sequence
 
 from axlearn.cloud.common.scheduler import JobScheduler
@@ -24,22 +25,43 @@ class Cleaner(Configurable):
         raise NotImplementedError(type(self))
 
 
+class AggregationType(Enum):
+    """The aggregation rule for CompositeCleaner.
+    Attributes:
+        UNION: Consider a job cleaned if any cleaner reports the job as cleaned.
+        INTERSECTION: Consider a job cleaned only if all cleaners report the job as cleaned.
+    """
+
+    UNION = "union"
+    INTERSECTION = "intersection"
+
+
 class CompositeCleaner(Cleaner):
-    """A cleaner that runs multiple cleaners on the jobs and returns the union of the results."""
+    """A cleaner that runs multiple cleaners on the jobs and returns the union
+    or intersection of the results."""
 
     @config_class
     class Config(Cleaner.Config):
         cleaners: Required[Sequence[Cleaner.Config]] = REQUIRED
+        aggregation: AggregationType = AggregationType.UNION
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         self._cleaners = [cleaner.instantiate() for cleaner in cfg.cleaners]
+        self._aggregation = cfg.aggregation
 
     def sweep(self, jobs: Dict[str, JobSpec]) -> Sequence[str]:
-        """Apply all cleaners and return the union of the results."""
-        cleaned_jobs = set()
-        for cleaner in self._cleaners:
-            cleaned_jobs.update(cleaner.sweep(jobs))
+        """Apply all cleaners and return the union or intersection of the results."""
+        if len(self._cleaners) < 1:
+            raise ValueError("There should be at least one cleaner.")
+        cleaned_jobs = set(self._cleaners[0].sweep(jobs))
+        for cleaner in self._cleaners[1:]:
+            if self._aggregation == AggregationType.UNION:
+                cleaned_jobs.update(cleaner.sweep(jobs))
+            elif self._aggregation == AggregationType.INTERSECTION:
+                cleaned_jobs.intersection_update(cleaner.sweep(jobs))
+            else:
+                raise ValueError(f"Unknown aggregation type: {self._aggregation}")
         return list(cleaned_jobs)
 
 
