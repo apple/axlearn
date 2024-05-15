@@ -103,7 +103,9 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
             config_name = make_config_name(
                 arch=arch, model_size=model_size, version=f"v{version.value}"
             )
-            kwargs = fuji.get_trainer_kwargs(model_size, vocab_size=vocab_size, version=version)
+            kwargs = fuji.get_trainer_kwargs(
+                model_size, vocab_size=vocab_size, version=version, flash_attention=True
+            )
             max_sequence_length = kwargs.pop("max_sequence_length")
             # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
             config_map[config_name] = get_trainer_config_fn(
