@@ -512,6 +512,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             uploader=Uploader.default_config().set(
                 upload_fn=config_for_function(with_interval).set(upload_fn=_gcloud_storage_rsync),
             ),
+            quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file()),
         )
         _with_retry(
             lambda: bastion_cfg.instantiate().execute(),

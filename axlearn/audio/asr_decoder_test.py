@@ -4,6 +4,7 @@
 # pylint: disable=no-self-use,too-many-lines
 
 import functools
+from typing import Any, Dict, Union
 
 import jax.random
 import numpy as np
@@ -24,6 +25,7 @@ from axlearn.common.config import config_for_function
 from axlearn.common.decoder import _scores_from_logits
 from axlearn.common.decoding import NEG_INF
 from axlearn.common.logit_modifiers import top_k_logits
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
@@ -509,6 +511,88 @@ class CTCDecoderModelTest(TestCase):
         self.assertNestedEqual(per_example_weight, aux_outputs["per_example_weight"])
         assert_allclose(ref_per_example_loss, aux_outputs["per_example_loss"] * per_example_weight)
         assert_allclose(np.sum(ref_per_example_loss) / np.sum(per_example_weight), loss)
+
+    def _check_summary(
+        self, summary_collection: Dict[str, Any], name: str, value: Union[Tensor, WeightedScalar]
+    ):
+        self.assertIn(name, summary_collection)
+        msg = f"mismatch in {name}: {summary_collection[name]} vs {value}"
+        self.assertEqual(summary_collection[name], value, msg)
+
+    def test_forward_summary(self):
+        input_dim, vocab_size = 16, 20
+        cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
+            input_dim=input_dim,
+            vocab_size=vocab_size,
+            blank_id=0,
+        )
+        # Initialize layer parameters.
+        layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, input_key, target_key = jax.random.split(prng_key, num=4)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        batch_size, max_seq_len = 8, 10
+
+        # Sample indices 2, 3 are invalid, since target_lengths exceeds input_lengths.
+        input_lengths = jnp.array([10, 5, 7, 0, 6, 3, 8, 1], dtype=jnp.int32)
+        target_lengths = jnp.array([6, 3, 9, 1, 6, 0, 4, 0], dtype=jnp.int32)
+        per_example_weight = jnp.array([1, 1, 0, 0, 1, 1, 1, 1], dtype=jnp.float32)
+        # [batch_size, max_seq_len, dim].
+        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, input_dim]) * 1000
+        target_labels = jax.random.randint(
+            target_key, [batch_size, max_seq_len], minval=0, maxval=vocab_size
+        )
+        # [batch_size, max_seq_len].
+        paddings = (jnp.arange(max_seq_len) >= input_lengths[:, None]).astype(target_labels.dtype)
+        # Map padding targets out-of-vocab.
+        target_labels = jnp.where(
+            jnp.arange(max_seq_len) >= target_lengths[:, None], -1, target_labels
+        )
+        target_paddings = jnp.where(target_labels == -1, 1, 0)
+        input_batch = dict(inputs=inputs, paddings=paddings, target_labels=target_labels)
+        _, output_collections = F(
+            layer,
+            inputs=dict(input_batch=input_batch),
+            is_training=True,
+            prng_key=prng_key,
+            state=layer_params,
+        )
+        summaries = output_collections.summaries
+        # 6 out of 8 examples are valid, therefore the average example weight is 0.75
+        self._check_summary(summaries, "loss/example_weight", WeightedScalar(0.75, 8))
+        self._check_summary(summaries, "loss/ctc_loss", WeightedScalar(6972.1353, 6))
+        self._check_summary(summaries, "loss/invalid_seq_percent", 0.25)
+        total_ctc_loss = summaries["loss/ctc_loss"].weight * summaries["loss/ctc_loss"].mean
+        num_valid_frames = jnp.sum((1 - paddings) * per_example_weight[:, None])
+        num_valid_labels = jnp.sum((1 - target_paddings) * per_example_weight[:, None])
+        num_valid_examples = jnp.sum(per_example_weight)
+        self._check_summary(
+            summaries,
+            "loss/per_frame_ctc_loss",
+            WeightedScalar(total_ctc_loss / num_valid_frames, num_valid_frames),
+        )
+        self._check_summary(
+            summaries,
+            "loss/per_label_ctc_loss",
+            WeightedScalar(total_ctc_loss / num_valid_labels, num_valid_labels),
+        )
+
+        self._check_summary(
+            summaries,
+            "input_stats/average_target_length",
+            WeightedScalar(num_valid_labels / num_valid_examples, num_valid_examples),
+        )
+        self._check_summary(
+            summaries,
+            "input_stats/average_source_length",
+            WeightedScalar(num_valid_frames / num_valid_examples, num_valid_examples),
+        )
+        self._check_summary(
+            summaries,
+            "input_stats/frame_packing_effiency",
+            WeightedScalar(num_valid_frames / paddings.size, paddings.size),
+        )
 
     def _check_paddings(self, outputs: DecodeOutputs, *, blank_id: int):
         # Padding positions should correspond to pad_id.

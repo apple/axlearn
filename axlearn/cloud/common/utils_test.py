@@ -13,6 +13,7 @@ import time
 from typing import Dict, Sequence, Union
 from unittest import mock
 
+import psutil
 import pytest
 from absl import app
 from absl.testing import parameterized
@@ -146,6 +147,43 @@ class UtilsTest(TestWithTemporaryCWD):
             time.sleep(1)
             # Ensure that the count is still the same.
             self.assertEqual(_read_count(), count)
+
+    @mock.patch("psutil.Process")
+    def test_send_signal_with_children_no_such_process(self, mock_process_class):
+        # Create a mock parent process
+        mock_process = mock.Mock()
+        mock_process.pid = 1234
+
+        # Create three mock child processes
+        mock_child1 = mock.Mock()
+        mock_child2 = mock.Mock()
+        mock_child3 = mock.Mock()
+
+        mock_child1.send_signal.side_effect = psutil.NoSuchProcess(pid=mock_child1.pid)
+        mock_child2.send_signal.return_value = None
+        mock_child3.send_signal.return_value = None
+
+        mock_process.children.return_value = [mock_child1, mock_child2, mock_child3]
+
+        # Ensure the parent process has the expected PID
+        mock_process.pid = 1234
+        mock_process_class.return_value = mock_process
+
+        mock_popen = mock.Mock()
+        mock_popen.pid = 1234
+
+        utils.send_signal(mock_popen, signal.SIGKILL)
+
+        mock_child1.send_signal.assert_called_once_with(signal.SIGKILL)
+        mock_child2.send_signal.assert_called_once_with(signal.SIGKILL)
+        mock_child3.send_signal.assert_called_once_with(signal.SIGKILL)
+
+        mock_popen.send_signal.assert_called_once_with(signal.SIGKILL)
+
+        try:
+            utils.send_signal(mock_popen, signal.SIGKILL)
+        except psutil.NoSuchProcess:
+            self.fail("send_signal() raised NoSuchProcess unexpectedly!")
 
     # TODO(tom_gunter,markblee): Understand & fix flakiness on CI.
     @pytest.mark.skip(reason="Passes locally & in docker but fails on CI, to be fixed.")

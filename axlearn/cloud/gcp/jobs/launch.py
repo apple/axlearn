@@ -318,13 +318,6 @@ class BaseBastionManagedJob(Job):
 
         logging.info("Starting run for job name %s", cfg.name)
         logging.info("Command: %s", cfg.command)
-        print(
-            "\nView bastion outputs with:\n"
-            f"gsutil cat {os.path.join(self._bastion_dir.logs_dir, cfg.name)}\n"
-            "\nCheck job history with:\n"
-            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} "
-            f"--job_name={cfg.name} --zone={cfg.zone}"
-        )
         with tempfile.NamedTemporaryFile("w") as f:
             metadata = JobMetadata(
                 user_id=cfg.user_id,
@@ -335,11 +328,20 @@ class BaseBastionManagedJob(Job):
             )
             serialize_jobspec(new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata), f)
             self._bastion_dir.submit_job(cfg.name, job_spec_file=f.name)
+        gcp_api = "gke" if "gke" in cfg.bastion_name else "qrm"
         print(
+            "\nView bastion outputs with: (if not found, check job and project history)\n"
+            f"gsutil cat {os.path.join(self._bastion_dir.logs_dir, cfg.name)}\n"
             f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "
             f"--name={cfg.name} --bastion={cfg.bastion_name} --instance_type={cfg.instance_type} "
-            f"--zone={cfg.zone}"
+            f"--zone={cfg.zone} --gcp_api={gcp_api}\n"
+            "\nCheck job history with:\n"
+            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
+            f"--job_name={cfg.name}"
+            "\nCheck project history with:\n"
+            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
+            f"{cfg.project_id or ''}"
         )
 
 
@@ -418,12 +420,14 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
             project: Used for load_kube_config.
             zone: Used to infer total quota.
             cluster: K8s cluster.
+            num_replicas: Number of replicas.
         """
 
         namespace: str = "default"
         project: Required[str] = REQUIRED
         zone: Required[str] = REQUIRED
         cluster: Required[str] = REQUIRED
+        num_replicas: int = 1
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):

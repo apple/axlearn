@@ -84,6 +84,7 @@ from axlearn.common.param_init import (
     constant_initializer,
 )
 from axlearn.common.pipeline import Pipeline
+from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.repeat import Repeat
 from axlearn.common.utils import (
     NestedTensor,
@@ -426,14 +427,14 @@ class SinusoidalPositionalEmbedding(BaseLayer):
         )
 
 
-class BaseMultiheadLinear(BaseLayer):
+class BaseMultiheadLinear(DenseGeneralBaseLayer):
     """The linear layer used for multi-head attention.
 
     It uses einsum for efficient computation on TPU to avoid reshaping.
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(DenseGeneralBaseLayer.Config):
         """Configures BaseMultiheadLinear."""
 
         model_dim: Required[int] = REQUIRED  # Feature dim.
@@ -461,9 +462,15 @@ class BaseMultiheadLinear(BaseLayer):
             params["bias"] = self._bias_spec
         return params
 
+    @property
+    def _einsum_expr(self):
+        raise NotImplementedError(type(self))
+
     def forward(self, inputs: Tensor) -> Tensor:
         params = self.parameters
-        outputs = jnp.einsum(self._einsum_expr, inputs, params["weight"])
+        outputs = self.einsum_maybe_quantized(
+            self._einsum_expr, activation=inputs, kernel=params["weight"]
+        )
         return outputs + params.get("bias", 0)
 
     def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
@@ -932,7 +939,9 @@ class FusedQKVLinear(BaseQKVLinear):
                 # N.B. this branch (with just the query inputs) is required in
                 # order to get the best step time on TPU for self-attention.
                 inputs = query  # [batch, target_length, target_dim].
-                proj = jnp.einsum("btd,pdnh->pbtnh", inputs, params["weight"])
+                proj = self.qkv_proj.einsum_maybe_quantized(
+                    "btd,pdnh->pbtnh", activation=inputs, kernel=params["weight"]
+                )
             elif key is not None and value is not None:
                 # Compute cross attention but with same target/source shapes.
                 assert (
@@ -941,7 +950,9 @@ class FusedQKVLinear(BaseQKVLinear):
                 inputs = jnp.stack(
                     [query, key, value], axis=0
                 )  # [q/k/v, batch, target, model_dim].
-                proj = jnp.einsum("pbtd,pdnh->pbtnh", inputs, params["weight"])
+                proj = self.qkv_proj.einsum_maybe_quantized(
+                    "pbtd,pdnh->pbtnh", activation=inputs, kernel=params["weight"]
+                )
             else:
                 raise ValueError("Key and value should be either both None or both set.")
             if self.qkv_proj.config.bias:
@@ -1534,6 +1545,7 @@ class MultiheadAttention(BaseLayer):
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
+
         q_proj = self._remat_name(q_proj, "q_proj")
         k_proj = self._remat_name(k_proj, "k_proj")
         v_proj = self._remat_name(v_proj, "v_proj")
@@ -1551,9 +1563,11 @@ class MultiheadAttention(BaseLayer):
         )
         self.vlog(3, "atten.prob=%s", probs[0, 0, 0, :])
         self.vlog(3, "atten.context=%s", context.sum())
+
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
+        self._add_tensor_stats("o_proj_outputs", outputs)
         return dict(i_proj=i_proj_state), self.Output(data=outputs, probs=probs)
 
     def _compute_attention(
@@ -2358,7 +2372,10 @@ class TransformerFeedForwardLayer(BaseLayer):
         add_dead_neuron_summary: Optional[bool] = None
 
         # Adds summary of RMS norms of the specified values. Supported value are:
+        # - "inputs": inputs of the layer.
+        # - "linear1_outputs": outputs of linear1.
         # - "linear2_outputs": outputs of linear2.
+        # TODO(tlei3): deprecate this feature since we use TensorStats.
         add_value_rms_norm_summary: Sequence[str] = []
 
     def __init__(self, cfg: Config, *, parent: Module):
@@ -2405,8 +2422,10 @@ class TransformerFeedForwardLayer(BaseLayer):
             raise NotImplementedError(cfg.structure)
 
         self._add_child("stochastic_depth", cfg.stochastic_depth)
+        # TODO(tlei3): deprecate this check since we will use TensorStats to handle what
+        # tensors are logged.
         for value in cfg.add_value_rms_norm_summary:
-            if value != "linear2_outputs":
+            if value not in ["inputs", "linear1_outputs", "linear2_outputs"]:
                 raise NotImplementedError(f"add_value_rms_norm_summary: {value}")
 
     def forward(self, inputs: Tensor) -> Tensor:
@@ -2415,10 +2434,10 @@ class TransformerFeedForwardLayer(BaseLayer):
         def _linear2(x):
             """Applies linear2, optionally logging RMS norm of the output."""
             x = self.linear2(x)
-            if "linear2_outputs" in cfg.add_value_rms_norm_summary:
-                rms_norm = (x**2.0).mean().astype(jnp.float32) ** 0.5
-                self.add_summary("rms_norm/linear2_outputs", rms_norm)
+            self._add_tensor_stats("linear2_outputs", x)
             return x
+
+        self._add_tensor_stats("inputs", inputs)
 
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
@@ -2484,10 +2503,16 @@ class TransformerFeedForwardLayer(BaseLayer):
                 for i, activation in enumerate(cfg.activation)
             ]
             assert len(activations) == 2, cfg.activation
-            return activations[0] * activations[1]
+            outputs = activations[0] * activations[1]
+            self._add_tensor_stats("linear1_0_outputs", activations[0])
+            self._add_tensor_stats("linear1_1_outputs", activations[1])
+            self._add_tensor_stats("linear1_outputs", outputs)
+            return outputs
         else:
             x = self.linear1(x)
-            return self._get_activation(x, activation_fn_name=cfg.activation)
+            x = self._get_activation(x, activation_fn_name=cfg.activation)
+            self._add_tensor_stats("linear1_outputs", x)
+            return x
 
     def _get_activation(self, x: Tensor, activation_fn_name: str) -> Tensor:
         """Applies activation function on 'x' and optionally counts the number of dead neurons.

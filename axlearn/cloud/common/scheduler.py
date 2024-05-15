@@ -25,7 +25,14 @@ from axlearn.cloud.common.types import (
     ResourceMap,
     ResourceType,
 )
-from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
+from axlearn.common.config import (
+    REQUIRED,
+    ConfigOr,
+    Configurable,
+    Required,
+    config_class,
+    maybe_instantiate,
+)
 
 
 class ProjectJobSorter(Configurable):
@@ -405,14 +412,14 @@ class JobScheduler(Configurable):
             scheduler: Scheduler that decides whether to resume/suspend jobs.
         """
 
-        quota: Required[InstantiableConfig[QuotaFn]] = REQUIRED
+        quota: Required[ConfigOr[QuotaFn]] = REQUIRED
         sorter: ProjectJobSorter.Config = ProjectJobSorter.default_config()
         scheduler: BaseScheduler.Config = TierScheduler.default_config()
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
-        self._quota = cfg.quota.instantiate()
+        self._quota = maybe_instantiate(cfg.quota)
         self._sorter: ProjectJobSorter = cfg.sorter.instantiate()
         self._scheduler: BaseScheduler = cfg.scheduler.instantiate()
 

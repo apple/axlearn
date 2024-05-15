@@ -259,16 +259,22 @@ class TPUGKEJobTest(TestCase):
             dict(env={}, reservation="test-reservation", expect_reserved=False),
         ],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        enable_ici_resiliency=[True, False, None],
     )
     def test_build_pod(
         self,
         bundler_cls,
         expect_reserved: bool,
+        enable_ici_resiliency: bool,
         env: Optional[dict] = None,
         reservation: Optional[str] = None,
     ):
         with mock.patch.dict("os.environ", env), self._job_config(bundler_cls) as cfg:
-            gke_job: job.TPUGKEJob = cfg.set(reservation=reservation, name="test").instantiate()
+            gke_job: job.TPUGKEJob = cfg.set(
+                reservation=reservation,
+                enable_tpu_ici_resiliency=enable_ici_resiliency,
+                name="test",
+            ).instantiate()
             # pylint: disable-next=protected-access
             pod_spec = gke_job._build_pod()["spec"]
             node_selector = pod_spec["nodeSelector"]
@@ -281,6 +287,23 @@ class TPUGKEJobTest(TestCase):
             else:
                 self.assertEqual("true", node_selector.get("cloud.google.com/gke-spot", None))
                 self.assertNotIn("cloud.google.com/reservation-name", node_selector)
+
+            self.assertEqual(len(pod_spec["containers"]), 1)
+            container_env = pod_spec["containers"][0]["env"]
+            container_env = {kv["name"]: kv["value"] for kv in container_env}
+            if enable_ici_resiliency is not None:
+                expected = "true" if enable_ici_resiliency else "false"
+                self.assertEqual(
+                    expected,
+                    node_selector.get("cloud.google.com/gke-tpu-ici-resiliency", None),
+                )
+                self.assertEqual(
+                    expected,
+                    container_env.get("ENABLE_ICI_RESILIENCY"),
+                )
+            else:
+                self.assertNotIn("cloud.google.com/gke-tpu-ici-resiliency", node_selector)
+                self.assertNotIn("ENABLE_ICI_RESILIENCY", container_env)
 
 
 if __name__ == "__main__":

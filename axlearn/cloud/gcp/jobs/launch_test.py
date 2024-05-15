@@ -3,7 +3,9 @@
 """Tests launchers."""
 # pylint: disable=protected-access
 
+import contextlib
 from datetime import datetime
+from typing import Optional
 from unittest import mock
 
 from absl import app, flags
@@ -78,32 +80,37 @@ class TestUtils(parameterized.TestCase):
                 _get_launcher_or_exit(action="start", instance_type="other", gcp_api=GCPAPI.QRM)
 
 
+class _DummyRunner(Job):
+    def _execute(self):
+        pass
+
+
+def _common_bastion_managed_job_kwargs() -> dict:
+    return dict(
+        instance_type="tpu-v4-8",
+        user_id="test_user",
+        project_id=None,
+        zone="test_zone",
+        name="test_job",
+        command="test_command",
+        max_tries=1,
+        retry_interval=60,
+        bastion_name="test_bastion",
+        priority=3,
+        output_dir="test-output",
+        runner=_DummyRunner.default_config().set(
+            max_tries=1,
+            retry_interval=60,
+            command="",
+        ),
+    )
+
+
 class TestBaseBastionManagedJob(parameterized.TestCase):
     """Tests BaseBastionManagedJob."""
 
     def _mock_config(self, **kwargs):
-        class DummyRunner(Job):
-            def _execute(self):
-                pass
-
-        cfg = BaseBastionManagedJob.default_config().set(
-            instance_type="test",
-            user_id="test_user",
-            project_id=None,
-            zone="test_zone",
-            name="test_job",
-            command="test_command",
-            max_tries=1,
-            retry_interval=60,
-            bastion_name="test_bastion",
-            priority=3,
-            output_dir="test-output",
-            runner=DummyRunner.default_config().set(
-                max_tries=1,
-                retry_interval=60,
-                command="",
-            ),
-        )
+        cfg = BaseBastionManagedJob.default_config().set(**_common_bastion_managed_job_kwargs())
         cfg.set(**kwargs)
         test_fixture = self
 
@@ -580,3 +587,32 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
         # Bundler should be propagated to runner.
         if action == "start":
             self.assertIsNotNone(job.runner.bundler)
+
+    @parameterized.parameters(
+        dict(name="test_job", expected=ValueError("invalid characters")),
+        dict(name="test-job", expected=None),
+    )
+    def test_execute(self, name: str, expected: Optional[Exception]):
+        class FakeBastionDirectory(BastionDirectory):
+            pass
+
+        tpu_gke_job = BastionManagedGKEJob.with_runner(_DummyRunner)
+        cfg = tpu_gke_job.default_config().set(
+            **_common_bastion_managed_job_kwargs(),
+            namespace="default",
+            project="test-project",
+            cluster="test-cluster",
+            bastion_dir=FakeBastionDirectory.default_config().set(root_dir="temp_dir"),
+        )
+        cfg.set(name=name)
+        patch_kube_config = mock.patch(f"{launch.__name__}.load_kube_config")
+        patch_execute = mock.patch(f"{launch.__name__}.{BaseBastionManagedJob.__name__}._execute")
+
+        if isinstance(expected, Exception):
+            ctx = self.assertRaisesRegex(type(expected), str(expected))
+        else:
+            ctx = contextlib.nullcontext()
+
+        with patch_kube_config, patch_execute, ctx:
+            job: BastionManagedGKEJob = cfg.instantiate()
+            job._execute()
