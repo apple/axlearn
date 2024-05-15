@@ -27,6 +27,7 @@ class Cleaner(Configurable):
 
 class AggregationType(Enum):
     """The aggregation rule for CompositeCleaner.
+    
     Attributes:
         UNION: Consider a job cleaned if any cleaner reports the job as cleaned.
         INTERSECTION: Consider a job cleaned only if all cleaners report the job as cleaned.
