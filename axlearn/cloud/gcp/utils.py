@@ -202,8 +202,11 @@ def load_kube_config(*, project: str, zone: str, cluster: str):
                 f"Failed to load kube-config for cluster {cluster} with: {e}\n"
                 "If it's complaining about a missing kube-config file, run: "
                 f"gcloud components install gke-gcloud-auth-plugin; {get_credentials_cmd}.\n"
-                "Make sure you also activated a config with an associated kubernetes cluster via "
-                f"`{infer_cli_name()} gcp config activate`."
+                "Make sure you also activated the config with the associated kubernetes cluster via"
+                f" `{infer_cli_name()} gcp config activate`.\n"
+                "Activating the config must be done separately for each kube cluster the first \n"
+                "time you want to access it, even if you are accessing it through a command that \n"
+                "does not normally require you to activate a config first."
             ) from e
 
 
