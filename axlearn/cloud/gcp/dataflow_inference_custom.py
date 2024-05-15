@@ -136,6 +136,7 @@ class PostProcessFn(beam.DoFn):
         logging.info(f"Inference finished. Output type: {type(element)}")
         yield None
 
+
 def get_examples() -> Sequence[NestedTensor]:
     """Returns a list of fake input. You can edit this function to return your desired input.
     Fake input: https://github.com/apple/axlearn/blob/main/axlearn/common/input_fake.py#L49
