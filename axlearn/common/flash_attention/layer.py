@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """FlashAttention layers."""
+import os
 from typing import Dict, Optional, Sequence, Tuple
 
 import jax
@@ -104,9 +105,11 @@ class FlashAttention(GroupedQueryAttention):
     ) -> Tuple[Tensor, Tensor]:
         cfg = self.config
 
-        # Repeats key/value heads dim if neccessary.
-        k_proj = self._repeat_kv_heads(k_proj)
-        v_proj = self._repeat_kv_heads(v_proj)
+        if "NVTE_FUSED_ATTN" not in os.environ:
+            # Repeats key/value heads dim if neccessary.
+            # TE supports GQA by design, no need to repeat key/value heads.
+            k_proj = self._repeat_kv_heads(k_proj)
+            v_proj = self._repeat_kv_heads(v_proj)
 
         if jax.default_backend() == "tpu":
             assert (

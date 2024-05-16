@@ -855,7 +855,7 @@ def scan_in_context(
 
         return carry_i, dict(y_i=y_i, output_collection=output_collection_i)
 
-    carry, scan_ys = jax.lax.scan(scan_fn, init=carry, xs=xs, unroll=8)
+    carry, scan_ys = jax.lax.scan(scan_fn, init=carry, xs=xs)
     ctx.output_collection.update(scan_ys.pop("output_collection"))
 
     return carry, scan_ys["y_i"]

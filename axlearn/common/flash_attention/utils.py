@@ -106,29 +106,22 @@ def flash_attention_implementation(
         if not user_triton_kernel:
             try:
                 # pylint: disable-next=import-outside-toplevel
-                import transformer_engine.jax as te
+                from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType, fused_attn
 
-                # TODO(kelvin-zou): Update to raw te library over flax library.
-                # TODO(kelvin-zou): Support bias in the future.
                 def te_attn(query, key, value, _):
-                    _, _, q_heads, per_head_dim = query.shape
-                    _, _, kv_heads, _ = key.shape
-                    te_flash_attention = te.flax.DotProductAttention(
-                        head_dim=per_head_dim,
-                        num_attention_heads=q_heads,
-                        num_gqa_groups=kv_heads,
-                        attn_mask_type="causal" if causal else "no_mask",
-                        attn_bias_type="no_bias",
-                        attention_dropout=0.0,
-                        dropout_rng_name="dropout",
-                        dtype=query.dtype,
-                        float32_logits=True,
-                        qkv_layout="BSHD_BSHD_BSHD",
-                        scale_factor=softmax_scale,
-                        transpose_batch_sequence=False,
+                    return fused_attn(
+                        query,
+                        key,
+                        value,
+                        bias=None,
+                        mask=None,
+                        seed=None,
+                        attn_mask_type=AttnMaskType.CAUSAL if causal else AttnMaskType.NO_MASK,
+                        attn_bias_type=AttnBiasType.NO_BIAS,
+                        scaling_factor=softmax_scale,
+                        dropout_probability=0.0,
+                        is_training=True,  # TODO(kelvin-zou): set to False for inference.
                     )
-                    context = te_flash_attention.apply({}, query, key, value)
-                    return context
 
                 logging.info("Using TE flash-attention implementation.")
                 return te_attn
@@ -136,6 +129,8 @@ def flash_attention_implementation(
             except ModuleNotFoundError:
                 logging.warning("TE flash-attention implementation not found.")
                 user_triton_kernel = True
+                # Unset the environment variable to fall back to Triton.
+                os.environ.pop("NVTE_FUSED_ATTN")
 
         if user_triton_kernel:
             # Lazy import GPU flash-attention to avoid file-level dependency on jax-triton.
