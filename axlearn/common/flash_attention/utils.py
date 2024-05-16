@@ -2,6 +2,7 @@
 
 """FlashAttention utilities shared amongst CPU/GPU/TPU backends."""
 import functools
+import os
 from typing import Callable, Literal, Optional
 
 import jax
@@ -99,39 +100,46 @@ def flash_attention_implementation(
         NotImplementedError: If implementation for the backend is not available.
     """
     if backend == "gpu":
-        try:
-            # pylint: disable-next=import-outside-toplevel
-            import transformer_engine.jax as te
+        # We must set NVTE_FUSED_ATTN to achieve a good performance in TE.
+        # Always fall back to Triton if the environment variable is not set.
+        user_triton_kernel = "NVTE_FUSED_ATTN" not in os.environ
+        if not user_triton_kernel:
+            try:
+                # pylint: disable-next=import-outside-toplevel
+                import transformer_engine.jax as te
 
-            logging.info("Using TE flash-attention implementation.")
+                # TODO(kelvin-zou): Update to raw te library over flax library.
+                # TODO(kelvin-zou): Support bias in the future.
+                def te_attn(query, key, value, _):
+                    _, _, q_heads, per_head_dim = query.shape
+                    _, _, kv_heads, _ = key.shape
+                    te_flash_attention = te.flax.DotProductAttention(
+                        head_dim=per_head_dim,
+                        num_attention_heads=q_heads,
+                        num_gqa_groups=kv_heads,
+                        attn_mask_type="causal" if causal else "no_mask",
+                        attn_bias_type="no_bias",
+                        attention_dropout=0.0,
+                        dropout_rng_name="dropout",
+                        dtype=query.dtype,
+                        float32_logits=True,
+                        qkv_layout="BSHD_BSHD_BSHD",
+                        scale_factor=softmax_scale,
+                        transpose_batch_sequence=False,
+                    )
+                    context = te_flash_attention.apply({}, query, key, value)
+                    return context
 
-            # TODO(kelvin-zou): Update to raw te library over flax library.
-            # TODO(kelvin-zou): Support bias in the future.
-            def jit_attn(query, key, value, _):
-                _, _, q_heads, per_head_dim = query.shape
-                _, _, kv_heads, _ = key.shape
-                te_flash_attention = te.flax.DotProductAttention(
-                    head_dim=per_head_dim,
-                    num_attention_heads=q_heads,
-                    num_gqa_groups=kv_heads,
-                    attn_mask_type="causal" if causal else "no_mask",
-                    attn_bias_type="no_bias",
-                    attention_dropout=0.0,
-                    dropout_rng_name="dropout",
-                    dtype=query.dtype,
-                    float32_logits=True,
-                    qkv_layout="BSHD_BSHD_BSHD",
-                    scale_factor=softmax_scale,
-                    transpose_batch_sequence=False,
-                )
-                context = te_flash_attention.apply({}, query, key, value)
-                return context
+                logging.info("Using TE flash-attention implementation.")
+                return te_attn
 
-        except ModuleNotFoundError:
-            logging.warning("TE flash-attention implementation not found.")
+            except ModuleNotFoundError:
+                logging.warning("TE flash-attention implementation not found.")
+                user_triton_kernel = True
+
+        if user_triton_kernel:
             # Lazy import GPU flash-attention to avoid file-level dependency on jax-triton.
             # Fall back to triton based flash attention.
-
             # pylint: disable-next=import-outside-toplevel
             from axlearn.common.flash_attention.gpu_attention import (
                 flash_attention as gpu_flash_attention,
@@ -141,12 +149,12 @@ def flash_attention_implementation(
 
             # shard_map-decorated function needs to be jitted.
             @jax.jit
-            def jit_attn(query, key, value, bias):
+            def triton_attn(query, key, value, bias):
                 return gpu_flash_attention(
                     query, key, value, bias=bias, causal=causal, softmax_scale=softmax_scale
                 )
 
-        return jit_attn
+        return triton_attn
 
     elif backend == "tpu":
         # TODO(tom_gunter): See if we can do better block-size tuning.
