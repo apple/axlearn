@@ -437,7 +437,7 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        annotations, selector, volumes = {}, {}, []
+        annotations, selector, volumes, tolerations = {}, {}, [], []
 
         if cfg.gcsfuse_mount:
             # Mount a GCS bucket as a volume.
@@ -475,6 +475,14 @@ class TPUGKEJob(GKEJob):
         else:
             logging.info("Found tier=%s in env. Using spot quota", tier)
             selector.update({"cloud.google.com/gke-spot": "true"})
+            tolerations.append(
+                {
+                    "key": "cloud.google.com/gke-spot",
+                    "operator": "Equal",
+                    "value": "true",
+                    "effect": "NoSchedule",
+                }
+            )
 
         if cfg.enable_tpu_ici_resiliency is not None:
             selector.update(
@@ -505,6 +513,7 @@ class TPUGKEJob(GKEJob):
                     "provisioner-nodepool-id": cfg.name,
                     **selector,
                 },
+                tolerations=tolerations,
                 containers=[self._build_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
