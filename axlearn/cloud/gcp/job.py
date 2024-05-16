@@ -575,6 +575,7 @@ class TPUGKEJob(GKEJob):
             kind="JobSet",
             **self._build_jobset(),
         )
+        logging.info("Submitting JobSet body=%s api_kwargs=%s", custom_object, api_kwargs)
         return k8s.client.CustomObjectsApi().create_namespaced_custom_object(
             namespace=cfg.namespace,
             body=custom_object,
