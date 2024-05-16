@@ -473,6 +473,7 @@ class TPUGKEJob(GKEJob):
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         else:
+            logging.info("Found tier=%s in env. Using spot quota", tier)
             selector.update({"cloud.google.com/gke-spot": "true"})
 
         if cfg.enable_tpu_ici_resiliency is not None:
@@ -575,6 +576,7 @@ class TPUGKEJob(GKEJob):
             kind="JobSet",
             **self._build_jobset(),
         )
+        logging.info("Submitting JobSet body=%s api_kwargs=%s", custom_object, api_kwargs)
         return k8s.client.CustomObjectsApi().create_namespaced_custom_object(
             namespace=cfg.namespace,
             body=custom_object,
