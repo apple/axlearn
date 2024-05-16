@@ -473,6 +473,7 @@ class TPUGKEJob(GKEJob):
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         else:
+            logging.info("Found tier=%s in env. Using spot quota", tier)
             selector.update({"cloud.google.com/gke-spot": "true"})
 
         if cfg.enable_tpu_ici_resiliency is not None:
