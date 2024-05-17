@@ -145,7 +145,7 @@ class JobStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
     # Job is cancelling. Command is terminating.
     CANCELLING = "CANCELLING"
-    # Job has completed/termianted the command, is running cleanup command (if any).
+    # Job has completed/terminated the command, is running cleanup command (if any).
     CLEANING = "CLEANING"
     # Job is complete.
     COMPLETED = "COMPLETED"
@@ -516,6 +516,7 @@ def download_job_batch(
                     user_id = spec.metadata.user_id
                     project_id = spec.metadata.project_id
                     if project_id not in quota_info.user_projects(user_id):
+                        # TODO(markblee): surface invalid specs in job history.
                         logging.warning(
                             "Job %s will be removed because user %s is not a member of %s",
                             job_name,
@@ -968,7 +969,7 @@ class Bastion(Configurable):
                         # see whether this is necessary.
                         assert job.state.status == JobStatus.ACTIVE and changed_tiers
                         self._append_to_job_history(
-                            job, f"Restarting at a different tier from {old_tier} to {new_tier}"
+                            job, f"Rescheduling at a different tier from {old_tier} to {new_tier}"
                         )
                         job.state.status = JobStatus.PENDING
                 else:
@@ -979,6 +980,8 @@ class Bastion(Configurable):
                         job.state.status = JobStatus.ACTIVE
                     else:
                         job.state.status = JobStatus.PENDING
+                        # Pending jobs which are not rescheduled should have no tier information.
+                        verdict.metadata.pop("tier", None)
 
                 job.state.metadata = verdict.metadata
 
@@ -1009,9 +1012,15 @@ class Bastion(Configurable):
         cleaned = []
 
         # Identify jobs which are idle (i.e., can be garbage collected).
+        # These are jobs that are fully completed or fully pending. Note that some jobs may be
+        # pending due to rescheduling tiers, which should not be cleaned -- instead, we let the
+        # runner decide how/when to recreate the resources.
         jobs_to_clean = {}
         for job_name, job in self._active_jobs.items():
-            if job.state.status in {JobStatus.PENDING, JobStatus.COMPLETED}:
+            if job.state.status == JobStatus.COMPLETED or (
+                job.state.status == JobStatus.PENDING
+                and job.state.metadata.get("tier", None) is None
+            ):
                 jobs_to_clean[job_name] = job.spec
 
         # Note that this may contain PENDING jobs that have not yet started (since they will not be

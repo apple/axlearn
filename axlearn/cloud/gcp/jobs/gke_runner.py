@@ -40,10 +40,12 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import GCPJob, GKEJob, TPUGKEJob, custom_jobset_kwargs
+from axlearn.cloud.gcp.job import GCPJob, GKEJob, TPUGKEJob
+from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.jobs.tpu_runner import with_tpu_training_defaults
 from axlearn.cloud.gcp.utils import (
     catch_auth,
+    custom_jobset_kwargs,
     delete_k8s_jobset,
     k8s_jobset_table,
     list_k8s_jobsets,
@@ -205,6 +207,7 @@ class GKERunnerJob(GCPJob):
         SUCCEEDED = "SUCCEEDED"
         RESCHEDULED = "RESCHEDULED"
 
+    # TODO(markblee): Consider moving some of the logic here into the inner impl.
     def _get_status(self) -> Status:
         cfg: GKERunnerJob.Config = self.config
         try:
@@ -215,13 +218,7 @@ class GKERunnerJob(GCPJob):
             )
             tier = os.environ.get("BASTION_TIER", 0)
             reservation = _infer_reservation(resp["spec"])
-            # If tier does not match reservation, we need to restart the jobset.
-            if (str(tier) == "0") != (reservation is not None):
-                logging.info(
-                    "Bastion tier is %s but reservation is %s. Jobset will be recreated.",
-                    tier,
-                    reservation,
-                )
+            if runner_utils.should_recreate_job(tier, reservation):
                 return GKERunnerJob.Status.RESCHEDULED
 
             # According to stogner@google.com, it's possible for "conditions" to be missing until
@@ -252,14 +249,19 @@ class GKERunnerJob(GCPJob):
                     statuses[status] += job.get(status, 0)
             logging.info("Statuses: %s", statuses)
 
-            # If any slice fails, consider PENDING (waiting on jobset to retry).
-            # If jobset fails overall, it'll show up in the "conditions" above.
-            if statuses.get("failed", 0):
-                logging.info("One or more child jobs failed, waiting for jobset to retry.")
-                return GKERunnerJob.Status.PENDING
-
-            # No statuses to report yet.
-            if all(v == 0 for v in statuses.values()):
+            # The job can enter PENDING state in a few different ways:
+            # 1. If any slice fails, and we're waiting on jobset to retry, we consider the job
+            #     PENDING. Note that if jobset fails overall, it'll show up in the "conditions"
+            #     above.
+            # 2. If all replicated job statuses above report 0, none of the jobs have started.
+            if (retryable_failure := statuses.get("failed", 0)) or all(
+                v == 0 for v in statuses.values()
+            ):
+                if retryable_failure:
+                    logging.info("One or more child jobs failed, waiting for jobset to retry.")
+                # Take this opportunity to reschedule if needed.
+                if runner_utils.should_recreate_job(tier, reservation, is_pending=True):
+                    return GKERunnerJob.Status.RESCHEDULED
                 return GKERunnerJob.Status.PENDING
 
             # Return status if all replicas agree.

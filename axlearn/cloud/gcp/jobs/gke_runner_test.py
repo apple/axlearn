@@ -171,6 +171,17 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             num_slices=2,
             expected=gke_runner.GKERunnerJob.Status.PENDING,
         ),
+        # At least one job failed without conditions, and tier does not match.
+        dict(
+            tier="0",
+            status=dict(
+                replicatedJobsStatus=[
+                    dict(failed=1, ready=1, succeeded=0),
+                ],
+            ),
+            num_slices=2,
+            expected=gke_runner.GKERunnerJob.Status.RESCHEDULED,
+        ),
         # Number of replicated job statuses do not match slices.
         dict(
             status=dict(
@@ -217,6 +228,17 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             num_slices=2,
             expected=gke_runner.GKERunnerJob.Status.PENDING,
         ),
+        # All statuses are 0 and tiers do not match (thus will be recreated).
+        dict(
+            tier="0",
+            status=dict(
+                replicatedJobsStatus=[
+                    dict(failed=0, ready=0, succeeded=0),
+                ],
+            ),
+            num_slices=2,
+            expected=gke_runner.GKERunnerJob.Status.RESCHEDULED,
+        ),
         # Jobset reservation and bastion tier do not match.
         dict(
             tier="1",
@@ -234,20 +256,29 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             expected=gke_runner.GKERunnerJob.Status.RESCHEDULED,
         ),
         # Jobset reservation and bastion tier do not match.
+        # In this case, we allow the job to keep running.
         dict(
             tier="0",
-            status={},
+            status=dict(
+                replicatedJobsStatus=[
+                    dict(active=2, ready=2),
+                ],
+            ),
             spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
             num_slices=2,
-            expected=gke_runner.GKERunnerJob.Status.RESCHEDULED,
+            expected=gke_runner.GKERunnerJob.Status.READY,
         ),
         # Missing reservation / invalid spec will be treated as spot.
         dict(
             tier="0",
-            status={},
+            status=dict(
+                replicatedJobsStatus=[
+                    dict(active=2, ready=2),
+                ],
+            ),
             spec=dict(replicatedJobs=[{"template": {}}]),
             num_slices=2,
-            expected=gke_runner.GKERunnerJob.Status.RESCHEDULED,
+            expected=gke_runner.GKERunnerJob.Status.READY,
         ),
     )
     def test_get_status(
