@@ -116,7 +116,7 @@ def flash_attention_implementation(
                         bias=None,
                         mask=None,
                         seed=None,
-                        attn_mask_type=AttnMaskType.CAUSAL if causal else AttnMaskType.NO_MASK,
+                        attn_mask_type=AttnMaskType.CAUSAL_MASK if causal else AttnMaskType.NO_MASK,
                         attn_bias_type=AttnBiasType.NO_BIAS,
                         scaling_factor=softmax_scale,
                         dropout_probability=0.0,

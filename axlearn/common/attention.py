@@ -3575,15 +3575,19 @@ def build_remat_spec(
     if stack_cfg.klass is PipelinedTransformerLayer:
         return None
     attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
+    ffn_name = stack_cfg.layer.feed_forward.klass.__name__
+    modules_to_checkpoint = [
+        f"{attention_name}.{el}" for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]
+    ]
+    # Add FFN modules to checkpoint if we are running on GPU.
+    if jax.devices()[0].platform == "gpu":
+        modules_to_checkpoint.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
     return RematSpec(
         prevent_cse=stack_cfg.klass is StackedTransformerLayer,
         # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
         # or Repeated Conformers) we can enable common subexpression elimination optimizations.
         policy=config_for_function(jax_remat_policies.save_only_these_names).set(
-            names_which_can_be_saved=[
-                f"{attention_name}.{el}"
-                for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]
-            ]
+            names_which_can_be_saved=modules_to_checkpoint
         ),
     )
 
