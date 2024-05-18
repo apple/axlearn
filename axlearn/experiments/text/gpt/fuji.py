@@ -17,10 +17,10 @@ from axlearn.common.attention import (
     CausalAttentionLogitBiasLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
-    RepeatedTransformerLayer,
-    RoFormerQKVLinear,
     GroupedQueryAttention,
     MultiheadAttention,
+    RepeatedTransformerLayer,
+    RoFormerQKVLinear,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
