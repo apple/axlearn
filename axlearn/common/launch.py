@@ -99,7 +99,6 @@ def setup():
 
     if FLAGS.jax_profiler_port is not None:
         # Start jax.profiler for Tensorboard and profiling in open source.
-        logging.info("Starting JAX profiler server at %s", FLAGS.jax_profiler_port)
         jax.profiler.start_server(FLAGS.jax_profiler_port)
 
     if FLAGS.status_port is not None:
