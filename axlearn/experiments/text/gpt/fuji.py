@@ -17,6 +17,8 @@ from axlearn.common.attention import (
     CausalAttentionLogitBiasLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
+    GroupedQueryAttention,
+    MultiheadAttention,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
 )
@@ -186,8 +188,10 @@ def model_config(
     if ffn_dim is None:
         ffn_dim = scaled_hidden_dim(scale=8 / 3, round_up_to_multiples_of=256)
     if num_kv_heads:
+        atten_cfg = GroupedQueryAttention.default_config()
         atten_input_linear = FusedGroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
     else:
+        atten_cfg = MultiheadAttention.default_config()
         atten_input_linear = FusedQKVLinear.default_config()
     atten_input_linear.cache_dtype = STEP_DTYPE
     # RoPE embeddings: https://arxiv.org/abs/2104.09864.
@@ -210,6 +214,7 @@ def model_config(
         dropout_rate=dropout_rate,
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
         attention_mask=CausalAttentionLogitBiasLayer.default_config(),
+        attention_cfg=atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
     )
     return cfg
