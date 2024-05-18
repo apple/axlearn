@@ -957,7 +957,7 @@ class BastionTest(parameterized.TestCase):
                         resources={"v4": 12},  # Uses part of project2 budget.
                     ),
                 ),
-                state=JobState(status=JobStatus.ACTIVE),
+                state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
                 command_proc=mock_proc("command"),
                 cleanup_proc=None,  # No cleanup_proc for ACTIVE.
             ),
@@ -1154,6 +1154,7 @@ class BastionTest(parameterized.TestCase):
             "cleaning": JobState(status=JobStatus.CLEANING),
             "completed": JobState(status=JobStatus.COMPLETED),
             "completed_gced": JobState(status=JobStatus.COMPLETED),
+            "rescheduled": JobState(status=JobStatus.PENDING, metadata={"tier": "0"}),
         }
         for job_name, job_state in init_job_states.items():
             active_jobs[job_name] = Job(
@@ -1174,6 +1175,7 @@ class BastionTest(parameterized.TestCase):
             )
         # We pretend that only some jobs are "fully gc'ed".
         fully_gced = ["completed_gced"]
+        rescheduled = ["rescheduled"]
 
         patch_tfio = mock.patch.multiple(
             f"{bastion.__name__}.tf_io.gfile",
@@ -1184,8 +1186,11 @@ class BastionTest(parameterized.TestCase):
             def mock_clean(jobs: Dict[str, ResourceMap]) -> Sequence[str]:
                 self.assertTrue(
                     all(
-                        active_jobs[job_name].state.status
-                        in {JobStatus.PENDING, JobStatus.COMPLETED}
+                        active_jobs[job_name].state.status == JobStatus.COMPLETED
+                        or (
+                            active_jobs[job_name].state.status == JobStatus.PENDING
+                            and active_jobs[job_name].state.metadata.get("tier") is None
+                        )
                         for job_name in jobs
                     )
                 )
@@ -1212,6 +1217,14 @@ class BastionTest(parameterized.TestCase):
                     active_jobs[job_name].state == JobState(status=JobStatus.COMPLETED),
                     deleted_state and deleted_jobspec,
                 )
+
+            # Ensure that rescheduled jobs do not get deleted.
+            for job_name in rescheduled:
+                self.assertEqual(init_job_states[job_name], active_jobs[job_name].state)
+                for delete_call in mock_tfio["remove"].mock_calls:
+                    self.assertNotIn(
+                        os.path.join(mock_bastion._state_dir, job_name), delete_call.call_args
+                    )
 
     @parameterized.parameters(
         dict(

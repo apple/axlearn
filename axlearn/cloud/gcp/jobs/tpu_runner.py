@@ -77,6 +77,7 @@ from axlearn.cloud.common.utils import (
 from axlearn.cloud.gcp.bundler import GCSTarBundler, with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import TPUQRMJob, docker_command
+from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.tpu import (
     create_queued_tpu,
@@ -101,6 +102,11 @@ from axlearn.common.liveness_monitor import LivenessMonitor
 
 FLAGS = flags.FLAGS
 _COMMAND_SESSION_NAME = "command"
+
+
+def _infer_reservation(node: Optional[dict]) -> Optional[bool]:
+    """Infers reservation given a QRM node."""
+    return (node or {}).get("guaranteed", {}).get("reserved", None)
 
 
 # TODO(markblee): Use composition instead of inheritance for TPUQRMJob.
@@ -319,6 +325,8 @@ class TPURunnerJob(TPUQRMJob):
         RUNNING = "RUNNING"
         # The liveness check failed.
         STUCK = "STUCK"
+        # The job was rescheduled on a different tier.
+        RESCHEDULED = "RESCHEDULED"
 
     # pylint: disable-next=no-self-use
     def _status_flag(self, status: Status):
@@ -435,6 +443,14 @@ class TPURunnerJob(TPUQRMJob):
             logging.info("TPU doesn't exist or not fully booted: %d/%d", num_booted, num_vms)
             return TPURunnerJob.Status.NOT_STARTED
 
+        tier = os.environ.get("BASTION_TIER", 0)
+        reservation = _infer_reservation(node)
+        # If tier has changed, we may need to recreate the TPUs.
+        # Note that in the QRM case, if the TPUs are pre-empted, they will also be recreated with
+        # the correct tier/reservation, so it's not necessary to always recreate proactively.
+        if runner_utils.should_recreate_job(tier, reservation):
+            return TPURunnerJob.Status.RESCHEDULED
+
         # Probe liveness monitor.
         if self._monitor is not None and self._monitor.started() and not self._monitor.ping():
             return TPURunnerJob.Status.STUCK
@@ -503,6 +519,9 @@ class TPURunnerJob(TPUQRMJob):
             elif status == TPURunnerJob.Status.FAILED:
                 self._delete()
                 raise ValueError("Job failed.")
+            elif status == TPURunnerJob.Status.RESCHEDULED:
+                logging.info("Jobset does not match scheduling tier. Deleting the TPU...")
+                self._delete()
             # TPU-VM doesn't exist -- create it and launch the command.
             elif status == TPURunnerJob.Status.NOT_STARTED:
                 self._start()
