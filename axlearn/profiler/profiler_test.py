@@ -1,5 +1,5 @@
 # Usage:
-# $ python axlearn/profiler/setup.py build_ext --inplace
+# $ python axlearn/profiler/setup.py build_ext --inplace --force
 # $ python axlearn/profiler/profiler_test.py
 # $ pprof --text my_heap_profile.0001.heap
 # File: python3.10
@@ -8,6 +8,13 @@
 #       flat  flat%   sum%        cum   cum%
 #        16B   100%   100%        16B   100%  std::allocator_traits::allocate (inline)
 #          0     0%   100%        16B   100%  PyCFunction_Call
+#
+# If importing jax, `python axlearn/profiler/profiler_test.py` would fail with:
+#
+# src/tcmalloc.cc:332] Attempt to free invalid pointer 0x17d9c40 
+# Aborted (core dumped)
+#
+# import jax
 
 import profiler
 

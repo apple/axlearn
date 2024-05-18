@@ -41,6 +41,7 @@ from axlearn.common.utils import (
     prune_tree,
     thread_stack_traces,
 )
+import profiler
 
 
 def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
@@ -421,6 +422,7 @@ class SpmdTrainer(Module):
 
             with self.checkpointer:
                 logging.info("Starting loop...")
+                profiler.dump_profile("start_trainer_loop")
                 start_time = time.perf_counter()
                 num_steps = 0
                 output = None

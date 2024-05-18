@@ -12,6 +12,7 @@ from absl import flags, logging
 from axlearn.common.trainer import SpmdTrainer, select_mesh_config
 from axlearn.common.utils import get_data_dir, infer_mesh_shape
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
+import profiler
 
 # Trainer-specific flags.
 flags.DEFINE_string(
@@ -105,6 +106,7 @@ def get_trainer_config(
 
 
 def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
+    profiler.start_profiling(os.path.join(trainer_config.dir, "trainer_heap_profile"))
     trainer_config_debug_string = trainer_config.debug_string()
     logging.info("Trainer config:\n%s", trainer_config_debug_string)
     if jax.process_index() == 0:
@@ -124,4 +126,6 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
 
     trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
     prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
-    return trainer.run(prng_key)
+    run_result = trainer.run(prng_key)
+    profiler.stop_profiling()
+    return run_result
