@@ -30,6 +30,8 @@ from typing import Optional, Sequence, Type, cast
 
 import kubernetes as k8s
 from absl import app, flags, logging
+from google.auth.credentials import Credentials
+from googleapiclient import discovery, errors
 
 from axlearn.cloud.common.bundler import get_bundler_config
 from axlearn.cloud.common.utils import (
@@ -47,6 +49,7 @@ from axlearn.cloud.gcp.utils import (
     catch_auth,
     custom_jobset_kwargs,
     delete_k8s_jobset,
+    get_credentials,
     k8s_jobset_table,
     list_k8s_jobsets,
     load_kube_config,
@@ -68,6 +71,57 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
                 return reservation
     except (TypeError, KeyError):
         logging.warning("Failed to infer reservation.")
+    return None
+
+
+def _node_pool_resource(credentials: Credentials) -> discovery.Resource:
+    """Builds gcloud v1 node pool API resource.
+
+    Args:
+        credentials: Gcloud credentials used by googleapiclient.discovery.
+
+    Returns:
+        discovery.Resource object for the v1 node pool API.
+    """
+    return (
+        discovery.build("container", "v1", credentials=credentials, cache_discovery=False)
+        .projects()
+        .locations()
+        .clusters()
+        .nodePools()
+    )
+
+
+def _list_node_pools(resource: discovery.Resource, *args, **kwargs) -> dict:
+    # https://googleapis.github.io/google-api-python-client/docs/dyn/container_v1.projects.locations.clusters.nodePools.html#get
+    return resource.list(*args, **kwargs).execute()
+
+
+def _delete_node_pool(resource: discovery.Resource, *, name: str):
+    # https://googleapis.github.io/google-api-python-client/docs/dyn/container_v1.projects.locations.clusters.nodePools.html#delete
+    try:
+        resource.delete(name=name).execute()
+    except errors.HttpError as e:
+        if e.status_code != 404:
+            raise
+        logging.info("Node pool %s does not exist, no need to delete.", name)
+
+
+def _get_node_pool_by_label(
+    resource: discovery.Resource, *, label: str, parent: str
+) -> Optional[dict]:
+    """Returns the name of the first node pool with the given label."""
+    try:
+        result = _list_node_pools(resource, parent=parent)
+        for item in (result or {}).get("nodePools", []):
+            labels = item.get("config", {}).get("labels", {})
+            if labels.get("provisioner-nodepool-id", None) == label:
+                return item
+    except errors.HttpError as e:
+        if e.status_code != 404:
+            logging.warning("Encountered error attempting to get node pool: %s", e)
+            raise
+    logging.info("Unable to find node pool with parent %s and label %s.", parent, label)
     return None
 
 
@@ -281,6 +335,74 @@ class GKERunnerJob(GCPJob):
         # TODO(markblee): Make delete a public method.
         self._inner._delete()  # pylint: disable=protected-access
 
+    def _reschedule(self, max_tries: int = 100, retry_interval: float = 10):
+        """Reschedules the jobset onto the appropriate tier.
+
+        If we can identify that the node pool has incorrect selectors for the current scheduling
+        tier, delete it to force provisioner to recreate with the right specs.
+        We identify the node pool by looking for the `provisioner-nodepool-id` label set during
+        creation.
+
+        TODO(markblee): Refactor this logic when jobset recreation is fixed in:
+        https://github.com/GoogleCloudPlatform/ai-on-gke/tree/main/tpu-provisioner
+        """
+        cfg: GKERunnerJob.Config = self.config
+        # Delete the jobset first, so that provisioner does not attempt to recreate the existing
+        # node-pools.
+        self._delete()
+
+        resource = _node_pool_resource(get_credentials())
+        region = cfg.zone.rsplit("-", 1)[0]
+        cluster_id = f"projects/{cfg.project}/locations/{region}/clusters/{cfg.cluster}"
+        for i in range(max_tries):
+            node_pool = _get_node_pool_by_label(resource, label=cfg.name, parent=cluster_id)
+            if node_pool is None:
+                logging.info("Could not infer node pool, skipping delete.")
+                break
+
+            node_pool_config = node_pool.get("config", {})
+            reservation_affinity = node_pool_config.get("reservationAffinity", {})
+            taints = node_pool_config.get("taints", [])
+
+            tier = os.environ.get("BASTION_TIER", 0)
+            has_reservation = (
+                reservation_affinity.get("key") == "compute.googleapis.com/reservation-name"
+                and len(reservation_affinity.get("values", [])) > 0
+            )
+            has_spot = any(
+                taint.get("key") == "cloud.google.com/gke-spot"
+                and taint.get("value") == "true"
+                and taint.get("effect") == "NO_SCHEDULE"
+                for taint in taints
+            )
+            logging.info(
+                "Found existing node pool %s with tier %s.\n"
+                "The reservation affinity is: %s\n"
+                "The taints are: %s",
+                node_pool["name"],
+                tier,
+                reservation_affinity,
+                taints,
+            )
+            if (str(tier) == "0" and not has_reservation) or (str(tier) != "0" and not has_spot):
+                logging.info("Since there is a mismatch, we will attempt to delete.")
+                try:
+                    # Node pool deletion can fail if there's an incompatible operation running on
+                    # the cluster: "Cluster is running incompatible operation ...".
+                    _delete_node_pool(resource, name=f"{cluster_id}/nodePools/{node_pool['name']}")
+                    break
+                except errors.HttpError as e:
+                    logging.warning("Encountered error during delete: %s.", e)
+                    if i < max_tries - 1:
+                        logging.info("Attempting a retry in %s seconds...", retry_interval)
+                        time.sleep(retry_interval)
+                    else:
+                        logging.warning(
+                            "Giving up on deleting node pool after %s tries.", max_tries
+                        )
+            else:
+                logging.info("Node pool appears to have the right specs.")
+
     def _execute(self):
         cfg: GKERunnerJob.Config = self.config
 
@@ -297,8 +419,8 @@ class GKERunnerJob(GCPJob):
                 logging.info("Task %s exited with status: %s.", cfg.name, status)
                 return
             elif status == GKERunnerJob.Status.RESCHEDULED:
-                logging.info("Jobset does not match scheduling tier. Deleting the jobset...")
-                self._delete()
+                logging.info("Jobset does not match scheduling tier. Rescheduling the jobset...")
+                self._reschedule()
             elif status == GKERunnerJob.Status.NOT_STARTED:
                 logging.info("Task does not exist. Submitting it now...")
                 # Only bundle on first start, not if we're resuming monitoring.
