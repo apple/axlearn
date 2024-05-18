@@ -1,7 +1,13 @@
 # Usage:
-#   python axlearn/profiler/setup.py build_ext --inplace
-#   python axlearn/profiler/profiler_test.py
-#   pprof --text my_heap_profile.0001.heap
+# $ python axlearn/profiler/setup.py build_ext --inplace
+# $ python axlearn/profiler/profiler_test.py
+# $ pprof --text my_heap_profile.0001.heap
+# File: python3.10
+# Type: space
+# Showing nodes accounting for 16B, 100% of 16B total
+#       flat  flat%   sum%        cum   cum%
+#        16B   100%   100%        16B   100%  std::allocator_traits::allocate (inline)
+#          0     0%   100%        16B   100%  PyCFunction_Call
 
 import profiler
 
