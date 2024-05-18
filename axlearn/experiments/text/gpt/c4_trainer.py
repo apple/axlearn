@@ -5,8 +5,7 @@
     mkdir -p /tmp/gpt_c4_test;
     python3 -m axlearn.common.launch_trainer_main \
         --module=text.gpt.c4_trainer --config=fuji-test-v1 \
-        --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE --jax_backend=cpu \
-        --jax_profiler_port=7337
+        --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE --jax_backend=cpu
 
     GS_ROOT=gs://my-bucket; \
     CONFIG=fuji-7B-v2; \
