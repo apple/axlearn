@@ -1,3 +1,8 @@
+# Usage:
+#   python axlearn/profiler/setup.py build_ext --inplace
+#   python axlearn/profiler/profiler_test.py
+#   pprof --text my_heap_profile.0001.heap
+
 import profiler
 
 # Start profiling to a file
