@@ -10,11 +10,16 @@ from unittest import mock
 import kubernetes as k8s
 from absl import app, flags
 from absl.testing import parameterized
+from googleapiclient import errors
 
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp.jobs import gke_runner
 from axlearn.cloud.gcp.jobs.bastion_vm_test import _mock_job
-from axlearn.cloud.gcp.jobs.gke_runner import _get_runner_or_exit, _infer_reservation
+from axlearn.cloud.gcp.jobs.gke_runner import (
+    _get_node_pool_by_label,
+    _get_runner_or_exit,
+    _infer_reservation,
+)
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 
 
@@ -47,7 +52,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         mock_user = mock.patch("os.environ", {"USER": "test"})
         mock_settings = {
             "project": "settings-project",
-            "zone": "settings-zone",
+            "zone": "settings-zone-a",
             "ttl_bucket": "settings-ttl-bucket",
             "gke_cluster": "settings-cluster",
             "default_dockerfile": "settings-dockerfile",
@@ -307,6 +312,177 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 ),
             ):
                 self.assertEqual(expected, job._get_status())
+
+    @parameterized.parameters(
+        # Don't need to reschedule if no node-pool exists.
+        dict(node_pool=None, expect_delete_count=0),
+        # Test a case when tier=0 matches reservation.
+        dict(
+            node_pool={
+                "name": "pool0",
+                "config": {
+                    "reservationAffinity": {
+                        "key": "compute.googleapis.com/reservation-name",
+                        "values": ["test-reservation"],
+                    },
+                    "labels": {"provisioner-nodepool-id": "test-name"},
+                },
+            },
+            tier=0,
+            expect_delete_count=0,
+        ),
+        # Test a case when tier=1 matches spot.
+        dict(
+            node_pool={
+                "name": "pool0",
+                "config": {
+                    "taints": [
+                        {
+                            "key": "cloud.google.com/gke-spot",
+                            "value": "true",
+                            "effect": "NO_SCHEDULE",
+                        }
+                    ],
+                    "labels": {"provisioner-nodepool-id": "pool0"},
+                },
+            },
+            tier=1,
+            expect_delete_count=0,
+        ),
+        # Tier=0 doesn't match spot, and delete goes through the first time.
+        dict(
+            node_pool={
+                "name": "pool0",
+                "config": {
+                    "taints": [
+                        {
+                            "key": "cloud.google.com/gke-spot",
+                            "value": "true",
+                            "effect": "NO_SCHEDULE",
+                        }
+                    ],
+                    "labels": {"provisioner-nodepool-id": "pool0"},
+                },
+            },
+            tier=0,
+            expect_delete_count=1,
+        ),
+        # Tier=1 doesn't match reservation, and delete goes through the first time.
+        dict(
+            node_pool={
+                "name": "pool0",
+                "config": {
+                    "reservationAffinity": {
+                        "key": "compute.googleapis.com/reservation-name",
+                        "values": ["test-reservation"],
+                    },
+                    "labels": {"provisioner-nodepool-id": "pool0"},
+                },
+            },
+            tier=1,
+            expect_delete_count=1,
+        ),
+        # Test that we retry deletes.
+        dict(
+            node_pool={
+                "name": "pool0",
+                "config": {
+                    "reservationAffinity": {
+                        "key": "compute.googleapis.com/reservation-name",
+                        "values": ["test-reservation"],
+                    },
+                    "labels": {"provisioner-nodepool-id": "pool0"},
+                },
+            },
+            tier=1,
+            expect_delete_count=2,
+            delete_node_pool=[
+                errors.HttpError(resp=mock.Mock(status=400), content="Conflict".encode("utf-8")),
+                None,
+            ],
+        ),
+    )
+    def test_reschedule(self, node_pool, expect_delete_count, delete_node_pool=None, tier=None):
+        with self._job_config("test-name", "test-cluster", "test-sa") as (cfg, _):
+            cfg.bundler.set(image="test")
+            # Node pool test cases assume "test-name".
+            self.assertEqual("test-name", cfg.name)
+
+            job: gke_runner.TPUGKERunnerJob = cfg.set(
+                command="",
+                status_interval_seconds=0,
+            ).instantiate()
+
+            mock_job = mock.patch.multiple(
+                job,
+                _get_status=mock.Mock(
+                    side_effect=[
+                        gke_runner.GKERunnerJob.Status.RESCHEDULED,
+                        gke_runner.GKERunnerJob.Status.COMPLETED,
+                    ]
+                ),
+                _get_job_credentials=mock.DEFAULT,
+                _delete=mock.DEFAULT,
+            )
+            mock_get_node_pool = mock.Mock(return_value=node_pool)
+            mock_delete_node_pool = mock.Mock(side_effect=delete_node_pool or [None])
+            mock_node_pool = mock.patch.multiple(
+                gke_runner.__name__,
+                _node_pool_resource=mock.DEFAULT,
+                _delete_node_pool=mock_delete_node_pool,
+                _get_node_pool_by_label=mock_get_node_pool,
+                get_credentials=mock.DEFAULT,
+            )
+            mock_env = mock.patch("os.environ", {"BASTION_TIER": tier} if tier is not None else {})
+            with mock_env, mock_job, mock_node_pool:
+                job._reschedule(max_tries=2, retry_interval=0.1)
+                cluster_id = (
+                    "projects/settings-project/" "locations/settings-zone/" "clusters/test-cluster"
+                )
+                self.assertEqual(
+                    {
+                        "label": "test-name",
+                        "parent": cluster_id,
+                    },
+                    mock_get_node_pool.call_args[1],
+                )
+                self.assertEqual(expect_delete_count, mock_delete_node_pool.call_count)
+                if expect_delete_count:
+                    self.assertEqual(
+                        {"name": f"{cluster_id}/nodePools/{node_pool['name']}"},
+                        mock_delete_node_pool.call_args[1],
+                    )
+                # Jobset should always be deleted.
+                job._delete.assert_called()  # pytype: disable=attribute-error
+
+
+class UtilsTest(parameterized.TestCase):
+    """Tests utils."""
+
+    @parameterized.parameters(
+        dict(node_pools={}, label="test", expected=None),
+        dict(node_pools={"nodePools": []}, label="test", expected=None),
+        dict(
+            node_pools={
+                "nodePools": [
+                    {"name": "pool0", "config": {"labels": {"provisioner-nodepool-id": "hello"}}},
+                    {"name": "pool1", "config": {"labels": {"provisioner-nodepool-id": "test"}}},
+                ]
+            },
+            label="test",
+            expected={"name": "pool1", "config": {"labels": {"provisioner-nodepool-id": "test"}}},
+        ),
+    )
+    def test_get_node_pool_by_label(self, node_pools, label, expected):
+        with mock.patch(f"{gke_runner.__name__}._list_node_pools", return_value=node_pools):
+            self.assertEqual(
+                expected,
+                _get_node_pool_by_label(
+                    mock.MagicMock(),
+                    label=label,
+                    parent="projects/test-project/locations/test-region/clusters/test-cluster",
+                ),
+            )
 
 
 class MainTest(parameterized.TestCase):

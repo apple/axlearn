@@ -333,6 +333,7 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
         mock_settings = {
             "ttl_bucket": "ttl_bucket",
             "permanent_bucket": "permanent_bucket",
+            "project": "default-project",
             "zone": zone or "default-zone",
             "docker_repo": "test-repo",
             "default_dockerfile": "test-dockerfile",
@@ -366,7 +367,7 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
             # Check some basic flags.
             self.assertEqual(fv.bastion, bastion)
             self.assertEqual(fv.name, name or "job-name")
-            self.assertEqual(fv.zone, zone)
+            self.assertEqual(fv.zone, zone or mock_settings["zone"])
             self.assertIn("instance_type", fv)
             self.assertIn("bundler_type", fv)
             self.assertIsNotNone(fv["name"].default)
