@@ -27,8 +27,7 @@ dependencies = [
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
     "tensorflow==2.16.1",
     "tensorflow-datasets>=4.9.2",
-    # tensorflow-io 0.34.0 enabled macOS arm64 builds.
-    "tensorflow-io>=0.34.0",
+    "tensorflow-io>=0.37.0",  # for tensorflow-2.16
     "tensorflow_text==2.16.1; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.56",  # used for supporting GDA checkpoints
     "toml",  # for config management
