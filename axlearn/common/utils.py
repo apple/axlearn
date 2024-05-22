@@ -525,6 +525,9 @@ def dispatch_input_batch(
     """Constrains all leaf values in the input batch, then (optionally) dispatches examples
     to a subset along the batch axis.
 
+    The dispatchings are applied to all nested dicts which contain a special dispatching key in
+    their root.
+
     Args:
         input_batch: The input batch, where the first dimension of each leaf is the batch dim.
         batch_axis_names: The name(s) of the batch axes.
@@ -540,13 +543,19 @@ def dispatch_input_batch(
         lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)), input_batch
     )
 
-    # Dispatch from physical batch dimensions to logical batch.
-    if PHYSICAL_TO_LOGICAL_DISPATCH_KEY in input_batch:
-        dispatch = input_batch.pop(PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
-        return jax.tree_util.tree_map(
-            lambda x: jnp.einsum("b...,bl->l...", x, dispatch), input_batch
-        )
-    return input_batch
+    def traverse_and_dispatch(data: NestedTensor) -> NestedTensor:
+        if isinstance(data, dict):
+            # Dispatch from physical batch dimensions to logical batch.
+            if PHYSICAL_TO_LOGICAL_DISPATCH_KEY in data:
+                dispatch = data.pop(PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
+                return jax.tree_util.tree_map(
+                    lambda x: jnp.einsum("b...,bl->l...", x, dispatch), data
+                )
+            for key, value in data.items():
+                data[key] = traverse_and_dispatch(value)
+        return data
+
+    return traverse_and_dispatch(input_batch)
 
 
 class DataPartitionType(Enum):

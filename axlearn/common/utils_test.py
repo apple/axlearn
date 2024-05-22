@@ -530,6 +530,33 @@ class TreeUtilsTest(TestCase):
         # Calling with input batch with padded-input-feed key returns a strict subset.
         self.assertNestedEqual(dispatch_input_batch(input_batch_with_key), expected_subset)
 
+    def test_dispatch_subsets_input_batch_under_key(self):
+        default_input_batch = {
+            "no-change": jnp.arange(3),
+            "change": {
+                "value_a": jnp.arange(4),
+                "value_b": jnp.arange(16).reshape(4, 4),
+            },
+        }
+        # Default batch (without physical to logical dispatch tensor) is unchanged.
+        self.assertNestedEqual(dispatch_input_batch(default_input_batch), default_input_batch)
+        input_batch_with_key = default_input_batch["change"]
+        is_from_padded_feed = jnp.asarray([[1, 0], [0, 1], [0, 0], [0, 0]])
+        input_batch_with_key[PHYSICAL_TO_LOGICAL_DISPATCH_KEY] = is_from_padded_feed
+        expected_subset = {
+            k: v[:2, ...]
+            for k, v in input_batch_with_key.items()
+            if k != PHYSICAL_TO_LOGICAL_DISPATCH_KEY
+        }
+        # Calling with input batch with padded-input-feed key returns a strict subset.
+        self.assertNestedEqual(
+            dispatch_input_batch(default_input_batch),
+            {
+                "no-change": jnp.arange(3),
+                "change": expected_subset,
+            },
+        )
+
     def test_complete_partition_spec_tree(self):
         data = dict(
             replicated=dict(a=1, b=2),
