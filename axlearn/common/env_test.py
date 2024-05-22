@@ -1,5 +1,5 @@
 """Tests for AXLearn environment."""
-# pylint: disable=no-self-use,redundant-keyword-arg,too-many-function-args
+# pylint: disable=no-self-use
 
 import tensorflow_io  # noqa: F401 # pylint: disable=unused-import
 from absl.testing import absltest
