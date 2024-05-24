@@ -7,7 +7,6 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests quantization layers and metrics."""
-
 # pylint: disable=no-self-use,wrong-import-position,missing-module-docstring
 from typing import List
 
@@ -212,6 +211,7 @@ class RandomVectorQuantizerTest(TestCase):
             ),
             shapes(layer_params),
         )
+        # pylint: disable-next=protected-access
         with prng_impl("threefry2x32"):
             proj_key = _create_prngkeyarray([3077990774, 2166202870])
             codebook_key = _create_prngkeyarray([791337683, 1373966058])
