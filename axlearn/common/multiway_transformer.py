@@ -168,6 +168,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         return dict(self_attention=self_atten_state), self.Output(
             data=data,
             self_attention_probs=self_atten_outputs.probs,
+            self_attention_kv_state=self_atten_outputs.kv_state,
             cross_attention_probs=cross_attention_probs,
         )
 

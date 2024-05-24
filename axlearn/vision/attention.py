@@ -16,6 +16,7 @@ from jax import numpy as jnp
 from axlearn.common import param_init
 from axlearn.common.attention import (
     BaseStackedTransformerLayer,
+    KVState,
     MultiheadAttention,
     TransformerAttentionLayer,
     softmax_with_biases,
@@ -223,7 +224,9 @@ class WindowedAttention(MultiheadAttention):
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
-        return self.Output(data=outputs, probs=probs)
+        return self.Output(
+            data=outputs, probs=probs, kv_state=KVState(k_proj=k_proj, v_proj=v_proj)
+        )
 
 
 class WindowedSelfAttentionLayer(TransformerAttentionLayer):
@@ -289,7 +292,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
             data = skip_input + self.stochastic_depth(self.dropout(x))
         else:
             raise NotImplementedError(cfg.structure)
-        return self.Output(data=data, probs=atten_output.probs)
+        return self.Output(data=data, probs=atten_output.probs, kv_state=atten_output.kv_state)
 
 
 class StackedWindowedTransformerLayer(BaseStackedTransformerLayer):
