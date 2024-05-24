@@ -4,13 +4,14 @@
 
 Some tests are intended to be run on TPU.
 """
+
 # pylint: disable=no-self-use,protected-access
 import os
 import re
 import tempfile
 import threading
-from typing import Iterable, List, Sequence
-from unittest.mock import Mock
+from typing import Iterable, List, Optional, Sequence
+from unittest import mock
 
 import jax
 import pytest
@@ -20,14 +21,16 @@ from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.experimental import mesh_utils
 
-from axlearn.common import test_utils, utils
+from axlearn.common import checkpointer, test_utils, utils
 from axlearn.common.checkpointer import (
     BestMetricPolicy,
     Checkpointer,
     CheckpointValidationType,
     EvalMetric,
     TensorStoreStateStorage,
+    _cleanup_checkpoint,
     check_state_structure,
+    checkpoint_paths,
     every_n_steps_and_last_policy,
     every_n_steps_policy,
     latest_checkpoint_path,
@@ -230,14 +233,66 @@ class CheckpointerTest(test_utils.TestCase):
             self.assertEqual(next(restored_state["input_iter"]), 2)
             ckpt.stop()
 
-    def test_garbage_collection(self):
+    def test_cleanup_checkpoint(self):
+        # Mock the rmtree s.t. it does nothing.
+        with (
+            mock.patch("tensorflow.io.gfile.rmtree", side_effect=None),
+            tempfile.TemporaryDirectory() as temp_dir,
+        ):
+            # Create a few mock checkpoints.
+            ckpt_paths = []
+            for step in [1, 2]:
+                ckpt_paths.append(os.path.join(temp_dir, f"step_{step:08d}"))
+                os.makedirs(ckpt_paths[-1])
+                for file in ["test", "index"]:
+                    with open(os.path.join(ckpt_paths[-1], file), "w", encoding="utf-8") as f:
+                        f.write(str(step))
+            self.assertEqual(latest_checkpoint_path(temp_dir), ckpt_paths[-1])
+            # Simulate a corrupted cleanup on the last ckpt.
+            _cleanup_checkpoint(ckpt_paths[-1], sync=False)
+            # Ensure that the last ckpt still has the "test" file.
+            with open(os.path.join(ckpt_paths[-1], "test"), "r", encoding="utf-8") as f:
+                self.assertEqual("2", f.read())
+            # Ensure that the last ckpt is considered invalid.
+            self.assertEqual(latest_checkpoint_path(temp_dir), ckpt_paths[0])
+
+    @parameterized.parameters(
+        # By default, we restore from the latest ckpt, keep the last 3 steps, and every 2 after.
+        dict(
+            ckpt_paths=None,
+            expect_restore_step=9,
+            expect_saved_steps=[0, 2, 4, 6, 7, 8, 9],
+        ),
+        # If we pretend that the first 2 ckpt paths failed, they should be retained.
+        # We then keep the next 3 steps and every 2 afterwards.
+        dict(
+            ckpt_paths=range(8),
+            expect_restore_step=7,
+            expect_saved_steps=[0, 2, 4, 5, 6, 7, 8, 9],
+        ),
+        # Test a case where committed dirs are not consecutive.
+        # In this case, we keep 9 due to possible in-progress write;
+        # we keep 8, 6, 3, which are the last 3 checkpoints;
+        # And we keep 0 (but not 1, since it doesn't respect keep_every_n=2).
+        dict(
+            ckpt_paths=[0, 1, 3, 6, 8],
+            expect_restore_step=8,
+            expect_saved_steps=[0, 3, 6, 8, 9],
+        ),
+    )
+    def test_garbage_collection(
+        self,
+        ckpt_paths: Optional[Sequence[str]],
+        expect_restore_step: int,
+        expect_saved_steps: Sequence[int],
+    ):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
-        with _mesh(mesh_shape):
+        with _mesh(mesh_shape), tempfile.TemporaryDirectory() as temp_dir:
             cfg = Checkpointer.default_config().set(
                 name="test",
-                dir=tempfile.mkdtemp(),
+                dir=temp_dir,
                 keep_last_n=3,
                 keep_every_n_steps=2,
                 gc_loop_interval_seconds=1,
@@ -249,20 +304,36 @@ class CheckpointerTest(test_utils.TestCase):
             for step in range(10):
                 ckpt.save(step=step, state=state)
             ckpt.wait_until_finished()
-            ckpt.run_garbage_collection()
 
-            # step=None restores from the latest ckpt.
-            self.assertNestedEqual(9, ckpt.restore(step=None, state=state)[0])
+            # Mock out the checkpoints that are committed.
+            if ckpt_paths:
+                ckpt_paths = [os.path.join(temp_dir, f"step_{i:08d}") for i in ckpt_paths]
+            else:
+                ckpt_paths = checkpoint_paths(cfg.dir)
 
-            saved = []
-            for step in range(10):
-                try:
-                    restored_step, _ = ckpt.restore(step=step, state=state)
-                    saved.append(restored_step)
-                except Exception as e:  # pylint: disable=broad-except
-                    logging.info("%s", e)
-            self.assertSequenceEqual([0, 2, 4, 6, 7, 8, 9], saved)
-            ckpt.stop()
+            with mock.patch(f"{checkpointer.__name__}.checkpoint_paths", return_value=ckpt_paths):
+                ckpt.run_garbage_collection()
+
+                # step=None restores from the latest ckpt.
+                self.assertNestedEqual(
+                    expect_restore_step,
+                    ckpt.restore(step=None, state=state)[0],
+                )
+
+                saved = []
+                for step in range(10):
+                    try:
+                        restored_step, _ = ckpt.restore(step=step, state=state)
+                        saved.append(restored_step)
+                    except Exception as e:  # pylint: disable=broad-except
+                        logging.info("%s", e)
+                self.assertSequenceEqual(expect_saved_steps, saved)
+                ckpt.stop()
+
+            # Check that the directories not in expect_saved_steps are indeed removed.
+            expect_removed = set(range(10)) - set(expect_saved_steps)
+            for path in [os.path.join(temp_dir, f"step_{i:08d}") for i in expect_removed]:
+                self.assertFalse(os.path.exists(path))
 
     def test_check_state_structure_exact(self):
         actual = []
@@ -399,7 +470,7 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt: Checkpointer = cfg.instantiate(parent=None)
             self.assertIsNotNone(ckpt.summary_writer)
 
-            ckpt.summary_writer.log_checkpoint = Mock()
+            ckpt.summary_writer.log_checkpoint = mock.Mock()
 
             state = dict(x=jnp.zeros([], dtype=jnp.int32))
             ckpt.save(step=1, state=state)
