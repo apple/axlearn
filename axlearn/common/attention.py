@@ -638,7 +638,7 @@ class BaseQKVLinear(BaseLayer):
         # Reference:
         # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
         cache = dict(time_step=jnp.zeros(target_batch_size, dtype=jnp.int32))
-        # If `kv_state` is provided externally, we will not have to maintain key/value in cache.
+        # If `kv_state` is provided externally, we do not have to maintain key/value in cache.
         if kv_state is None:
             cache.update(
                 key=jnp.zeros(
