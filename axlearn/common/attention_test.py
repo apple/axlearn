@@ -2929,9 +2929,65 @@ class TransformerTest(TestCase):
         )
         assert_allclose(base_layer_outputs.data, test_layer_outputs.data)
 
+        # Tests prefill_state and extend_step.
+        for start_time_step in (-1, 0, 2, tgt_len):
+            if start_time_step < 0:
+                cached_states, _ = F(
+                    test_layer,
+                    inputs=dict(
+                        target_batch_size=batch_size,
+                        target_max_len=tgt_len,
+                        # Explicitly pass `self_attention_kv_state`.
+                        self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
+                    ),
+                    state=test_layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="init_states",
+                )
+                decoder_output = jnp.zeros_like(target)
+                start_time_step = 0
+            else:
+                (cached_states, prefill_outputs), _ = F(
+                    test_layer,
+                    inputs=dict(
+                        time_step=jnp.array([start_time_step] * batch_size, dtype=jnp.int32),
+                        data=jnp.asarray(target),
+                        # Explicitly pass `self_attention_kv_state`.
+                        self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
+                    ),
+                    state=test_layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="prefill_states",
+                )
+                decoder_output = prefill_outputs.data
+            # Transpose to [tgt_len, batch_size, model_dim].
+            decoder_output = jnp.einsum("bsd->sbd", decoder_output)
+            for time_step in range(start_time_step, tgt_len):
+                (cached_states, extend_step_outputs), _ = F(
+                    test_layer,
+                    inputs=dict(
+                        data=jnp.asarray(target[:, time_step : time_step + 1, :]),
+                        cached_states=cached_states,
+                        # Explicitly pass `self_attention_kv_state`.
+                        self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
+                    ),
+                    state=test_layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="extend_step",
+                )
+                decoder_output = decoder_output.at[time_step].set(
+                    jnp.squeeze(extend_step_outputs.data, axis=1)
+                )
+            # Transpose to [batch_size, tgt_len, model_dim].
+            decoder_output = jnp.einsum("sbd->bsd", decoder_output)
+            # Prefill + extend_step == forward.
+            assert_allclose(test_layer_outputs.data, decoder_output)
 
-class ParallelTransformerTest(TestCase):
-    """Tests ParallelTransformerLayer."""
+    class ParallelTransformerTest(TestCase):
+        """Tests ParallelTransformerLayer."""
 
     def test_with_golden_value(self):
         """A test of ParallelTransformerLayer by comparing results to a golden value."""

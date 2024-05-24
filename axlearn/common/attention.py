@@ -216,6 +216,7 @@ class BaseTransformerLayer(BaseLayer):
         *,
         time_step: Tensor,
         data: Tensor,
+        self_attention_kv_state: Optional[KVState] = None,
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
@@ -230,6 +231,7 @@ class BaseTransformerLayer(BaseLayer):
                 indicating where decoding will start from.
             data: A Tensor of shape [batch, target_length, input_dim]. For batch index `i`, only
                 `data[i, :time_step[i], ...]` will affect subsequent decoding.
+            self_attention_kv_state: an optional KVState used for self-attention.
             self_attention_logit_biases: An optional Tensor representing the self-attention biases.
             cross_attention_data: An optional Tensor representing cross-attention data of shape
                 [batch, source_length, source_dim].
@@ -250,6 +252,7 @@ class BaseTransformerLayer(BaseLayer):
         cached_states: NestedTensor,
         data: Tensor,
         *,
+        self_attention_kv_state: Optional[KVState] = None,
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
@@ -262,6 +265,7 @@ class BaseTransformerLayer(BaseLayer):
             data: a Tensor of shape [target_batch_size, target_step_length, input_dim], where
                 `target_step_length` is usually 1. For self-attention, `data` will be used as the
                 `query` sequence and will be appended to key and value sequences.
+            self_attention_kv_state: an optional KVState used for self-attention.
             self_attention_logit_biases: an optional Tensor of shape
                 [..., target_step_length, target_max_len], where `target_step_length` must match
                 the shape of `data` and `target_max_len` must match the value given for
@@ -2829,13 +2833,13 @@ class TransformerLayer(BaseTransformerLayer):
         *,
         target_batch_size: int,
         target_max_len: int,
-        kv_state: Optional[KVState] = None,
+        self_attention_kv_state: Optional[KVState] = None,
     ) -> NestedTensor:
         return dict(
             self_attention=self.self_attention.init_states(
                 target_batch_size=target_batch_size,
                 target_max_len=target_max_len,
-                kv_state=kv_state,
+                kv_state=self_attention_kv_state,
             )
         )
 
