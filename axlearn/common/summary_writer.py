@@ -3,6 +3,7 @@
 """Utilities for writing summaries."""
 
 import contextlib
+import enum
 import numbers
 import os
 from functools import wraps
@@ -18,7 +19,7 @@ from tensorflow import summary as tf_summary
 from axlearn.common.config import REQUIRED, ConfigBase, Required, RequiredFieldValue, config_class
 from axlearn.common.module import Module
 from axlearn.common.summary import ImageSummary, Summary
-from axlearn.common.utils import Tensor, tree_paths
+from axlearn.common.utils import NestedTensor, Tensor, tree_paths
 
 try:
     import wandb
@@ -26,6 +27,18 @@ except ModuleNotFoundError:
     wandb = None
 
 Tensor = jnp.ndarray
+
+
+class CheckpointerAction(str, enum.Enum):
+    """Represents the checkpointer action corresponding to a checkpoint summary.
+
+    Attributes:
+        RESTORE: The model was restored from the checkpoint.
+        SAVE: The model was saved to the checkpoint.
+    """
+
+    RESTORE = "RESTORE"
+    SAVE = "SAVE"
 
 
 def processor_zero_only(fn: Callable) -> Callable:
@@ -60,6 +73,24 @@ class BaseWriter(Module):
             step: The step to log the config.
         """
         raise NotImplementedError
+
+    def log_checkpoint(
+        self,
+        ckpt_dir: str,
+        *,
+        state: NestedTensor,
+        action: CheckpointerAction,
+        step: int = 0,
+    ):
+        """Log a checkpoint. The default implementation is no-op.
+
+        Args:
+            ckpt_dir: The location of the checkpoint to log.
+            state: The state to store.
+            action: Represents a type of checkpoint action.
+            step: Training step.
+        """
+        pass
 
     # We adapt the args and kwargs from base Module to arguments specific to summary writer,
     # and drop the method argument since the caller does not decide which method to call.

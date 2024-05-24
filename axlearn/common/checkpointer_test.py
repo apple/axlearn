@@ -10,6 +10,7 @@ import re
 import tempfile
 import threading
 from typing import Iterable, List, Sequence
+from unittest.mock import Mock
 
 import jax
 import pytest
@@ -35,6 +36,7 @@ from axlearn.common.checkpointer import (
     save_tf_savables,
 )
 from axlearn.common.metrics import WeightedScalar
+from axlearn.common.summary_writer import SummaryWriter
 
 
 def _mesh(mesh_shape: Sequence[int]):
@@ -387,6 +389,25 @@ class CheckpointerTest(test_utils.TestCase):
         run_thread.join()
         self.assertTrue(ckpt._gc_stopping.is_set())
 
+    def test_summary_writer_checkpoint(self):
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+        with _mesh(mesh_shape):
+            cfg = _checkpointer_config()
+            cfg.summary_writer = SummaryWriter.default_config()
+            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            self.assertIsNotNone(ckpt.summary_writer)
+
+            ckpt.summary_writer.log_checkpoint = Mock()
+
+            state = dict(x=jnp.zeros([], dtype=jnp.int32))
+            ckpt.save(step=1, state=state)
+            ckpt.wait_until_finished()
+
+            ckpt.summary_writer.log_checkpoint.assert_called_once()
+            ckpt.stop()
+
     @parameterized.product(
         mode=("max", "min"),
         metric_type=("array", "weighted_scalar"),
@@ -591,9 +612,11 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                 restored_state = restore_state()
                 self.assertNestedEqual(
                     restored_state,
-                    state
-                    if restore_floats_as is None
-                    else make_state(float_dtype=restore_floats_as),
+                    (
+                        state
+                        if restore_floats_as is None
+                        else make_state(float_dtype=restore_floats_as)
+                    ),
                 )
 
 
