@@ -41,6 +41,7 @@ from axlearn.common.attention import (
     BaseStackedTransformerLayer,
     BottleNeckAdapterTransformerLayer,
     FusedQKVLinear,
+    KVState,
     LearnedPositionalEmbedding,
     MultiheadAttentionXL,
     MultiheadInputLinear,
@@ -50,6 +51,7 @@ from axlearn.common.attention import (
     PerDimScale,
     PipelinedTransformerLayer,
     QKVLinear,
+    QLinear,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
     StackedTransformerLayer,
@@ -1331,6 +1333,57 @@ class QKVLinearTest(TestCase):
                 cfg.set(num_kv_heads=num_kv_heads)
             layer = cfg.instantiate(parent=None)
             self.assertEqual(expected, layer.num_kv_heads)
+
+    def test_qlinear(self):
+        """Tests that QLinear is equivalent to QKVLinear with the same kv_state."""
+        with utils.numeric_checks(True):
+            model_dim = 12
+            num_heads = 4
+            per_head_dim = model_dim // num_heads
+            layer_kwargs = dict(
+                query_dim=model_dim,
+                key_dim=model_dim,
+                value_dim=model_dim,
+                num_heads=num_heads,
+                per_head_dim=per_head_dim,
+            )
+            base_cfg = QKVLinear.default_config().set(**layer_kwargs)
+            test_cfg = QLinear.default_config().set(**layer_kwargs)
+            maybe_set_config(test_cfg, num_kv_heads=num_heads)
+            base_layer = base_cfg.set(name="base").instantiate(parent=None)
+            test_layer = test_cfg.set(name="test").instantiate(parent=None)
+
+            # Construct base layer state.
+            base_state = base_layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
+            # Map state to QLinear.
+            test_state = {"q_proj": base_state["q_proj"]}
+
+            # Construct test inputs.
+            batch_size, src_len, tgt_len = 2, 6, 6
+            query = jax.random.uniform(jax.random.PRNGKey(0), [batch_size, tgt_len, model_dim])
+            key = jax.random.uniform(jax.random.PRNGKey(1), [batch_size, src_len, model_dim])
+            value = jax.random.uniform(jax.random.PRNGKey(2), [batch_size, src_len, model_dim])
+
+            outputs = {}
+            layer_names = ("base", "test")
+            kv_kwargs = {"key": key, "value": value}
+            for name, layer, state in zip(
+                layer_names, (base_layer, test_layer), (base_state, test_state)
+            ):
+                outputs[name], _ = F(
+                    layer,
+                    state=state,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(456),
+                    inputs=dict(query=query, **kv_kwargs),
+                )
+                if name == "base":
+                    kv_kwargs = {
+                        "kv_state": KVState(k_proj=outputs[name].key, v_proj=outputs[name].value)
+                    }
+            for layer_a, layer_b in combinations(layer_names, 2):
+                # Check that the outputs are close for all pairs.
+                self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
 
 
 class PerDimScaleTest(TestCase):
