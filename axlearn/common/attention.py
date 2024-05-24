@@ -193,13 +193,14 @@ class BaseTransformerLayer(BaseLayer):
         *,
         target_batch_size: int,
         target_max_len: int,
-        kv_state: Optional[KVState] = None,
+        self_attention_kv_state: Optional[KVState] = None,
     ) -> NestedTensor:
         """Initializes cached states for incremental computation.
 
         Args:
             target_batch_size: The batch size for target sequences.
             target_max_len: The maximum number of tokens in a target sequence.
+            self_attention_kv_state: an optional KVState used for self-attention.
 
         Returns:
             A nested tree of Tensors, which can be used as `cached_states` for the initial call
@@ -662,6 +663,7 @@ class BaseQKVLinear(BaseLayer):
                    If None, will use `query`.
             value: an optional Tensor of shape [batch, source_length, source_dim].
                    If None, will use `query`.
+            kv_state: an optional KVState. If not None, both key and value must be None.
             time_step: an optional Tensor of shape [batch]. If None, will ignore.
 
         Returns:
@@ -695,6 +697,7 @@ class BaseQKVLinear(BaseLayer):
                 `query`.
             value: An optional Tensor of shape [batch, source_length, source_dim]. If None, will
                 use `query`.
+            kv_state: an optional KVState. If not None, both key and value must be None.
 
         Returns:
             A `NestedTensor` state of `key`, `value` of shape
@@ -759,6 +762,7 @@ class BaseQKVLinear(BaseLayer):
                 `query`.
             value: An optional Tensor of shape [batch, source_length, source_dim]. If None, will
                 use `query`.
+            kv_state: an optional KVState. If not None, both key and value must be None.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -1698,6 +1702,7 @@ class MultiheadAttention(BaseLayer):
             query: a Tensor of shape [batch, target_length, target_dim].
             key:   an optional Tensor of shape [batch, source_length, source_dim].
             value: an optional Tensor of shape [batch, source_length, source_dim].
+            kv_state: an optional KVState. If not None, both key and value must be None.
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
 
         Returns:
@@ -1742,6 +1747,7 @@ class MultiheadAttention(BaseLayer):
         Args:
             target_batch_size: the batch size of the target to be decoded.
             target_max_len: the sequence length of the target to be decoded.
+            kv_state: an optional KVState.
 
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
@@ -1773,6 +1779,7 @@ class MultiheadAttention(BaseLayer):
             query: Tensor of shape [B, T, D] corresponding to query vector up to `time_step`. For
                 batch index `i`, only `query[i, :time_step[i], ...]` will affect subsequent
                 decoding.
+            kv_state: an optional KVState.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
 
         Returns:
@@ -1807,6 +1814,7 @@ class MultiheadAttention(BaseLayer):
                 previous attentions, and index used for fast decoding. Contains "key" and "value" of
                 shape [B, N, H, T], and a Tensor "time_step" of shape [B].
             query: Tensor of shape [B, 1, D] corresponding to query vector at "time_step" indices.
+            kv_state: an optional KVState.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
                 Additionally, target_length is expected to be 1 since this is per time step.
                 The biases should already include causal masking for decoding, plus other biases
@@ -2325,6 +2333,7 @@ class TransformerAttentionLayer(BaseLayer):
         Args:
             target_batch_size: the batch size of the target to be decoded.
             target_max_len: the sequence length of the target to be decoded.
+            kv_state: an optional KVState.
 
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
