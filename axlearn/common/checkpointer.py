@@ -43,6 +43,7 @@ from axlearn.common.module import (
     clone_context_stack,
     install_context_stack,
 )
+from axlearn.common.summary_writer import CheckpointerAction, SummaryWriter
 from axlearn.common.utils import NestedTensor, NestedTensorSpec, Tensor, TensorSpec, set_recursively
 
 
@@ -589,6 +590,8 @@ class Checkpointer(Module):
         save_policy: InstantiableConfig = config_for_function(every_n_steps_policy)
         # A config that instantiates to a StateStorage.
         storage: StateStorage.Config = TensorStoreStateStorage.default_config()
+        # A config that instantiates an optional SummaryWriter, and is used to log checkpoints.
+        summary_writer: Optional[SummaryWriter.Config] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -597,6 +600,9 @@ class Checkpointer(Module):
         self._gc_thread = None
         self._within_context = False
         self._save_policy: CheckpointPolicy = cfg.save_policy.instantiate()
+        if cfg.summary_writer is not None:
+            cfg.summary_writer.dir = cfg.summary_writer.dir or cfg.dir
+            self._add_child("summary_writer", cfg.summary_writer)
 
     def __enter__(self):
         if self._within_context:
@@ -662,6 +668,13 @@ class Checkpointer(Module):
             step=step, state=state, ckpt_dir=ckpt_dir, on_commit_callback=write_index_file
         )
         end_time = time.perf_counter()
+        if "summary_writer" in self.children:
+            self.summary_writer.log_checkpoint(
+                step=step,
+                state=state,
+                ckpt_dir=ckpt_dir,
+                action=CheckpointerAction.SAVE,
+            )
         logging.info(
             "Saved checkpoint with %s in %s seconds", type(self._storage), end_time - start_time
         )
@@ -730,15 +743,29 @@ class Checkpointer(Module):
         cfg = self.config
         if step is not None:
             # For a specified step, we try to load it.
-            return step, self._validate_and_restore(
-                step=step, state=state, ckpt_dir=self.ckpt_dir(step)
-            )
+            ckpt_dir = self.ckpt_dir(step)
+            restored_state = self._validate_and_restore(step=step, state=state, ckpt_dir=ckpt_dir)
+            if "summary_writer" in self.children:
+                self.summary_writer.log_checkpoint(
+                    step=step,
+                    state=state,
+                    ckpt_dir=ckpt_dir,
+                    action=CheckpointerAction.RESTORE,
+                )
+            return step, restored_state
         try:
             # Latest checkpoint path, if it exists, is guaranteed to be complete.
             ckpt_dir = latest_checkpoint_path(cfg.dir)
             step = parse_step_from_dir(ckpt_dir)
             restored_state = self._validate_and_restore(step=step, state=state, ckpt_dir=ckpt_dir)
             logging.info("Restored state from ckpt at step %s", step)
+            if "summary_writer" in self.children:
+                self.summary_writer.log_checkpoint(
+                    step=step,
+                    state=state,
+                    ckpt_dir=ckpt_dir,
+                    action=CheckpointerAction.RESTORE,
+                )
         except IndexError:
             # No checkpoint path exists. Return with input state.
             logging.info("Could not find any completed checkpoints under %s", cfg.dir)
