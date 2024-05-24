@@ -151,6 +151,9 @@ class BaseTransformerLayer(BaseLayer):
         # self_attention_probs.sum(axis=-1) equals to all 1's.
         self_attention_probs: Tensor
 
+        # The KV state used in self-attention.
+        self_attention_kv_state: KVState
+
         # The attention probabilities returned by the cross-attention layer.
         # Shape: [..., target_length, source_length].
         #
@@ -1583,6 +1586,8 @@ class MultiheadAttention(BaseLayer):
         data: Tensor
         # [batch, num_heads, target_length, source_length]. The attention probabilities.
         probs: Tensor
+        # The KV state used for computing the attention outputs.
+        kv_state: KVState
 
     def _forward_for_mode(
         self,
@@ -1627,6 +1632,7 @@ class MultiheadAttention(BaseLayer):
         if kv_state is not None:
             if key is not None or value is not None:
                 raise ValueError("kv_state should not be specified together with key/value")
+            print(f"Using kv_state: self.i_proj={self.i_proj}")
             kv_kwargs = dict(kv_state=kv_state)
         else:
             kv_kwargs = dict(key=key, value=value)
@@ -1646,6 +1652,7 @@ class MultiheadAttention(BaseLayer):
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
 
+        kv_state = KVState(k_proj=k_proj, v_proj=v_proj)
         q_proj = self._remat_name(q_proj, "q_proj")
         k_proj = self._remat_name(k_proj, "k_proj")
         v_proj = self._remat_name(v_proj, "v_proj")
@@ -1668,7 +1675,7 @@ class MultiheadAttention(BaseLayer):
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
         self._add_tensor_stats("o_proj_outputs", outputs)
-        return dict(i_proj=i_proj_state), self.Output(data=outputs, probs=probs)
+        return dict(i_proj=i_proj_state), self.Output(data=outputs, probs=probs, kv_state=kv_state)
 
     def _compute_attention(
         self,
@@ -2217,6 +2224,8 @@ class TransformerAttentionLayer(BaseLayer):
         data: Tensor
         # The attention probabilities returned by the attention layer.
         probs: Tensor
+        # KV state used to compute outputs.
+        kv_state: KVState
 
     def _forward_for_mode(
         self,
@@ -2304,7 +2313,9 @@ class TransformerAttentionLayer(BaseLayer):
             )
         else:
             raise NotImplementedError(cfg.structure)
-        return dict(attention=atten_state), self.Output(data=data, probs=atten_output.probs)
+        return dict(attention=atten_state), self.Output(
+            data=data, probs=atten_output.probs, kv_state=atten_output.kv_state
+        )
 
     def forward(
         self,
@@ -2797,6 +2808,7 @@ class TransformerLayer(BaseTransformerLayer):
         return dict(self_attention=self_atten_state), BaseTransformerLayer.Output(
             data=data,
             self_attention_probs=self_atten_outputs.probs,
+            self_attention_kv_state=self_atten_outputs.kv_state,
             cross_attention_probs=cross_attention_probs,
         )
 
@@ -2925,6 +2937,7 @@ class ParallelTransformerLayer(BaseTransformerLayer):
         return BaseTransformerLayer.Output(
             data=outputs,
             self_attention_probs=self_atten_outputs.probs,
+            self_attention_kv_state=self_atten_outputs.kv_state,
             cross_attention_probs=None,
         )
 

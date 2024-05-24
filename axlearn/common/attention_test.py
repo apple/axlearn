@@ -2855,6 +2855,59 @@ class TransformerTest(TestCase):
         ref = hf_roberta.RobertaLayer(roberta_config)
         self._compare_against_roberta_layer(ref, layer)
 
+    def test_self_attention_kv_state(self):
+        """Tests TransformerLayer with explicit self_attention_kv_state.
+
+        Creates a base TransformerLayer and a test TransformerLayer with QLinear. Uses the kv_state
+        of the base layer as the explicit kv_state for the test layer. Checks that the outputs are
+        identical.
+        """
+        model_dim = 16
+        num_heads = 4
+        base_cfg = TransformerLayer.default_config().set(name="test", input_dim=model_dim)
+        base_cfg.feed_forward.set(hidden_dim=scaled_hidden_dim(4))
+        base_cfg.self_attention.attention.set(num_heads=num_heads)
+        base_layer: TransformerLayer = base_cfg.instantiate(parent=None)
+        base_layer_params = base_layer.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(0)
+        )
+
+        test_cfg = base_cfg.clone()
+        test_cfg.self_attention.attention.input_linear = QLinear.default_config()
+        test_layer: TransformerLayer = test_cfg.instantiate(parent=None)
+        # Let test_layer_params to be identical to base_layer_params except removing {k,v}_proj.
+        test_layer_params = copy.deepcopy(base_layer_params)
+        for k in ("k_proj", "v_proj"):
+            test_layer_params["self_attention"]["attention"]["i_proj"].pop(k)
+        self.assertEqual(
+            shapes(test_layer_params),
+            shapes(test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))),
+        )
+
+        batch_size, tgt_len = 2, 6
+        rng = np.random.default_rng(seed=123)
+        target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
+        base_layer_outputs, _ = F(
+            base_layer,
+            inputs=dict(data=jnp.asarray(target)),
+            state=base_layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        test_layer_outputs, _ = F(
+            test_layer,
+            # Explicitly pass `self_attention_kv_state` from `base_layer_outputs` as inputs to
+            # test_layer.
+            inputs=dict(
+                data=jnp.asarray(target),
+                self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
+            ),
+            state=test_layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        assert_allclose(base_layer_outputs.data, test_layer_outputs.data)
+
 
 class ParallelTransformerTest(TestCase):
     """Tests ParallelTransformerLayer."""
