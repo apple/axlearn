@@ -2024,16 +2024,31 @@ class MultiheadAttentionTest(TestCase):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
         batch_size, tgt_len = 2, 6
+        head_dim = model_dim // num_heads
         query = jax.random.normal(
             jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
         )
+        key = value = kv_state = None
         if attention_cfg.klass == attention.GroupedQueryAttention:
-            key = value = None
+            pass
+        elif attention_cfg.input_linear.klass == QLinear:
+            kv_state = KVState(
+                k_proj=jax.random.normal(
+                    jax.random.PRNGKey(124), [batch_size, tgt_len, num_heads, head_dim], dtype=dtype
+                ),
+                v_proj=jax.random.normal(
+                    jax.random.PRNGKey(125), [batch_size, tgt_len, num_heads, head_dim], dtype=dtype
+                ),
+            )
         else:
             key = value = query
         attention_logit_biases = attention.make_causal_mask(tgt_len)
         inputs = dict(
-            query=query, key=key, value=value, attention_logit_biases=attention_logit_biases
+            query=query,
+            key=key,
+            value=value,
+            kv_state=kv_state,
+            attention_logit_biases=attention_logit_biases,
         )
         forward_outputs, _ = F(
             layer,
@@ -2043,11 +2058,17 @@ class MultiheadAttentionTest(TestCase):
             inputs=inputs,
         )
 
-        initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
-        for k in ["key", "value"]:
-            # Check that the cache dtype is inferred as the layer dtype.
-            self.assertEqual(initial_state["i_proj"][k].dtype, dtype)
-        inputs = dict(cached_states=initial_state)
+        initial_state = layer.init_states(
+            target_batch_size=batch_size, target_max_len=tgt_len, kv_state=kv_state
+        )
+        if kv_state is None:
+            for k in ["key", "value"]:
+                # Check that the cache dtype is inferred as the layer dtype.
+                self.assertEqual(initial_state["i_proj"][k].dtype, dtype)
+        else:
+            self.assertNotIn("key", initial_state["i_proj"])
+            self.assertNotIn("value", initial_state["i_proj"])
+        inputs = dict(cached_states=initial_state, kv_state=kv_state)
         decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
         decoder_probs = jnp.zeros(shape=[tgt_len, batch_size, num_heads, tgt_len])
         for t in range(tgt_len):
@@ -2088,7 +2109,7 @@ class MultiheadAttentionTest(TestCase):
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
         bias=(True, False),
-        input_linear=(attention.QKVLinear, attention.RoFormerQKVLinear),
+        input_linear=(QKVLinear, RoFormerQKVLinear, QLinear),
     )
     def test_extend_step(
         self,
@@ -3149,7 +3170,7 @@ class StackedTransformerTest(TestCase):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                jax.tree_map(
+                jax.tree_util.tree_map(
                     lambda v: self.assertIsInstance(v, utils.VDict),
                     updated_states,
                     is_leaf=lambda v: isinstance(v, dict),
@@ -3302,7 +3323,7 @@ class StackedTransformerTest(TestCase):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                jax.tree_map(
+                jax.tree_util.tree_map(
                     lambda v: self.assertIsInstance(v, utils.VDict),
                     updated_states,
                     is_leaf=lambda v: isinstance(v, dict),

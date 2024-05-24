@@ -1632,7 +1632,6 @@ class MultiheadAttention(BaseLayer):
         if kv_state is not None:
             if key is not None or value is not None:
                 raise ValueError("kv_state should not be specified together with key/value")
-            print(f"Using kv_state: self.i_proj={self.i_proj}")
             kv_kwargs = dict(kv_state=kv_state)
         else:
             kv_kwargs = dict(key=key, value=value)
@@ -2986,10 +2985,8 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         *,
         mode: ForwardMode,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
+        **kwargs,
     ) -> Tuple[Optional[NestedTensor], Tensor]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
@@ -3014,103 +3011,70 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         """
         self.vlog(3, "transformer.input=%s", data.sum())
         if mode == ForwardMode.FORWARD:
-            output = self.layer.forward(
-                data=data,
-                self_attention_logit_biases=self_attention_logit_biases,
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
-            )
+            output = self.layer.forward(data=data, **kwargs)
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
             cached_states, output = self.layer.prefill_states(
                 time_step=cached_states["layer"],
                 data=data,
-                self_attention_logit_biases=self_attention_logit_biases,
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
+                **kwargs,
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
             cached_states, output = self.layer.extend_step(
                 cached_states=cached_states,
                 data=data,
-                self_attention_logit_biases=self_attention_logit_biases,
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
+                **kwargs,
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
-        self_attention_probs = output.self_attention_probs
-        cross_attention_probs = output.cross_attention_probs
         skip_input = output.data
         data = self.adapter(output.data)
         data += skip_input
         self.vlog(3, "adapted_transformer.output=%s", data.sum())
-        return cached_states, BaseTransformerLayer.Output(
-            data=data,
-            self_attention_probs=self_attention_probs,
-            cross_attention_probs=cross_attention_probs,
-        )
+        return cached_states, output._replace(data=data)
 
     def forward(
         self,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> BaseTransformerLayer.Output:
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             cached_states=None,
+            **kwargs,
         )
         return output
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
-        return dict(
-            layer=self.layer.init_states(
-                target_batch_size=target_batch_size, target_max_len=target_max_len
-            )
-        )
+    def init_states(self, **kwargs) -> NestedTensor:
+        return dict(layer=self.layer.init_states(**kwargs))
 
     def prefill_states(
         self,
         *,
         time_step: Tensor,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> Tuple[NestedTensor, BaseTransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(layer=time_step),
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **kwargs,
         )
 
     def extend_step(
         self,
         cached_states: NestedTensor,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> Tuple[NestedTensor, BaseTransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             cached_states=cached_states,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **kwargs,
         )
 
 
@@ -3302,17 +3266,11 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             all_layer_outputs.append(layer_outputs)
             all_layer_states.append(layer_states)
             data = layer_outputs.data
-        aux_outputs = {}
-        for field in TransformerLayer.Output._fields:
-            if field == "data":
-                continue
-            values = [getattr(output, field) for output in all_layer_outputs]
-            if None in values:
-                assert all(v is None for v in values), f"{field}: {values}"
-                aux_outputs[field] = None
-            else:
-                aux_outputs[field] = jnp.stack(values, axis=0)
-        return all_layer_states, TransformerLayer.Output(data=data, **aux_outputs)
+
+        # Stack auxiliary outputs along axis 0.
+        aux_outputs = [output._replace(data=None) for output in all_layer_outputs]
+        aux_outputs = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *aux_outputs)
+        return all_layer_states, aux_outputs._replace(data=data)
 
     def forward(
         self,
@@ -3444,7 +3402,7 @@ class _TransformerRepeat(Repeat):
             ys = {k: v for k, v in layer_outputs._asdict().items() if k != "data"}
             if layer_states is not None:
                 # Vectorize over scan axis.
-                ys["cached_states"] = jax.tree_map(
+                ys["cached_states"] = jax.tree_util.tree_map(
                     VDict, layer_states, is_leaf=lambda v: isinstance(v, dict)
                 )
             return layer_outputs.data, ys
@@ -3474,7 +3432,7 @@ class _TransformerRepeat(Repeat):
 
     def init_states(self, *args: Any, **kwargs: Any) -> NestedTensor:
         def layer_fn(_):
-            return jax.tree_map(
+            return jax.tree_util.tree_map(
                 VDict,
                 self.layer.init_states(*args, **kwargs),
                 is_leaf=lambda v: isinstance(v, dict),
