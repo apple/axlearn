@@ -710,10 +710,16 @@ class BaseQKVLinear(BaseLayer):
         # Default to base layer dtype for initialization if cache_dtype is None.
         dtype = cfg.cache_dtype or cfg.dtype
 
+        if kv_state is not None:
+            if key is not None or value is not None:
+                raise ValueError("kv_state should not be specified together with key/value")
+            kv_kwargs = dict(kv_state=kv_state)
+        else:
+            kv_kwargs = dict(key=key, value=value)
         # In the prefill state, the time_step filtering is not provided in the QKV forward function,
         # but in the time_step_mask defined below.
         # Therefore, time_step argument for the forward is set as None.
-        q_proj, k_proj, v_proj = self.forward(query, key=key, value=value, kv_state=kv_state)
+        q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs)
 
         init_state = dict(time_step=time_step)
         # If external kv_state is provided, we don't need to maintain key/value in cached_state.
@@ -773,10 +779,14 @@ class BaseQKVLinear(BaseLayer):
         time_step = cached_states["time_step"]
         assert time_step.ndim == 1
 
+        if kv_state is not None:
+            if key is not None or value is not None:
+                raise ValueError("kv_state should not be specified together with key/value")
+            kv_kwargs = dict(kv_state=kv_state)
+        else:
+            kv_kwargs = dict(key=key, value=value)
         # Project inputs to key, value and query. Each has shape [B, 1, N, H].
-        q_proj, k_proj, v_proj = self.forward(
-            query, key=key, value=value, kv_state=kv_state, time_step=time_step
-        )
+        q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, time_step=time_step)
 
         updated_state = dict(time_step=time_step + 1)
         if kv_state is None:
@@ -1614,9 +1624,13 @@ class MultiheadAttention(BaseLayer):
                 "key and value must be both None or both set, "
                 f"key:{type(key)}, value:{type(value)}"
             )
-        if kv_state is not None and (key is not None or value is not None):
-            raise ValueError("kv_state should not be specified together with key/value")
-        kv_kwargs = dict(kv_state=kv_state, key=key, value=value)
+        if kv_state is not None:
+            if key is not None or value is not None:
+                raise ValueError("kv_state should not be specified together with key/value")
+            kv_kwargs = dict(kv_state=kv_state)
+        else:
+            kv_kwargs = dict(key=key, value=value)
+
         if mode == ForwardMode.FORWARD:
             i_proj_state, (q_proj, k_proj, v_proj) = None, self.i_proj(query, **kv_kwargs)
         elif mode == ForwardMode.INIT_STATES:
@@ -2235,12 +2249,14 @@ class TransformerAttentionLayer(BaseLayer):
         """
         cfg = self.config
 
-        if isinstance(source, KVState):
+        if source is None:
+            kv_kwargs = {}
+        elif isinstance(source, KVState):
             kv_kwargs = {"kv_state": source}
-        else:
-            if not isinstance(source, Tensor):
-                raise NotImplementedError("Expect Tensor source")
+        elif isinstance(source, Tensor):
             kv_kwargs = {"key": source, "value": source}
+        else:
+            raise NotImplementedError(source)
 
         def attention_thunk(target: Tensor) -> Tuple[Optional[NestedTensor], Tensor]:
             if mode == ForwardMode.FORWARD:
@@ -2294,7 +2310,7 @@ class TransformerAttentionLayer(BaseLayer):
         self,
         *,
         target: Tensor,
-        source: Optional[Union[Tensor, KVState]],
+        source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
     ) -> Output:
         """Computes attention with target as query and source as key and value.
@@ -2351,8 +2367,8 @@ class TransformerAttentionLayer(BaseLayer):
         *,
         time_step: NestedTensor,
         target: Tensor,
-        source: Optional[Union[Tensor, KVState]],
-        attention_logit_biases: Optional[Tensor],
+        source: Optional[Union[Tensor, KVState]] = None,
+        attention_logit_biases: Optional[Tensor] = None,
     ) -> Tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -2387,8 +2403,8 @@ class TransformerAttentionLayer(BaseLayer):
         cached_states: NestedTensor,
         target: Tensor,
         *,
-        source: Optional[Union[Tensor, KVState]],
-        attention_logit_biases: Optional[Tensor],
+        source: Optional[Union[Tensor, KVState]] = None,
+        attention_logit_biases: Optional[Tensor] = None,
     ) -> Tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
