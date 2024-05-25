@@ -81,6 +81,8 @@ COPY . .
 
 FROM base AS tpu
 
+RUN apt-get install -y google-perftools
+
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
