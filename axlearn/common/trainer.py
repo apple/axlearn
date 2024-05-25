@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Defines SpmdTrainer, a trainer that supports partitioning of computation and data with GSPMD."""
+
 import contextlib
 import itertools
 import math
@@ -15,11 +16,17 @@ from absl import logging
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 
-from axlearn.common import utils
+from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import Checkpointer
-from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.config import (
+    REQUIRED,
+    InstantiableConfig,
+    Required,
+    config_class,
+    maybe_instantiate,
+)
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.learner import ForwardOutputs, Learner, NestedOptParam
 from axlearn.common.module import InvocationContext, Module, child_context, clone_context_stack
@@ -156,6 +163,9 @@ class SpmdTrainer(Module):
         # increment within this interval.
         watchdog_timeout_seconds: Optional[float] = None
 
+        # An optional recorder for measuring common metrics like step time.
+        recorder: Optional[InstantiableConfig[measurement.Recorder]] = None
+
     def __init__(
         self,
         cfg: Config,
@@ -177,6 +187,7 @@ class SpmdTrainer(Module):
         self._jit_train_step: jax.stages.Wrapped = None
         self._watchdog_stopping = None
         self._watchdog_thread = None
+        self._recorder = maybe_instantiate(cfg.recorder)
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
@@ -383,6 +394,10 @@ class SpmdTrainer(Module):
             )
         return force_run_evals
 
+    def _maybe_record_event(self, event: measurement.Event, *args, **kwargs):
+        if self._recorder is not None:
+            self._recorder.record(event, *args, **kwargs)
+
     # pylint: disable-next=too-many-statements,too-many-branches
     def run(
         self, prng_key: Tensor, *, return_evaler_summaries: Optional[Union[bool, Set[str]]] = None
@@ -427,6 +442,7 @@ class SpmdTrainer(Module):
                 stop_trace_step = None
 
                 for input_batch in self._input_iter:
+                    self._maybe_record_event(measurement.Event.START_STEP, self._step)
                     logging.log_first_n(
                         logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
                     )
