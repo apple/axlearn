@@ -10,7 +10,7 @@ import jax.random
 import numpy as np
 import optax
 import torch
-from absl.testing import absltest, parameterized
+from absl.testing import parameterized
 from jax import numpy as jnp
 
 from axlearn.audio.asr_decoder import (
@@ -1531,7 +1531,3 @@ class TransducerDecoderModelTest(TestCase):
                 )
             )
         )
-
-
-if __name__ == "__main__":
-    absltest.main()
