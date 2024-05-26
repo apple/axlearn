@@ -732,7 +732,15 @@ class Module(Configurable):
         # Build nullary that that evaluates <method_fn(self, *args, **kwargs)> when called.
         @no_stack_summary
         def nullary():
-            return method_fn(self, *args, **kwargs)
+            try:
+                return method_fn(self, *args, **kwargs)
+            except TypeError as e:
+                args_types = [type(arg) for arg in args]
+                kwargs_types = {k: type(v) for k, v in kwargs.items()}
+                raise TypeError(
+                    f"Type error when calling {self}.{method_fn} "
+                    f"with args={args_types} and kwargs={kwargs_types}"
+                ) from e
 
         return nullary
 
