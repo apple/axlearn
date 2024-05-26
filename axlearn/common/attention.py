@@ -3134,6 +3134,13 @@ class BaseStackedTransformerLayer(BaseTransformerLayer):
 
     Note that BaseStackedTransformerLayer is a subclass of BaseTransformerLayer and therefore
     can be used where a BaseTransformerLayer is expected.
+
+    The Output returned by BaseStackedTransformerLayer has the following fields:
+        * .data is of the same shape as query, from the output of the final layer;
+        * .self_attention_kv_state is of shape [batch, target_length, num_heads, head_dim],
+          from the self-attention KV state of the final layer;
+        * .probs is of shape [num_layers, batch, num_heads, target_length, source_length],
+          from all layers of the stack;
     """
 
     @config_class
@@ -3209,9 +3216,6 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         *,
         mode: ForwardMode,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         **layer_kwargs,
     ) -> Tuple[List[Optional[NestedTensor]], TransformerLayer.Output]:
@@ -3221,15 +3225,12 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             data: A Tensor of shape [batch, target_length, target_dim].
-            self_attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
-            cross_attention_logit_biases: See ``On attention logit biases`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
 
         Returns:
-            An optional NestedTensor of cache states, depending on `mode`.
-            An Output instance, where .data is of the same shape as query and .probs is of shape
-            [batch, num_heads, target_length, source_length].
+            (updated_cache_states, outputs), where
+            updated_cached_states is an optional NestedTensor of cache states, depending on `mode`;
+            outputs is an instance of Output (see comments on BaseStackedTransformerLayer).
 
         Raises:
             ValueError: If `mode` is unsupported.
@@ -3238,21 +3239,12 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         all_layer_states = []
         for i, layer in enumerate(self._layers):
             if mode == ForwardMode.FORWARD:
-                layer_states, layer_outputs = None, layer(
-                    data,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
-                    **layer_kwargs,
-                )
+                layer_states, layer_outputs = None, layer(data, **layer_kwargs)
             elif mode == ForwardMode.INIT_STATES:
                 assert cached_states is not None
                 layer_states, layer_outputs = layer.prefill_states(
                     time_step=cached_states,
                     data=data,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
                     **layer_kwargs,
                 )
             elif mode == ForwardMode.EXTEND_STEP:
@@ -3260,9 +3252,6 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
                 layer_states, layer_outputs = layer.extend_step(
                     cached_states=cached_states[i],
                     data=data,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
                     **layer_kwargs,
                 )
             else:
@@ -3270,11 +3259,16 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             all_layer_outputs.append(layer_outputs)
             all_layer_states.append(layer_states)
             data = layer_outputs.data
+            self_attention_kv_state = layer_outputs.self_attention_kv_state
 
         # Stack auxiliary outputs along axis 0.
-        aux_outputs = [output._replace(data=None) for output in all_layer_outputs]
+        aux_outputs = [
+            output._replace(data=None, self_attention_kv_state=None) for output in all_layer_outputs
+        ]
         aux_outputs = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *aux_outputs)
-        return all_layer_states, aux_outputs._replace(data=data)
+        return all_layer_states, aux_outputs._replace(
+            data=data, self_attention_kv_state=self_attention_kv_state
+        )
 
     def forward(
         self,
@@ -3350,9 +3344,7 @@ class _TransformerRepeat(Repeat):
         mode: ForwardMode,
         data: Tensor,
         cached_states: Optional[NestedTensor] = None,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> Tuple[Optional[NestedTensor], TransformerLayer.Output]:
         """Computes transformer stack outputs.
 
@@ -3360,15 +3352,12 @@ class _TransformerRepeat(Repeat):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             data: A Tensor of shape [batch, target_length, target_dim].
-            self_attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
-            cross_attention_logit_biases: See ``On attention logit biases`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
 
         Returns:
-            An optional NestedTensor of cache states, depending on `mode`.
-            An Output instance, where .data is of the same shape as query and .probs is of shape
-            [batch, num_heads, target_length, source_length].
+            (updated_cache_states, outputs), where
+            updated_cached_states is an optional NestedTensor of cache states, depending on `mode`;
+            outputs is an instance of Output (see comments on BaseStackedTransformerLayer).
 
         Raises:
             ValueError: If `mode` is unsupported.
@@ -3376,29 +3365,20 @@ class _TransformerRepeat(Repeat):
 
         def layer_fn(carry, x_i):
             if mode == ForwardMode.FORWARD:
-                layer_states, layer_outputs = None, self.layer(
-                    carry,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
-                )
+                layer_states, layer_outputs = None, self.layer(carry, **layer_kwargs)
             elif mode == ForwardMode.INIT_STATES:
                 assert x_i is not None
                 layer_states, layer_outputs = self.layer.prefill_states(
                     time_step=x_i,
                     data=carry,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
+                    **layer_kwargs,
                 )
             elif mode == ForwardMode.EXTEND_STEP:
                 assert x_i is not None
                 layer_states, layer_outputs = self.layer.extend_step(
-                    x_i,
-                    carry,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
+                    cached_states=x_i,
+                    data=carry,
+                    **layer_kwargs,
                 )
             else:
                 raise ValueError(f"Unrecognized mode {mode}.")
@@ -3414,7 +3394,13 @@ class _TransformerRepeat(Repeat):
         repeat_outputs: Repeat.Output = self._run(layer_fn, carry=data, xs=cached_states)
         ys = repeat_outputs.ys
         updated_states = ys.pop("cached_states", None)
-        return updated_states, TransformerLayer.Output(data=repeat_outputs.carry, **ys)
+        self_attention_kv_state = ys.pop("self_attention_kv_state", None)
+        if self_attention_kv_state is not None:
+            # Take the KV state from the last layer.
+            self_attention_kv_state = self_attention_kv_state[-1]
+        return updated_states, TransformerLayer.Output(
+            data=repeat_outputs.carry, self_attention_kv_state=self_attention_kv_state, **ys
+        )
 
     def forward(
         self,
