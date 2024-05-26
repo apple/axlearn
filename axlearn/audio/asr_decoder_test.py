@@ -4,13 +4,13 @@
 # pylint: disable=no-self-use,too-many-lines
 
 import functools
-from typing import Any, Dict, Union
+from typing import Any, Dict, Tuple, Union
 
 import jax.random
 import numpy as np
 import optax
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
 from axlearn.audio.asr_decoder import (
@@ -18,6 +18,7 @@ from axlearn.audio.asr_decoder import (
     CTCPrefixMerger,
     DecodeOutputs,
     RNNPredictionNetwork,
+    TransducerDecoderModel,
     _is_valid_ctc_seq,
     _map_label_sequences,
 )
@@ -26,10 +27,14 @@ from axlearn.common.decoder import _scores_from_logits
 from axlearn.common.decoding import NEG_INF
 from axlearn.common.logit_modifiers import top_k_logits
 from axlearn.common.metrics import WeightedScalar
+from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
+from axlearn.common.rnn import BaseRNNCell, IdentityCell, LSTMCell
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import Nested, Tensor, shapes
+from axlearn.common.utils import Nested, NestedTensor, Tensor, shapes
+
+_NEG_INF = -1.0e7
 
 
 class UtilsTest(TestCase):
@@ -158,7 +163,7 @@ class UtilsTest(TestCase):
 class ValidCtcSeqTest(TestCase):
     def get_logits_and_labels(
         self, batch_size: int, input_lengths: int, target_lengths: int, vocab_size: int
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         prng_key = jax.random.PRNGKey(1234)
         logits = jax.random.normal(
             prng_key, (batch_size, input_lengths, vocab_size), dtype=jnp.float32
@@ -1014,3 +1019,519 @@ class RNNPredictionNetworkTest(TestCase):
         )
         # Tests that `time_major_inputs` axis order is correctly handled.
         self.assertSequenceEqual(forward_outputs.shape, (batch_size, seq_len, output_dim))
+
+
+class SimpleRecurrentCell(BaseRNNCell):
+    """A simple recurrent cell."""
+
+    def __init__(self, cfg: BaseRNNCell.Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        if cfg.output_dim and cfg.output_dim != cfg.input_dim:
+            raise ValueError(
+                (
+                    "SimpleRecurrentCell requires input_dim = output_dim, but got "
+                    f"input_dim = {cfg.input_dim}, output_dim = {cfg.output_dim}."
+                )
+            )
+
+    def init_states(self, *, batch_size: int) -> NestedTensor:
+        """Returns the initial step states, to be used by `extend_step`."""
+        cfg = self.config
+        return {
+            "step": jnp.zeros((batch_size, 1)),
+            "memory": jnp.zeros((batch_size, cfg.input_dim)),
+        }
+
+    def extend_step(
+        self, *, data: Tensor, cached_states: NestedTensor
+    ) -> Tuple[NestedTensor, Tensor]:
+        # [batch*beam, emb_dim].
+        memory_init = data
+        # Markov chain transition probability.
+        transition = jnp.array([[0.5, 0, 0, 0.5], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+        memory_prob = jnp.exp(cached_states["memory"]) @ transition
+        memory_update = jnp.where(memory_prob > 0, jnp.log(memory_prob), _NEG_INF)
+        memory_new = jnp.where(cached_states["step"] > 0, memory_update, memory_init)
+        new_states = dict(step=cached_states["step"] + 1, memory=memory_new)
+        return new_states, memory_new
+
+    def _batch_size(self, inputs: NestedTensor) -> int:
+        assert isinstance(inputs, Tensor)
+        assert inputs.ndim == 3, inputs.shape
+        return inputs.shape[1]
+
+    def _seq_len(self, inputs: NestedTensor) -> int:
+        assert isinstance(inputs, Tensor)
+        assert inputs.ndim == 3, inputs.shape
+        return inputs.shape[0]
+
+
+class TransducerDecoderModelTest(TestCase):
+    def _set_up_transducer(
+        self,
+        vocab_size,
+        lm_type="lstm_lm",
+        blank_logit_bias=None,
+    ):
+        """Helper function to set up transducer."""
+        am_dim = emb_dim = lm_dim = joint_dim = 4
+        cfg = TransducerDecoderModel.default_config().set(
+            name="transducer_decoder",
+            input_dim=am_dim,
+            lm_dim=lm_dim,
+            joint_dim=joint_dim,
+            vocab_size=vocab_size,
+        )
+        if lm_type == "lstm_lm":
+            rnn_cfg = LSTMCell.default_config().set(hidden_dim=12)
+        elif lm_type == "recurrent_lm":
+            rnn_cfg = SimpleRecurrentCell.default_config()
+            cfg.transducer.activation_fn = "linear"
+        else:
+            rnn_cfg = IdentityCell.default_config()
+            cfg.transducer.activation_fn = "linear"
+
+        cfg.prediction_network.rnn_cell = rnn_cfg
+        cfg.prediction_network.emb_dim = emb_dim
+
+        if blank_logit_bias:
+            cfg.transducer.logits_to_log_probs.blank_logit_bias = blank_logit_bias
+
+        layer = cfg.instantiate(parent=None)  # type: TransducerDecoderModel
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        if lm_type != "lstm_lm":
+            # Initialize weights.
+            layer_params["transducer"]["proj"]["weight"] = jnp.identity(joint_dim)
+            layer_params["lm_proj"]["weight"] = jnp.identity(lm_dim)
+
+        if lm_type == "stateless_lm":
+            layer_params["am_proj"]["weight"] = jnp.identity(am_dim)
+            layer_params["prediction_network"]["embedding"]["weight"] = jnp.zeros(
+                (emb_dim, emb_dim)
+            )
+        elif lm_type == "stateful_lm":
+            layer_params["am_proj"]["weight"] = jnp.zeros((am_dim, am_dim))
+            # [vocab_size, emb_dim].
+            layer_params["prediction_network"]["embedding"]["weight"] = jnp.array(
+                [
+                    # blank. This should never be used.
+                    [jnp.log(0.25), jnp.log(0.25), jnp.log(0.25), jnp.log(0.25)],
+                    [jnp.log(0.8), _NEG_INF, _NEG_INF, jnp.log(0.2)],  # bos.
+                    [jnp.log(1.0), _NEG_INF, _NEG_INF, _NEG_INF],  # eos.
+                    [jnp.log(1.0), _NEG_INF, _NEG_INF, _NEG_INF],  # token.
+                ]
+            )
+        elif lm_type == "recurrent_lm":
+            layer_params["am_proj"]["weight"] = jnp.zeros((am_dim, am_dim))
+            # [vocab_size, emb_dim].
+            layer_params["prediction_network"]["embedding"]["weight"] = jnp.array(
+                [
+                    # blank. This should never be used.
+                    [jnp.log(0.25), jnp.log(0.25), jnp.log(0.25), jnp.log(0.25)],
+                    # bos. Markov chain initial state.
+                    [jnp.log(0.8), _NEG_INF, _NEG_INF, jnp.log(0.2)],
+                    # eos.
+                    [jnp.log(1.0), _NEG_INF, _NEG_INF, _NEG_INF],
+                    # token.
+                    [jnp.log(0.25), jnp.log(0.25), jnp.log(0.25), jnp.log(0.25)],
+                ]
+            )
+        return layer, layer_params, prng_key
+
+    @parameterized.parameters(
+        # [batch_size, tgt_len].
+        (
+            jnp.array(
+                [
+                    [14, 8, 17, 19, 17, 2],  # length 5.
+                    [17, 4, 18, 2, -1, -1],  # length 3.
+                    [2, -1, -1, -1, -1, -1],  # length 0.
+                ]
+            ),
+            False,
+        ),
+        (jnp.array([[9, 11, 8, 5, 2, -1, -1, -1]]), True),
+    )
+    def test_forward(self, target_labels, tile_input):
+        """Tests that loss computation excludes empty sequence, and respects paddings."""
+        am_dim, bos_id = 4, 1
+        layer, layer_params, prng_key = self._set_up_transducer(vocab_size=20)
+
+        # Generate inputs.
+        if tile_input:
+            batch_size, src_len, max_src_len = 4, 5, 10
+            # [batch_size, src_len, am_dim].
+            inputs = jnp.tile(
+                jax.random.normal(jax.random.PRNGKey(707), [1, max_src_len, am_dim]) * 1000,
+                [batch_size, 1, 1],
+            )
+            paddings = jnp.tile(jnp.arange(max_src_len)[None, :] >= src_len, [batch_size, 1])
+            # Generate different padding data.
+            pad_inputs_data = (
+                jax.random.normal(jax.random.PRNGKey(124), [batch_size, max_src_len, am_dim]) * 200
+            )
+            # Generate inputs with the same data at non-pad positions.
+            inputs = jnp.where(paddings[:, :, None], pad_inputs_data, inputs)
+            assert_allclose(
+                jnp.diff(inputs[:, :src_len], axis=0), jnp.zeros([batch_size - 1, src_len, am_dim])
+            )
+            self.assertGreater(
+                jnp.abs(jnp.diff(inputs[:, src_len:], axis=0)).sum(),
+                1e3,
+            )
+            target_labels = jnp.tile(target_labels, [batch_size, 1])
+        else:
+            batch_size = target_labels.shape[0]
+            max_src_len = 10
+            src_len = np.array([10, 0, 7])
+            # [batch_size, src_len, am_dim].
+            inputs = (
+                jax.random.normal(jax.random.PRNGKey(311), [batch_size, max_src_len, am_dim]) * 1000
+            )
+            paddings = jnp.arange(max_src_len)[None, :] >= src_len[:, None]
+
+        input_ids = jnp.concatenate(
+            [jnp.full([batch_size, 1], bos_id), target_labels[:, :-1]], axis=1
+        )
+
+        @jax.jit
+        def jit_forward(input_batch):
+            (loss, aux_outputs), _ = F(
+                layer,
+                inputs=dict(input_batch=input_batch),
+                is_training=True,
+                prng_key=prng_key,
+                state=layer_params,
+            )
+            return loss, aux_outputs
+
+        # Compute test loss.
+        loss, aux_outputs = jit_forward(
+            dict(
+                inputs=inputs,
+                paddings=paddings,
+                target_labels=target_labels,
+                target=dict(input_ids=input_ids),
+            )
+        )
+        assert_allclose(
+            loss,
+            (aux_outputs["per_example_loss"] * aux_outputs["per_example_weight"]).sum()
+            / jnp.sum(aux_outputs["per_example_weight"]),
+        )
+        if tile_input:
+            # The loss is the same for all examples in the batch.
+            assert_allclose(jnp.diff(aux_outputs["per_example_loss"]), jnp.zeros(batch_size - 1))
+            assert_allclose(aux_outputs["per_example_weight"], jnp.ones(batch_size))
+            expected_loss = 25.908243
+        else:
+            # Empty source example has weight 0.
+            expected_weight = jnp.array([1.0, 0.0, 1.0])
+            self.assertNestedEqual(aux_outputs["per_example_weight"], expected_weight)
+            expected_loss = 29.287447
+        assert_allclose(loss, expected_loss)
+
+    def _generate_decode_test_data(self, lm_type):
+        if lm_type == "stateless_lm":
+            # Generate inputs.
+            max_src_len = 5
+            src_len = jnp.array([2, 2, 3, 3])
+
+            # [batch_size, max_src_len, am_dim].
+            am_data = jnp.array(
+                [
+                    [  # Test that blank token transits to the next frame.
+                        [jnp.log(1.0), _NEG_INF, _NEG_INF, _NEG_INF],
+                        [jnp.log(1.0), _NEG_INF, _NEG_INF, _NEG_INF],
+                        [_NEG_INF, _NEG_INF, _NEG_INF, _NEG_INF],
+                        [_NEG_INF, _NEG_INF, _NEG_INF, _NEG_INF],
+                        [_NEG_INF, _NEG_INF, _NEG_INF, _NEG_INF],
+                    ],
+                    [  # Test that label token stays at the same frame.
+                        [_NEG_INF, _NEG_INF, _NEG_INF, jnp.log(1.0)],
+                        [jnp.log(1.0), _NEG_INF, _NEG_INF, _NEG_INF],
+                        [_NEG_INF, _NEG_INF, _NEG_INF, _NEG_INF],
+                        [_NEG_INF, _NEG_INF, _NEG_INF, _NEG_INF],
+                        [_NEG_INF, _NEG_INF, _NEG_INF, _NEG_INF],
+                    ],
+                    [  # Test that the decoding exits with 3 blank emissions.
+                        [jnp.log(0.5), _NEG_INF, _NEG_INF, jnp.log(0.5)],
+                        [jnp.log(1.0), _NEG_INF, _NEG_INF, _NEG_INF],
+                        [jnp.log(1.0), _NEG_INF, _NEG_INF, _NEG_INF],
+                        [_NEG_INF, _NEG_INF, _NEG_INF, _NEG_INF],
+                        [_NEG_INF, _NEG_INF, _NEG_INF, _NEG_INF],
+                    ],
+                    [  # Test that eos token is excluded until the last frame.
+                        # But eos token's probability affect the beam search scores.
+                        [jnp.log(0.2), _NEG_INF, jnp.log(0.6), jnp.log(0.2)],
+                        [jnp.log(0.5), _NEG_INF, jnp.log(0.5), _NEG_INF],
+                        [jnp.log(0.5), _NEG_INF, jnp.log(0.5), _NEG_INF],
+                        [_NEG_INF, _NEG_INF, _NEG_INF, _NEG_INF],
+                        [_NEG_INF, _NEG_INF, _NEG_INF, _NEG_INF],
+                    ],
+                ]
+            )
+            am_paddings = (jnp.arange(max_src_len)[None, :] >= src_len[:, None]).astype(jnp.int32)
+            expected_decodes = dict(
+                raw_sequences=jnp.array(
+                    [
+                        [
+                            [0, 0, 2, 0, 0, 0, 0],
+                            [0, 0, 0, 0, 0, 0, 0],
+                            [0, 0, 0, 0, 0, 0, 0],
+                            [0, 0, 0, 0, 0, 0, 0],
+                        ],
+                        [
+                            [3, 3, 3, 3, 3, 3, 2],
+                            [0, 0, 0, 0, 0, 0, 0],
+                            [0, 0, 0, 0, 0, 0, 0],
+                            [0, 0, 0, 0, 0, 0, 0],
+                        ],
+                        [
+                            [0, 0, 0, 2, 0, 0, 0],
+                            [3, 0, 0, 0, 2, 0, 0],
+                            [3, 3, 0, 0, 0, 2, 0],
+                            [3, 3, 3, 0, 0, 0, 2],
+                        ],
+                        [
+                            [0, 0, 0, 2, 0, 0, 0],
+                            [3, 0, 0, 0, 2, 0, 0],
+                            [3, 3, 0, 0, 0, 2, 0],
+                            [3, 3, 3, 0, 0, 0, 2],
+                        ],
+                    ]
+                ),
+                paddings=jnp.array(
+                    [
+                        [
+                            [1, 1, 1, 1, 1, 1, 1],
+                            [1, 1, 1, 1, 1, 1, 1],
+                            [1, 1, 1, 1, 1, 1, 1],
+                            [1, 1, 1, 1, 1, 1, 1],
+                        ],
+                        [
+                            [0, 0, 0, 0, 0, 0, 1],
+                            [1, 1, 1, 1, 1, 1, 1],
+                            [1, 1, 1, 1, 1, 1, 1],
+                            [1, 1, 1, 1, 1, 1, 1],
+                        ],
+                        [
+                            [1, 1, 1, 1, 1, 1, 1],
+                            [0, 1, 1, 1, 1, 1, 1],
+                            [0, 0, 1, 1, 1, 1, 1],
+                            [0, 0, 0, 1, 1, 1, 1],
+                        ],
+                        [
+                            [1, 1, 1, 1, 1, 1, 1],
+                            [0, 1, 1, 1, 1, 1, 1],
+                            [0, 0, 1, 1, 1, 1, 1],
+                            [0, 0, 0, 1, 1, 1, 1],
+                        ],
+                    ]
+                ),
+                probabilities=jnp.array(
+                    [
+                        [1, 0, 0, 0],
+                        [1, 0, 0, 0],
+                        [0.5, 0.25, 0.125, 0.0625],
+                        [0.05, 0.01, 0.002, 0.0004],
+                    ]
+                ),
+            )
+
+        elif lm_type == "stateful_lm":
+            batch_size, max_src_len, am_dim = 2, 5, 4
+            src_len = jnp.array([3, 4])
+            # [batch_size, max_src_len, am_dim].
+            am_data = jnp.zeros([batch_size, max_src_len, am_dim])
+            am_paddings = (jnp.arange(max_src_len)[None, :] >= src_len[:, None]).astype(jnp.int32)
+            expected_decodes = dict(
+                raw_sequences=jnp.array(
+                    [
+                        [
+                            [0, 0, 0, 2, 0, 0, 0],
+                            [3, 0, 0, 0, 2, 0, 0],
+                            [0, 3, 0, 0, 2, 0, 0],
+                            [0, 0, 3, 0, 2, 0, 0],
+                        ],
+                        [
+                            [0, 0, 0, 0, 2, 0, 0],
+                            [3, 0, 0, 0, 0, 2, 0],
+                            [0, 3, 0, 0, 0, 2, 0],
+                            [0, 0, 3, 0, 0, 2, 0],
+                        ],
+                    ]
+                ),
+                paddings=jnp.array(
+                    [
+                        [
+                            [1, 1, 1, 1, 1, 1, 1],
+                            [0, 1, 1, 1, 1, 1, 1],
+                            [0, 1, 1, 1, 1, 1, 1],
+                            [0, 1, 1, 1, 1, 1, 1],
+                        ],
+                        [
+                            [1, 1, 1, 1, 1, 1, 1],
+                            [0, 1, 1, 1, 1, 1, 1],
+                            [0, 1, 1, 1, 1, 1, 1],
+                            [0, 1, 1, 1, 1, 1, 1],
+                        ],
+                    ]
+                ),
+                probabilities=jnp.array(
+                    [
+                        [0.8**3, 0.2, 0.8 * 0.2, 0.8**2 * 0.2],
+                        [0.8**4, 0.2, 0.8 * 0.2, 0.8**2 * 0.2],
+                    ]
+                ),
+            )
+        elif lm_type == "recurrent_lm":
+            batch_size, max_src_len, am_dim = 2, 4, 4
+            src_len = jnp.array([3, 4])
+            # [batch_size, max_src_len, am_dim].
+            am_data = jnp.zeros([batch_size, max_src_len, am_dim])
+            am_paddings = (jnp.arange(max_src_len)[None, :] >= src_len[:, None]).astype(jnp.int32)
+            expected_decodes = dict(
+                raw_sequences=jnp.array(
+                    [
+                        [[0, 0, 0, 2, 0], [3, 3, 3, 3, 2], [0, 0, 3, 3, 2], [0, 3, 3, 3, 2]],
+                        [[0, 0, 0, 0, 2], [0, 0, 0, 3, 2], [3, 3, 3, 3, 2], [0, 0, 3, 3, 2]],
+                    ]
+                ),
+                paddings=jnp.array(
+                    [
+                        [[1, 1, 1, 1, 1], [0, 0, 0, 0, 1], [0, 0, 1, 1, 1], [0, 0, 0, 1, 1]],
+                        [[1, 1, 1, 1, 1], [0, 1, 1, 1, 1], [0, 0, 0, 0, 1], [0, 0, 1, 1, 1]],
+                    ]
+                ),
+                probabilities=jnp.array(
+                    [
+                        [
+                            0.8**3,
+                            0.2 * 0.6 * 0.8 * 0.9,
+                            0.8 * 0.8 * 0.2 * 0.6,
+                            0.8 * 0.2 * 0.6 * 0.8,
+                        ],
+                        [0.8**4, 0.8**3 * 0.2, 0.2 * 0.6 * 0.8 * 0.9, 0.8 * 0.8 * 0.2 * 0.6],
+                    ]
+                ),
+            )
+        else:
+            raise ValueError(f"Unrecognized lm type {lm_type}.")
+
+        return dict(
+            inputs=am_data,
+            paddings=am_paddings,
+            expected_decodes=expected_decodes,
+        )
+
+    @parameterized.parameters(["stateless_lm", "stateful_lm", "recurrent_lm"])
+    def test_special_beam_search_decode(self, lm_type):
+        """Tests beam search decode.
+
+        In stateless_lm, prediction network is set to all 0s. We test that am input
+            transits to the next frame by blank token.
+
+        In stateful_lm, prediction network is an embedding lookup, and am_proj is set to all 0s.
+            We test that lm input transits to the next token by label token.
+
+        In recurrent_lm, prediction network is a toy markov chain. and am_proj is set to all 0s.
+            We test that prediction network state transits by label token.
+        """
+        vocab_size, num_decodes = 4, 4
+        max_decode_len = 5 if lm_type == "recurrent_lm" else 7
+        layer, layer_params, prng_key = self._set_up_transducer(
+            vocab_size=vocab_size, lm_type=lm_type
+        )
+
+        test_data = self._generate_decode_test_data(lm_type=lm_type)
+
+        beam_search_outputs, _ = F(
+            layer,
+            inputs=dict(
+                input_batch=dict(inputs=test_data["inputs"], paddings=test_data["paddings"]),
+                num_decodes=num_decodes,
+                max_decode_len=max_decode_len,
+            ),
+            is_training=False,
+            prng_key=prng_key,
+            state=layer_params,
+            method="beam_search_decode",
+        )
+
+        self.assertNestedEqual(
+            beam_search_outputs.raw_sequences,
+            test_data["expected_decodes"]["raw_sequences"],
+        )
+        self.assertNestedEqual(
+            beam_search_outputs.paddings,
+            test_data["expected_decodes"]["paddings"],
+        )
+        assert_allclose(
+            jnp.exp(beam_search_outputs.scores),
+            test_data["expected_decodes"]["probabilities"],
+        )
+        # Check that no blank id in the final sequence.
+        self.assertTrue(
+            jnp.all(
+                jnp.logical_or(
+                    beam_search_outputs.sequences != layer.config.blank_id,
+                    beam_search_outputs.paddings,
+                )
+            )
+        )
+
+    def test_general_beam_search_decode(self):
+        am_dim, vocab_size = 4, 8
+        num_decodes, max_decode_len = 4, 10
+        layer, layer_params, prng_key = self._set_up_transducer(
+            vocab_size,
+            blank_logit_bias=0.6,
+        )
+
+        batch_size, max_src_len = 3, 5
+        src_len = jnp.array([2, 5, 0])
+        # [batch_size, src_len, am_dim].
+        am_data = jax.random.normal(jax.random.PRNGKey(312), [batch_size, max_src_len, am_dim])
+        am_paddings = (jnp.arange(max_src_len)[None, :] >= src_len[:, None]).astype(jnp.int32)
+        # Test beam_search_decode.
+        beam_search_outputs, _ = F(
+            layer,
+            inputs=dict(
+                input_batch=dict(inputs=am_data, paddings=am_paddings),
+                num_decodes=num_decodes,
+                max_decode_len=max_decode_len,
+            ),
+            is_training=False,
+            prng_key=prng_key,
+            state=layer_params,
+            method="beam_search_decode",
+        )
+        # src_len = 0 for the 3rd example.
+        self.assertNestedEqual(
+            beam_search_outputs.paddings[2],
+            jnp.ones((num_decodes, max_decode_len), dtype=jnp.int32),
+        )
+        # The decoding finishes with the eos token.
+        self.assertNestedEqual(
+            jnp.sum(beam_search_outputs.raw_sequences[:2] == 2, axis=-1),
+            jnp.ones((batch_size - 1, num_decodes), dtype=jnp.int32),
+        )
+        # Check that token_ids does not contain blank tokens.
+        self.assertTrue(
+            jnp.all(
+                jnp.logical_or(
+                    beam_search_outputs.sequences != layer.config.blank_id,
+                    beam_search_outputs.paddings,
+                )
+            )
+        )
+
+
+if __name__ == "__main__":
+    absltest.main()
