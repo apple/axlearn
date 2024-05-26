@@ -11,7 +11,14 @@ import optax
 from axlearn.common import struct
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
-from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
+from axlearn.common.config import (
+    REQUIRED,
+    ConfigOr,
+    InstantiableConfig,
+    Required,
+    config_class,
+    maybe_instantiate,
+)
 from axlearn.common.decoding import (
     NEG_INF,
     PrefixMerger,
@@ -20,14 +27,17 @@ from axlearn.common.decoding import (
     beam_search_decode,
     compute_merge_matrix_by_prefix_ids,
     flatten_decoding_dim,
+    infer_initial_time_step,
     sample_decode,
+    unflatten_decoding_dim,
 )
 from axlearn.common.layers import Embedding, Linear
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.metrics import WeightedScalar
-from axlearn.common.module import Module
+from axlearn.common.module import Module, child_context
 from axlearn.common.rnn import BaseRNNCell, LSTMCell
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.transducer import Transducer, log_probs_from_blank_and_tokens
+from axlearn.common.utils import Nested, Tensor, vectorized_tree_map
 
 
 def _is_valid_ctc_seq(
@@ -712,4 +722,323 @@ class RNNPredictionNetwork(BaseLayer):
             (updated_cached_states, outputs), where `outputs` is a Tensor of shape
                 [batch_size, output_dim].
         """
-        return self.rnn.extend_step(inputs=self.embedding(x=data), cached_states=cached_states)
+        return self.rnn.extend_step(data=self.embedding(x=data), cached_states=cached_states)
+
+
+class TransducerDecoderModel(BaseASRDecoderModel):
+    """Transducer decoder.
+
+    It is often referred as rnn-transducer or rnnt in the literature.
+    """
+
+    @config_class
+    class Config(BaseASRDecoderModel.Config):
+        """Configures TransducerDecoderModel."""
+
+        # The lm dim.
+        lm_dim: Required[int] = REQUIRED
+        # The joint network dim.
+        joint_dim: Required[int] = REQUIRED
+
+        # Blank token ID.
+        blank_id: int = 0
+        bos_id: int = 1
+        eos_id: int = 2
+
+        # Prediction network internal language model.
+        prediction_network: RNNPredictionNetwork.Config = RNNPredictionNetwork.default_config()
+        # Joint network that combines acoustic model and language model features.
+        # AM projection.
+        am_proj: Linear.Config = Linear.default_config()
+        # LM projection.
+        lm_proj: Linear.Config = Linear.default_config()
+        # Transducer that maps the hidden state to vocab logits.
+        transducer: InstantiableConfig = Transducer.default_config()
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        if cfg.eos_id == cfg.blank_id:
+            raise ValueError(
+                "eos_id and blank_id should be different for the transducer model, "
+                f"but got eos_id = blank_id = {cfg.blank_id}."
+            )
+        self.vlog(
+            3,
+            (
+                f"am_dim={cfg.input_dim}, lm_dim={cfg.lm_dim}, joint_dim={cfg.joint_dim}，"
+                f"vocab_size={cfg.vocab_size}."
+            ),
+        )
+        # In most common cases, am_data and lm_data are summed together after the projection, thus
+        # we only keep one bias in the two projections.
+        self._add_child(
+            "am_proj", cfg.am_proj.set(input_dim=cfg.input_dim, output_dim=cfg.joint_dim, bias=True)
+        )
+        self._add_child(
+            "lm_proj", cfg.lm_proj.set(input_dim=cfg.lm_dim, output_dim=cfg.joint_dim, bias=False)
+        )
+        self._add_child(
+            "prediction_network",
+            cfg.prediction_network.set(
+                vocab_size=cfg.vocab_size,
+                output_dim=cfg.lm_dim,
+            ),
+        )
+        transducer_cfg = cfg.transducer.set(input_dim=cfg.joint_dim, vocab_size=cfg.vocab_size)
+        transducer_cfg.logits_to_log_probs.blank_id = cfg.blank_id
+        self._add_child("transducer", transducer_cfg)
+
+    def forward(self, input_batch: Nested[Tensor]) -> Tuple[Tensor, Nested[Tensor]]:
+        """Computes the transducer loss.
+
+        Args:
+            input_batch: A dict containing:
+                inputs: A Tensor of shape [batch_size, num_frames, dim].
+                paddings: A 0/1 Tensor of shape [batch_size, num_frames]. 1's represent paddings.
+                target_labels: An int Tensor of shape [batch_size, num_labels]. Prediction target
+                    of the transducer decoder.
+                target: A dictionary with input_ids as key, and an int Tensor of shape
+                    [batch_size, num_labels] as value. Prediction inputs to the transducer decoder.
+
+            For both target_labels and target["input_ids"], values should be in the range
+            [0, vocab_size). target_labels does not contain BOS and valid label tokens are
+            followed by a EOS token. input_ids starts with a BOS token. Sequences are not
+            truncated. Out-of-range values are excluded from the loss calculation.
+
+        Returns:
+            A tuple (loss, per_example):
+                loss: A scalar of the transducer loss.
+                per_example: A dict containing transducer decoder outputs of the following keys:
+                    weight: A tensor of shape [batch_size], the aggregation weight of the
+                        per-example loss.
+                    loss: A tensor of shape [batch_size] representing per-example loss.
+        """
+        # [batch, src_max_len, joint_dim].
+        am_data = self.am_proj(input_batch["inputs"])
+        am_paddings: Tensor = input_batch["paddings"]
+        target_labels: Tensor = input_batch["target_labels"]
+        target_paddings: Tensor = self._compute_target_paddings(input_batch)
+
+        # [batch, tgt_max_len, joint_dim].
+        lm_data = self.lm_proj(self.prediction_network(inputs=input_batch["target"]["input_ids"]))
+
+        _, per_example = self.transducer(
+            am_data=am_data,
+            am_paddings=am_paddings,
+            lm_data=lm_data,
+            lm_paddings=target_paddings,
+            target_labels=target_labels,
+        )
+        per_example_loss, per_example_weight = (
+            per_example["loss"],
+            per_example["is_valid_example"],
+        )
+        per_example_weight = per_example_weight.astype(per_example_loss.dtype)
+
+        # Compute weighted loss.
+        loss = jnp.sum(per_example_loss * per_example_weight) / jnp.maximum(
+            per_example_weight.sum(), 1
+        )
+        aux_outputs = dict(per_example_weight=per_example_weight, per_example_loss=per_example_loss)
+        self.add_summary(
+            "loss/example_weight",
+            WeightedScalar(jnp.mean(per_example_weight), per_example_weight.shape[0]),
+        )
+        self.add_summary(
+            "loss/rnnt_loss",
+            WeightedScalar(loss, jnp.maximum(1, per_example_weight.sum())),
+        )
+        return loss, aux_outputs
+
+    def _tokens_to_scores(
+        self,
+        input_batch: Nested[Tensor],
+        *,
+        num_decodes: int,
+        max_decode_len: int,
+    ) -> Callable[[Tensor, Nested[Tensor]], Tuple[Tensor, Nested[Tensor]]]:
+        """Returns a function that maps current token IDs and model state to next logits and updated
+            state, to be used with decoding, see `beam_search_decode`.
+
+        The signature is [batch*beam, vocab], {} = tokens_to_scores([batch*beam, 1], {}).
+            state_cache contains keys:
+            - am_step: the am frame index.
+            - lm_states: the prediction network rnn states.
+            - lm_data: the projected rnn prediction network outputs.
+            - decode_step: number of decode steps.
+        """
+        cfg = self.config
+        vocab_size = cfg.vocab_size
+        blank_id, eos_id = cfg.blank_id, cfg.eos_id
+        # [batch].
+        src_len = jnp.sum(1 - input_batch["paddings"], axis=-1)
+        # [batch, src_max_len, joint_dim].
+        am_data = self.am_proj(input_batch["inputs"])
+        batch_size, src_max_len = input_batch["paddings"].shape  # pytype: disable=attribute-error
+
+        def tokens_to_scores(
+            token_ids: Tensor, state_cache: Nested[Tensor]
+        ) -> Tuple[Tensor, Nested[Tensor]]:
+            # [batch*beam, 1].
+            is_blank = token_ids == blank_id
+
+            # 1. Computes am_data at current step.
+            # [batch*beam].
+            am_step_at_t_flatten = state_cache["am_step"] + jnp.squeeze(is_blank, axis=1)
+            # [batch, beam].
+            am_step_at_t = unflatten_decoding_dim(
+                am_step_at_t_flatten, batch_size=batch_size, num_decodes=num_decodes
+            )
+            # [batch, beam, src_max_len].
+            am_indices_at_t = jax.nn.one_hot(am_step_at_t, src_max_len, dtype=am_data.dtype)
+
+            # Slice am_t. am_data_at_t[b, k, :] = am_data[b, am_step_at_t[b, k], :].
+            # [batch, beam, joint_dim].
+            am_data_at_t = jnp.einsum("bso,bks->bko", am_data, am_indices_at_t)
+            # [batch*beam, 1, joint_dim]. Flatten and add back the sequence dimension.
+            am_data_at_t = flatten_decoding_dim(am_data_at_t)[:, None, :]
+
+            # 2. Computes lm_data at current step.
+            with child_context("prediction_network_decode", module=self.prediction_network):
+                # [batch*beam, ...], [batch*beam, joint_dim].
+                new_lm_states, new_preproj_lm_data = self.prediction_network.extend_step(
+                    data=jnp.squeeze(token_ids, axis=-1),
+                    cached_states=state_cache["lm_states"],
+                )
+            new_lm_data = self.lm_proj(new_preproj_lm_data)
+            # lm_data = state_cache["lm_data"] if is_blank else new_lm_data.
+            # [batch*beam, 1, joint_dim].
+            lm_data_at_t = (
+                state_cache["lm_data"] * is_blank[:, :, None]
+                + (new_lm_data * (1 - is_blank))[:, None, :]
+            )
+
+            # updated_lm_states = state_cache["lm_states"] if is_blank else new_lm_states.
+            # [batch*beam, ...].
+            lm_states_at_t = vectorized_tree_map(
+                lambda x1, x2: x1 * is_blank + x2 * (1 - is_blank),
+                state_cache["lm_states"],
+                new_lm_states,
+            )
+            pred = self.transducer.predict(am_data=am_data_at_t, lm_data=lm_data_at_t)
+
+            # [batch*beam, 1, 1, vocab].
+            log_probs = log_probs_from_blank_and_tokens(
+                log_prob_blank=pred["log_prob_blank"],  # [batch*beam, 1, 1].
+                log_prob_tokens=pred["log_prob_tokens"],  # [batch*beam, 1, 1, vocab].
+                blank_id=blank_id,
+            )
+            # [batch*beam, vocab].
+            log_probs = jnp.squeeze(log_probs, axis=(1, 2))
+
+            # Force eos when all speech frames are consumed or at the last step.
+            # [batch*beam, 1].
+            force_eos = jnp.logical_or(
+                # all frames are consumed.
+                flatten_decoding_dim(am_step_at_t >= src_len[:, None]),
+                # reaches last step
+                state_cache["decode_step"] == max_decode_len - 1,
+            )[:, None]
+
+            # [1, vocab].
+            eos_id_onehot = jax.nn.one_hot(eos_id, vocab_size, dtype=jnp.int32)[None, :]
+            # log_probs[b, eos] = 0 if force_eos[b] else NEG_INF.
+            # log_probs is of shape [batch*beam, vocab].
+            log_probs *= 1 - eos_id_onehot
+            log_probs += (1 - force_eos) * eos_id_onehot * NEG_INF
+            # log_probs[b, non_eos] = NEG_INF if force_eos[b].
+            log_probs += force_eos * (1 - eos_id_onehot) * NEG_INF
+
+            new_cache = dict(
+                am_step=am_step_at_t_flatten,
+                lm_data=lm_data_at_t,
+                lm_states=lm_states_at_t,
+                decode_step=state_cache["decode_step"] + 1,
+            )
+            return log_probs, new_cache
+
+        return tokens_to_scores
+
+    def beam_search_decode(
+        self,
+        input_batch: Nested[Tensor],
+        num_decodes: int,
+        max_decode_len: int,
+    ) -> DecodeOutputs:
+        """Transducer label-synchronous search.
+
+        Each hypothesis in the beam has the same length of tokens, including
+            both blank and label tokens.
+
+        Args:
+            input_batch: A dict containing:
+                inputs: A Tensor of shape [batch_size, num_frames, dim] from encoder outputs.
+                paddings: A 0/1 Tensor of shape [batch_size, num_frames]. 1's represent paddings.
+            num_decodes: Beam size.
+            max_decode_len: maximum number of decode steps to run beam search.
+                Decoding terminates if an eos token is not emitted after max_decode_steps
+                steps. This value can depend on the tokenization.
+
+        Returns:
+            DecodeOutputs, containing
+                raw_sequences: An int Tensor of shape [batch_size, num_decodes, num_frames].
+                sequences: An int Tensor of shape [batch_size, num_decodes, num_frames].
+                paddings: A 0/1 Tensor of shape [batch_size, num_decodes, num_frames].
+                scores: A Tensor of shape [batch_size, num_decodes].
+
+        Raises:
+            ValueError: If max_decode_len <= src_max_len.
+        """
+        batch_size, src_max_len = input_batch["paddings"].shape  # pytype: disable=attribute-error
+        if max_decode_len <= src_max_len:
+            raise ValueError(
+                f"max_decode_len = {max_decode_len} is smaller than src_max_len={src_max_len}."
+            )
+
+        cfg = self.config
+        blank_id, eos_id, bos_id = cfg.blank_id, cfg.eos_id, cfg.bos_id
+
+        # Starts decoding with [BOS] token.
+        inputs = jnp.zeros((batch_size, max_decode_len))
+        inputs = inputs.at[:, 0].set(bos_id)
+
+        init_states = {
+            "am_step": jnp.zeros(batch_size),
+            "lm_states": self.prediction_network.init_states(batch_size=batch_size),
+            "lm_data": jnp.zeros((batch_size, 1, self.config.joint_dim)),
+            "decode_step": jnp.array(0),
+        }
+
+        beam_search_outputs = beam_search_decode(
+            inputs=inputs,
+            time_step=infer_initial_time_step(inputs, pad_id=0),
+            cache=init_states,
+            tokens_to_scores=self._tokens_to_scores(
+                input_batch, num_decodes=num_decodes, max_decode_len=max_decode_len
+            ),
+            eos_id=eos_id,
+            num_decodes=num_decodes,
+            max_decode_len=max_decode_len,
+        )
+
+        decode_paddings = jnp.logical_or(
+            jnp.cumsum(beam_search_outputs.sequences == eos_id, axis=-1),
+            # Return all paddings for invalid sequences.
+            (beam_search_outputs.scores == NEG_INF)[..., None],
+        )
+        # Drop dummy decode position and mask outputs corresponding to padding.
+        sequences = beam_search_outputs.sequences * (1 - decode_paddings)
+        # Remove blanks.
+        outputs = _map_label_sequences(
+            inputs=sequences,
+            remove_repeats=False,
+            blank_id=blank_id,
+            pad_id=0,
+        )
+        return DecodeOutputs(
+            raw_sequences=beam_search_outputs.sequences,
+            sequences=outputs["sequences"],
+            paddings=outputs["paddings"],
+            scores=beam_search_outputs.scores,
+        )
