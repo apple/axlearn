@@ -658,39 +658,6 @@ def _map_label_sequences(
     return dict(sequences=sequences, paddings=paddings, lengths=lens)
 
 
-def _remove_blank_tokens(inputs: Tensor, *, blank_id: int = 0, pad_id: int = 0):
-    """Removes blank tokens from the input sequences, as seen in RNN-T.
-
-    Args:
-        inputs: An int Tensor of shape [batch_size, num_decodes, max_decode_len] of sequences
-            that contain blank tokens.
-        blank_id: Token ID corresponding to blanks.
-
-    Returns:
-        A dict containing:
-            sequences: A Tensor of shape [batch_size, num_decodes, max_decode_len] containing
-                label sequences.
-            paddings: A 0/1 Tensor of shape [batch_size, num_decodes, max_decode_len].
-                1's represent paddings.
-    """
-    max_decode_len = inputs.shape[-1]
-    # [batch, beam, seq].
-    indicators = (inputs != blank_id) & (inputs != pad_id)
-    # cum_non_blanks[i, k, t] = #(non-blanks in inputs[i, k, :t-1]),
-    # if is_non_blank and (1-paddings) else -1.
-
-    lens = jnp.sum(indicators, axis=-1, keepdims=True, dtype=inputs.dtype)
-    # [batch, beam, seq, seq].
-    # dispatch[:, :, from, to] = 1 if inputs[:, :, from] is put at sequences[:, :, to].
-    dispatch = jax.nn.one_hot(
-        jnp.cumsum(indicators, axis=-1) * indicators - 1, max_decode_len
-    ).astype(jnp.int32)
-    sequences = jnp.einsum("...nm,...n->...m", dispatch, inputs)
-
-    paddings = (jnp.arange(max_decode_len)[None, None, :] >= lens).astype(inputs.dtype)
-    return dict(sequences=sequences, paddings=paddings)
-
-
 class RNNPredictionNetwork(BaseLayer):
     """RNN prediction network internal language model."""
 
