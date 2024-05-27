@@ -1059,19 +1059,37 @@ def match_regex_rules(
     return default_value
 
 
-def _register_per_param_settings(settings: NestedTree, *, description: str):
-    del settings, description
+def _register_per_param_settings(
+    settings: NestedTree, *, description: str, path: Optional[str] = None
+):
+    del settings, description, path
 
 
-def register_per_param_settings(settings: NestedTree, *, description: str):
+def register_per_param_settings(
+    settings: NestedTree, *, description: str, path: Optional[str] = None
+) -> NestedTree:
     """Registers per-parameter setting.
 
     This function can be patched in testing to inspect per-param settings.
+
+    Args:
+        settings: A nested tree of per parameter settings, e.g. a per parameter learner update rule.
+        description: A string description of the per-param settings.
+        path: An optional string of where the per param settings is registered.
+
+    Returns:
+        A nested tree of per parameter settings.
     """
-    _register_per_param_settings(settings, description=description)
+    _register_per_param_settings(settings, description=description, path=path)
     if logging.vlog_is_on(1):
-        for path, setting in flatten_items(settings):
-            logging.info("Per-param setting %s: %s=%s", description, path, setting)
+        for param_path, param_setting in flatten_items(settings):
+            logging.info(
+                "Per-param setting %s registered in %s: %s=%s",
+                description,
+                path,
+                param_path,
+                param_setting,
+            )
     return settings
 
 
