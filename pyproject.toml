@@ -34,7 +34,8 @@ dependencies = [
     "typing-extensions==4.9.0",  # needed for typing.Protocol. >4.9.0 runs into attribute error `__non_callable_proto_members__`.
     "scipy==1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
     "seqio==0.0.18",  # used for inputs
-    "aqtp==0.4.0" # aqtp>=0.5.0 requires python>=3.10 due to the use of Union shorthand "|" in type hints
+    "aqtp==0.4.0", # aqtp>=0.5.0 requires python>=3.10 due to the use of Union shorthand "|" in type hints.
+    "flax==0.8.2", # for AQT, param converter and adapter.
 ]
 
 [project.optional-dependencies]
@@ -53,7 +54,6 @@ dev = [
     "einops",
     "evaluate",
     "fairseq==0.12.2",  # test-only; note Apple Silicon start.md instructions parse this specifier '==', please be careful when upgrading.
-    "flax==0.8.2",  # for param converter and adapter
     "isort",  # formatting
     "pre-commit",  # local pre commit hooks
     "pycocotools",  # COCO evaluation tools
