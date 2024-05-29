@@ -11,7 +11,7 @@ import tempfile
 from collections import OrderedDict
 from functools import partial
 from tempfile import mkdtemp
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 from unittest.mock import patch
 
 import jax
@@ -27,19 +27,24 @@ from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     InstantiableConfig,
     Required,
+    RequiredFieldValue,
     config_class,
     config_for_function,
 )
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import Learner
+from axlearn.common.module import InvocationContext, Module, current_context
 from axlearn.common.module import functional as F
+from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import opt_param_values
 from axlearn.common.param_init import FanAxes, Initializer, Shape
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     NestedTree,
     Tensor,
@@ -84,7 +89,7 @@ def is_supported_platform(target_platform: str) -> bool:
     return supported
 
 
-def is_supported_mesh_shape(mesh_shape: Tuple[int, int]) -> bool:
+def is_supported_mesh_shape(mesh_shape: Sequence[int]) -> bool:
     """Checks if a function intended for a mesh shape is compatible with the current device(s)."""
     device_count = jax.device_count()
     supported = device_count == np.prod(mesh_shape)
@@ -246,10 +251,20 @@ class TrainerConfigTestCase(TestCase):
             cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
             cfg.mesh_shape = cfg.mesh_shape or (len(jax.devices()), 1)
             cfg.max_step = 3
+
+            # TODO(kelvin-zou): Remove this once bfloat16 bug on CPU is fixed.
+            if jax.devices()[0].platform == "cpu":
+                if cfg.train_dtype == jnp.bfloat16:
+                    cfg.train_dtype = jnp.float32
+                for evaler_cfg in cfg.evalers.values():
+                    if evaler_cfg.eval_dtype == jnp.bfloat16:
+                        evaler_cfg.eval_dtype = jnp.float32
+
             for evaler_cfg in cfg.evalers.values():
                 if getattr(evaler_cfg.eval_policy, "fn", None) is eval_every_n_steps_policy:
                     evaler_cfg.eval_policy.n = 2
                 evaler_cfg.vlog = max(evaler_cfg.vlog or 0, 3)
+
             if getattr(cfg.checkpointer.save_policy, "fn", None) is every_n_steps_policy:
                 cfg.checkpointer.save_policy.n = 2
             logging.info("_test_with_trainer_config: %s", trainer_config)
@@ -708,3 +723,106 @@ def temp_chdir(new_cwd: Union[pathlib.Path, str]):
         yield
     finally:
         os.chdir(old_cwd)
+
+
+L = TypeVar("L", bound=BaseLayer)
+M = TypeVar("M", bound=Module)
+
+
+@contextlib.contextmanager
+def bind_module(
+    module: ConfigOr[M],
+    *,
+    is_training: bool = True,
+    prng_key: Optional[jax.random.PRNGKey] = None,
+    state: Nested[Tensor],
+) -> Iterator[M]:
+    """Creates a context in which `module` has `state`.`
+
+    This lets you write tests that make calls to a module without needing to call `functional()`
+    yourself.
+
+    It is similar in spirit to FLAX's `module.bind()` although that works differently due to the
+    fact that FLAX state is only associated with an instance of a module, whereas AXLearn state is
+    global.
+
+    Example:
+        ```
+        cfg = MyModule.default_config()
+        with test_utils.bind_layer(cfg) as module:
+            result = module.do_something(some_args)
+        ```
+
+    Args:
+        module: The module to create a context for.
+        is_training: Tell the module it is in training or not.
+        prng_key: The PRNG key to use. If None, `jax.random.PRNGKey(0)`.
+        state: The state to use.
+
+    Returns:
+        The initialized module.
+    """
+    if prng_key is None:
+        prng_key = jax.random.PRNGKey(0)
+
+    if isinstance(module, InstantiableConfig):
+        if isinstance(module, Module.Config) and isinstance(
+            getattr(module, "name", None), RequiredFieldValue
+        ):
+            setattr(module, "name", "tmp")
+        module = module.instantiate(parent=None)
+    ctx = InvocationContext(
+        name="root",
+        parent=None,
+        module=module,
+        is_training=is_training,
+        prng_key=prng_key,
+        state=state,
+        output_collection=new_output_collection(),
+    )
+    with set_current_context(ctx):
+        yield module
+
+
+@contextlib.contextmanager
+def bind_layer(
+    layer: ConfigOr[L],
+    *,
+    is_training: bool = True,
+    prng_key: Optional[jax.random.PRNGKey] = None,
+    state: Optional[Nested[Tensor]] = None,
+) -> Iterator[L]:
+    """Creates a context in which `layer` has state initialized using
+    `initialize_parameters_recursively`.
+
+    The only difference between this and `bind_module()` is this calls
+    `initialize_parameters_recursively`.
+
+    Example:
+        ```
+        cfg = Linear.default_config().set(input_dim=5, output_dim=7)
+        with test_utils.bind_layer(cfg) as layer:
+            result = layer(jnp.ones(5))
+        assert result.shape == (7,)
+        ```
+
+    Args:
+        layer: The layer to initialize.
+        is_training: Tell the layer it is in training or not.
+        prng_key: The PRNG key to use. If None, `jax.random.PRNGKey(0)`.
+        state: The state to use. If None, call `initialize_parameters_recursively()` to initialize
+               the state.
+
+    Returns:
+        The Initialized module.
+    """
+    if prng_key is None:
+        prng_key = jax.random.PRNGKey(0)
+
+    init_key, ctx_key = jax.random.split(prng_key)
+
+    with bind_module(layer, is_training=is_training, prng_key=ctx_key, state={}) as instance:
+        if state is None:
+            state = instance.initialize_parameters_recursively(prng_key=init_key)
+        current_context().state = state
+        yield instance

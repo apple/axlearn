@@ -106,5 +106,5 @@ class LabelSampler:
         )
         samples = foreground_samples | background_samples
         _, indices = jax.lax.top_k(samples, k=self.size)
-        paddings = ~(jnp.take_along_axis(samples, indices, axis=-1))
+        paddings = jnp.bitwise_not(jnp.take_along_axis(samples, indices, axis=-1))
         return LabelSamples(indices=indices, paddings=paddings)

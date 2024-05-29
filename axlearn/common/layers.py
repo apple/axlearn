@@ -42,6 +42,7 @@ from axlearn.common.param_init import (
     WeightInitializer,
     constant_initializer,
 )
+from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.utils import (
     NestedTensor,
     Tensor,
@@ -519,11 +520,11 @@ class BatchNorm(BaseNormalizationLayer):
         return x
 
 
-class Linear(BaseLayer):
+class Linear(DenseGeneralBaseLayer):
     """The linear layer."""
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(DenseGeneralBaseLayer.Config):
         """Configures Linear."""
 
         # Input feature dim.
@@ -570,7 +571,9 @@ class Linear(BaseLayer):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
-        output = x @ self.parameters["weight"]
+        output = self.einsum_maybe_quantized(
+            "...d,dh->...h", activation=x, kernel=self.parameters["weight"]
+        )
         if cfg.bias:
             output += self.parameters["bias"]
         return self._maybe_shard(output)

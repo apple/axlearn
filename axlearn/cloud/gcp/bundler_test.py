@@ -4,7 +4,7 @@
 
 from absl.testing import parameterized
 
-from axlearn.cloud.common.bundler import BaseDockerBundler, get_bundler_config
+from axlearn.cloud.common.bundler import BaseDockerBundler, _bundlers, get_bundler_config
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
@@ -89,9 +89,7 @@ class RegistryTest(TestCase):
             self.assertEqual(cfg.external, "test_external")
             self.assertEqual(cfg.target, "test_target")
 
-    @parameterized.parameters(
-        GCSTarBundler.TYPE, ArtifactRegistryBundler.TYPE, CloudBuildBundler.TYPE
-    )
+    @parameterized.parameters([bundler_klass.TYPE for bundler_klass in _bundlers.values()])
     def test_with_tpu_extras(self, bundler_type):
         # Test configuring bundle for TPU.
         with mock_gcp_settings(bundler.__name__, settings={"ttl_bucket": "default_bucket"}):

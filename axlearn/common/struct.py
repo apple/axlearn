@@ -9,7 +9,7 @@
 """Adapted from flax.struct with minor changes."""
 
 import dataclasses
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 import jax
 from typing_extensions import dataclass_transform  # pytype: disable=not-supported-yet
@@ -19,18 +19,32 @@ from axlearn.common import serialization, utils
 _T = TypeVar("_T")
 
 
+def _sort_fields(klass: _T) -> _T:
+    """Sorts all dataclass fields of `klass` so that the order returned by
+    `dataclasses.fields(klass)` is in ascended sorted order by field name.
+
+    Pseudo-fields like `ClassVar` and `InitVar` are also sorted.
+
+    This function mutates `klass`.
+    """
+    klass.__dataclass_fields__ = dict(
+        sorted(klass.__dataclass_fields__.items(), key=lambda x: x[0])
+    )
+
+
 def field(pytree_node: bool = True, **kwargs):
     return dataclasses.field(metadata={"pytree_node": pytree_node}, **kwargs)
 
 
 @dataclass_transform(field_specifiers=(field,))  # type: ignore[literal-required]
-def dataclass(klass: _T, **kwargs) -> _T:
+def dataclass(klass: _T, flatten_order: Literal[None, "asc"] = "asc", **kwargs) -> _T:
     """Same as `flax.struct.dataclass`. See also `PyTreeNode`.
 
     Equivalent to `flax.struct.dataclass`.
 
     Args:
         klass: The class that will be transformed by the decorator.
+        flatten_order: The sort order used when flattening this as a pytree. If None, no sorting.
         kwargs: Forwarded to `dataclasses.dataclass`.
 
     Returns:
@@ -42,6 +56,8 @@ def dataclass(klass: _T, **kwargs) -> _T:
 
     kwargs.setdefault("frozen", True)
     dataklass = dataclasses.dataclass(**kwargs)(klass)  # type: ignore
+    if flatten_order == "asc":
+        _sort_fields(dataklass)  # type: ignore
     dataklass.replace = dataclasses.replace
 
     # Data fields are fields that are transformable by jax. All other fields are meta fields, which
@@ -66,6 +82,8 @@ def dataclass(klass: _T, **kwargs) -> _T:
 
     # Note that meta, data are tuples as produced by `flatten_with_keys`.
     def unflatten_func(meta: tuple, data: tuple):
+        # Support unflattening from chex.dataclass which requires handling lists.
+        data = tuple(data)
         return dataklass(**dict(zip(meta_fields + data_fields, meta + data)))
 
     jax.tree_util.register_pytree_with_keys(

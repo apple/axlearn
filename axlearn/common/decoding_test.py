@@ -13,7 +13,7 @@ Adapted from: https://github.com/google-research/t5x/blob/main/t5x/decoding_test
 # pylint: disable=no-self-use,too-many-lines,protected-access
 import logging
 import os
-from typing import Callable, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -28,7 +28,7 @@ from axlearn.common.utils import NestedTensor, Tensor
 
 EOS_ID = 1
 NEG_INF = decoding.NEG_INF
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
+tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers")
 _SENTENCEPIECE_DIR = os.path.join(tokenizers_dir, "sentencepiece")
 _T5_VOCAB_FILE = os.path.join(_SENTENCEPIECE_DIR, "t5-base")
 
@@ -70,7 +70,8 @@ class DecodeTest(parameterized.TestCase):
         np.testing.assert_allclose(t5_brevity_penalty_score, raw_scores / 2, atol=1e-6)
 
         with self.assertRaises(NotImplementedError):
-            decoding.brevity_penalty_fn(bp_type="next")(length=jnp.array(1), raw_scores=raw_scores)
+            fn = decoding.brevity_penalty_fn(bp_type="next")  # pytype: disable=wrong-arg-types
+            fn(length=jnp.array(1), raw_scores=raw_scores)
 
     def test_beam_search_decode_with_brevity_penalty(self):
         # Toy problem, we have 4 states, A, B, START, END, (plus PAD).
@@ -831,7 +832,7 @@ class DecodeTest(parameterized.TestCase):
         num_decodes: int,
         pad_id: int,
         prefix_merger: Optional[decoding.PrefixMerger],
-        brevity_penalty: Optional[Callable],
+        brevity_penalty: Optional[decoding.BrevityPenaltyFn],
     ):
         """Tests beam search with prefilling matches decoding from scratch."""
         vocab_size = 1024

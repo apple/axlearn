@@ -59,7 +59,7 @@ class JobTest(TestCase):
 
         fv = _mock_flag_values()
         cfg = FailNJob.from_flags(fv)
-        cfg.set(max_tries=3)
+        cfg.set(max_tries=3, retry_interval=0.1)
 
         # Test max tries.
         job = cfg.set(n=cfg.max_tries).instantiate()

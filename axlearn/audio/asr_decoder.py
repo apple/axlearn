@@ -2,13 +2,13 @@
 
 """ASR decoder layers."""
 
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, Union
 
-import chex
 import jax
 import jax.numpy as jnp
 import optax
 
+from axlearn.common import struct
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
@@ -22,9 +22,11 @@ from axlearn.common.decoding import (
     flatten_decoding_dim,
     sample_decode,
 )
-from axlearn.common.layers import Linear
+from axlearn.common.layers import Embedding, Linear
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
+from axlearn.common.rnn import BaseRNNCell, LSTMCell
 from axlearn.common.utils import Nested, Tensor
 
 
@@ -86,7 +88,9 @@ class CTCPrefixMerger(PrefixMerger):
         If the initial prefix is non-empty, we produce state equivalent to initializing from an
         empty prefix and invoking `update` token-by-token until the end of the initial prefix.
         """
-        outputs = _map_label_sequences(tokens, blank_id=self._blank_id, pad_id=-1)
+        outputs = _map_label_sequences(
+            tokens, remove_repeats=True, blank_id=self._blank_id, pad_id=-1
+        )
         # Compute last tokens.
         last_token = jnp.take_along_axis(outputs["sequences"], outputs["lengths"] - 1, axis=-1)
         return dict(
@@ -120,8 +124,7 @@ class CTCPrefixMerger(PrefixMerger):
         return jax.vmap(jax.vmap(_update_seq))(tokens, state)
 
 
-@chex.dataclass
-class DecodeOutputs:
+class DecodeOutputs(struct.PyTreeNode):
     """Output of decoding."""
 
     # Raw decode output sequences. May contain blank and/or repeated tokens.
@@ -138,37 +141,117 @@ class DecodeOutputs:
     scores: Tensor
 
 
-class CTCDecoderModel(BaseModel):
+class BaseASRDecoderModel(BaseModel):
+    """ASR decoder model base."""
+
+    @config_class
+    class Config(BaseModel.Config):
+        """Configures BaseASRDecoderModel."""
+
+        # Dimensionality of inputs.
+        input_dim: Required[int] = REQUIRED
+        # The vocab size.
+        vocab_size: Required[int] = REQUIRED
+
+    def forward(
+        self,
+        input_batch: Nested[Tensor],
+    ) -> Tuple[Tensor, Nested[Tensor]]:
+        """Computes decoder loss.
+
+        Args:
+            input_batch: A dict containing:
+                inputs: A Tensor of shape [batch_size, num_frames, dim] of encoder outputs.
+                paddings: A 0/1 Tensor of shape [batch_size, num_frames]. 1's represent paddings.
+                target_labels: An int Tensor of shape [batch_size, num_labels].
+                target: A dictionary with input_ids as key, and an int Tensor of shape
+                    [batch_size, num_labels] as value.
+
+            For both target_labels and target["input_ids"], values should be in the range
+                [0, vocab_size). Out-of-range values are excluded from the loss calculation
+                (e.g., paddings and EOS can be represented this way).
+
+        Returns:
+            A tuple (loss, aux_outputs):
+                loss: A scalar loss value.
+                aux_outputs: A dict containing:
+                    per_example_loss: A float Tensor of shape [batch_size].
+                    per_example_weight: A float Tensor of shape [batch_size].
+        """
+        raise NotImplementedError(type(self))
+
+    def _compute_target_paddings(
+        self,
+        input_batch: Nested[Tensor],
+    ) -> Tensor:
+        """Computes target paddings and other input statistics.
+
+        Args:
+            input_batch: See forward method signature.
+
+        Returns:
+            target_paddings: A 0/1 Tensor of shape [batch_size, num_labels].
+        """
+        cfg = self.config
+        target_labels: Tensor = input_batch["target_labels"]
+        # Infer target_paddings from out-of-range labels.
+        target_paddings = jnp.logical_or(cfg.vocab_size <= target_labels, target_labels < 0)
+        return target_paddings
+
+    def _input_stats_summaries(
+        self, input_batch: Nested[Tensor]
+    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
+        target_labels: Tensor = input_batch["target_labels"]
+        target_paddings = self._compute_target_paddings(target_labels)
+        batch_size = jnp.maximum(target_labels.shape[0], 1)
+        num_source_elements = jnp.maximum(input_batch["paddings"].size, 1)  # type: ignore
+        target_lengths = jnp.sum(1 - target_paddings, axis=-1)
+        source_lengths = jnp.sum(1 - input_batch["paddings"], axis=-1)
+        # pytype: disable=attribute-error
+        ret_dict = {
+            "input_stats/average_target_length": WeightedScalar(
+                jnp.mean(target_lengths), batch_size
+            ),
+            "input_stats/average_source_length": WeightedScalar(
+                jnp.mean(source_lengths), batch_size
+            ),
+            "input_stats/frame_packing_effiency": WeightedScalar(
+                jnp.sum(source_lengths) / num_source_elements, num_source_elements
+            ),
+        }
+        # pytype: enable=attribute-error
+        return ret_dict
+
+
+class CTCDecoderModel(BaseASRDecoderModel):
     """CTC decoder model.
 
     CTC maps continuous sequences (e.g. speech embeddings) to "labelings", sequences over a finite
     vocab (with size `vocab_size`). The vocab does not have to contain EOS.
     Output sequences should be no longer than input sequences, and may possibly be shorter (e.g.
-    after removing repeated tokens and/or "blanks", represented by `blank_token_id`).
+    after removing repeated tokens and/or "blanks", represented by `blank_id`).
 
     Reference:
     https://dl.acm.org/doi/10.1145/1143844.1143891
     """
 
     @config_class
-    class Config(BaseModel.Config):
+    class Config(BaseASRDecoderModel.Config):
         """Configures CTCDecoderModel."""
 
-        # Dimensionality of inputs.
-        dim: Required[int] = REQUIRED
-        # The vocab size.
-        vocab_size: Required[int] = REQUIRED
         # Layer to map hidden state to vocab logits.
         lm_head: BaseLayer.Config = Linear.default_config()
         # Blank token ID.
-        blank_token_id: int = 0
+        blank_id: int = 0
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        self._add_child("lm_head", cfg.lm_head.set(input_dim=cfg.dim, output_dim=cfg.vocab_size))
+        self._add_child(
+            "lm_head", cfg.lm_head.set(input_dim=cfg.input_dim, output_dim=cfg.vocab_size)
+        )
 
-    def predict(self, input_batch: Nested[Tensor]) -> Nested[Tensor]:
+    def predict(self, input_batch: Nested[Tensor]) -> Tensor:
         """Computes logits.
 
         Args:
@@ -185,6 +268,65 @@ class CTCDecoderModel(BaseModel):
         paddings = input_batch["paddings"]
         logits = self.lm_head(inputs)
         return logits * (1 - paddings[..., None])
+
+    def _input_stats_summaries(
+        self, input_batch: Nested[Tensor], per_example_weight: Tensor
+    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
+        paddings = input_batch["paddings"]
+        target_paddings = self._compute_target_paddings(input_batch)
+        valid_frame_mask = (1.0 - paddings) * per_example_weight[:, None]
+        valid_label_mask = (1.0 - target_paddings) * per_example_weight[:, None]
+        num_valid_frames = jnp.sum(valid_frame_mask)
+        num_valid_labels = jnp.sum(valid_label_mask)
+        total_example_weights = jnp.maximum(per_example_weight.sum(), 1.0)
+        # pytype: disable=attribute-error
+        num_total_frames = jnp.maximum(input_batch["paddings"].size, 1)
+        ret_dict = {
+            "input_stats/average_target_length": WeightedScalar(
+                num_valid_labels / total_example_weights, total_example_weights
+            ),
+            "input_stats/average_source_length": WeightedScalar(
+                num_valid_frames / total_example_weights, total_example_weights
+            ),
+            "input_stats/frame_packing_effiency": WeightedScalar(
+                num_valid_frames / num_total_frames, num_total_frames
+            ),
+        }
+        # pytype: enable=attribute-error
+        return ret_dict
+
+    def _loss_summaries(
+        self,
+        *,
+        total_ctc_loss: Tensor,
+        per_example_weight: Tensor,
+        paddings: Tensor,
+        target_paddings: Tensor,
+    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
+        valid_frame_mask = (1.0 - paddings) * per_example_weight[:, None]
+        valid_label_mask = (1.0 - target_paddings) * per_example_weight[:, None]
+
+        num_valid_frames = jnp.maximum(jnp.sum(valid_frame_mask), 1.0)
+        num_valid_labels = jnp.maximum(jnp.sum(valid_label_mask), 1.0)
+        per_frame_loss = total_ctc_loss / num_valid_frames
+        per_label_loss = total_ctc_loss / num_valid_labels
+        batch_size = jnp.maximum(per_example_weight.shape[0], 1.0)
+
+        ret_dict = {}
+        # 1. loss/example_weight
+        ret_dict["loss/example_weight"] = WeightedScalar(jnp.mean(per_example_weight), batch_size)
+        # 2. loss/ctc_loss
+        ret_dict["loss/ctc_loss"] = WeightedScalar(
+            total_ctc_loss / jnp.maximum(per_example_weight.sum(), 1),
+            jnp.maximum(per_example_weight.sum(), 1),
+        )
+        # 3. loss/invalid_seq_percent, per_frame_ctc_loss, per_label_ctc_loss
+        invalid_example_percent = 1.0 - jnp.sum(per_example_weight) / batch_size
+        ret_dict["loss/invalid_seq_percent"] = invalid_example_percent
+        ret_dict["loss/per_frame_ctc_loss"] = WeightedScalar(per_frame_loss, num_valid_frames)
+        ret_dict["loss/per_label_ctc_loss"] = WeightedScalar(per_label_loss, num_valid_labels)
+
+        return ret_dict
 
     def forward(
         self,
@@ -209,11 +351,9 @@ class CTCDecoderModel(BaseModel):
                     per_example_weight: A float Tensor of shape [batch_size].
         """
         cfg: CTCDecoderModel.Config = self.config
+        target_paddings: Tensor = self._compute_target_paddings(input_batch)
         paddings: Tensor = input_batch["paddings"]
         target_labels: Tensor = input_batch["target_labels"]
-
-        # Infer target_paddings from out-of-range labels.
-        target_paddings = jnp.logical_or(cfg.vocab_size <= target_labels, target_labels < 0)
 
         # Compute CTC loss.
         logits = self.predict(input_batch)
@@ -222,7 +362,7 @@ class CTCDecoderModel(BaseModel):
             logit_paddings=paddings,
             labels=target_labels,
             label_paddings=target_paddings,
-            blank_id=cfg.blank_token_id,
+            blank_id=cfg.blank_id,
         )
 
         # Drop examples with targets longer than inputs.
@@ -236,6 +376,20 @@ class CTCDecoderModel(BaseModel):
             per_example_weight.sum(), 1
         )
         aux_outputs = dict(per_example_weight=per_example_weight, per_example_loss=per_example_loss)
+        # Add summaries.
+        summary = self._input_stats_summaries(
+            input_batch=input_batch, per_example_weight=per_example_weight
+        )
+        summary.update(
+            self._loss_summaries(
+                total_ctc_loss=jnp.sum(per_example_loss * per_example_weight),
+                per_example_weight=per_example_weight,
+                paddings=paddings,
+                target_paddings=target_paddings,
+            )
+        )
+        for name, value in summary.items():
+            self.add_summary(name, value)
         return loss, aux_outputs
 
     def _tokens_to_scores(
@@ -317,7 +471,7 @@ class CTCDecoderModel(BaseModel):
             ValueError: If max_decode_len is not None.
         """
         cfg: CTCDecoderModel.Config = self.config
-        paddings = input_batch["paddings"]
+        paddings: Tensor = input_batch["paddings"]
         # Add 1 so we can drop EOS while ensuring decodes can be up to `num_frames`.
         max_decode_len = paddings.shape[-1] + 1
         beam_search_outputs = beam_search_decode(
@@ -358,7 +512,7 @@ class CTCDecoderModel(BaseModel):
             See `beam_search_decode`.
         """
         cfg: CTCDecoderModel.Config = self.config
-        paddings = input_batch["paddings"]
+        paddings: Tensor = input_batch["paddings"]
         # Add 1 so we can drop EOS while ensuring decodes can be up to `num_frames`.
         max_decode_len = paddings.shape[-1] + 1
         sample_decode_outputs = sample_decode(
@@ -397,14 +551,16 @@ class CTCDecoderModel(BaseModel):
                 scores: A Tensor of shape [batch_size, 1].
         """
         cfg: CTCDecoderModel.Config = self.config
-        paddings = input_batch["paddings"]
+        paddings: Tensor = input_batch["paddings"]
         # [batch_size, num_frames, vocab_size].
         logits = self.predict(input_batch)
         # [batch, 1, num_frames].
         sequences = jnp.argmax(logits, axis=-1)[:, None, :]
         # Remove repeats and blanks.
         # We make the assumption that the trailing padding positions have 0 as the argmax index.
-        outputs = _map_label_sequences(inputs=sequences, blank_id=cfg.blank_token_id, pad_id=0)
+        outputs = _map_label_sequences(
+            inputs=sequences, remove_repeats=True, blank_id=cfg.blank_id, pad_id=0
+        )
 
         # [batch_size, num_frames, vocab_size].
         log_probs = jax.nn.log_softmax(logits, axis=-1)
@@ -430,7 +586,9 @@ class CTCDecoderModel(BaseModel):
         if scores.ndim == 3:
             scores = (scores[..., :-1] * live_mask).sum(axis=-1)
         # Remove repeats and blanks.
-        outputs = _map_label_sequences(inputs=sequences, blank_id=cfg.blank_token_id, pad_id=0)
+        outputs = _map_label_sequences(
+            inputs=sequences, remove_repeats=True, blank_id=cfg.blank_id, pad_id=0
+        )
         return DecodeOutputs(
             raw_sequences=sequences,
             sequences=outputs["sequences"],
@@ -439,11 +597,18 @@ class CTCDecoderModel(BaseModel):
         )
 
 
-def _map_label_sequences(inputs: Tensor, *, blank_id: int = 0, pad_id: int = 0) -> Nested[Tensor]:
-    """Removes blanks, paddings, and repeats from the input sequences, as seen in CTC.
+def _map_label_sequences(
+    inputs: Tensor, *, remove_repeats: bool, blank_id: int = 0, pad_id: int = 0
+) -> Nested[Tensor]:
+    """Removes blanks, paddings, and repeats from the input sequences, as used in CTC or RNN-T.
+
+    Note that unless pad_id is the same as blank_id, pad_id should not be in the range of the vocab.
+    We use pad_id to infer padding positions in the inputs.
 
     Args:
         inputs: An int Tensor of shape [..., max_decode_len] containing decoded sequences.
+        remove_repeats: A boolean indicating whether we remove repeats or not. It is True for CTC,
+            False for RNN-T.
         blank_id: Token ID corresponding to blanks.
         pad_id: Token ID corresponding to paddings.
 
@@ -454,20 +619,24 @@ def _map_label_sequences(inputs: Tensor, *, blank_id: int = 0, pad_id: int = 0) 
             lengths: A Tensor of shape [..., 1] containing the length of each sequence.
     """
     max_decode_len = inputs.shape[-1]
-
-    # Identify points at which curr != prev, excluding blanks and paddings.
-    # `indicators` will have shape [batch_size, num_decodes, max_decode_len], and have a value
-    # of 1 in positions corresponding to inputs we intend to keep (i.e., the token is not blank
-    # or padding, and is different from the previous token).
-    y = jnp.concatenate([jnp.full(inputs.shape[:-1] + (1,), pad_id), inputs], axis=-1)
-    indicators = (y[..., 1:] != y[..., :-1]) & (inputs != blank_id) & (inputs != pad_id)
+    # Identify points at which the token is a valid label token to keep.
+    # `indicators` has shape [batch_size, num_decodes, max_decode_len], and has a value of 1
+    # in positions corresponding to inputs we intend to keep,
+    # i.e., the token is not blank or padding.
+    indicators = (inputs != blank_id) & (inputs != pad_id)
+    if remove_repeats:
+        # Identify points at which curr != prev.
+        # I.e., the token is not blank or padding, and is different from the previous token.
+        y = jnp.concatenate([jnp.full(inputs.shape[:-1] + (1,), pad_id), inputs], axis=-1)
+        indicators = (y[..., 1:] != y[..., :-1]) & indicators
 
     # Compute lengths of final sequences. [..., 1].
     lens = jnp.sum(indicators, axis=-1, keepdims=True, dtype=inputs.dtype)
 
     # Compute sequences by left-justifying the tokens-to-keep. Under jit, we use a dispatch matrix
-    # of shape [batch_size, num_decodes, max_decode_len, max_decode_len]. dispatch[..., i, j] == 1
-    # means token i goes to position j. dispatch[..., i, :] == 0 means we drop token i.
+    # of shape [batch_size, num_decodes, max_decode_len, max_decode_len].
+    # dispatch[..., from, to] == 1 means inputs[:, :, from] is put at sequences[:, :, to].
+    # dispatch[..., i, :] == 0 means we drop token i in the inputs.
     # [batch_size, num_decodes, max_decode_len, max_decode_len].
     dispatch = jax.nn.one_hot(
         jnp.cumsum(indicators, axis=-1) * indicators - 1, max_decode_len, dtype=inputs.dtype
@@ -477,3 +646,70 @@ def _map_label_sequences(inputs: Tensor, *, blank_id: int = 0, pad_id: int = 0) 
     if pad_id != 0:
         sequences = jnp.where(paddings, pad_id, sequences)
     return dict(sequences=sequences, paddings=paddings, lengths=lens)
+
+
+class RNNPredictionNetwork(BaseLayer):
+    """RNN prediction network internal language model."""
+
+    @config_class
+    class Config(BaseLayer.Config):
+        """Configs RNNPredictionNetwork."""
+
+        # Vocab size.
+        vocab_size: Required[int] = REQUIRED
+        # The embedding dim.
+        emb_dim: Required[int] = REQUIRED
+        # The output dim.
+        output_dim: Required[int] = REQUIRED
+
+        # Embedding lookup layer.
+        embedding: Embedding.Config = Embedding.default_config()
+        # RNN cell of the internal LM. Defaults to a 1 layer LSTM.
+        rnn_cell: BaseRNNCell.Config = LSTMCell.default_config()
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._add_child(
+            "embedding", cfg.embedding.set(num_embeddings=cfg.vocab_size, dim=cfg.emb_dim)
+        )
+        self._add_child("rnn", cfg.rnn_cell.set(input_dim=cfg.emb_dim, output_dim=cfg.output_dim))
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        """Computes prediction network output from the inputs.
+
+        Args:
+            inputs: An int Tensor of shape [batch_size, num_labels]. Valid tokens are in the range
+                [0, vocab_size). Out-of-range token ids are clamped to the bounds of the array.
+                See https://jax.readthedocs.io/en/latest/notebooks/Common_Gotchas_in_JAX.html
+                #out-of-bounds-indexing.
+
+        Returns:
+            A Tensor of shape [batch_size, num_labels, output_dim].
+        """
+        time_major_outputs = self.rnn(
+            time_major_inputs=jnp.transpose(self.embedding(x=inputs), [1, 0, 2])
+        )
+        return jnp.transpose(time_major_outputs, [1, 0, 2])
+
+    def init_states(self, *, batch_size: int) -> Nested[Tensor]:
+        """Returns the prediction network initial step states, to be used by `extend_step`."""
+        return self.rnn.init_states(batch_size=batch_size)
+
+    def extend_step(
+        self,
+        *,
+        cached_states: Nested[Tensor],
+        data: Tensor,
+    ) -> Tuple[Nested[Tensor], Tensor]:
+        """Computes prediction network outputs and RNN state updates for one step.
+
+        Args:
+            cached_states: A NestedTensor returned by `init_states` or `extend_step`.
+            data: An int Tensor of shape [batch_size, num_labels].
+
+        Returns:
+            (updated_cached_states, outputs), where `outputs` is a Tensor of shape
+                [batch_size, output_dim].
+        """
+        return self.rnn.extend_step(inputs=self.embedding(x=data), cached_states=cached_states)

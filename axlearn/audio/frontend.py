@@ -44,19 +44,15 @@ def _ms_to_samples(ms: Union[int, float], *, sample_rate: int) -> float:
     return sample_rate / 1000 * ms
 
 
-class LogMelFrontend(BaseLayer):
-    """Computes Log Mel spectrogram features.
-
-    The frontend implements the following stages:
-        `Framer -> PreEmphasis -> Window -> FFT -> FilterBank -> MeanStdDev`.
-    """
+class BaseFrontend(BaseLayer):
+    """Defines the interface for speech frontend."""
 
     @config_class
     class Config(BaseLayer.Config):
-        """Configures LogMelFrontend."""
+        """Configures BaseFrontend."""
 
-        # Number of output channels. Should always be 1.
-        output_dim: int = 1
+        # Number of output channels.
+        output_dim: Required[int] = REQUIRED
         # Number of filters/bands in the output spectrogram.
         num_filters: Required[int] = REQUIRED
         # Number of input samples per second, e.g., 24000 for 24KHz inputs.
@@ -65,16 +61,11 @@ class LogMelFrontend(BaseLayer):
         frame_size_ms: Required[float] = REQUIRED
         # Hop size in ms.
         hop_size_ms: Required[float] = REQUIRED
-        # Optional output transformation. See `normalize_by_mean_std` for an example.
-        output_transformation: Optional[InstantiableConfig[Callable[[Tensor], Tensor]]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        if cfg.output_dim != 1:
-            raise ValueError(
-                "output_dim should always be 1. Did you mean to configure num_filters instead?"
-            )
+
         frame_size = _ms_to_samples(cfg.frame_size_ms, sample_rate=cfg.sample_rate)
         hop_size = _ms_to_samples(cfg.hop_size_ms, sample_rate=cfg.sample_rate)
         if not frame_size.is_integer():
@@ -84,6 +75,35 @@ class LogMelFrontend(BaseLayer):
 
         self._frame_size = int(frame_size)
         self._hop_size = int(hop_size)
+
+
+class LogMelFrontend(BaseFrontend):
+    """Computes Log Mel spectrogram features.
+
+    The frontend implements the following stages:
+        `Framer -> PreEmphasis -> Window -> FFT -> FilterBank -> MeanStdDev`.
+    """
+
+    @config_class
+    class Config(BaseFrontend.Config):
+        """Configures LogMelFrontend."""
+
+        # Number of output channels. Should always be 1.
+        output_dim: int = 1
+        # Optional output transformation. See `normalize_by_mean_std` for an example.
+        output_transformation: Optional[InstantiableConfig[Callable[[Tensor], Tensor]]] = None
+        # Floor of melfilter bank energy to prevent log(0).
+        # Recommend to set to 1e-6 or smaller to capture
+        # low-energy signals.
+        mel_floor: Required[float] = REQUIRED
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        if cfg.output_dim != 1:
+            raise ValueError(
+                "output_dim should always be 1. Did you mean to configure num_filters instead?"
+            )
 
         self._output_transformation = None
         if cfg.output_transformation is not None:
@@ -99,6 +119,7 @@ class LogMelFrontend(BaseLayer):
             lower_edge_hertz=125.0,
             upper_edge_hertz=7600.0,
         )
+        self._mel_floor = cfg.mel_floor
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
         """Computes log-mel spectrogram features.
@@ -122,7 +143,11 @@ class LogMelFrontend(BaseLayer):
         # FFT.
         spectrogram = magnitude_spectrogram(frames, fft_size=self._fft_size)
         # Convert to log-mel. [batch, num_frames, num_filters].
-        outputs = linear_to_log_mel_spectrogram(spectrogram, weight_matrix=self._filterbank)
+        outputs = linear_to_log_mel_spectrogram(
+            spectrogram,
+            weight_matrix=self._filterbank,
+            mel_floor=self._mel_floor,
+        )
         if self._output_transformation is not None:
             outputs = self._output_transformation(outputs)
         # To identify padding frames, apply the framer to the input padding.

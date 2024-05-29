@@ -14,6 +14,7 @@ from absl.testing import parameterized
 from axlearn.cloud.common.bastion import (
     Job,
     JobState,
+    JobStatus,
     _load_runtime_options,
     new_jobspec,
     set_runtime_options,
@@ -237,11 +238,11 @@ class MainTest(TestWithTemporaryCWD):
                         resources={"v4": 8},
                     ),
                 ),
-                state=state,
+                state=JobState(status=status),
                 command_proc=None,
                 cleanup_proc=None,
             )
-            for i, state in enumerate([JobState.PENDING, JobState.ACTIVE, JobState.CANCELLING])
+            for i, status in enumerate([JobStatus.PENDING, JobStatus.ACTIVE, JobStatus.CANCELLING])
         }
         mock_utils = mock.patch.multiple(
             bastion_vm.__name__,

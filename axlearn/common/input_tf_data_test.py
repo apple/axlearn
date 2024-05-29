@@ -475,7 +475,7 @@ class PadTest(test_utils.TestCase):
             dispatch = input_batch[utils.PHYSICAL_TO_LOGICAL_DISPATCH_KEY].numpy()
             self.assertEqual(dispatch.shape, (per_feed_physcal_batch_size, logical_batch_size))
             expected_dispatch = np.zeros(
-                (per_feed_physcal_batch_size, logical_batch_size), dtype=np.bool
+                (per_feed_physcal_batch_size, logical_batch_size), dtype=bool
             )
             logical_dispatch_start = logical_feed_index * per_feed_logical_batch_size
             expected_dispatch[
@@ -530,7 +530,7 @@ class PadTest(test_utils.TestCase):
             self.assertNestedEqual(
                 input_batch[utils.PHYSICAL_TO_LOGICAL_DISPATCH_KEY],
                 np.zeros(
-                    (per_feed_physcal_batch_size, logical_feed_logical_batch_size), dtype=np.bool
+                    (per_feed_physcal_batch_size, logical_feed_logical_batch_size), dtype=bool
                 ),
             )
             num_batches += 1

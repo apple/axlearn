@@ -13,6 +13,7 @@ import time
 from typing import Dict, Sequence, Union
 from unittest import mock
 
+import psutil
 import pytest
 from absl import app
 from absl.testing import parameterized
@@ -147,6 +148,43 @@ class UtilsTest(TestWithTemporaryCWD):
             # Ensure that the count is still the same.
             self.assertEqual(_read_count(), count)
 
+    @mock.patch("psutil.Process")
+    def test_send_signal_with_children_no_such_process(self, mock_process_class):
+        # Create a mock parent process
+        mock_process = mock.Mock()
+        mock_process.pid = 1234
+
+        # Create three mock child processes
+        mock_child1 = mock.Mock()
+        mock_child2 = mock.Mock()
+        mock_child3 = mock.Mock()
+
+        mock_child1.send_signal.side_effect = psutil.NoSuchProcess(pid=mock_child1.pid)
+        mock_child2.send_signal.return_value = None
+        mock_child3.send_signal.return_value = None
+
+        mock_process.children.return_value = [mock_child1, mock_child2, mock_child3]
+
+        # Ensure the parent process has the expected PID
+        mock_process.pid = 1234
+        mock_process_class.return_value = mock_process
+
+        mock_popen = mock.Mock()
+        mock_popen.pid = 1234
+
+        utils.send_signal(mock_popen, signal.SIGKILL)
+
+        mock_child1.send_signal.assert_called_once_with(signal.SIGKILL)
+        mock_child2.send_signal.assert_called_once_with(signal.SIGKILL)
+        mock_child3.send_signal.assert_called_once_with(signal.SIGKILL)
+
+        mock_popen.send_signal.assert_called_once_with(signal.SIGKILL)
+
+        try:
+            utils.send_signal(mock_popen, signal.SIGKILL)
+        except psutil.NoSuchProcess:
+            self.fail("send_signal() raised NoSuchProcess unexpectedly!")
+
     # TODO(tom_gunter,markblee): Understand & fix flakiness on CI.
     @pytest.mark.skip(reason="Passes locally & in docker but fails on CI, to be fixed.")
     def test_copy_blobs(self):
@@ -189,3 +227,73 @@ class UtilsTest(TestWithTemporaryCWD):
     )
     def test_merge(self, base, overrides, expected):
         self.assertEqual(expected, utils.merge(base, overrides))
+
+
+class TestTable(parameterized.TestCase):
+    """Tests table utils."""
+
+    @parameterized.parameters(
+        dict(headings="a", rows=[1, 2, 3], expected=ValueError("sequence")),
+        dict(headings=["a", "b", "c"], rows=1, expected=ValueError("sequence")),
+        dict(headings=["a", "b", "c"], rows=[1, 2, 3], expected=ValueError("sequence")),
+        dict(headings=["a", "b", "c"], rows=[[1, 2]], expected=ValueError("3 columns")),
+        dict(headings=["a", "b", "c"], rows=[[1, 2, 3]], expected=None),  # OK.
+    )
+    def test_init(self, headings, rows, expected):
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                utils.Table(headings=headings, rows=rows)
+        else:
+            utils.Table(headings=headings, rows=rows)
+
+    def test_add_row(self):
+        table = utils.Table(headings=["a", "b", "c"], rows=[])
+        table.add_row([1, 2, 3])
+        # fmt: off
+        self.assertEqual(
+            (
+                "\n"
+                "A      B      C      \n"
+                "1      2      3      \n"
+            ),
+            str(table),
+        )
+        # fmt: on
+        with self.assertRaisesRegex(ValueError, "3 columns"):
+            table.add_row([1, 2])
+
+    def test_add_col(self):
+        table = utils.Table(headings=["a", "b", "c"], rows=[[1, 2, 3]])
+        table.add_col("d", [4])
+        # fmt: off
+        self.assertEqual(
+            (
+                "\n"
+                "A      B      C      D      \n"
+                "1      2      3      4      \n"
+            ),
+            str(table),
+        )
+        # fmt: on
+        with self.assertRaisesRegex(ValueError, "1 row"):
+            table.add_col("e", [5, 6])
+
+    def test_get_col(self):
+        table = utils.Table(headings=["a", "b"], rows=[[1, 2], [3, 4]])
+        self.assertEqual([[1], [3]], table.get_col("a"))
+        self.assertEqual([[1, 2], [3, 4]], table.get_col("a", "b"))
+        with self.assertRaisesRegex(ValueError, ""):
+            table.get_col("c")
+
+    def test_sort(self):
+        table = utils.Table(headings=["a", "b"], rows=[[1, 4], [3, 2]])
+        table.sort(key=lambda row: row[-1])
+        self.assertEqual(
+            utils.Table(headings=["a", "b"], rows=[[3, 2], [1, 4]]),
+            table,
+        )
+        table.sort(key=lambda row: row[-1], reverse=True)
+        self.assertEqual(
+            utils.Table(headings=["a", "b"], rows=[[1, 4], [3, 2]]),
+            table,
+        )

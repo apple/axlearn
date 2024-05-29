@@ -32,6 +32,7 @@ from axlearn.common.attention import (
     BaseQKVLinear,
     CausalAttentionLogitBiasLayer,
     FusedQKVLinear,
+    MultiheadAttention,
     RepeatedTransformerLayer,
     TransformerLayer,
     build_remat_spec,
@@ -168,6 +169,7 @@ def model_config(
     stack_cfg: causal_lm.TransformerStackConfig = RepeatedTransformerLayer.default_config(),
     emb_cfg: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config(),
     attention_mask: AttentionLogitBiasLayer.Config = CausalAttentionLogitBiasLayer.default_config(),
+    attention_cfg: MultiheadAttention.Config = MultiheadAttention.default_config(),
     attention_qkv_linear: Optional[BaseQKVLinear.Config] = FusedQKVLinear.default_config(),
     z_loss_scale: float = 0.0,
     ffn_structure: str = "prenorm",
@@ -209,6 +211,8 @@ def model_config(
     layer_cfg.feed_forward.hidden_dim = ffn_dim
     layer_cfg.feed_forward.structure = ffn_structure
     # Attention.
+    if attention_cfg is not None:
+        layer_cfg.self_attention.attention = attention_cfg
     layer_cfg.self_attention.attention.num_heads = num_heads
     if attention_qkv_linear is not None:
         layer_cfg.self_attention.attention.input_linear = attention_qkv_linear
@@ -444,7 +448,7 @@ def evaler_config_dict(
     return evalers
 
 
-def make_config_name(arch: str, model_size: str) -> str:
+def make_config_name(arch: str, model_size: str, version: Optional[str] = None) -> str:
     """Makes config name string as a function of architecture and model-size.
 
     Useful to keep config names synced with fine-tuning configs.
@@ -452,11 +456,15 @@ def make_config_name(arch: str, model_size: str) -> str:
     Args:
         arch: The architecture of the model.
         model_size: The number of transformer parameters (not including vocab embeddings).
+        version: An optional version string.
 
     Returns:
-        f"{arch}-{model_size}".
+        f"{arch}-{model_size}" or f"{arch}-{model_size}-{version}".
     """
-    return f"{arch}-{model_size}"
+    name = f"{arch}-{model_size}"
+    if version:
+        name += f"-{version}"
+    return name
 
 
 def get_trainer_config_fn(

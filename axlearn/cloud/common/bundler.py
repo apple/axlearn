@@ -274,6 +274,8 @@ class BaseDockerBundler(Bundler):
         allow_dirty: bool = False
         # Additional image(s) to cache from.
         cache_from: Optional[Sequence[str]] = None
+        # Skip the build + push step (e.g., using a pre-built image).
+        skip_bundle: bool = False
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -306,9 +308,13 @@ class BaseDockerBundler(Bundler):
         - platform: The image target platform.
         - allow_dirty: Whether to ignore dirty git status.
         - cache_from: A comma-separated list of cache sources.
+        - skip_bundle: Whether to skip the build + push. This option is intended to be used when an
+            image has already been pre-built offline, in which case we may still want to leverage
+            the install commands implemented by the bundler.
 
         All other specs are treated as build args.
         """
+        del fv  # Not used.
         cfg: BaseDockerBundler.Config = cls.default_config()
         kwargs = parse_kv_flags(spec, delimiter="=")
         cache_from = canonicalize_to_list(kwargs.pop("cache_from", None))
@@ -319,7 +325,7 @@ class BaseDockerBundler(Bundler):
     # pylint: disable-next=arguments-renamed
     def id(self, tag: str) -> str:
         """Returns the full image identifier from the tag."""
-        cfg = self.config
+        cfg: BaseDockerBundler.Config = self.config
         return f"{cfg.repo}/{cfg.image}:{tag}"
 
     # pylint: disable-next=arguments-renamed
@@ -337,6 +343,10 @@ class BaseDockerBundler(Bundler):
             RuntimeError: If attempting to bundle with dirty git status.
         """
         cfg: BaseDockerBundler.Config = self.config
+        if cfg.skip_bundle:
+            bundle_id = self.id(tag)
+            logging.info("Skipping build + push and using: %s.", bundle_id)
+            return bundle_id
 
         # Fail early if git status is dirty.
         if running_from_source() and (status := get_git_status()):
@@ -469,6 +479,8 @@ class BaseTarBundler(Bundler):
         remote_dir: Required[str] = REQUIRED
         # Optional list of --find-links to use in pip install.
         find_links: Optional[Union[str, Sequence[str]]] = None
+        # Optional --index-url to use in pip install.
+        index_url: Optional[str] = None
         # Whether to install in editable mode.
         editable: bool = False
 
@@ -479,6 +491,7 @@ class BaseTarBundler(Bundler):
         Possible options:
         - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf_io.
         """
+        del fv  # Not used.
         return cls.default_config().set(**parse_kv_flags(spec, delimiter="="))
 
     def id(self, name: str) -> str:
@@ -496,7 +509,7 @@ class BaseTarBundler(Bundler):
         Returns:
             The remote path.
         """
-        cfg = self.config
+        cfg: BaseTarBundler.Config = self.config
 
         with self._local_dir_context() as temp_dir:
             temp_dir = pathlib.Path(temp_dir)
@@ -518,6 +531,8 @@ class BaseTarBundler(Bundler):
             with requirements.open("w", encoding="utf-8") as f:
                 for find_links in canonicalize_to_list(cfg.find_links):
                     f.write(f"--find-links {find_links}\n")
+                if cfg.index_url:
+                    f.write(f"--index-url {cfg.index_url}\n")
                 pyproject_extras = []
                 for extra in canonicalize_to_list(cfg.extras):
                     # NOTE: .whl can also end with a pyproject section, e.g. axlearn.whl[dev].

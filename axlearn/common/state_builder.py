@@ -967,6 +967,7 @@ class EmaParamsConverter(Converter):
         )
         if (
             aux.trainer_state.learner is not None
+            and "ema" in aux.trainer_state.learner
             and aux.trainer_state.learner["ema"].ema is not optax.EmptyState()
         ):
             # Load ema weight to target ema.

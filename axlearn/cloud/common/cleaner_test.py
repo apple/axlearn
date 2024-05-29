@@ -1,13 +1,19 @@
 # Copyright © 2024 Apple Inc.
 
 """Tests for cleaner.py."""
+
 import datetime
 from typing import Dict, Sequence
 
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bastion import new_jobspec
-from axlearn.cloud.common.cleaner import Cleaner, CompositeCleaner, UnschedulableCleaner
+from axlearn.cloud.common.cleaner import (
+    AggregationType,
+    Cleaner,
+    CompositeCleaner,
+    UnschedulableCleaner,
+)
 from axlearn.cloud.common.quota import QuotaInfo
 from axlearn.cloud.common.scheduler import JobMetadata, JobScheduler
 from axlearn.cloud.common.types import JobSpec
@@ -26,15 +32,29 @@ class MockCleaner(Cleaner):
 
 
 class CompositeCleanerTest(parameterized.TestCase):
-    def test_sweep(self):
+    @parameterized.named_parameters(
+        ("Union", AggregationType.UNION, ["a", "b"]),
+        ("Intersection", AggregationType.INTERSECTION, []),
+    )
+    def test_sweep(self, aggregation_type, expected_result):
         cleaner_a = MockCleaner.default_config().set(names=["a"])
         cleaner_b = MockCleaner.default_config().set(names=["b"])
-        cfg = CompositeCleaner.default_config().set(cleaners=[cleaner_a, cleaner_b])
+        cfg = CompositeCleaner.default_config().set(
+            cleaners=[cleaner_a, cleaner_b], aggregation=aggregation_type
+        )
         cleaner = cfg.instantiate()
 
         jobs = {"a": None, "b": None, "c": None}
         result = cleaner.sweep(jobs)
-        self.assertSequenceEqual(sorted(result), ["a", "b"])
+        self.assertSequenceEqual(sorted(result), expected_result)
+
+    def test_sweep_no_cleaners(self):
+        cfg = CompositeCleaner.default_config().set(cleaners=[])
+        cleaner = cfg.instantiate()
+
+        jobs = {"a": None, "b": None, "c": None}
+        with self.assertRaises(ValueError):
+            cleaner.sweep(jobs)
 
 
 class UnschedulableCleanerTest(parameterized.TestCase):
@@ -64,12 +84,14 @@ class UnschedulableCleanerTest(parameterized.TestCase):
             }
 
         quota = QuotaInfo(
-            total_resources={
-                "gcp1:a2-ultragpu-8g": 148.000001,
-                "aws_5:p5.48xlarge": 1e-06,
-                "aws_2:g5.12xlarge": 5.000001,
-                "aws_4:p5.48xlarge": 8.000001,
-            },
+            total_resources=[
+                {
+                    "gcp1:a2-ultragpu-8g": 148.000001,
+                    "aws_5:p5.48xlarge": 1e-06,
+                    "aws_2:g5.12xlarge": 5.000001,
+                    "aws_4:p5.48xlarge": 8.000001,
+                }
+            ],
             project_resources={
                 "fm-proj-lm-pretrain": {
                     "gcp1:a2-ultragpu-8g": 400,

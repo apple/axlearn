@@ -11,7 +11,6 @@ try:
     from google.cloud.aiplatform import initializer
     from google.cloud.aiplatform.tensorboard import uploader, uploader_utils
     from google.cloud.aiplatform.utils import TensorboardClientWithOverride
-    from tensorboard.uploader import util
 
     _VERTEXAI_INSTALLED = True
 except (ImportError, ModuleNotFoundError):
@@ -74,7 +73,7 @@ def _start_vertexai_tensorboard(*, project_id: str, region: str, resource_name: 
         event_file_inactive_secs=None,
         verbosity=0,
         run_name_prefix=None,
-        logdir_poll_rate_limiter=util.RateLimiter(interval_secs=30),
+        logdir_poll_rate_limiter=uploader_utils.RateLimiter(interval_secs=30),
     )
     tb_uploader.create_experiment()
     tb_uploader.start_uploading()
@@ -110,11 +109,11 @@ class VertexAITensorboardUploader(Configurable):
         self._uploader_proc = None
 
     @classmethod
-    def default_config(cls) -> Config:
+    def from_flags(cls, fv: flags.FlagValues):
         cfg = super().default_config()
-        instance_id = gcp_config.gcp_settings(key="vertexai_tensorboard")
-        region = gcp_config.gcp_settings(key="vertexai_region")
-        project_id = gcp_config.gcp_settings(key="project")
+        instance_id = gcp_config.gcp_settings(key="vertexai_tensorboard", fv=fv)
+        region = gcp_config.gcp_settings(key="vertexai_region", fv=fv)
+        project_id = gcp_config.gcp_settings(key="project", fv=fv)
         return cfg.set(instance_id=instance_id, region=region, project_id=project_id)
 
     def upload(self):

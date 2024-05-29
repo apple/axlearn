@@ -15,9 +15,7 @@ from axlearn.common import input_fake, input_tf_data
 from axlearn.common.config import config_for_class, config_for_function
 from axlearn.common.test_utils import TestCase
 
-tokenizers_dir = os.path.join(
-    os.path.dirname(__file__), "../experiments/testdata/tokenizers/sentencepiece"
-)
+tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers/sentencepiece")
 
 
 class SpeechInputTest(TestCase, tf.test.TestCase):
@@ -48,6 +46,25 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
             expected=[
                 {"inputs": tf.constant([-29515.0, 0]), "paddings": tf.constant([0, 1])},
                 {"inputs": tf.constant([14620.0, -21206.0]), "paddings": tf.constant([0, 0])},
+            ],
+        ),
+        dict(
+            # Test a basic case with truncation.
+            max_len=2,
+            truncate=True,
+            expected=[
+                {
+                    "inputs": tf.constant([-29515.0, 0]),
+                    "paddings": tf.constant([0, 1]),
+                },
+                {
+                    "inputs": tf.constant([14620.0, -21206.0]),
+                    "paddings": tf.constant([0, 0]),
+                },
+                {
+                    "inputs": tf.constant([-3954.0, -15555.0]),
+                    "paddings": tf.constant([0, 0]),
+                },
             ],
         ),
         dict(
@@ -90,6 +107,7 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
         self,
         max_len: int,
         expected: Dict[str, Any],
+        truncate: bool = False,
         input_key: str = "speech",
         scale: Optional[float] = None,
     ):
@@ -97,6 +115,7 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
             max_len=max_len,
             input_key=input_key,
             normalize_by_scale=scale,
+            truncate=truncate,
         )
         # Use a fake speech source with only speech inputs.
         source = input_tf_data.with_processor(

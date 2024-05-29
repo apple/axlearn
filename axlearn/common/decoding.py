@@ -22,12 +22,12 @@ The key differences from the reference impl are:
 # pylint: disable=too-many-lines
 from typing import Callable, Literal, NamedTuple, Optional, Protocol, Sequence, Tuple, Union
 
-import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import lax
 
+from axlearn.common import struct
 from axlearn.common.utils import NestedTensor, Tensor, vectorized_tree_map
 
 # Constants
@@ -184,11 +184,24 @@ def _gather_topk_beams(
     )
 
 
+class BrevityPenaltyFn(Protocol):
+    def __call__(self, *, length: Tensor, raw_scores: Tensor) -> Tensor:
+        """Compute the brevity penality based on the length of a decoding and its raw scores.
+
+        Args:
+            length: A tensor of shape broadcastable to [batch_size, beam_size].
+            raw_scores: Raw beam search scores.
+
+        Returns:
+            Normalized scores of same shape as `raw_scores`.
+        """
+
+
 def brevity_penalty_fn(
     *,
     alpha: float = 0.0,
     bp_type: Literal["t5", "hf"] = "t5",
-) -> Callable[[Tensor, Tensor], Tensor]:
+) -> BrevityPenaltyFn:
     """Brevity penalty function to do length normalization during beam search.
 
     If alpha is zero, we do not apply length normaliation.
@@ -204,9 +217,7 @@ def brevity_penalty_fn(
         bp_type: The way to compute the bevity penalty.
 
     Returns:
-        A fn that accepts `length` of shape broadcastable to [batch_size, beam_size] and
-        `raw_scores` of shape [batch_size, beam_size], and returns normalized scores of same shape
-        as `raw_scores`.
+        A penalty function for brevity.
     """
 
     def fn(*, length: Tensor, raw_scores: Tensor) -> Tensor:
@@ -340,8 +351,7 @@ class _BeamState(NamedTuple):
     prefix_merger: NestedTensor
 
 
-@chex.dataclass
-class BeamSearchOutputs:
+class BeamSearchOutputs(struct.PyTreeNode):
     """Output values after performing beam search decoding."""
 
     # Sequences that end with eos_id.
@@ -427,7 +437,7 @@ def beam_search_decode(
     num_decodes: int,
     max_decode_len: Optional[int] = None,
     loop: Literal["lax", "python"] = "lax",
-    brevity_penalty: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
+    brevity_penalty: Optional[BrevityPenaltyFn] = None,
     pad_id: int = 0,
     prefix_merger: Optional[PrefixMerger] = None,
 ) -> BeamSearchOutputs:
@@ -801,8 +811,7 @@ def _decode_init(
     )
 
 
-@chex.dataclass
-class SampleOutputs:
+class SampleOutputs(struct.PyTreeNode):
     """Output values after performing sample decoding."""
 
     # Sequences which may or may not end with eos_id.

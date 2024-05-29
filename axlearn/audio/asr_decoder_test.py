@@ -4,6 +4,7 @@
 # pylint: disable=no-self-use,too-many-lines
 
 import functools
+from typing import Any, Dict, Union
 
 import jax.random
 import numpy as np
@@ -16,6 +17,7 @@ from axlearn.audio.asr_decoder import (
     CTCDecoderModel,
     CTCPrefixMerger,
     DecodeOutputs,
+    RNNPredictionNetwork,
     _is_valid_ctc_seq,
     _map_label_sequences,
 )
@@ -23,6 +25,7 @@ from axlearn.common.config import config_for_function
 from axlearn.common.decoder import _scores_from_logits
 from axlearn.common.decoding import NEG_INF
 from axlearn.common.logit_modifiers import top_k_logits
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
@@ -54,6 +57,7 @@ class UtilsTest(TestCase):
             ),
             blank_id=0,
             pad_id=0,
+            remove_repeats=True,
         ),
         dict(
             inputs=jnp.asarray(
@@ -79,15 +83,75 @@ class UtilsTest(TestCase):
             ),
             blank_id=0,
             pad_id=-1,
+            remove_repeats=True,
+        ),
+        dict(
+            inputs=jnp.asarray(
+                [
+                    [[0, 3, 3, 3, 0, 0, 2, 2, 2, 3], [2, 2, 1, 0, 0, 0, 0, 0, 0, 0]],
+                    [[2, 0, 2, 2, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+                ]
+            ),
+            expected=dict(
+                sequences=jnp.asarray(
+                    [
+                        [[3, 3, 3, 2, 2, 2, 3, 0, 0, 0], [2, 2, 1, 0, 0, 0, 0, 0, 0, 0]],
+                        [[2, 2, 2, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+                    ],
+                ),
+                paddings=jnp.asarray(
+                    [
+                        [[0, 0, 0, 0, 0, 0, 0, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1, 1, 1, 1]],
+                        [[0, 0, 0, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]],
+                    ]
+                ),
+                lengths=jnp.asarray([[[7], [3]], [[3], [0]]]),
+            ),
+            blank_id=0,
+            pad_id=0,
+            remove_repeats=False,
+        ),
+        dict(
+            inputs=jnp.asarray(
+                [
+                    [[0, 3, 3, 3, 0, 0, 2, 2, 2, 3], [2, 2, 1, 0, 0, 0, -1, -1, -1, -1]],
+                    [[2, 0, 2, 2, 1, 1, -1, -1, -1, -1], [3, 1, 3, 1, 3, 1, -1, -1, -1, -1]],
+                ]
+            ),
+            expected=dict(
+                sequences=jnp.asarray(
+                    [
+                        [[0, 0, 0, 2, 2, 2, -1, -1, -1, -1], [2, 2, 1, 0, 0, 0, -1, -1, -1, -1]],
+                        [[2, 0, 2, 2, 1, 1, -1, -1, -1, -1], [1, 1, 1, -1, -1, -1, -1, -1, -1, -1]],
+                    ],
+                ),
+                paddings=jnp.asarray(
+                    [
+                        [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]],
+                        [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1, 1, 1, 1]],
+                    ]
+                ),
+                lengths=jnp.asarray([[[6], [6]], [[6], [3]]]),
+            ),
+            blank_id=3,
+            pad_id=-1,
+            remove_repeats=False,
         ),
     )
     def test_map_label_sequences(
-        self, inputs: Tensor, expected: Nested[Tensor], blank_id: int, pad_id: int
+        self,
+        inputs: Tensor,
+        expected: Nested[Tensor],
+        blank_id: int,
+        pad_id: int,
+        remove_repeats: bool,
     ):
-        jit_fn = jax.jit(_map_label_sequences, static_argnames=("blank_id", "pad_id"))
+        jit_fn = jax.jit(
+            _map_label_sequences, static_argnames=("blank_id", "pad_id", "remove_repeats")
+        )
         self.assertNestedEqual(
             expected,
-            jit_fn(inputs, blank_id=blank_id, pad_id=pad_id),
+            jit_fn(inputs, blank_id=blank_id, pad_id=pad_id, remove_repeats=remove_repeats),
         )
 
 
@@ -310,12 +374,12 @@ class CTCDecoderModelTest(TestCase):
     """Tests CTCDecoderModel."""
 
     @parameterized.parameters([0, 1])
-    def test_predict(self, blank_token_id):
-        dim, vocab_size = 6, 8
+    def test_predict(self, blank_id):
+        input_dim, vocab_size = 6, 8
         cfg = CTCDecoderModel.default_config().set(
-            dim=dim,
+            input_dim=input_dim,
             vocab_size=vocab_size,
-            blank_token_id=blank_token_id,
+            blank_id=blank_id,
         )
         # Initialize layer parameters.
         layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
@@ -323,7 +387,7 @@ class CTCDecoderModelTest(TestCase):
         prng_key, init_key = jax.random.split(prng_key)
         layer_params = layer.initialize_parameters_recursively(init_key)
         self.assertEqual(
-            {"lm_head": dict(weight=(dim, vocab_size), bias=(vocab_size,))},
+            {"lm_head": dict(weight=(input_dim, vocab_size), bias=(vocab_size,))},
             shapes(layer_params),
         )
 
@@ -331,13 +395,16 @@ class CTCDecoderModelTest(TestCase):
         seq_len = jnp.array([7, 5])
         # [batch_size, max_seq_len, dim] with the same data across sequences.
         inputs = jnp.tile(
-            jax.random.normal(jax.random.PRNGKey(123), [1, max_seq_len, dim]), [batch_size, 1, 1]
+            jax.random.normal(jax.random.PRNGKey(123), [1, max_seq_len, input_dim]),
+            [batch_size, 1, 1],
         )
         # [batch_size, max_seq_len].
         paddings = (jnp.arange(max_seq_len) >= seq_len[:, None]).astype(inputs.dtype)
 
         # Generate different padding data.
-        padding_data = jax.random.normal(jax.random.PRNGKey(130), [batch_size, max_seq_len, dim])
+        padding_data = jax.random.normal(
+            jax.random.PRNGKey(130), [batch_size, max_seq_len, input_dim]
+        )
         # Generate input sequences with the same data at non-pad positions.
         inputs = jnp.where(paddings[..., None], padding_data, inputs)
 
@@ -362,12 +429,12 @@ class CTCDecoderModelTest(TestCase):
         self.assertTrue(jnp.all(jnp.logical_not(outputs_at_padding)))
 
     @parameterized.parameters([0, 1])
-    def test_forward(self, blank_token_id):
-        dim, vocab_size = 16, 20
+    def test_forward(self, blank_id):
+        input_dim, vocab_size = 16, 20
         cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
-            dim=dim,
+            input_dim=input_dim,
             vocab_size=vocab_size,
-            blank_token_id=blank_token_id,
+            blank_id=blank_id,
         )
         # Initialize layer parameters.
         layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
@@ -387,7 +454,7 @@ class CTCDecoderModelTest(TestCase):
         self.assertEqual(len(input_lengths), batch_size)
 
         # [batch_size, max_seq_len, dim].
-        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, dim]) * 1000
+        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, input_dim]) * 1000
         target_labels = jax.random.randint(
             target_key, [batch_size, max_seq_len], minval=0, maxval=vocab_size
         )
@@ -434,7 +501,7 @@ class CTCDecoderModelTest(TestCase):
             targets=ref_target_labels,
             input_lengths=as_torch_tensor(input_lengths),
             target_lengths=as_torch_tensor(target_lengths),
-            blank=cfg.blank_token_id,
+            blank=cfg.blank_id,
             reduction="none",
             zero_infinity=True,
         )
@@ -445,25 +512,107 @@ class CTCDecoderModelTest(TestCase):
         assert_allclose(ref_per_example_loss, aux_outputs["per_example_loss"] * per_example_weight)
         assert_allclose(np.sum(ref_per_example_loss) / np.sum(per_example_weight), loss)
 
-    def _check_paddings(self, outputs: DecodeOutputs, *, blank_token_id: int):
+    def _check_summary(
+        self, summary_collection: Dict[str, Any], name: str, value: Union[Tensor, WeightedScalar]
+    ):
+        self.assertIn(name, summary_collection)
+        msg = f"mismatch in {name}: {summary_collection[name]} vs {value}"
+        self.assertEqual(summary_collection[name], value, msg)
+
+    def test_forward_summary(self):
+        input_dim, vocab_size = 16, 20
+        cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
+            input_dim=input_dim,
+            vocab_size=vocab_size,
+            blank_id=0,
+        )
+        # Initialize layer parameters.
+        layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, input_key, target_key = jax.random.split(prng_key, num=4)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        batch_size, max_seq_len = 8, 10
+
+        # Sample indices 2, 3 are invalid, since target_lengths exceeds input_lengths.
+        input_lengths = jnp.array([10, 5, 7, 0, 6, 3, 8, 1], dtype=jnp.int32)
+        target_lengths = jnp.array([6, 3, 9, 1, 6, 0, 4, 0], dtype=jnp.int32)
+        per_example_weight = jnp.array([1, 1, 0, 0, 1, 1, 1, 1], dtype=jnp.float32)
+        # [batch_size, max_seq_len, dim].
+        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, input_dim]) * 1000
+        target_labels = jax.random.randint(
+            target_key, [batch_size, max_seq_len], minval=0, maxval=vocab_size
+        )
+        # [batch_size, max_seq_len].
+        paddings = (jnp.arange(max_seq_len) >= input_lengths[:, None]).astype(target_labels.dtype)
+        # Map padding targets out-of-vocab.
+        target_labels = jnp.where(
+            jnp.arange(max_seq_len) >= target_lengths[:, None], -1, target_labels
+        )
+        target_paddings = jnp.where(target_labels == -1, 1, 0)
+        input_batch = dict(inputs=inputs, paddings=paddings, target_labels=target_labels)
+        _, output_collections = F(
+            layer,
+            inputs=dict(input_batch=input_batch),
+            is_training=True,
+            prng_key=prng_key,
+            state=layer_params,
+        )
+        summaries = output_collections.summaries
+        # 6 out of 8 examples are valid, therefore the average example weight is 0.75
+        self._check_summary(summaries, "loss/example_weight", WeightedScalar(0.75, 8))
+        self._check_summary(summaries, "loss/ctc_loss", WeightedScalar(6972.1353, 6))
+        self._check_summary(summaries, "loss/invalid_seq_percent", 0.25)
+        total_ctc_loss = summaries["loss/ctc_loss"].weight * summaries["loss/ctc_loss"].mean
+        num_valid_frames = jnp.sum((1 - paddings) * per_example_weight[:, None])
+        num_valid_labels = jnp.sum((1 - target_paddings) * per_example_weight[:, None])
+        num_valid_examples = jnp.sum(per_example_weight)
+        self._check_summary(
+            summaries,
+            "loss/per_frame_ctc_loss",
+            WeightedScalar(total_ctc_loss / num_valid_frames, num_valid_frames),
+        )
+        self._check_summary(
+            summaries,
+            "loss/per_label_ctc_loss",
+            WeightedScalar(total_ctc_loss / num_valid_labels, num_valid_labels),
+        )
+
+        self._check_summary(
+            summaries,
+            "input_stats/average_target_length",
+            WeightedScalar(num_valid_labels / num_valid_examples, num_valid_examples),
+        )
+        self._check_summary(
+            summaries,
+            "input_stats/average_source_length",
+            WeightedScalar(num_valid_frames / num_valid_examples, num_valid_examples),
+        )
+        self._check_summary(
+            summaries,
+            "input_stats/frame_packing_effiency",
+            WeightedScalar(num_valid_frames / paddings.size, paddings.size),
+        )
+
+    def _check_paddings(self, outputs: DecodeOutputs, *, blank_id: int):
         # Padding positions should correspond to pad_id.
         self.assertTrue(jnp.all(outputs.sequences * outputs.paddings == 0))
         # Other positions should not contain pad_id or blanks.
         self.assertTrue(jnp.all((outputs.sequences != 0) | outputs.paddings))
-        if blank_token_id != 0:
-            self.assertTrue(jnp.all((outputs.sequences != blank_token_id) | outputs.paddings))
+        if blank_id != 0:
+            self.assertTrue(jnp.all((outputs.sequences != blank_id) | outputs.paddings))
 
     @parameterized.product(
         num_decodes=[1, 3],
         vocab_size=[5, 20],
-        blank_token_id=[0, 1],
+        blank_id=[0, 1],
         logits_modifier=[top_k_logits(1), config_for_function(top_k_logits).set(k=1)],
     )
-    def test_greedy_decode(self, num_decodes, vocab_size, blank_token_id, logits_modifier):
+    def test_greedy_decode(self, num_decodes, vocab_size, blank_id, logits_modifier):
         cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
-            dim=6,
+            input_dim=6,
             vocab_size=vocab_size,
-            blank_token_id=blank_token_id,
+            blank_id=blank_id,
         )
 
         # Initialize layer parameters.
@@ -475,7 +624,7 @@ class CTCDecoderModelTest(TestCase):
         batch_size, max_seq_len = 4, 10
         seq_len = jnp.array([10, 7, 5, 8])
         # [batch_size, max_seq_len, dim].
-        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, cfg.dim]) * 1000
+        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, cfg.input_dim]) * 1000
         # [batch_size, max_seq_len].
         paddings = (jnp.arange(max_seq_len) >= seq_len[:, None]).astype(jnp.int32)
 
@@ -525,7 +674,9 @@ class CTCDecoderModelTest(TestCase):
 
         # Sequences have shape [batch_size, max_seq_len].
         ref_raw_sequences = jnp.argmax(ref_log_probs, axis=-1)
-        ref_outputs = _map_label_sequences(ref_raw_sequences, blank_id=cfg.blank_token_id)
+        ref_outputs = _map_label_sequences(
+            ref_raw_sequences, remove_repeats=True, blank_id=cfg.blank_id
+        )
         ref_sequences, ref_paddings = ref_outputs["sequences"], ref_outputs["paddings"]
 
         # Mask out padding/EOS tokens.
@@ -549,25 +700,25 @@ class CTCDecoderModelTest(TestCase):
         self.assertNestedEqual(ref_paddings, sample_decode_outputs.paddings[:, 0, :])
         self.assertNestedEqual(ref_scores, sample_decode_outputs.scores[:, 0])
 
-        self._check_paddings(sample_decode_outputs, blank_token_id=cfg.blank_token_id)
+        self._check_paddings(sample_decode_outputs, blank_id=cfg.blank_id)
 
         # Greedy decode output should match.
         self.assertNestedEqual(ref_sequences, greedy_decode_outputs.sequences[:, 0, :])
         self.assertNestedEqual(ref_paddings, greedy_decode_outputs.paddings[:, 0, :])
         self.assertNestedEqual(ref_scores, greedy_decode_outputs.scores[:, 0])
 
-        self._check_paddings(greedy_decode_outputs, blank_token_id=cfg.blank_token_id)
+        self._check_paddings(greedy_decode_outputs, blank_id=cfg.blank_id)
 
     @parameterized.product(
         num_decodes=[1, 3],
         vocab_size=[5, 20],
-        blank_token_id=[0, 1],
+        blank_id=[0, 1],
     )
-    def test_beam_search_decode(self, num_decodes, vocab_size, blank_token_id):
+    def test_beam_search_decode(self, num_decodes, vocab_size, blank_id):
         cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
-            dim=6,
+            input_dim=6,
             vocab_size=vocab_size,
-            blank_token_id=blank_token_id,
+            blank_id=blank_id,
         )
         # Initialize layer parameters.
         layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
@@ -578,7 +729,7 @@ class CTCDecoderModelTest(TestCase):
         batch_size, max_seq_len = 4, 10
         seq_len = jnp.array([10, 7, 5, 8])
         # [batch_size, max_seq_len, dim].
-        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, cfg.dim]) * 1000
+        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, cfg.input_dim]) * 1000
         # [batch_size, max_seq_len].
         paddings = (jnp.arange(max_seq_len) >= seq_len[:, None]).astype(jnp.int32)
 
@@ -609,7 +760,7 @@ class CTCDecoderModelTest(TestCase):
         )
         # Check that beams are sorted descending by score.
         self.assertTrue(jnp.all(jnp.diff(beam_search_outputs.scores, axis=-1) <= 0))
-        self._check_paddings(beam_search_outputs, blank_token_id=cfg.blank_token_id)
+        self._check_paddings(beam_search_outputs, blank_id=cfg.blank_id)
 
         # Greedy decode.
         greedy_outputs: DecodeOutputs = jit_method(
@@ -629,9 +780,9 @@ class CTCDecoderModelTest(TestCase):
 
     def test_prefix_merger(self):
         # Use a small vocab_size to encourage similar prefixes.
-        dim, vocab_size, num_decodes = 6, 3, 4
+        input_dim, vocab_size, num_decodes = 6, 3, 4
         cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
-            dim=dim,
+            input_dim=input_dim,
             vocab_size=vocab_size,
         )
         # Initialize layer parameters.
@@ -643,7 +794,7 @@ class CTCDecoderModelTest(TestCase):
         batch_size, max_seq_len = 4, 8
         seq_len = jnp.array([8, 5, 4, 6])
         # [batch_size, max_seq_len, dim].
-        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, dim]) * 1000
+        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, input_dim]) * 1000
         # [batch_size, max_seq_len].
         paddings = (jnp.arange(max_seq_len) >= seq_len[:, None]).astype(jnp.int32)
 
@@ -720,7 +871,7 @@ class CTCDecoderModelTest(TestCase):
             prng_key=decode_key,
             method="beam_search_decode",
             num_decodes=num_decodes,
-            prefix_merger=CTCPrefixMerger(blank_id=cfg.blank_token_id),
+            prefix_merger=CTCPrefixMerger(blank_id=cfg.blank_id),
         )
         self.assertNestedEqual(
             jnp.array(
@@ -769,8 +920,8 @@ class CTCDecoderModelTest(TestCase):
         self.assertLess(beam_search_outputs.scores[3, 3], 0.5 * NEG_INF)
 
     def test_postprocess(self):
-        dim, vocab_size = 3, 8
-        cfg = CTCDecoderModel.default_config().set(dim=dim, vocab_size=vocab_size)
+        input_dim, vocab_size = 3, 8
+        cfg = CTCDecoderModel.default_config().set(input_dim=input_dim, vocab_size=vocab_size)
 
         # Initialize layer parameters.
         layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
@@ -836,3 +987,30 @@ class CTCDecoderModelTest(TestCase):
             ),
         )
         self.assertNestedEqual(outputs.scores, jnp.array([[28, 28], [36, 36]]))
+
+
+class RNNPredictionNetworkTest(TestCase):
+    def test_forward(self):
+        batch_size, seq_len, vocab_size, output_dim = 2, 8, 5, 3
+        # Tests that out-of-range token ids (-1, -2, 6, 10) work.
+        inputs = jnp.array([[3, 3, 2, 4, 3, -1, -1, -2], [2, 1, 3, 3, 3, 10, 6, -1]])
+        layer: RNNPredictionNetwork = (
+            RNNPredictionNetwork.default_config()
+            .set(
+                name="test",
+                vocab_size=vocab_size,
+                emb_dim=2,
+                output_dim=output_dim,
+            )
+            .instantiate(parent=None)
+        )
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(1))
+        forward_outputs, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),  # not used.
+            state=layer_params,
+            inputs=dict(inputs=inputs),
+        )
+        # Tests that `time_major_inputs` axis order is correctly handled.
+        self.assertSequenceEqual(forward_outputs.shape, (batch_size, seq_len, output_dim))

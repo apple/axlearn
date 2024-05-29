@@ -3,6 +3,7 @@
 """SPMD related utils."""
 
 import logging
+import time
 from typing import Optional
 
 import jax
@@ -88,5 +89,31 @@ def setup(
                 process_id=process_id,
             )
 
-        jax.distributed.initialize(**init_kwargs)
-        _jax_distributed_initialized = True
+        # Ensure that coordinator initialization respects initialization_timeout.
+        # The current jax version hardcodes the number of attempts to discover coordinator address:
+        # https://github.com/google/jax/blob/33e1a96204bf88f76b9f8d982cb2fe92ebcf0151/jax/_src/clusters/cloud_tpu_cluster.py#L110-L125
+        # TODO(markblee): Remove this once we update jax to include:
+        # https://github.com/google/jax/commit/c5869feb92a175ce40b4e5a897f505e97bcc610b.
+        if initialization_timeout is not None:
+            max_time = time.time() + initialization_timeout
+            while not _jax_distributed_initialized and time.time() < max_time:
+                try:
+                    logging.info("Attempting to initialize JAX distributed system...")
+                    jax.distributed.initialize(**init_kwargs)
+                    _jax_distributed_initialized = True
+                except RuntimeError as e:
+                    err_str = str(e)
+                    if (
+                        "Failed to recognize coordinator" in err_str
+                        or "Barrier timed out" in err_str
+                    ):
+                        continue  # Retry. Sleep is handled by jax.distributed.initialze.
+                    raise
+            if not _jax_distributed_initialized:
+                raise RuntimeError(
+                    "Failed to initialize JAX distributed system within the specified timeout "
+                    f"({initialization_timeout} seconds)."
+                )
+        else:
+            jax.distributed.initialize(**init_kwargs)
+            _jax_distributed_initialized = True

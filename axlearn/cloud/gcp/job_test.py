@@ -15,21 +15,24 @@ import contextlib
 import os
 import subprocess
 import sys
-from typing import Union
+from typing import Optional, Type, Union
 from unittest import mock
 
 import pytest
 from absl import flags, logging
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 
+from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import configure_logging, generate_job_name
-from axlearn.cloud.gcp.bundler import GCSTarBundler
+from axlearn.cloud.gcp import bundler, job
+from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import CPUJob, TPUJob, _kill_ssh_agent, _start_ssh_agent
-from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, qrm_resource
+from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh_agent
+from axlearn.cloud.gcp.test_utils import mock_gcp_settings
+from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, infer_tpu_type, qrm_resource
 from axlearn.cloud.gcp.utils import common_flags, get_credentials
 from axlearn.cloud.gcp.vm import create_vm, delete_vm
-from axlearn.common.config import config_class
+from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.test_utils import TestCase
 
 
@@ -47,18 +50,18 @@ def _private_flags():
 FLAGS = flags.FLAGS
 
 
-class DummyRemoteTPUJob(TPUJob):
+class DummyRemoteTPUJob(TPUQRMJob):
     """A dummy TPU job."""
 
     def _execute(self) -> Union[subprocess.CompletedProcess, subprocess.Popen]:
         """Provisions a TPU and launches a command."""
-        cfg: TPUJob.Config = self.config
+        cfg: TPUQRMJob.Config = self.config
         bundle_id = self._bundler.bundle(cfg.name)
         resource = qrm_resource(get_credentials())
         create_queued_tpu(
             cfg.name,
             resource,
-            tpu_type=cfg.tpu_type,
+            tpu_type=infer_tpu_type(cfg.accelerator.instance_type),
             bundler_type=self._bundler.TYPE,
         )
         out = self._execute_remote_cmd(
@@ -81,16 +84,16 @@ class TPUJobTest(TestCase):
         atexit.register(delete_queued_tpu, jobname, resource)
         project = gcp_settings("project")
         zone = gcp_settings("zone")
-        cfg = DummyRemoteTPUJob.default_config().set(
+        cfg: DummyRemoteTPUJob.Config = DummyRemoteTPUJob.default_config().set(
             name=jobname,
             project=project,
             zone=zone,
             max_tries=1,
             retry_interval=60,
             bundler=GCSTarBundler.default_config(),
-            tpu_type=FLAGS.tpu_type,
             command="pip list",
         )
+        cfg.accelerator.instance_type = FLAGS.instance_type
         out = cfg.instantiate().execute()
         self.assertIn("axlearn", out.stdout)
 
@@ -175,6 +178,139 @@ class UtilTest(TestCase):
         finally:
             os.environ.clear()
             os.environ.update(old_environ)
+
+
+class TPUGKEJobTest(TestCase):
+    @property
+    def _mock_settings(self):
+        return {
+            "project": "settings-project",
+            "zone": "settings-zone",
+            "ttl_bucket": "settings-ttl-bucket",
+            "gke_cluster": "settings-cluster",
+            "gke_reservation": "settings-reservation",
+            "k8s_service_account": "settings-account",
+            "docker_repo": "settings-repo",
+            "default_dockerfile": "settings-dockerfile",
+        }
+
+    @contextlib.contextmanager
+    def _job_config(
+        self,
+        bundler_cls: Type[Bundler],
+        reservation: Optional[str] = None,
+        service_account: Optional[str] = None,
+    ):
+        with mock_gcp_settings([job.__name__, bundler.__name__], self._mock_settings):
+            fv = flags.FlagValues()
+            job.TPUGKEJob.define_flags(fv)
+            if reservation:
+                fv.set_default("reservation", reservation)
+            if service_account:
+                fv.set_default("service_account", service_account)
+            fv.mark_as_parsed()
+            cfg = job.TPUGKEJob.from_flags(fv)
+            cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
+            cfg.accelerator.instance_type = "tpu-v4-8"
+            yield cfg
+
+    @parameterized.product(
+        reservation=[None, "test"],
+        service_account=[None, "sa"],
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        wrap_bundler=[False, True],
+    )
+    def test_instantiate(self, reservation, service_account, bundler_cls, wrap_bundler):
+        class WrappedBundler(Bundler):
+            @config_class
+            class Config(Bundler.Config):
+                inner: Required[Bundler.Config] = REQUIRED
+
+        with self._job_config(
+            bundler_cls, reservation=reservation, service_account=service_account
+        ) as cfg:
+            self.assertEqual(cfg.reservation, reservation or self._mock_settings["gke_reservation"])
+            self.assertEqual(
+                cfg.service_account,
+                service_account or self._mock_settings.get("k8s_service_account", "default"),
+            )
+            # Should work with wrapped bundlers.
+            if wrap_bundler:
+                cfg.bundler = WrappedBundler.default_config().set(inner=cfg.bundler)
+            # Should be instantiable.
+            cfg.set(
+                project="test-project",
+                zone="test-zone",
+                command="",
+                max_tries=1,
+                retry_interval=1,
+                env_vars={"a": 1},
+                name="test",
+            )
+            gke_job: job.TPUGKEJob = cfg.instantiate()
+            self.assertEqual("v4-8", gke_job._tpu_type)  # pylint: disable=protected-access
+
+    @parameterized.product(
+        [
+            dict(env={}, reservation=None, expect_reserved=False),
+            dict(env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False),
+            dict(env={"BASTION_TIER": "0"}, reservation="test-reservation", expect_reserved=True),
+            dict(env={"BASTION_TIER": "1"}, reservation="test-reservation", expect_reserved=False),
+            dict(env={}, reservation="test-reservation", expect_reserved=False),
+        ],
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        enable_ici_resiliency=[True, False, None],
+    )
+    def test_build_pod(
+        self,
+        bundler_cls,
+        expect_reserved: bool,
+        enable_ici_resiliency: bool,
+        env: Optional[dict] = None,
+        reservation: Optional[str] = None,
+    ):
+        with mock.patch.dict("os.environ", env), self._job_config(bundler_cls) as cfg:
+            gke_job: job.TPUGKEJob = cfg.set(
+                reservation=reservation,
+                enable_tpu_ici_resiliency=enable_ici_resiliency,
+                name="test",
+            ).instantiate()
+            # pylint: disable-next=protected-access
+            pod_spec = gke_job._build_pod()["spec"]
+            node_selector = pod_spec["nodeSelector"]
+            # The reservation should be used only if scheduled as tier 0.
+            if expect_reserved:
+                self.assertEqual(
+                    reservation, node_selector.get("cloud.google.com/reservation-name", None)
+                )
+                self.assertNotIn("cloud.google.com/gke-spot", node_selector)
+                self.assertEqual([], pod_spec.get("tolerations", []))
+            else:
+                self.assertEqual("true", node_selector.get("cloud.google.com/gke-spot", None))
+                self.assertNotIn("cloud.google.com/reservation-name", node_selector)
+                tolerations = {
+                    kv["key"]: (kv["value"], kv["effect"]) for kv in pod_spec.get("tolerations", [])
+                }
+                self.assertEqual(
+                    ("true", "NoSchedule"), tolerations.get("cloud.google.com/gke-spot", None)
+                )
+
+            self.assertEqual(len(pod_spec["containers"]), 1)
+            container_env = pod_spec["containers"][0]["env"]
+            container_env = {kv["name"]: kv["value"] for kv in container_env}
+            if enable_ici_resiliency is not None:
+                expected = "true" if enable_ici_resiliency else "false"
+                self.assertEqual(
+                    expected,
+                    node_selector.get("cloud.google.com/gke-tpu-ici-resiliency", None),
+                )
+                self.assertEqual(
+                    expected,
+                    container_env.get("ENABLE_ICI_RESILIENCY"),
+                )
+            else:
+                self.assertNotIn("cloud.google.com/gke-tpu-ici-resiliency", node_selector)
+                self.assertNotIn("ENABLE_ICI_RESILIENCY", container_env)
 
 
 if __name__ == "__main__":

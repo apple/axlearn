@@ -1,21 +1,23 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests CLI utilities."""
+
 import shutil
+import subprocess
 import tempfile
 from io import StringIO
 from typing import List, Tuple
 from unittest import mock
 
 import pytest
-from absl.flags import argparse_flags
+from absl.flags import FlagValues, argparse_flags
 from absl.testing import parameterized
 
 from axlearn.cli.utils import CommandGroup, CommandType, _insert_flags, absl_main
 
 
 def _parse(argv: List[str]) -> argparse_flags.argparse.Namespace:
-    kwargs = dict(inherited_absl_flags={})
+    kwargs = dict(inherited_absl_flags=FlagValues())
     root = CommandGroup("root", argv=argv, **kwargs)
     root.add_flag("--root", undefok=True, action="store_true")
     root.add_flag("--root_default", undefok=True, default="some_value")
@@ -352,3 +354,53 @@ class TestUtils(parameterized.TestCase):
     def test_insert_flags_argv0(self, argv: List[str]):
         with self.assertRaises(AssertionError):
             _insert_flags(argv, ["--i", "100"])
+
+    def test_subprocess_argv(self):
+        argv = [self.root_module, "--i", '"hello && world"', "--", "test", "command"]
+        mock_args = mock.MagicMock(
+            command_type=CommandType.MODULE,
+            module=self.root_module,
+            argv=argv,
+        )
+        expected = ["python3", "-m", mock_args.module] + argv[1:]
+
+        # In the module case, test that argv retains quotes, e.g. "--i 'hello && world'".
+        with mock.patch.object(subprocess, "Popen", autospec=True) as mock_popen:
+            absl_main(mock_args)
+            self.assertEqual(1, len(mock_popen.call_args_list))
+            self.assertEqual((expected,), mock_popen.call_args[0])
+            self.assertDictContainsSubset({"text": True}, mock_popen.call_args[1])
+            self.assertEqual(self.root_module, mock_popen.call_args[1]["env"]["AXLEARN_CLI_NAME"])
+
+        shell_cases = [
+            # Test a basic shell case.
+            dict(
+                command=f"{self.root_module} --i 'hello && world' -- test command",
+                argv=[self.root_module],
+                expected=f"{self.root_module} --i 'hello && world' -- test command",
+            ),
+            # Command should include supplied argv.
+            dict(
+                command=self.root_module,
+                argv=[self.root_module, "--i", "hello && world", "--", "test", "command"],
+                expected=f"{self.root_module} --i 'hello && world' -- test command",
+            ),
+        ]
+        for test_case in shell_cases:
+            mock_args = mock.MagicMock(
+                command_type=CommandType.SHELL,
+                command=test_case["command"],
+                module=self.root_module,
+                argv=test_case["argv"],
+            )
+            expected = test_case["expected"]
+            with mock.patch.object(subprocess, "Popen", autospec=True) as mock_popen:
+                absl_main(mock_args)
+                self.assertEqual(1, len(mock_popen.call_args_list))
+                self.assertEqual((expected,), mock_popen.call_args[0])
+                self.assertDictContainsSubset(
+                    {"text": True, "shell": True}, mock_popen.call_args[1]
+                )
+                self.assertEqual(
+                    self.root_module, mock_popen.call_args[1]["env"]["AXLEARN_CLI_NAME"]
+                )

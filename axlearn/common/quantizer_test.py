@@ -7,7 +7,8 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests quantization layers and metrics."""
-# pylint: disable=no-self-use
+
+# pylint: disable=no-self-use,wrong-import-position,missing-module-docstring
 from typing import List
 
 import jax
@@ -16,6 +17,9 @@ import numpy as np
 import torch
 from absl.testing import absltest, parameterized
 from fairseq.modules import GumbelVectorQuantizer as fairseq_gumbel_vq
+
+# pylint: disable-next=protected-access
+from jax._src import prng as prng_interal
 
 from axlearn.common import schedule
 from axlearn.common.module import functional as F
@@ -45,9 +49,9 @@ _CODE_BOOK = jnp.array(
 
 
 def _create_prngkeyarray(key_data: List[int]) -> Tensor:
-    # pylint: disable-next=protected-access
-    return jax._src.prng.PRNGKeyArrayImpl(  # pytype: disable=module-attr
-        impl=jax.random.default_prng_impl(), key_data=jnp.array(key_data, dtype=jnp.uint32)
+    return jax.random.wrap_key_data(
+        jnp.array(key_data, dtype=jnp.uint32),
+        impl=prng_interal.threefry_prng_impl,
     )
 
 

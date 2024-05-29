@@ -13,28 +13,29 @@ requires-python = ">=3.9"
 # Every time we upgrade JAX, we should try to bring the rest to the newest versions.
 dependencies = [
     "attrs>=23.1.0", # We use `type` in `attrs.field`
-    "absl-py",
-    "chex<0.1.81",  # chex 0.1.81 depends on numpy>=1.25.0.
+    "absl-py==2.1.0",
+    "chex==0.1.86",  # chex 0.1.86 is required for jax 0.4.25.
     "importlab==0.7",  # breaks pytype on 0.8
-    "jax==0.4.21",
-    "jaxlib==0.4.21",
+    "jax==0.4.28",
+    "jaxlib==0.4.28",
     "nltk==3.7",  # for text preprocessing
-    "numpy<1.24",  # needed to pin to < 1.24; tf ragged_tensor depends on deprecated np.object.
+    "numpy==1.26.4",  # verified with tensorflow 2.14 RaggedTensor
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
     "protobuf>=3.20.3",
-    "tensorboard-plugin-profile==2.14.0",
+    "tensorboard-plugin-profile==2.15.1",
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
-    "tensorflow==2.14.0",
+    "tensorflow==2.16.1",
     "tensorflow-datasets>=4.9.2",
     # tensorflow-io 0.34.0 enabled macOS arm64 builds.
     "tensorflow-io>=0.34.0",
-    "tensorflow_text==2.14.0; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
-    "tensorstore>=0.1.21",  # used for supporting GDA checkpoints
+    "tensorflow_text==2.16.1; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
+    "tensorstore>=0.1.56",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions==4.9.0",  # needed for typing.Protocol. >4.9.0 runs into attribute error `__non_callable_proto_members__`.
-    "scipy==1.12.0",
+    "scipy==1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
     "seqio==0.0.18",  # used for inputs
+    "aqtp==0.4.0" # aqtp>=0.5.0 requires python>=3.10 due to the use of Union shorthand "|" in type hints
 ]
 
 [project.optional-dependencies]
@@ -53,7 +54,7 @@ dev = [
     "einops",
     "evaluate",
     "fairseq==0.12.2",  # test-only; note Apple Silicon start.md instructions parse this specifier '==', please be careful when upgrading.
-    "flax==0.7.4",  # for param converter and adapter
+    "flax==0.8.2",  # for param converter and adapter
     "isort",  # formatting
     "pre-commit",  # local pre commit hooks
     "pycocotools",  # COCO evaluation tools
@@ -62,13 +63,14 @@ dev = [
     "pytest-xdist",  # pytest plugin for test parallelism
     "pytype==2022.4.22",  # type checking
     "scikit-learn>=1.1.1",  # test-only
+    # Fix AttributeError: module 'scipy.linalg' has no attribute 'tril' and related scipy import errors.
     "scipy==1.12.0",
     "sentencepiece != 0.1.92",
     "tqdm",  # test-only
     "timm==0.6.12",  # DiT Dependency test-only
     "torch>=1.12.1",  # test-only
     "torchvision==0.16.1",  # test-only
-    "transformers==4.38.2",  # test-only
+    "transformers==4.40.1",  # test-only
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
 ]
@@ -76,19 +78,20 @@ dev = [
 gcp = [
     "cloud-tpu-client",  # for creating and managing TPUs.
     "crcmod",  # for file uploads.
+    "kubernetes",
     "google-api-core==2.17.1",
     "google-api-python-client==2.109.0",
-    "google-auth==2.23.0",
+    "google-auth==2.29.0",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
-    "pyOpenSSL>=22.1.0",  # compat with cryptography version.
-    "google-cloud-storage==2.11.0",
+    "google-cloud-storage==2.16.0",
     "google-cloud-core==2.3.3",
+    "pyOpenSSL>=22.1.0",  # compat with cryptography version.
 ]
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.4.21",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.4.28",  # must be >=0.4.19 for compat with v5p.
 ]
 # Vertex AI tensorboard.
 vertexai_tensorboard = [
@@ -102,10 +105,14 @@ vertexai_tensorboard = [
 ]
 # Dataflow dependencies.
 dataflow = [
-    "apache-beam==2.52.0",
+    "apache-beam==2.55.1",
     "apache-beam[gcp]",
     "google-apitools",  # for beam pipeline
     "orjson==3.9.10",
+]
+# GPU custom kernel dependency.
+gpu = [
+    "triton==2.1.0",
 ]
 
 [tool.flit.module]

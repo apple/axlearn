@@ -21,13 +21,12 @@ from typing import (
     Union,
 )
 
-import chex
 import jax
 from absl import logging
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 
-from axlearn.common import summary_writer, utils
+from axlearn.common import struct, summary_writer, utils
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import (
     REQUIRED,
@@ -359,8 +358,7 @@ class CompositeMetricCalculator(BaseMetricCalculator):
     actually read the new keys.
     """
 
-    @chex.dataclass
-    class Dependency:
+    class Dependency(struct.PyTreeNode):
         # Source calculator name.
         src: str
         # Destination calculator name.

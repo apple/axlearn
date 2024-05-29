@@ -14,9 +14,10 @@
   "character_coverage": 0.9995,
   "model_type": "bpe",
   "max_sentence_length": 32768,
+  "split_by_whitespace": false,
   "allow_whitespace_only_pieces": true,
   "remove_extra_whitespaces": false,
   "shuffle_input_sentence": false,
   "split_digits": true,
-  "normalization_rule_name": "nfkc"
+  "normalization_rule_name": "identity"
 }

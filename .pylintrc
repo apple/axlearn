@@ -19,7 +19,13 @@ persistent=no
 
 # List of plugins (as comma separated values of python modules names) to load,
 # usually to register additional checkers.
-load-plugins="pylint.extensions.docparams"
+# This used to have quotes on it which caused the error `bad-plugin-value` for
+# `pylint.extensions.docparams` sometimes. Removing the quotes fixes the issue,
+# but the quotes also seem to have disabled the plugin because it flags a lot of
+# noncompliant docstrings when the quotes are removed.
+# So we disable it for now.
+# TODO (markblee or apghml) Fix the docstrings and reenable pylint.
+# load-plugins=pylint.extensions.docparams
 
 # Use multiple processes to speed up Pylint.
 jobs=4

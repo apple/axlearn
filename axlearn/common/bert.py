@@ -439,7 +439,11 @@ def bert_transformer_config(
         The stack config.
     """
     base_cfg = base_cfg.clone() if base_cfg else StackedTransformerLayer.default_config()
-    layer_norm_epsilon = bert_layer_norm_epsilon(dtype=base_cfg.dtype)
+    layer_norm_epsilon = (
+        layer_norm_epsilon
+        if layer_norm_epsilon is not None
+        else bert_layer_norm_epsilon(dtype=base_cfg.dtype)
+    )
 
     layer_cfg = TransformerLayer.default_config()
     # Feed-forward transformer layer config.

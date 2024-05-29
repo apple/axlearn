@@ -29,7 +29,7 @@ Examples:
     axlearn gcp dataflow start \
         --name=$USER-dataflow \
         --bundler_spec=dockerfile=Dockerfile \
-        --bundler_spec=base_image=apache/beam_python3.10_sdk:2.52.0 \
+        --bundler_spec=base_image=apache/beam_python3.10_sdk:2.55.1 \
         --bundler_spec=target=dataflow \
         -- "'
         python3 -m apache_beam.examples.wordcount \
@@ -52,7 +52,7 @@ Examples:
             --name=$USER-dataflow \
             --dataflow_spec=runner=DirectRunner \
             --bundler_spec=dockerfile=Dockerfile \
-            --bundler_spec=base_image=apache/beam_python3.10_sdk:2.52.0 \
+            --bundler_spec=base_image=apache/beam_python3.10_sdk:2.55.1 \
             --bundler_spec=target=dataflow \
             -- "'
             rm -r /tmp/output_dir; \
@@ -154,7 +154,9 @@ class DataflowJob(GCPJob):
             # Buildkit is required for actual multi-stage '--target' (without it, docker will
             # attempt to build all stages up to the target).
             # https://docs.docker.com/engine/install/ubuntu/#install-using-the-convenience-script
+            # We use apt-get update and wait for apt lock to release (often held on first boot).
             "if [[ ! -x $(which docker) ]]; then "
+            "sudo apt-get -o DPkg::Lock::Timeout=60 update; "
             "curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh;"
             "fi"
         )
