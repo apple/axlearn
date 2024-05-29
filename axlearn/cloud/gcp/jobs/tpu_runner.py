@@ -566,6 +566,7 @@ def with_tpu_training_defaults(
         # Forces TensorStore to retry failed requests.
         TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60,
         TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES=256,
+        LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4",
     )
     vertexai_tb_uploader = None
     if is_vertexai_tensorboard_configured(flag_values=flag_values):
