@@ -12,7 +12,7 @@ from typing import Dict, Iterable, Tuple
 
 import apache_beam as beam
 import tensorflow as tf
-from absl import app, flags
+from absl import app
 from apache_beam.ml.inference.base import KeyedModelHandler, PredictionResult, RunInference
 from apache_beam.ml.inference.huggingface_inference import HuggingFaceModelHandlerKeyedTensor
 from apache_beam.options.pipeline_options import PipelineOptions
@@ -93,7 +93,7 @@ def main(argv=None):
             | "TokenizeSentence" >> beam.Map(lambda x: tokenize_sentence(x, tokenizer))
         )
 
-        result = (
+        _ = (
             tokenized_examples
             | "RunInference" >> RunInference(KeyedModelHandler(model_handler))
             | "PostProcess" >> beam.ParDo(PostProcessor(tokenizer))

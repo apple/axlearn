@@ -128,6 +128,7 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
 
 class PostProcessFn(beam.DoFn):
     """Defines the transformations needed for post processing."""
+
     def process(self, element):
         logging.info(f"Inference finished. Output type: {type(element)}")
         yield None
