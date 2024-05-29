@@ -1,4 +1,5 @@
 """An Apache Beam example pipeline to run batch inference jobs using a model trained with AXLearn.
+
 Command line options:
 --module: the same module used for training
 --config: the same config used for training
@@ -47,7 +48,6 @@ $ axlearn gcp dataflow start \
 
 import copy
 import logging
-import warnings
 from typing import Any, Dict, Optional, Sequence
 
 import apache_beam as beam
@@ -62,13 +62,12 @@ import axlearn.common.launch_trainer as trainer_utils
 from axlearn.common.inference import InferenceRunner, MethodRunner
 from axlearn.common.utils import NestedTensor
 
-warnings.filterwarnings("ignore")
-
 
 class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
-    """Defines how to load a model and run inference"""
+    """Defines how to load a custom checkpoint and run inference."""
 
     def __init__(self, flag_dict):
+        # Store absl FLAGS in a flag dictionary to avoid pickling issues
         self._flag_dict = flag_dict
 
     def _flag_values_from_dict(self, flag_values: dict) -> flags.FlagValues:
@@ -86,25 +85,21 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
     def load_model(self) -> MethodRunner:
         """Loads a pre-trained model in the desired type (MethodRunner in this case).
         Reference: https://github.com/apple/axlearn/blob/main/axlearn/common/inference.py#L54
-
-        Returns:
-          An instance of MethodRunner.
+        Returns an instance of MethodRunner.
         """
         # construct absl FlagValues from dict
         flag_values = self._flag_values_from_dict(self._flag_dict)
 
-        module_config = trainer_utils.get_trainer_config(flag_values=flag_values)
+        trainer_config = trainer_utils.get_trainer_config(flag_values=flag_values)
 
         # get InferenceRunner Config from Trainer Config and instantiate InferenceRunner
-        inference_runner_cfg = InferenceRunner.config_from_trainer(module_config)
+        inference_runner_cfg = InferenceRunner.config_from_trainer(trainer_config)
         inference_runner_cfg.init_state_builder.set(dir=flag_values.trainer_dir)
         inference_runner = InferenceRunner(cfg=inference_runner_cfg, parent=None)
 
-        # create Method Runner only once
-        method_runner = inference_runner.create_method_runner(
+        return inference_runner.create_method_runner(
             method="predict", prng_key=jax.random.PRNGKey(1)
         )
-        return method_runner
 
     def run_inference(
         self,
@@ -116,12 +111,12 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
         NestedTensor: https://github.com/apple/axlearn/blob/main/axlearn/common/utils.py#L56
 
         Args:
-          batch: A sequence of examples as NestedTensors.
-          model: An instance of a MethodRunner.
-          inference_args: Any additional arguments for an inference.
+            batch: A sequence of examples as NestedTensors.
+            model: An instance of a MethodRunner.
+            inference_args: Optional additional keyword arguments for inference.
 
         Returns:
-          A list of type MethodRunner.Output.
+            A list of method runner outputs.
         """
         logging.info("Running Inference...")
         output_list = []
@@ -132,6 +127,7 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
 
 
 class PostProcessFn(beam.DoFn):
+    """Defines the transformations needed for post processing."""
     def process(self, element):
         logging.info(f"Inference finished. Output type: {type(element)}")
         yield None
@@ -160,7 +156,7 @@ def get_examples() -> Sequence[NestedTensor]:
 
 
 def parse_flags(argv):
-    """Parse out arguments in addition to the defined absl flags
+    """Parse out Dataflow pipeline options in addition to the defined trainer-related absl flags.
     (can be found in axlearn/common/launch_trainer.py).
     Addition arguments are returned to the 'main' function by 'app.run'.
     """

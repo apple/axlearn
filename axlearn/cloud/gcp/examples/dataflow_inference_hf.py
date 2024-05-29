@@ -1,7 +1,7 @@
 """An Apache Beam example pipeline to run batch inference jobs with a HuggingFace model.
+
 Reference: https://cloud.google.com/dataflow/docs/notebooks/
 run_inference_huggingface#runinference_with_a_pretrained_model_from_hugging_face_hub
-
 
 """
 

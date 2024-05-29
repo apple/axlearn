@@ -78,7 +78,6 @@ COPY . .
 COPY --from=apache/beam_python3.9_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
 ENTRYPOINT ["/opt/apache/beam/boot"]
 
-
 ################################################################################
 # TPU container spec.                                                          #
 ################################################################################
