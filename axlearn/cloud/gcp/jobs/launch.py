@@ -531,7 +531,7 @@ def _get_launcher_or_exit(*, action: str, instance_type: str, gcp_api: str) -> L
 
     If there are multiple matches, the first one in the registry is returned.
     """
-    # Idenfity launcher from instance type.
+    # Identify launcher from instance type.
     for launcher in _LAUNCHERS:
         m = maybe_instantiate(launcher.matcher)
         if m(action=action, instance_type=instance_type, gcp_api=gcp_api):

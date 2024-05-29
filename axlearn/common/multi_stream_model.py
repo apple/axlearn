@@ -199,7 +199,7 @@ class MultiStreamModel(BaseModel):
                 A scalar Tensor representing the total loss.
                 A NestedTensor representing additional metrics (currently none).
         """
-        # Disentangling the foward and the predict is based on the following thoughts:
+        # Disentangling the forward and the predict is based on the following thoughts:
         # User might override the predict function for some specific tasks, the predict
         #       function could produce redundant outputs that might interfere the _fusion_network.
         input_batch = self._forward_all_stream_encoder(input_batch)

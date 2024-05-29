@@ -124,7 +124,7 @@ class Bundler(Configurable):
         exclude_paths = set(canonicalize_to_list(cfg.exclude))
 
         def copytree(src: pathlib.Path, dst: pathlib.Path, exclude: Iterable[str], root=None):
-            """Recusively copies `src` to `dst`.
+            """Recursively copies `src` to `dst`.
 
             Args:
                 src: A path to a file or directory.

@@ -45,7 +45,7 @@ class COCOWrapper(coco.COCO):
             eval_type: either 'box' or 'mask'.
             annotation_file: a JSON file that stores annotations of the eval dataset.
                 This is required if `gt_dataset` is not provided.
-            gt_dataset: the groundtruth eval datatset in COCO API format.
+            gt_dataset: the groundtruth eval dataset in COCO API format.
 
         Raises:
             ValueError: If annotation_file and gt_dataset are both specified or both left
@@ -264,7 +264,7 @@ def convert_groundtruths_to_coco_dataset(
                 masks depending on which one is available.
             - masks: a list of numpy arrays of string of shape [batch_size, K],
         label_map: (optional) a dictionary that defines items from the category id to the category
-            name. If `None`, collect the category mappping from the `groundtruths`.
+            name. If `None`, collect the category mapping from the `groundtruths`.
 
     Returns:
         coco_groundtruths: the groundtruth dataset in COCO format.

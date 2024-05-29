@@ -186,7 +186,7 @@ def _gather_topk_beams(
 
 class BrevityPenaltyFn(Protocol):
     def __call__(self, *, length: Tensor, raw_scores: Tensor) -> Tensor:
-        """Compute the brevity penality based on the length of a decoding and its raw scores.
+        """Compute the brevity penalty based on the length of a decoding and its raw scores.
 
         Args:
             length: A tensor of shape broadcastable to [batch_size, beam_size].
@@ -490,7 +490,7 @@ def beam_search_decode(
     Raises:
         NotImplementedError: If an unsupported loop is provided.
     """
-    # If brevity_penalty is set as None, we explictly use the default function
+    # If brevity_penalty is set as None, we explicitly use the default function
     # without length normalization.
     if brevity_penalty is None:
         brevity_penalty = brevity_penalty_fn(alpha=0.0)

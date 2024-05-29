@@ -171,7 +171,7 @@ def with_qrm_tpu_state(fn: JobsToTableFn) -> JobsToTableFn:
 def _qrm_tpu_state_from_jobs(
     jobs: Dict[str, BastionJob], tpu_infos: Optional[List[TpuInfo]] = None
 ) -> Dict[str, Any]:
-    """Retrives QRM TPU states for the given jobs."""
+    """Retrieves QRM TPU states for the given jobs."""
     if tpu_infos is None:
         tpu_infos = list_tpu_info(tpu_resource(get_credentials()))
 
@@ -224,7 +224,7 @@ def with_k8s_jobset_state(fn: JobsToTableFn, *, namespace: str) -> JobsToTableFn
 def _k8s_jobset_state_from_jobs(
     jobs: Dict[str, BastionJob], *, namespace: str, k8s_jobsets: Optional[Dict[str, list]] = None
 ) -> List[str]:
-    """Retrives k8s jobset states for the given jobs."""
+    """Retrieves k8s jobset states for the given jobs."""
     if k8s_jobsets is None:
         k8s_jobsets = list_k8s_jobsets(namespace=namespace)
 

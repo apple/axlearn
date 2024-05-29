@@ -48,8 +48,8 @@ class TextEmbeddingEncoder(nn.Module):
             attention_mask: Attention mask in shape of [batch_size, max_seq_len].
 
         Returns:
-            Output embeddings in shape of [batch_size, output_dim] where ouput_dim==hidden_size when
-                there is no linear projection, projection_dim otherwise.
+            Output embeddings in shape of [batch_size, output_dim] where output_dim==hidden_size
+                when there is no linear projection, projection_dim otherwise.
         """
         base_model_outputs = self.base_model(
             input_ids=input_ids, attention_mask=attention_mask, return_dict=True

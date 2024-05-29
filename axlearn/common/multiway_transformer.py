@@ -265,7 +265,7 @@ class MultiModalEncoder(BaseLayer):
         visual_pos_emb: InstantiableConfig = LearnedPositionalEmbedding.default_config()
         # Text embedding.
         text_embed: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config()
-        # The modality type specifc embedding config.
+        # The modality type specific embedding config.
         modality_emb: InstantiableConfig = Embedding.default_config()
         # Input dropout config.
         input_dropout: InstantiableConfig = Dropout.default_config().set(rate=0.1)
@@ -345,7 +345,7 @@ class MultiModalEncoder(BaseLayer):
                 position for the pachified image.
 
         Returns:
-            A float Tensor of shape (batch, legnth, output_dim) representing the visual embedding.
+            A float Tensor of shape (batch, length, output_dim) representing the visual embedding.
         """
         cfg = self.config
         batch_size = data.shape[0]
@@ -382,7 +382,7 @@ class MultiModalEncoder(BaseLayer):
                 1 or IMAGE_MODALITY: representing images in shape [batch, height, width, channels].
                 2 or TEXT_IMAGE_MODALITY: a dict that contains text-image multimodal data with the
                     same format as monomodal data.
-            is_masked: a boolen Tensor in shape (batch, length), representing masked positions for
+            is_masked: a boolean Tensor in shape (batch, length), representing masked positions for
                 the patchifie input sequence.
 
         Returns:

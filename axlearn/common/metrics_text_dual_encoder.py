@@ -158,7 +158,7 @@ def calculate_retrieval_metrics_from_similarity_matrix(
             scores=sim_with_masks, relevance_labels=relevance_labels, top_ks=top_ks_for_ndcg
         )
         for k, ndcg_metric in ndcg_metrics.items():
-            # Calculate average nDCG at each postion k.
+            # Calculate average nDCG at each position k.
             metrics.update(
                 calculate_mean_metrics(
                     metric_name=f"ndcg@{k}",

@@ -445,7 +445,7 @@ class IouSimilarity:
 
 
 class TargetGather:
-    """Targer gather for dense object detector."""
+    """Target gather for dense object detector."""
 
     def __call__(
         self,
@@ -759,7 +759,7 @@ class BoxList:
 
         Returns:
             Number of boxes held in collection (integer) or None if this is not
-            inferrable at graph construction time.
+            inferable at graph construction time.
         """
         return self.data["boxes"].get_shape().dims[0].value
 

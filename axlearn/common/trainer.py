@@ -410,7 +410,7 @@ class SpmdTrainer(Module):
                 last training step. If None or False, do not force run evalers and no evaler
                 summaries are returned; if True, force run all evalers at the last training step
                 and return summaries; if given as a set of strings, force run all the evalers
-                with the name in the set at teh last training step and return summaries.
+                with the name in the set at the last training step and return summaries.
 
         Returns:
             None if no training is run or a dict otherwise.

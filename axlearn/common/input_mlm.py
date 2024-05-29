@@ -317,7 +317,7 @@ def apply_mlm_mask(
         # 1. Input already starts with a start-of-word. Masking behavior is unchanged, as the added
         #    dummy token is masked independently and then discarded.
         # 2. Input does not start with, but contains, a start-of-word. The leading segment is then
-        #    treated as a word. This is acceptible given that the segment is likely truncated from
+        #    treated as a word. This is acceptable given that the segment is likely truncated from
         #    an actual start-of-word, e.g. from the previous document.
         # 3. Input does not contain a start-of-word at all. To prevent masking the entire sequence,
         #    this falls back to masking tokens independently (see tf.cond).

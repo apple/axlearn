@@ -1244,11 +1244,11 @@ class InferMeshShapeTest(TestCase):
         mesh_shape = infer_mesh_shape((4, 1, 8, 1))
         self.assertEqual(mesh_shape, (4, 1, 8, 1))
 
-        # When there is mutiple -1
+        # When there is multiple -1
         with self.assertRaises(ValueError):
             infer_mesh_shape((-1, 1, -1, 8))
 
-        # When num_devices is not a mutiple of products of mesh_shape
+        # When num_devices is not a multiple of products of mesh_shape
         with self.assertRaises(ValueError):
             infer_mesh_shape((-1, 1, 8, 1), num_devices=4)
 

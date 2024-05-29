@@ -154,7 +154,7 @@ class MaskTest(absltest.TestCase):
         dim = 32
         logits = jnp.asarray(np.random.random(size=[batch_size, num_heads, dim]))
 
-        # Tesing for biases = None
+        # Testing for biases = None
         masked_logit = apply_attention_logit_biases(logits, attention_logit_biases=None)
         self.assertEqual(masked_logit.dtype, logits.dtype)
         np.testing.assert_array_equal(logits, masked_logit)
@@ -951,7 +951,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
     def llama_ref_precompute_freqs_cis(
         self, *, dim: int, end: int, theta: float = 10000.0
     ) -> torch.Tensor:
-        """Reference LLaMA-1 implemention.
+        """Reference LLaMA-1 implementation.
 
         Ref:
         https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L47-L52

@@ -62,7 +62,7 @@ def _factored_dims(
 
 @dataclasses.dataclass
 class _UpdateResult:
-    """Opaque containter that is not traversed by jax.tree_util.tree_map."""
+    """Opaque container that is not traversed by jax.tree_util.tree_map."""
 
     update: Tensor  # the update to apply to params.
     v_row: Tensor  # used for factored params.

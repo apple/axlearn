@@ -1,6 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
-"""Utilites used for testing."""
+"""Utilities used for testing."""
 import contextlib
 import copy
 import dataclasses

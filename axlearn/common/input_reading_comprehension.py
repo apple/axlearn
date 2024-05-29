@@ -380,7 +380,7 @@ def convert_example_to_features(
         doc_tokens, char_to_doc_token_offset = _get_doc_tokens_and_char_offsets(context=context)
 
         # Use the subtokenize of the tokenizer to subtokenize each whitespace-delimited token into
-        # their respective subtokens. Additionally computes the subtoken indicies the answer span by
+        # their respective subtokens. Additionally computes the subtoken indices the answer span by
         # mapping from the original answer character indices to their subtoken indices.
         (
             doc_subtokens,
@@ -499,7 +499,7 @@ def _get_subtokens_and_answer_subtoken_indices(
     """Subtokenize and return the answer subtoken indices
 
     Use the subtokenize of the tokenizer to subtokenize each whitespace-delimited token into
-    their respective subtokens. Additionally computes the subtoken indicies the answer span by
+    their respective subtokens. Additionally computes the subtoken indices the answer span by
     mapping from the original answer character indices to their subtoken indices.
 
     Args:
@@ -509,7 +509,7 @@ def _get_subtokens_and_answer_subtoken_indices(
             the document tokens.
         answer_start_positions: A list containing an int value indicating the index of the start
             character of the answer in the context.
-        answer_texts: A list containing a string value indiciating the answer text in the context.
+        answer_texts: A list containing a string value indicating the answer text in the context.
         is_training: Indicate if these are training examples.
 
     Returns:
@@ -532,7 +532,7 @@ def _get_subtokens_and_answer_subtoken_indices(
             doc_subtokens.append(subtoken)
 
     if is_training and len(answer_start_positions) > 0:
-        # Compute the subtoken indicies the answer span by mapping from the original answer
+        # Compute the subtoken indices the answer span by mapping from the original answer
         # character indices to their context token indices, then to their subtoken indices.
         answer_token_start = char_to_doc_token_offset[answer_start_positions[0]]
         answer_token_end = char_to_doc_token_offset[

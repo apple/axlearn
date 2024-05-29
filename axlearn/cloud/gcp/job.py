@@ -551,7 +551,7 @@ class TPUGKEJob(GKEJob):
             metadata=dict(
                 name=cfg.name,
                 annotations={
-                    # The exlusive topology annotation will ensure that all Pods will have affinity
+                    # The exclusive topology annotation will ensure that all Pods will have affinity
                     # rules added that will ensure that they are fully scheduled on the same
                     # pod-slice node-pools.
                     "alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",

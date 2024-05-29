@@ -107,7 +107,7 @@ def setup(
                         "Failed to recognize coordinator" in err_str
                         or "Barrier timed out" in err_str
                     ):
-                        continue  # Retry. Sleep is handled by jax.distributed.initialze.
+                        continue  # Retry. Sleep is handled by jax.distributed.initialize.
                     raise
             if not _jax_distributed_initialized:
                 raise RuntimeError(

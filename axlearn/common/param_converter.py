@@ -798,8 +798,8 @@ def _parameters_from_deberta_for_sequence_classification(
 ) -> NestedTensor:
     model = _parameters_from_deberta_model(src.deberta, dst_layer=dst_layer)
     pooler = _parameters_from_deberta_context_pooler(src.pooler)
-    classifer = torch_to_axlearn(src.classifier)
-    return dict(encoder=model["encoder"], head=dict(pooler=pooler, output=classifer))
+    classifier = torch_to_axlearn(src.classifier)
+    return dict(encoder=model["encoder"], head=dict(pooler=pooler, output=classifier))
 
 
 def _parameters_from_deberta_embeddings(

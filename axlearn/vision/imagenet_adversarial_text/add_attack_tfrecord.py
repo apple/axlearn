@@ -66,7 +66,7 @@ def _decode_record_and_attack(record: Dict[str, tf.Tensor], verbose: bool = Fals
     if verbose:
         print(f"image shape: {img.shape}")
 
-    new_category = sc.most_similiar_class(target)
+    new_category = sc.most_similar_class(target)
 
     new_text = imagenet_classes[new_category]
     new_img = util_im_process.write_text_to_image(img, new_text)

@@ -294,7 +294,7 @@ class DenseGeneralBaseLayer(BaseLayer):
         # QuantizedDotGeneral config. Replace jax.lax.dot_general with
         # dot_general_maybe_quantized from this layer to achieve
         # hardware accelerated quantized dot_general.
-        # TODO(jiarui): Siwtch to ConfigOr[Protocol] which defines the implementation of
+        # TODO(jiarui): Switch to ConfigOr[Protocol] which defines the implementation of
         #  dot_general(subscript, activation, kernel) (which can be a layer) to generalize the API.
         quantized_dot_general: Optional[QuantizedDotGeneral.Config] = None
 
