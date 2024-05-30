@@ -513,7 +513,7 @@ class BaseLayerTest(TestCase):
 class ComputeFanAxesTest(TestCase):
     """Tests compute_fan_axes."""
 
-    class DefaultFanLayer(BaseLayer):
+    class BaseFanLayer(BaseLayer):
         """A layer using default _compute_fan_axes."""
 
         def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
@@ -524,13 +524,19 @@ class ComputeFanAxesTest(TestCase):
                 ),
             }
 
-    class CustomFanLayer(DefaultFanLayer):
+    class ConvFanLayer(BaseFanLayer):
+        """A layer with convolution-like FanAxes (no batched axis)."""
+
+        def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> FanAxes:
+            return FanAxes(in_axis=-2, out_axis=-1)
+
+    class CustomFanLayer(BaseFanLayer):
         """A layer with FanAxes (no batched axis)."""
 
         def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> FanAxes:
             return FanAxes(in_axis=(1, 2), out_axis=3)
 
-    class BatchedCustomFanLayer(DefaultFanLayer):
+    class BatchedCustomFanLayer(BaseFanLayer):
         """A layer with FanAxes (with batched axis)."""
 
         def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> FanAxes:
@@ -538,7 +544,12 @@ class ComputeFanAxesTest(TestCase):
 
     @parameterized.parameters(
         (
-            DefaultFanLayer,
+            BaseFanLayer,
+            None,
+            None,
+        ),
+        (
+            ConvFanLayer,
             FanAxes(in_axis=-2, out_axis=-1),
             {
                 "fan_in": 6 * 4 * 4 * 8,
@@ -580,20 +591,30 @@ class ComputeFanAxesTest(TestCase):
                     layer: BaseLayer = cfg.instantiate(parent=None)
                     # pylint: disable-next=protected-access
                     param_spec_map = layer._create_layer_parameter_specs()
-                    self.assertEqual(
-                        # pylint: disable-next=protected-access
-                        layer._compute_fan_axes("weight", param_spec_map["weight"]),
-                        fan_axes,
-                    )
-                    spec = dataclasses.replace(param_spec_map["weight"], fan_axes=fan_axes)
-                    self.assertEqual(spec.fans(), fans)
-                    layer_params = layer.initialize_parameters_recursively(jax.random.PRNGKey(1))
-                    weight = layer_params["weight"]
-                    fan = fans[fan_type]
-                    self.assertEqual(weight.dtype, jnp.float32)
-                    expected_std = scale / math.sqrt(fan)
-                    actual_std = np.std(weight)
-                    self.assertBetween(actual_std, expected_std / 1.5, expected_std * 1.5)
+                    if cls == ComputeFanAxesTest.BaseFanLayer:
+                        with self.assertRaisesRegex(
+                            NotImplementedError,
+                            "_compute_fan_axes requires weight parameters to have exactly 2 axes",
+                        ):
+                            # pylint: disable-next=protected-access
+                            layer._compute_fan_axes("weight", param_spec_map["weight"])
+                    else:
+                        self.assertEqual(
+                            # pylint: disable-next=protected-access
+                            layer._compute_fan_axes("weight", param_spec_map["weight"]),
+                            fan_axes,
+                        )
+                        spec = dataclasses.replace(param_spec_map["weight"], fan_axes=fan_axes)
+                        self.assertEqual(spec.fans(), fans)
+                        layer_params = layer.initialize_parameters_recursively(
+                            jax.random.PRNGKey(1)
+                        )
+                        weight = layer_params["weight"]
+                        fan = fans[fan_type]
+                        self.assertEqual(weight.dtype, jnp.float32)
+                        expected_std = scale / math.sqrt(fan)
+                        actual_std = np.std(weight)
+                        self.assertBetween(actual_std, expected_std / 1.5, expected_std * 1.5)
 
     def test_fan_axes_in_create_parameter_specs_recursively(self):
         layer_cfg = self.BatchedCustomFanLayer.default_config().set(name="test")
