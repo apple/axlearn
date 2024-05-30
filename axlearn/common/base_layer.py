@@ -459,13 +459,12 @@ class BaseLayer(Module):
             params = self._param_noise.apply(prng_key, params)
         return params
 
-    # pylint: disable-next=no-self-use
     def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
         if not name.endswith("weight"):
             return None
-        if len(parameter_spec.shape) < 2:
+        if len(parameter_spec.shape) != 2:
             raise NotImplementedError(
-                "Default _compute_fan_axes requires weight parameters to have at least 2 axes "
+                "Default _compute_fan_axes requires weight parameters to have exactly 2 axes "
                 f"shape({name}) = {parameter_spec.shape}"
             )
         return FanAxes(in_axis=-2, out_axis=-1)
