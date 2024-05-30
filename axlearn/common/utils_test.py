@@ -844,10 +844,10 @@ class ReadPerParamSettingsTest(TestCase):
         self.named_trainer_configs = lambda: {"test": config_fn}
         weight_decays = read_per_param_settings(module=self, config_name="test")
         self.assertIn("weight_decay_scale", weight_decays)
-        self.assertEqual(weight_decays["weight_decay_scale"]["child1"]["weight"], 1.0)
-        self.assertEqual(weight_decays["weight_decay_scale"]["child1"]["bias"], 0.0)
-        self.assertEqual(weight_decays["weight_decay_scale"]["child2"]["weight"], 1.0)
-        self.assertEqual(weight_decays["weight_decay_scale"]["child2"]["bias"], 0.0)
+        self.assertDictEqual(
+            dict(child1=dict(weight=1.0, bias=0.0), child2=dict(weight=1.0, bias=0.0)),
+            weight_decays["weight_decay_scale"]["root"],
+        )
 
     @parameterized.parameters(0.0, 3.5)
     def test_l2_regularizer(self, l2_regularizer_weight):
@@ -876,11 +876,10 @@ class ReadPerParamSettingsTest(TestCase):
         settings = read_per_param_settings(module=self, config_name="test")
         if l2_regularizer_weight:
             self.assertIn("l2_regularizer_scale", settings)
-            l2_regs = settings["l2_regularizer_scale"]
-            self.assertEqual(l2_regs["bias"], 0.0)
-            self.assertEqual(l2_regs["scale"], 1.0)
-            self.assertEqual(l2_regs["moving_mean"], 0.0)
-            self.assertEqual(l2_regs["moving_variance"], 0.0)
+            self.assertDictEqual(
+                dict(bias=0.0, scale=1.0, moving_mean=0.0, moving_variance=0.0),
+                settings["l2_regularizer_scale"]["root"],
+            )
         else:
             self.assertNotIn("l2_regularizer_scale", settings)
 
@@ -911,9 +910,10 @@ class ReadPerParamSettingsTest(TestCase):
         self.named_trainer_configs = lambda: {"test": config_fn}
         settings = read_per_param_settings(module=self, config_name="test")
         self.assertIn("l2_regularizer_scale", settings)
-        l2_regs = settings["l2_regularizer_scale"]
-        self.assertEqual(l2_regs["layer"]["bias"], 1.0)
-        self.assertEqual(l2_regs["layer"]["scale"], 0.0)
+        self.assertDictEqual(
+            dict(layer=dict(bias=1.0, scale=0.0)),
+            settings["l2_regularizer_scale"]["root"],
+        )
 
     def test_two_per_param_scales(self):
         def config_fn():
@@ -957,12 +957,10 @@ class ReadPerParamSettingsTest(TestCase):
         settings = read_per_param_settings(module=self, config_name="test")
         # l2_per_param_scale.
         self.assertIn("l2_regularizer_scale", settings)
-        l2_regs = settings["l2_regularizer_scale"]
-        self.assertDictEqual(l2_regs, {"bias": 0.0, "weight": 1.0})
+        self.assertDictEqual({"bias": 0.0, "weight": 1.0}, settings["l2_regularizer_scale"]["root"])
         # freeze_per_param_scale.
         self.assertIn("update_scale", settings)
-        update_scales = settings["update_scale"]
-        self.assertDictEqual(update_scales, {"bias": 1.0, "weight": 0.0})
+        self.assertDictEqual({"bias": 1.0, "weight": 0.0}, settings["update_scale"]["root"])
 
     def test_learner_update_types(self):
         def config_fn():
@@ -990,8 +988,104 @@ class ReadPerParamSettingsTest(TestCase):
         )
         # learner_update_type.
         self.assertDictEqual(
-            all_per_param_settings["learner_update_type"],
             {"bias": learner.UpdateType.ALL_UPDATES, "weight": learner.UpdateType.ALL_UPDATES},
+            all_per_param_settings["learner_update_type"]["learner"],
+        )
+
+    def test_composite_learner(self):
+        def config_fn():
+            trainer_cfg = SpmdTrainer.default_config()
+            trainer_cfg.model = _TestParentLayer.default_config().set(name="test")
+            trainer_cfg.model.child1.bias = False
+
+            freeze_per_param_scale = config_for_function(optimizers.per_param_scale_by_path).set(
+                description="update_scale",
+                scale_by_path=[
+                    (".*bias.*", 0),
+                ],
+            )
+            opt1_cfg = config_for_function(optimizers.sgd_optimizer).set(
+                learning_rate=0.1,
+                decouple_weight_decay=0.01,
+            )
+            opt2_cfg = config_for_function(optimizers.chain).set(
+                args=[
+                    opt1_cfg.clone(decouple_weight_decay=10.0),
+                    config_for_function(optimizers.scale_update_per_param).set(
+                        per_param_scale=freeze_per_param_scale
+                    ),
+                ]
+            )
+            trainer_cfg.learner = learner.CompositeLearner.default_config().set(
+                learners={
+                    "learner1": learner.Learner.default_config().set(
+                        optimizer=opt1_cfg,
+                        update_rules=[
+                            # Freeze weight.
+                            (".*weight.*", learner.UpdateType.NO_UPDATE),
+                        ],
+                    ),
+                    "learner2": learner.Learner.default_config().set(optimizer=opt2_cfg),
+                },
+                rules=[("child1.*", "learner1"), ("child2.*", "learner2")],
+            )
+            return trainer_cfg
+
+        # pylint: disable-next=attribute-defined-outside-init
+        self.named_trainer_configs = lambda: {"test": config_fn}
+        all_per_param_settings = read_per_param_settings(module=self, config_name="test")
+        # read_per_param_settings returns a dictionary with setting_type as keys, and values of
+        # a dict that maps learner path to per_parameter_settings of that setting_type.
+        self.assertDictEqual(
+            # The length of the per_parameter_settings is determined by the number of times
+            # a setting_type is registered. For example learner_update_types are registered in
+            # both sub-learners of the composite learner, thus of length 2.
+            dict(learner_rule=1, learner_update_type=2, weight_decay_scale=2, update_scale=1),
+            {k: len(v) for k, v in all_per_param_settings.items()},
+        )
+        # The learner rule per_param_settings. Parameters of child 1 are mapped to learner1, and
+        # parameters of child 2 are mapped to learner2.
+        self.assertDictEqual(
+            dict(child1=dict(weight="learner1"), child2=dict(weight="learner2", bias="learner2")),
+            all_per_param_settings["learner_rule"]["learner"],
+        )
+
+        # learner_update_type has 2 entries, one from each learner.
+        # In learner1's update_type, parameters associated with learner2 are pruned.
+        self.assertDictEqual(
+            # child2 is pruned from the settings.
+            dict(child1=dict(weight=learner.UpdateType.NO_UPDATE)),
+            all_per_param_settings["learner_update_type"]["learner.learner1"],
+        )
+        # In learner2's update_type, parameters associated with learner1 are pruned.
+        self.assertDictEqual(
+            # child1 is pruned.
+            dict(
+                child2=dict(
+                    weight=learner.UpdateType.ALL_UPDATES, bias=learner.UpdateType.ALL_UPDATES
+                )
+            ),
+            all_per_param_settings["learner_update_type"]["learner.learner2"],
+        )
+        # weight_decay_scale has 2 entries, one from each learner.
+        # In learner1's weight_decay_scale, parameters associated with learner2 are pruned.
+        self.assertDictEqual(
+            # child1 weight has update_type learner.UpdateType.NO_UPDATE,
+            # thus has weight_decay as None. child2 is pruned.
+            dict(child1=dict(weight=None)),
+            # The key is determined from current_context, thus `root.learner1`.
+            all_per_param_settings["weight_decay_scale"]["root.learner1"],
+        )
+        # In learner2's weight_decay_scale, parameters associated with learner1 are pruned.
+        self.assertDictEqual(
+            # child1 is pruned.
+            dict(child2=dict(weight=1.0, bias=1.0)),
+            all_per_param_settings["weight_decay_scale"]["root.learner2"],
+        )
+        # update scale has 1 entry from learner2.
+        self.assertDictEqual(
+            dict(child2={"bias": 0.0, "weight": 1.0}),
+            all_per_param_settings["update_scale"]["root.learner2"],
         )
 
 

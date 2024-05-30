@@ -1,4 +1,4 @@
-====================weight_decay_scale====================
+====================weight_decay_scale root====================
 backbone/stem/conv1/weight: 1.0
 backbone/stem/norm1/bias: 0
 backbone/stem/norm1/moving_mean: 0
