@@ -1885,7 +1885,7 @@ def adastar_optimizer(
 
         # First compute raw updates.
         raw_updates, pps_tree = _split_update_results(
-            vectorized_tree_map(
+            jax.tree_util.tree_map(
                 lambda g, s: _raw_updates(grad=g, pps=s),
                 grads,
                 state.pps,
@@ -1898,7 +1898,7 @@ def adastar_optimizer(
         raw_updates, _ = clip_fn(raw_updates, None, params)
         # Compute smoothed updates.
         smoothed_updates, pps_tree = _split_update_results(
-            vectorized_tree_map(
+            jax.tree_util.tree_map(
                 lambda g, s: _smoothed_updates(raw_updates=g, pps=s),
                 raw_updates,
                 pps_tree,
