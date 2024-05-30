@@ -1,4 +1,8 @@
 # Copyright © 2023 Apple Inc.
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests audio frontends."""
 
