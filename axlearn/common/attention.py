@@ -362,6 +362,16 @@ class LearnedPositionalEmbedding(BaseLayer):
             )
         )
 
+    def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
+        if not name.endswith("weight"):
+            return None
+        if len(parameter_spec.shape) != 3:
+            raise NotImplementedError(
+                "_compute_fan_axes requires weight parameters to have exactly 3 axes "
+                f"shape({name}) = {parameter_spec.shape}"
+            )
+        return FanAxes(batch_axis=0, in_axis=1, out_axis=2)
+
     def embeddings(self) -> Tensor:
         """Returns weights of shape cfg.shape + [dim]."""
         return self.parameters["weight"].squeeze(0)
