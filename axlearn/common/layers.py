@@ -9,6 +9,10 @@
 # bzhangGo/rmsnorm:
 # Copyright (c) 2019, Biao Zhang. All rights reserved.
 # Licensed under the BSD 3-Clause License.
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
 
 # pylint: disable=too-many-lines
 """Basic layers."""
