@@ -563,6 +563,10 @@ def with_tpu_training_defaults(
         NUM_TPU_SLICES=flag_values.num_replicas,
         XLA_FLAGS=f"--xla_dump_to=/output/{cfg.name}/xla",
         TF_CPP_MIN_LOG_LEVEL=0,
+        # Necessary for surfacing FATAL TPU errors.
+        TPU_STDERR_LOG_LEVEL=0,
+        # Default; see https://cloud.google.com/tpu/docs/troubleshooting/trouble-tf#debug_logs
+        TPU_MIN_LOG_LEVEL=0,
         # Forces TensorStore to retry failed requests.
         TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60,
         TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES=256,
