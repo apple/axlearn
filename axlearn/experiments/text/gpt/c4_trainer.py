@@ -43,6 +43,7 @@ from typing import Dict
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
 from axlearn.common.trainer import SpmdTrainer
+from axlearn.common.utils import get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
 from axlearn.experiments.text.gpt import fuji
 from axlearn.experiments.text.gpt.common import (
@@ -100,6 +101,8 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
             vocab_cfg=vocab_cfg,
             preprocessor=config_for_function(lm_text_preprocessor).set(max_padding_fraction=0.5),
         )
+        if get_data_dir() == "FAKE":
+            train_input_source.preprocessor.shuffle_buffer_size = 0
         for model_size in fuji.MODEL_SIZES:
             config_name = make_config_name(
                 arch=arch, model_size=model_size, version=f"v{version.value}"
@@ -118,6 +121,22 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                 ),
                 **kwargs,
             )
+            if model_size == "test":
+
+                def wrapper(config_name: str = config_name):
+                    trainer_cfg: SpmdTrainer.Config = config_map[config_name]()
+                    trainer_cfg.max_step = 5
+                    # Make learning rate large to accentuate any differences.
+                    trainer_cfg.learner.optimizer.args[1].learning_rate = 0.3
+                    trainer_cfg.learner.optimizer.args[1].update_schedule = 1
+                    trainer_cfg.vlog = 1
+                    return trainer_cfg
+
+                config_map[
+                    make_config_name(
+                        arch=arch, model_size="golden-run-test", version=f"v{version.value}"
+                    )
+                ] = wrapper
             if model_size == "7B":
 
                 def make_single_host_config(base_config_name: str) -> SpmdTrainer.Config:
