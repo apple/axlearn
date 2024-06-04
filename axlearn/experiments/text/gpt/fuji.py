@@ -24,7 +24,12 @@ from axlearn.common.attention import (
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
-from axlearn.experiments.text.gpt.common import STEP_DTYPE, learner_config, mesh_shape_from_axes
+from axlearn.experiments.text.gpt.common import (
+    STEP_DTYPE,
+    flash_attention_config,
+    learner_config,
+    mesh_shape_from_axes,
+)
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 
@@ -80,7 +85,13 @@ TOTAL_TOKENS = {
 }
 
 
-def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) -> Dict[str, Any]:
+def get_trainer_kwargs(
+    model_size: str,
+    *,
+    vocab_size: int,
+    version: Version,
+    flash_attention: bool = False,
+) -> Dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 4 * (1024**2)  # 4M tokens.
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
@@ -106,6 +117,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 num_kv_heads=2,
                 vocab_size=32,
                 rope_theta=rope_theta,
+                flash_attention=flash_attention,
             ),
             learner_kwargs=dict(
                 peak_lr=6e-4,
@@ -127,6 +139,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 num_heads=32,
                 num_kv_heads=num_kv_heads,
                 rope_theta=rope_theta,
+                flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -166,6 +179,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
                 num_kv_heads=None if version == Version.V1 else 8,
                 rope_theta=rope_theta,
+                flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -206,6 +220,7 @@ def model_config(
     rope_theta: float,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
+    flash_attention: bool = False,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -254,8 +269,8 @@ def model_config(
         normalization=RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),
         dropout_rate=dropout_rate,
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
-        attention_mask=CausalAttentionLogitBiasLayer.default_config(),
-        attention_cfg=atten_cfg,
+        attention_mask=None if flash_attention else CausalAttentionLogitBiasLayer.default_config(),
+        attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
     )
     return cfg

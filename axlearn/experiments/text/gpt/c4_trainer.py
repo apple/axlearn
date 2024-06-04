@@ -121,6 +121,25 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                 ),
                 **kwargs,
             )
+            kwargs_flash = fuji.get_trainer_kwargs(
+                model_size,
+                vocab_size=vocab_size,
+                version=version,
+                flash_attention=True,
+            )
+            max_sequence_length = kwargs_flash.pop("max_sequence_length")
+            # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
+            config_map[(f"{config_name}-flash")] = get_trainer_config_fn(
+                train_input_source=train_input_source.clone(
+                    max_sequence_length=max_sequence_length
+                ),
+                evalers=evaler_config_dict(
+                    _eval_input_sources(
+                        vocab_cfg=vocab_cfg, max_sequence_length=max_sequence_length
+                    ),
+                ),
+                **kwargs_flash,
+            )
             if model_size == "test":
 
                 def wrapper(config_name: str = config_name):
@@ -168,5 +187,8 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
 
                 config_map[f"{config_name}-single-host"] = functools.partial(
                     make_single_host_config, config_name
+                )
+                config_map[f"{config_name}-flash-single-host"] = functools.partial(
+                    make_single_host_config, f"{config_name}-flash"
                 )
     return config_map

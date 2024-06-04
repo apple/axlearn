@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 import tensorflow as tf
+from jax.sharding import PartitionSpec
 
 from axlearn.common import (
     base_model,
@@ -50,6 +51,7 @@ from axlearn.common.decoder import Decoder
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.evaler import BaseMetricCalculator, ModelSummaryAccumulator, SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
+from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, set_norm_recursively
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.summary_writer import BaseWriter
@@ -79,6 +81,22 @@ def scaled_hidden_dim(scale: float, *, round_up_to_multiples_of: int = 256) -> F
     return config_for_function(scale_fn).set(
         scale=scale,
         round_up_to_multiples_of=round_up_to_multiples_of,
+    )
+
+
+def flash_attention_config() -> FlashAttention.Config:
+    """Builds a FlashAttention config with sharding config."""
+    return FlashAttention.default_config().set(
+        causal=True,
+        mha_dim_to_partition_spec={
+            "btnh": PartitionSpec(("data", "expert", "fsdp"), None, ("seq", "model"), None),
+            "bsnh": PartitionSpec(("data", "expert", "fsdp"), None, ("seq", "model"), None),
+            "bnts": PartitionSpec(("data", "expert", "fsdp"), None, None, None),
+        },
+        output_dim_to_partition_spec={
+            "btnh": PartitionSpec(("data", "expert", "fsdp"), "seq", "model", None),
+            "bnts": PartitionSpec(("data", "expert", "fsdp"), "model", "seq", None),
+        },
     )
 
 
@@ -219,8 +237,14 @@ def model_config(
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
     if stack_cfg.klass is RepeatedTransformerLayer:
-        # Enable remat to reduce memory usage for larger models.
-        layer_cfg.remat_spec = build_remat_spec(stack_cfg)
+        if layer_cfg.self_attention.attention.klass is not FlashAttention:
+            # Enable remat to reduce memory usage for larger models.
+            layer_cfg.remat_spec = build_remat_spec(stack_cfg)
+        else:
+            # Checkpointing both ffn and attention to give the best performance.
+            layer_cfg.remat_spec = build_remat_spec(
+                stack_cfg, feed_forward=True, self_attention=True
+            )
     # Stack.
     transformer_cls = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(
