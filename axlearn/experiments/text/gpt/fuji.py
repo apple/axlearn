@@ -28,7 +28,7 @@ from axlearn.experiments.text.gpt.common import STEP_DTYPE, learner_config, mesh
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 
-MODEL_SIZES = ("test", "7B")
+MODEL_SIZES = ("test", "7B", "70B")
 
 
 class Version(enum.Enum):
@@ -62,16 +62,28 @@ ROPE_THETA = {
 
 # Mapping from Fuji versions to total number of tokens used in training.
 TOTAL_TOKENS = {
-    Version.V1: 1 * (1024**4),  # 1T tokens
-    Version.V2: 2 * (1024**4),  # 2T tokens
-    Version.V3: 15 * (1024**4),  # 15T tokens
+    Version.V1: {
+        "test": 1 * (1024**4),  # 1T tokens
+        "7B": 1 * (1024**4),  # 1T tokens
+        "70B": 1.4 * (1024**4),  # 1.4T tokens
+    },
+    Version.V2: {
+        "test": 2 * (1024**4),  # 2T tokens
+        "7B": 2 * (1024**4),  # 2T tokens
+        "70B": 2 * (1024**4),  # 2T tokens
+    },
+    Version.V3: {
+        "test": 15 * (1024**4),  # 15T tokens
+        "7B": 15 * (1024**4),  # 15T tokens
+        "70B": 15 * (1024**4),  # 15T tokens
+    },
 }
 
 
 def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) -> Dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 4 * (1024**2)  # 4M tokens.
-    max_step = TOTAL_TOKENS[version] // tokens_per_batch
+    max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
 
@@ -142,6 +154,32 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+            ),
+        )
+    elif model_size == "70B":
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=80,
+                hidden_dim=128 * 64,
+                num_heads=64,
+                # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
+                num_kv_heads=None if version == Version.V1 else 8,
+                rope_theta=rope_theta,
+            ),
+            learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
+            max_sequence_length=max_sequence_length,
+            train_batch_size=train_batch_size,
+            max_step=max_step,
+            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            mesh_rules=(
+                # tpu-v5e. step time: TBD.
+                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=256)),
+                # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
+                # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
+                (
+                    "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
+                    mesh_shape_from_axes(data=-1, fsdp=128),
                 ),
             ),
         )
