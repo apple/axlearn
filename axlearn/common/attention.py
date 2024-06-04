@@ -3657,7 +3657,9 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
 def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
-    ]
+    ],
+    self_attention: bool = True,
+    feed_forward: bool = False,
 ) -> Optional[RematSpec]:
     """Configures how the Transformer or Conformer stack will save the linearization points.
 
@@ -3673,6 +3675,8 @@ def build_remat_spec(
 
     Args:
         stack_cfg: A transformer config.
+        self_attention: Checkpoint self attention layer activations if true.
+        feed_forward: Checkpoint feed-forward layer activations if true.
 
     Returns:
         None (if no rematerialization is needed) or a RematSpec.
@@ -3681,15 +3685,22 @@ def build_remat_spec(
     if stack_cfg.klass is PipelinedTransformerLayer:
         return None
     attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
+    ffn_name = stack_cfg.layer.feed_forward.klass.__name__
+
+    checkpoints = []
+    if self_attention:
+        checkpoints.extend(
+            [f"{attention_name}.{el}" for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]]
+        )
+    if feed_forward:
+        checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
+
     return RematSpec(
         prevent_cse=stack_cfg.klass is StackedTransformerLayer,
         # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
         # or Repeated Conformers) we can enable common subexpression elimination optimizations.
         policy=config_for_function(jax_remat_policies.save_only_these_names).set(
-            names_which_can_be_saved=[
-                f"{attention_name}.{el}"
-                for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]
-            ]
+            names_which_can_be_saved=checkpoints
         ),
     )
 
