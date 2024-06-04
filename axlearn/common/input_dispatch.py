@@ -22,6 +22,12 @@ class InputDispatcher(Module):
 
     This process is needed because utils.host_to_global_device_array requires that global batch
     size be divisible by number of devices.
+
+    One should set up the local input generator to read the logical shard as specified by
+    `feed_read_config` and batch the examples by `feed_logical_batch_size`.
+    One should then call `logical_to_physical_batch` on each per-feed batch, followed by
+    `utils.host_to_global_device_array` to generate the input array for pjit, then finally
+    `physical_to_logical_batch` inside pjit.
     """
 
     @config_class
@@ -78,7 +84,7 @@ class InputDispatcher(Module):
             raise ValueError(f"logical_feed_indices must be unique: {cfg.logical_feed_indices}")
 
     @property
-    def num_logical_feeds(self):
+    def num_logical_feeds(self) -> int:
         return len(self.config.logical_feed_indices)
 
     @property
@@ -89,8 +95,12 @@ class InputDispatcher(Module):
         except ValueError:
             return None
 
-    def physical_feed_read_config(self) -> Dict[str, int]:
-        """Generates the read configuration for the physical feed.
+    @property
+    def feed_logical_batch_size(self) -> int:
+        return self.config.global_logical_batch_size // self.num_logical_feeds
+
+    def feed_read_config(self) -> Dict[str, int]:
+        """Generates the read configuration for the local physical feed.
 
         Returns:
             A dict containing:
@@ -113,10 +123,13 @@ class InputDispatcher(Module):
 
     def logical_to_physical_batch(self, logical_feed_batch: Nested[Tensor]) -> Nested[Tensor]:
         cfg = self.config
-        if cfg.global_logical_batch_size == cfg.global_physical_batch_size:
+        if (
+            cfg.global_logical_batch_size == cfg.global_physical_batch_size
+            and cfg.num_physical_feeds == self.num_logical_feeds
+        ):
             return copy.deepcopy(logical_feed_batch)
         feed_physical_batch_size = cfg.global_physical_batch_size // cfg.num_physical_feeds
-        feed_logical_batch_size = cfg.global_logical_batch_size // self.num_logical_feeds
+        feed_logical_batch_size = self.feed_logical_batch_size
 
         def pad_to_physical_batch_size(x: Tensor):
             if x.ndim < 1 or x.shape[0] != feed_logical_batch_size:
