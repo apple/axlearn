@@ -122,6 +122,19 @@ class InputDispatcher(Module):
         return dict(num_shards=num_shards, shard_index=shard_index)
 
     def logical_to_physical_batch(self, logical_feed_batch: Nested[Tensor]) -> Nested[Tensor]:
+        """Converts a per-feed logical batch to a per-feed physical batch.
+
+        Specifically, pads the batch to feed_physical_batch_size and adds a dispatch Tensor under
+        key PHYSICAL_TO_LOGICAL_DISPATCH_KEY, which will be used by physical_to_logical_batch later.
+
+        Args:
+            logical_feed_batch: A per-feed logical batch, where every leaf Tensor should be of
+                shape [feed_logical_batch_size, ...].
+
+        Returns:
+            A per-feed physical batch, where every leaf Tensor should be of shape
+            [feed_physical_batch_size, ...].
+        """
         cfg = self.config
         if (
             cfg.global_logical_batch_size == cfg.global_physical_batch_size
@@ -172,6 +185,16 @@ class InputDispatcher(Module):
         return physical_feed_batch
 
     def physical_to_logical_batch(self, global_physical_batch: Nested[Tensor]) -> Nested[Tensor]:
+        """Converts a global physical batch to a global logical batch.
+
+        Args:
+            global_physical_batch: A global physical batch, where every leaf Tensor should be of
+                shape [global_physical_batch_size, ...].
+
+        Returns:
+            A global logical batch, where every leaf Tensor should be of shape
+            [global_logical_batch_size, ...].
+        """
         cfg = self.config
 
         def traverse_and_dispatch(data: Nested[Tensor]) -> Nested[Tensor]:
