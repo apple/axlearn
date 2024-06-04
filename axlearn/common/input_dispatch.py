@@ -2,7 +2,7 @@
 """Utility to help dispatching input batches from hosts to devices."""
 
 import copy
-from typing import Dict, Optional, Sequence, Union
+from typing import Dict, Optional, Sequence
 
 import jax
 from jax import numpy as jnp
@@ -49,8 +49,6 @@ class InputDispatcher(Module):
         # If not None, a list of length num_logical_feeds. logical_feed_indices[i] is an integer in
         # [0, num_physical_feeds), representing the physical feed index for the i'th logical feed.
         logical_feed_indices: Optional[Sequence[int]] = None
-
-        batch_axis_names: Union[str, Sequence[str]] = "data"
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         if cfg.global_physical_batch_size is None:
@@ -99,6 +97,11 @@ class InputDispatcher(Module):
     def feed_logical_batch_size(self) -> int:
         return self.config.global_logical_batch_size // self.num_logical_feeds
 
+    @property
+    def feed_physical_batch_size(self) -> int:
+        cfg = self.config
+        return cfg.global_physical_batch_size // cfg.num_physical_feeds
+
     def feed_read_config(self) -> Dict[str, int]:
         """Generates the read configuration for the local physical feed.
 
@@ -141,7 +144,7 @@ class InputDispatcher(Module):
             and cfg.num_physical_feeds == self.num_logical_feeds
         ):
             return copy.deepcopy(logical_feed_batch)
-        feed_physical_batch_size = cfg.global_physical_batch_size // cfg.num_physical_feeds
+        feed_physical_batch_size = self.feed_physical_batch_size
         feed_logical_batch_size = self.feed_logical_batch_size
 
         def pad_to_physical_batch_size(x: Tensor):
@@ -160,17 +163,19 @@ class InputDispatcher(Module):
 
         physical_feed_batch = jax.tree_util.tree_map(pad_to_physical_batch_size, logical_feed_batch)
 
-        if cfg.physical_feed_index in cfg.logical_feed_indices:
+        if cfg.physical_feed_index not in cfg.logical_feed_indices:
             logical_example_indices = -1 + jnp.zeros([feed_physical_batch_size], dtype=jnp.int32)
         else:
             dispatch_start_ix = self.logical_feed_index * feed_logical_batch_size
-            logical_example_indices = jnp.concatenate(
-                # dispatch_start_ix + [0, feed_logical_batch_size).
-                dispatch_start_ix + jnp.arange(feed_logical_batch_size),
+            # dispatch_start_ix + [0, feed_logical_batch_size).
+            logical_example_indices = dispatch_start_ix + jnp.arange(feed_logical_batch_size)
+            if feed_logical_batch_size < feed_physical_batch_size:
                 # Padded with -1's.
-                -1
-                + jnp.zeros([feed_physical_batch_size - feed_logical_batch_size], dtype=jnp.int32),
-            )
+                logical_example_indices = jnp.pad(
+                    logical_example_indices,
+                    (0, feed_physical_batch_size - feed_logical_batch_size),
+                    constant_values=-1,
+                )
         dispatch = jax.nn.one_hot(
             logical_example_indices, cfg.global_logical_batch_size, dtype=jnp.bool
         )
