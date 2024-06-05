@@ -36,6 +36,7 @@ dependencies = [
     "seqio==0.0.18",  # used for inputs
     "aqtp==0.4.0", # aqtp>=0.5.0 requires python>=3.10 due to the use of Union shorthand "|" in type hints.
     "flax==0.8.2", # for AQT, param converter and adapter.
+    "prefixed==0.7.1", # For formatting file sizes, param counts, etc.
 ]
 
 [project.optional-dependencies]
