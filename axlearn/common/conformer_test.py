@@ -10,7 +10,7 @@ from fairseq.modules import conformer_layer as fairseq_conformer
 from jax import numpy as jnp
 
 from axlearn.common import utils
-from axlearn.common.attention import sinusoidal_positional_embeddings
+from axlearn.common.attention import build_remat_spec, sinusoidal_positional_embeddings
 from axlearn.common.conformer import (
     ConformerLayer,
     RepeatedConformerLayer,
@@ -150,7 +150,8 @@ class ConformerLayerTest(TestCase):
             self.assertEqual(ff_cfg.activation, "nn.silu")
         self.assertEqual(cfg.layer.self_attention.attention.input_linear.layer.bias, True)
 
-    def test_repeated_conformer_forward(self):
+    @parameterized.parameters((True, True), (False, True), (True, False), (False, False))
+    def test_repeated_conformer_forward(self, checkpoint_self_attention, checkpoint_feed_forward):
         """Tests RepeatedConformerLayer."""
         dim, num_heads = 6, 2
         # Create a conformer layer.
@@ -164,6 +165,11 @@ class ConformerLayerTest(TestCase):
             name="repeat_conformer", input_dim=dim, num_layers=num_layers
         )
         repeat_cfg.layer.self_attention.attention.num_heads = num_heads
+        repeat_cfg.layer.remat_spec = build_remat_spec(
+            repeat_cfg,
+            self_attention=checkpoint_self_attention,
+            feed_forward=checkpoint_feed_forward,
+        )
         repeat_layer = repeat_cfg.instantiate(parent=None)  # type: RepeatedConformerLayer
         repeat_state = repeat_layer.initialize_parameters_recursively(jax.random.PRNGKey(100))
         # Generate synthetic inputs.

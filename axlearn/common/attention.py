@@ -3684,15 +3684,15 @@ def build_remat_spec(
     # TODO(markblee): Switch to using isinstance everywhere.
     if stack_cfg.klass is PipelinedTransformerLayer:
         return None
-    attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
-    ffn_name = stack_cfg.layer.feed_forward.klass.__name__
 
     checkpoints = []
     if self_attention:
+        attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
         checkpoints.extend(
             [f"{attention_name}.{el}" for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]]
         )
-    if feed_forward:
+    if feed_forward and hasattr(stack_cfg.layer, "feed_forward"):
+        ffn_name = stack_cfg.layer.feed_forward.klass.__name__
         checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
 
     return RematSpec(
