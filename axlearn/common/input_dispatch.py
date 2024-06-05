@@ -9,7 +9,7 @@ from jax import numpy as jnp
 
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module
-from axlearn.common.utils import PHYSICAL_TO_LOGICAL_DISPATCH_KEY, Nested, Tensor
+from axlearn.common.utils import PHYSICAL_TO_LOGICAL_DISPATCH_KEY, Nested, Tensor, as_numpy_array
 
 
 class InputDispatcher(Module):
@@ -67,6 +67,11 @@ class InputDispatcher(Module):
             raise ValueError(
                 f"global_logical_batch_size {cfg.global_physical_batch_size} must be "
                 f"divisible by num_logical_feeds {self.num_physical_feeds}"
+            )
+        if self.feed_physical_batch_size < self.feed_logical_batch_size:
+            raise ValueError(
+                f"feed_physical_batch_size {self.feed_physical_batch_size} must be "
+                f">= feed_logical_batch_size {self.feed_logical_batch_size}"
             )
         if not 0 <= cfg.physical_feed_index < cfg.num_physical_feeds:
             raise ValueError(
@@ -155,10 +160,14 @@ class InputDispatcher(Module):
                 )
             if feed_logical_batch_size == feed_physical_batch_size:
                 return x
-            padding = jnp.zeros(
-                [feed_physical_batch_size - feed_logical_batch_size] + list(x.shape[1:]),
-                dtype=x.dtype,
-            )
+            pad_size = feed_physical_batch_size - feed_logical_batch_size
+            if pad_size < 0:
+                raise ValueError(f"{feed_physical_batch_size} < {feed_logical_batch_size}")
+            # Convert to numpy array if necessary.
+            x = as_numpy_array(x)
+            if not jnp.isdtype(x.dtype, ("numeric", "bool")):
+                raise NotImplementedError(f"dtype {x.dtype} is not supported")
+            padding = jnp.zeros([pad_size] + list(x.shape[1:]), dtype=x.dtype)
             return jnp.concatenate([x, padding], axis=0)
 
         physical_feed_batch = jax.tree_util.tree_map(pad_to_physical_batch_size, logical_feed_batch)
