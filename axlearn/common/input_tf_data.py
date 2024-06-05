@@ -31,6 +31,7 @@ from axlearn.common.config import (
     REQUIRED,
     ConfigBase,
     ConfigOr,
+    FunctionConfigBase,
     InstantiableConfig,
     Required,
     config_class,
@@ -1034,6 +1035,23 @@ def ragged_to_tensor(feature_shapes: Dict[str, Any], default_value: int = 0) -> 
     return seqio.map_over_dataset(fn)
 
 
+def set_read_config_recursively(source_config: ConfigBase, **kwargs):
+    """Sets **kwargs on all tfds_read_config in `source_config`."""
+
+    def enter_fn(_, value, default_kv):
+        if (
+            isinstance(value, FunctionConfigBase)
+            and value.fn is tfds_dataset
+            and value.read_config is None
+        ):
+            value.read_config = config_for_function(tfds_read_config).set(**kwargs)
+        if isinstance(value, FunctionConfigBase) and value.fn is tfds_read_config:
+            value.set(**kwargs)
+        return default_kv
+
+    source_config.visit(visit_fn=lambda k, v: None, enter_fn=enter_fn)
+
+
 class Input(Module):
     """A Module to generate input batches with tf.data.Dataset.
 
@@ -1075,11 +1093,15 @@ class Input(Module):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+        if cfg.input_dispatcher is not None:
+            self._add_child("input_dispatcher", cfg.input_dispatcher)
+            # Let input_dispatcher determine num_shards and shard_index for tfds_read_config.
+            feed_read_config = self.input_dispatcher.feed_read_config()
+            set_read_config_recursively(cfg.source, **feed_read_config)
+            logging.info("feed_read_config=%s, source=%s", feed_read_config, cfg.source)
         self._source = maybe_set_config(cfg.source, is_training=cfg.is_training).instantiate()
         self._processor = maybe_set_config(cfg.processor, is_training=cfg.is_training).instantiate()
         self._batcher = maybe_set_config(cfg.batcher, is_training=cfg.is_training).instantiate()
-        if cfg.input_dispatcher is not None:
-            self._add_child("input_dispatcher", cfg.input_dispatcher)
 
     @property
     def source(self) -> BuildDatasetFn:

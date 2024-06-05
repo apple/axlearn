@@ -573,11 +573,13 @@ class PadTest(test_utils.TestCase):
 
     @parameterized.product(
         num_physical_feeds=(2, 4),
+        num_logical_feeds=(1, 2),
         physical_batch_size=(4, 8, 16),
     )
     def test_input_dispatcher(
         self,
         num_physical_feeds: int,
+        num_logical_feeds: int,
         physical_batch_size: int,
     ):
         """Checks that Input with input_dispatcher generates the same physical batches and global
@@ -591,7 +593,9 @@ class PadTest(test_utils.TestCase):
         if feed_physical_batch_size < feed_logical_batch_size:
             return  # skip invalid cases
         num_logical_batches_per_feed = len(text_examples) // feed_logical_batch_size
-        logical_feed_indices = [num_physical_feeds - 1]
+        logical_feed_indices = list(
+            range(num_physical_feeds - num_logical_feeds, num_physical_feeds)
+        )
         global_logical_batch_size = feed_logical_batch_size * len(logical_feed_indices)
 
         # Mappings from physical_feed_index to physical feed batches.
@@ -602,15 +606,18 @@ class PadTest(test_utils.TestCase):
                 logical_feed_index = logical_feed_indices.index(physical_feed_index)
             else:
                 logical_feed_index = None
-            with mock.patch("jax.process_count", return_value=num_physical_feeds):
-                physical_feed_ds = _pad_logical_to_physical(
-                    _tokens_ds(text_examples),
-                    global_batch_size=physical_batch_size,
-                    global_logical_batch_size=global_logical_batch_size,
-                    num_logical_feeds=len(logical_feed_indices),
-                    logical_feed_index=logical_feed_index,
-                    pad_example_fn=default_pad_example_fn,
-                ).batch(per_feed_physcal_batch_size)
+            physical_feed_ds = _tokens_ds(text_examples)
+            if global_logical_batch_size != physical_batch_size:
+                with mock.patch("jax.process_count", return_value=num_physical_feeds):
+                    physical_feed_ds = _pad_logical_to_physical(
+                        physical_feed_ds,
+                        global_batch_size=physical_batch_size,
+                        global_logical_batch_size=global_logical_batch_size,
+                        num_logical_feeds=len(logical_feed_indices),
+                        logical_feed_index=logical_feed_index,
+                        pad_example_fn=default_pad_example_fn,
+                    )
+            physical_feed_ds = physical_feed_ds.batch(per_feed_physcal_batch_size)
             manual_feed_batches = list(iter(physical_feed_ds))
             self.assertLen(manual_feed_batches, num_logical_batches_per_feed)
 
