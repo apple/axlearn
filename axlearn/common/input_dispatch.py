@@ -36,7 +36,8 @@ class InputDispatcher(Module):
 
         global_logical_batch_size: Required[int] = REQUIRED
 
-        # If None, defaults to max(global_logical_batch_size, jax.device_count()).
+        # Usually left unset. Defaults to
+        # max(feed_logical_batch_size * num_physical_feeds, jax.device_count()).
         global_physical_batch_size: Optional[int] = None
 
         # The total number of physical feeds across all hosts. Defaults to jax.process_count().
@@ -46,6 +47,7 @@ class InputDispatcher(Module):
         # Defaults to jax.process_index().
         physical_feed_index: Optional[int] = None
 
+        # Usually left unset.
         # If not None, a list of length num_logical_feeds. logical_feed_indices[i] is an integer in
         # [0, num_physical_feeds), representing the physical feed index for the i'th logical feed.
         logical_feed_indices: Optional[Sequence[int]] = None
