@@ -38,15 +38,19 @@ from axlearn.common.config import (
     maybe_instantiate,
     maybe_set_config,
 )
+from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.module import Module
 from axlearn.common.utils import (
     PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
     NestedTensor,
+    PartitionSpec,
     Tensor,
     as_numpy_array,
+    dispatch_input_batch,
     get_data_dir,
     get_recursively,
     set_recursively,
+    with_sharding_constraint,
 )
 
 
@@ -1064,12 +1068,18 @@ class Input(Module):
         # A config that instantiates to a DatasetToDatasetFn, which performs batching of examples.
         batcher: InstantiableConfig = config_for_function(batch)
 
+        # If not None, creates an InputDispatcher and use it for dispatching per-feed batches to
+        # global batches.
+        input_dispatcher: Optional[InputDispatcher] = None
+
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._source = maybe_set_config(cfg.source, is_training=cfg.is_training).instantiate()
         self._processor = maybe_set_config(cfg.processor, is_training=cfg.is_training).instantiate()
         self._batcher = maybe_set_config(cfg.batcher, is_training=cfg.is_training).instantiate()
+        if cfg.input_dispatcher is not None:
+            self._add_child("input_dispatcher", cfg.input_dispatcher)
 
     @property
     def source(self) -> BuildDatasetFn:
@@ -1082,9 +1092,36 @@ class Input(Module):
     def dataset(self) -> tf.data.Dataset:
         return self._batcher(self._processor(self._source()))
 
+    def batches(self, it: tf.data.Iterator) -> Iterable[NestedTensor]:
+        for input_batch in it:
+            if "input_dispatcher" in self.children:
+                input_batch = self.input_dispatcher.logical_to_physical_batch(input_batch)
+            yield input_batch
+
     def __iter__(self) -> Iterable[NestedTensor]:
-        for input_batch in self.dataset():
+        it = iter(self.dataset())
+        for input_batch in self.batches(it):
             yield as_numpy_array(input_batch)
+
+    def dispatch_global_batch(
+        self,
+        global_physical_batch: NestedTensor,
+        *,
+        batch_axis_names: Union[str, Sequence[str]] = "data",
+    ) -> NestedTensor:
+        if "input_dispatcher" in self.children:
+            global_physical_batch = jax.tree_util.tree_map(
+                lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)),
+                global_physical_batch,
+            )
+            global_logical_batch = self.input_dispatcher.physical_to_logical_batch(
+                global_physical_batch
+            )
+        else:
+            global_logical_batch = dispatch_input_batch(
+                global_physical_batch, batch_axis_names=batch_axis_names
+            )
+        return global_logical_batch
 
 
 def disable_shuffle_recursively(cfg: Input.Config):

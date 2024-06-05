@@ -234,7 +234,7 @@ class BaseMetricCalculator(Module):
             self._model.method(...).
         """
         # Shard and (possibly) dispatch the input batch.
-        input_batch = utils.dispatch_input_batch(input_batch)
+        input_batch = self.input.dispatch_global_batch(input_batch)
         model_inputs = dict(
             input_batch=self._eval_cast(input_batch),
             **kwargs,

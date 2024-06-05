@@ -20,6 +20,7 @@ class DispatcherTest(TestCase):
         (8, 16, 2, None),
         (8, 16, 2, (0,)),
         (8, 16, 4, (1, 3)),
+        (2, 16, 16, (7, 11)),
     )
     def test_input_dispatcher(
         self,
@@ -87,6 +88,6 @@ class DispatcherTest(TestCase):
         self.assertEqual(
             {"example_index": (global_logical_batch_size,)}, shapes(global_logical_batch)
         )
-        self.assertCountEqual(
+        self.assertSequenceEqual(
             global_logical_batch["example_index"].tolist(), range(global_logical_batch_size)
         )
