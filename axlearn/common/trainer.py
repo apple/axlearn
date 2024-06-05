@@ -14,6 +14,7 @@ import jax
 import tensorflow as tf
 from absl import logging
 from jax import numpy as jnp
+from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
 
 from axlearn.common import measurement, utils
@@ -45,25 +46,8 @@ from axlearn.common.utils import (
     count_model_params,
     flatten_items,
     match_regex_rules,
-    prune_tree,
     thread_stack_traces,
 )
-
-
-def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
-    """Returns a shallow copy of the input tree with empty subtrees pruned.
-
-    If a tree would be made empty by removal of its subtrees, it will also be pruned.
-    This is a shallow copy because leaf nodes (non-dict values) are not deep-copied.
-
-    Args:
-        in_tree: the input tree to be pruned.
-
-    Returns:
-        The pruned copy of the input tree.
-    """
-    # Note that falsey values or empty Tensors are not considered empty.
-    return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
 
 
 class TrainerState(NamedTuple):
@@ -604,8 +588,9 @@ class SpmdTrainer(Module):
         self._step_log("Total number of model params: %s", f"{total_num_params:,}")
         self.summary_writer(0, {"num_model_params": total_num_params})
 
-        total_state_bytes = 0
         # Training state size.
+        total_state_bytes = 0
+        total_sharded_state_bytes = 0
         state_spec_map = dict(utils.flatten_items(self.trainer_state_specs))
         for path, value in utils.flatten_items(self._trainer_state):
             self._step_log(
@@ -616,10 +601,23 @@ class SpmdTrainer(Module):
                 state_spec_map.get(path),
             )
             total_state_bytes += value.size * value.dtype.itemsize
-        self._step_log("Training state size: %.2f GB", total_state_bytes / 1024**3)
-        trainer_state_structure = jax.tree_util.tree_structure(self._trainer_state)
-        utils.complete_partition_spec_tree(
-            trainer_state_structure, self._trainer_state_partition_specs
+            shard_shape = value.sharding.shard_shape(value.shape)
+            total_sharded_state_bytes += math.prod(shard_shape) * value.dtype.itemsize
+
+        if jax.process_count() > 1:
+            max_sharded_state_bytes = int(
+                jnp.max(multihost_utils.process_allgather(total_sharded_state_bytes))
+            )
+        else:
+            max_sharded_state_bytes = total_sharded_state_bytes
+
+        self._step_log(
+            "Training state size: %.2f GiB\n"
+            "Training state size (partitioned): %.2f GiB\n"
+            "Max training state size (partitioned): %.2f GiB",
+            total_state_bytes / 1024**3,
+            total_sharded_state_bytes / 1024**3,
+            max_sharded_state_bytes / 1024**3,
         )
 
     def _prepare_training(self, prng_key: Tensor) -> bool:
