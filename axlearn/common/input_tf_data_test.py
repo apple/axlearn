@@ -14,6 +14,7 @@ import seqio
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from absl.testing import absltest, parameterized
+from jax import numpy as jnp
 from jax.sharding import Mesh
 
 from axlearn.common import test_utils, utils
@@ -54,6 +55,7 @@ from axlearn.common.input_tf_data import (
     unpack,
     with_processor,
 )
+from axlearn.common.utils import as_numpy_array
 
 
 def build_ds_fn(
@@ -578,6 +580,10 @@ class PadTest(test_utils.TestCase):
         num_physical_feeds: int,
         physical_batch_size: int,
     ):
+        """Checks that Input with input_dispatcher generates the same physical batches and global
+        logical batches as a manual feed generated through `_pad_logical_to_physical` and
+        `dispatch_input_batch`.
+        """
         text_examples = [[1, 2], [3, 4], [5, 6], [7, 8]]
         per_feed_physcal_batch_size = physical_batch_size // num_physical_feeds
         feed_logical_batch_size = 2
@@ -587,6 +593,10 @@ class PadTest(test_utils.TestCase):
         num_logical_batches_per_feed = len(text_examples) // feed_logical_batch_size
         logical_feed_indices = [num_physical_feeds - 1]
         global_logical_batch_size = feed_logical_batch_size * len(logical_feed_indices)
+
+        # Mappings from physical_feed_index to physical feed batches.
+        manual_feeds = {}
+        input_feeds = {}
         for physical_feed_index in range(num_physical_feeds):
             if physical_feed_index in logical_feed_indices:
                 logical_feed_index = logical_feed_indices.index(physical_feed_index)
@@ -638,6 +648,7 @@ class PadTest(test_utils.TestCase):
             self._check_iterator_saveable(input_it)
 
             input_batches = list(input_generator.batches(input_it))
+            print(f"input_batch={input_batches[0]}")
             self.assertLen(input_batches, num_logical_batches_per_feed)
 
             if physical_feed_index in logical_feed_indices:
@@ -645,6 +656,26 @@ class PadTest(test_utils.TestCase):
                     print(f"manual_batch={manual_batch}")
                     print(f"input_batch={input_batch}")
                     self.assertNestedEqual(manual_batch, input_batch)
+
+            manual_feeds[physical_feed_index] = manual_feed_batches
+            input_feeds[physical_feed_index] = input_batches
+
+        for step in range(num_logical_batches_per_feed):
+            # For each step, assemble global logical batches from `manual_feeds` and
+            # `input_feeds` and check that they are equal.
+            manual_global_batch = utils.dispatch_input_batch(
+                jax.tree_util.tree_map(
+                    lambda *xs: jnp.concatenate(as_numpy_array(xs), axis=0),
+                    *[batches[step] for batches in manual_feeds.values()],
+                )
+            )
+            input_global_batch = input_generator.input_dispatcher.physical_to_logical_batch(
+                jax.tree_util.tree_map(
+                    lambda *xs: jnp.concatenate(as_numpy_array(xs), axis=0),
+                    *[batches[step] for batches in input_feeds.values()],
+                )
+            )
+            self.assertNestedEqual(manual_global_batch, input_global_batch)
 
 
 class BatchTest(test_utils.TestCase):

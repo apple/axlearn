@@ -21,6 +21,7 @@ class DispatcherTest(TestCase):
         (8, 16, 2, (0,)),
         (8, 16, 4, (1, 3)),
         (2, 16, 16, (7, 11)),
+        (2, None, 16, None),
     )
     def test_input_dispatcher(
         self,
@@ -42,10 +43,8 @@ class DispatcherTest(TestCase):
             dispatcher: InputDispatcher = cfg.set(name="dispatcher").instantiate(parent=None)
             if logical_feed_indices is not None:
                 self.assertEqual(len(logical_feed_indices), dispatcher.num_logical_feeds)
-            else:
-                self.assertEqual(num_physical_feeds, dispatcher.num_logical_feeds)
             feed_read_config = dispatcher.feed_read_config()
-            if logical_feed_indices is None or physical_feed_index in logical_feed_indices:
+            if physical_feed_index in dispatcher.config.logical_feed_indices:
                 self.assertIsNotNone(dispatcher.logical_feed_index)
                 self.assertEqual(
                     {
@@ -80,7 +79,7 @@ class DispatcherTest(TestCase):
         )
         print(global_physical_batch)
         self.assertEqual(
-            (global_physical_batch_size or global_logical_batch_size,),
+            (dispatcher.config.global_physical_batch_size,),
             global_physical_batch["example_index"].shape,
         )
         global_logical_batch = dispatcher.physical_to_logical_batch(global_physical_batch)
@@ -88,6 +87,6 @@ class DispatcherTest(TestCase):
         self.assertEqual(
             {"example_index": (global_logical_batch_size,)}, shapes(global_logical_batch)
         )
-        self.assertSequenceEqual(
+        self.assertCountEqual(
             global_logical_batch["example_index"].tolist(), range(global_logical_batch_size)
         )

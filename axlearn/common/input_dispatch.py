@@ -51,11 +51,17 @@ class InputDispatcher(Module):
         logical_feed_indices: Optional[Sequence[int]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
-        if cfg.global_physical_batch_size is None:
-            cfg.global_physical_batch_size = max(cfg.global_logical_batch_size, jax.device_count())
         cfg.num_physical_feeds = cfg.num_physical_feeds or jax.process_count()
         cfg.physical_feed_index = cfg.physical_feed_index or jax.process_index()
-        cfg.logical_feed_indices = cfg.logical_feed_indices or list(range(cfg.num_physical_feeds))
+        if cfg.logical_feed_indices is None:
+            num_logical_feeds = min(cfg.global_logical_batch_size, cfg.num_physical_feeds)
+            cfg.logical_feed_indices = list(range(num_logical_feeds))
+        if cfg.global_physical_batch_size is None:
+            num_logical_feeds = len(cfg.logical_feed_indices)
+            feed_logical_batch_size = cfg.global_logical_batch_size // num_logical_feeds
+            cfg.global_physical_batch_size = max(
+                feed_logical_batch_size * cfg.num_physical_feeds, jax.device_count()
+            )
         super().__init__(cfg, parent=parent)
         cfg = self.config
         if cfg.global_logical_batch_size % self.num_logical_feeds != 0:
@@ -219,6 +225,9 @@ class InputDispatcher(Module):
                     assert dispatch.shape == (
                         cfg.global_physical_batch_size,
                         cfg.global_logical_batch_size,
+                    ), (
+                        f"{dispatch.shape} vs. "
+                        f"{(cfg.global_physical_batch_size, cfg.global_logical_batch_size)}"
                     )
                     return jax.tree_util.tree_map(
                         lambda x: jnp.einsum("p...,pl->l...", x, dispatch), data
