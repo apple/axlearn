@@ -16,12 +16,17 @@ from axlearn.common.utils import shapes
 
 class DispatcherTest(TestCase):
     @parameterized.parameters(
+        # In the most common use cases, users only specify `global_logical_batch_size` and
+        # `num_physical_feeds` and let InputDispatcher figure out `global_physical_batch_size`
+        # and `logical_feed_indices` automatically.
         (8, None, 2, None),
+        (2, None, 16, None),
+        # With explicit `global_physical_batch_size`.
         (8, 16, 2, None),
+        # With explicit `logical_feed_indices`.
         (8, 16, 2, (0,)),
         (8, 16, 4, (1, 3)),
         (2, 16, 16, (7, 11)),
-        (2, None, 16, None),
     )
     def test_input_dispatcher(
         self,
