@@ -119,7 +119,7 @@ class CompositeWriter(BaseWriter):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
-        self._writers = []
+        self._writers: List[BaseWriter] = []
         for writer_name, writer_cfg in cfg.writers.items():
             self._writers.append(
                 self._add_child(writer_name, writer_cfg.set(dir=os.path.join(cfg.dir, writer_name)))
@@ -139,6 +139,17 @@ class CompositeWriter(BaseWriter):
         writer: BaseWriter
         for writer in self._writers:
             writer(step, values)
+
+    def log_checkpoint(
+        self,
+        ckpt_dir: str,
+        *,
+        state: NestedTensor,
+        action: CheckpointerAction,
+        step: int = 0,
+    ):
+        for writer in self._writers:
+            writer.log_checkpoint(ckpt_dir=ckpt_dir, state=state, action=action, step=step)
 
 
 class NoOpWriter(BaseWriter):

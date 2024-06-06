@@ -9,17 +9,24 @@ To run tests with Weights & Biases writers, run this file with:
 """
 import os
 import tempfile
+from unittest import mock
 
 import jax
 import pytest
 import tensorflow as tf
 from absl.testing import absltest
+from jax import numpy as jnp
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 from axlearn.common.evaler_test import DummyModel
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.summary import ImageSummary
-from axlearn.common.summary_writer import CompositeWriter, SummaryWriter, WandBWriter
+from axlearn.common.summary_writer import (
+    CheckpointerAction,
+    CompositeWriter,
+    SummaryWriter,
+    WandBWriter,
+)
 
 try:
     import wandb
@@ -116,6 +123,33 @@ class CompositeWriterTest(absltest.TestCase):
                     "learner": {"learning_rate": 0.1},
                 },
             )
+
+    def test_multiple_summary_writers_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            writer = (
+                CompositeWriter.default_config()
+                .set(
+                    name="test_multi_writer",
+                    dir=tempdir,
+                    writers={
+                        "writer1": SummaryWriter.default_config(),
+                        "writer2": SummaryWriter.default_config(),
+                    },
+                )
+                .instantiate(parent=None)
+            )
+            for sub_writer in writer.writers:
+                sub_writer.log_checkpoint = mock.Mock()
+
+            writer.log_checkpoint(
+                ckpt_dir=tempdir,
+                state=dict(x=jnp.zeros([], dtype=jnp.int32)),
+                action=CheckpointerAction.SAVE,
+                step=100,
+            )
+
+            for sub_writer in writer.writers:
+                sub_writer.log_checkpoint.assert_called_once()
 
 
 class WandBWriterTest(absltest.TestCase):
