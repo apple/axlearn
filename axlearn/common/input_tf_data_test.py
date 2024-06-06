@@ -587,7 +587,6 @@ class PadTest(test_utils.TestCase):
         `dispatch_input_batch`.
         """
         text_examples = [[1, 2], [3, 4], [5, 6], [7, 8]]
-        per_feed_physcal_batch_size = physical_batch_size // num_physical_feeds
         feed_logical_batch_size = 2
         feed_physical_batch_size = physical_batch_size // num_physical_feeds
         if feed_physical_batch_size < feed_logical_batch_size:
@@ -617,7 +616,7 @@ class PadTest(test_utils.TestCase):
                         logical_feed_index=logical_feed_index,
                         pad_example_fn=default_pad_example_fn,
                     )
-            physical_feed_ds = physical_feed_ds.batch(per_feed_physcal_batch_size)
+            physical_feed_ds = physical_feed_ds.batch(feed_physical_batch_size)
             manual_feed_batches = list(iter(physical_feed_ds))
             self.assertLen(manual_feed_batches, num_logical_batches_per_feed)
 
