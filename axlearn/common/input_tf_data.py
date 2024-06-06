@@ -868,6 +868,79 @@ def batch(
     return fn
 
 
+def per_feed_batch(
+    feed_batch_size: int,
+    *,
+    is_training: bool,
+    pad_example_fn: PadExampleFn,
+    prefetch_buffer_size: Optional[int] = None,
+    post_batch_processor: Optional[ConfigOr[DatasetToDatasetFn]] = None,
+    repeat: Optional[int] = None,
+) -> DatasetToDatasetFn:
+    """Returns a function that generates a tf.data.Dataset object.
+
+    Note: per_feed_batch(is_training=True) requires sufficient number of examples
+    per feed. When your data is too small, you should add `ds = ds.repeat()`
+    before batching.
+
+    Args:
+        feed_batch_size: The per-feed batch size.
+        is_training: Whether the examples are used for training.
+        pad_example_fn: Create padded examples with the given function.
+        prefetch_buffer_size: Size of prefetch buffer. This allows later
+            elements to be prepared while the current element is being
+            processed. If not set, `tf.data.experimental.AUTOTUNE` is used.
+        post_batch_processor: An optional processor (or config instantiating to a processor) that
+            applies batch-wise processing functions.
+        repeat: The number of times to repeat the batches from the dataset.
+            If None, repeat indefinitely if is_training=True and do not repeat otherwise.
+            Otherwise must be a positive integer.
+
+    Returns:
+        A DatasetToDataset fn.
+
+    Raises:
+        ValueError: If repeat is not a positive integer.
+    """
+    if repeat is not None and (not isinstance(repeat, int) or repeat <= 0):
+        raise ValueError(f"Invalid repeat (must be a positive integer): {repeat}")
+
+    def fn(ds: tf.data.Dataset) -> tf.data.Dataset:
+        if not is_training:
+            # Pad for evaluation.
+            ds = _pad_for_evaluation(
+                ds,
+                per_feed_batch_size=feed_batch_size,
+                pad_example_fn=pad_example_fn,
+            )
+
+        # Batch.
+        ds = ds.batch(feed_batch_size, drop_remainder=True)
+
+        # Post batch processing methods at batch-level.
+        if post_batch_processor:
+            ds = maybe_instantiate(post_batch_processor)(ds)
+
+        if not is_training and jax.process_count() > 1:
+            num_eval_batches = _infer_cardinality(ds)
+            logging.info("Feed has %s eval batches.", num_eval_batches)
+            multihost_utils.assert_equal(
+                num_eval_batches,
+                f"Number of eval batches are not all equal ({num_eval_batches})",
+            )
+
+        if repeat is None:
+            if is_training:
+                ds = ds.repeat()
+        else:
+            ds = ds.repeat(repeat)
+        # If `prefetch_buffer_size` is not set, use autotune.
+        ds = ds.prefetch(prefetch_buffer_size or tf.data.experimental.AUTOTUNE)
+        return ds
+
+    return fn
+
+
 def identity() -> DatasetToDatasetFn:
     """Identity function, useful for example as batcher when data is already batched."""
 
@@ -1099,6 +1172,10 @@ class Input(Module):
             feed_read_config = self.input_dispatcher.feed_read_config()
             set_read_config_recursively(cfg.source, **feed_read_config)
             logging.info("feed_read_config=%s, source=%s", feed_read_config, cfg.source)
+            if cfg.batcher.fn is per_feed_batch:
+                # If using `per_feed_batch`, set feed_batch_size according to `input_batcher`.
+                # If not, we rely on user to set up batcher correctly.
+                cfg.batcher.feed_batch_size = self.input_batcher.feed_logical_batch_size
         self._source = maybe_set_config(cfg.source, is_training=cfg.is_training).instantiate()
         self._processor = maybe_set_config(cfg.processor, is_training=cfg.is_training).instantiate()
         self._batcher = maybe_set_config(cfg.batcher, is_training=cfg.is_training).instantiate()
