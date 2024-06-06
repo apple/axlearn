@@ -165,6 +165,8 @@ class InputDispatcher(Module):
                     "Shape does not match logical batch size: "
                     f"{x.shape} vs. {feed_logical_batch_size}"
                 )
+            if cfg.physical_feed_index not in cfg.logical_feed_indices:
+                x = jnp.zeros_like(as_numpy_array(x))
             if feed_logical_batch_size == feed_physical_batch_size:
                 return x
             pad_size = feed_physical_batch_size - feed_logical_batch_size

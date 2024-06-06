@@ -657,11 +657,10 @@ class PadTest(test_utils.TestCase):
             print(f"input_batch={input_batches[0]}")
             self.assertLen(input_batches, num_logical_batches_per_feed)
 
-            if physical_feed_index in logical_feed_indices:
-                for manual_batch, input_batch in zip(manual_feed_batches, input_batches):
-                    print(f"manual_batch={manual_batch}")
-                    print(f"input_batch={input_batch}")
-                    self.assertNestedEqual(manual_batch, input_batch)
+            for manual_batch, input_batch in zip(manual_feed_batches, input_batches):
+                print(f"manual_batch={manual_batch}")
+                print(f"input_batch={input_batch}")
+                self.assertNestedEqual(manual_batch, input_batch)
 
             manual_feeds[physical_feed_index] = manual_feed_batches
             input_feeds[physical_feed_index] = input_batches
