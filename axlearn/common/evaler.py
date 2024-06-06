@@ -234,7 +234,6 @@ class BaseMetricCalculator(Module):
             self._model.method(...).
         """
         # Shard and (possibly) dispatch the input batch.
-        input_batch = self.input.dispatch_global_batch(input_batch)
         model_inputs = dict(
             input_batch=self._eval_cast(input_batch),
             **kwargs,
@@ -686,6 +685,8 @@ class SpmdEvaler(Module):
             with jax.profiler.StepTraceAnnotation(cfg.name, step_num=step):
                 with jax.profiler.TraceAnnotation(f"{cfg.name}.forward"):
                     global_input_batch = utils.host_to_global_device_array(input_batch)
+                    if hasattr(self.input, "dispatch_global_batch"):
+                        global_input_batch = self.input.dispatch_global_batch(global_input_batch)
                     forward_outputs = self.metric_calculator.forward(
                         global_input_batch,
                         model_params=model_params,
