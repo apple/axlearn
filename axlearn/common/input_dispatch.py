@@ -223,7 +223,7 @@ class InputDispatcher(Module):
             if isinstance(data, dict):
                 # Dispatch from physical batch dimensions to logical batch.
                 if PHYSICAL_TO_LOGICAL_DISPATCH_KEY in data:
-                    dispatch = data.pop(PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
+                    dispatch: Tensor = data.pop(PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
                     assert dispatch.shape == (
                         cfg.global_physical_batch_size,
                         cfg.global_logical_batch_size,
