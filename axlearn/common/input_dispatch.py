@@ -101,10 +101,9 @@ class InputDispatcher(Module):
     @property
     def logical_feed_index(self) -> Optional[int]:
         cfg = self.config
-        try:
+        if cfg.physical_feed_index in cfg.logical_feed_indices:
             return cfg.logical_feed_indices.index(cfg.physical_feed_index)
-        except ValueError:
-            return None
+        return None
 
     @property
     def feed_logical_batch_size(self) -> int:

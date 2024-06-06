@@ -3,7 +3,6 @@
 """Tests input dispatcher."""
 
 import random
-from typing import Optional
 
 import jax
 from absl.testing import parameterized
@@ -36,7 +35,7 @@ class DispatcherTest(TestCase):
         logical_feed_indices,
     ):
         all_physical_batches = []
-        dispatcher: Optional[InputDispatcher] = None
+        dispatcher: InputDispatcher = None
         for physical_feed_index in range(num_physical_feeds):
             cfg = InputDispatcher.default_config().set(
                 global_logical_batch_size=global_logical_batch_size,
@@ -82,13 +81,11 @@ class DispatcherTest(TestCase):
             lambda *xs: jnp.concatenate(xs, axis=0),
             *all_physical_batches,
         )
-        print(global_physical_batch)
         self.assertEqual(
             (dispatcher.config.global_physical_batch_size,),
             global_physical_batch["example_index"].shape,
         )
         global_logical_batch = dispatcher.physical_to_logical_batch(global_physical_batch)
-        print(global_logical_batch)
         self.assertEqual(
             {"example_index": (global_logical_batch_size,)}, shapes(global_logical_batch)
         )
