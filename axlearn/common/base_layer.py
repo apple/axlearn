@@ -464,8 +464,8 @@ class BaseLayer(Module):
             return None
         if len(parameter_spec.shape) != 2:
             raise NotImplementedError(
-                "Default _compute_fan_axes requires weight parameters to have exactly 2 axes "
-                f"shape({name}) = {parameter_spec.shape}"
+                f"{type(self)} uses the default _compute_fan_axes, which requires weight "
+                f"parameters to have exactly 2 axes: shape({name}) = {parameter_spec.shape}"
             )
         return FanAxes(in_axis=-2, out_axis=-1)
 
