@@ -594,7 +594,7 @@ class ComputeFanAxesTest(TestCase):
                     if cls == ComputeFanAxesTest.BaseFanLayer:
                         with self.assertRaisesRegex(
                             NotImplementedError,
-                            "_compute_fan_axes requires weight parameters to have exactly 2 axes",
+                            "requires weight parameters to have exactly 2 axes",
                         ):
                             # pylint: disable-next=protected-access
                             layer._compute_fan_axes("weight", param_spec_map["weight"])
