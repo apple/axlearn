@@ -1171,11 +1171,12 @@ class Input(Module):
             # Let input_dispatcher determine num_shards and shard_index for tfds_read_config.
             feed_read_config = self.input_dispatcher.feed_read_config()
             set_read_config_recursively(cfg.source, **feed_read_config)
-            logging.info("feed_read_config=%s, source=%s", feed_read_config, cfg.source)
             if cfg.batcher.fn is per_feed_batch:
                 # If using `per_feed_batch`, set feed_batch_size according to `input_batcher`.
                 # If not, we rely on user to set up batcher correctly.
                 cfg.batcher.feed_batch_size = self.input_batcher.feed_logical_batch_size
+            logging.info("feed_read_config=%s", feed_read_config)
+            logging.info("Modified Input.config according to input_batcher:\n%s", cfg)
         self._source = maybe_set_config(cfg.source, is_training=cfg.is_training).instantiate()
         self._processor = maybe_set_config(cfg.processor, is_training=cfg.is_training).instantiate()
         self._batcher = maybe_set_config(cfg.batcher, is_training=cfg.is_training).instantiate()
