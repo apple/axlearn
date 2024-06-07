@@ -3259,32 +3259,38 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             all_layer_outputs.append(layer_outputs)
             all_layer_states.append(layer_states)
             data = layer_outputs.data
-            self_attention_kv_state = layer_outputs.self_attention_kv_state
+            # Prepare inputs to the next layer.
+            self._update_layer_kwargs(layer_kwargs, outputs=layer_outputs)
 
-        # Stack auxiliary outputs along axis 0.
+        return all_layer_states, self._aggregate_layer_outputs(all_layer_outputs)
+
+    def _update_layer_kwargs(
+        self, layer_kwargs: Dict[str, Any], *, outputs: BaseTransformerLayer.Output
+    ):
+        pass  # Do nothing by default.
+
+    def _aggregate_layer_outputs(
+        self,
+        layer_outputs: Sequence[BaseTransformerLayer.Output],
+    ) -> BaseTransformerLayer.Output:
+        """Aggregates outputs from the stack."""
+        data = layer_outputs[-1].data
+        self_attention_kv_state = layer_outputs[-1].self_attention_kv_state
         aux_outputs = [
-            output._replace(data=None, self_attention_kv_state=None) for output in all_layer_outputs
+            output._replace(data=None, self_attention_kv_state=None) for output in layer_outputs
         ]
-        aux_outputs = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *aux_outputs)
-        return all_layer_states, aux_outputs._replace(
-            data=data, self_attention_kv_state=self_attention_kv_state
-        )
+        # Stack auxiliary outputs along axis 0.
+        outputs = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *aux_outputs)
+        return outputs._replace(data=data, self_attention_kv_state=self_attention_kv_state)
 
     def forward(
         self,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         **layer_kwargs,
     ) -> TransformerLayer.Output:
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             cached_states=None,
             **layer_kwargs,
         )
@@ -3299,18 +3305,12 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         *,
         time_step: Tensor,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         **layer_kwargs,
     ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=time_step,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             **layer_kwargs,
         )
 
@@ -3318,25 +3318,24 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         self,
         cached_states: List[NestedTensor],
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         **layer_kwargs,
     ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             cached_states=cached_states,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             **layer_kwargs,
         )
 
 
 class _TransformerRepeat(Repeat):
     """A Repeat layer with layer=TransformerLayer."""
+
+    @config_class
+    class Config(Repeat.Config):
+        """Configures QKVLinearWithExternalKVState."""
+
+        carry: Sequence[str] = []
 
     def _forward_for_mode(
         self,
@@ -3362,61 +3361,63 @@ class _TransformerRepeat(Repeat):
         Raises:
             ValueError: If `mode` is unsupported.
         """
+        cfg = self.config
 
         def layer_fn(carry, x_i):
             if mode == ForwardMode.FORWARD:
-                layer_states, layer_outputs = None, self.layer(carry, **layer_kwargs)
+                layer_states, layer_outputs = None, self.layer(**carry, **layer_kwargs)
             elif mode == ForwardMode.INIT_STATES:
                 assert x_i is not None
                 layer_states, layer_outputs = self.layer.prefill_states(
                     time_step=x_i,
-                    data=carry,
+                    **carry,
                     **layer_kwargs,
                 )
             elif mode == ForwardMode.EXTEND_STEP:
                 assert x_i is not None
                 layer_states, layer_outputs = self.layer.extend_step(
                     cached_states=x_i,
-                    data=carry,
+                    **carry,
                     **layer_kwargs,
                 )
             else:
                 raise ValueError(f"Unrecognized mode {mode}.")
 
-            ys = {k: v for k, v in layer_outputs._asdict().items() if k != "data"}
+            ys = {k: v for k, v in layer_outputs._asdict().items() if k not in carry}
             if layer_states is not None:
                 # Vectorize over scan axis.
                 ys["cached_states"] = jax.tree_util.tree_map(
                     VDict, layer_states, is_leaf=lambda v: isinstance(v, dict)
                 )
-            return layer_outputs.data, ys
+            return {k: getattr(layer_outputs, k) for k in carry}, ys
 
-        repeat_outputs: Repeat.Output = self._run(layer_fn, carry=data, xs=cached_states)
+        carry = {"data": data}
+        if "self_attention_kv_state" in cfg.carry:
+            carry["self_attention_kv_state"] = layer_kwargs.pop("self_attention_kv_state")
+        repeat_outputs: Repeat.Output = self._run(layer_fn, carry=carry, xs=cached_states)
         ys = repeat_outputs.ys
         updated_states = ys.pop("cached_states", None)
-        self_attention_kv_state = ys.pop("self_attention_kv_state", None)
-        if self_attention_kv_state is not None:
-            # Take the KV state from the last layer.
-            self_attention_kv_state = self_attention_kv_state[-1]
+        if "self_attention_kv_state" in carry:
+            self_attention_kv_state = repeat_outputs.carry.pop("self_attention_kv_state")
+        else:
+            self_attention_kv_state = ys.pop("self_attention_kv_state", None)
+            if self_attention_kv_state is not None:
+                # Take the KV state from the last layer.
+                self_attention_kv_state = self_attention_kv_state[-1]
         return updated_states, TransformerLayer.Output(
-            data=repeat_outputs.carry, self_attention_kv_state=self_attention_kv_state, **ys
+            data=repeat_outputs.carry["data"], self_attention_kv_state=self_attention_kv_state, **ys
         )
 
     def forward(
         self,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> TransformerLayer.Output:
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             cached_states=None,
+            **layer_kwargs,
         )
         return output
 
@@ -3436,36 +3437,27 @@ class _TransformerRepeat(Repeat):
         *,
         time_step: Tensor,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> Tuple[NestedTensor, TransformerLayer.Output]:
         cfg = self.config
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             data=data,
             cached_states=jnp.tile(time_step, [cfg.num_layers, 1]),
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **layer_kwargs,
         )
 
     def extend_step(
         self,
         cached_states: NestedTensor,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> Tuple[NestedTensor, TransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             data=data,
             cached_states=cached_states,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **layer_kwargs,
         )
 
 
@@ -3506,17 +3498,9 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
     def forward(
         self,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> TransformerLayer.Output:
-        return self.repeat(
-            data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
-        )
+        return self.repeat(data, **layer_kwargs)
 
     def init_states(self, *args: Any, **kwargs: Any) -> NestedTensor:
         return self.repeat.init_states(*args, **kwargs)
@@ -3526,33 +3510,20 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         *,
         time_step: Tensor,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
-        return self.repeat.prefill_states(
-            time_step=time_step,
-            data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
-        )
+        return self.repeat.prefill_states(time_step=time_step, data=data, **layer_kwargs)
 
     def extend_step(
         self,
         cached_states: NestedTensor,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
         return self.repeat.extend_step(
             cached_states=cached_states,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **layer_kwargs,
         )
 
 
