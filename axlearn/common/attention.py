@@ -3335,7 +3335,14 @@ class _TransformerRepeat(Repeat):
     class Config(Repeat.Config):
         """Configures QKVLinearWithExternalKVState."""
 
-        carry: Sequence[str] = []
+        # The additional fields of BaseTransformerLayer.Output that should propagate as input to
+        # the next layer.
+        #
+        # For example, carry=("data", "self_attention_kv_state") means that both `data` and
+        # `self_attention_kv_state` will propagate between layers.
+        #
+        # If None, only "data" is propagated.
+        carry: Optional[Sequence[str]] = None
 
     def _forward_for_mode(
         self,
@@ -3391,22 +3398,25 @@ class _TransformerRepeat(Repeat):
                 )
             return {k: getattr(layer_outputs, k) for k in carry}, ys
 
-        carry = {"data": data}
-        if "self_attention_kv_state" in cfg.carry:
-            carry["self_attention_kv_state"] = layer_kwargs.pop("self_attention_kv_state")
+        if cfg.carry is None:
+            carry = {"data": data}
+        else:
+            layer_kwargs["data"] = data
+            carry = {k: layer_kwargs.pop(k) for k in cfg.carry}
         repeat_outputs: Repeat.Output = self._run(layer_fn, carry=carry, xs=cached_states)
+        carry = repeat_outputs.carry
         ys = repeat_outputs.ys
         updated_states = ys.pop("cached_states", None)
-        if "self_attention_kv_state" in carry:
-            self_attention_kv_state = repeat_outputs.carry.pop("self_attention_kv_state")
-        else:
-            self_attention_kv_state = ys.pop("self_attention_kv_state", None)
-            if self_attention_kv_state is not None:
-                # Take the KV state from the last layer.
-                self_attention_kv_state = self_attention_kv_state[-1]
-        return updated_states, TransformerLayer.Output(
-            data=repeat_outputs.carry["data"], self_attention_kv_state=self_attention_kv_state, **ys
-        )
+
+        for k in ("data", "self_attention_kv_state"):
+            if k in carry:
+                continue
+            v = ys.pop(k, None)
+            if v is not None:
+                # Take the output from the last layer.
+                v = v[-1]
+            carry[k] = v
+        return updated_states, TransformerLayer.Output(**carry, **ys)
 
     def forward(
         self,
