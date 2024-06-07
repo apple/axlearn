@@ -30,8 +30,6 @@ from typing import Optional, Sequence, Type, cast
 
 import kubernetes as k8s
 from absl import app, flags, logging
-from google.auth.credentials import Credentials
-from googleapiclient import discovery, errors
 
 from axlearn.cloud.common.bundler import get_bundler_config
 from axlearn.cloud.common.utils import (
@@ -45,11 +43,16 @@ from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import GCPJob, GKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.jobs.tpu_runner import with_tpu_training_defaults
+from axlearn.cloud.gcp.node_pool import (
+    PRE_PROVISIONER_LABEL,
+    delete_node_pools,
+    list_node_pools_by_label_key,
+)
+from axlearn.cloud.gcp.node_pool_provisioner import NodePoolProvisioner, TPUNodePoolProvisioner
 from axlearn.cloud.gcp.utils import (
     catch_auth,
     custom_jobset_kwargs,
     delete_k8s_jobset,
-    get_credentials,
     k8s_jobset_table,
     list_k8s_jobsets,
     load_kube_config,
@@ -67,61 +70,11 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
         for job in jobset_spec["replicatedJobs"]:
             node_selector = job["template"]["spec"]["template"]["spec"]["nodeSelector"]
             # If any job has a reservation selector, return it.
-            if reservation := node_selector.get("cloud.google.com/reservation-name", None):
+            reservation = node_selector.get("cloud.google.com/reservation-name", None)
+            if reservation is not None:
                 return reservation
     except (TypeError, KeyError):
         logging.warning("Failed to infer reservation.")
-    return None
-
-
-def _node_pool_resource(credentials: Credentials) -> discovery.Resource:
-    """Builds gcloud v1 node pool API resource.
-
-    Args:
-        credentials: Gcloud credentials used by googleapiclient.discovery.
-
-    Returns:
-        discovery.Resource object for the v1 node pool API.
-    """
-    return (
-        discovery.build("container", "v1", credentials=credentials, cache_discovery=False)
-        .projects()
-        .locations()
-        .clusters()
-        .nodePools()
-    )
-
-
-def _list_node_pools(resource: discovery.Resource, *args, **kwargs) -> dict:
-    # https://googleapis.github.io/google-api-python-client/docs/dyn/container_v1.projects.locations.clusters.nodePools.html#get
-    return resource.list(*args, **kwargs).execute()
-
-
-def _delete_node_pool(resource: discovery.Resource, *, name: str):
-    # https://googleapis.github.io/google-api-python-client/docs/dyn/container_v1.projects.locations.clusters.nodePools.html#delete
-    try:
-        resource.delete(name=name).execute()
-    except errors.HttpError as e:
-        if e.status_code != 404:
-            raise
-        logging.info("Node pool %s does not exist, no need to delete.", name)
-
-
-def _get_node_pool_by_label(
-    resource: discovery.Resource, *, label: str, parent: str
-) -> Optional[dict]:
-    """Returns the name of the first node pool with the given label."""
-    try:
-        result = _list_node_pools(resource, parent=parent)
-        for item in (result or {}).get("nodePools", []):
-            labels = item.get("config", {}).get("labels", {})
-            if labels.get("provisioner-nodepool-id", None) == label:
-                return item
-    except errors.HttpError as e:
-        if e.status_code != 404:
-            logging.warning("Encountered error attempting to get node pool: %s", e)
-            raise
-    logging.info("Unable to find node pool with parent %s and label %s.", parent, label)
     return None
 
 
@@ -129,6 +82,7 @@ class GKERunnerJob(GCPJob):
     """Launches and monitors a GKE job via k8s JobSet API."""
 
     inner: Type[GKEJob]
+    pre_provisioner: Type[NodePoolProvisioner]
 
     @config_class
     class Config(GCPJob.Config):
@@ -142,6 +96,8 @@ class GKERunnerJob(GCPJob):
             env_vars: Optional env vars to set.
             status_interval_seconds: Interval to poll status.
             vertexai_tb_uploader: Optional VertexAI Tensorboard Uploader.
+            enable_pre_provisioner: Whether to enable pre-provisioner.
+            pre_provisioner: Optional pre-provisioner configuration.
         """
 
         inner: Required[GKEJob.Config] = REQUIRED
@@ -151,6 +107,8 @@ class GKERunnerJob(GCPJob):
         env_vars: dict[str, str] = {}
         status_interval_seconds: float = 30
         vertexai_tb_uploader: Optional[VertexAITensorboardUploader.Config] = None
+        enable_pre_provisioner: bool = False
+        pre_provisioner: Optional[NodePoolProvisioner.Config] = None
 
     @classmethod
     def validate_inner(cls):
@@ -170,6 +128,9 @@ class GKERunnerJob(GCPJob):
         flags.DEFINE_string("namespace", "default", "K8s namespace.", **common_kwargs)
         flags.DEFINE_string("cluster", None, "GKE cluster name.", **common_kwargs)
         flags.DEFINE_multi_string("env", [], "Env var in the format key:value.", **common_kwargs)
+        flags.DEFINE_boolean(
+            "enable_pre_provisioner", False, "Whether to enable pre-provisioner.", **common_kwargs
+        )
         # Allow inner to be unspecified for help/list/stop.
         if hasattr(cls, "inner"):
             cls.inner.define_flags(fv)
@@ -201,6 +162,8 @@ class GKERunnerJob(GCPJob):
         cfg.service_account = cfg.service_account or gcp_settings(
             "k8s_service_account", default="default", fv=fv
         )
+        if cfg.enable_pre_provisioner:
+            cfg.pre_provisioner = cast(NodePoolProvisioner, cls.pre_provisioner).from_flags(fv)
         return cfg
 
     @property
@@ -220,6 +183,7 @@ class GKERunnerJob(GCPJob):
             service_account=cfg.service_account,
             max_tries=cfg.max_tries,
             retry_interval=cfg.retry_interval,
+            enable_pre_provisioner=cfg.enable_pre_provisioner,
         ).instantiate()
         # Use the bundler configured on inner.
         self._bundler = None
@@ -228,6 +192,12 @@ class GKERunnerJob(GCPJob):
         if cfg.vertexai_tb_uploader:
             self._tb_uploader: VertexAITensorboardUploader = cfg.vertexai_tb_uploader.set(
                 summary_dir=cfg.output_dir
+            ).instantiate()
+
+        self._pre_provisioner = None
+        if cfg.pre_provisioner is not None:
+            self._pre_provisioner: NodePoolProvisioner = cfg.pre_provisioner.set(
+                name=cfg.name,
             ).instantiate()
 
     class Status(enum.Enum):
@@ -264,12 +234,14 @@ class GKERunnerJob(GCPJob):
     # TODO(markblee): Consider moving some of the logic here into the inner impl.
     def _get_status(self) -> Status:
         cfg: GKERunnerJob.Config = self.config
+
         try:
             resp = k8s.client.CustomObjectsApi().get_namespaced_custom_object_status(
                 name=cfg.name,
                 namespace=cfg.inner.namespace,
                 **custom_jobset_kwargs(),
             )
+
             tier = os.environ.get("BASTION_TIER", 0)
             reservation = _infer_reservation(resp["spec"])
             if runner_utils.should_recreate_job(tier, reservation):
@@ -334,14 +306,17 @@ class GKERunnerJob(GCPJob):
     def _delete(self):
         # TODO(markblee): Make delete a public method.
         self._inner._delete()  # pylint: disable=protected-access
+        if self._pre_provisioner is not None:
+            self._pre_provisioner.delete_for(self._inner)
 
-    def _reschedule(self, max_tries: int = 100, retry_interval: float = 10):
+    def _reschedule(self):
         """Reschedules the jobset onto the appropriate tier.
 
         If we can identify that the node pool has incorrect selectors for the current scheduling
         tier, delete it to force provisioner to recreate with the right specs.
         We identify the node pool by looking for the `provisioner-nodepool-id` label set during
-        creation.
+        creation (by auto-provisioner),
+        or by node_pool.PRE_PROVISIONER_LABEL label set during provisioning (by pre-provisioner)
 
         TODO(markblee): Refactor this logic when jobset recreation is fixed in:
         https://github.com/GoogleCloudPlatform/ai-on-gke/tree/main/tpu-provisioner
@@ -349,21 +324,26 @@ class GKERunnerJob(GCPJob):
         cfg: GKERunnerJob.Config = self.config
         # Delete the jobset first, so that provisioner does not attempt to recreate the existing
         # node-pools.
-        self._delete()
+        logging.info("Deleting jobset %s", cfg.name)
+        self._inner._delete()  # pylint: disable=protected-access
 
-        resource = _node_pool_resource(get_credentials())
-        region = cfg.zone.rsplit("-", 1)[0]
-        cluster_id = f"projects/{cfg.project}/locations/{region}/clusters/{cfg.cluster}"
-        for i in range(max_tries):
-            node_pool = _get_node_pool_by_label(resource, label=cfg.name, parent=cluster_id)
-            if node_pool is None:
-                logging.info("Could not infer node pool, skipping delete.")
-                break
+        node_pool_label_key = "provisioner-nodepool-id"
+        if self._pre_provisioner is not None:
+            # TODO(ethanli): move this logic to pre-provisioner.
+            node_pool_label_key = PRE_PROVISIONER_LABEL
 
+        node_pools_dict = list_node_pools_by_label_key(
+            project=cfg.project, zone=cfg.zone, cluster=cfg.cluster, label_key=node_pool_label_key
+        )
+        node_pools = node_pools_dict.get(cfg.name, [])
+        if len(node_pools) == 0:
+            logging.info("Could not infer node pool, skipping delete.")
+            return
+        node_pools_to_delete = []
+        for node_pool in node_pools:
             node_pool_config = node_pool.get("config", {})
             reservation_affinity = node_pool_config.get("reservationAffinity", {})
             taints = node_pool_config.get("taints", [])
-
             tier = os.environ.get("BASTION_TIER", 0)
             has_reservation = (
                 reservation_affinity.get("key") == "compute.googleapis.com/reservation-name"
@@ -385,23 +365,27 @@ class GKERunnerJob(GCPJob):
                 taints,
             )
             if (str(tier) == "0" and not has_reservation) or (str(tier) != "0" and not has_spot):
-                logging.info("Since there is a mismatch, we will attempt to delete.")
-                try:
-                    # Node pool deletion can fail if there's an incompatible operation running on
-                    # the cluster: "Cluster is running incompatible operation ...".
-                    _delete_node_pool(resource, name=f"{cluster_id}/nodePools/{node_pool['name']}")
-                    break
-                except errors.HttpError as e:
-                    logging.warning("Encountered error during delete: %s.", e)
-                    if i < max_tries - 1:
-                        logging.info("Attempting a retry in %s seconds...", retry_interval)
-                        time.sleep(retry_interval)
-                    else:
-                        logging.warning(
-                            "Giving up on deleting node pool after %s tries.", max_tries
-                        )
+                logging.info(
+                    "Since there is a mismatch, we will attempt to delete %s.",
+                    node_pool["name"],
+                )
+                node_pools_to_delete.append(node_pool["name"])
             else:
                 logging.info("Node pool appears to have the right specs.")
+        if len(node_pools_to_delete) > 0:
+            start_time = time.perf_counter()
+            delete_node_pools(
+                node_pools_to_delete,
+                project=cfg.project,
+                zone=cfg.zone,
+                cluster=cfg.cluster,
+                retry_interval=cfg.retry_interval,
+                wait_timeout=30 * 60 * len(node_pools_to_delete),
+            )
+            elapsed_time = time.perf_counter() - start_time
+            logging.info(
+                "Node pools %s deletion took %s seconds", node_pools_to_delete, elapsed_time
+            )
 
     def _execute(self):
         cfg: GKERunnerJob.Config = self.config
@@ -427,6 +411,11 @@ class GKERunnerJob(GCPJob):
                 # If running from bastion VM, bundling should have happened on the user's machine.
                 if not running_from_vm():
                     self._inner.bundler.bundle(cfg.name)
+
+                # Provision node pools for the job to run.
+                if self._pre_provisioner is not None:
+                    self._pre_provisioner.create_for(self._inner)
+
                 self._inner.execute()
             else:
                 # Ensure VertexAI Tensorboard Uploader is running.
@@ -440,6 +429,7 @@ class TPUGKERunnerJob(GKERunnerJob):
     """A GKERunnerJob that uses TPUGKEJob."""
 
     inner = TPUGKEJob
+    pre_provisioner = TPUNodePoolProvisioner
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues = FLAGS):
@@ -462,14 +452,55 @@ def _get_runner_or_exit(instance_type: str):
         raise app.UsageError(f"Unknown instance_type {instance_type}")
 
 
+def _delete_k8s_jobset_and_node_pools(
+    *, project: str, zone: str, cluster: str, jobset_name: str, jobset_namespace: str
+):
+    """Delete jobset and its associated node pools provisioned by the pre-provisioner.
+
+    Args:
+        project: GCP Project name.
+        zone: GCP zone name.
+        cluster: K8s cluster.
+        jobset_name: K8s jobset name.
+        jobset_namespace: K8s jobset namespace.
+    """
+
+    # TODO(ethanli): encapsulate the deletion logic to the runner
+    #  while preserving backwards compatibility.
+
+    logging.info("Deleting jobset %s", jobset_name)
+    delete_k8s_jobset(jobset_name, namespace=jobset_namespace)
+
+    # Delete pre-provisioned node pools associated with the jobset
+    node_pools_by_pre_provisioner_id = list_node_pools_by_label_key(
+        project=project, zone=zone, cluster=cluster, label_key=PRE_PROVISIONER_LABEL
+    )
+
+    node_pools = node_pools_by_pre_provisioner_id.get(jobset_name, [])
+    node_pool_names = []
+    for node_pool in node_pools:
+        node_pool_names.append(node_pool["name"])
+
+    logging.info("Deleting node pools %s", node_pool_names)
+    delete_node_pools(
+        node_pool_names,
+        project=project,
+        zone=zone,
+        cluster=cluster,
+        retry_interval=30,
+        wait_timeout=30 * 60 * len(node_pools),
+    )
+
+
 @catch_auth
 def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     action = parse_action(argv, options=["start", "list", "stop"])
-    load_kube_config(
-        project=gcp_settings("project", fv=flag_values),
-        zone=gcp_settings("zone", fv=flag_values),
-        cluster=flag_values.cluster or gcp_settings("gke_cluster", fv=flag_values, required=False),
-    )
+
+    project = gcp_settings("project", fv=flag_values)
+    zone = gcp_settings("zone", fv=flag_values)
+    cluster = flag_values.cluster or gcp_settings("gke_cluster", fv=flag_values, required=False)
+
+    load_kube_config(project=project, zone=zone, cluster=cluster)
 
     if action == "start":
         command = " ".join(argv[2:])
@@ -485,7 +516,14 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         if not flag_values.name:
             raise app.UsageError("--name is required.")
 
-        delete_k8s_jobset(flag_values.name, namespace=flag_values.namespace)
+        _delete_k8s_jobset_and_node_pools(
+            project=project,
+            zone=zone,
+            cluster=cluster,
+            jobset_name=flag_values.name,
+            jobset_namespace=flag_values.namespace,
+        )
+
     else:
         # Unreachable -- `parse_action` will handle validation.
         raise app.UsageError(f"Unknown action {action}")

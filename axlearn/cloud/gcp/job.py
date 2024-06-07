@@ -24,6 +24,7 @@ from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import parse_kv_flags, subprocess_run
 from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.cloud.gcp.tpu import (
@@ -304,11 +305,13 @@ class GKEJob(GCPJob):
                 https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
             gcsfuse_mount: Optional configs for the GCS FUSE sidecar and volume mount.
                 See `GCSFuseMount` for details.
+            enable_pre_provisioner: Whether to enable pre-provisioner.
         """
 
         env_vars: Dict[str, str] = {}
         namespace: str = "default"
         gcsfuse_mount: Optional[GCSFuseMount] = None
+        enable_pre_provisioner: bool = False
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -354,11 +357,14 @@ class TPUGKEJob(GKEJob):
                 degraded performance.
                 If None, we leave it to GCP to determine whether it's appropriate for the requested
                 TPU topology.
+            location_hint: If set, the job will be scheduled to run on this TPU location.
+                If None, we leave it to GCP to determine where the TPUs are located.
         """
 
         accelerator: AcceleratorConfig = AcceleratorConfig()
         reservation: Optional[str] = None
         enable_tpu_ici_resiliency: Optional[bool] = None
+        location_hint: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -379,6 +385,8 @@ class TPUGKEJob(GKEJob):
         cfg: TPUGKEJob.Config = super().from_flags(fv, **kwargs)
         cfg.accelerator.set(instance_type=fv.instance_type, num_replicas=fv.num_replicas)
         cfg.reservation = cfg.reservation or gcp_settings("gke_reservation", required=False, fv=fv)
+        # Only read from the config file since users shouldn't need to configure this.
+        cfg.location_hint = gcp_settings("location_hint", required=False, fv=fv)
         return cfg
 
     def __init__(self, cfg: Config):
@@ -477,7 +485,8 @@ class TPUGKEJob(GKEJob):
         # If running from bastion, a scheduling tier will be specified in env.
         # Tier "0" corresponds to reserved; otherwise we use preemptible.
         tier = os.environ.get("BASTION_TIER", None)
-        if tier == "0" and cfg.reservation:
+
+        if tier == "0" and cfg.reservation is not None:
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         else:
@@ -501,6 +510,41 @@ class TPUGKEJob(GKEJob):
                 }
             )
 
+        if cfg.location_hint is not None:
+            selector.update({"cloud.google.com/gke-location-hint": str(cfg.location_hint).lower()})
+
+        if cfg.enable_pre_provisioner:
+            # Used by pre-provisioner.
+            selector.update(
+                {
+                    PRE_PROVISIONER_LABEL: cfg.name,
+                }
+            )
+        else:
+            # Used by GCP auto-provisioner.
+            selector.update(
+                {
+                    # NOTE: This is an arbitrary key, with a value that must be unique to the
+                    # jobset. This forces the jobset to be associated with its own node pool;
+                    # without this, the TPU provisioner may create a node pool and the scheduler may
+                    # schedule a different jobset onto the node pool, which can cause conflicts if
+                    # the original jobset attempts to restart (node pool conflict). This is more
+                    # reliable at the moment but doesn't take advantage of node pool sharing. GCP is
+                    # working on a fix.
+                    "provisioner-nodepool-id": cfg.name,
+                }
+            )
+
+        annotations.update(
+            {
+                # Disable gcp auto-provisioner or not.
+                # https://github.com/GoogleCloudPlatform/ai-on-gke/blob/b199de1d5326f257fa6fc21d99e45b5b4621bb20/tpu-provisioner/internal/controller/creation_controller.go#L40
+                "tpu-provisioner.cloud.google.com/disable-autoprovisioning": "true"
+                if cfg.enable_pre_provisioner
+                else "false",
+            }
+        )
+
         return dict(
             metadata=dict(annotations=annotations),
             spec=dict(
@@ -511,14 +555,6 @@ class TPUGKEJob(GKEJob):
                 nodeSelector={
                     "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
                     "cloud.google.com/gke-tpu-topology": system.topology,
-                    # NOTE: This is an arbitrary key, with a value that must be unique to the
-                    # jobset. This forces the jobset to be associated with its own node pool;
-                    # without this, the TPU provisioner may create a node pool and the scheduler may
-                    # schedule a different jobset onto the node pool, which can cause conflicts if
-                    # the original jobset attempts to restart (node pool conflict). This is more
-                    # reliable at the moment but doesn't take advantage of node pool sharing. GCP is
-                    # working on a fix.
-                    "provisioner-nodepool-id": cfg.name,
                     **selector,
                 },
                 tolerations=tolerations,
@@ -555,6 +591,7 @@ class TPUGKEJob(GKEJob):
             A nested dict corresponding to a k8s JobSet config.
         """
         cfg: TPUGKEJob.Config = self.config
+
         return dict(
             metadata=dict(
                 name=cfg.name,
