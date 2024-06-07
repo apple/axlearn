@@ -22,7 +22,7 @@ from google.auth.credentials import Credentials
 
 from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
-from axlearn.cloud.common.utils import subprocess_run
+from axlearn.cloud.common.utils import parse_kv_flags, subprocess_run
 from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
@@ -316,6 +316,12 @@ class GKEJob(GCPJob):
         flags.DEFINE_string(
             "namespace", "default", "K8s namespace.", flag_values=fv, allow_override=True
         )
+        flags.DEFINE_multi_string(
+            "gcsfuse_mount_spec",
+            None,
+            "GCS FUSE mount spec in the format key=value.",
+            flag_values=fv,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
@@ -323,6 +329,8 @@ class GKEJob(GCPJob):
         cfg.service_account = cfg.service_account or gcp_settings(
             "k8s_service_account", default="default", fv=fv
         )
+        if fv.gcsfuse_mount_spec:
+            cfg.gcsfuse_mount = GCSFuseMount(**parse_kv_flags(fv.gcsfuse_mount_spec, delimiter="="))
         return cfg
 
 
