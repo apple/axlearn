@@ -3816,6 +3816,7 @@ class StackedTransformerTest(TestCase):
             expected_output = 1.8719857
         else:
             kv_state = None
+            # carry=None and carry=("data",) are equivalent.
             expected_output = 5.3901253
 
         layer = cfg.instantiate(parent=None)
