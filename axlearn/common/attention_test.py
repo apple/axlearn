@@ -19,7 +19,7 @@ import copy
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
 from itertools import combinations
-from typing import List, Optional, Tuple, Type, Union
+from typing import List, Optional, Sequence, Tuple, Type, Union
 
 import jax
 import numpy as np
@@ -39,6 +39,7 @@ from axlearn.common import attention, test_utils, utils
 from axlearn.common.attention import (
     NEG_INF,
     BaseStackedTransformerLayer,
+    BaseTransformerLayer,
     BottleNeckAdapterTransformerLayer,
     FusedQKVLinear,
     KVState,
@@ -3054,9 +3055,9 @@ class TestStackModel(BaseLayer):
         cfg = self.config
         self._add_child("stack", cfg.stack)
 
-    def forward(self, data, self_attention_logit_biases):
+    def forward(self, data, **layer_kwargs):
         # [batch, length, dim].
-        x = self.stack(data, self_attention_logit_biases=self_attention_logit_biases).data
+        x = self.stack(data, **layer_kwargs).data
         x_mean = jnp.mean(x, axis=1, keepdims=True)
         # [batch, length].
         x_var = jnp.sum((x - x_mean) ** 2, axis=-1)
@@ -3108,6 +3109,20 @@ def _convert_from_stacked_params(
         return layer_params
     else:
         raise NotImplementedError(target_stack_cfg)
+
+
+class NonUniformStack(StackedTransformerLayer):
+    def _aggregate_layer_outputs(
+        self, layer_outputs: Sequence[BaseTransformerLayer.Output]
+    ) -> BaseTransformerLayer.Output:
+        return BaseTransformerLayer.Output(
+            # Use data and self_attention_kv_state from the final layer outputs.
+            data=layer_outputs[-1].data,
+            self_attention_kv_state=layer_outputs[-1].self_attention_kv_state,
+            # Do not aggregate *_attention_probs.
+            self_attention_probs=None,
+            cross_attention_probs=None,
+        )
 
 
 class StackedTransformerTest(TestCase):
@@ -3731,6 +3746,91 @@ class StackedTransformerTest(TestCase):
         )
         assert_allclose(outputs.data, ref_outputs.data)
         assert_allclose(outputs.self_attention_probs, ref_outputs.self_attention_probs)
+
+    @parameterized.product(is_training=(True, False))
+    def test_stacked_transformer_with_non_uniform_layers(self, is_training):
+        """Tests that a custom StackedTransformerLayer can support non-uniform layers."""
+        batch_size = 2
+        seq_len = 16
+        input_dim = 4
+        hidden_dim = 16
+        num_layers = 2
+
+        # Create a StackedTransformerLayer by specifying a sequence of non-uniform layer configs.
+        cfg = NonUniformStack.default_config().set(name="test")
+        cfg.input_dim = input_dim
+        cfg.num_layers = num_layers
+        cfg.layer = []
+        for i in range(num_layers):
+            transformer_cfg = TransformerLayer.default_config()
+            # Different numbers of heads between the layers.
+            transformer_cfg.self_attention.attention.num_heads = 2 if i == 0 else 1
+            transformer_cfg.feed_forward.hidden_dim = hidden_dim
+            cfg.layer.append(transformer_cfg)
+        layer: StackedTransformerLayer = cfg.instantiate(parent=None)
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim))
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        outputs, _ = F(
+            layer,
+            is_training=is_training,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(data=inputs),
+        )
+        self.assertEqual(
+            BaseTransformerLayer.Output(
+                data=(2, 16, 4),
+                self_attention_probs=None,
+                self_attention_kv_state=KVState(k_proj=(2, 16, 1, 4), v_proj=(2, 16, 1, 4)),
+                cross_attention_probs=None,
+            ),
+            shapes(outputs),
+        )
+
+    @parameterized.parameters(None, [("data",)], [("data", "self_attention_kv_state")])
+    def test_repeated_layer_with_custom_carry(self, repeat_carry):
+        """Tests RepeatedTransformerLayer with customized `carry`."""
+        batch_size = 1
+        seq_len = 16
+        input_dim = 4
+        num_heads = 2
+        head_dim = input_dim // num_heads
+        num_layers = 3
+
+        cfg = self._stack_config(
+            RepeatedTransformerLayer,
+            num_layers=num_layers,
+            model_dim=input_dim,
+            num_heads=num_heads,
+            dtype=jnp.float32,
+            remat_spec=None,
+        )
+        cfg.stack.repeat.carry = repeat_carry
+        if repeat_carry is not None and "self_attention_kv_state" in repeat_carry:
+            kv_shape = (batch_size, seq_len, num_heads, head_dim)
+            kv_state = KVState(
+                k_proj=jax.random.normal(key=jax.random.PRNGKey(1), shape=kv_shape),
+                v_proj=jax.random.normal(key=jax.random.PRNGKey(2), shape=kv_shape),
+            )
+            cfg.stack.layer.self_attention.attention.input_linear = QLinear.default_config()
+            expected_output = 1.8719857
+        else:
+            kv_state = None
+            # carry=None and carry=("data",) are equivalent.
+            expected_output = 5.3901253
+
+        layer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim))
+        outputs, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(data=inputs, self_attention_kv_state=kv_state),
+        )
+        print(outputs)
+        self.assertNestedAllClose(expected_output, outputs[0])
 
 
 class ConfigHelperTest(TestCase):
