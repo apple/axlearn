@@ -658,9 +658,29 @@ class MaxPool2D(BaseLayer):
         return [input_shape[0], output_height, output_width, input_shape[3]]
 
 
+class BaseConv(BaseLayer):
+    """Base class for convolution layers."""
+
+    @config_class
+    class Config(BaseLayer.Config):
+        input_dim: Required[int] = REQUIRED  # Input feature dim.
+
+    # pylint: disable-next=no-self-use
+    def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
+        if not name.endswith("weight"):
+            return None
+        if len(parameter_spec.shape) < 2:
+            raise NotImplementedError(
+                "Default _compute_fan_axes requires weight parameters to have at least 2 axes "
+                f"shape({name}) = {parameter_spec.shape}"
+            )
+        # All other axes represent receptive field.
+        return FanAxes(in_axis=-2, out_axis=-1)
+
+
 # The accuracy of the output of this layer currently doesn't match that of PyTorch
 # quite as closely as we would like. See layers_test.py:test_conv2d().
-class Conv2D(BaseLayer):
+class Conv2D(BaseConv):
     """The 2-D convolution layer.
 
     Kernel weights have the HWIO layout and in the shape of (window[0], window[1], input_dim,
@@ -668,14 +688,13 @@ class Conv2D(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(BaseConv.Config):
         """Configures Conv2D."""
 
         window: Tuple[int, int] = (1, 1)  # The convolution window.
         strides: Tuple[int, int] = (1, 1)  # The convolution strides.
         # Paddings: "SAME", "VALID", or ((top, bottom), (left, right)).
         padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int]]] = ((0, 0), (0, 0))
-        input_dim: Required[int] = REQUIRED  # Input feature dim.
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
         # The number of groups in which the input is split along the channel axis.
@@ -801,7 +820,7 @@ def _compute_conv_output_1d_padding(
     return out_paddings
 
 
-class Conv2DTranspose(BaseLayer):
+class Conv2DTranspose(BaseConv):
     """The 2-D transposed convolution layer.
 
     Kernel weights have the HWIO layout and in the shape of (window[0], window[1], output_dim,
@@ -809,13 +828,12 @@ class Conv2DTranspose(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(BaseConv.Config):
         """Configures Conv2DTranspose."""
 
         window: Tuple[int, int] = (1, 1)
         strides: Tuple[int, int] = (1, 1)
         padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int]]] = ((0, 0), (0, 0))
-        input_dim: Required[int] = REQUIRED  # Input feature dim.
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
 
@@ -935,7 +953,7 @@ class Conv2DWith1DPadding(Conv2D):
         return output, output_paddings
 
 
-class Conv3D(BaseLayer):
+class Conv3D(BaseConv):
     """The 3-D convolution layer.
 
     Kernel weights have the HWDIO layout and in the shape of (window[0], window[1],
@@ -943,7 +961,7 @@ class Conv3D(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(BaseConv.Config):
         """Configures Conv3D."""
 
         window: Tuple[int, int, int] = (1, 1, 1)  # The convolution window.
@@ -956,9 +974,7 @@ class Conv3D(BaseLayer):
             (0, 0),
         )
 
-        input_dim: Required[int] = REQUIRED  # Input feature dim.
         output_dim: Required[int] = REQUIRED  # Output feature dim.
-
         bias: bool = True  # Whether to add a bias.
 
         # The number of groups in which the input is split along the channel axis.
@@ -1045,7 +1061,7 @@ class Conv3D(BaseLayer):
         return [input_shape[0], *output_shape, cfg.output_dim]
 
 
-class Conv1D(BaseLayer):
+class Conv1D(BaseConv):
     """The 1D convolution layer.
 
     Kernel weights have the WIO layout and in the shape of (window, input_dim, output_dim).
@@ -1053,7 +1069,7 @@ class Conv1D(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(BaseConv.Config):
         """Configures Conv1D."""
 
         window: Required[int] = REQUIRED  # The convolution window.
@@ -1061,8 +1077,6 @@ class Conv1D(BaseLayer):
         # Paddings: "SAME", "VALID", or (left, right).
         # For causal convolution, set padding to (window - 1, 0).
         padding: Union[str, Tuple[int, int]] = (0, 0)
-        # Input feature dim, which is also the output dim.
-        input_dim: Required[int] = REQUIRED
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
         # The number of groups in which the input is split along the channel axis.
@@ -1131,7 +1145,7 @@ class Conv1D(BaseLayer):
         return output
 
 
-class DepthwiseConv1D(BaseLayer):
+class DepthwiseConv1D(BaseConv):
     """The 1-D depth-wise convolution layer.
 
     Kernel weights have the WIO layout and in the shape of (window, 1, output_dim=input_dim).
@@ -1139,7 +1153,7 @@ class DepthwiseConv1D(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(BaseConv.Config):
         """Configures DepthwiseConv1D."""
 
         window: Required[int] = REQUIRED  # The convolution window.
@@ -1147,8 +1161,6 @@ class DepthwiseConv1D(BaseLayer):
         # Paddings: "SAME", "VALID", or (left, right).
         # For causal convolution, set padding to (window - 1, 0).
         padding: Union[str, Tuple[int, int]] = (0, 0)
-        # Input feature dim, which is also the output dim.
-        input_dim: Required[int] = REQUIRED
         bias: bool = True  # Whether to add a bias.
 
     @classmethod
