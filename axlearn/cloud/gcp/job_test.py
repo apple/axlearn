@@ -202,7 +202,7 @@ class TPUGKEJobTest(TestCase):
         bundler_cls: Type[Bundler],
         reservation: Optional[str] = None,
         service_account: Optional[str] = None,
-        enable_pre_provisioner: bool = False,
+        enable_pre_provisioner: Optional[bool] = None,
     ):
         with mock_gcp_settings([job.__name__, bundler.__name__], self._mock_settings):
             fv = flags.FlagValues()
@@ -223,7 +223,7 @@ class TPUGKEJobTest(TestCase):
         service_account=[None, "sa"],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         wrap_bundler=[False, True],
-        enable_pre_provisioner=[False, True],
+        enable_pre_provisioner=[None, False, True],
     )
     def test_instantiate(
         self, reservation, service_account, enable_pre_provisioner, bundler_cls, wrap_bundler
@@ -272,7 +272,7 @@ class TPUGKEJobTest(TestCase):
         ],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         enable_ici_resiliency=[True, False, None],
-        enable_pre_provisioner=[True, False],
+        enable_pre_provisioner=[None, True, False],
         location_hint=["test-location-hint", None],
     )
     def test_build_pod(
@@ -282,7 +282,7 @@ class TPUGKEJobTest(TestCase):
         enable_ici_resiliency: bool,
         env: Optional[dict] = None,
         reservation: Optional[str] = None,
-        enable_pre_provisioner: bool = False,
+        enable_pre_provisioner: Optional[bool] = None,
         location_hint: Optional[str] = None,
     ):
         with mock.patch.dict("os.environ", env), self._job_config(bundler_cls) as cfg:

@@ -107,7 +107,8 @@ class GKERunnerJob(GCPJob):
         env_vars: dict[str, str] = {}
         status_interval_seconds: float = 30
         vertexai_tb_uploader: Optional[VertexAITensorboardUploader.Config] = None
-        enable_pre_provisioner: bool = False
+        # This config is made Optional for backwards compatibility. Default is False.
+        enable_pre_provisioner: Optional[bool] = None
         pre_provisioner: Optional[NodePoolProvisioner.Config] = None
 
     @classmethod
@@ -129,7 +130,7 @@ class GKERunnerJob(GCPJob):
         flags.DEFINE_string("cluster", None, "GKE cluster name.", **common_kwargs)
         flags.DEFINE_multi_string("env", [], "Env var in the format key:value.", **common_kwargs)
         flags.DEFINE_boolean(
-            "enable_pre_provisioner", False, "Whether to enable pre-provisioner.", **common_kwargs
+            "enable_pre_provisioner", None, "Whether to enable pre-provisioner.", **common_kwargs
         )
         # Allow inner to be unspecified for help/list/stop.
         if hasattr(cls, "inner"):
