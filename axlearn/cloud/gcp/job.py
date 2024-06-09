@@ -311,7 +311,8 @@ class GKEJob(GCPJob):
         env_vars: Dict[str, str] = {}
         namespace: str = "default"
         gcsfuse_mount: Optional[GCSFuseMount] = None
-        enable_pre_provisioner: bool = False
+        # This config is made Optional for backwards compatibility. Default is False.
+        enable_pre_provisioner: Optional[bool] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):

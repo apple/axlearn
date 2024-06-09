@@ -49,7 +49,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         name: str,
         cluster: str,
         service_account: str,
-        enable_pre_provisioner: bool = False,
+        enable_pre_provisioner: Optional[bool] = None,
         gcsfuse_mount_spec: Optional[str] = None,
     ) -> Iterator[tuple[gke_runner.TPUGKERunnerJob.Config, dict]]:
         mock_user = mock.patch("os.environ", {"USER": "test"})
@@ -83,7 +83,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         name=[None, "test-name"],
         cluster=[None, "test-cluster"],
         service_account=[None, "test-sa"],
-        enable_pre_provisioner=[False, True],
+        enable_pre_provisioner=[None, False, True],
         gcsfuse_mount_spec=[None, ["gcs_path=my-test-path"]],
     )
     def test_from_flags(
@@ -116,7 +116,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             gke_runner.GKERunnerJob.Status.SUCCEEDED,
             gke_runner.GKERunnerJob.Status.COMPLETED,
         ],
-        enable_pre_provisioner=[False, True],
+        enable_pre_provisioner=[None, False, True],
     )
     def test_exit(self, status, enable_pre_provisioner):
         with self._job_config(
@@ -344,7 +344,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=gke_runner.GKERunnerJob.Status.READY,
             ),
         ),
-        enable_pre_provisioner=(False, True),
+        enable_pre_provisioner=(None, False, True),
     )
     def test_get_status(
         self,
@@ -353,7 +353,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         expected: gke_runner.GKERunnerJob.Status,
         tier: str,
         spec: dict,
-        enable_pre_provisioner: bool,
+        enable_pre_provisioner: Optional[bool] = None,
     ):
         with self._job_config(
             name="test-name",
@@ -609,7 +609,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 # Jobset should always be deleted.
                 job._inner._delete.assert_called()  # pytype: disable=attribute-error
 
-    @parameterized.parameters(False, True)
+    @parameterized.parameters(None, False, True)
     def test_delete(self, enable_pre_provisioner):
         with self._job_config(
             name="test-name",
@@ -644,7 +644,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     job._pre_provisioner.delete_for.assert_called()
                     # pytype: enable=attribute-error
 
-    @parameterized.parameters(False, True)
+    @parameterized.parameters(None, False, True)
     def test_start(self, enable_pre_provisioner):
         with self._job_config(
             name="test-name",
