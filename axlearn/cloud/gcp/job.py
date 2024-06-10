@@ -655,6 +655,198 @@ class TPUGKEJob(GKEJob):
             **api_kwargs,
         )
 
+class GPUGKEJob(GKEJob):
+    """A GPU job represented as a k8s JobSet.
+
+    See also `gke_runner` as an example.
+    """
+
+    @config_class
+    class Config(GKEJob.Config):
+        """Configures GPUGKEJob.
+
+        Attributes:
+            accelerator: GPU configuration.
+        """
+
+        accelerator: AcceleratorConfig = AcceleratorConfig()
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        accelerator_flags(**common_kwargs)
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
+        cfg: GPUGKEJob.Config = super().from_flags(fv, **kwargs)
+        cfg.accelerator.set(instance_type=fv.instance_type, num_replicas=fv.num_replicas)
+        return cfg
+
+    def __init__(self, cfg: Config):
+        bundler_cfg = cfg.bundler
+        bundler_cfg = getattr(bundler_cfg, "inner", bundler_cfg)
+        if bundler_cfg is None or not issubclass(bundler_cfg.klass, BaseDockerBundler):
+            raise NotImplementedError(f"Only docker bundler supported, got: {bundler_cfg}")
+        super().__init__(cfg)
+
+    def _build_sidecar_container(self) -> Nested[Any]:
+        cfg: GPUGKEJob.Config = self.config
+
+        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+            volumeMounts = [
+                {
+                    "name": "nvidia-install-dir-host",
+                    "mountPath": "/usr/local/nvidia/lib64",
+                },
+                {
+                    "name": "tcpx-socket",
+                    "mountPath": "/run/tcpx",
+                },
+                {
+                    "name": "termination-volume",
+                    "mountPath": "/run/terminated",
+                },
+            ]
+
+            command = [
+                "bash",
+                "-c",
+                """
+                /tcpgpudmarxd/build/app/tcpgpudmarxd --gpu_nic_preset a3vm \
+                    --gpu_shmem_type fd --uds_path /run/tcpx" \
+                    --setup_param "--verbose 128 2 0" &
+                while [ ! -f /run/terminated/terminated ]; do sleep 10; done; "
+                """,
+            ]
+
+            return dict(
+                name="tcpx-daemon",
+                image="us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpx/tcpgpudmarxd-dev:v2.0.11",
+                securityContext={"privileged": True},
+                command=command,
+                env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
+                volumeMounts=volumeMounts,
+            )
+        
+        return {}
+
+    def _build_container(self) -> Nested[Any]:
+        """Builds a config for a single container.
+
+        Returns:
+            A nested dict corresponding to a k8s Container config.
+        """
+        cfg: GPUGKEJob.Config = self.config
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        volume_mounts = []
+
+        env_vars = {**cfg.env_vars}
+        return dict(
+            name=cfg.name,
+            image=self._bundler.id(cfg.name),
+            ports=[
+                dict(containerPort=8080),  # Port for MXLA coordinator.
+            ],
+            securityContext=dict(privileged=True),
+            # TODO(markblee): Improve SIGTERM behavior for command.
+            command=["bash", "-c", cfg.command],
+            resources=dict(limits={"nvidia.com/gpu": "8"}),
+            # Env var values should always be strings.
+            env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
+            volumeMounts=volume_mounts,
+        )
+
+    def _build_pod(self) -> Nested[Any]:
+        """Builds a config for a single Pod, which is a set of containers.
+
+        https://kubernetes.io/docs/concepts/workloads/pods
+
+        Returns:
+            A nested dict corresponding to a k8s Pod template, including the pod metadata and spec.
+        """
+        cfg: GPUGKEJob.Config = self.config
+        annotations, volumes = {}, []
+
+        return dict(
+            metadata=dict(annotations=annotations),
+            spec=dict(
+                terminationGracePeriodSeconds=60,
+                # Fail if any pod fails, and allow retries to happen at JobSet level.
+                restartPolicy="Never",
+                containers=[self._build_container()],
+                serviceAccountName=cfg.service_account,
+                volumes=volumes,
+            ),
+        )
+
+    def _build_job(self) -> Nested[Any]:
+        """Builds a config for a single Job, which is a set of Pods.
+
+        https://kubernetes.io/docs/concepts/workloads/controllers/job/
+
+        Returns:
+            A nested dict corresponding to a k8s Job config, including the job metadata and spec.
+        """
+        cfg: GPUGKEJob.Config = self.config
+        return dict(
+            spec=dict(
+                parallelism=cfg.accelerator.num_replicas,
+                completions=cfg.accelerator.num_replicas,
+                backoffLimit=0,  # Fail the job if any node fails. Retries happen at JobSet level.
+                template=self._build_pod(),
+            ),
+        )
+
+    def _build_jobset(self) -> Nested[Any]:
+        """Builds a config for a JobSet, which is a set of Jobs.
+
+        https://github.com/kubernetes-sigs/jobset/blob/d49514bee57da8ac9aec2fcea06c3a13c21afeae/docs/concepts/README.md
+
+        Returns:
+            A nested dict corresponding to a k8s JobSet config.
+        """
+        cfg: GPUGKEJob.Config = self.config
+
+        return dict(
+            metadata=dict(
+                name=cfg.name,
+            ),
+            spec=dict(
+                failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
+                replicatedJobs=[
+                    # NOTE: the suffix here impacts how long job names can be.
+                    dict(
+                        name="job",
+                        replicas=cfg.accelerator.num_replicas,
+                        template=self._build_job(),
+                    ),
+                ],
+            ),
+        )
+
+    def _delete(self):
+        cfg: GPUGKEJob.Config = self.config
+        # Issues a delete request for the JobSet and proactively delete its descendants. This is not
+        # fully blocking; after the call returns there can be a delay before everything is deleted.
+        delete_k8s_jobset(cfg.name, namespace=cfg.namespace)
+
+    def _execute(self) -> Any:
+        """Submits a JobSet to the cluster."""
+        cfg: GPUGKEJob.Config = self.config
+        api_kwargs = custom_jobset_kwargs()
+        custom_object = dict(
+            apiVersion=f"{api_kwargs['group']}/{api_kwargs['version']}",
+            kind="JobSet",
+            **self._build_jobset(),
+        )
+        logging.info("Submitting JobSet body=%s api_kwargs=%s", custom_object, api_kwargs)
+        return k8s.client.CustomObjectsApi().create_namespaced_custom_object(
+            namespace=cfg.namespace,
+            body=custom_object,
+            **api_kwargs,
+        )
+
 
 class CPUJob(GCPJob):
     """Executes arbitrary commands on CPU VMs."""
