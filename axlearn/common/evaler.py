@@ -233,6 +233,7 @@ class BaseMetricCalculator(Module):
             (outputs, output_collection), where `outputs` are the return value of
             self._model.method(...).
         """
+        input_batch = self._dispatch_global_batch(input_batch)
         # Shard and (possibly) dispatch the input batch.
         model_inputs = dict(
             input_batch=self._eval_cast(input_batch),
@@ -247,6 +248,16 @@ class BaseMetricCalculator(Module):
             inputs=model_inputs,
             is_training=False,
         )
+
+    def _dispatch_global_batch(self, input_batch: NestedTensor) -> NestedTensor:
+        module = self.parent
+        while module is not None:
+            if isinstance(module, SpmdEvaler):
+                break
+            module = module.parent
+        if module is not None and hasattr(module.input, "dispatch_global_batch"):
+            input_batch = module.input.dispatch_global_batch(input_batch)
+        return input_batch
 
     def formatted_metric_name(self, metric_name):
         """Prepend the prefix to the metric_name."""
@@ -685,8 +696,6 @@ class SpmdEvaler(Module):
             with jax.profiler.StepTraceAnnotation(cfg.name, step_num=step):
                 with jax.profiler.TraceAnnotation(f"{cfg.name}.forward"):
                     global_input_batch = utils.host_to_global_device_array(input_batch)
-                    if hasattr(self.input, "dispatch_global_batch"):
-                        global_input_batch = self.input.dispatch_global_batch(global_input_batch)
                     forward_outputs = self.metric_calculator.forward(
                         global_input_batch,
                         model_params=model_params,
