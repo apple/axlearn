@@ -867,7 +867,11 @@ class GPUGKEJob(GKEJob):
             A nested dict corresponding to a k8s Job config, including the job metadata and spec.
         """
         cfg: GPUGKEJob.Config = self.config
+
+        # TODO stoelinga make this configurable before merging PR
+        annotations = {"kueue.x-k8s.io/queue-name": "multislice-queue"}
         return dict(
+            metadata=dict(annotations=annotations),
             spec=dict(
                 parallelism=cfg.accelerator.num_replicas,
                 completions=cfg.accelerator.num_replicas,
