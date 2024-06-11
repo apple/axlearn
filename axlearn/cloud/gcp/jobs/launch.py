@@ -468,11 +468,6 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
     def _execute(self):
         """Submits the command to bastion."""
         cfg: BastionManagedGKEJob.Config = self.config
-        super()._execute()
-        print(
-            "\nView running pods with:\nkubectl get pods\n"
-            "\nNote that the job may take a few minutes to start."
-        )
         try:
             num_workers = infer_tpu_workers(infer_tpu_type(cfg.instance_type))
         except ValueError:
@@ -489,6 +484,11 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
                 "Replace `--worker=0` with `--worker={idx}` "
                 f"where idx is between [0, {num_workers})."
             )
+        super()._execute()
+        print(
+            "\nView running pods with:\nkubectl get pods\n"
+            "\nNote that the job may take a few minutes to start."
+        )
 
 
 # Launchers specified here will be tried (in the given order) when launching a given instance type.

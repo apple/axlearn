@@ -614,6 +614,11 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
         else:
             ctx = contextlib.nullcontext()
 
-        with patch_kube_config, patch_execute, ctx:
+        with ctx, patch_kube_config, patch_execute as mock_execute:
             job: BastionManagedGKEJob = cfg.instantiate()
             job._execute()
+
+            if isinstance(expected, Exception):
+                mock_execute.assert_not_called()
+            else:
+                mock_execute.assert_called_once()
