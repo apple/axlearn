@@ -772,7 +772,7 @@ class GPUGKEJob(GKEJob):
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
             volume_mounts = [
                 {
-                    "name": "tcpx-nccl-plugin-installer",
+                    "name": "tcpx-nccl-plugin-volume",
                     "mountPath": "/var/lib/tcpx",
                 },
             ]
