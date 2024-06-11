@@ -868,10 +868,7 @@ class GPUGKEJob(GKEJob):
         """
         cfg: GPUGKEJob.Config = self.config
 
-        # TODO stoelinga make this configurable before merging PR
-        annotations = {"kueue.x-k8s.io/queue-name": "multislice-queue"}
         return dict(
-            metadata=dict(annotations=annotations),
             spec=dict(
                 parallelism=cfg.accelerator.num_replicas,
                 completions=cfg.accelerator.num_replicas,
@@ -889,10 +886,13 @@ class GPUGKEJob(GKEJob):
             A nested dict corresponding to a k8s JobSet config.
         """
         cfg: GPUGKEJob.Config = self.config
+        # TODO stoelinga make this configurable before merging PR
+        annotations = {"kueue.x-k8s.io/queue-name": "multislice-queue"}
 
         return dict(
             metadata=dict(
                 name=cfg.name,
+                annotations=annotations,
             ),
             spec=dict(
                 failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
