@@ -932,7 +932,7 @@ class GPUGKEJob(GKEJob):
                     # NOTE: the suffix here impacts how long job names can be.
                     dict(
                         name="job",
-                        replicas=cfg.accelerator.num_replicas,
+                        replicas=1,
                         template=self._build_job(),
                     ),
                 ],
