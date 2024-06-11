@@ -737,7 +737,7 @@ class GPUGKEJob(GKEJob):
         cfg: GPUGKEJob.Config = self.config
         volume_mounts = []
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
-            volume_mounts.append(
+            volume_mounts.extend(
                 [
                     {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
                     {"name": "shared-memory", "mountPath": "/dev/shm"},
@@ -796,7 +796,7 @@ class GPUGKEJob(GKEJob):
         volumes = []
 
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
-            volumes.append(
+            volumes.extend(
                 [
                     {
                         "name": "nvidia-install-dir-host",
