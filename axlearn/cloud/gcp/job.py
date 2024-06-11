@@ -557,9 +557,9 @@ class TPUGKEJob(GKEJob):
             {
                 # Disable gcp auto-provisioner or not.
                 # https://github.com/GoogleCloudPlatform/ai-on-gke/blob/b199de1d5326f257fa6fc21d99e45b5b4621bb20/tpu-provisioner/internal/controller/creation_controller.go#L40
-                "tpu-provisioner.cloud.google.com/disable-autoprovisioning": "true"
-                if cfg.enable_pre_provisioner
-                else "false",
+                "tpu-provisioner.cloud.google.com/disable-autoprovisioning": (
+                    "true" if cfg.enable_pre_provisioner else "false"
+                ),
             }
         )
 
@@ -655,6 +655,7 @@ class TPUGKEJob(GKEJob):
             **api_kwargs,
         )
 
+
 class GPUGKEJob(GKEJob):
     """A GPU job represented as a k8s JobSet.
 
@@ -694,7 +695,7 @@ class GPUGKEJob(GKEJob):
         cfg: GPUGKEJob.Config = self.config
 
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
-            volumeMounts = [
+            volume_mounts = [
                 {
                     "name": "nvidia-install-dir-host",
                     "mountPath": "/usr/local/nvidia/lib64",
@@ -726,19 +727,18 @@ class GPUGKEJob(GKEJob):
                 securityContext={"privileged": True},
                 command=command,
                 env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
-                volumeMounts=volumeMounts,
+                volumeMounts=volume_mounts,
             )
-        
+
         return {}
 
-    def _build_container(self) -> Nested[Any]:
+    def _build_main_container(self) -> Nested[Any]:
         """Builds a config for a single container.
 
         Returns:
             A nested dict corresponding to a k8s Container config.
         """
         cfg: GPUGKEJob.Config = self.config
-        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         volume_mounts = []
 
         env_vars = {**cfg.env_vars}
@@ -757,6 +757,61 @@ class GPUGKEJob(GKEJob):
             volumeMounts=volume_mounts,
         )
 
+    def _build_init_container(self) -> Nested[Any]:
+        """Builds a config for a single container."""
+        cfg: GPUGKEJob.Config = self.config
+        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+            volume_mounts = [
+                {
+                    "name": "tcpx-nccl-plugin-installer",
+                    "mountPath": "/var/lib/tcpx",
+                },
+            ]
+
+            command = ["bash", "-c", "/scripts/container_entry.sh install --install-nccl"]
+
+            return dict(
+                name="tcpx-nccl-plugin-installer",
+                image=(
+                    "us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpx/"
+                    "nccl-plugin-gpudirecttcpx-dev:v3.1.7"
+                ),
+                command=command,
+                env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
+                volumeMounts=volume_mounts,
+            )
+
+        return {}
+
+    def _build_volumes(self) -> Nested[Any]:
+        """Builds a config for volumes."""
+        cfg: GPUGKEJob.Config = self.config
+        volumes = []
+
+        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+            volumes.append(
+                [
+                    {
+                        "name": "nvidia-install-dir-host",
+                        "hostPath": {"path": "/home/kubernetes/bin/nvidia/lib64"},
+                    },
+                    {
+                        "name": "tcpx-socket",
+                        "emptyDir": {},
+                    },
+                    {
+                        "name": "shared-memory",
+                        "emptyDir": {"medium": "Memory", "sizeLimit": "200Gi"},
+                    },
+                    {
+                        "name": "tcpx-nccl-plugin-volume",
+                        "emptyDir": {},
+                    },
+                ]
+            )
+
+        return volumes
+
     def _build_pod(self) -> Nested[Any]:
         """Builds a config for a single Pod, which is a set of containers.
 
@@ -768,13 +823,24 @@ class GPUGKEJob(GKEJob):
         cfg: GPUGKEJob.Config = self.config
         annotations, volumes = {}, []
 
+        containers = [self._build_main_container()]
+        sidecar_container = self._build_sidecar_container()
+        if sidecar_container:
+            containers.append(sidecar_container)
+
+        init_containers = []
+        init_container = self._build_init_container()
+        if init_container:
+            init_containers.append(init_container)
+
         return dict(
             metadata=dict(annotations=annotations),
             spec=dict(
                 terminationGracePeriodSeconds=60,
                 # Fail if any pod fails, and allow retries to happen at JobSet level.
                 restartPolicy="Never",
-                containers=[self._build_container()],
+                initContainers=init_containers,
+                containers=[self._build_main_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
             ),
