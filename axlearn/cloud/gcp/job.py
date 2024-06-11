@@ -704,10 +704,6 @@ class GPUGKEJob(GKEJob):
                     "name": "tcpx-socket",
                     "mountPath": "/run/tcpx",
                 },
-                {
-                    "name": "termination-volume",
-                    "mountPath": "/run/terminated",
-                },
             ]
 
             command = [
@@ -717,7 +713,7 @@ class GPUGKEJob(GKEJob):
                 /tcpgpudmarxd/build/app/tcpgpudmarxd --gpu_nic_preset a3vm \
                     --gpu_shmem_type fd --uds_path /run/tcpx" \
                     --setup_param "--verbose 128 2 0" &
-                while [ ! -f /run/terminated/terminated ]; do sleep 10; done; "
+                while [ ! -f /run/tcpx/terminated ]; do sleep 10; done; "
                 """,
             ]
 
@@ -733,15 +729,28 @@ class GPUGKEJob(GKEJob):
         return {}
 
     def _build_main_container(self) -> Nested[Any]:
-        """Builds a config for a single container.
+        """Builds the config for the container running the job.
 
         Returns:
             A nested dict corresponding to a k8s Container config.
         """
         cfg: GPUGKEJob.Config = self.config
         volume_mounts = []
+        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+            volume_mounts.append(
+                [
+                    {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
+                    {"name": "shared-memory", "mountPath": "/dev/shm"},
+                    {"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
+                    {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
+                ]
+            )
 
         env_vars = {**cfg.env_vars}
+        command = ["bash", "-c", cfg.command]
+        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+            command.append("touch /run/tcpx/terminated")
+
         return dict(
             name=cfg.name,
             image=self._bundler.id(cfg.name),
@@ -750,7 +759,7 @@ class GPUGKEJob(GKEJob):
             ],
             securityContext=dict(privileged=True),
             # TODO(markblee): Improve SIGTERM behavior for command.
-            command=["bash", "-c", cfg.command],
+            command=command,
             resources=dict(limits={"nvidia.com/gpu": "8"}),
             # Env var values should always be strings.
             env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
@@ -767,9 +776,7 @@ class GPUGKEJob(GKEJob):
                     "mountPath": "/var/lib/tcpx",
                 },
             ]
-
-            command = ["bash", "-c", "/scripts/container_entry.sh install --install-nccl"]
-
+            command = ["bash", "-c", "/scripts/container_entry.sh install"]
             return dict(
                 name="tcpx-nccl-plugin-installer",
                 image=(
@@ -821,7 +828,10 @@ class GPUGKEJob(GKEJob):
             A nested dict corresponding to a k8s Pod template, including the pod metadata and spec.
         """
         cfg: GPUGKEJob.Config = self.config
-        annotations, volumes = {}, []
+        volumes = self._build_volumes()
+        annotations = {
+            "kubectl.kubernetes.io/default-container": cfg.name,
+        }
 
         containers = [self._build_main_container()]
         sidecar_container = self._build_sidecar_container()
@@ -840,6 +850,8 @@ class GPUGKEJob(GKEJob):
                 # Fail if any pod fails, and allow retries to happen at JobSet level.
                 restartPolicy="Never",
                 initContainers=init_containers,
+                hostNetwork=True,
+                dnsPolicy="ClusterFirstWithHostNet",
                 containers=[self._build_main_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
