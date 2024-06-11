@@ -747,6 +747,8 @@ class GPUGKEJob(GKEJob):
             )
 
         env_vars: Dict[str, str] = {}
+        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
+        env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
             env_vars["LD_LIBRARY_PATH"] = "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64"
             env_vars["NCCL_CROSS_NIC"] = "0"
@@ -778,6 +780,20 @@ class GPUGKEJob(GKEJob):
             env_vars["NCCL_NVLS_ENABLE"] = "0"
 
         env_vars.update(cfg.env_vars)
+        # K8s expects each env variable to be a dict
+        k8s_env_vars = [{"name": name, "value": value} for name, value in env_vars.items()]
+        k8s_env_vars.append(
+            {
+                "name": "PROCESS_ID",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": (
+                            "metadata.annotations['batch.kubernetes.io/" "job-completion-index']"
+                        ),
+                    }
+                },
+            },
+        )
 
         command = ["bash", "-c", cfg.command]
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
@@ -793,8 +809,7 @@ class GPUGKEJob(GKEJob):
             # TODO(markblee): Improve SIGTERM behavior for command.
             command=command,
             resources=dict(limits={"nvidia.com/gpu": "8"}),
-            # Env var values should always be strings.
-            env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
+            env=k8s_env_vars,
             volumeMounts=volume_mounts,
         )
 
