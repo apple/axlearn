@@ -746,7 +746,10 @@ class GPUGKEJob(GKEJob):
                 ]
             )
 
-        env_vars = {**cfg.env_vars}
+        env_vars = cfg.env_vars.copy()
+        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+            env_vars["LD_LIBRARY_PATH"] = "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64"
+
         command = ["bash", "-c", cfg.command]
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
             command.append("touch /run/tcpx/terminated")
