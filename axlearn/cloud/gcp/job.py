@@ -908,7 +908,7 @@ class GPUGKEJob(GKEJob):
                 initContainers=init_containers,
                 hostNetwork=True,
                 dnsPolicy="ClusterFirstWithHostNet",
-                containers=[self._build_main_container()],
+                containers=containers,
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
             ),
