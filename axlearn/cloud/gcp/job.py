@@ -749,6 +749,12 @@ class GPUGKEJob(GKEJob):
         env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
 
+        default_xla_flags = [
+            "--xla_gpu_enable_latency_hiding_scheduler=true",
+            "--xla_gpu_all_reduce_contiguous",
+        ]
+        env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
+
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
             volume_mounts.extend(
                 [
