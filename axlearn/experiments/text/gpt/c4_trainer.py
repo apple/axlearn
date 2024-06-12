@@ -109,6 +109,9 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
             )
             kwargs = fuji.get_trainer_kwargs(model_size, vocab_size=vocab_size, version=version)
             max_sequence_length = kwargs.pop("max_sequence_length")
+
+            # TODO remove before merging
+            kwargs["max_step"] = 1000
             # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
             config_map[config_name] = get_trainer_config_fn(
                 train_input_source=train_input_source.clone(
