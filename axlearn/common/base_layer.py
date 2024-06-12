@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Defines BaseLayer, the base class for layer implementations."""
+
 import dataclasses
 import math
 from typing import Any, Callable, Dict, Optional, Sequence, Union
@@ -345,7 +346,11 @@ class BaseLayer(Module):
             param_spec = dataclasses.replace(
                 param_spec,
                 mesh_axes=PartitionSpec(*partition_spec),
-                fan_axes=self._compute_fan_axes(name=name, parameter_spec=param_spec),
+                fan_axes=(
+                    param_spec.fan_axes
+                    if param_spec.fan_axes is not None
+                    else self._compute_fan_axes(name=name, parameter_spec=param_spec)
+                ),
             )
             if param_spec.dtype is None:
                 param_spec = dataclasses.replace(param_spec, dtype=self.dtype())

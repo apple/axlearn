@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests BaseLayer."""
+
 import dataclasses
 import math
 from functools import partial
@@ -542,6 +543,22 @@ class ComputeFanAxesTest(TestCase):
         def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> FanAxes:
             return FanAxes(in_axis=(1, 2), out_axis=3, batch_axis=0)
 
+    class ExplicitFanLayer(BaseFanLayer):
+        """A layer with FanAxes specified explicitly in parameter spec."""
+
+        def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+            return {
+                "weight_with_fan_axes": ParameterSpec(
+                    shape=(6, 8, 12),  # B, H, W
+                    fan_axes=FanAxes(in_axis=-2, out_axis=-1, batch_axis=0),
+                ),
+            }
+
+        def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
+            if name == "weight_with_fan_axes":
+                raise RuntimeError("Should not be invoked.")
+            super()._compute_fan_axes(name, parameter_spec)
+
     @parameterized.parameters(
         (
             BaseFanLayer,
@@ -591,6 +608,7 @@ class ComputeFanAxesTest(TestCase):
                     layer: BaseLayer = cfg.instantiate(parent=None)
                     # pylint: disable-next=protected-access
                     param_spec_map = layer._create_layer_parameter_specs()
+
                     if cls == ComputeFanAxesTest.BaseFanLayer:
                         with self.assertRaisesRegex(
                             NotImplementedError,
@@ -624,6 +642,19 @@ class ComputeFanAxesTest(TestCase):
         self.assertEqual(
             specs["weight"].fan_axes, FanAxes(in_axis=(1, 2), out_axis=3, batch_axis=0)
         )
+
+    def test_fan_axes_respects_parameter_spec(self):
+        # pylint: disable=protected-access
+        layer_cfg = self.ExplicitFanLayer.default_config().set(name="test")
+        layer = layer_cfg.instantiate(parent=None)
+        param_spec_map = layer._create_layer_parameter_specs()
+        orig_fan_axes = param_spec_map["weight_with_fan_axes"].fan_axes
+
+        # FanAxes from _create_layer_parameter_specs should be respected.
+        with self.assertRaises(RuntimeError):
+            layer._compute_fan_axes("weight_with_fan_axes", param_spec_map["weight_with_fan_axes"])
+        specs = layer.create_parameter_specs_recursively()
+        self.assertEqual(orig_fan_axes, specs["weight_with_fan_axes"].fan_axes)
 
 
 if __name__ == "__main__":
