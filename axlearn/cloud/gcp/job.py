@@ -754,7 +754,7 @@ class GPUGKEJob(GKEJob):
             env_vars["NCCL_CROSS_NIC"] = "0"
             env_vars["NCCL_ALGO"] = "Ring"
             env_vars["NCCL_PROTO"] = "Simple"
-            env_vars["NCCL_DEBUG"] = "INFO"
+            env_vars["NCCL_DEBUG"] = "WARN"
             env_vars["NCCL_DEBUG_SUBSYS"] = "INIT,GRAPH,ENV,TUNING,NET,VERSION"
             env_vars["NCCL_NET_GDR_LEVEL"] = "PIX"
             env_vars["NCCL_P2P_PXN_LEVEL"] = "0"
