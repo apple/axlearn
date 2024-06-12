@@ -720,9 +720,9 @@ class GPUGKEJob(GKEJob):
                 "-c",
                 """
                 /tcpgpudmarxd/build/app/tcpgpudmarxd --gpu_nic_preset a3vm \
-                    --gpu_shmem_type fd --uds_path /run/tcpx" \
+                    --gpu_shmem_type fd --uds_path /run/tcpx \
                     --setup_param "--verbose 128 2 0" &
-                while [ ! -f /run/tcpx/terminated ]; do sleep 10; done; "
+                while [ ! -f /run/tcpx/terminated ]; do sleep 10; done;
                 """,
             ]
 
