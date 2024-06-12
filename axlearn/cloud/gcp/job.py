@@ -692,8 +692,17 @@ class GPUGKEJob(GKEJob):
         super().__init__(cfg)
 
     def _build_sidecar_container(self) -> Nested[Any]:
+        """Builds a sidecar container which is required by A3 and A3 Mega
+        for GPU to GPU RDMA like networking.
+
+        Returns:
+            A nested dict on machine types that require a sidecar. Otherwise,
+            returns {}.
+        """
         cfg: GPUGKEJob.Config = self.config
 
+        # Different machine types require different sidecar containers
+        # for example A3 requires a tcpx socket but A3 Mega does not
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
             volume_mounts = [
                 {
@@ -735,21 +744,19 @@ class GPUGKEJob(GKEJob):
             A nested dict corresponding to a k8s Container config.
         """
         cfg: GPUGKEJob.Config = self.config
-        volume_mounts = []
+        volume_mounts = [{"name": "shared-memory", "mountPath": "/dev/shm"}]
+        env_vars: Dict[str, str] = {}
+        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
+        env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
+
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
             volume_mounts.extend(
                 [
                     {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
-                    {"name": "shared-memory", "mountPath": "/dev/shm"},
                     {"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
                     {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
                 ]
             )
-
-        env_vars: Dict[str, str] = {}
-        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
-        env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
-        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
             env_vars["LD_LIBRARY_PATH"] = "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64"
             env_vars["NCCL_CROSS_NIC"] = "0"
             env_vars["NCCL_ALGO"] = "Ring"
@@ -779,6 +786,7 @@ class GPUGKEJob(GKEJob):
             env_vars["NCCL_SOCKET_IFNAME"] = "eth0"
             env_vars["NCCL_NVLS_ENABLE"] = "0"
 
+        # Override env vars with user provided env vars
         env_vars.update(cfg.env_vars)
         # K8s expects each env variable to be a dict
         k8s_env_vars = [{"name": name, "value": value} for name, value in env_vars.items()]
@@ -840,7 +848,12 @@ class GPUGKEJob(GKEJob):
     def _build_volumes(self) -> Nested[Any]:
         """Builds a config for volumes."""
         cfg: GPUGKEJob.Config = self.config
-        volumes = []
+        volumes = [
+            {
+                "name": "shared-memory",
+                "emptyDir": {"medium": "Memory"},
+            },
+        ]
 
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
             volumes.extend(
@@ -852,10 +865,6 @@ class GPUGKEJob(GKEJob):
                     {
                         "name": "tcpx-socket",
                         "emptyDir": {},
-                    },
-                    {
-                        "name": "shared-memory",
-                        "emptyDir": {"medium": "Memory", "sizeLimit": "200Gi"},
                     },
                     {
                         "name": "tcpx-nccl-plugin-volume",
