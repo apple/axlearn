@@ -327,7 +327,7 @@ def convert_example_to_features(
     """Returns a DatasetToDatasetFn that converts a reading comprehension example to input features.
 
     This generic function prepares a reading comprehension example into multiple input features by
-    tokenizing and chunking the the example based off of the TokenizerForReadingComprehension, max
+    tokenizing and chunking the example based off of the TokenizerForReadingComprehension, max
     input length, and a given document stride. For documents that are longer than the max_length,
     the document is "chunked" into multiple model inputs such that there is a doc_stride amount of
     token overlap between the chunks of the context.
