@@ -96,13 +96,7 @@ COPY . .
 
 FROM base AS gpu
 
-
 RUN apt-get install -y google-perftools
-
-RUN JAX_VERSION=$(grep "jax==" pyproject.toml | sed -E 's/"jax==([0-9.]+)",/\1/') && \
-    pip install --no-cache-dir --upgrade \
-      "jax[cuda12_pip]==${JAX_VERSION}" \
-      -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
