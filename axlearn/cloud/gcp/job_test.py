@@ -326,7 +326,10 @@ class TPUGKEJobTest(TestCase):
             self.assertIn("limits", resources)
             tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
             tpu_characteristics = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
-            if tpu_characteristics.gce_machine_type in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS:
+            if (
+                tpu_characteristics.gce_machine_type
+                in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS
+            ):
                 self.assertIn("requests", resources)
                 self.assertEqual(
                     resources["requests"]["memory"],
