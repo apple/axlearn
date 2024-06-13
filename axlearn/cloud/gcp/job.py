@@ -27,8 +27,8 @@ from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.system_characteristics import (
-    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
     GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS,
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
 from axlearn.cloud.gcp.tpu import (
     get_queued_tpu_node,
@@ -428,15 +428,13 @@ class TPUGKEJob(GKEJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
-        resources = {
-            "limits": {
-                "google.com/tpu": system.chips_per_vm
-            }
-        }
+        resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
         # Set request memory by tpu type
         if system.gce_machine_type in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS:
             resources["requests"] = {
-                "memory": GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[system.gce_machine_type]
+                "memory": GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[
+                    system.gce_machine_type
+                ]
             }
 
         return dict(

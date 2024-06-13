@@ -29,14 +29,14 @@ from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh_agent
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
+from axlearn.cloud.gcp.system_characteristics import (
+    GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS,
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+)
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, infer_tpu_type, qrm_resource
 from axlearn.cloud.gcp.utils import common_flags, get_credentials
 from axlearn.cloud.gcp.vm import create_vm, delete_vm
-from axlearn.cloud.gcp.system_characteristics import (
-    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
-    GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS,
-)
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.test_utils import TestCase
 
@@ -326,10 +326,17 @@ class TPUGKEJobTest(TestCase):
             self.assertIn("limits", resources)
             tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
             gce_machine_type = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
-            if gce_machine_type.gce_machine_type in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS:
+            if (
+                gce_machine_type.gce_machine_type
+                in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS
+            ):
                 self.assertIn("requests", resources)
-                self.assertEqual(resources["requests"]["memory"],
-                                 GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[gce_machine_type.gce_machine_type])
+                self.assertEqual(
+                    resources["requests"]["memory"],
+                    GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[
+                        gce_machine_type.gce_machine_type
+                    ],
+                )
 
             container_env = container["env"]
             container_env = {kv["name"]: kv["value"] for kv in container_env}
