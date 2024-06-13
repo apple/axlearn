@@ -718,12 +718,10 @@ class GPUGKEJob(GKEJob):
             command = [
                 "bash",
                 "-c",
-                """
-                /tcpgpudmarxd/build/app/tcpgpudmarxd --gpu_nic_preset a3vm \
+                'set -x; /tcpgpudmarxd/build/app/tcpgpudmarxd --gpu_nic_preset a3vm  \
                     --gpu_shmem_type fd --uds_path /run/tcpx \
-                    --setup_param "--verbose 128 2 0" &
-                while [ ! -f /run/tcpx/terminated ]; do sleep 10; done;
-                """,
+                    --setup_param "--verbose 128 2 0" & \n\
+                while [ ! -f /run/tcpx/terminated ]; do sleep 10; done;',
             ]
 
             return dict(
