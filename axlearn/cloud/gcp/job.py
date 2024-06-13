@@ -783,34 +783,40 @@ class GPUGKEJob(GKEJob):
                     {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
                 ]
             )
-            env_vars["LD_LIBRARY_PATH"] = "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64"
-            env_vars["NCCL_CROSS_NIC"] = "0"
-            env_vars["NCCL_ALGO"] = "Ring"
-            env_vars["NCCL_PROTO"] = "Simple"
-            env_vars["NCCL_DEBUG"] = "WARN"
-            env_vars["NCCL_DEBUG_SUBSYS"] = "INIT,GRAPH,ENV,TUNING,NET,VERSION"
-            env_vars["NCCL_NET_GDR_LEVEL"] = "PIX"
-            env_vars["NCCL_P2P_PXN_LEVEL"] = "0"
-            env_vars["NCCL_GPUDIRECTTCPX_FORCE_ACK"] = "0"
-            env_vars["NCCL_GPUDIRECTTCPX_TX_COMPLETION_NANOSLEEP"] = "1000"
-            env_vars["NCCL_GPUDIRECTTCPX_PROGRAM_FLOW_STEERING_WAIT_MICROS"] = "1000000"
-            env_vars[
-                "NCCL_GPUDIRECTTCPX_TX_BINDINGS"
-            ] = "eth1:8-21,112-125;eth2:8-21,112-125;eth3:60-73,164-177;eth4:60-73,164-177"
-            env_vars[
-                "NCCL_GPUDIRECTTCPX_RX_BINDINGS"
-            ] = "eth1:22-35,124-139;eth2:22-35,124-139;eth3:74-87,178-191;eth4:74-87,178-191"
-            env_vars["NCCL_GPUDIRECTTCPX_SOCKET_IFNAME"] = "eth1,eth2,eth3,eth4"
-            env_vars["NCCL_GPUDIRECTTCPX_CTRL_DEV"] = "eth0"
-            env_vars["NCCL_GPUDIRECTTCPX_UNIX_CLIENT_PREFIX"] = "/run/tcpx"
-            env_vars["NCCL_DYNAMIC_CHUNK_SIZE"] = "524288"
-            env_vars["NCCL_P2P_NET_CHUNKSIZE"] = "524288"
-            env_vars["NCCL_P2P_PCI_CHUNKSIZE"] = "524288"
-            env_vars["NCCL_P2P_NVL_CHUNKSIZE"] = "1048576"
-            env_vars["NCCL_NSOCKS_PERTHREAD"] = "4"
-            env_vars["NCCL_SOCKET_NTHREADS"] = "1"
-            env_vars["NCCL_SOCKET_IFNAME"] = "eth0"
-            env_vars["NCCL_NVLS_ENABLE"] = "0"
+            env_vars.update(
+                {
+                    "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
+                    "NCCL_CROSS_NIC": "0",
+                    "NCCL_ALGO": "Ring",
+                    "NCCL_PROTO": "Simple",
+                    "NCCL_DEBUG": "WARN",
+                    "NCCL_DEBUG_SUBSYS": "INIT,GRAPH,ENV,TUNING,NET,VERSION",
+                    "NCCL_NET_GDR_LEVEL": "PIX",
+                    "NCCL_P2P_PXN_LEVEL": "0",
+                    "NCCL_GPUDIRECTTCPX_FORCE_ACK": "0",
+                    "NCCL_GPUDIRECTTCPX_TX_COMPLETION_NANOSLEEP": "1000",
+                    "NCCL_GPUDIRECTTCPX_PROGRAM_FLOW_STEERING_WAIT_MICROS": "1000000",
+                    "NCCL_GPUDIRECTTCPX_TX_BINDINGS": (
+                        "eth1:8-21,112-125;eth2:8-21,112-125;"
+                        "eth3:60-73,164-177;eth4:60-73,164-177"
+                    ),
+                    "NCCL_GPUDIRECTTCPX_RX_BINDINGS": (
+                        "eth1:22-35,124-139;eth2:22-35,124-139;"
+                        "eth3:74-87,178-191;eth4:74-87,178-191"
+                    ),
+                    "NCCL_GPUDIRECTTCPX_SOCKET_IFNAME": "eth1,eth2,eth3,eth4",
+                    "NCCL_GPUDIRECTTCPX_CTRL_DEV": "eth0",
+                    "NCCL_GPUDIRECTTCPX_UNIX_CLIENT_PREFIX": "/run/tcpx",
+                    "NCCL_DYNAMIC_CHUNK_SIZE": "524288",
+                    "NCCL_P2P_NET_CHUNKSIZE": "524288",
+                    "NCCL_P2P_PCI_CHUNKSIZE": "524288",
+                    "NCCL_P2P_NVL_CHUNKSIZE": "1048576",
+                    "NCCL_NSOCKS_PERTHREAD": "4",
+                    "NCCL_SOCKET_NTHREADS": "1",
+                    "NCCL_SOCKET_IFNAME": "eth0",
+                    "NCCL_NVLS_ENABLE": "0",
+                }
+            )
 
         # Override env vars with user provided env vars
         env_vars.update(cfg.env_vars)
