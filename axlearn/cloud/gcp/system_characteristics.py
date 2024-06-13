@@ -452,3 +452,8 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
         "N/A", 2048, "N/A", "n2-standard-32", 1, AcceleratorType["CPU"], "n2-standard-32-2048"
     ),
 }
+
+GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS = {
+    "ct5p-hightpu-4t": 448,
+    "ct4p-hightpu-4t": 407,
+}
