@@ -41,7 +41,6 @@ from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.test_utils import TestCase
 
 
-
 @contextlib.contextmanager
 def mock_job(module_name: str):
     with mock.patch(f"{module_name}.get_credentials", return_value=None):
@@ -366,9 +365,6 @@ class TPUGKEJobTest(TestCase):
                 )
 
             self.assertEqual(location_hint, node_selector.get("cloud.google.com/gke-location-hint"))
-
-
-
 
 
 if __name__ == "__main__":
