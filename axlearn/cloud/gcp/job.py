@@ -807,9 +807,11 @@ class GPUGKEJob(GKEJob):
             },
         )
 
-        command = ["bash", "-c", cfg.command]
+        user_cmd = cfg.command
+        # This is needed to make the sidecar exit when the main container exits.
         if cfg.accelerator.instance_type.startswith("a3-highgpu"):
-            command.append("touch /run/tcpx/terminated")
+            user_cmd += "\ntouch /run/tcpx/terminated"
+        command = ["bash", "-c", user_cmd]
 
         return dict(
             name=cfg.name,
