@@ -455,7 +455,7 @@ class GPUGKERunnerJob(GKERunnerJob):
 def _get_runner_or_exit(instance_type: str):
     if instance_type.startswith("tpu"):
         return TPUGKERunnerJob
-    elif instance_type.startswith("a3-highgpu"):
+    elif instance_type.startswith("gpu-a3"):
         return GPUGKERunnerJob
     else:
         raise app.UsageError(f"Unknown instance_type {instance_type}")

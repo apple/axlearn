@@ -710,7 +710,7 @@ class GPUGKEJob(GKEJob):
 
         # Different machine types require different sidecar containers
         # for example A3 requires a tcpx socket but A3 Mega does not
-        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+        if cfg.accelerator.instance_type.startswith("gpu-a3-highgpu"):
             volume_mounts = [
                 {
                     "name": "nvidia-install-dir-host",
@@ -763,7 +763,7 @@ class GPUGKEJob(GKEJob):
         ]
         env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
 
-        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+        if cfg.accelerator.instance_type.startswith("gpu-a3-highgpu"):
             volume_mounts.extend(
                 [
                     {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
@@ -825,7 +825,7 @@ class GPUGKEJob(GKEJob):
 
         user_cmd = cfg.command
         # This is needed to make the sidecar exit when the main container exits.
-        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+        if cfg.accelerator.instance_type.startswith("gpu-a3-highgpu"):
             user_cmd += "\ntouch /run/tcpx/terminated"
         command = ["bash", "-c", user_cmd]
 
@@ -846,7 +846,7 @@ class GPUGKEJob(GKEJob):
     def _build_init_container(self) -> Nested[Any]:
         """Builds a config for a single container."""
         cfg: GPUGKEJob.Config = self.config
-        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+        if cfg.accelerator.instance_type.startswith("gpu-a3-highgpu"):
             volume_mounts = [
                 {
                     "name": "tcpx-nccl-plugin-volume",
@@ -877,7 +877,7 @@ class GPUGKEJob(GKEJob):
             },
         ]
 
-        if cfg.accelerator.instance_type.startswith("a3-highgpu"):
+        if cfg.accelerator.instance_type.startswith("gpu-a3-highgpu"):
             volumes.extend(
                 [
                     {
