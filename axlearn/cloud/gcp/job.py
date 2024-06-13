@@ -429,7 +429,7 @@ class TPUGKEJob(GKEJob):
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
-        # Set request memory by tpu type
+        # Set request memory by host machine type.
         if system.gce_machine_type in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS:
             resources["requests"] = {
                 "memory": GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[

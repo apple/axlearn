@@ -321,20 +321,17 @@ class TPUGKEJobTest(TestCase):
 
             self.assertEqual(len(pod_spec["containers"]), 1)
             container = pod_spec["containers"][0]
-            # Check memory request
+            # Check memory request.
             resources = container["resources"]
             self.assertIn("limits", resources)
             tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
-            gce_machine_type = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
-            if (
-                gce_machine_type.gce_machine_type
-                in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS
-            ):
+            tpu_characteristics = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
+            if tpu_characteristics.gce_machine_type in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS:
                 self.assertIn("requests", resources)
                 self.assertEqual(
                     resources["requests"]["memory"],
                     GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[
-                        gce_machine_type.gce_machine_type
+                        tpu_characteristics.gce_machine_type
                     ],
                 )
 
