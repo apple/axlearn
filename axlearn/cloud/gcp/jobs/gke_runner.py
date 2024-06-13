@@ -450,7 +450,6 @@ class GPUGKERunnerJob(GKERunnerJob):
     """A GKERunnerJob that uses GPUGKEJob."""
 
     inner = GPUGKEJob
-    pre_provisioner = TPUNodePoolProvisioner
 
 
 def _get_runner_or_exit(instance_type: str):
