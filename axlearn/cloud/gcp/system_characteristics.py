@@ -453,7 +453,7 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
     ),
 }
 
-# Ref: https://cloud.google.com/tpu/docs/tpus-in-gke
+# Reference doc https://cloud.google.com/tpu/docs/tpus-in-gke.
 GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS = {
     "ct5p-hightpu-4t": "448GB",
     "ct4p-hightpu-4t": "407GB",
