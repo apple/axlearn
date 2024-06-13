@@ -454,7 +454,7 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
 }
 
 GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS = {
-    "ct5p-hightpu-4t": "448Gi",
-    "ct4p-hightpu-4t": "407Gi",
-    "ct5lp-hightpu-4t": "192Gi",
+    "ct5p-hightpu-4t": "448GB",
+    "ct4p-hightpu-4t": "407GB",
+    "ct5lp-hightpu-4t": "192GB",
 }
