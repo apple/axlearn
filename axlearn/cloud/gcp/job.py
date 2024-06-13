@@ -671,12 +671,19 @@ class GPUGKEJob(GKEJob):
         """
 
         accelerator: AcceleratorConfig = AcceleratorConfig()
+        queue: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         accelerator_flags(**common_kwargs)
+        flags.DEFINE_string(
+            "queue",
+            None,
+            "The name of the Kueue LocalQueue to use.",
+            **common_kwargs,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
@@ -948,8 +955,9 @@ class GPUGKEJob(GKEJob):
             A nested dict corresponding to a k8s JobSet config.
         """
         cfg: GPUGKEJob.Config = self.config
-        # TODO stoelinga make this configurable before merging PR
-        annotations = {"kueue.x-k8s.io/queue-name": "multislice-queue"}
+        annotations = {}
+        if cfg.queue:
+            annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
 
         return dict(
             metadata=dict(
