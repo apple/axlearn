@@ -709,8 +709,10 @@ class GPUGKEJob(GKEJob):
         """
         cfg: GPUGKEJob.Config = self.config
 
-        # Different machine types require different sidecar containers
-        # for example A3 requires a tcpx socket but A3 Mega does not
+        # Different machine types require different sidecar containers.
+        # For example A3 requires a tcpx socket but A3 Mega does not.
+        # GCP docs for A3 TCPX:
+        # https://cloud.google.com/kubernetes-engine/docs/how-to/gpu-bandwidth-gpudirect-tcpx#add-gpudirect-manifests
         if cfg.accelerator.instance_type.startswith("gpu-a3-highgpu"):
             volume_mounts = [
                 {
