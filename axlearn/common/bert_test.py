@@ -68,10 +68,7 @@ def dummy_inputs_for_mlm(
     np.putmask(input_ids, attention_mask, padding_input_id)
     # hf expects the opposite masking scheme as we do:
     # A float value of 0. represents padding and 1. represents non-padding.
-    attention_mask = np.logical_not(attention_mask)
-    hf_attention_mask = np.logical_and(
-        attention_mask[:, None, :], attention_mask[:, :, None]
-    ).astype(jnp.float32)
+    hf_attention_mask = np.logical_not(attention_mask)
 
     test_inputs = dict(
         input_ids=input_ids,
