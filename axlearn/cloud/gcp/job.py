@@ -777,13 +777,19 @@ class GPUGKEJob(GKEJob):
             env_vars.update(
                 {
                     "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
+                    # Set to 0 to encourage rail alignment.
                     "NCCL_CROSS_NIC": "0",
+                    # TCPX only supports Ring algorithm.
                     "NCCL_ALGO": "Ring",
+                    # TCPX only supports Simple protocol.
                     "NCCL_PROTO": "Simple",
                     "NCCL_DEBUG": "WARN",
                     "NCCL_DEBUG_SUBSYS": "INIT,GRAPH,ENV,TUNING,NET,VERSION",
+                    # Enable GPU Direct RDMA when GPU and NIC are same PCI switch.
                     "NCCL_NET_GDR_LEVEL": "PIX",
+                    # TCPX requires disabling PXN.
                     "NCCL_P2P_PXN_LEVEL": "0",
+                    # The NCCL_GPU_DIRECTTCPX variables can not be tweaked.
                     "NCCL_GPUDIRECTTCPX_FORCE_ACK": "0",
                     "NCCL_GPUDIRECTTCPX_TX_COMPLETION_NANOSLEEP": "1000",
                     "NCCL_GPUDIRECTTCPX_PROGRAM_FLOW_STEERING_WAIT_MICROS": "1000000",
@@ -798,13 +804,17 @@ class GPUGKEJob(GKEJob):
                     "NCCL_GPUDIRECTTCPX_SOCKET_IFNAME": "eth1,eth2,eth3,eth4",
                     "NCCL_GPUDIRECTTCPX_CTRL_DEV": "eth0",
                     "NCCL_GPUDIRECTTCPX_UNIX_CLIENT_PREFIX": "/run/tcpx",
+                    # Improves performance but can be tweaked.
                     "NCCL_DYNAMIC_CHUNK_SIZE": "524288",
                     "NCCL_P2P_NET_CHUNKSIZE": "524288",
                     "NCCL_P2P_PCI_CHUNKSIZE": "524288",
                     "NCCL_P2P_NVL_CHUNKSIZE": "1048576",
+                    # The number of sockets per thread improves performance.
                     "NCCL_NSOCKS_PERTHREAD": "4",
                     "NCCL_SOCKET_NTHREADS": "1",
+                    # Use the system NIC for NCCL control plane comms.
                     "NCCL_SOCKET_IFNAME": "eth0",
+                    # TCPX is not compatible with NVLS.
                     "NCCL_NVLS_ENABLE": "0",
                 }
             )
