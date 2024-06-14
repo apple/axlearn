@@ -702,6 +702,12 @@ class GPUGKEJob(GKEJob):
             raise NotImplementedError("GCSFuse is not supported on GKE with GPU.")
         if cfg.enable_pre_provisioner:
             raise NotImplementedError("Pre-provisioner is not supported on GKE with GPU.")
+        instance_type = cfg.accelerator.instance_type
+        if not instance_type.startswith("gpu-a3-highgpu"):
+            raise NotImplementedError(
+                f"The instance type {instance_type} is not supported on GKE with GPU."
+                "Only gpu-a3-highgpu-8g is supported"
+            )
 
     def _build_sidecar_container(self) -> Nested[Any]:
         """Builds a sidecar container which is required by A3 and A3 Mega
@@ -841,6 +847,8 @@ class GPUGKEJob(GKEJob):
         )
 
         user_cmd = cfg.command
+        if user_cmd is None:
+            user_cmd = ""
         # This is needed to make the sidecar exit when the main container exits.
         if cfg.accelerator.instance_type.startswith("gpu-a3-highgpu"):
             user_cmd += "\ntouch /run/tcpx/terminated"
