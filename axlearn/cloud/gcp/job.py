@@ -436,6 +436,11 @@ class TPUGKEJob(GKEJob):
                     system.gce_machine_type
                 ]
             }
+            resources["limits"] = {
+                "memory": GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[
+                    system.gce_machine_type
+                ]
+            }
 
         return dict(
             name=cfg.name,
