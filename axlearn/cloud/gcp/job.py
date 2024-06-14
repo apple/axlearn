@@ -668,6 +668,7 @@ class GPUGKEJob(GKEJob):
 
         Attributes:
             accelerator: GPU configuration.
+            queue: The Kueue LocalQueue to use. If not set, no queue is used.
         """
 
         accelerator: AcceleratorConfig = AcceleratorConfig()
@@ -681,7 +682,7 @@ class GPUGKEJob(GKEJob):
         flags.DEFINE_string(
             "queue",
             None,
-            "The name of the Kueue LocalQueue to use.",
+            "The name of the Kueue LocalQueue to use. If not set, no queue is used.",
             **common_kwargs,
         )
 
