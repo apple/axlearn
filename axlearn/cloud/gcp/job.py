@@ -698,6 +698,8 @@ class GPUGKEJob(GKEJob):
         if bundler_cfg is None or not issubclass(bundler_cfg.klass, BaseDockerBundler):
             raise NotImplementedError(f"Only docker bundler supported, got: {bundler_cfg}")
         super().__init__(cfg)
+        if cfg.gcsfuse_mount:
+            raise NotImplementedError("GCSFuse is not supported on GKE with GPU.")
 
     def _build_sidecar_container(self) -> Nested[Any]:
         """Builds a sidecar container which is required by A3 and A3 Mega
