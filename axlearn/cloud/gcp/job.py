@@ -700,6 +700,8 @@ class GPUGKEJob(GKEJob):
         super().__init__(cfg)
         if cfg.gcsfuse_mount:
             raise NotImplementedError("GCSFuse is not supported on GKE with GPU.")
+        if cfg.enable_pre_provisioner:
+            raise NotImplementedError("Pre-provisioner is not supported on GKE with GPU.")
 
     def _build_sidecar_container(self) -> Nested[Any]:
         """Builds a sidecar container which is required by A3 and A3 Mega
