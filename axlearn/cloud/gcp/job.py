@@ -809,9 +809,9 @@ class GPUGKEJob(GKEJob):
                 }
             )
 
-        # Override env vars with user provided env vars
+        # Override env vars with user provided env vars.
         env_vars.update(cfg.env_vars)
-        # K8s expects each env variable to be a dict
+        # K8s expects each env variable to be a dict.
         k8s_env_vars = [{"name": name, "value": value} for name, value in env_vars.items()]
         k8s_env_vars.append(
             {
