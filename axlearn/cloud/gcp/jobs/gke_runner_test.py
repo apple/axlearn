@@ -694,6 +694,7 @@ class MainTest(parameterized.TestCase):
     @parameterized.parameters(
         dict(instance_type="tpu", expected=gke_runner.TPUGKERunnerJob),
         dict(instance_type="tpu-v4-8", expected=gke_runner.TPUGKERunnerJob),
+        dict(instance_type="gpu-a3-highgpu-8g-256", expected=gke_runner.GPUGKERunnerJob),
         dict(instance_type="gpu", expected=app.UsageError("instance_type")),
     )
     def test_get_runner_or_exit(self, instance_type: str, expected: Union[Exception, Type]):
@@ -703,8 +704,14 @@ class MainTest(parameterized.TestCase):
         else:
             self.assertEqual(expected, _get_runner_or_exit(instance_type))
 
-    @parameterized.parameters("start", "stop")
-    def test_load_kube_config(self, action):
+    @parameterized.product(
+        [
+            dict(runner=gke_runner.TPUGKERunnerJob, instance_type="tpu-v4-8"),
+            dict(runner=gke_runner.GPUGKERunnerJob, instance_type="gpu-a3-highgpu-8g-256"),
+        ],
+        action=["start", "stop"],
+    )
+    def test_load_kube_config(self, action, runner, instance_type):
         # load_kube_config should only be called if using gke action.
         mock_settings = {
             "project": "settings-project",
@@ -712,7 +719,7 @@ class MainTest(parameterized.TestCase):
             "gke_cluster": "settings-cluster",
         }
         mock_job = _mock_job(
-            gke_runner.TPUGKERunnerJob,
+            runner,
             bundler_kwargs={},
             settings_kwargs=mock_settings,
         )
@@ -727,7 +734,7 @@ class MainTest(parameterized.TestCase):
             fv = flags.FlagValues()
             gke_runner.TPUGKERunnerJob.define_flags(fv)
             fv.set_default("name", "test")
-            fv.set_default("instance_type", "tpu-v4-8")
+            fv.set_default("instance_type", instance_type)
             fv.mark_as_parsed()
             gke_runner.main(["cli", action, "test_command"], flag_values=fv)
             call_kwargs = m["load_kube_config"].call_args[1]
