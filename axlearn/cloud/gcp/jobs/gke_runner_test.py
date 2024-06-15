@@ -12,7 +12,7 @@ from absl import app, flags
 from absl.testing import parameterized
 
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
-from axlearn.cloud.gcp.job import TPUGKEJob
+from axlearn.cloud.gcp.job import GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import gke_runner
 from axlearn.cloud.gcp.jobs.bastion_vm_test import _mock_job
 from axlearn.cloud.gcp.jobs.gke_runner import _get_runner_or_exit, _infer_reservation
@@ -37,6 +37,151 @@ def _mock_replicated_jobs(reservations: Sequence[str]):
         }
         for reservation in reservations
     ]
+
+
+class GPUGKERunnerJobTest(parameterized.TestCase):
+    """Tests GPUGKERunnerJob."""
+
+    @contextlib.contextmanager
+    def _job_config(
+        self,
+        *,
+        name: str,
+        cluster: str,
+        service_account: str,
+        gcsfuse_mount_spec: Optional[str] = None,
+    ) -> Iterator[tuple[gke_runner.GPUGKERunnerJob.Config, dict]]:
+        mock_user = mock.patch("os.environ", {"USER": "test"})
+        mock_settings = {
+            "project": "settings-project",
+            "zone": "settings-zone-a",
+            "ttl_bucket": "settings-ttl-bucket",
+            "gke_cluster": "settings-cluster",
+            "default_dockerfile": "settings-dockerfile",
+            "docker_repo": "settings-repo",
+        }
+        with mock_user, mock_gcp_settings(
+            [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__], mock_settings
+        ):
+            fv = flags.FlagValues()
+            gke_runner.GPUGKERunnerJob.define_flags(fv)
+            if name:
+                fv.set_default("name", name)
+            if cluster:
+                fv.set_default("cluster", cluster)
+            if service_account:
+                fv.set_default("service_account", service_account)
+            if gcsfuse_mount_spec:
+                fv.set_default("gcsfuse_mount_spec", gcsfuse_mount_spec)
+            fv.set_default("instance_type", "gpu-a3-highgpu-8g-256")
+            fv.mark_as_parsed()
+            yield gke_runner.GPUGKERunnerJob.from_flags(fv), mock_settings
+
+    @parameterized.product(
+        name=[None, "test-name"],
+        cluster=[None, "test-cluster"],
+        service_account=[None, "test-sa"],
+        gcsfuse_mount_spec=[None, ["gcs_path=my-test-path"]],
+    )
+    def test_from_flags(self, name, cluster, service_account, gcsfuse_mount_spec):
+        with self._job_config(
+            name=name,
+            cluster=cluster,
+            service_account=service_account,
+            gcsfuse_mount_spec=gcsfuse_mount_spec,
+        ) as (cfg, mock_settings):
+            if name:
+                self.assertEqual(cfg.name, name)
+            else:
+                self.assertIsNotNone(cfg.name)
+            self.assertEqual(cfg.cluster, cluster or mock_settings["gke_cluster"])
+            self.assertEqual(cfg.service_account, service_account or "default")
+            if gcsfuse_mount_spec:
+                fuse = cast(GPUGKEJob.Config, cfg.inner).gcsfuse_mount
+                self.assertEqual(fuse.gcs_path, "my-test-path")
+
+    @parameterized.product(
+        status=[
+            gke_runner.GKERunnerJob.Status.FAILED,
+            gke_runner.GKERunnerJob.Status.SUCCEEDED,
+            gke_runner.GKERunnerJob.Status.COMPLETED,
+        ],
+    )
+    def test_exit(self, status):
+        with self._job_config(
+            name="test-name",
+            cluster="test-cluster",
+            service_account="test-sa",
+        ) as (cfg, _):
+            cfg.bundler.set(image="test")
+            job: gke_runner.GPUGKERunnerJob = cfg.set(command="").instantiate()
+
+            mock_job = mock.patch.multiple(
+                job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
+            )
+
+            with mock_job:
+                job._execute()
+
+    def test_delete(self):
+        with self._job_config(
+            name="test-name",
+            cluster="test-cluster",
+            service_account="test-sa",
+        ) as (
+            cfg,
+            _,
+        ):
+            cfg.bundler.set(image="test")
+
+            job: gke_runner.GPUGKERunnerJob = cfg.set(
+                command="",
+                status_interval_seconds=0,
+            ).instantiate()
+
+            mock_job = mock.patch.multiple(
+                job,
+                _inner=mock.DEFAULT,
+                _pre_provisioner=mock.DEFAULT,
+            )
+
+            with mock_job:
+                job._delete()
+                job._inner._delete.assert_called()  # pytype: disable=attribute-error
+
+    def test_start(self):
+        with self._job_config(
+            name="test-name",
+            cluster="test-cluster",
+            service_account="test-sa",
+        ) as (
+            cfg,
+            _,
+        ):
+            cfg.bundler.set(image="test")
+
+            job: gke_runner.GPUGKERunnerJob = cfg.set(
+                command="",
+                status_interval_seconds=0,
+            ).instantiate()
+
+            mock_job = mock.patch.multiple(
+                job,
+                _get_status=mock.Mock(
+                    side_effect=[
+                        gke_runner.GKERunnerJob.Status.NOT_STARTED,
+                        gke_runner.GKERunnerJob.Status.COMPLETED,
+                    ]
+                ),
+                _get_job_credentials=mock.DEFAULT,
+                _delete=mock.DEFAULT,
+                _inner=mock.DEFAULT,
+                _pre_provisioner=mock.DEFAULT,
+            )
+
+            with mock_job:
+                job._execute()
+                job._inner.execute.assert_called()  # pytype: disable=attribute-error
 
 
 class TPUGKERunnerJobTest(parameterized.TestCase):
