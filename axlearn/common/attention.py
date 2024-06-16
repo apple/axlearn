@@ -92,6 +92,7 @@ from axlearn.common.utils import (
     Tensor,
     VDict,
     check_numerics,
+    flatten_items,
     get_or_none,
     shapes,
     split_prng_key,
@@ -3380,6 +3381,10 @@ class _TransformerRepeat(Repeat):
         """
         cfg = self.config
 
+        if cached_states is not None:
+            for path, value in flatten_items(cached_states):
+                assert value.shape[0] == cfg.num_layers, f"{path}={shapes(value)}"
+
         def layer_fn(carry, x_i):
             if mode == ForwardMode.FORWARD:
                 layer_states, layer_outputs = None, self.layer(**carry, **layer_kwargs)
@@ -3402,10 +3407,7 @@ class _TransformerRepeat(Repeat):
 
             ys = {k: v for k, v in layer_outputs._asdict().items() if k not in carry}
             if layer_states is not None:
-                # Vectorize over scan axis.
-                ys["cached_states"] = jax.tree_util.tree_map(
-                    VDict, layer_states, is_leaf=lambda v: isinstance(v, dict)
-                )
+                ys["cached_states"] = layer_states
             return {k: getattr(layer_outputs, k) for k in carry}, ys
 
         if cfg.carry is None:
@@ -3442,14 +3444,11 @@ class _TransformerRepeat(Repeat):
         return output
 
     def init_states(self, *args: Any, **kwargs: Any) -> NestedTensor:
-        def layer_fn(_):
-            return jax.tree_util.tree_map(
-                VDict,
-                self.layer.init_states(*args, **kwargs),
-                is_leaf=lambda v: isinstance(v, dict),
-            )
-
         cfg = self.config
+
+        def layer_fn(_):
+            return self.layer.init_states(*args, **kwargs)
+
         return jax.vmap(layer_fn)(jnp.empty(cfg.num_layers))
 
     def prefill_states(
@@ -3523,7 +3522,7 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         return self.repeat(data, **layer_kwargs)
 
     def init_states(self, *args: Any, **kwargs: Any) -> NestedTensor:
-        return self.repeat.init_states(*args, **kwargs)
+        return VDict(repeat=self.repeat.init_states(*args, **kwargs))
 
     def prefill_states(
         self,
@@ -3532,7 +3531,10 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         data: Tensor,
         **layer_kwargs,
     ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
-        return self.repeat.prefill_states(time_step=time_step, data=data, **layer_kwargs)
+        repeat_cached_states, output = self.repeat.prefill_states(
+            time_step=time_step, data=data, **layer_kwargs
+        )
+        return VDict(repeat=repeat_cached_states), output
 
     def extend_step(
         self,
@@ -3540,11 +3542,12 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         data: Tensor,
         **layer_kwargs,
     ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
-        return self.repeat.extend_step(
-            cached_states=cached_states,
+        repeat_cached_states, output = self.repeat.extend_step(
+            cached_states=cached_states["repeat"],
             data=data,
             **layer_kwargs,
         )
+        return VDict(repeat=repeat_cached_states), output
 
 
 class _TransformerPipeline(Pipeline):
