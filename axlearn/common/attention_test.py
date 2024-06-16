@@ -3062,7 +3062,7 @@ class TransformerTest(BaseTransformerTest):
             shapes(test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))),
         )
 
-        batch_size, tgt_len = 2, 6
+        batch_size, tgt_len = 2, 5
         rng = np.random.default_rng(seed=123)
         target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
         base_layer_outputs, _ = F(
