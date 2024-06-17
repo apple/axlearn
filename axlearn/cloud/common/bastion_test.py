@@ -1328,6 +1328,37 @@ class BastionTest(parameterized.TestCase):
                     mock_job.cleanup_proc, mock_methods["_wait_and_close_proc"].call_args_list[1][0]
                 )
 
+    def test_execute_with_exception_and_job_failure(self):
+        job_1 = Job(
+            spec=mock.Mock(),
+            state=mock.Mock(),
+            command_proc=mock.Mock(),
+            cleanup_proc=mock.Mock(),
+        )
+        job_2 = Job(
+            spec=mock.Mock(),
+            state=mock.Mock(),
+            command_proc=mock.Mock(),
+            cleanup_proc=mock.Mock(),
+        )
+        active_jobs = {
+            "job1": job_1,
+            "job2": job_2,
+        }
+
+        with self._patch_bastion() as mock_bastion:
+            mock_bastion._execute = mock.Mock(side_effect=Exception("Execution failed"))
+            mock_bastion._kill_job = mock.Mock(side_effect=[Exception("Cannot kill job"), None])
+
+            mock_bastion._active_jobs = active_jobs
+
+            with self.assertRaises(Exception):
+                mock_bastion.execute()
+
+            self.assertEqual(mock_bastion._kill_job.call_count, 2)
+            expected_calls = [mock.call(job_1), mock.call(job_2)]
+            self.assertEqual(mock_bastion._kill_job.call_args_list, expected_calls)
+
 
 class BastionDirectoryTest(parameterized.TestCase):
     """Tests BastionDirectory."""

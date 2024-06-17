@@ -1078,7 +1078,10 @@ class Bastion(Configurable):
         except Exception:
             logging.error("Caught exception, will cleanup all child jobs.")
             for job in self._active_jobs.values():
-                self._kill_job(job)
+                try:
+                    self._kill_job(job)
+                except Exception as e:  # pylint: disable=broad-except
+                    logging.warning("Fail to kill a job with error: %s", e)
             self._active_jobs = {}
             raise  # Re-raise.
 
