@@ -434,12 +434,8 @@ class TPUGKEJob(GKEJob):
             machine_memory_in_gigabytes = GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[
                 system.gce_machine_type
             ]
-            resources["limits"]["memory"] = f'{machine_memory_in_gigabytes}G'
-            if "requests" in resources:
-                resources["requests"]["memory"] = f'{round(machine_memory_in_gigabytes * 0.8, 2)}G'
-            else:
-                memory_request = {"requests": {"memory": f'{round(machine_memory_in_gigabytes * 0.8, 2)}G'}}
-                resources.update(memory_request)
+            resources["limits"]["memory"] = f"{machine_memory_in_gigabytes}G"
+            resources["requests"] = {"memory": f"{round(machine_memory_in_gigabytes * 0.8, 2)}G"}
 
         return dict(
             name=cfg.name,

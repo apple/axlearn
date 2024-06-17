@@ -330,14 +330,8 @@ class TPUGKEJobTest(TestCase):
                 tpu_characteristics.gce_machine_type
                 in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS
             ):
-                self.assertEqual(
-                    resources["limits"]["memory"],
-                    "407G"
-                )
-                self.assertEqual(
-                    resources["requests"]["memory"],
-                    "325.6G"
-                )
+                self.assertEqual(resources["limits"]["memory"], "407G")
+                self.assertEqual(resources["requests"]["memory"], "325.6G")
             self.assertIn("google.com/tpu", resources["limits"])
 
             container_env = container["env"]
