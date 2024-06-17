@@ -432,11 +432,9 @@ class TPUGKEJob(GKEJob):
         # Set request memory by host machine type.
         if system.gce_machine_type in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS:
             machine_memory_in_gigabytes = GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[
-                    system.gce_machine_type
-                ]
-            resources["limits"] = {
-                "memory": machine_memory_in_gigabytes
-            }
+                system.gce_machine_type
+            ]
+            resources["limits"] = {"memory": machine_memory_in_gigabytes}
 
         return dict(
             name=cfg.name,
