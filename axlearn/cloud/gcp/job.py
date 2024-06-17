@@ -839,7 +839,7 @@ class GPUGKEJob(GKEJob):
         user_cmd = cfg.command
         if user_cmd is None:
             raise ValueError("Command should not be None.")
-        user_cmd += ";touch /run/tcpx/terminated"
+        user_cmd += "; touch /run/tcpx/terminated"
         command = ["bash", "-c", user_cmd]
 
         return dict(
