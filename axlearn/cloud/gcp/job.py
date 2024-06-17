@@ -706,7 +706,7 @@ class GPUGKEJob(GKEJob):
         if not instance_type.startswith("gpu-a3-highgpu"):
             raise NotImplementedError(
                 f"The instance type {instance_type} is not supported on GKE with GPU."
-                "Only gpu-a3-highgpu-8g is supported"
+                "Only gpu-a3-highgpu-8g is supported."
             )
 
     def _build_a3_sidecar_container(self) -> Nested[Any]:
