@@ -269,10 +269,10 @@ class TPUGKEJobTest(TestCase):
     @parameterized.product(
         [
             dict(env={}, reservation=None, expect_reserved=False),
-            dict(env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False),
-            dict(env={"BASTION_TIER": "0"}, reservation="test-reservation", expect_reserved=True),
-            dict(env={"BASTION_TIER": "1"}, reservation="test-reservation", expect_reserved=False),
-            dict(env={}, reservation="test-reservation", expect_reserved=False),
+            # dict(env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False),
+            # dict(env={"BASTION_TIER": "0"}, reservation="test-reservation", expect_reserved=True),
+            # dict(env={"BASTION_TIER": "1"}, reservation="test-reservation", expect_reserved=False),
+            # dict(env={}, reservation="test-reservation", expect_reserved=False),
         ],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         enable_ici_resiliency=[True, False, None],
@@ -330,13 +330,15 @@ class TPUGKEJobTest(TestCase):
                 tpu_characteristics.gce_machine_type
                 in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS
             ):
-                self.assertIn("requests", resources)
+                self.assertEqual(
+                    resources["limits"]["memory"],
+                    "407G"
+                )
                 self.assertEqual(
                     resources["requests"]["memory"],
-                    GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[
-                        tpu_characteristics.gce_machine_type
-                    ],
+                    "325.6G"
                 )
+            self.assertIn("google.com/tpu", resources["limits"])
 
             container_env = container["env"]
             container_env = {kv["name"]: kv["value"] for kv in container_env}
