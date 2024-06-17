@@ -51,7 +51,7 @@ def create_vm(
         metadata: Optional metadata for the instance.
 
     Raises:
-        VMCreationError: If an exeption is raised on the creation request.
+        VMCreationError: If an exception is raised on the creation request.
         ValueError: If an invalid name is provided.
     """
     validate_resource_name(name)
@@ -102,6 +102,8 @@ def create_vm(
                     "(which usually takes a few minutes)",
                     name,
                 )
+            elif status == "BOOT_FAILED":
+                raise VMCreationError("Fail to boot VM.")
             else:
                 logging.info("VM %s showing %s, waiting for RUNNING.", name, status)
             time.sleep(10)
@@ -119,6 +121,7 @@ def get_vm_node_status(node: Dict[str, Any]) -> str:
 
         On top of regular VM statuses, this also returns:
         * BOOTED: VM is RUNNING + finished booting.
+        * BOOT_FAILED: VM is RUNNING but fails to boot.
         * UNKNOWN: VM is missing a status.
     """
     status = node.get("status", "UNKNOWN")
@@ -126,6 +129,8 @@ def get_vm_node_status(node: Dict[str, Any]) -> str:
         # Check boot status.
         if node["labels"].get("boot_status", None) == "done":
             return "BOOTED"
+        if node["labels"].get("boot_status", None) == "failed":
+            return "BOOT_FAILED"
     return status
 
 
@@ -137,7 +142,7 @@ def delete_vm(name: str, *, credentials: Credentials):
         credentials: Credentials to use when interacting with GCP.
 
     Raises:
-        VMDeletionError: If an exeption is raised on the deletion request.
+        VMDeletionError: If an exception is raised on the deletion request.
     """
     resource = _compute_resource(credentials)
     node = get_vm_node(name, resource)

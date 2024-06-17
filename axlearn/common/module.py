@@ -29,7 +29,7 @@ class MyModule(Module):
 `MyModule.__init__` will identify `MyModule.do_foo` as one of the methods to wrap through
 `Module._methods_to_wrap_for_auto_child_context` (which can be overridden by subclasses, e.g.,
 in RedirectToSharedModule). It will then wrap the method via
-`Modue._wrap_method_with_auto_child_context` and install the wrapped function as `self.do_foo`.
+`Module._wrap_method_with_auto_child_context` and install the wrapped function as `self.do_foo`.
 
 This allows MyModule's parents to invoke `do_foo` as `self.my_child.do_foo(...)` without having
 to create the child context explicitly.
@@ -732,7 +732,15 @@ class Module(Configurable):
         # Build nullary that that evaluates <method_fn(self, *args, **kwargs)> when called.
         @no_stack_summary
         def nullary():
-            return method_fn(self, *args, **kwargs)
+            try:
+                return method_fn(self, *args, **kwargs)
+            except TypeError as e:
+                args_types = [type(arg) for arg in args]
+                kwargs_types = {k: type(v) for k, v in kwargs.items()}
+                raise TypeError(
+                    f"Type error when calling {self}.{method_fn} "
+                    f"with args={args_types} and kwargs={kwargs_types}"
+                ) from e
 
         return nullary
 

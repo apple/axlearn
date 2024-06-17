@@ -28,6 +28,7 @@ from axlearn.cloud.gcp import bundler, job
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh_agent
+from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, infer_tpu_type, qrm_resource
 from axlearn.cloud.gcp.utils import common_flags, get_credentials
@@ -192,6 +193,7 @@ class TPUGKEJobTest(TestCase):
             "k8s_service_account": "settings-account",
             "docker_repo": "settings-repo",
             "default_dockerfile": "settings-dockerfile",
+            "location_hint": "settings-location-hint",
         }
 
     @contextlib.contextmanager
@@ -200,6 +202,7 @@ class TPUGKEJobTest(TestCase):
         bundler_cls: Type[Bundler],
         reservation: Optional[str] = None,
         service_account: Optional[str] = None,
+        enable_pre_provisioner: Optional[bool] = None,
     ):
         with mock_gcp_settings([job.__name__, bundler.__name__], self._mock_settings):
             fv = flags.FlagValues()
@@ -212,6 +215,7 @@ class TPUGKEJobTest(TestCase):
             cfg = job.TPUGKEJob.from_flags(fv)
             cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             cfg.accelerator.instance_type = "tpu-v4-8"
+            cfg.enable_pre_provisioner = enable_pre_provisioner
             yield cfg
 
     @parameterized.product(
@@ -219,21 +223,29 @@ class TPUGKEJobTest(TestCase):
         service_account=[None, "sa"],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         wrap_bundler=[False, True],
+        enable_pre_provisioner=[None, False, True],
     )
-    def test_instantiate(self, reservation, service_account, bundler_cls, wrap_bundler):
+    def test_instantiate(
+        self, reservation, service_account, enable_pre_provisioner, bundler_cls, wrap_bundler
+    ):
         class WrappedBundler(Bundler):
             @config_class
             class Config(Bundler.Config):
                 inner: Required[Bundler.Config] = REQUIRED
 
         with self._job_config(
-            bundler_cls, reservation=reservation, service_account=service_account
+            bundler_cls,
+            reservation=reservation,
+            service_account=service_account,
+            enable_pre_provisioner=enable_pre_provisioner,
         ) as cfg:
             self.assertEqual(cfg.reservation, reservation or self._mock_settings["gke_reservation"])
             self.assertEqual(
                 cfg.service_account,
                 service_account or self._mock_settings.get("k8s_service_account", "default"),
             )
+            self.assertEqual(cfg.enable_pre_provisioner, enable_pre_provisioner)
+            self.assertEqual(cfg.location_hint, self._mock_settings["location_hint"])
             # Should work with wrapped bundlers.
             if wrap_bundler:
                 cfg.bundler = WrappedBundler.default_config().set(inner=cfg.bundler)
@@ -259,28 +271,85 @@ class TPUGKEJobTest(TestCase):
             dict(env={}, reservation="test-reservation", expect_reserved=False),
         ],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        enable_ici_resiliency=[True, False, None],
+        enable_pre_provisioner=[None, True, False],
+        location_hint=["test-location-hint", None],
     )
     def test_build_pod(
         self,
         bundler_cls,
         expect_reserved: bool,
+        enable_ici_resiliency: bool,
         env: Optional[dict] = None,
         reservation: Optional[str] = None,
+        enable_pre_provisioner: Optional[bool] = None,
+        location_hint: Optional[str] = None,
     ):
         with mock.patch.dict("os.environ", env), self._job_config(bundler_cls) as cfg:
-            gke_job: job.TPUGKEJob = cfg.set(reservation=reservation, name="test").instantiate()
+            gke_job: job.TPUGKEJob = cfg.set(
+                reservation=reservation,
+                enable_tpu_ici_resiliency=enable_ici_resiliency,
+                enable_pre_provisioner=enable_pre_provisioner,
+                location_hint=location_hint,
+                name="test",
+            ).instantiate()
             # pylint: disable-next=protected-access
-            pod_spec = gke_job._build_pod()["spec"]
+            pod = gke_job._build_pod()
+            pod_spec = pod["spec"]
             node_selector = pod_spec["nodeSelector"]
+            annotations = pod["metadata"]["annotations"]
             # The reservation should be used only if scheduled as tier 0.
             if expect_reserved:
                 self.assertEqual(
                     reservation, node_selector.get("cloud.google.com/reservation-name", None)
                 )
                 self.assertNotIn("cloud.google.com/gke-spot", node_selector)
+                self.assertEqual([], pod_spec.get("tolerations", []))
             else:
                 self.assertEqual("true", node_selector.get("cloud.google.com/gke-spot", None))
                 self.assertNotIn("cloud.google.com/reservation-name", node_selector)
+                tolerations = {
+                    kv["key"]: (kv["value"], kv["effect"]) for kv in pod_spec.get("tolerations", [])
+                }
+                self.assertEqual(
+                    ("true", "NoSchedule"), tolerations.get("cloud.google.com/gke-spot", None)
+                )
+
+            self.assertEqual(len(pod_spec["containers"]), 1)
+            container_env = pod_spec["containers"][0]["env"]
+            container_env = {kv["name"]: kv["value"] for kv in container_env}
+            if enable_ici_resiliency is not None:
+                expected = "true" if enable_ici_resiliency else "false"
+                self.assertEqual(
+                    expected,
+                    node_selector.get("cloud.google.com/gke-tpu-ici-resiliency", None),
+                )
+                self.assertEqual(
+                    expected,
+                    container_env.get("ENABLE_ICI_RESILIENCY"),
+                )
+            else:
+                self.assertNotIn("cloud.google.com/gke-tpu-ici-resiliency", node_selector)
+                self.assertNotIn("ENABLE_ICI_RESILIENCY", container_env)
+
+            if enable_pre_provisioner:
+                self.assertIn(PRE_PROVISIONER_LABEL, node_selector)
+                self.assertEqual(
+                    "true",
+                    annotations.get(
+                        "tpu-provisioner.cloud.google.com/disable-autoprovisioning", None
+                    ),
+                )
+            else:
+                self.assertNotIn(PRE_PROVISIONER_LABEL, node_selector)
+                self.assertEqual(
+                    "false",
+                    annotations.get(
+                        "tpu-provisioner.cloud.google.com/disable-autoprovisioning", None
+                    ),
+                )
+
+            self.assertEqual(location_hint, node_selector.get("cloud.google.com/gke-location-hint"))
 
 
 if __name__ == "__main__":

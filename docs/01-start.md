@@ -49,6 +49,10 @@ conda install -c apple tensorflow-deps
 # This was tested using clang version 15 - you may get non-working wheels with earlier versions of clang.
 mkdir ~/builds && git clone https://github.com/tensorflow/text.git ~/builds/text
 cd ~/builds/text && git checkout 6064f1bf8fd078777b6c8690986b908c28764a94
+
+# If you do NOT have bazel installed, run the following and ensure that $HOME/bin is in $PATH:
+# ./oss_scripts/install_bazel.sh
+
 ./oss_scripts/run_build.sh
 pip install ./tensorflow_text-2.14.0-cp39-cp39-macosx_*_arm64.whl
 ```

@@ -548,7 +548,7 @@ def traverse_and_set_target_state_parameters(
 class FlaxPretrainedBuilder(Builder):
     """Builds (partial) model state from supplied flax states.
 
-    The function reads model parameters from cofigured state supplier, and
+    The function reads model parameters from configured state supplier, and
     sets the corresponding model state to these parameters.
 
     In the following context, the target refers to the model state.

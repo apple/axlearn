@@ -18,7 +18,7 @@ from axlearn.common.test_utils import TestCase
 class OptimizationBarrierTest(TestCase):
     """Tests ops.optimization_barrier"""
 
-    def test_foward_optimization_barrier(self):
+    def test_forward_optimization_barrier(self):
         """Test that constant folding happens without a barrier and does
         not happen with a barrier by inspecting the optimized HLO for the
         presence / absence of the original constants and folded constant.

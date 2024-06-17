@@ -4,8 +4,9 @@
 
     mkdir -p /tmp/gpt_c4_test;
     python3 -m axlearn.common.launch_trainer_main \
-        --module=text.gpt.c4_trainer --config=fuji-test \
-        --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE --jax_backend=cpu
+        --module=text.gpt.c4_trainer --config=fuji-test-v1 \
+        --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE --jax_backend=cpu \
+        --status_port=7337
 
     GS_ROOT=gs://my-bucket; \
     CONFIG=fuji-7B-v2; \
@@ -42,6 +43,7 @@ from typing import Dict
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
 from axlearn.common.trainer import SpmdTrainer
+from axlearn.common.utils import get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
 from axlearn.experiments.text.gpt import fuji
 from axlearn.experiments.text.gpt.common import (
@@ -99,6 +101,8 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
             vocab_cfg=vocab_cfg,
             preprocessor=config_for_function(lm_text_preprocessor).set(max_padding_fraction=0.5),
         )
+        if get_data_dir() == "FAKE":
+            train_input_source.preprocessor.shuffle_buffer_size = 0
         for model_size in fuji.MODEL_SIZES:
             config_name = make_config_name(
                 arch=arch, model_size=model_size, version=f"v{version.value}"
@@ -117,14 +121,52 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
                 ),
                 **kwargs,
             )
+            kwargs_flash = fuji.get_trainer_kwargs(
+                model_size,
+                vocab_size=vocab_size,
+                version=version,
+                flash_attention=True,
+            )
+            max_sequence_length = kwargs_flash.pop("max_sequence_length")
+            # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
+            config_map[(f"{config_name}-flash")] = get_trainer_config_fn(
+                train_input_source=train_input_source.clone(
+                    max_sequence_length=max_sequence_length
+                ),
+                evalers=evaler_config_dict(
+                    _eval_input_sources(
+                        vocab_cfg=vocab_cfg, max_sequence_length=max_sequence_length
+                    ),
+                ),
+                **kwargs_flash,
+            )
+            if model_size == "test":
+
+                def wrapper(config_name: str = config_name):
+                    trainer_cfg: SpmdTrainer.Config = config_map[config_name]()
+                    trainer_cfg.max_step = 5
+                    # Make learning rate large to accentuate any differences.
+                    trainer_cfg.learner.optimizer.args[1].learning_rate = 0.3
+                    trainer_cfg.learner.optimizer.args[1].update_schedule = 1
+                    trainer_cfg.vlog = 1
+                    return trainer_cfg
+
+                config_map[
+                    make_config_name(
+                        arch=arch, model_size="golden-run-test", version=f"v{version.value}"
+                    )
+                ] = wrapper
             if model_size == "7B":
 
                 def make_single_host_config(base_config_name: str) -> SpmdTrainer.Config:
                     """Make a single-host variant of the base config.
 
-                    p5.48xlarge 8x1 step time:
-                    8K tokens per GPU: 1.1s for v1, 1.54s for v2.
-                    16K tokens per GPU: 2.03s for v1.
+                    gpu-p5.48xlarge 8x1 step time:
+                    128K tokens per batch: 2.03s for v1.
+                    64K tokens per batch:  1.1s for v1, 1.54s for v2.
+
+                    tpu-v5litepod-32 step time:
+                    128K tokens per batch: 1.93s for v1.
 
                     Args:
                         base_config_name: The multi-host config name.
@@ -145,5 +187,8 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
 
                 config_map[f"{config_name}-single-host"] = functools.partial(
                     make_single_host_config, config_name
+                )
+                config_map[f"{config_name}-flash-single-host"] = functools.partial(
+                    make_single_host_config, f"{config_name}-flash"
                 )
     return config_map

@@ -31,22 +31,23 @@ class UtilsTest(parameterized.TestCase):
 
     @parameterized.parameters(
         # OK.
-        dict(name="test-job0123", num_workers=1, ok=True),
+        dict(name="test-job0123", num_workers=1, num_replicas=1, ok=True),
         # Too long.
-        dict(name="a" * 64, num_workers=1, ok=False),
-        dict(name="a" * 50, num_workers=100, ok=False),
+        dict(name="a" * 64, num_workers=1, num_replicas=1, ok=False),
+        dict(name="a" * 48, num_workers=10, num_replicas=10, ok=False),
+        dict(name="a" * 48, num_workers=100, num_replicas=1, ok=False),
         # Invalid chars.
-        dict(name="a_b", num_workers=1, ok=False),
-        dict(name="a/b", num_workers=1, ok=False),
-        dict(name="-ab", num_workers=1, ok=False),
+        dict(name="a_b", num_workers=1, num_replicas=1, ok=False),
+        dict(name="a/b", num_workers=1, num_replicas=1, ok=False),
+        dict(name="-ab", num_workers=1, num_replicas=1, ok=False),
     )
-    def test_validate_k8s_name(self, name, num_workers, ok):
+    def test_validate_k8s_name(self, name, num_workers, num_replicas, ok):
         if ok:
             ctx = contextlib.nullcontext()
         else:
             ctx = self.assertRaisesRegex(ValueError, "Job name")
         with ctx:
-            utils.validate_k8s_name(name, num_workers=num_workers)
+            utils.validate_k8s_name(name, num_workers=num_workers, num_replicas=num_replicas)
 
     @parameterized.product(
         running_from_gcp=[False, True],

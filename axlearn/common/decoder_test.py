@@ -26,7 +26,7 @@ from axlearn.common.attention import (
     TransformerAttentionLayer,
     TransformerLayer,
 )
-from axlearn.common.base_layer import RematSpec
+from axlearn.common.base_layer import DefaultTensorStats, RematSpec
 from axlearn.common.causal_lm import gpt_decoder_config
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.decoder import Decoder, LmHead, _segment_ids_from_causal_input_ids
@@ -170,7 +170,7 @@ class TestDecoder(TestCase):
             flash_decoder = flash_decoder_cfg.instantiate(parent=None)
             flash_decoder_state = decoder_state
 
-            inputs = jax.random.randint(
+            input_ids = jax.random.randint(
                 jax.random.PRNGKey(1), minval=1, maxval=vocab_size, shape=(3, source_length)
             )
 
@@ -178,7 +178,7 @@ class TestDecoder(TestCase):
             def layer_output(state, layer):
                 return functional(
                     layer,
-                    inputs=dict(input_ids=inputs),
+                    inputs=dict(input_ids=input_ids),
                     state=state,
                     is_training=False,
                     prng_key=jax.random.PRNGKey(2),
@@ -187,6 +187,40 @@ class TestDecoder(TestCase):
             decoder_logits = layer_output(decoder_state, decoder)
             flash_decoder_logits = layer_output(flash_decoder_state, flash_decoder)
             assert_allclose(decoder_logits, flash_decoder_logits)
+
+            # Test decode.
+            # Explicitly fill positions >= prefix_length with pad_token_id.
+            # Note that each batch example may have a different prefix length.
+            # [batch_size, source_length].
+            prefix_length = jnp.array([1, 3, 6])
+            prefix_mask = jnp.arange(source_length) < prefix_length[:, None]
+            prefix = input_ids * prefix_mask + decoder_cfg.pad_token_id * (1 - prefix_mask)
+            # Set last token to a non-pad token, to fix the prefix length.
+            oh_indices = jax.nn.one_hot(prefix_length - 1, source_length, dtype=prefix.dtype)
+            prefix = prefix * (1 - oh_indices) + decoder_cfg.eos_token_id * oh_indices
+            inputs = dict(
+                prefix=prefix,
+                max_sequence_length=source_length,
+                num_decodes=2,
+            )
+            flash_decoder_outputs, _ = functional(
+                flash_decoder,
+                inputs=inputs,
+                state=flash_decoder_state,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(2),
+                method="beam_search_decode",
+            )
+            with utils.numeric_checks(False):
+                decoder_outputs, _ = functional(
+                    decoder,
+                    inputs=inputs,
+                    state=decoder_state,
+                    is_training=False,
+                    prng_key=jax.random.PRNGKey(2),
+                    method="beam_search_decode",
+                )
+        self.assertTrue(jnp.all(flash_decoder_outputs.sequences == decoder_outputs.sequences))
 
     @parameterized.parameters(None, 0.0, 0.2)
     def test_dropout_rate(self, output_dropout_rate):
@@ -223,6 +257,44 @@ class TestDecoder(TestCase):
             layer_test.output_dropout.config.rate,
             dropout_rate if output_dropout_rate is None else output_dropout_rate,
         )
+
+    def test_add_tensor_stats(self):
+        hidden_dim = 12
+        num_heads = 4
+        vocab_size = 24
+        source_length = 11
+
+        decoder = gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=1,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+            activation_function="nn.relu",
+            max_position_embeddings=source_length,
+        )
+        decoder = decoder.set(tensor_stats=DefaultTensorStats.default_config())
+        layer = decoder.set(name="decoder").instantiate(parent=None)
+        layer_state = layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        inputs = jax.random.randint(
+            jax.random.PRNGKey(1), minval=1, maxval=vocab_size, shape=(3, source_length)
+        )
+
+        _, output_collection = functional(
+            layer,
+            inputs=dict(input_ids=inputs),
+            state=layer_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+        )
+        if "tensor_stats" in output_collection.summaries:
+            output_stats = output_collection.summaries["tensor_stats"]
+        else:
+            output_stats = {}
+        expected_stats = ["outputs", "norm_outputs"]
+        for k in expected_stats:
+            assert k in output_stats
 
     @parameterized.product(
         use_cross_attention=[False, True],

@@ -99,17 +99,17 @@ def validate_resource_name(name: Optional[str]):
         )
 
 
-def validate_k8s_name(name: str, num_workers: int):
+def validate_k8s_name(name: str, *, num_workers: int, num_replicas: int):
     """Validates k8s name (e.g. TPUs, VMs, jobs) to ensure compat with GKE.
 
     Raises:
         ValueError: If name is invalid.
     """
     # K8s job name cannot exceed 63 chars. By default, GKE jobset also appends a suffix
-    # "-job-<host id>-<hash>" to each pod. The hash is typically 5 chars long.
+    # "-job-<replica_id>-<host id>-<hash>" to each pod. The hash is typically 5 chars long.
     # https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set
     max_length = 63
-    job_name = f"{name}-job-{num_workers}-abcde"
+    job_name = f"{name}-job-{num_replicas}-{num_workers}-abcde"
     if (excess := len(job_name) - max_length) > 0:
         raise ValueError(f"Job name {job_name} exceeds max ({max_length}) by {excess} chars.")
 
@@ -202,8 +202,11 @@ def load_kube_config(*, project: str, zone: str, cluster: str):
                 f"Failed to load kube-config for cluster {cluster} with: {e}\n"
                 "If it's complaining about a missing kube-config file, run: "
                 f"gcloud components install gke-gcloud-auth-plugin; {get_credentials_cmd}.\n"
-                "Make sure you also activated a config with an associated kubernetes cluster via "
-                f"`{infer_cli_name()} gcp config activate`."
+                "Make sure you also activated the config with the associated kubernetes cluster via"
+                f" `{infer_cli_name()} gcp config activate`.\n"
+                "Activating the config must be done separately for each kube cluster the first \n"
+                "time you want to access it, even if you are accessing it through a command that \n"
+                "does not normally require you to activate a config first."
             ) from e
 
 
@@ -251,7 +254,7 @@ def delete_k8s_jobset(name: str, *, namespace: str):
         )
     except k8s.client.ApiException as e:
         if e.status == 404:
-            logging.info("%s does not exist, no need to delete.", name)
+            logging.info("Jobset %s does not exist, no need to delete.", name)
             return
         raise
 

@@ -1787,7 +1787,7 @@ class CausalLM(TorchModule):
         return loss, predictions
 
     def extract_logits(self, input_ids: torch.Tensor) -> torch.Tensor:
-        """Obtains logits from the langauge model.
+        """Obtains logits from the language model.
 
         Args:
             input_ids: an int Tensor of shape [batch_size, seq_len].

@@ -17,16 +17,23 @@ from axlearn.common.attention import (
     CausalAttentionLogitBiasLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
+    GroupedQueryAttention,
+    MultiheadAttention,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
-from axlearn.experiments.text.gpt.common import STEP_DTYPE, learner_config, mesh_shape_from_axes
+from axlearn.experiments.text.gpt.common import (
+    STEP_DTYPE,
+    flash_attention_config,
+    learner_config,
+    mesh_shape_from_axes,
+)
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 
-MODEL_SIZES = ("test", "7B")
+MODEL_SIZES = ("test", "7B", "70B")
 
 
 class Version(enum.Enum):
@@ -60,16 +67,34 @@ ROPE_THETA = {
 
 # Mapping from Fuji versions to total number of tokens used in training.
 TOTAL_TOKENS = {
-    Version.V1: 1 * (1024**4),  # 1T tokens
-    Version.V2: 2 * (1024**4),  # 2T tokens
-    Version.V3: 15 * (1024**4),  # 15T tokens
+    Version.V1: {
+        "test": 1 * (1024**4),  # 1T tokens
+        "7B": 1 * (1024**4),  # 1T tokens
+        "70B": 1.4 * (1024**4),  # 1.4T tokens
+    },
+    Version.V2: {
+        "test": 2 * (1024**4),  # 2T tokens
+        "7B": 2 * (1024**4),  # 2T tokens
+        "70B": 2 * (1024**4),  # 2T tokens
+    },
+    Version.V3: {
+        "test": 15 * (1024**4),  # 15T tokens
+        "7B": 15 * (1024**4),  # 15T tokens
+        "70B": 15 * (1024**4),  # 15T tokens
+    },
 }
 
 
-def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) -> Dict[str, Any]:
+def get_trainer_kwargs(
+    model_size: str,
+    *,
+    vocab_size: int,
+    version: Version,
+    flash_attention: bool = False,
+) -> Dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 4 * (1024**2)  # 4M tokens.
-    max_step = TOTAL_TOKENS[version] // tokens_per_batch
+    max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
 
@@ -92,15 +117,19 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 num_kv_heads=2,
                 vocab_size=32,
                 rope_theta=rope_theta,
+                flash_attention=flash_attention,
             ),
             learner_kwargs=dict(
                 peak_lr=6e-4,
                 weight_decay=0.01,
             ),
             max_sequence_length=64,
-            train_batch_size=16,
+            train_batch_size=32,
+            eval_batch_size=32,
             max_step=3000,
-            mesh_shape=mesh_shape_from_axes(),  # cpu
+            eval_every_n_steps=1500,
+            save_every_n_steps=500,
+            mesh_shape=mesh_shape_from_axes(data=-1),
         )
     elif model_size == "7B":
         trainer_kwargs = dict(
@@ -110,22 +139,27 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 num_heads=32,
                 num_kv_heads=num_kv_heads,
                 rope_theta=rope_theta,
+                flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
             train_batch_size=train_batch_size,
             max_step=max_step,
-            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
                 # Step time:
-                # v1 on tpu-v4-1024 (512 chips):        3.03s
-                # v1 on gpu-p5.48xlarge-256 (32 nodes): 2.44s
-                # v1 on gpu-p5.48xlarge-512 (64 nodes): 1.54s
+                # v1 on tpu-v4-1024 (512 chips):            3.03s
+                # v1 on tpu-v5litepod-256x4 (1024 chips):   2.44s
+                # v1 on tpu-v5p-512 (256 chips):            2.85s
+                # v1 on gpu-p5.48xlarge-256 (256 chips):    2.44s
+                # v1 on gpu-p5.48xlarge-512 (512 chips):    1.54s
                 #
-                # tpu-v4.
-                ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
+                # tpu-v4-(1024|2048).
+                ("tpu-v4-.*", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e.
-                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=16)),
+                ("tpu-v5litepod-.*", mesh_shape_from_axes(data=-1, fsdp=16)),
+                # tpu-v5p.
+                ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
                 # H100/A100 80G.
                 # Maximum per-node batch size = 64, hence need >= 32 nodes.
                 # Without sequence sharding, the maximum number of devices <= batch_size,
@@ -133,6 +167,33 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+            ),
+        )
+    elif model_size == "70B":
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=80,
+                hidden_dim=128 * 64,
+                num_heads=64,
+                # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
+                num_kv_heads=None if version == Version.V1 else 8,
+                rope_theta=rope_theta,
+                flash_attention=flash_attention,
+            ),
+            learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
+            max_sequence_length=max_sequence_length,
+            train_batch_size=train_batch_size,
+            max_step=max_step,
+            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            mesh_rules=(
+                # tpu-v5e. step time: TBD.
+                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=256)),
+                # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
+                # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
+                (
+                    "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
+                    mesh_shape_from_axes(data=-1, fsdp=128),
                 ),
             ),
         )
@@ -159,6 +220,7 @@ def model_config(
     rope_theta: float,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
+    flash_attention: bool = False,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -182,8 +244,10 @@ def model_config(
     if ffn_dim is None:
         ffn_dim = scaled_hidden_dim(scale=8 / 3, round_up_to_multiples_of=256)
     if num_kv_heads:
+        atten_cfg = GroupedQueryAttention.default_config()
         atten_input_linear = FusedGroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
     else:
+        atten_cfg = MultiheadAttention.default_config()
         atten_input_linear = FusedQKVLinear.default_config()
     atten_input_linear.cache_dtype = STEP_DTYPE
     # RoPE embeddings: https://arxiv.org/abs/2104.09864.
@@ -205,7 +269,8 @@ def model_config(
         normalization=RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),
         dropout_rate=dropout_rate,
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
-        attention_mask=CausalAttentionLogitBiasLayer.default_config(),
+        attention_mask=None if flash_attention else CausalAttentionLogitBiasLayer.default_config(),
+        attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
     )
     return cfg

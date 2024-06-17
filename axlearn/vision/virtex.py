@@ -219,12 +219,12 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
                     should be +1 of the maximum sequence length.
                     Shape: [batch, max_sequence_length]. Values should be in the range
                     [0, vocab_size].
-            return_aux: Whether to return auxilliary outputs, which includes
+            return_aux: Whether to return auxiliary outputs, which includes
                 visual backbone features and text decoder logits (and hidden state
                 if the decoder is a transformer).
 
         Returns:
-            (loss, Dict): The loss and dictionary of auxilliary outputs (if `return_aux=True`).
+            (loss, Dict): The loss and dictionary of auxiliary outputs (if `return_aux=True`).
                 If `return_aux=False`, an empty dictionary will be returned.
         """
         image = input_batch["image"]

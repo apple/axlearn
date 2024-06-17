@@ -76,11 +76,18 @@ except ModuleNotFoundError:
     logging.warning("tensorflow_io is not installed -- tf_io may not work with s3://")
 
 from axlearn.cloud.common.cleaner import Cleaner
+from axlearn.cloud.common.quota import QuotaFn
 from axlearn.cloud.common.scheduler import BaseScheduler, JobMetadata, JobScheduler, ResourceMap
 from axlearn.cloud.common.types import JobSpec
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
-from axlearn.common.config import REQUIRED, Configurable, Required, config_class
+from axlearn.common.config import (
+    REQUIRED,
+    Configurable,
+    Required,
+    config_class,
+    config_for_function,
+)
 from axlearn.common.utils import Nested
 
 _LATEST_BASTION_VERSION = 1  # Determines job schema (see JobSpec).
@@ -138,7 +145,7 @@ class JobStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
     # Job is cancelling. Command is terminating.
     CANCELLING = "CANCELLING"
-    # Job has completed/termianted the command, is running cleanup command (if any).
+    # Job has completed/terminated the command, is running cleanup command (if any).
     CLEANING = "CLEANING"
     # Job is complete.
     COMPLETED = "COMPLETED"
@@ -217,8 +224,13 @@ def serialize_jobspec(spec: JobSpec, f: Union[str, IO]):
         with open(f, "w", encoding="utf-8") as fd:
             serialize_jobspec(spec, fd)
             return
-
-    json.dump(dataclasses.asdict(spec), f, default=str)
+    data = dataclasses.asdict(spec)
+    # Use an explicit date format instead of str() to ensure that microseconds
+    # are included even if they are 0.
+    data["metadata"]["creation_time"] = data["metadata"]["creation_time"].strftime(
+        "%Y-%m-%d %H:%M:%S.%f"
+    )
+    json.dump(data, f, default=str)
     f.flush()
 
 
@@ -414,6 +426,7 @@ def download_job_batch(
     local_spec_dir: str = _JOB_DIR,
     verbose: bool = False,
     remove_invalid_job_specs: bool = False,
+    quota: Optional[QuotaFn] = None,
 ) -> Tuple[Dict[str, Job], Set[str]]:
     """Downloads a batch of jobs.
 
@@ -424,6 +437,9 @@ def download_job_batch(
         local_spec_dir: Directory to store downloaded job specs.
         verbose: Verbose logging.
         remove_invalid_job_specs: Whether to remove invalid job specs.
+        quota: A thunk returning the UserQuotaInfo to use for validating
+               user project membership.
+               If None, do not validate project membership.
 
     Returns:
         A mapping from job name to Job(spec, state), and
@@ -465,9 +481,16 @@ def download_job_batch(
             job_name: pool.submit(_download_job_state, job_name, remote_dir=user_state_dir)
             for job_name in user_states
         }
+
+        if quota is not None:
+            quota_info = quota()
+        else:
+            quota_info = None
+
         wait(spec_futs.values())
         wait(job_state_futs.values())
         wait(user_state_futs.values())
+
         # Construct Jobs for each spec. The status of the job depends on the following:
         # 1. User state must be CANCELLING. We ignore other user states, e.g., a user should not be
         #     able to bypass scheduling by initiating a state change to ACTIVE.
@@ -483,12 +506,25 @@ def download_job_batch(
         jobs_with_user_states = set()
         for job_name in jobspecs:
             try:
-                spec = spec_futs[job_name].result()
+                spec: JobSpec = spec_futs[job_name].result()
                 state = job_state_futs[job_name].result()
                 if job_name in user_state_futs:
                     user_state = user_state_futs[job_name].result()
                 else:
                     user_state = None
+                if quota_info is not None:
+                    user_id = spec.metadata.user_id
+                    project_id = spec.metadata.project_id
+                    if project_id not in quota_info.user_projects(user_id):
+                        # TODO(markblee): surface invalid specs in job history.
+                        logging.warning(
+                            "Job %s will be removed because user %s is not a member of %s",
+                            job_name,
+                            user_id,
+                            project_id,
+                        )
+                        invalid_jobspecs.append(job_name)
+                        continue
             except ValidationError as e:
                 logging.warning("Job %s failed validation and will be removed: %s", job_name, e)
                 invalid_jobspecs.append(job_name)
@@ -525,7 +561,6 @@ def download_job_batch(
                 [os.path.join(spec_dir, job_name) for job_name in invalid_jobspecs]
                 + [os.path.join(user_state_dir, job_name) for job_name in invalid_user_states],
             )
-
     return jobs, jobs_with_user_states
 
 
@@ -568,6 +603,8 @@ class Bastion(Configurable):
         uploader: Required[Uploader.Config] = REQUIRED
         # Output directory. Must be compatible with tf_io.
         output_dir: Required[str] = REQUIRED
+        # The quota function to use for getting user group membership and group quota.
+        quota: Required[QuotaFn] = REQUIRED
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -600,9 +637,13 @@ class Bastion(Configurable):
         self._jobs_with_user_states: Set[str] = set()
         # Runtime options.
         self._runtime_options = {}
+        # The QuotaFn that returns quota for scheduling.
+        self._quota: QuotaFn = cfg.quota.instantiate()
 
         # Instantiate children.
-        self._scheduler: JobScheduler = cfg.scheduler.instantiate()
+        self._scheduler: JobScheduler = cfg.scheduler.set(
+            quota=config_for_function(lambda: self._quota)
+        ).instantiate()
         self._cleaner: Cleaner = cfg.cleaner.instantiate()
         self._uploader = cfg.uploader.set(src_dir=_LOG_DIR, dst_dir=self._log_dir).instantiate()
 
@@ -733,6 +774,7 @@ class Bastion(Configurable):
             user_state_dir=self._user_state_dir,
             verbose=True,
             remove_invalid_job_specs=True,
+            quota=self._quota,
         )
         self._jobs_with_user_states = jobs_with_user_states
         # Iterate over unique job names.
@@ -927,7 +969,7 @@ class Bastion(Configurable):
                         # see whether this is necessary.
                         assert job.state.status == JobStatus.ACTIVE and changed_tiers
                         self._append_to_job_history(
-                            job, f"Restarting at a different tier from {old_tier} to {new_tier}"
+                            job, f"Rescheduling at a different tier from {old_tier} to {new_tier}"
                         )
                         job.state.status = JobStatus.PENDING
                 else:
@@ -938,6 +980,8 @@ class Bastion(Configurable):
                         job.state.status = JobStatus.ACTIVE
                     else:
                         job.state.status = JobStatus.PENDING
+                        # Pending jobs which are not rescheduled should have no tier information.
+                        verdict.metadata.pop("tier", None)
 
                 job.state.metadata = verdict.metadata
 
@@ -968,9 +1012,15 @@ class Bastion(Configurable):
         cleaned = []
 
         # Identify jobs which are idle (i.e., can be garbage collected).
+        # These are jobs that are fully completed or fully pending. Note that some jobs may be
+        # pending due to rescheduling tiers, which should not be cleaned -- instead, we let the
+        # runner decide how/when to recreate the resources.
         jobs_to_clean = {}
         for job_name, job in self._active_jobs.items():
-            if job.state.status in {JobStatus.PENDING, JobStatus.COMPLETED}:
+            if job.state.status == JobStatus.COMPLETED or (
+                job.state.status == JobStatus.PENDING
+                and job.state.metadata.get("tier", None) is None
+            ):
                 jobs_to_clean[job_name] = job.spec
 
         # Note that this may contain PENDING jobs that have not yet started (since they will not be

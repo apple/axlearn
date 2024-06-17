@@ -1,7 +1,9 @@
 # Copyright © 2023 Apple Inc.
 
 """Utilities for writing summaries."""
+
 import contextlib
+import enum
 import numbers
 import os
 from functools import wraps
@@ -17,7 +19,7 @@ from tensorflow import summary as tf_summary
 from axlearn.common.config import REQUIRED, ConfigBase, Required, RequiredFieldValue, config_class
 from axlearn.common.module import Module
 from axlearn.common.summary import ImageSummary, Summary
-from axlearn.common.utils import Tensor, tree_paths
+from axlearn.common.utils import NestedTensor, Tensor, tree_paths
 
 try:
     import wandb
@@ -25,6 +27,18 @@ except ModuleNotFoundError:
     wandb = None
 
 Tensor = jnp.ndarray
+
+
+class CheckpointerAction(str, enum.Enum):
+    """Represents the checkpointer action corresponding to a checkpoint summary.
+
+    Attributes:
+        RESTORE: The model was restored from the checkpoint.
+        SAVE: The model was saved to the checkpoint.
+    """
+
+    RESTORE = "RESTORE"
+    SAVE = "SAVE"
 
 
 def processor_zero_only(fn: Callable) -> Callable:
@@ -60,6 +74,24 @@ class BaseWriter(Module):
         """
         raise NotImplementedError
 
+    def log_checkpoint(
+        self,
+        ckpt_dir: str,
+        *,
+        state: NestedTensor,
+        action: CheckpointerAction,
+        step: int = 0,
+    ):
+        """Log a checkpoint. The default implementation is no-op.
+
+        Args:
+            ckpt_dir: The location of the checkpoint to log.
+            state: The state to store.
+            action: Represents a type of checkpoint action.
+            step: Training step.
+        """
+        pass
+
     # We adapt the args and kwargs from base Module to arguments specific to summary writer,
     # and drop the method argument since the caller does not decide which method to call.
     # pylint: disable=arguments-differ
@@ -87,7 +119,7 @@ class CompositeWriter(BaseWriter):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
-        self._writers = []
+        self._writers: List[BaseWriter] = []
         for writer_name, writer_cfg in cfg.writers.items():
             self._writers.append(
                 self._add_child(writer_name, writer_cfg.set(dir=os.path.join(cfg.dir, writer_name)))
@@ -108,6 +140,17 @@ class CompositeWriter(BaseWriter):
         for writer in self._writers:
             writer(step, values)
 
+    def log_checkpoint(
+        self,
+        ckpt_dir: str,
+        *,
+        state: NestedTensor,
+        action: CheckpointerAction,
+        step: int = 0,
+    ):
+        for writer in self._writers:
+            writer.log_checkpoint(ckpt_dir=ckpt_dir, state=state, action=action, step=step)
+
 
 class NoOpWriter(BaseWriter):
     """A writer that does nothing. Used by testing."""
@@ -124,15 +167,29 @@ class SummaryWriter(BaseWriter):
 
     @config_class
     class Config(BaseWriter.Config):
-        """Configures SummaryWriter."""
+        """Configures SummaryWriter.
 
-        write_every_n_steps: int = 1  # Writes summary every N steps.
+        See also: https://www.tensorflow.org/api_docs/python/tf/summary/create_file_writer
+
+        Attributes:
+            write_every_n_steps: Writes summary every N steps.
+            max_queue: Configures maximum number of summaries before flush.
+                If None, uses the `tf_summary` default (10).
+            flush_ms: Largest interval between flushes in milliseconds.
+                If None, uses the `tf_summary` default (120,000, i.e. 2 minutes).
+        """
+
+        write_every_n_steps: int = 1
+        max_queue: Optional[int] = None
+        flush_ms: Optional[float] = None
 
     def __init__(self, cfg: BaseWriter.Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
-        cfg = self.config
+        cfg: SummaryWriter.Config = self.config
         self.summary_writer: tf_summary.SummaryWriter = (
-            tf_summary.create_file_writer(cfg.dir)
+            tf_summary.create_file_writer(
+                cfg.dir, max_queue=cfg.max_queue, flush_millis=cfg.flush_ms
+            )
             if jax.process_index() == 0
             else tf_summary.create_noop_writer()
         )
@@ -155,6 +212,7 @@ class SummaryWriter(BaseWriter):
         cfg = self.config
         if step % cfg.write_every_n_steps != 0:
             return
+
         with self.summary_writer.as_default(step=step):
 
             def write(path: str, value: jax.Array):
@@ -199,7 +257,7 @@ class WandBWriter(BaseWriter):
 
     Note:
         This utility does not support restarts gracefully.
-        If the job is pre-empted, the logger will create a new run.
+        If the job is preempted, the logger will create a new run.
 
     TODO(adesai22): Add support for restarts.
     """

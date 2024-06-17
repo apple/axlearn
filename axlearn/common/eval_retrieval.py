@@ -1,6 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
-"""Retreival evaluation pipeline."""
+"""Retrieval evaluation pipeline."""
 import csv
 from collections import defaultdict
 from functools import partial
@@ -268,7 +268,7 @@ class EmbeddingRetrievalMetricCalculator(GlobalMetricCalculator):
         #   * MAP - mean average precision
         #   * MAP@k - mean average precision at K
         #   * accuracy@k - accuracy at K
-        # TODO(atimofeev): add more suported metrics (accuracy, recall, etc.)
+        # TODO(atimofeev): add more supported metrics (accuracy, recall, etc.)
         metrics: Required[List[str]] = REQUIRED
 
         # Optional tuple of cateogory names - category `i` gets name `categories_names[i]`.
@@ -585,8 +585,8 @@ class KnnMetricCalculator(EmbeddingRetrievalMetricCalculator):
 
         chunk_metrics = {}
         for k in cfg.top_ks:
-            top_similarities, top_indicies = jax.lax.top_k(similarities, k)
-            top_labels = jnp.take(index_labels, top_indicies)
+            top_similarities, top_indices = jax.lax.top_k(similarities, k)
+            top_labels = jnp.take(index_labels, top_indices)
             for temp in cfg.temps:
                 weights = jnp.exp(top_similarities / temp)
                 label_scores = batch_segment_sum(weights, top_labels)

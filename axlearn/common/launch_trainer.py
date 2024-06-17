@@ -1,6 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 """Utilities to launch a trainer."""
+
+import json
 import os
 from typing import Any, Optional
 
@@ -8,8 +10,9 @@ import jax
 import tensorflow as tf
 from absl import flags, logging
 
+from axlearn.common import measurement
 from axlearn.common.trainer import SpmdTrainer, select_mesh_config
-from axlearn.common.utils import infer_mesh_shape
+from axlearn.common.utils import get_data_dir, infer_mesh_shape
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
 
 # Trainer-specific flags.
@@ -104,13 +107,26 @@ def get_trainer_config(
 
 
 def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
+    measurement.record_event(measurement.Event.START_JOB)
     trainer_config_debug_string = trainer_config.debug_string()
     logging.info("Trainer config:\n%s", trainer_config_debug_string)
     if jax.process_index() == 0:
         trainer_config_file = os.path.join(trainer_config.dir, "trainer_config")
-        with tf.io.gfile.GFile(trainer_config_file, "w") as f:  # type: ignore
+        with tf.io.gfile.GFile(trainer_config_file, "w") as f:
             f.write(trainer_config_debug_string)
+
+        config_file = os.path.join(trainer_config.dir, "launch_trainer_flags")
+        with tf.io.gfile.GFile(config_file, "w") as f:
+            json.dump(
+                {
+                    **FLAGS.flag_values_dict(),
+                    "data_dir": get_data_dir(),
+                },
+                f,
+            )
 
     trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
     prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
-    return trainer.run(prng_key)
+    output = trainer.run(prng_key)
+    measurement.record_event(measurement.Event.END_JOB)
+    return output

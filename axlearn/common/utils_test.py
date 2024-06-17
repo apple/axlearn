@@ -429,44 +429,51 @@ class TreeUtilsTest(TestCase):
         target["a"]["b"] = 10
         self.assertEqual(2, source["a"]["b"])
 
-    def test_split_prng_key(self):
-        original_key = jax.random.PRNGKey(1234)
+    @parameterized.parameters("threefry2x32", "rbg")
+    def test_split_prng_key(self, prng_impl_type: str):
+        with prng_impl(prng_impl_type):
+            original_key = jax.random.PRNGKey(1234)
 
-        def fn(key: Tensor):
-            return jax.random.normal(key, [3, 2])
+            def fn(key: Tensor):
+                return jax.random.normal(key, [3, 2])
 
-        base_results = []
-        key = original_key
-        for _ in range(10):
-            key, child_key = jax.random.split(key)
-            base_results.append(fn(child_key))
-        base_results = jnp.stack(base_results)
+            base_results = []
+            key = original_key
+            for _ in range(10):
+                key, child_key = jax.random.split(key)
+                base_results.append(fn(child_key))
+            base_results = jnp.stack(base_results)
 
-        def batch(fn):
-            return lambda split_keys: jax.vmap(fn)(split_keys.keys)
+            def batch(fn):
+                return lambda split_keys: jax.vmap(fn)(split_keys.keys)
 
-        split_keys = split_prng_key(original_key, 10)
-        self.assertIsInstance(split_keys, StackedKeyArray)
-        self.assertNestedAllClose(batch(fn)(split_keys), base_results)
+            split_keys = split_prng_key(original_key, 10)
+            self.assertIsInstance(split_keys, StackedKeyArray)
+            if prng_impl_type == "threefry2x32":
+                # Only the "threefry" implementation ensures invariance under "vmap".
+                # See https://github.com/google/jax/pull/20094.
+                self.assertNestedAllClose(batch(fn)(split_keys), base_results)
 
-        # Splitting the keys again is a no-op.
-        resplit_keys = split_prng_key(split_keys, 10)
-        self.assertNestedAllClose(resplit_keys, split_keys)
-        self.assertNestedAllClose(batch(fn)(resplit_keys), base_results)
+            # Splitting the keys again is a no-op.
+            resplit_keys = split_prng_key(split_keys, 10)
+            self.assertNestedAllClose(resplit_keys, split_keys)
+            if prng_impl_type == "threefry2x32":
+                self.assertNestedAllClose(batch(fn)(resplit_keys), base_results)
 
-        # Splitting the keys again with the wrong number of keys.
-        with self.assertRaisesRegex(AssertionError, "9"):
-            split_prng_key(split_keys, 9)
+            # Splitting the keys again with the wrong number of keys.
+            with self.assertRaisesRegex(AssertionError, "9"):
+                split_prng_key(split_keys, 9)
 
-        # Split keys by multiple dims.
-        split_keys = split_prng_key(original_key, (2, 5))
-        batch_results = batch(batch(fn))(split_keys)
-        self.assertSequenceEqual(batch_results.shape, [2, 5, 3, 2])
-        self.assertNestedAllClose(batch_results.reshape(base_results.shape), base_results)
+            # Split keys by multiple dims.
+            split_keys = split_prng_key(original_key, (2, 5))
+            batch_results = batch(batch(fn))(split_keys)
+            self.assertSequenceEqual(batch_results.shape, [2, 5, 3, 2])
+            if prng_impl_type == "threefry2x32":
+                self.assertNestedAllClose(batch_results.reshape(base_results.shape), base_results)
 
-        # Splitting the keys again is a no-op.
-        resplit_keys = split_prng_key(split_keys, (2, 5))
-        self.assertNestedAllClose(resplit_keys, split_keys)
+            # Splitting the keys again is a no-op.
+            resplit_keys = split_prng_key(split_keys, (2, 5))
+            self.assertNestedAllClose(resplit_keys, split_keys)
 
     @parameterized.parameters(
         ((1, 1), ("data", "model")),
@@ -522,6 +529,33 @@ class TreeUtilsTest(TestCase):
         }
         # Calling with input batch with padded-input-feed key returns a strict subset.
         self.assertNestedEqual(dispatch_input_batch(input_batch_with_key), expected_subset)
+
+    def test_dispatch_subsets_input_batch_under_key(self):
+        default_input_batch = {
+            "no-change": jnp.arange(3),
+            "change": {
+                "value_a": jnp.arange(4),
+                "value_b": jnp.arange(16).reshape(4, 4),
+            },
+        }
+        # Default batch (without physical to logical dispatch tensor) is unchanged.
+        self.assertNestedEqual(dispatch_input_batch(default_input_batch), default_input_batch)
+        input_batch_with_key = default_input_batch["change"]
+        is_from_padded_feed = jnp.asarray([[1, 0], [0, 1], [0, 0], [0, 0]])
+        input_batch_with_key[PHYSICAL_TO_LOGICAL_DISPATCH_KEY] = is_from_padded_feed
+        expected_subset = {
+            k: v[:2, ...]
+            for k, v in input_batch_with_key.items()
+            if k != PHYSICAL_TO_LOGICAL_DISPATCH_KEY
+        }
+        # Calling with input batch with padded-input-feed key returns a strict subset.
+        self.assertNestedEqual(
+            dispatch_input_batch(default_input_batch),
+            {
+                "no-change": jnp.arange(3),
+                "change": expected_subset,
+            },
+        )
 
     def test_complete_partition_spec_tree(self):
         data = dict(
@@ -1210,11 +1244,11 @@ class InferMeshShapeTest(TestCase):
         mesh_shape = infer_mesh_shape((4, 1, 8, 1))
         self.assertEqual(mesh_shape, (4, 1, 8, 1))
 
-        # When there is mutiple -1
+        # When there is multiple -1
         with self.assertRaises(ValueError):
             infer_mesh_shape((-1, 1, -1, 8))
 
-        # When num_devices is not a mutiple of products of mesh_shape
+        # When num_devices is not a multiple of products of mesh_shape
         with self.assertRaises(ValueError):
             infer_mesh_shape((-1, 1, 8, 1), num_devices=4)
 

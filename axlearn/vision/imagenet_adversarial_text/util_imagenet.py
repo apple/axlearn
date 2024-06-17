@@ -19,7 +19,7 @@ class ImageNet_SimilarClass:
         self.target2esti = target2esti
         self.S = S
 
-    def most_similiar_class(self, c):
+    def most_similar_class(self, c):
         mylist = None
         if c in self.target2esti:
             mylist = [tmp for tmp in self.target2esti[c] if tmp != c]

@@ -16,8 +16,8 @@ dependencies = [
     "absl-py==2.1.0",
     "chex==0.1.86",  # chex 0.1.86 is required for jax 0.4.25.
     "importlab==0.7",  # breaks pytype on 0.8
-    "jax==0.4.25",
-    "jaxlib==0.4.25",
+    "jax==0.4.28",
+    "jaxlib==0.4.28",
     "nltk==3.7",  # for text preprocessing
     "numpy==1.26.4",  # verified with tensorflow 2.14 RaggedTensor
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -27,14 +27,16 @@ dependencies = [
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
     "tensorflow==2.14.0",
     "tensorflow-datasets>=4.9.2",
-    # tensorflow-io 0.34.0 enabled macOS arm64 builds.
-    "tensorflow-io>=0.34.0",
+    "tensorflow-io==0.34.0",  # 0.34.0 enabled macOS arm64 builds, but >= 0.35.0 hits 'pure virtual method called' with s3
     "tensorflow_text==2.14.0; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.21",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions==4.9.0",  # needed for typing.Protocol. >4.9.0 runs into attribute error `__non_callable_proto_members__`.
     "scipy==1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
     "seqio==0.0.18",  # used for inputs
+    "aqtp==0.4.0", # aqtp>=0.5.0 requires python>=3.10 due to the use of Union shorthand "|" in type hints.
+    "flax==0.8.2", # for AQT, param converter and adapter.
+    "prefixed==0.7.1", # For formatting file sizes, param counts, etc.
 ]
 
 [project.optional-dependencies]
@@ -53,7 +55,6 @@ dev = [
     "einops",
     "evaluate",
     "fairseq==0.12.2",  # test-only; note Apple Silicon start.md instructions parse this specifier '==', please be careful when upgrading.
-    "flax==0.8.2",  # for param converter and adapter
     "isort",  # formatting
     "pre-commit",  # local pre commit hooks
     "pycocotools",  # COCO evaluation tools
@@ -69,7 +70,7 @@ dev = [
     "timm==0.6.12",  # DiT Dependency test-only
     "torch>=1.12.1",  # test-only
     "torchvision==0.16.1",  # test-only
-    "transformers==4.40.1",  # test-only
+    "transformers==4.41.2",  # test-only
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
 ]
@@ -84,13 +85,14 @@ gcp = [
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
     "google-cloud-storage==2.16.0",
     "google-cloud-core==2.3.3",
+    "ml_goodput_measurement==0.0.2",
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
 ]
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.4.25",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.4.28",  # must be >=0.4.19 for compat with v5p.
 ]
 # Vertex AI tensorboard.
 vertexai_tensorboard = [
@@ -108,6 +110,10 @@ dataflow = [
     "apache-beam[gcp]",
     "google-apitools",  # for beam pipeline
     "orjson==3.9.10",
+]
+# GPU custom kernel dependency.
+gpu = [
+    "triton==2.1.0",
 ]
 
 [tool.flit.module]

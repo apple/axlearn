@@ -22,8 +22,9 @@ from google.auth.credentials import Credentials
 
 from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
-from axlearn.cloud.common.utils import subprocess_run
+from axlearn.cloud.common.utils import parse_kv_flags, subprocess_run
 from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.cloud.gcp.tpu import (
@@ -33,7 +34,12 @@ from axlearn.cloud.gcp.tpu import (
     qrm_resource,
     tpu_resource,
 )
-from axlearn.cloud.gcp.utils import custom_jobset_kwargs, get_credentials, running_from_vm
+from axlearn.cloud.gcp.utils import (
+    custom_jobset_kwargs,
+    delete_k8s_jobset,
+    get_credentials,
+    running_from_vm,
+)
 from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -299,17 +305,26 @@ class GKEJob(GCPJob):
                 https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
             gcsfuse_mount: Optional configs for the GCS FUSE sidecar and volume mount.
                 See `GCSFuseMount` for details.
+            enable_pre_provisioner: Whether to enable pre-provisioner.
         """
 
         env_vars: Dict[str, str] = {}
         namespace: str = "default"
         gcsfuse_mount: Optional[GCSFuseMount] = None
+        # This config is made Optional for backwards compatibility. Default is False.
+        enable_pre_provisioner: Optional[bool] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         flags.DEFINE_string(
             "namespace", "default", "K8s namespace.", flag_values=fv, allow_override=True
+        )
+        flags.DEFINE_multi_string(
+            "gcsfuse_mount_spec",
+            None,
+            "GCS FUSE mount spec in the format key=value.",
+            flag_values=fv,
         )
 
     @classmethod
@@ -318,6 +333,8 @@ class GKEJob(GCPJob):
         cfg.service_account = cfg.service_account or gcp_settings(
             "k8s_service_account", default="default", fv=fv
         )
+        if fv.gcsfuse_mount_spec:
+            cfg.gcsfuse_mount = GCSFuseMount(**parse_kv_flags(fv.gcsfuse_mount_spec, delimiter="="))
         return cfg
 
 
@@ -336,10 +353,19 @@ class TPUGKEJob(GKEJob):
             reservation: If specified, the TPU reservation name. This is not necessarily specific to
                 GKE and can be the same as e.g. the QRM reservation.
                 https://cloud.google.com/sdk/gcloud/reference/alpha/compute/tpus/reservations/list
+            enable_tpu_ici_resiliency: Whether to enable TPU ICI resiliency.
+                If True, the job will persist through some types of network failure, but with
+                degraded performance.
+                If None, we leave it to GCP to determine whether it's appropriate for the requested
+                TPU topology.
+            location_hint: If set, the job will be scheduled to run on this TPU location.
+                If None, we leave it to GCP to determine where the TPUs are located.
         """
 
         accelerator: AcceleratorConfig = AcceleratorConfig()
         reservation: Optional[str] = None
+        enable_tpu_ici_resiliency: Optional[bool] = None
+        location_hint: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -347,12 +373,21 @@ class TPUGKEJob(GKEJob):
         common_kwargs = dict(flag_values=fv, allow_override=True)
         accelerator_flags(**common_kwargs)
         flags.DEFINE_string("reservation", None, "TPU reservation.", **common_kwargs)
+        flags.DEFINE_boolean(
+            "enable_tpu_ici_resiliency",
+            None,
+            "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
+            "not all TPU types support this flag.",
+            **common_kwargs,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
         cfg: TPUGKEJob.Config = super().from_flags(fv, **kwargs)
         cfg.accelerator.set(instance_type=fv.instance_type, num_replicas=fv.num_replicas)
         cfg.reservation = cfg.reservation or gcp_settings("gke_reservation", required=False, fv=fv)
+        # Only read from the config file since users shouldn't need to configure this.
+        cfg.location_hint = gcp_settings("location_hint", required=False, fv=fv)
         return cfg
 
     def __init__(self, cfg: Config):
@@ -386,6 +421,10 @@ class TPUGKEJob(GKEJob):
                 ),
             )
 
+        env_vars = {**cfg.env_vars}
+        if cfg.enable_tpu_ici_resiliency is not None:
+            env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
+
         return dict(
             name=cfg.name,
             image=self._bundler.id(cfg.name),
@@ -401,7 +440,7 @@ class TPUGKEJob(GKEJob):
             command=["bash", "-c", cfg.command],
             resources=dict(limits={"google.com/tpu": system.chips_per_vm}),
             # Env var values should always be strings.
-            env=[dict(name=k, value=str(v)) for k, v in cfg.env_vars.items()],
+            env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
             volumeMounts=volume_mounts,
         )
 
@@ -415,7 +454,7 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        annotations, selector, volumes = {}, {}, []
+        annotations, selector, volumes, tolerations = {}, {}, [], []
 
         if cfg.gcsfuse_mount:
             # Mount a GCS bucket as a volume.
@@ -447,11 +486,65 @@ class TPUGKEJob(GKEJob):
         # If running from bastion, a scheduling tier will be specified in env.
         # Tier "0" corresponds to reserved; otherwise we use preemptible.
         tier = os.environ.get("BASTION_TIER", None)
-        if tier == "0" and cfg.reservation:
+
+        if tier == "0" and cfg.reservation is not None:
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         else:
+            logging.info("Found tier=%s in env. Using spot quota", tier)
             selector.update({"cloud.google.com/gke-spot": "true"})
+            tolerations.append(
+                {
+                    "key": "cloud.google.com/gke-spot",
+                    "operator": "Equal",
+                    "value": "true",
+                    "effect": "NoSchedule",
+                }
+            )
+
+        if cfg.enable_tpu_ici_resiliency is not None:
+            selector.update(
+                {
+                    "cloud.google.com/gke-tpu-ici-resiliency": str(
+                        cfg.enable_tpu_ici_resiliency
+                    ).lower()
+                }
+            )
+
+        if cfg.location_hint is not None:
+            selector.update({"cloud.google.com/gke-location-hint": str(cfg.location_hint).lower()})
+
+        if cfg.enable_pre_provisioner:
+            # Used by pre-provisioner.
+            selector.update(
+                {
+                    PRE_PROVISIONER_LABEL: cfg.name,
+                }
+            )
+        else:
+            # Used by GCP auto-provisioner.
+            selector.update(
+                {
+                    # NOTE: This is an arbitrary key, with a value that must be unique to the
+                    # jobset. This forces the jobset to be associated with its own node pool;
+                    # without this, the TPU provisioner may create a node pool and the scheduler may
+                    # schedule a different jobset onto the node pool, which can cause conflicts if
+                    # the original jobset attempts to restart (node pool conflict). This is more
+                    # reliable at the moment but doesn't take advantage of node pool sharing. GCP is
+                    # working on a fix.
+                    "provisioner-nodepool-id": cfg.name,
+                }
+            )
+
+        annotations.update(
+            {
+                # Disable gcp auto-provisioner or not.
+                # https://github.com/GoogleCloudPlatform/ai-on-gke/blob/b199de1d5326f257fa6fc21d99e45b5b4621bb20/tpu-provisioner/internal/controller/creation_controller.go#L40
+                "tpu-provisioner.cloud.google.com/disable-autoprovisioning": "true"
+                if cfg.enable_pre_provisioner
+                else "false",
+            }
+        )
 
         return dict(
             metadata=dict(annotations=annotations),
@@ -463,16 +556,9 @@ class TPUGKEJob(GKEJob):
                 nodeSelector={
                     "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
                     "cloud.google.com/gke-tpu-topology": system.topology,
-                    # NOTE: This is an arbitrary key, with a value that must be unique to the
-                    # jobset. This forces the jobset to be associated with its own node pool;
-                    # without this, the TPU provisioner may create a node pool and the scheduler may
-                    # schedule a different jobset onto the node pool, which can cause conflicts if
-                    # the original jobset attempts to restart (node pool conflict). This is more
-                    # reliable at the moment but doesn't take advantage of node pool sharing. GCP is
-                    # working on a fix.
-                    "provisioner-nodepool-id": cfg.name,
                     **selector,
                 },
+                tolerations=tolerations,
                 containers=[self._build_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
@@ -506,11 +592,12 @@ class TPUGKEJob(GKEJob):
             A nested dict corresponding to a k8s JobSet config.
         """
         cfg: TPUGKEJob.Config = self.config
+
         return dict(
             metadata=dict(
                 name=cfg.name,
                 annotations={
-                    # The exlusive topology annotation will ensure that all Pods will have affinity
+                    # The exclusive topology annotation will ensure that all Pods will have affinity
                     # rules added that will ensure that they are fully scheduled on the same
                     # pod-slice node-pools.
                     "alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
@@ -529,6 +616,12 @@ class TPUGKEJob(GKEJob):
             ),
         )
 
+    def _delete(self):
+        cfg: TPUGKEJob.Config = self.config
+        # Issues a delete request for the JobSet and proactively delete its descendants. This is not
+        # fully blocking; after the call returns there can be a delay before everything is deleted.
+        delete_k8s_jobset(cfg.name, namespace=cfg.namespace)
+
     def _execute(self) -> Any:
         """Submits a JobSet to the cluster."""
         cfg: TPUGKEJob.Config = self.config
@@ -538,6 +631,7 @@ class TPUGKEJob(GKEJob):
             kind="JobSet",
             **self._build_jobset(),
         )
+        logging.info("Submitting JobSet body=%s api_kwargs=%s", custom_object, api_kwargs)
         return k8s.client.CustomObjectsApi().create_namespaced_custom_object(
             namespace=cfg.namespace,
             body=custom_object,

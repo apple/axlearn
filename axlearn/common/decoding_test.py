@@ -28,7 +28,7 @@ from axlearn.common.utils import NestedTensor, Tensor
 
 EOS_ID = 1
 NEG_INF = decoding.NEG_INF
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
+tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers")
 _SENTENCEPIECE_DIR = os.path.join(tokenizers_dir, "sentencepiece")
 _T5_VOCAB_FILE = os.path.join(_SENTENCEPIECE_DIR, "t5-base")
 
@@ -158,7 +158,7 @@ class DecodeTest(parameterized.TestCase):
         init_cache = {}
         init_cache["cur_iter"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
 
-        # alpha is zero and beam search will perfer shorter sequences.
+        # alpha is zero and beam search will prefer shorter sequences.
         inputs = np.zeros([batch_size, decode_length])
         beam_search_output = decoding.beam_search_decode(
             inputs=inputs,

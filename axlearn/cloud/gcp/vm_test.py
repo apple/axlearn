@@ -15,6 +15,9 @@ class VmUtilsTest(parameterized.TestCase):
         dict(node={"status": "RUNNING"}, expected="RUNNING"),
         dict(node={"status": "RUNNING", "labels": {"boot_status": ""}}, expected="RUNNING"),
         dict(node={"status": "RUNNING", "labels": {"boot_status": "done"}}, expected="BOOTED"),
+        dict(
+            node={"status": "RUNNING", "labels": {"boot_status": "failed"}}, expected="BOOT_FAILED"
+        ),
     )
     def test_get_vm_node_status(self, node, expected):
         self.assertEqual(expected, get_vm_node_status(node))

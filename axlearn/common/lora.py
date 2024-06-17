@@ -348,7 +348,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
         return cfg.output_dim // cfg.num_heads
 
     @property
-    def _num_enbaled(self):
+    def _num_enabled(self):
         cfg = self.config
         return sum(cfg.enable_lora.values())
 
@@ -375,7 +375,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
             cfg.lora_down.set(
                 input_dim=cfg.input_dim,
                 output_dim=cfg.rank,
-                num_enabled=self._num_enbaled,
+                num_enabled=self._num_enabled,
             ),
         )
         self._add_child(
@@ -384,7 +384,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
                 input_dim=cfg.rank,
                 num_heads=cfg.num_heads,
                 per_head_dim=self._per_head_dim,
-                num_enabled=self._num_enbaled,
+                num_enabled=self._num_enabled,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
                         PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)

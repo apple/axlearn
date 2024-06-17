@@ -208,7 +208,7 @@ class Model(BaseModel):
             )
 
     def extract_logits(self, input_batch: NestedTensor) -> Tensor:
-        """Obtains logits from the langauge model.
+        """Obtains logits from the language model.
 
         Args:
             input_batch: A dict containing:

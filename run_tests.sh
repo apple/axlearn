@@ -18,11 +18,11 @@ exit_if_error() {
 }
 
 download_assets() {
-  mkdir -p axlearn/experiments/testdata/tokenizers/sentencepiece
-  mkdir -p axlearn/experiments/testdata/tokenizers/bpe
-  curl https://huggingface.co/t5-base/resolve/main/spiece.model -o axlearn/experiments/testdata/tokenizers/sentencepiece/t5-base
-  curl https://huggingface.co/FacebookAI/roberta-base/raw/main/merges.txt -o axlearn/experiments/testdata/tokenizers/bpe/roberta-base-merges.txt
-  curl https://huggingface.co/FacebookAI/roberta-base/raw/main/vocab.json -o axlearn/experiments/testdata/tokenizers/bpe/roberta-base-vocab.json
+  mkdir -p axlearn/data/tokenizers/sentencepiece
+  mkdir -p axlearn/data/tokenizers/bpe
+  curl https://huggingface.co/t5-base/resolve/main/spiece.model -o axlearn/data/tokenizers/sentencepiece/t5-base
+  curl https://huggingface.co/FacebookAI/roberta-base/raw/main/merges.txt -o axlearn/data/tokenizers/bpe/roberta-base-merges.txt
+  curl https://huggingface.co/FacebookAI/roberta-base/raw/main/vocab.json -o axlearn/data/tokenizers/bpe/roberta-base-vocab.json
 }
 
 set -o xtrace

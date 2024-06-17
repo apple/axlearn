@@ -25,7 +25,14 @@ from axlearn.cloud.common.types import (
     ResourceMap,
     ResourceType,
 )
-from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
+from axlearn.common.config import (
+    REQUIRED,
+    ConfigOr,
+    Configurable,
+    Required,
+    config_class,
+    maybe_instantiate,
+)
 
 
 class ProjectJobSorter(Configurable):
@@ -159,6 +166,7 @@ class BaseScheduler(Configurable):
         resource_limits: Sequence[ResourceMap[int]],
         project_quotas: ProjectResourceMap[float],
         project_jobs: ProjectJobs,
+        verbosity: int = 0,
     ) -> ScheduleResults:
         """Makes per-job scheduling decisions based on available resources, quotas, and jobs.
 
@@ -167,6 +175,7 @@ class BaseScheduler(Configurable):
                 available resources.
             project_quotas: A mapping from project ids to quotas.
             project_jobs: A mapping from project ids to its job queue.
+            verbosity: The logging verbosity.
 
         Returns:
             Scheduling results consisting of:
@@ -275,6 +284,7 @@ class TierScheduler(BaseScheduler):
         resource_limits: Sequence[ResourceMap[int]],
         project_quotas: ProjectResourceMap,
         project_jobs: ProjectJobs,
+        verbosity: int = 0,
     ) -> BaseScheduler.ScheduleResults:
         """See `BaseScheduler.schedule` for details."""
         if not isinstance(resource_limits, Sequence):
@@ -336,7 +346,7 @@ class TierScheduler(BaseScheduler):
 
         job_verdicts = collections.defaultdict(dict)
         while not project_queue.empty() and remaining_limits:
-            *_, project_id = project_queue.get()
+            project_usage_ratio, _, project_id = project_queue.get()
             job_id, job_metadata = project_jobs[project_id].popleft()
 
             # Admit the highest priority job within the project.
@@ -364,6 +374,11 @@ class TierScheduler(BaseScheduler):
                         if remaining_limits[resource_type] <= 0:
                             del remaining_limits[resource_type]
                         project_usages[project_id][resource_type] += usage
+
+            if verbosity > 0:
+                logging.info(
+                    "Schedule %s(%s)/%s: %s", project_id, project_usage_ratio, job_id, verdict
+                )
 
             job_verdicts[project_id][job_id] = verdict
             if project_jobs[project_id]:
@@ -397,14 +412,14 @@ class JobScheduler(Configurable):
             scheduler: Scheduler that decides whether to resume/suspend jobs.
         """
 
-        quota: Required[InstantiableConfig[QuotaFn]] = REQUIRED
+        quota: Required[ConfigOr[QuotaFn]] = REQUIRED
         sorter: ProjectJobSorter.Config = ProjectJobSorter.default_config()
         scheduler: BaseScheduler.Config = TierScheduler.default_config()
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
-        self._quota = cfg.quota.instantiate()
+        self._quota = maybe_instantiate(cfg.quota)
         self._sorter: ProjectJobSorter = cfg.sorter.instantiate()
         self._scheduler: BaseScheduler = cfg.scheduler.instantiate()
 
@@ -446,6 +461,7 @@ class JobScheduler(Configurable):
             resource_limits=resource_limits,
             project_quotas=project_quotas,
             project_jobs=project_jobs,
+            verbosity=verbosity,
         )
 
         # Log the job verdicts.

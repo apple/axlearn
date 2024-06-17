@@ -3,14 +3,23 @@
 """Utilities for testing experiments."""
 # pylint: disable=no-self-use
 import enum
+import gc
+import logging as pylogging
 import os.path
+import pickle
 import re
 import sys
+import tempfile
+import unittest
 from types import ModuleType
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
+import chex
+import jax
 import pytest
+from absl import logging
 
+from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.test_utils import (
     ParamInitSpec,
     TestCase,
@@ -19,19 +28,23 @@ from axlearn.common.test_utils import (
     read_per_param_settings,
 )
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.common.utils import flatten_items, set_data_dir
+from axlearn.common.utils import Tensor, flatten_items, set_data_dir
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 from axlearn.huggingface.hf_module import HF_MODULE_KEY
 
 
 def named_parameters(
-    module: ModuleType, *, match_by_name: Optional[str] = None
+    module: ModuleType,
+    *,
+    match_by_name: Optional[str] = None,
+    data_dir: str = "$DATA_DIR",
 ) -> List[Tuple[str, ModuleType, str, TrainerConfigFn]]:
     """Obtains the named parameters for golden config test.
 
     Args:
         module: A module.
         match_by_name: A string which will be used for selecting config_names for golden config.
+        data_dir: The data_dir to set when fetching the configs.
 
     Returns:
         A list of
@@ -40,7 +53,7 @@ def named_parameters(
         - a config name
         - the trainer config for the module.config_name.
     """
-    with set_data_dir("$DATA_DIR"):
+    with set_data_dir(data_dir):
         final_named_trainer_configs = {}
         named_trainer_configs = getattr(module, "named_trainer_configs")()
         if match_by_name:
@@ -111,11 +124,25 @@ def per_param_setting_debug_string(
 
 @enum.unique
 class GoldenTestType(enum.Enum):
+    """Types of golden tests."""
+
     CONFIG = "config"
     INIT = "init"
     # We cover both coupled (l2_regularizer) and decoupled weight decay in this test.
     REGULARIZER = "regularizer"
     PARAM_UPDATE = "param_update"
+    # This test runs the trainer to completion and compares the final state against
+    # a reference file. The state values are checked for being all_close to the reference file.
+    # The state specs are checked for equality with the reference file.
+    # The input iterator values are also saved and checked in order to make it easier to diagnose
+    # failures of this test if the user accidentally uses a nondeterministic input config.
+    RUN = "run"
+
+
+# Compare an actual result against a golden result and raise an error if
+# they are sufficiently different.
+# The function must be a function of str arguments or a function of bytes arguments.
+GoldenComparisonFn = Union[Callable[[bytes, bytes], None], Callable[[str, str], None]]
 
 
 class BaseGoldenConfigTest(TestCase):
@@ -162,48 +189,61 @@ class BaseGoldenConfigTest(TestCase):
     def _golden_file_path(self, module: str, config_name: str, test_type: GoldenTestType) -> str:
         if test_type == GoldenTestType.CONFIG:
             suffix = ""
+            file_type = "txt"
         elif test_type in (
             GoldenTestType.INIT,
             GoldenTestType.REGULARIZER,
             GoldenTestType.PARAM_UPDATE,
         ):
             suffix = "_" + test_type.value
+            file_type = "txt"
+        elif test_type == GoldenTestType.RUN:
+            suffix = ""
+            file_type = "pickle"
         else:
             raise ValueError(f"{test_type} is not supported.")
-        return os.path.join(self._testdata, module.__name__, f"{config_name}{suffix}.txt")
+        return os.path.join(self._testdata, module.__name__, f"{config_name}{suffix}.{file_type}")
 
     # pylint: disable-next=too-many-branches
-    def _to_string(
+    def _get_golden_results(
         self,
         *,
         module: str,
         config_name: str,
         trainer_config: TrainerConfigFn,
         test_type: GoldenTestType,
-    ) -> str:
+    ) -> Tuple[Union[str, bytes], GoldenComparisonFn]:
+        """Get the results from the golden test for comparison / serialization."""
         if test_type == GoldenTestType.CONFIG:
             cfg = trainer_config()
-            debug_str = cfg.debug_string()
+            return cfg.debug_string(), self.compare_str
         elif test_type == GoldenTestType.INIT:
             cfg = trainer_config()
-            debug_str = param_init_debug_string(cfg)
+            return param_init_debug_string(cfg), self.compare_str
         elif test_type == GoldenTestType.REGULARIZER:
-            debug_str = self._per_param_settings(
-                module=module,
-                config_name=config_name,
-                trainer_config=trainer_config,
-                setting_types=("weight_decay_scale", "l2_regularizer_scale"),
+            return (
+                self._per_param_settings(
+                    module=module,
+                    config_name=config_name,
+                    trainer_config=trainer_config,
+                    setting_types=("weight_decay_scale", "l2_regularizer_scale"),
+                ),
+                self.compare_str,
             )
         elif test_type == GoldenTestType.PARAM_UPDATE:
-            debug_str = self._per_param_settings(
-                module=module,
-                config_name=config_name,
-                trainer_config=trainer_config,
-                setting_types=("update_scale", "gradient_scale", "learner_update_type"),
+            return (
+                self._per_param_settings(
+                    module=module,
+                    config_name=config_name,
+                    trainer_config=trainer_config,
+                    setting_types=("update_scale", "gradient_scale", "learner_update_type"),
+                ),
+                self.compare_str,
             )
+        elif test_type == GoldenTestType.RUN:
+            return self._golden_run(trainer_config=trainer_config)
         else:
             raise ValueError(f"{test_type} is not supported.")
-        return debug_str
 
     def _per_param_settings(
         self,
@@ -245,6 +285,81 @@ class BaseGoldenConfigTest(TestCase):
             raise ValueError(f"No per param settings for {setting_types} is found.")
         return debug_str
 
+    def _golden_run(self, trainer_config: TrainerConfigFn) -> Tuple[bytes, GoldenComparisonFn]:
+        """Checks that the trainer state after running for a few steps matches a reference file.
+
+        This test may fail if you generate the golden run file on one machine and then try
+        to verify it on a different machine. For that reason, it should only be run manually.
+        """
+        pylogging.getLogger().setLevel(pylogging.INFO)
+        logging.set_verbosity(logging.INFO)
+        with set_data_dir("FAKE"):
+            trainer_cfg: SpmdTrainer.Config = trainer_config()
+            with tempfile.TemporaryDirectory() as trainer_cfg.dir:
+                trainer: SpmdTrainer = trainer_cfg.set(name="tmp").instantiate(parent=None)
+                # Record summaries.
+                all_summaries = []
+
+                def add_summary(self, step: int, summary: Dict[str, Any]):
+                    del self
+                    all_summaries.append((step, summary))
+
+                # Record inputs:
+                # pylint: disable-next=protected-access
+                old_input_iter = trainer._input_iter
+                inputs = []
+
+                def record_input(input_data: Any) -> Any:
+                    inputs.append(input_data)
+                    return input_data
+
+                input_iter = (record_input(input_data) for input_data in old_input_iter)
+
+                if not isinstance(trainer.summary_writer, SummaryWriter):
+                    raise TypeError(
+                        f"Summary writer must be SummaryWriter, not {type(trainer.summary_writer)}"
+                    )
+
+                with unittest.mock.patch.object(
+                    SummaryWriter, "__call__", add_summary
+                ), unittest.mock.patch.object(trainer, "_input_iter", input_iter):
+                    trainer.run(prng_key=jax.random.PRNGKey(0))
+                    loss = dict(all_summaries)[trainer_cfg.max_step]["loss"]
+                    self.assertIsInstance(loss, Tensor)
+                    chex.assert_tree_all_finite(dict(all_summaries))
+
+                    # These values will be updated or checked.
+                    state_values = dict(
+                        trainer_state=trainer.trainer_state,
+                        trainer_state_specs=trainer.trainer_state_specs,
+                        inputs=inputs,
+                    )
+                    result = pickle.dumps(state_values)
+
+                    # Work around Tensorflow bug that causes hang on exit.
+                    for k in list(vars(trainer)):
+                        delattr(trainer, k)
+                    gc.collect()
+
+                    def comparison_fn(actual_result: bytes, golden_result: bytes):
+                        actual_run_values = pickle.loads(actual_result)
+                        golden_run_values = pickle.loads(golden_result)
+                        self.assertNestedEqual(
+                            actual_run_values["inputs"], golden_run_values["inputs"]
+                        )
+                        self.assertNestedAllClose(
+                            actual_run_values["trainer_state"],
+                            golden_run_values["trainer_state"],
+                            rtol=5e-6,
+                            atol=0,
+                        )
+                        self.assertNestedEqual(
+                            actual_run_values["trainer_state_specs"],
+                            golden_run_values["trainer_state_specs"],
+                        )
+
+                    return result, comparison_fn
+
     def _check_against_golden_file(
         self,
         module: str,
@@ -253,16 +368,19 @@ class BaseGoldenConfigTest(TestCase):
         trainer_config: TrainerConfigFn,
         test_type: GoldenTestType,
     ):
-        with open(self._golden_file_path(module, config_name, test_type), encoding="utf-8") as f:
-            golden_str = f.read()
+        with open(self._golden_file_path(module, config_name, test_type), "rb") as f:
+            golden_result = f.read()
         try:
-            actual_str = self._to_string(
+            actual_result, comparison_fn = self._get_golden_results(
                 module=module,
                 config_name=config_name,
                 trainer_config=trainer_config,
                 test_type=test_type,
             )
-            self.assertListEqual(golden_str.split("\n"), actual_str.split("\n"))
+            if isinstance(actual_result, str):
+                golden_result = golden_result.decode("utf-8")
+            comparison_fn(actual_result, golden_result)
+
         except AssertionError as e:
             raise AssertionError(
                 f"Golden {test_type.value} files have changed. If this is expected, run "
@@ -279,12 +397,18 @@ class BaseGoldenConfigTest(TestCase):
     ):
         config_path = self._golden_file_path(module, config_name, test_type)
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        with open(config_path, "w", encoding="utf-8") as f:
-            f.write(
-                self._to_string(
-                    module=module,
-                    config_name=config_name,
-                    trainer_config=trainer_config,
-                    test_type=test_type,
-                )
-            )
+        result, _ = self._get_golden_results(
+            module=module,
+            config_name=config_name,
+            trainer_config=trainer_config,
+            test_type=test_type,
+        )
+        if isinstance(result, str):
+            result = result.encode("utf-8")
+        elif not isinstance(result, bytes):
+            raise ValueError(f"Invalid golden result type {type(result)}.")
+        with open(config_path, "wb") as f:
+            f.write(result)
+
+    def compare_str(self, actual_result: str, golden_result: str):
+        self.assertListEqual(golden_result.split("\n"), actual_result.split("\n"))

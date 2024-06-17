@@ -503,8 +503,11 @@ class Decoder(DecodingMixin, BaseLayer):
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
         x = x.data
+        self._add_tensor_stats("outputs", x)
+
         if "output_norm" in self.children:
             x = self.output_norm(x)
+            self._add_tensor_stats("norm_outputs", x)
         x = self.output_dropout(x)
         if "lm_head" in self.children:
             logits = self.lm_head(x)
@@ -630,12 +633,13 @@ class Decoder(DecodingMixin, BaseLayer):
         # Note: if `time_step` exceeds `target_len`, e.g. in the case where one decode starts at a
         # later index than another, clip the indices instead of producing NaNs.
         # TODO(markblee): Update attention masks to support explicit positions, so we can skip this.
-        self_attention_biases = jnp.take_along_axis(
-            self_attention_biases,
-            time_step[:, None, None, None],
-            axis=2,
-            mode="clip",
-        )
+        if self_attention_biases is not None:
+            self_attention_biases = jnp.take_along_axis(
+                self_attention_biases,
+                time_step[:, None, None, None],
+                axis=2,
+                mode="clip",
+            )
 
         updated_states, outputs = self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,

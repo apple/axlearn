@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for test_utils.py."""
+import unittest
 
 import jax
 import jax.numpy as jnp
@@ -61,6 +62,25 @@ class CleanHLOTest(parameterized.TestCase):
         hlo = "before" + hlo + "after"
         hlo = test_utils.clean_hlo(hlo)
         self.assertEqual(hlo, "beforeafter")
+
+
+class TestCaseTest(test_utils.TestCase):
+    def test_super_setup_teardown_called(self):
+        """Tests that super() calls are made in setUp and tearDown.
+
+        Without this, functionality like `self.enter_context()` breaks.
+        """
+        t = test_utils.TestCase()
+        with unittest.mock.patch.multiple(
+            parameterized.TestCase, setUp=unittest.mock.DEFAULT, tearDown=unittest.mock.DEFAULT
+        ) as mocks:
+            t.setUp()
+            mocks["setUp"].assert_called_once()
+            mocks["tearDown"].assert_not_called()
+
+            t.tearDown()
+            mocks["setUp"].assert_called_once()
+            mocks["tearDown"].assert_called_once()
 
 
 if __name__ == "__main__":

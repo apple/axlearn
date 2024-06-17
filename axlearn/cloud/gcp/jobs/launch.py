@@ -318,13 +318,6 @@ class BaseBastionManagedJob(Job):
 
         logging.info("Starting run for job name %s", cfg.name)
         logging.info("Command: %s", cfg.command)
-        print(
-            "\nView bastion outputs with:\n"
-            f"gsutil cat {os.path.join(self._bastion_dir.logs_dir, cfg.name)}\n"
-            "\nCheck job history with:\n"
-            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} "
-            f"--job_name={cfg.name} --zone={cfg.zone}"
-        )
         with tempfile.NamedTemporaryFile("w") as f:
             metadata = JobMetadata(
                 user_id=cfg.user_id,
@@ -335,11 +328,20 @@ class BaseBastionManagedJob(Job):
             )
             serialize_jobspec(new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata), f)
             self._bastion_dir.submit_job(cfg.name, job_spec_file=f.name)
+        gcp_api = "gke" if "gke" in cfg.bastion_name else "qrm"
         print(
+            "\nView bastion outputs with: (if not found, check job and project history)\n"
+            f"gsutil cat {os.path.join(self._bastion_dir.logs_dir, cfg.name)}\n"
             f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "
             f"--name={cfg.name} --bastion={cfg.bastion_name} --instance_type={cfg.instance_type} "
-            f"--zone={cfg.zone}"
+            f"--zone={cfg.zone} --gcp_api={gcp_api}\n"
+            "\nCheck job history with:\n"
+            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
+            f"--job_name={cfg.name}"
+            "\nCheck project history with:\n"
+            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
+            f"{cfg.project_id or ''}"
         )
 
 
@@ -418,12 +420,14 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
             project: Used for load_kube_config.
             zone: Used to infer total quota.
             cluster: K8s cluster.
+            num_replicas: Number of replicas.
         """
 
         namespace: str = "default"
         project: Required[str] = REQUIRED
         zone: Required[str] = REQUIRED
         cluster: Required[str] = REQUIRED
+        num_replicas: int = 1
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -464,11 +468,6 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
     def _execute(self):
         """Submits the command to bastion."""
         cfg: BastionManagedGKEJob.Config = self.config
-        super()._execute()
-        print(
-            "\nView running pods with:\nkubectl get pods\n"
-            "\nNote that the job may take a few minutes to start."
-        )
         try:
             num_workers = infer_tpu_workers(infer_tpu_type(cfg.instance_type))
         except ValueError:
@@ -477,7 +476,7 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
             )
             num_workers = None
         if num_workers is not None:
-            validate_k8s_name(cfg.name, num_workers=num_workers)
+            validate_k8s_name(cfg.name, num_workers=num_workers, num_replicas=cfg.num_replicas)
             # TODO(markblee): add the logs command.
             worker_log = f"{infer_cli_name()} gcp logs --name={cfg.name} --worker=0"
             print(
@@ -485,6 +484,11 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
                 "Replace `--worker=0` with `--worker={idx}` "
                 f"where idx is between [0, {num_workers})."
             )
+        super()._execute()
+        print(
+            "\nView running pods with:\nkubectl get pods\n"
+            "\nNote that the job may take a few minutes to start."
+        )
 
 
 # Launchers specified here will be tried (in the given order) when launching a given instance type.
@@ -527,7 +531,7 @@ def _get_launcher_or_exit(*, action: str, instance_type: str, gcp_api: str) -> L
 
     If there are multiple matches, the first one in the registry is returned.
     """
-    # Idenfity launcher from instance type.
+    # Identify launcher from instance type.
     for launcher in _LAUNCHERS:
         m = maybe_instantiate(launcher.matcher)
         if m(action=action, instance_type=instance_type, gcp_api=gcp_api):

@@ -3,11 +3,13 @@
 """Tests language modeling inputs."""
 # pylint: disable=no-self-use,too-many-lines
 import os
+import tempfile
 from typing import Any, Dict, List, Literal, Optional
 
 import pytest
 import seqio
 import tensorflow as tf
+import tensorflow_datasets as tfds
 from absl.testing import absltest, parameterized
 
 from axlearn.common import input_tf_data, test_utils
@@ -742,6 +744,72 @@ class LmTrainingInputTest(BaseLmInputTest):
                 if k in examples[0]:
                     self.assertEqual(batch[k][0].tolist(), examples[0][k].numpy().tolist())
             break
+
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_preprocessing_dataset_with_decoder(self):
+        """Tests that lm_text_preprocessor works with a dataset that uses a custom decoder."""
+        texts = ["hello world\n", "hello moon\n", "hello tiger\n", "hello dog\n", "hello cat\n"]
+
+        def _test_builder_with_datadir(data_dir: str) -> tfds.core.DatasetBuilder:
+            class TestBuilder(tfds.core.GeneratorBasedBuilder):
+                """Test dataset builder."""
+
+                name = "temptext"
+                VERSION = tfds.core.Version("1.0.0")
+
+                def _info(self) -> tfds.core.DatasetInfo:
+                    return tfds.core.DatasetInfo(
+                        builder=self,
+                        description="test",
+                        features=tfds.features.FeaturesDict({"text": tf.string}),
+                    )
+
+                def _split_generators(self, _: tfds.download.DownloadManager):
+                    return {"train": self._generate_examples("train")}
+
+                def _generate_examples(self, _):
+                    for i, text in enumerate(texts):
+                        yield i, {"text": text}
+
+            return TestBuilder(data_dir=data_dir)
+
+        def append_foo(tensor: tf.Tensor) -> tf.Tensor:
+            return tf.constant(tf.strings.join([tensor, "foo"]), dtype=tf.string)
+
+        def tfds_custom_decoder() -> Dict[str, tfds.decode.Decoder]:
+            @tfds.decode.make_decoder()
+            def replace_field_value(example: tf.Tensor, _: tfds.features.text_feature.Text):
+                return tf.py_function(append_foo, [example], tf.string)
+
+            # pylint: disable=no-value-for-parameter
+            return {"text": replace_field_value()}
+
+        shuffle_buffer_size, max_sequence_length, window_size = 8, 6, 10
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder = _test_builder_with_datadir(tmpdir)
+            builder.download_and_prepare()  # Downloads to tmpdir.
+            source = config_for_function(input_tf_data.tfds_dataset).set(
+                dataset_name=builder.name,
+                split="train",
+                is_training=True,
+                train_shuffle_buffer_size=shuffle_buffer_size,
+                data_dir=tmpdir,
+                decoders=config_for_function(tfds_custom_decoder),
+            )
+            preprocessor = config_for_function(lm_text_preprocessor).set(
+                vocab_cfg=self.vocab_cfg,
+                max_sequence_length=max_sequence_length,
+                replace_newlines_with=self.newlines_replaced_with,
+                window_size=window_size,
+                max_padding_fraction=0.5,
+                shuffle_buffer_size=shuffle_buffer_size,
+            )
+            dataset_fn = input_tf_data.with_processor(source=source, processor=preprocessor)
+            # The following will raise a ValueError if shape information is lost.
+            element: Dict[str, tf.Tensor] = next(iter(dataset_fn()))
+            assert "input_ids" in element
 
 
 class LmEvalInputTest(BaseLmInputTest):

@@ -16,6 +16,8 @@ import numpy as np
 import pytest
 import tensorflow as tf
 from absl.testing import parameterized
+from jax.experimental import mesh_utils
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike
 
 from axlearn.audio.frontend_utils import (
@@ -25,11 +27,17 @@ from axlearn.audio.frontend_utils import (
     magnitude_spectrogram,
     next_power_of_2,
     pre_emphasis,
+    sharded_fft,
     sliding_window,
     windowing,
 )
 from axlearn.audio.test_utils import fake_audio
+from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import as_tensor
+
+
+def _magnitude_spectrogram_from_audio(x, fft_size):
+    return magnitude_spectrogram(jnp.fft.fft(x, n=fft_size), dtype=x.dtype)
 
 
 class SlidingWindowTest(parameterized.TestCase, tf.test.TestCase):
@@ -131,7 +139,7 @@ class SpectrogramTest(parameterized.TestCase, tf.test.TestCase):
         ref_spectrogram = _ref_magnitude_spectrogram(
             inputs=inputs, fft_size=fft_size, compute_energy=compute_energy
         )
-        fn = jax.jit(magnitude_spectrogram, static_argnames="fft_size")
+        fn = jax.jit(_magnitude_spectrogram_from_audio, static_argnames="fft_size")
         test_spectrogram = fn(as_tensor(inputs), fft_size=fft_size)
         if compute_energy:
             test_spectrogram = jnp.square(test_spectrogram)
@@ -171,7 +179,7 @@ class SpectrogramTest(parameterized.TestCase, tf.test.TestCase):
     def test_log_mel_spectrogram(self, input_shape, compute_energy, num_filters):
         sample_rate, lower_edge_hertz, upper_edge_hertz, mel_floor = 16_000, 125.0, 7600.0, 1.0
         fft_size = next_power_of_2(input_shape[-1])
-        spectrogram_fn = jax.jit(magnitude_spectrogram, static_argnames="fft_size")
+        spectrogram_fn = jax.jit(_magnitude_spectrogram_from_audio, static_argnames="fft_size")
 
         inputs = jax.random.uniform(
             jax.random.PRNGKey(123),
@@ -305,3 +313,33 @@ def _ref_log_mel_spectrogram(
     )
     mel_spectrogram = tf.reshape(mel_spectrogram, [batch_size, num_frames, num_filters])
     return tf.math.log(tf.maximum(float(mel_floor), mel_spectrogram))
+
+
+class ShardedFftTest(TestCase):
+    def test_fft(self):
+        input_shape = (8, 800, 400)
+        fft_size = 512
+        inputs = jax.random.uniform(
+            jax.random.PRNGKey(123),
+            shape=input_shape,
+            minval=-32768.0,
+            maxval=32768.0,
+        )
+        with Mesh(
+            mesh_utils.create_device_mesh((len(jax.devices()), 1)), ("data", "model")
+        ) as mesh:
+            inputs = jax.device_put(
+                inputs,
+                NamedSharding(mesh, PartitionSpec("data", None, None)),
+            )
+            # The sharded fn should be defined within a mesh context.
+            fft_fn = jax.jit(
+                sharded_fft(n=fft_size, partition_spec=PartitionSpec("data", None, None))
+            )
+            ref_ffts = jax.jit(jnp.fft.fft, static_argnames="n")(inputs, n=fft_size)
+            test_ffts = fft_fn(inputs)
+
+        assert_allclose(ref_ffts, test_ffts)
+        # Run the following on gpu.
+        jax.debug.inspect_array_sharding(test_ffts, callback=print)
+        jax.debug.inspect_array_sharding(ref_ffts, callback=print)

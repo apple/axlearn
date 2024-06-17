@@ -71,22 +71,24 @@ pytorch-triton==2.1.0+9e3e10c5ed
 import jax
 import jax.numpy as jnp
 import triton  # pytype: disable=import-error
+from jax.experimental.pallas.ops.attention import mha as pallas_mha
 
 from axlearn.common.flash_attention.gpu_attention import flash_attention
 from axlearn.common.flash_attention.utils import mha_reference
 
 
 def _perf_report(prefix: str):
-    batch_size, num_heads, seq_len, per_head_dim = 2, 32, 2048, 64
+    # 128 is the most common value for per_head_dim.
+    batch_size, num_heads, seq_len, per_head_dim = 2, 32, 2048, 128
 
     # Vary batch size for fixed heads and seq length.
     batch_size_bench = triton.testing.Benchmark(
         x_names=["batch_size"],
         x_vals=[2, 4, 8, 16],
         line_arg="library",
-        line_vals=["jax", "jax-triton"],
-        line_names=["Jax", "Jax Triton"],
-        styles=[("blue", "-"), ("purple", "-")],
+        line_vals=["jax", "jax-triton", "jax-pallas"],
+        line_names=["Jax", "Jax Triton", "Pallas"],
+        styles=[("blue", "-"), ("purple", "-"), ("green", "-")],
         ylabel="ms",
         plot_name=f"{prefix}-head{num_heads}-seq1024-d{per_head_dim}",
         args={"num_heads": num_heads, "seq_len": 1024, "per_head_dim": per_head_dim},
@@ -94,11 +96,11 @@ def _perf_report(prefix: str):
     # Vary num heads for fixed batch and seq length.
     num_heads_bench = triton.testing.Benchmark(
         x_names=["num_heads"],
-        x_vals=[12, 16, 32, 40, 56, 72],
+        x_vals=[12, 16, 32, 48, 72],
         line_arg="library",
-        line_vals=["jax", "jax-triton"],
-        line_names=["Jax", "Jax Triton"],
-        styles=[("blue", "-"), ("purple", "-")],
+        line_vals=["jax", "jax-triton", "jax-pallas"],
+        line_names=["Jax", "Jax Triton", "Pallas"],
+        styles=[("blue", "-"), ("purple", "-"), ("green", "-")],
         ylabel="ms",
         plot_name=f"{prefix}-batch{batch_size}-seq{seq_len}-d{per_head_dim}",
         args={"batch_size": batch_size, "seq_len": seq_len, "per_head_dim": per_head_dim},
@@ -108,9 +110,9 @@ def _perf_report(prefix: str):
         x_names=["seq_len"],
         x_vals=[2**i for i in range(7, 12)],  # 128 to 2048.
         line_arg="library",
-        line_vals=["jax", "jax-triton"],
-        line_names=["Jax", "Jax Triton"],
-        styles=[("blue", "-"), ("purple", "-")],
+        line_vals=["jax", "jax-triton", "jax-pallas"],
+        line_names=["Jax", "Jax Triton", "Pallas"],
+        styles=[("blue", "-"), ("purple", "-"), ("green", "-")],
         ylabel="ms",
         plot_name=f"{prefix}-batch{batch_size}-head{num_heads}-d{per_head_dim}",
         args={"batch_size": batch_size, "num_heads": num_heads, "per_head_dim": per_head_dim},
@@ -120,9 +122,9 @@ def _perf_report(prefix: str):
         x_names=["per_head_dim"],
         x_vals=[16, 32, 64, 128],
         line_arg="library",
-        line_vals=["jax", "jax-triton"],
-        line_names=["Jax", "Jax Triton"],
-        styles=[("blue", "-"), ("purple", "-")],
+        line_vals=["jax", "jax-triton", "jax-pallas"],
+        line_names=["Jax", "Jax Triton", "Pallas"],
+        styles=[("blue", "-"), ("purple", "-"), ("green", "-")],
         ylabel="ms",
         plot_name=f"{prefix}-batch{batch_size}-head{num_heads}-seq{seq_len}",
         args={"batch_size": batch_size, "num_heads": num_heads, "seq_len": seq_len},
@@ -149,14 +151,15 @@ def bench_flash_attention(
         v = jax.random.normal(
             jax.random.PRNGKey(2), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
         )
-        bias = jax.random.normal(
-            jax.random.PRNGKey(2), (batch_size, num_heads, seq_len, seq_len), dtype=jnp.float16
-        )
+        # Bias is not supported in pallas, so we don't include it here.
+        bias = None
 
         if "triton" in library:
-            fn = lambda: flash_attention(q, k, v, bias)
+            fn = lambda: flash_attention(q, k, v, bias, causal=True)
+        elif "pallas" in library:
+            fn = lambda: pallas_mha(q, k, v, segment_ids=None, causal=True)
         else:
-            fn = lambda: mha_reference(q, k, v, bias)
+            fn = lambda: mha_reference(q, k, v, bias, causal=True)
         ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
 
     else:
@@ -181,23 +184,30 @@ def bench_flash_attention_backward(
         v = jax.random.normal(
             jax.random.PRNGKey(2), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
         )
-        bias = jax.random.normal(
-            jax.random.PRNGKey(3), (batch_size, num_heads, seq_len, seq_len), dtype=jnp.float16
-        )
+        # Bias is not supported in pallas, so we don't include it here.
+        bias = None
 
         if "triton" in library:
 
             @jax.jit
             def test_fn(q, k, v, bias):
-                return flash_attention(q, k, v, bias).sum()
+                return flash_attention(q, k, v, bias, causal=True).sum()
 
             test_bwd = jax.grad(test_fn, argnums=(0, 1, 2))
             fn = lambda: test_bwd(q, k, v, bias)
+        elif "pallas" in library:
+
+            @jax.jit
+            def pallas_fn(q, k, v):
+                return pallas_mha(q, k, v, segment_ids=None, causal=True).sum()
+
+            pallas_bwd = jax.grad(pallas_fn, argnums=(0, 1, 2))
+            fn = lambda: pallas_bwd(q, k, v)
         else:
 
             @jax.jit
             def ref_fn(q, k, v, bias):
-                return mha_reference(q, k, v, bias).sum()
+                return mha_reference(q, k, v, bias, causal=True).sum()
 
             ref_bwd = jax.grad(ref_fn, argnums=(0, 1, 2))
             fn = lambda: ref_bwd(q, k, v, bias)

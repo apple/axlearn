@@ -1,6 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
-"""Utilites used for testing."""
+"""Utilities used for testing."""
 import contextlib
 import copy
 import dataclasses
@@ -134,6 +134,7 @@ class TestCase(parameterized.TestCase):
         return "FAKE"
 
     def setUp(self):
+        super().setUp()
         push_data_dir(self.data_dir)
         utils_spmd.setup(jax_backend=self._jax_backend())
 
@@ -142,6 +143,7 @@ class TestCase(parameterized.TestCase):
         return "cpu"
 
     def tearDown(self) -> None:
+        super().tearDown()
         self.assertEqual(pop_data_dir(), self.data_dir)
 
     def _compute_layer_outputs(

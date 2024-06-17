@@ -9,6 +9,7 @@ Checkpointer uses jax.experimental.array_serialization as the storage layer and 
 (3) global synchronization across processes to ensure that a checkpoint directory is visible only
     after all processes have completed saving the checkpoint.
 """
+
 import dataclasses
 import difflib
 import enum
@@ -43,6 +44,7 @@ from axlearn.common.module import (
     clone_context_stack,
     install_context_stack,
 )
+from axlearn.common.summary_writer import CheckpointerAction, SummaryWriter
 from axlearn.common.utils import NestedTensor, NestedTensorSpec, Tensor, TensorSpec, set_recursively
 
 
@@ -144,13 +146,23 @@ def check_state_structure(
         )
 
 
-def _cleanup_checkpoint(ckpt_dir: str):
-    """Removes ckpt_dir if it exists."""
+def _cleanup_checkpoint(ckpt_dir: str, *, sync: bool = True):
+    """Removes ckpt_dir if it exists.
+
+    If sync is True, we also create a barrier to sync all devices, since removes only happen on
+    process 0.
+    """
     if jax.process_index() == 0:
+        # We always remove the index file as the first step -- otherwise, the partially-removed dir
+        # can still be considered a valid checkpoint if rmtree is interrupted.
+        index_path = os.path.join(ckpt_dir, "index")
+        if tf.io.gfile.exists(index_path):
+            tf.io.gfile.remove(index_path)
         if tf.io.gfile.exists(ckpt_dir):
             tf.io.gfile.rmtree(ckpt_dir)
-    # Wait for cleanup to complete.
-    multihost_utils.sync_global_devices(f"{ckpt_dir}_cleanup")
+    if sync:
+        # Wait for cleanup to complete.
+        multihost_utils.sync_global_devices(f"{ckpt_dir}_cleanup")
 
 
 def _validate_checkpoint(ckpt_dir: str):
@@ -589,6 +601,8 @@ class Checkpointer(Module):
         save_policy: InstantiableConfig = config_for_function(every_n_steps_policy)
         # A config that instantiates to a StateStorage.
         storage: StateStorage.Config = TensorStoreStateStorage.default_config()
+        # A config that instantiates an optional SummaryWriter, and is used to log checkpoints.
+        summary_writer: Optional[SummaryWriter.Config] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -597,6 +611,9 @@ class Checkpointer(Module):
         self._gc_thread = None
         self._within_context = False
         self._save_policy: CheckpointPolicy = cfg.save_policy.instantiate()
+        if cfg.summary_writer is not None:
+            cfg.summary_writer.dir = cfg.summary_writer.dir or cfg.dir
+            self._add_child("summary_writer", cfg.summary_writer)
 
     def __enter__(self):
         if self._within_context:
@@ -662,32 +679,82 @@ class Checkpointer(Module):
             step=step, state=state, ckpt_dir=ckpt_dir, on_commit_callback=write_index_file
         )
         end_time = time.perf_counter()
+        if "summary_writer" in self.children:
+            self.summary_writer.log_checkpoint(
+                step=step,
+                state=state,
+                ckpt_dir=ckpt_dir,
+                action=CheckpointerAction.SAVE,
+            )
         logging.info(
             "Saved checkpoint with %s in %s seconds", type(self._storage), end_time - start_time
         )
 
     def run_garbage_collection(self):
-        """Runs one round of garbage collection of past checkpoints."""
-        cfg = self.config
-        # Garbage collection.
-        dirs = sorted(tf.io.gfile.glob(os.path.join(cfg.dir, "step_*")))  # type: ignore
-        last_kept_step = float("-inf")
-        remaining_dirs = []
-        for saved_dir in dirs[: -cfg.keep_last_n]:
-            saved_step = int(saved_dir[-8:])
-            if cfg.keep_every_n_steps and saved_step - last_kept_step >= cfg.keep_every_n_steps:
-                logging.vlog(
-                    2, "Keeping %s >= %s + %s", saved_dir, last_kept_step, cfg.keep_every_n_steps
-                )
+        """Runs one round of garbage collection of past checkpoints.
+
+        We keep as many dirs to satisfy `keep_last_n` and `keep_every_n_steps`, considering only
+        those dirs which are fully committed. For example, supposing that `keep_last_n=1`, if we
+        count the latest (possibly partially-written) checkpoint as the one to keep, we may end up
+        gc'ing the previous (committed) checkpoint. However, if the commit for the current
+        checkpoint is pre-empted, this can cause both checkpoints to be corrupted.
+        """
+        cfg: Checkpointer.Config = self.config
+        remaining_dirs, gc_dirs = [], []
+
+        # Gather all candidate checkpoint dirs, as well as all committed checkpoint dirs.
+        dirs = sorted(tf.io.gfile.glob(os.path.join(cfg.dir, "step_*")), reverse=True)
+        committed_dirs = set(checkpoint_paths(cfg.dir))
+
+        # Collect the recent non-committed checkpoints, since any of them could be in-progress.
+        # (Note that keeping just the first one is not sufficient, e.g., if we restarted with a more
+        # frequent saving policy after a prior failure.)
+        for saved_dir in dirs:
+            if saved_dir in committed_dirs:
+                break
+            remaining_dirs.append(saved_dir)
+
+        # Always keep the last N committed ckpts. These may not be consecutive -- e.g., we're
+        # potentially retaining multiple non-committed ckpts at head.
+        num_uncommitted = len(remaining_dirs)
+        for saved_dir in dirs[num_uncommitted:]:
+            if len(remaining_dirs) >= num_uncommitted + cfg.keep_last_n:
+                break
+            elif saved_dir in committed_dirs:
                 remaining_dirs.append(saved_dir)
-                last_kept_step = saved_step
             else:
-                logging.info("Removing %s", saved_dir)
-                try:
-                    tf.io.gfile.rmtree(saved_dir)  # type: ignore
-                except Exception as e:  # pylint: disable=broad-except
-                    logging.warning("Ignoring error in removing %s: %s.", saved_dir, e)
-        remaining_dirs += dirs[-cfg.keep_last_n :]
+                gc_dirs.append(saved_dir)
+
+        # For subsequent dirs, non-committed dirs are gc'ed, and committed dirs are kept according
+        # to keep_n_steps. Note that we iterate in order of oldest to newest.
+        last_kept_step = float("-inf")
+        for saved_dir in reversed(dirs[len(remaining_dirs) + len(gc_dirs) :]):
+            saved_step = parse_step_from_dir(saved_dir)
+            if not (
+                saved_dir in committed_dirs
+                and cfg.keep_every_n_steps
+                and saved_step - last_kept_step >= cfg.keep_every_n_steps
+            ):
+                gc_dirs.append(saved_dir)
+                continue
+            logging.vlog(
+                2,
+                "Keeping %s >= %s + %s",
+                saved_dir,
+                last_kept_step,
+                cfg.keep_every_n_steps,
+            )
+            remaining_dirs.append(saved_dir)
+            last_kept_step = saved_step
+
+        for gc_dir in gc_dirs:
+            logging.info("Removing %s", gc_dir)
+            try:
+                # Don't need to sync here since gc only runs on process 0.
+                _cleanup_checkpoint(gc_dir, sync=False)
+            except Exception as e:  # pylint: disable=broad-except
+                logging.warning("Ignoring error in removing %s: %s.", gc_dir, e)
+
         logging.log_every_n_seconds(
             logging.INFO,
             "Garbage collection done on %s. Remaining=%s",
@@ -730,15 +797,29 @@ class Checkpointer(Module):
         cfg = self.config
         if step is not None:
             # For a specified step, we try to load it.
-            return step, self._validate_and_restore(
-                step=step, state=state, ckpt_dir=self.ckpt_dir(step)
-            )
+            ckpt_dir = self.ckpt_dir(step)
+            restored_state = self._validate_and_restore(step=step, state=state, ckpt_dir=ckpt_dir)
+            if "summary_writer" in self.children:
+                self.summary_writer.log_checkpoint(
+                    step=step,
+                    state=state,
+                    ckpt_dir=ckpt_dir,
+                    action=CheckpointerAction.RESTORE,
+                )
+            return step, restored_state
         try:
             # Latest checkpoint path, if it exists, is guaranteed to be complete.
             ckpt_dir = latest_checkpoint_path(cfg.dir)
             step = parse_step_from_dir(ckpt_dir)
             restored_state = self._validate_and_restore(step=step, state=state, ckpt_dir=ckpt_dir)
             logging.info("Restored state from ckpt at step %s", step)
+            if "summary_writer" in self.children:
+                self.summary_writer.log_checkpoint(
+                    step=step,
+                    state=state,
+                    ckpt_dir=ckpt_dir,
+                    action=CheckpointerAction.RESTORE,
+                )
         except IndexError:
             # No checkpoint path exists. Return with input state.
             logging.info("Could not find any completed checkpoints under %s", cfg.dir)

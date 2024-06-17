@@ -2,7 +2,7 @@
 
 """A command-line tool to perform AoT (ahead-of-time) compilation.
 
-pip install 'jax[tpu]==0.4.25' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+pip install 'jax[tpu]==0.4.28' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 XLA_FLAGS=--xla_dump_to=/tmp/aot_xla_dump \
 python -m axlearn.experiments.run_aot_compilation \
@@ -60,7 +60,7 @@ def _compile_and_dump_programs(
         print(program.as_text())
         print(f"== Cost analysis {program_name} ==")
         print(program.cost_analysis())
-        print(f"== Memeory analysis {program_name} ==")
+        print(f"== Memory analysis {program_name} ==")
         print(program.memory_analysis())
 
         # Serialization does not work for CPU devices:
