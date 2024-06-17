@@ -414,6 +414,7 @@ class GPUGKEJobTest(TestCase):
             cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             cfg.accelerator.instance_type = "gpu-a3-highgpu-8g-256"
             cfg.queue = queue
+            cfg.command = "test-command"
             cfg.env_vars = env_vars if env_vars is not None else {}
             cfg.max_tries = 999
             yield cfg
