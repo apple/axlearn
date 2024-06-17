@@ -269,10 +269,10 @@ class TPUGKEJobTest(TestCase):
     @parameterized.product(
         [
             dict(env={}, reservation=None, expect_reserved=False),
-            # dict(env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False),
-            # dict(env={"BASTION_TIER": "0"}, reservation="test-reservation", expect_reserved=True),
-            # dict(env={"BASTION_TIER": "1"}, reservation="test-reservation", expect_reserved=False),
-            # dict(env={}, reservation="test-reservation", expect_reserved=False),
+            dict(env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False),
+            dict(env={"BASTION_TIER": "0"}, reservation="test-reservation", expect_reserved=True),
+            dict(env={"BASTION_TIER": "1"}, reservation="test-reservation", expect_reserved=False),
+            dict(env={}, reservation="test-reservation", expect_reserved=False),
         ],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         enable_ici_resiliency=[True, False, None],
