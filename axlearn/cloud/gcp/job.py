@@ -435,7 +435,7 @@ class TPUGKEJob(GKEJob):
                     system.gce_machine_type
                 ]
             resources["limits"] = {
-                "memory": f"{machine_memory_in_gigabytes}G"
+                "memory": machine_memory_in_gigabytes
             }
 
         return dict(
