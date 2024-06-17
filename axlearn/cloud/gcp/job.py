@@ -431,15 +431,11 @@ class TPUGKEJob(GKEJob):
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
         # Set request memory by host machine type.
         if system.gce_machine_type in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS:
-            resources["requests"] = {
-                "memory": GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[
+            machine_memory_in_gigabytes = GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[
                     system.gce_machine_type
                 ]
-            }
             resources["limits"] = {
-                "memory": GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS[
-                    system.gce_machine_type
-                ]
+                "memory": f"{machine_memory_in_gigabytes}G"
             }
 
         return dict(
