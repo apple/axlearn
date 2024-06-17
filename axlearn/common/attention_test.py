@@ -19,7 +19,7 @@ import copy
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
 from itertools import combinations
-from typing import List, Optional, Sequence, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Union
 
 import jax
 import numpy as np
@@ -85,6 +85,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_set_config,
 )
+from axlearn.common.decoder import Decoder, TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm, set_bias_recursively
 from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
@@ -2759,7 +2760,154 @@ class TransformerFeedForwardLayerTest(TestCase):
         )
 
 
-class TransformerTest(TestCase):
+class BaseTransformerTest(TestCase):
+    def _test_decoder_with_transformer(self, transformer_cfg: BaseTransformerLayer.Config):
+        prefix_length = jnp.asarray([0, 2])
+        batch_size, num_decodes, seq_len, vocab_size = prefix_length.shape[0], 3, 7, 6
+        bos_id = eos_id = 1
+        pad_token_id = 0
+
+        cfg = Decoder.default_config().set(
+            transformer=transformer_cfg.clone(name="transformer"),
+            dim=transformer_cfg.input_dim,
+            vocab_size=vocab_size,
+            emb=TransformerTextEmbeddings.default_config().set(
+                pos_emb=LearnedPositionalEmbedding.default_config().set(shape=(seq_len,))
+            ),
+            # output_norm=LayerNorm.default_config().set(eps=layer_norm_epsilon),
+            # dropout_rate=dropout_rate,
+            pad_token_id=pad_token_id,
+            eos_token_id=eos_id,
+        )
+
+        decoder: Decoder = cfg.set(name="decoder").instantiate(parent=None)
+        decoder_state = decoder.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        prefix = jax.random.randint(
+            jax.random.PRNGKey(124),
+            shape=[batch_size, seq_len],
+            # Prefix can consist of any tokens, including pad and eos.
+            minval=0,
+            maxval=vocab_size,
+        )
+        # Explicitly fill positions >= prefix_length with pad_token_id.
+        # Note that each batch example may have a different prefix length.
+        # [batch_size, seq_len].
+        prefix_mask = jnp.arange(seq_len) < prefix_length[:, None]
+        prefix = prefix * prefix_mask + pad_token_id * (1 - prefix_mask)
+        # Set last token to a non-pad token, to fix the prefix length.
+        oh_indices = jax.nn.one_hot(prefix_length - 1, seq_len, dtype=prefix.dtype)
+        prefix = prefix * (1 - oh_indices) + bos_id * oh_indices
+        inputs = dict(
+            prefix=prefix,
+            max_sequence_length=seq_len,
+            # cross_attention_data=None,
+            # cross_attention_logit_biases=None,
+            num_decodes=num_decodes,
+        )
+        outputs, _ = F(
+            decoder,
+            inputs=inputs,
+            state=decoder_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            method="sample_decode",
+        )
+        sequences = outputs.sequences
+        self.assertEqual(sequences.shape, (batch_size, num_decodes, seq_len))
+
+    def _test_forward_vs_extend_step(
+        self,
+        cfg: BaseTransformerLayer.Config,
+        *,
+        input_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+        """Tests that {init,prefill}_states + extend_step is equivalent to forward for `cfg`."""
+        if input_kwargs is None:
+            input_kwargs = {}
+        layer: BaseTransformerLayer = cfg.clone(name="layer").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        batch_size, tgt_len = 2, 5
+        rng = np.random.default_rng(seed=123)
+        target = rng.random([batch_size, tgt_len, cfg.input_dim], dtype=np.float32)
+        attention_logit_biases = attention.make_causal_mask(tgt_len)[None, :, :]
+
+        forward_outputs, _ = F(
+            layer,
+            inputs=dict(
+                data=jnp.asarray(target),
+                self_attention_logit_biases=attention_logit_biases,
+                **input_kwargs,
+            ),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+
+        for start_time_step in (-1, 0, 2, tgt_len):
+            if start_time_step > tgt_len:
+                continue
+            print(f"start_time_step={start_time_step}")
+            if start_time_step < 0:
+                cached_states, _ = F(
+                    layer,
+                    inputs=dict(
+                        target_batch_size=batch_size,
+                        target_max_len=tgt_len,
+                        **input_kwargs,
+                    ),
+                    state=layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="init_states",
+                )
+                decoder_output = jnp.zeros_like(target)
+                start_time_step = 0
+            else:
+                (cached_states, prefill_outputs), _ = F(
+                    layer,
+                    inputs=dict(
+                        time_step=jnp.array([start_time_step] * batch_size, dtype=jnp.int32),
+                        data=jnp.asarray(target),
+                        self_attention_logit_biases=attention_logit_biases,
+                        **input_kwargs,
+                    ),
+                    state=layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="prefill_states",
+                )
+                decoder_output = prefill_outputs.data
+            # Transpose to [tgt_len, batch_size, model_dim].
+            decoder_output = jnp.einsum("bsd->sbd", decoder_output)
+            for time_step in range(start_time_step, tgt_len):
+                (cached_states, extend_step_outputs), _ = F(
+                    layer,
+                    inputs=dict(
+                        data=jnp.asarray(target[:, time_step : time_step + 1, :]),
+                        cached_states=cached_states,
+                        self_attention_logit_biases=attention_logit_biases[
+                            :, time_step : time_step + 1, :
+                        ],
+                        **input_kwargs,
+                    ),
+                    state=layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="extend_step",
+                )
+                decoder_output = decoder_output.at[time_step].set(
+                    jnp.squeeze(extend_step_outputs.data, axis=1)
+                )
+            # Transpose to [batch_size, tgt_len, model_dim].
+            decoder_output = jnp.einsum("sbd->bsd", decoder_output)
+            # Prefill + extend_step == forward.
+            assert_allclose(forward_outputs.data, decoder_output)
+
+
+class TransformerTest(BaseTransformerTest):
+
     """Tests TransformerLayer."""
 
     def _compare_against_roberta_attention(
@@ -2877,6 +3025,14 @@ class TransformerTest(TestCase):
         ref = hf_roberta.RobertaLayer(roberta_config)
         self._compare_against_roberta_layer(ref, layer)
 
+    def test_decoding(self):
+        model_dim, num_heads = 6, 2
+        cfg = TransformerLayer.default_config().set(input_dim=model_dim)
+        cfg.self_attention.attention.set(num_heads=num_heads)
+        cfg.feed_forward.hidden_dim = model_dim * 4
+        cfg.vlog = 5
+        self._test_forward_vs_extend_step(cfg)
+
     def test_self_attention_kv_state(self):
         """Tests TransformerLayer with explicit self_attention_kv_state.
 
@@ -2906,7 +3062,7 @@ class TransformerTest(TestCase):
             shapes(test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))),
         )
 
-        batch_size, tgt_len = 2, 6
+        batch_size, tgt_len = 2, 5
         rng = np.random.default_rng(seed=123)
         target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
         base_layer_outputs, _ = F(
@@ -2931,64 +3087,17 @@ class TransformerTest(TestCase):
         assert_allclose(base_layer_outputs.data, test_layer_outputs.data)
 
         # Tests prefill_state and extend_step.
-        for start_time_step in (-1, 0, 2, tgt_len):
-            if start_time_step < 0:
-                cached_states, _ = F(
-                    test_layer,
-                    inputs=dict(
-                        target_batch_size=batch_size,
-                        target_max_len=tgt_len,
-                        # Explicitly pass `self_attention_kv_state`.
-                        self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
-                    ),
-                    state=test_layer_params,
-                    is_training=True,
-                    prng_key=jax.random.PRNGKey(0),
-                    method="init_states",
-                )
-                decoder_output = jnp.zeros_like(target)
-                start_time_step = 0
-            else:
-                (cached_states, prefill_outputs), _ = F(
-                    test_layer,
-                    inputs=dict(
-                        time_step=jnp.array([start_time_step] * batch_size, dtype=jnp.int32),
-                        data=jnp.asarray(target),
-                        # Explicitly pass `self_attention_kv_state`.
-                        self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
-                    ),
-                    state=test_layer_params,
-                    is_training=True,
-                    prng_key=jax.random.PRNGKey(0),
-                    method="prefill_states",
-                )
-                decoder_output = prefill_outputs.data
-            # Transpose to [tgt_len, batch_size, model_dim].
-            decoder_output = jnp.einsum("bsd->sbd", decoder_output)
-            for time_step in range(start_time_step, tgt_len):
-                (cached_states, extend_step_outputs), _ = F(
-                    test_layer,
-                    inputs=dict(
-                        data=jnp.asarray(target[:, time_step : time_step + 1, :]),
-                        cached_states=cached_states,
-                        # Explicitly pass `self_attention_kv_state`.
-                        self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
-                    ),
-                    state=test_layer_params,
-                    is_training=True,
-                    prng_key=jax.random.PRNGKey(0),
-                    method="extend_step",
-                )
-                decoder_output = decoder_output.at[time_step].set(
-                    jnp.squeeze(extend_step_outputs.data, axis=1)
-                )
-            # Transpose to [batch_size, tgt_len, model_dim].
-            decoder_output = jnp.einsum("sbd->bsd", decoder_output)
-            # Prefill + extend_step == forward.
-            assert_allclose(test_layer_outputs.data, decoder_output)
+        self._test_forward_vs_extend_step(
+            test_cfg,
+            input_kwargs=dict(
+                # Explicitly pass `self_attention_kv_state`.
+                self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
+            ),
+        )
 
-    class ParallelTransformerTest(TestCase):
-        """Tests ParallelTransformerLayer."""
+
+class ParallelTransformerTest(TestCase):
+    """Tests ParallelTransformerLayer."""
 
     def test_with_golden_value(self):
         """A test of ParallelTransformerLayer by comparing results to a golden value."""
@@ -3125,7 +3234,7 @@ class NonUniformStack(StackedTransformerLayer):
         )
 
 
-class StackedTransformerTest(TestCase):
+class StackedTransformerTest(BaseTransformerTest):
     """Tests StackedTransformerLayer."""
 
     def _stack_config(
@@ -3671,6 +3780,30 @@ class StackedTransformerTest(TestCase):
             self.assertNestedAllClose(all_outputs[0], all_outputs[1])
             self.assertNestedAllClose(all_gradients[0], all_gradients[1])
             self.assertNestedAllClose(all_updates[0], all_updates[1])
+
+    @parameterized.parameters(StackedTransformerLayer, RepeatedTransformerLayer)
+    def test_stacked_decoding(self, stack_cls):
+        model_dim, num_heads = 6, 2
+        cfg = stack_cls.default_config().set(num_layers=5, input_dim=model_dim)
+        layer_cfg = cfg.layer
+        layer_cfg.self_attention.attention.set(num_heads=num_heads)
+        layer_cfg.feed_forward.hidden_dim = model_dim * 4
+        self._test_forward_vs_extend_step(cfg)
+        self._test_decoder_with_transformer(cfg)
+
+    @parameterized.product(
+        outer_stack_cls=(StackedTransformerLayer, RepeatedTransformerLayer),
+        inner_stack_cls=(StackedTransformerLayer, RepeatedTransformerLayer),
+    )
+    def test_nested_stacked_decoding(self, outer_stack_cls, inner_stack_cls):
+        model_dim, num_heads = 6, 2
+        cfg = outer_stack_cls.default_config().set(num_layers=2, input_dim=model_dim)
+        cfg.layer = inner_stack_cls.default_config().set(num_layers=3)
+        layer_cfg = cfg.layer.layer
+        layer_cfg.self_attention.attention.set(num_heads=num_heads)
+        layer_cfg.feed_forward.hidden_dim = model_dim * 4
+        self._test_forward_vs_extend_step(cfg)
+        self._test_decoder_with_transformer(cfg)
 
     @parameterized.parameters(None, 0.0, 0.2, 1.0)
     def test_stochastic_depth(self, rate):
