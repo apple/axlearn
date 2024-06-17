@@ -604,20 +604,19 @@ class SpmdTrainer(Module):
             shard_shape = value.sharding.shard_shape(value.shape)
             total_sharded_state_bytes += math.prod(shard_shape) * value.dtype.itemsize
 
+        total_sharded_state_gb = total_sharded_state_bytes / 1024**3
         if jax.process_count() > 1:
-            max_sharded_state_bytes = int(
-                jnp.max(multihost_utils.process_allgather(total_sharded_state_bytes))
-            )
+            max_sharded_state_gb = multihost_utils.process_allgather(total_sharded_state_gb).max()
         else:
-            max_sharded_state_bytes = total_sharded_state_bytes
+            max_sharded_state_gb = total_sharded_state_gb
 
         self._step_log(
             "Training state size: %.2f GiB\n"
             "Training state size (partitioned): %.2f GiB\n"
             "Max training state size (partitioned): %.2f GiB",
             total_state_bytes / 1024**3,
-            total_sharded_state_bytes / 1024**3,
-            max_sharded_state_bytes / 1024**3,
+            total_sharded_state_gb,
+            max_sharded_state_gb,
         )
 
     def _prepare_training(self, prng_key: Tensor) -> bool:
