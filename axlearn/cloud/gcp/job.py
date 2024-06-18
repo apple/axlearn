@@ -436,9 +436,9 @@ class TPUGKEJob(GKEJob):
             system.gce_machine_type, None
         )
         if machine_memory_gi is not None:
-            eighty_percent_memory_gi = machine_memory_gi * MEMORY_REQUEST_PERCENTAGE
+            request_memory_gi = machine_memory_gi * MEMORY_REQUEST_PERCENTAGE
             resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
-            resources["requests"] = {"memory": f"{math.floor(eighty_percent_memory_gi)}Gi"}
+            resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
 
         return dict(
             name=cfg.name,
