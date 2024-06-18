@@ -28,7 +28,13 @@ from axlearn.cloud.common.utils import configure_logging, generate_job_name
 from axlearn.cloud.gcp import bundler, job
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh_agent, _get_memory_request_percentage
+from axlearn.cloud.gcp.job import (
+    CPUJob,
+    TPUQRMJob,
+    _get_memory_request_percentage,
+    _kill_ssh_agent,
+    _start_ssh_agent,
+)
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,

@@ -747,6 +747,11 @@ def _prepare_cmd_for_gcloud_ssh(cmd: str) -> str:
     return cmd
 
 
+def _get_memory_request_percentage():
+    """Function to access the memory request percentage safely."""
+    return _MEMORY_REQUEST_PERCENTAGE
+
+
 def docker_command(
     cmd: str,
     *,
@@ -781,8 +786,3 @@ def docker_command(
     )
     logging.debug("Docker run command: %s", cmd)
     return cmd
-
-
-def _get_memory_request_percentage():
-    """Function to access the memory request percentage safely."""
-    return _MEMORY_REQUEST_PERCENTAGE
