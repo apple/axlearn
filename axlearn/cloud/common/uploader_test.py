@@ -44,3 +44,9 @@ class UploaderTest(parameterized.TestCase):
             up()
             self.assertEqual(mock_proc.start.call_count, 2)
             self.assertIsNotNone(up._upload_proc)
+
+            # Cleanup the upload_proc
+            up.cleanup()
+            self.assertEqual(mock_proc.terminate.call_count, 1)
+            self.assertEqual(mock_proc.join.call_count, 4)
+            self.assertIsNone(up._upload_proc)

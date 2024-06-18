@@ -95,3 +95,13 @@ class Uploader(Configurable):
             logging.info("Upload process started.")
         else:
             logging.info("Upload process is still running.")
+
+    def cleanup(self):
+        """Terminate the upload process."""
+        logging.info("Cleanup upload process.")
+        if self._upload_proc is not None:
+            logging.info("Terminating upload process.")
+            self._upload_proc.terminate()
+            self._upload_proc.join()  # make sure uploading finished
+            self._upload_proc = None
+            logging.info("Upload process terminated.")

@@ -1055,6 +1055,14 @@ class Bastion(Configurable):
             shutil.rmtree(_JOB_DIR)
         os.makedirs(_LOG_DIR, exist_ok=True)
         os.makedirs(_JOB_DIR, exist_ok=True)
+        try:
+            subprocess.run(
+                ["gcloud", "config", "set", "core/disable_file_logging", "True"],
+                check=False,
+            )
+            logging.info("Successfully disable file logging.")
+        except subprocess.CalledProcessError as e:
+            logging.warning("Error disable file logging: %s", e.stderr.decode())
         while True:
             start = time.time()
             self._uploader()
@@ -1083,6 +1091,7 @@ class Bastion(Configurable):
                 except Exception as e:  # pylint: disable=broad-except
                     logging.warning("Fail to kill a job with error: %s", e)
             self._active_jobs = {}
+            self._uploader.cleanup()
             raise  # Re-raise.
 
 
