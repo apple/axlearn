@@ -29,7 +29,6 @@ from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
-    MEMORY_REQUEST_PERCENTAGE,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
 from axlearn.cloud.gcp.tpu import (
@@ -47,6 +46,9 @@ from axlearn.cloud.gcp.utils import (
 )
 from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
 from axlearn.common.utils import Nested
+
+# Set 80% of the max value as the requested memory.
+_MEMORY_REQUEST_PERCENTAGE = 0.8
 
 
 class GCPJob(Job):
@@ -436,7 +438,7 @@ class TPUGKEJob(GKEJob):
             system.gce_machine_type, None
         )
         if machine_memory_gi is not None:
-            request_memory_gi = machine_memory_gi * MEMORY_REQUEST_PERCENTAGE
+            request_memory_gi = machine_memory_gi * _MEMORY_REQUEST_PERCENTAGE
             resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
             resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
 

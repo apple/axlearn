@@ -32,7 +32,6 @@ from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
-    MEMORY_REQUEST_PERCENTAGE,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
@@ -335,7 +334,7 @@ class TPUGKEJobTest(TestCase):
                 self.assertEqual(resources["limits"]["memory"], f"{memory_in_gi}Gi")
                 self.assertEqual(
                     resources["requests"]["memory"],
-                    f"{math.floor(memory_in_gi * MEMORY_REQUEST_PERCENTAGE)}Gi",
+                    f"{math.floor(memory_in_gi * 0.8)}Gi",
                 )
             self.assertIn("google.com/tpu", resources["limits"])
 
