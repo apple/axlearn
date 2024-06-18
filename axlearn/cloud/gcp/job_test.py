@@ -30,7 +30,8 @@ from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh_agent
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
-    GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS,
+    GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
+    MEMORY_EIGHTY_PERCENT_MAX,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
@@ -326,12 +327,14 @@ class TPUGKEJobTest(TestCase):
             self.assertIn("limits", resources)
             tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
             tpu_characteristics = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
-            if (
-                tpu_characteristics.gce_machine_type
-                in GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS
-            ):
-                self.assertEqual(resources["limits"]["memory"], "407G")
-                self.assertEqual(resources["requests"]["memory"], "325.6G")
+            memory_in_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
+                tpu_characteristics.gce_machine_type, None
+            )
+            if memory_in_gi is not None:
+                self.assertEqual(resources["limits"]["memory"], f"{memory_in_gi}Gi")
+                self.assertEqual(
+                    resources["requests"]["memory"], f"{memory_in_gi * MEMORY_EIGHTY_PERCENT_MAX}Gi"
+                )
             self.assertIn("google.com/tpu", resources["limits"])
 
             container_env = container["env"]

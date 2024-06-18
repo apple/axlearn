@@ -7,6 +7,7 @@ Note that these utilities do not handle resource management.
 
 import atexit
 import logging
+import math
 import os
 import pathlib
 import re
@@ -27,7 +28,8 @@ from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.system_characteristics import (
-    GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS,
+    GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
+    MEMORY_EIGHTY_PERCENT_MAX,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
 from axlearn.cloud.gcp.tpu import (
@@ -430,12 +432,13 @@ class TPUGKEJob(GKEJob):
 
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
         # Set request memory by host machine type.
-        machine_memory_gb = GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS.get(
+        machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
             system.gce_machine_type, None
         )
-        if machine_memory_gb is not None:
-            resources["limits"]["memory"] = f"{machine_memory_gb}G"
-            resources["requests"] = {"memory": f"{round(machine_memory_gb * 0.8, 2)}G"}
+        if machine_memory_gi is not None:
+            eighty_percent_memory_gi = machine_memory_gi * MEMORY_EIGHTY_PERCENT_MAX
+            resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
+            resources["requests"] = {"memory": f"{math.floor(eighty_percent_memory_gi)}Gi"}
 
         return dict(
             name=cfg.name,
