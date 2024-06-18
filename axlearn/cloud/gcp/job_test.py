@@ -355,7 +355,7 @@ class TPUGKEJobTest(TestCase):
                 self.assertEqual(
                     expected,
                     container_env.get("ENABLE_ICI_RESILIENCY"),
-                )df
+                )
             else:
                 self.assertNotIn("cloud.google.com/gke-tpu-ici-resiliency", node_selector)
                 self.assertNotIn("ENABLE_ICI_RESILIENCY", container_env)
