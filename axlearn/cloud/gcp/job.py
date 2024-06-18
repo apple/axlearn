@@ -48,7 +48,7 @@ from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
 from axlearn.common.utils import Nested
 
 # Set 80% of the max value as the requested memory.
-_MEMORY_REQUEST_PERCENTAGE = 0.7
+_MEMORY_REQUEST_PERCENTAGE = 0.8
 
 
 class GCPJob(Job):
