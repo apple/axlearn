@@ -48,7 +48,7 @@ from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
 from axlearn.common.utils import Nested
 
 # Set 80% of the max value as the requested memory.
-_MEMORY_REQUEST_PERCENTAGE = 0.8
+_MEMORY_REQUEST_PERCENTAGE = 0.7
 
 
 class GCPJob(Job):
@@ -781,3 +781,8 @@ def docker_command(
     )
     logging.debug("Docker run command: %s", cmd)
     return cmd
+
+
+def _get_memory_request_percentage():
+    """Function to access the memory request percentage safely."""
+    return _MEMORY_REQUEST_PERCENTAGE
