@@ -29,7 +29,7 @@ from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
-    MEMORY_EIGHTY_PERCENT_MAX,
+    MEMORY_REQUEST_PERCENTAGE,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
 from axlearn.cloud.gcp.tpu import (
@@ -436,7 +436,7 @@ class TPUGKEJob(GKEJob):
             system.gce_machine_type, None
         )
         if machine_memory_gi is not None:
-            eighty_percent_memory_gi = machine_memory_gi * MEMORY_EIGHTY_PERCENT_MAX
+            eighty_percent_memory_gi = machine_memory_gi * MEMORY_REQUEST_PERCENTAGE
             resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
             resources["requests"] = {"memory": f"{math.floor(eighty_percent_memory_gi)}Gi"}
 

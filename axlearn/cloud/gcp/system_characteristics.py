@@ -454,7 +454,7 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
 }
 
 # Set 80% of the max value as the requested memory
-MEMORY_EIGHTY_PERCENT_MAX = 0.8
+MEMORY_REQUEST_PERCENTAGE = 0.8
 
 # Reference doc https://cloud.google.com/tpu/docs/tpus-in-gke.
 GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS = {
