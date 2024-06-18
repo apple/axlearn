@@ -26,7 +26,10 @@ from axlearn.cloud.common.utils import parse_kv_flags, subprocess_run
 from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
-from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
+from axlearn.cloud.gcp.system_characteristics import (
+    GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS,
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+)
 from axlearn.cloud.gcp.tpu import (
     get_queued_tpu_node,
     get_tpu_node,
@@ -425,6 +428,15 @@ class TPUGKEJob(GKEJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
+        resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
+        # Set request memory by host machine type.
+        machine_memory_gb = GCE_MACHINE_TYPE_TO_REQUEST_MEMORY_CHARACTERISTICS.get(
+            system.gce_machine_type, None
+        )
+        if machine_memory_gb is not None:
+            resources["limits"]["memory"] = f"{machine_memory_gb}G"
+            resources["requests"] = {"memory": f"{round(machine_memory_gb * 0.8, 2)}G"}
+
         return dict(
             name=cfg.name,
             image=self._bundler.id(cfg.name),
@@ -438,7 +450,7 @@ class TPUGKEJob(GKEJob):
             securityContext=dict(privileged=True),
             # TODO(markblee): Improve SIGTERM behavior for command.
             command=["bash", "-c", cfg.command],
-            resources=dict(limits={"google.com/tpu": system.chips_per_vm}),
+            resources=resources,
             # Env var values should always be strings.
             env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
             volumeMounts=volume_mounts,
