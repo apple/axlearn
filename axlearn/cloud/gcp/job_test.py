@@ -29,9 +29,9 @@ from axlearn.cloud.gcp import bundler, job
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import (
+    _MEMORY_REQUEST_PERCENTAGE,
     CPUJob,
     TPUQRMJob,
-    _get_memory_request_percentage,
     _kill_ssh_agent,
     _start_ssh_agent,
 )
@@ -340,7 +340,7 @@ class TPUGKEJobTest(TestCase):
                 self.assertEqual(resources["limits"]["memory"], f"{memory_in_gi}Gi")
                 self.assertEqual(
                     resources["requests"]["memory"],
-                    f"{math.floor(memory_in_gi * _get_memory_request_percentage())}Gi",
+                    f"{math.floor(memory_in_gi * _MEMORY_REQUEST_PERCENTAGE)}Gi",
                 )
             self.assertIn("google.com/tpu", resources["limits"])
 
