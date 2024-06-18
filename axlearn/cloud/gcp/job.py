@@ -705,7 +705,7 @@ class GPUGKEJob(GKEJob):
         instance_type = cfg.accelerator.instance_type
         if not instance_type.startswith("gpu-a3-highgpu"):
             raise NotImplementedError(
-                f"The instance type {instance_type} is not supported on GKE with GPU."
+                f"The instance type {instance_type} is not supported on GKE with GPU. "
                 "Only gpu-a3-highgpu-8g is supported."
             )
 
