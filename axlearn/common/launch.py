@@ -45,7 +45,6 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 # tpu_library_init_fns.inc:98] TpuEmbeddingEngine_ExecutePartitioner not available in this library.
 import jax  # jax must be imported before tensorflow!
 
-print(f"env={os.environ}", file=sys.stderr)
 print(f"jax version={jax.__version__}", file=sys.stderr)
 if instance_type != "none":
     print(f"instance_type={instance_type} num_slices={num_tpu_slices}", file=sys.stderr)
