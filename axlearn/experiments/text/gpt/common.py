@@ -29,9 +29,7 @@ from axlearn.common import (
     state_builder,
 )
 from axlearn.common.attention import (
-    AttentionLogitBiasLayer,
     BaseQKVLinear,
-    CausalAttentionLogitBiasLayer,
     FusedQKVLinear,
     MultiheadAttention,
     RepeatedTransformerLayer,
@@ -186,7 +184,6 @@ def model_config(
     dropout_rate: float = 0.0,
     stack_cfg: causal_lm.TransformerStackConfig = RepeatedTransformerLayer.default_config(),
     emb_cfg: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config(),
-    attention_mask: AttentionLogitBiasLayer.Config = CausalAttentionLogitBiasLayer.default_config(),
     attention_cfg: MultiheadAttention.Config = MultiheadAttention.default_config(),
     attention_qkv_linear: Optional[BaseQKVLinear.Config] = FusedQKVLinear.default_config(),
     z_loss_scale: float = 0.0,
@@ -209,7 +206,6 @@ def model_config(
             Defaults to 0.0 (i.e. no dropout).
         stack_cfg: The transformer stack config.
         emb_cfg: The Transformer embedding layer config.
-        attention_mask: The AttentionLogitBiasLayer config.
         attention_qkv_linear: The attention QKV linear layer.
         z_loss_scale: The scalar weight for the z-loss to encourages the cross-entropy loss
             normalizer to be well-behaved.
@@ -231,6 +227,7 @@ def model_config(
     # Attention.
     if attention_cfg is not None:
         layer_cfg.self_attention.attention = attention_cfg
+    layer_cfg.self_attention.attention.causal = True
     layer_cfg.self_attention.attention.num_heads = num_heads
     if attention_qkv_linear is not None:
         layer_cfg.self_attention.attention.input_linear = attention_qkv_linear
@@ -249,7 +246,7 @@ def model_config(
     transformer_cls = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(
         transformer=transformer_cls,
-        attention_mask=attention_mask,
+        attention_mask=None,
         dim=hidden_dim,
         vocab_size=vocab_size,
         emb=emb_cfg,

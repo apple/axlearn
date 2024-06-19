@@ -118,7 +118,7 @@ mesh_shape[4]: 1
 model.batch_axis_names[0]: 'data'
 model.batch_axis_names[1]: 'expert'
 model.batch_axis_names[2]: 'fsdp'
-model.decoder.attention_mask.klass: 'axlearn.common.attention.CausalAttentionLogitBiasLayer'
+model.decoder.attention_mask: None
 model.decoder.dim: 8
 model.decoder.dropout_rate: 0.0
 model.decoder.emb.dropout.klass: 'axlearn.common.layers.Dropout'
@@ -188,6 +188,7 @@ model.decoder.transformer.layer.remat_spec['policy'].names_which_can_be_saved[1]
 model.decoder.transformer.layer.remat_spec['policy'].names_which_can_be_saved[2]: 'MultiheadAttention.v_proj'
 model.decoder.transformer.layer.remat_spec['policy'].names_which_can_be_saved[3]: 'MultiheadAttention.context'
 model.decoder.transformer.layer.remat_spec['policy'].names_which_can_be_saved[4]: 'MultiheadAttention.o_proj'
+model.decoder.transformer.layer.self_attention.attention.causal: True
 model.decoder.transformer.layer.self_attention.attention.dropout.klass: 'axlearn.common.layers.Dropout'
 model.decoder.transformer.layer.self_attention.attention.input_linear.cache_dtype: 'jax.numpy.bfloat16'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.cache_dtype: 'jax.numpy.bfloat16'

@@ -14,7 +14,6 @@ from typing import Any, Dict, Optional, Union
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
-    CausalAttentionLogitBiasLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
     GroupedQueryAttention,
@@ -269,7 +268,6 @@ def model_config(
         normalization=RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),
         dropout_rate=dropout_rate,
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
-        attention_mask=None if flash_attention else CausalAttentionLogitBiasLayer.default_config(),
         attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
     )
