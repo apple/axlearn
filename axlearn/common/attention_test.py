@@ -2504,8 +2504,8 @@ def oracle_xl_attention_logits(
 class TransformerXLTest(TestCase):
     """Tests TransformerXL."""
 
-    def test_rel_pos_to_abs_pos(self):
-        seq_len = 5
+    @parameterized.parameters(5, 2, 1)
+    def test_rel_pos_to_abs_pos(self, seq_len):
         # rel_offset[:, i] = i - (seq_len - 1), i.e., in range [-seq_len + 1, seq_len - 1].
         rel_offset = jnp.tile(jnp.arange(-seq_len + 1, seq_len)[None, :], [seq_len, 1])
         # abs_pos[i, j] = j - i.

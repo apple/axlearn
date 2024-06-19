@@ -1963,6 +1963,7 @@ def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
     Args:
         x: a Tensor of shape [T, 2*T - 1], where x[i, j] represents the bias between query[i] and
             absolute position k = i + j - (T - 1), if 0 <= k < T, otherwise the value is not used.
+            T >= 1.
 
     Returns:
         y: a Tensor of shape [T, T], s.t. y[i, k] = x[i, j] where k = i + j - (T - 1),
@@ -1970,14 +1971,16 @@ def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
     """
     t, offset_length = x.shape
     assert offset_length == 2 * t - 1
+    if t == 1:
+        return x
     # [t * (2t - 1)].
     x = x.reshape([-1])
     # [t * (2t - 2)].
     x = x[t - 1 : -1]
     # [t, 2t - 2].
     x = x.reshape([t, -1])
-    # [t, t].
-    x = x[:, : -(t - 2)]
+    # [t, t]. When t = 2, do not trim.
+    x = x[:, : -(t - 2) or None]
     return x
 
 
