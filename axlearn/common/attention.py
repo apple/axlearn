@@ -1556,6 +1556,9 @@ class MultiheadAttention(BaseLayer):
         key_scale: BaseScaleQK.Config = ScaleKey.default_config()
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = None
+        # If True, applies causal masking. If `attention_logit_biases` is given, causal masking
+        # will be applied on top of the biases. `key` and `value` must be None.
+        causal: Optional[bool] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1638,12 +1641,15 @@ class MultiheadAttention(BaseLayer):
             ValueError: If key & value are an invalid combination.
             ValueError: If `mode` is unsupported.
         """
+        cfg = self.config
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
                 "key and value must be both None or both set, "
                 f"key:{type(key)}, value:{type(value)}"
             )
+        if cfg.causal and (key is not None or value is not None):
+            raise ValueError("key and value are not expected when causal=True")
         if kv_state is not None:
             if key is not None or value is not None:
                 raise ValueError("kv_state should not be specified together with key/value")
@@ -1711,9 +1717,15 @@ class MultiheadAttention(BaseLayer):
             The context of shape [batch_size, target_length, num_heads, per_head_dim],
             and probs of shape [batch, num_heads, target_length, source_length].
         """
+        cfg = self.config
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
+        if cfg.causal:
+            seq_len = q_proj.shape[1]
+            attention_logit_biases = apply_attention_logit_biases(
+                attention_logit_biases, make_causal_mask(seq_len)
+            )
         probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases)
         probs = self.dropout(probs)
         context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
