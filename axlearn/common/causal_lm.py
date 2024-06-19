@@ -417,6 +417,7 @@ def gpt_decoder_config(
     layer_cfg.feed_forward.hidden_dim = 4 * hidden_dim
     # Self attention transformer layer config.
     layer_cfg.self_attention.norm = LayerNorm.default_config().set(eps=layer_norm_epsilon)
+    layer_cfg.self_attention.attention.causal = True
     layer_cfg.self_attention.attention.num_heads = num_heads
     # Use residual initialization for output linear layer
     layer_cfg.self_attention.attention.output_linear.param_init = residual_initializer_cfg(
@@ -436,5 +437,6 @@ def gpt_decoder_config(
         ),
         output_norm=LayerNorm.default_config().set(eps=layer_norm_epsilon),
         dropout_rate=dropout_rate,
+        attention_mask=None,
     )
     return decoder
