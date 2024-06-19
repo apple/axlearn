@@ -13,7 +13,7 @@
 
 Reference: https://arxiv.org/abs/2405.15052.
 
-Dimensions:
+Dimensions used in the implementations:
     O/o: outer batch size
     G/g: number of groups
     S/s: per group size
