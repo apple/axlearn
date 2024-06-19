@@ -340,6 +340,7 @@ def create_queued_tpu(
                             name,
                             tpu_type=tpu_type,
                             bundler_type=bundler_type,
+                            reserved=reserved,
                             metadata=metadata,
                             service_account=service_account,
                         ),
@@ -539,6 +540,7 @@ def _tpu_body(
     *,
     tpu_type: str,
     bundler_type: str,
+    reserved: Optional[bool] = None,
     metadata: Optional[Dict[str, str]] = None,
     service_account: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -567,9 +569,21 @@ def _tpu_body(
             "enable_ici_resiliency": metadata.pop("enable_ici_resiliency"),
         }
 
+    vm_tier_labels = {}
+    # Create labels for vm tier that can be used to group tpu metrics.
+    # TPUs are created via QRM. In QRM, vm tier can be one of guaranteed, spot, or, bestEffort.
+    # guaranteeded is mapped to label value reserved. bestEffort is implemented to create spot instance. 
+    # Hence, both spot and bestEffort are mapped to lable value spot. 
+    # See [`_qrm_body()`](#L651) for details on the tiers. 
+    if reserved or gcp_settings("reserved_tpu", default=False):
+        vm_tier_labels["vmtier"] = "reserved"
+    else:
+        vm_tier_labels["vmtier"] = "spot"
+        
     body.update(
         {
             "acceleratorType": tpu_type,
+            "labels": vm_tier_labels,
             "metadata": {
                 "bundle_bucket": gcp_settings("ttl_bucket"),
                 "enable-oslogin": "false",
@@ -639,6 +653,7 @@ def _qrm_body(
         body["guaranteed"] = {"reserved": True}
     else:
         # https://cloud.google.com/tpu/docs/queued-resources#request_a_preemptible_queued_resource
+        # bestEffort in QRM is implemented to create spot instance
         body["best_effort"] = {}
     return body
 
