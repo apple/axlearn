@@ -1724,7 +1724,8 @@ class MultiheadAttention(BaseLayer):
         if cfg.causal:
             seq_len = q_proj.shape[1]
             attention_logit_biases = apply_attention_logit_biases(
-                attention_logit_biases, make_causal_mask(seq_len)
+                make_causal_mask(seq_len).astype(logits.dtype),
+                attention_logit_biases,
             )
         probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases)
         probs = self.dropout(probs)
