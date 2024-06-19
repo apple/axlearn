@@ -9,9 +9,18 @@
 # google/praxis:
 # Copyright 2022 The Pax Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
-"""Mixture of experts implementations.
+"""Mixture-of-Experts implementations.
 
 Reference: https://arxiv.org/abs/2405.15052.
+
+Dimensions in used the implementations:
+    O/o: outer batch size
+    G/g: number of groups
+    S/s: per group size
+    E/e: number of experts
+    C/c: capacity per expert
+    M/m: input dim, same as output dim
+    H/h: hidden dim
 """
 from typing import Dict, NamedTuple, Optional, Tuple, Union
 
@@ -144,18 +153,7 @@ def _cap_logits(logits: Tensor, gating_logit_cap: float) -> Tensor:
 
 
 class BaseGating(BaseLayer):
-    """An abstract class to define the common interface of gating layers.
-
-    Dimensions:
-        O: outer batch size
-        G: number of groups
-        S: per group size
-        E: number of experts
-        C: capacity per expert
-        M: model_dim (same as input_dim and output_dim as in FF layer)
-        B: original batch dim
-        L: original seq len dim
-    """
+    """An abstract class to define the common interface of gating layers."""
 
     @config_class
     class Config(BaseLayer.Config):
@@ -164,9 +162,9 @@ class BaseGating(BaseLayer):
         num_experts: Required[int] = REQUIRED
 
     class Output(NamedTuple):
-        # A OG`SEC tensor for combining expert outputs.
+        # A OGSEC tensor for combining expert outputs.
         combine_tensor: Tensor
-        # A OG`SEC tensor, scattering/dispatching inputs to experts.
+        # A OGSEC tensor, scattering/dispatching inputs to experts.
         dispatch_tensor: Tensor
         # Load balance loss, for equalizing the expert assignment ratios.
         load_balance_loss: Optional[Tensor] = None
@@ -177,7 +175,7 @@ class BaseGating(BaseLayer):
         """Forward pass of gating.
 
         Args:
-            logits: a tensor of shape OG`SE.
+            logits: a tensor of shape OGSE.
 
         Returns:
             BaseGating.Output.
@@ -287,7 +285,7 @@ class Top2Gating(BaseGating):
         mask_1 *= jnp.less(position_in_expert_1, expert_capacity).astype(mask_1.dtype)
         position_in_expert_1 = jnp.einsum("ogse,ogse->ogs", position_in_expert_1, mask_1)
 
-        # How many examples in this sequence go to this expert?
+        # Compute the number of examples go to each expert.
         mask_1_count = jnp.einsum("ogse->oge", mask_1)
         # [batch, group] - mostly ones, but zeros where something didn't fit.
         mask_1_flat = jnp.sum(mask_1, axis=-1, dtype=cfg.mask_dtype)
@@ -405,13 +403,6 @@ class TransformerFeedForwardMoE(BaseLayer):
         router_z_loss_weight: float = 0.0
 
         # SPMD partition params used to represent the MoE layer dimensions.
-        # O - outer batch dim
-        # M - input dim, same as output dim
-        # E - experts dim
-        # G - groups dim
-        # C - experts capacity dim
-        # H - hidden dim
-        # S - sequence dim
         dim_to_mesh_axis_map: Dict[str, Optional[PartitionSpec]] = {}
 
     @classmethod
