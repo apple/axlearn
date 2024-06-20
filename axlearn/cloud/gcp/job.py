@@ -7,6 +7,7 @@ Note that these utilities do not handle resource management.
 
 import atexit
 import logging
+import math
 import os
 import pathlib
 import re
@@ -26,7 +27,10 @@ from axlearn.cloud.common.utils import parse_kv_flags, subprocess_run
 from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
-from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
+from axlearn.cloud.gcp.system_characteristics import (
+    GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+)
 from axlearn.cloud.gcp.tpu import (
     get_queued_tpu_node,
     get_tpu_node,
@@ -42,6 +46,9 @@ from axlearn.cloud.gcp.utils import (
 )
 from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
 from axlearn.common.utils import Nested
+
+# Set 80% of the max value as the requested memory.
+_MEMORY_REQUEST_PERCENTAGE = 0.8
 
 
 class GCPJob(Job):
@@ -425,6 +432,16 @@ class TPUGKEJob(GKEJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
+        resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
+        # Set request memory by host machine type.
+        machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
+            system.gce_machine_type, None
+        )
+        if machine_memory_gi is not None:
+            request_memory_gi = machine_memory_gi * _MEMORY_REQUEST_PERCENTAGE
+            resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
+            resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
+
         return dict(
             name=cfg.name,
             image=self._bundler.id(cfg.name),
@@ -438,7 +455,7 @@ class TPUGKEJob(GKEJob):
             securityContext=dict(privileged=True),
             # TODO(markblee): Improve SIGTERM behavior for command.
             command=["bash", "-c", cfg.command],
-            resources=dict(limits={"google.com/tpu": system.chips_per_vm}),
+            resources=resources,
             # Env var values should always be strings.
             env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
             volumeMounts=volume_mounts,
