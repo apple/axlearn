@@ -7,15 +7,15 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests quantization layers and metrics."""
+
 # pylint: disable=no-self-use,wrong-import-position,missing-module-docstring
+import os
 from typing import List
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import torch
 from absl.testing import absltest, parameterized
-from fairseq.modules import GumbelVectorQuantizer as fairseq_gumbel_vq
 
 # pylint: disable-next=protected-access
 from jax._src import prng as prng_interal
@@ -36,6 +36,8 @@ from axlearn.common.quantizer import (
 )
 from axlearn.common.test_utils import TestCase, assert_allclose, prng_impl
 from axlearn.common.utils import Tensor, shapes
+
+testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
 
 _CODE_BOOK = jnp.array(
     [
@@ -748,52 +750,20 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
             )
             .instantiate(parent=None)
         )
-        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
         batch_size, seq_len = 2, 4
-        np.random.seed(2021)
-        inputs = np.random.rand(batch_size, seq_len, input_dim).astype(np.float32)
-        paddings = np.zeros([batch_size, seq_len])
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_forward_against_fairseq.npy"),
+            allow_pickle=True,
+        ).item()
+        ref_outputs = testcase["outputs"]
+        paddings = testcase["paddings"]
         outputs, output_collections = F(
             layer,
-            inputs=dict(inputs=inputs, paddings=paddings),
+            inputs=dict(inputs=testcase["inputs"], paddings=paddings),
             is_training=False,
             prng_key=jax.random.PRNGKey(1),
-            state=layer_params,
+            state=testcase["params"],
         )
-        ref_layer = fairseq_gumbel_vq(
-            dim=input_dim,
-            num_vars=vocab_size,
-            temp=(constant_temperature, 0.5, 0.999995),
-            groups=num_groups,
-            combine_groups=False,
-            vq_dim=dim_from_all_codebooks,
-            time_first=True,
-            activation=None,
-        )
-        for name, param in ref_layer.named_parameters():
-            # Set ref_layer weight matrices.
-            if name == "weight_proj.weight":
-                # [input_dim, num_codebooks, vocab_size] -> [num_codebooks * vocab_size, input_dim].
-                weight_proj = jnp.transpose(
-                    jnp.reshape(
-                        layer_params["input_proj"]["weight"], [input_dim, num_groups * vocab_size]
-                    ),
-                    [1, 0],
-                )
-                weight_proj = np.asarray(weight_proj)
-                param.data = torch.nn.parameter.Parameter(torch.tensor(weight_proj))
-            if name == "vars":
-                # [vocab_size, num_codebooks, dim] -> [num_codebooks, vocab_size, dim]
-                # -> [1, vocab_size * num_groups, dim]
-                codebook = jnp.reshape(
-                    jnp.transpose(layer_params["codebook"], [1, 0, 2]),
-                    [1, vocab_size * num_groups, codebook_dim],
-                )
-                codebook = np.asarray(codebook)
-                param.data = torch.nn.parameter.Parameter(torch.tensor(codebook))
-
-        ref_layer.eval()
-        ref_outputs = ref_layer(torch.tensor(inputs), produce_targets=True)
         assert_allclose(
             ref_outputs["code_perplexity"],
             output_collections.summaries["codebook/pplx"].mean * num_groups,
