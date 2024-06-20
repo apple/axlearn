@@ -114,6 +114,10 @@ dataflow = [
 gpu = [
     "triton==2.1.0",
 ]
+# Open API inference.
+open_api = [
+    "openai==1.35.1",
+]
 
 [tool.flit.module]
 # This defines the import name. https://flit.pypa.io/en/stable/pyproject_toml.html#module-section
