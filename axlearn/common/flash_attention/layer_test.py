@@ -26,22 +26,25 @@ from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 
 
-def _fake_inputs(*, batch: int, num_heads: int, seq_len: int, hidden_dim: int):
+def _fake_inputs(*, batch: int, num_heads: int, seq_len: int, hidden_dim: int, causal: bool):
     query = jax.random.normal(
         jax.random.PRNGKey(0),
         [batch, seq_len, hidden_dim],
         dtype=jnp.bfloat16,
     )
-    key = jax.random.normal(
-        jax.random.PRNGKey(1),
-        [batch, seq_len, hidden_dim],
-        dtype=jnp.bfloat16,
-    )
-    value = jax.random.normal(
-        jax.random.PRNGKey(2),
-        [batch, seq_len, hidden_dim],
-        dtype=jnp.bfloat16,
-    )
+    if causal:
+        key = value = None
+    else:
+        key = jax.random.normal(
+            jax.random.PRNGKey(1),
+            [batch, seq_len, hidden_dim],
+            dtype=jnp.bfloat16,
+        )
+        value = jax.random.normal(
+            jax.random.PRNGKey(2),
+            [batch, seq_len, hidden_dim],
+            dtype=jnp.bfloat16,
+        )
     bias = jax.random.normal(
         jax.random.PRNGKey(3),
         [batch, num_heads, seq_len, seq_len],
@@ -207,6 +210,7 @@ class TestFlashAttention(TestCase):
                 num_heads=num_heads,
                 seq_len=seq_len,
                 hidden_dim=hidden_dim,
+                causal=causal,
             )
             ref_inputs = inputs
             if causal:
@@ -299,6 +303,7 @@ class TestFlashAttention(TestCase):
                 num_heads=num_heads,
                 seq_len=seq_len,
                 hidden_dim=hidden_dim,
+                causal=causal,
             )
             ref_inputs = inputs
             if causal:

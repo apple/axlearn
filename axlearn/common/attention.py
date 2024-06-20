@@ -1682,6 +1682,27 @@ class MultiheadAttention(BaseLayer):
         if attention_logit_biases is not None and attention_logit_biases.ndim == 3:
             # [batch, 1, target_length, source_length].
             attention_logit_biases = attention_logit_biases[:, None, :, :]
+        if cfg.causal:
+            if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
+                seq_len = q_proj.shape[1]
+                causal_mask = make_causal_mask(seq_len)[None, None, :, :]
+            elif mode == ForwardMode.EXTEND_STEP:
+                # [batch], representing query time_step.
+                time_step = cached_states["i_proj"]["time_step"]
+                kv_len = k_proj.shape[1]
+                indexes = jnp.arange(kv_len)
+                # [batch, 1, 1, kv_len].
+                # causal_mask[b, :, :, kv_pos] = 0 if kv_pos <= time_step[b] else NEG_INF.
+                causal_mask = (
+                    jax.lax.lt(time_step[:, None, None, None], indexes[None, None, None, :])
+                    * NEG_INF
+                )
+            else:
+                raise ValueError(f"Unrecognized mode {mode}.")
+            attention_logit_biases = apply_attention_logit_biases(
+                causal_mask.astype(q_proj.dtype),
+                attention_logit_biases,
+            )
         context, probs = self._compute_attention(
             q_proj=q_proj,
             k_proj=k_proj,
@@ -1717,16 +1738,9 @@ class MultiheadAttention(BaseLayer):
             The context of shape [batch_size, target_length, num_heads, per_head_dim],
             and probs of shape [batch, num_heads, target_length, source_length].
         """
-        cfg = self.config
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
-        if cfg.causal:
-            seq_len = q_proj.shape[1]
-            attention_logit_biases = apply_attention_logit_biases(
-                make_causal_mask(seq_len).astype(logits.dtype),
-                attention_logit_biases,
-            )
         probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases)
         probs = self.dropout(probs)
         context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)

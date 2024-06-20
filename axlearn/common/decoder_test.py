@@ -42,7 +42,7 @@ def _enable_flash_attention(cfg: Decoder.Config) -> Decoder.Config:
     # Replace layer_cfg.self_attention.attention with a FlashAttention.Config.
     layer_cfg: TransformerLayer.Config = cfg.transformer.layer
     orig_atten: MultiheadAttention.Config = layer_cfg.self_attention.attention
-    kvs = {k: v for k, v in orig_atten.items() if k != "klass"}
+    kvs = {k: v for k, v in orig_atten.items() if k not in ("klass", "causal")}
     logging.info("atten kvs=%s", kvs)
     flash_atten = FlashAttention.default_config().set(causal=True, **kvs)
     layer_cfg.self_attention.attention = flash_atten
@@ -220,6 +220,7 @@ class TestDecoder(TestCase):
                     prng_key=jax.random.PRNGKey(2),
                     method="beam_search_decode",
                 )
+        np.testing.assert_array_equal(flash_decoder_outputs.sequences, decoder_outputs.sequences)
         self.assertTrue(jnp.all(flash_decoder_outputs.sequences == decoder_outputs.sequences))
 
     @parameterized.parameters(None, 0.0, 0.2)
