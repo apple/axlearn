@@ -656,10 +656,10 @@ class CheckpointerTest(test_utils.TestCase):
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
     @parameterized.parameters(None, 1)
-    def test_max_concurrency(self, max_concurrency: Optional[int]):
-        cfg = TensorStoreStateStorage.default_config().set(max_concurrency=max_concurrency)
+    def test_max_concurrent_gb(self, max_concurrent_gb: Optional[int]):
+        cfg = TensorStoreStateStorage.default_config().set(max_concurrent_gb=max_concurrent_gb)
         storage = cfg.instantiate()
-        if max_concurrency is not None:
+        if max_concurrent_gb is not None:
             self.assertIsInstance(storage._manager, BoundedAsyncCheckpointManager)
         else:
             self.assertIsInstance(

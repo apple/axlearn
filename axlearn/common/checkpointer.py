@@ -308,19 +308,20 @@ class TensorStoreStateStorage(StateStorage):
 
         Attributes:
             timeout_secs: Barrier timeout in seconds.
-            max_concurrency: Max concurrent shards to write.
+            max_concurrent_gb: Max concurrent shards (in GB) to write.
         """
 
         timeout_secs: float = 3600
-        max_concurrency: Optional[int] = None
+        max_concurrent_gb: Optional[int] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
+
         # TODO(markblee): Consider making BoundedAsyncCheckpointManager the default once stable.
-        if cfg.max_concurrency is not None:
+        if cfg.max_concurrent_gb is not None:
             self._manager = BoundedAsyncCheckpointManager(
-                max_concurrency=cfg.max_concurrency,
+                max_concurrent_gb=cfg.max_concurrent_gb,
                 timeout_secs=cfg.timeout_secs,
             )
         else:
