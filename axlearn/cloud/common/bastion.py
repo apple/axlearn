@@ -1062,7 +1062,7 @@ class Bastion(Configurable):
                 ["gcloud", "config", "set", "core/disable_file_logging", "True"],
                 check=False,
             )
-            logging.info("Successfully disable file logging.")
+            logging.info("Successfully disabled file logging.")
         except subprocess.CalledProcessError as e:
             logging.warning("Error disable file logging: %s", e.stderr.decode())
         while True:
