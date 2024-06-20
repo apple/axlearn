@@ -1060,7 +1060,7 @@ class Bastion(Configurable):
             # Disable the file logging to unblock gcloud operation like rsync.
             subprocess.run(
                 ["gcloud", "config", "set", "core/disable_file_logging", "True"],
-                check=False,
+                check=True,
             )
             logging.info("Successfully disabled file logging.")
         except subprocess.CalledProcessError as e:
