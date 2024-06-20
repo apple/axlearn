@@ -1056,6 +1056,8 @@ class Bastion(Configurable):
         os.makedirs(_LOG_DIR, exist_ok=True)
         os.makedirs(_JOB_DIR, exist_ok=True)
         try:
+            # The gloud logging could stuck at listing logging files.
+            # Disable the file logging to unblock gcloud operation like rsync.
             subprocess.run(
                 ["gcloud", "config", "set", "core/disable_file_logging", "True"],
                 check=False,
