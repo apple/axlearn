@@ -3158,6 +3158,7 @@ class TestStackModel(BaseLayer):
     @config_class
     class Config(BaseLayer.Config):
         stack: Optional[BaseStackedTransformerLayer.Config] = None  # The transformer stack.
+        output_self_attention_kv_state: bool = False
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -3165,12 +3166,17 @@ class TestStackModel(BaseLayer):
         self._add_child("stack", cfg.stack)
 
     def forward(self, data, **layer_kwargs):
+        cfg = self.config
+
         # [batch, length, dim].
-        x = self.stack(data, **layer_kwargs).data
+        output = self.stack(data, **layer_kwargs)
+        x = output.data
         x_mean = jnp.mean(x, axis=1, keepdims=True)
         # [batch, length].
         x_var = jnp.sum((x - x_mean) ** 2, axis=-1)
         loss = jnp.mean(x_var)
+        if cfg.output_self_attention_kv_state:
+            return loss, {"mean": x_mean, "self_attention_kv_state": output.self_attention_kv_state}
         return loss, {"mean": x_mean}
 
 
@@ -3238,7 +3244,15 @@ class StackedTransformerTest(BaseTransformerTest):
     """Tests StackedTransformerLayer."""
 
     def _stack_config(
-        self, stack_cfg, *, num_layers, model_dim, num_heads, dtype, remat_spec
+        self,
+        stack_cfg,
+        *,
+        num_layers,
+        model_dim,
+        num_heads,
+        dtype,
+        remat_spec,
+        output_self_attention_kv_state=False,
     ) -> TestStackModel.Config:
         if isinstance(stack_cfg, type):
             stack_cfg = stack_cfg.default_config()
@@ -3253,6 +3267,7 @@ class StackedTransformerTest(BaseTransformerTest):
                 dtype=dtype,
                 layer=TransformerLayer.default_config().set(remat_spec=remat_spec),
             ),
+            output_self_attention_kv_state=output_self_attention_kv_state,
         )
         layer_cfg = cfg.stack.layer
         layer_cfg.self_attention.attention.set(num_heads=num_heads)
@@ -3920,8 +3935,13 @@ class StackedTransformerTest(BaseTransformerTest):
             shapes(outputs),
         )
 
-    @parameterized.parameters(None, [("data",)], [("data", "self_attention_kv_state")])
-    def test_repeated_layer_with_custom_carry(self, repeat_carry):
+    @parameterized.parameters(
+        [None, False],
+        [("data",), False],
+        [("data",), True],
+        [("data", "self_attention_kv_state"), True],
+    )
+    def test_repeated_layer_with_custom_carry(self, repeat_carry, precomputed_kv_state):
         """Tests RepeatedTransformerLayer with customized `carry`."""
         batch_size = 1
         seq_len = 16
@@ -3937,9 +3957,10 @@ class StackedTransformerTest(BaseTransformerTest):
             num_heads=num_heads,
             dtype=jnp.float32,
             remat_spec=None,
+            output_self_attention_kv_state=True,
         )
         cfg.stack.repeat.carry = repeat_carry
-        if repeat_carry is not None and "self_attention_kv_state" in repeat_carry:
+        if precomputed_kv_state:
             kv_shape = (batch_size, seq_len, num_heads, head_dim)
             kv_state = KVState(
                 k_proj=jax.random.normal(key=jax.random.PRNGKey(1), shape=kv_shape),
@@ -3964,6 +3985,10 @@ class StackedTransformerTest(BaseTransformerTest):
         )
         print(outputs)
         self.assertNestedAllClose(expected_output, outputs[0])
+        if precomputed_kv_state:
+            self.assertNestedAllClose(kv_state, outputs[1]["self_attention_kv_state"])
+        else:
+            self.assertIsInstance(outputs[1]["self_attention_kv_state"], KVState)
 
 
 class ConfigHelperTest(TestCase):

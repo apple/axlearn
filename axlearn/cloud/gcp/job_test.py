@@ -12,6 +12,7 @@
 
 import atexit
 import contextlib
+import math
 import os
 import subprocess
 import sys
@@ -27,8 +28,18 @@ from axlearn.cloud.common.utils import configure_logging, generate_job_name
 from axlearn.cloud.gcp import bundler, job
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh_agent
+from axlearn.cloud.gcp.job import (
+    _MEMORY_REQUEST_PERCENTAGE,
+    CPUJob,
+    TPUQRMJob,
+    _kill_ssh_agent,
+    _start_ssh_agent,
+)
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
+from axlearn.cloud.gcp.system_characteristics import (
+    GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+)
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, infer_tpu_type, qrm_resource
 from axlearn.cloud.gcp.utils import common_flags, get_credentials
@@ -316,7 +327,24 @@ class TPUGKEJobTest(TestCase):
                 )
 
             self.assertEqual(len(pod_spec["containers"]), 1)
-            container_env = pod_spec["containers"][0]["env"]
+            container = pod_spec["containers"][0]
+            # Check memory request.
+            resources = container["resources"]
+            self.assertIn("limits", resources)
+            tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
+            tpu_characteristics = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
+            memory_in_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
+                tpu_characteristics.gce_machine_type, None
+            )
+            if memory_in_gi is not None:
+                self.assertEqual(resources["limits"]["memory"], f"{memory_in_gi}Gi")
+                self.assertEqual(
+                    resources["requests"]["memory"],
+                    f"{math.floor(memory_in_gi * _MEMORY_REQUEST_PERCENTAGE)}Gi",
+                )
+            self.assertIn("google.com/tpu", resources["limits"])
+
+            container_env = container["env"]
             container_env = {kv["name"]: kv["value"] for kv in container_env}
             if enable_ici_resiliency is not None:
                 expected = "true" if enable_ici_resiliency else "false"

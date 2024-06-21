@@ -1906,7 +1906,7 @@ class GroupedQueryAttention(MultiheadAttention):
 
     def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
         """Repeats key or value heads dim to match the query."""
-        num_head_repeats = self.config.num_heads // self.num_kv_heads
+        num_head_repeats = self.config.num_heads // key_or_value.shape[2]
         if num_head_repeats == 1:
             return key_or_value
         # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
@@ -3430,7 +3430,10 @@ class _TransformerRepeat(Repeat):
             v = ys.pop(k, None)
             if v is not None:
                 # Take the output from the last layer.
-                v = v[-1]
+                if isinstance(v, KVState):
+                    v = KVState(k_proj=v.k_proj[-1], v_proj=v.v_proj[-1])
+                else:
+                    v = v[-1]
             carry[k] = v
         return updated_states, TransformerLayer.Output(**carry, **ys)
 
