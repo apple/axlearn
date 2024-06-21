@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests SpmdTrainer."""
+
 # pylint: disable=no-self-use
 import copy
 import dataclasses
@@ -709,8 +710,15 @@ class TrainerTest(test_utils.TestCase):
     @parameterized.product(
         save_input_iterator=[False, True],
         restore_input_iterator=[False, True],
+        max_concurrent_gb=[None, 1],
     )
-    def test_checkpoint_policy(self, *, save_input_iterator: bool, restore_input_iterator: bool):
+    def test_checkpoint_policy(
+        self,
+        *,
+        save_input_iterator: bool,
+        restore_input_iterator: bool,
+        max_concurrent_gb: Optional[int],
+    ):
         """Test checkpoint policy when evaler and checkpointer run at different cadences."""
         model_cfg = DummyModel.default_config().set(dtype=jnp.float32)
 
@@ -724,7 +732,7 @@ class TrainerTest(test_utils.TestCase):
 
             return fn
 
-        cfg = SpmdTrainer.default_config().set(
+        cfg: SpmdTrainer.Config = SpmdTrainer.default_config().set(
             name="test_trainer",
             dir=tempfile.mkdtemp(),
             mesh_axis_names=("data", "model"),
@@ -754,6 +762,7 @@ class TrainerTest(test_utils.TestCase):
             ),
             save_input_iterator=save_input_iterator,
         )
+        cfg.checkpointer.storage.max_concurrent_gb = max_concurrent_gb
 
         # Run trainer.
         trainer: SpmdTrainer = cfg.instantiate(parent=None)

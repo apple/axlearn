@@ -5,11 +5,13 @@
 Some tests are intended to be run on TPU.
 """
 
-# pylint: disable=no-self-use,protected-access
 import os
+import queue
 import re
 import tempfile
 import threading
+
+# pylint: disable=no-self-use,protected-access
 from typing import Iterable, List, Optional, Sequence
 from unittest import mock
 
@@ -20,8 +22,10 @@ from absl import logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.experimental import mesh_utils
+from jax.experimental.array_serialization import serialization as array_serialization
 
 from axlearn.common import checkpointer, test_utils, utils
+from axlearn.common.array_serialization import BoundedAsyncCheckpointManager
 from axlearn.common.checkpointer import (
     BestMetricPolicy,
     Checkpointer,
@@ -651,6 +655,17 @@ class CheckpointerTest(test_utils.TestCase):
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
+    @parameterized.parameters(None, 1)
+    def test_max_concurrent_gb(self, max_concurrent_gb: Optional[int]):
+        cfg = TensorStoreStateStorage.default_config().set(max_concurrent_gb=max_concurrent_gb)
+        storage = cfg.instantiate()
+        if max_concurrent_gb is not None:
+            self.assertIsInstance(storage._manager, BoundedAsyncCheckpointManager)
+        else:
+            self.assertIsInstance(
+                storage._manager, array_serialization.GlobalAsyncCheckpointManager
+            )
+
     @parameterized.parameters(jnp.float32, jnp.bfloat16, jnp.int32, jnp.int16)
     def test_save_and_restore_from_dir(self, restore_floats_as: jnp.dtype):
         mesh_shape = (1, 1)
@@ -670,17 +685,13 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                 storage.save_to_dir(step=step, state=state, ckpt_dir=final_dir)
                 storage.wait_until_finished()
 
-                # Restore.
-                def restore_state():
-                    return storage.restore_from_dir(
-                        step,
-                        state=make_state(float_dtype=restore_floats_as),
-                        ckpt_dir=final_dir,
-                        validation=CheckpointValidationType.EXACT_UP_TO_DTYPE,
-                    )
-
                 # Successfully restores with different dtypes.
-                restored_state = restore_state()
+                restored_state = storage.restore_from_dir(
+                    step,
+                    state=make_state(float_dtype=restore_floats_as),
+                    ckpt_dir=final_dir,
+                    validation=CheckpointValidationType.EXACT_UP_TO_DTYPE,
+                )
                 self.assertNestedEqual(
                     restored_state,
                     (
@@ -689,6 +700,33 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                         else make_state(float_dtype=restore_floats_as)
                     ),
                 )
+
+    def test_save_to_dir_async(self):
+        """Tests that serialization happens async."""
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+        with _mesh(mesh_shape):
+            storage = TensorStoreStateStorage.default_config().instantiate()
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # We do a blocking set on the main thread and a blocking get on commit.
+                q = queue.Queue()
+                committed_value = None
+
+                def on_commit_callback(**kwargs):
+                    del kwargs
+                    nonlocal committed_value
+                    committed_value = q.get(block=True)
+
+                storage.save_to_dir(
+                    step=1,
+                    state=dict(x=jnp.zeros([], dtype=jnp.int32)),
+                    ckpt_dir=temp_dir,
+                    on_commit_callback=on_commit_callback,
+                )
+                q.put("test", block=True)
+                storage.wait_until_finished()
+                self.assertEqual("test", committed_value)
 
 
 def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> List[str]:
