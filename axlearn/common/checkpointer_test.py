@@ -828,15 +828,13 @@ SWITCHABLE_VDICT_IMPL: Optional[Type[VDict]] = None
 
 
 # Subclass VDict so that VDict-specific code works the same with this class.
-# The pytree flattening / serialization logic is defined explicitly for this subclass
+# The pytree flattening logic is defined explicitly for this subclass
 # and is not inherited.
 @jax.tree_util.register_pytree_node_class
 class SwitchableVDict(VDict):
     """A VDict that can switch its implementation between different implementations.
 
     For testing backwards compatibility.
-
-    Must be top level for pickle to be able to serialize it.
     """
 
     def __repr__(self):
