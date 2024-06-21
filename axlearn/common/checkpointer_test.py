@@ -7,10 +7,12 @@ Some tests are intended to be run on TPU.
 
 # pylint: disable=no-self-use,protected-access
 import os
+import queue
 import re
 import tempfile
 import threading
-from typing import Iterable, List, Optional, Sequence
+import unittest
+from typing import Iterable, List, Optional, Sequence, Type
 from unittest import mock
 
 import jax
@@ -20,8 +22,10 @@ from absl import logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.experimental import mesh_utils
+from jax.experimental.array_serialization import serialization as array_serialization
 
-from axlearn.common import checkpointer, test_utils, utils
+from axlearn.common import checkpointer, serialization, test_utils, utils
+from axlearn.common.array_serialization import BoundedAsyncCheckpointManager
 from axlearn.common.checkpointer import (
     BestMetricPolicy,
     Checkpointer,
@@ -40,6 +44,7 @@ from axlearn.common.checkpointer import (
 )
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.summary_writer import SummaryWriter
+from axlearn.common.utils import VDict
 
 
 def _mesh(mesh_shape: Sequence[int]):
@@ -649,8 +654,75 @@ class CheckpointerTest(test_utils.TestCase):
             self.assertNestedEqual(0, step)
             self.assertNestedEqual(state0, state1)
 
+    def test_vdict_order_compatibility(self):
+        """Tests that changing VDict to correctly have the same pytree flattenning behavior as dict
+        can still restore old checkpoints created using the old VDict version.
+        """
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+
+        # Subclass VDict so that VDict-specific code works the same with this class.
+        # The pytree flattening / serialization logic is defined explicitly for this subclass
+        # and is not inherited.
+        @jax.tree_util.register_pytree_node_class
+        class OldVDict(VDict):
+            """The original implementation of VDict."""
+
+            def __repr__(self):
+                return f"VDict({super().__repr__()})"
+
+            def tree_flatten(self):
+                # Convert dict_values and_keys to lists to avoid holding reference to the VDict.
+                return (list(self.values()), list(self.keys()))
+
+            @classmethod
+            def tree_unflatten(cls, keys, values):
+                return cls(zip(keys, values))
+
+        with _mesh(mesh_shape):
+            with unittest.mock.patch.dict(globals(), {"SWITCHABLE_VDICT_IMPL": OldVDict}):
+                cfg = _checkpointer_config()
+                cfg.save_policy.min_step = 0
+                ckpt: Checkpointer = cfg.instantiate(parent=None)
+                # VDict with out of order keys.
+                state0 = dict(a=3, b=SwitchableVDict(d=6, b=5))
+                state0 = jax.tree_util.tree_map(jnp.asarray, state0)
+                self.assertEqual(list(state0["b"].keys()), ["d", "b"])
+                ckpt.save(step=0, state=state0)
+                ckpt.wait_until_finished()
+
+                _, result = ckpt.restore(step=0, state=state0)
+                self.assertNestedEqual(state0, result)
+                self.assertEqual(list(result["b"].keys()), ["d", "b"])
+            with unittest.mock.patch.dict(globals(), {"SWITCHABLE_VDICT_IMPL": VDict}):
+                _, result = ckpt.restore(step=0, state=state0)
+                self.assertNestedEqual(state0, result)
+                self.assertEqual(list(result["b"].keys()), ["d", "b"])
+
+                after_tree_map = jax.tree_util.tree_map(lambda x: x, result)
+                self.assertEqual(list(after_tree_map["b"].keys()), ["d", "b"])
+
+                # The AXLearn checkpointing code preserves the order of the dict keys at the
+                # time the checkpoint was created rather than from the state structure
+                # it is given at restore time.
+                _, result = ckpt.restore(step=0, state=after_tree_map)
+                self.assertNestedEqual(state0, result)
+                self.assertEqual(list(result["b"].keys()), ["d", "b"])
+
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
+    @parameterized.parameters(None, 1)
+    def test_max_concurrent_gb(self, max_concurrent_gb: Optional[int]):
+        cfg = TensorStoreStateStorage.default_config().set(max_concurrent_gb=max_concurrent_gb)
+        storage = cfg.instantiate()
+        if max_concurrent_gb is not None:
+            self.assertIsInstance(storage._manager, BoundedAsyncCheckpointManager)
+        else:
+            self.assertIsInstance(
+                storage._manager, array_serialization.GlobalAsyncCheckpointManager
+            )
+
     @parameterized.parameters(jnp.float32, jnp.bfloat16, jnp.int32, jnp.int16)
     def test_save_and_restore_from_dir(self, restore_floats_as: jnp.dtype):
         mesh_shape = (1, 1)
@@ -670,17 +742,13 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                 storage.save_to_dir(step=step, state=state, ckpt_dir=final_dir)
                 storage.wait_until_finished()
 
-                # Restore.
-                def restore_state():
-                    return storage.restore_from_dir(
-                        step,
-                        state=make_state(float_dtype=restore_floats_as),
-                        ckpt_dir=final_dir,
-                        validation=CheckpointValidationType.EXACT_UP_TO_DTYPE,
-                    )
-
                 # Successfully restores with different dtypes.
-                restored_state = restore_state()
+                restored_state = storage.restore_from_dir(
+                    step,
+                    state=make_state(float_dtype=restore_floats_as),
+                    ckpt_dir=final_dir,
+                    validation=CheckpointValidationType.EXACT_UP_TO_DTYPE,
+                )
                 self.assertNestedEqual(
                     restored_state,
                     (
@@ -689,6 +757,33 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                         else make_state(float_dtype=restore_floats_as)
                     ),
                 )
+
+    def test_save_to_dir_async(self):
+        """Tests that serialization happens async."""
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+        with _mesh(mesh_shape):
+            storage = TensorStoreStateStorage.default_config().instantiate()
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # We do a blocking set on the main thread and a blocking get on commit.
+                q = queue.Queue()
+                committed_value = None
+
+                def on_commit_callback(**kwargs):
+                    del kwargs
+                    nonlocal committed_value
+                    committed_value = q.get(block=True)
+
+                storage.save_to_dir(
+                    step=1,
+                    state=dict(x=jnp.zeros([], dtype=jnp.int32)),
+                    ckpt_dir=temp_dir,
+                    on_commit_callback=on_commit_callback,
+                )
+                q.put("test", block=True)
+                storage.wait_until_finished()
+                self.assertEqual("test", committed_value)
 
 
 def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> List[str]:
@@ -731,6 +826,40 @@ class TfIteratorTest(test_utils.TestCase):
         # should continue from the interruption.
         self.assertSetEqual(set(seen), set(range(num_examples)))
 
+
+SWITCHABLE_VDICT_IMPL: Optional[Type[VDict]] = None
+
+
+# Subclass VDict so that VDict-specific code works the same with this class.
+# The pytree flattening / serialization logic is defined explicitly for this subclass
+# and is not inherited.
+@jax.tree_util.register_pytree_node_class
+class SwitchableVDict(VDict):
+    """A VDict that can switch its implementation between different implementations.
+
+    For testing backwards compatibility.
+
+    Must be top level for pickle to be able to serialize it.
+    """
+
+    def __repr__(self):
+        return SWITCHABLE_VDICT_IMPL.__repr__(self)
+
+    def tree_flatten(self):
+        return SWITCHABLE_VDICT_IMPL.tree_flatten(self)
+
+    @classmethod
+    def tree_unflatten(cls, keys, values):
+        return SWITCHABLE_VDICT_IMPL.tree_unflatten(keys, values)
+
+
+serialization.register_serialization_state(
+    SwitchableVDict,
+    # pylint: disable-next=protected-access
+    ty_to_state_dict=serialization._dict_state_dict,
+    # pylint: disable-next=protected-access
+    ty_from_state_dict=serialization._restore_dict,
+)
 
 if __name__ == "__main__":
     absltest.main()

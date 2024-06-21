@@ -29,6 +29,7 @@ from jax.experimental import maps, multihost_utils
 from jax.experimental.array_serialization import serialization as array_serialization
 
 from axlearn.common import utils
+from axlearn.common.array_serialization import BoundedAsyncCheckpointManager
 from axlearn.common.config import (
     REQUIRED,
     Configurable,
@@ -303,14 +304,30 @@ class TensorStoreStateStorage(StateStorage):
 
     @config_class
     class Config(StateStorage.Config):
-        """Configures TensorStoreStateStorage."""
+        """Configures TensorStoreStateStorage.
+
+        Attributes:
+            timeout_secs: Barrier timeout in seconds.
+            max_concurrent_gb: Max concurrent shards (in GB) to write.
+        """
 
         timeout_secs: float = 3600
+        max_concurrent_gb: Optional[int] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
-        self._manager = array_serialization.GlobalAsyncCheckpointManager(cfg.timeout_secs)
+
+        # TODO(markblee): Consider making BoundedAsyncCheckpointManager the default once stable.
+        if cfg.max_concurrent_gb is not None:
+            self._manager = BoundedAsyncCheckpointManager(
+                max_concurrent_gb=cfg.max_concurrent_gb,
+                timeout_secs=cfg.timeout_secs,
+            )
+        else:
+            self._manager = array_serialization.GlobalAsyncCheckpointManager(
+                timeout_secs=cfg.timeout_secs
+            )
 
     @dataclasses.dataclass
     class CheckpointSpec:  # pylint: disable=too-many-instance-attributes
@@ -324,6 +341,7 @@ class TensorStoreStateStorage(StateStorage):
         tf_ckpt_map: Dict[str, Any]
 
     def _spec_from_path(self, ckpt_path: str):
+        # TODO(markblee): Enable ocdbt driver.
         return array_serialization.get_tensorstore_spec(ckpt_path)
 
     def _get_spec(self, step: int, state: NestedTensor, ckpt_dir: str) -> CheckpointSpec:
@@ -378,6 +396,7 @@ class TensorStoreStateStorage(StateStorage):
         ckpt_dir: str,
         on_commit_callback: StateStorageCommitCallback = write_index_file,
     ):
+        start_time = time.perf_counter()
         # We write data files directly to `ckpt_dir`. `index` is written into `ckpt_dir` in
         # `on_commit_callback` to finalize the checkpoint.
         spec = self._get_spec(step, state, ckpt_dir)
@@ -394,16 +413,20 @@ class TensorStoreStateStorage(StateStorage):
         multihost_utils.sync_global_devices(ckpt_dir)
         # Each worker writes its tf checkpoints under a different path.
         save_tf_savables(spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"))
+
+        def commit():
+            on_commit_callback(ckpt_dir=ckpt_dir, index=spec.index)
+            logging.info(
+                "Serialization of %s completed in %s seconds.",
+                ckpt_dir,
+                time.perf_counter() - start_time,
+            )
+
         # Run serialization of GDA values in parallel.
         logging.info(
             "array_values=%s tensorstore=%s", utils.shapes(spec.gda_values), spec.tensorstore_specs
         )
-        self._manager.serialize(
-            spec.gda_values,
-            spec.tensorstore_specs,
-            on_commit_callback=lambda: on_commit_callback(ckpt_dir=ckpt_dir, index=spec.index),
-        )
-        logging.info("GlobalAsyncCheckpointManager.serialize done")
+        self._manager.serialize(spec.gda_values, spec.tensorstore_specs, on_commit_callback=commit)
 
     def wait_until_finished(self):
         self._manager.wait_until_finished()
@@ -428,7 +451,7 @@ class TensorStoreStateStorage(StateStorage):
             spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}")
         )
 
-        restored_gda_values = array_serialization.run_deserialization(
+        restored_gda_values = self._manager.deserialize(
             shardings=spec.shardings,
             tensorstore_specs=spec.tensorstore_specs,
             global_shapes=spec.shapes,
@@ -673,12 +696,10 @@ class Checkpointer(Module):
         if step < 0 or step >= 10**8:
             raise ValueError(f"Out-of-range: {step}")
         ckpt_dir = self.ckpt_dir(step)
-        start_time = time.perf_counter()
         _cleanup_checkpoint(ckpt_dir)
         self._storage.save_to_dir(
             step=step, state=state, ckpt_dir=ckpt_dir, on_commit_callback=write_index_file
         )
-        end_time = time.perf_counter()
         if "summary_writer" in self.children:
             self.summary_writer.log_checkpoint(
                 step=step,
@@ -686,9 +707,6 @@ class Checkpointer(Module):
                 ckpt_dir=ckpt_dir,
                 action=CheckpointerAction.SAVE,
             )
-        logging.info(
-            "Saved checkpoint with %s in %s seconds", type(self._storage), end_time - start_time
-        )
 
     def run_garbage_collection(self):
         """Runs one round of garbage collection of past checkpoints.
