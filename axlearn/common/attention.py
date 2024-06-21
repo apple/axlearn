@@ -1981,7 +1981,7 @@ def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
     x = x.reshape([t, -1])
     # [t, t]. When t = 2, do not trim.
     if t > 2:
-      x = x[:, : -(t - 2)]
+        x = x[:, : -(t - 2)]
     return x
 
 
