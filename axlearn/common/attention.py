@@ -1971,7 +1971,7 @@ def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
     """
     t, offset_length = x.shape
     assert offset_length == 2 * t - 1
-    if t == 1:
+    if t <= 1:
         return x
     # [t * (2t - 1)].
     x = x.reshape([-1])
@@ -1980,7 +1980,8 @@ def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
     # [t, 2t - 2].
     x = x.reshape([t, -1])
     # [t, t]. When t = 2, do not trim.
-    x = x[:, : -(t - 2) or None]
+    if t > 2:
+      x = x[:, : -(t - 2)]
     return x
 
 
