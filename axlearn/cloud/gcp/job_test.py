@@ -497,7 +497,7 @@ class GPUGKEJobTest(TestCase):
                 main_container_env_vars["NUM_PROCESSES"]["value"], f"{expected_num_replicas}"
             )
             # Verify that default XLA flags can be overwritten by user.
-            if env_vars.get("XLA_FLAGS"):
+            if env_vars and env_vars.get("XLA_FLAGS"):
                 self.assertEqual(
                     main_container_env_vars["XLA_FLAGS"]["value"], env_vars["XLA_FLAGS"]
                 )
