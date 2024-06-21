@@ -54,7 +54,6 @@ dev = [
     "diffusers==0.26.3", # diffuser dependency for golden config updates
     "einops",
     "evaluate",
-    "fairseq==0.12.2",  # test-only; note Apple Silicon start.md instructions parse this specifier '==', please be careful when upgrading.
     "isort",  # formatting
     "pre-commit",  # local pre commit hooks
     "pycocotools",  # COCO evaluation tools
