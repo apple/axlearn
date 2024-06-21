@@ -698,17 +698,14 @@ class CheckpointerTest(test_utils.TestCase):
             with unittest.mock.patch.dict(globals(), {"SWITCHABLE_VDICT_IMPL": VDict}):
                 _, result = ckpt.restore(step=0, state=state0)
                 self.assertNestedEqual(state0, result)
-                self.assertEqual(list(result["b"].keys()), ["d", "b"])
+                self.assertEqual(list(result["b"].keys()), ["b", "d"])
 
                 after_tree_map = jax.tree_util.tree_map(lambda x: x, result)
-                self.assertEqual(list(after_tree_map["b"].keys()), ["d", "b"])
+                self.assertEqual(list(after_tree_map["b"].keys()), ["b", "d"])
 
-                # The AXLearn checkpointing code preserves the order of the dict keys at the
-                # time the checkpoint was created rather than from the state structure
-                # it is given at restore time.
                 _, result = ckpt.restore(step=0, state=after_tree_map)
                 self.assertNestedEqual(state0, result)
-                self.assertEqual(list(result["b"].keys()), ["d", "b"])
+                self.assertEqual(list(result["b"].keys()), ["b", "d"])
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
@@ -850,7 +847,7 @@ class SwitchableVDict(VDict):
 
     @classmethod
     def tree_unflatten(cls, keys, values):
-        return SWITCHABLE_VDICT_IMPL.tree_unflatten(keys, values)
+        return cls(SWITCHABLE_VDICT_IMPL.tree_unflatten(keys, values))
 
 
 serialization.register_serialization_state(
