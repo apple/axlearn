@@ -218,7 +218,13 @@ class VDict(dict):
 
     def tree_flatten(self):
         # Convert dict_values and dict_keys to lists to avoid holding reference to the VDict.
-        return (list(self.values()), list(self.keys()))
+        # We sort the keys so that tree_map works with VDicts that have different key orderings,
+        # matching jax's behavior for dicts.
+        items = sorted(self.items(), key=lambda x: x[0])
+        if not items:
+            return ((), ())
+        keys, values = zip(*items)
+        return (values, keys)
 
     @classmethod
     def tree_unflatten(cls, keys, values):
