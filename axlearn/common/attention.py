@@ -125,7 +125,7 @@ class KVState(NamedTuple):
 
 
 def _return_aux(return_aux: Optional[Set[str]], aux: str) -> bool:
-    return return_aux and aux in return_aux
+    return return_aux is not None and aux in return_aux
 
 
 class BaseTransformerLayer(BaseLayer):
