@@ -32,10 +32,6 @@ from axlearn.vision.window_attention import (
 )
 
 
-def _return_aux(return_aux: Optional[Set[str]], aux: str) -> bool:
-    return return_aux is not None and aux in return_aux
-
-
 def get_rel_pos_emb(
     q_size: int,
     k_size: int,
@@ -231,10 +227,11 @@ class WindowedAttention(MultiheadAttention):
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
         kv_state = KVState(k_proj=k_proj, v_proj=v_proj)
+        return_aux = return_aux or set()
         return self.Output(
             data=outputs,
-            probs=probs if _return_aux(return_aux, "probs") else None,
-            kv_state=kv_state if _return_aux(return_aux, "kv_state") else None,
+            probs=probs if "probs" in return_aux else None,
+            kv_state=kv_state if "kv_state" in return_aux else None,
         )
 
 

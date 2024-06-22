@@ -124,10 +124,6 @@ class KVState(NamedTuple):
     v_proj: Tensor
 
 
-def _return_aux(return_aux: Optional[Set[str]], aux: str) -> bool:
-    return return_aux is not None and aux in return_aux
-
-
 class BaseTransformerLayer(BaseLayer):
     """An abstract class to define the common interface of all *TransformerLayer classes, including:
 
@@ -1731,10 +1727,11 @@ class MultiheadAttention(BaseLayer):
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
         self._add_tensor_stats("o_proj_outputs", outputs)
+        return_aux = return_aux or set()
         output = self.Output(
             data=outputs,
-            probs=probs if _return_aux(return_aux, "probs") else None,
-            kv_state=kv_state if _return_aux(return_aux, "kv_state") else None,
+            probs=probs if "probs" in return_aux else None,
+            kv_state=kv_state if "kv_state" in return_aux else None,
         )
         return dict(i_proj=i_proj_state), output
 
