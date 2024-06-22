@@ -535,7 +535,10 @@ class DeBERTaEncoderTest(TestCase):
             output_hidden_states=True,
             return_dict=True,
         )
-        self.assertNestedAllClose(ref_out.hidden_states[-1], test_out)
+        output_mask = padding_mask[:, :, None]
+        self.assertNestedAllClose(
+            ref_out.hidden_states[-1] * as_torch_tensor(output_mask), test_out * output_mask
+        )
 
     def test_encoder(self, query_len: int, **kwargs):
         torch.use_deterministic_algorithms(True)
