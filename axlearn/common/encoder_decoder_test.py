@@ -484,6 +484,7 @@ class TestAgainstHF(TestCase):
                 output_hidden_states=True,
             ),
             parameters_from_ref_layer=parameters_from_torch_layer,
+            require_same_tree_structure=False,
         )
 
         # Compare outputs at non-padding positions.

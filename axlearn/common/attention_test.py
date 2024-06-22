@@ -19,7 +19,7 @@ import copy
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
 from itertools import combinations
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
 
 import jax
 import numpy as np
@@ -1895,6 +1895,72 @@ class MultiheadAttentionTest(TestCase):
         )
         self.assertEqual(layer_outputs.data.dtype, dtype)
 
+    @parameterized.product(
+        base_cfg=(
+            attention.MultiheadAttention.default_config(),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.GroupedQKVLinear.default_config().set(num_kv_heads=2)
+            ),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.FusedGroupedQKVLinear.default_config().set(num_kv_heads=2)
+            ),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.RoFormerQKVLinear.default_config().set(rotary_value=False)
+            ),
+        ),
+        attention_logit_biases_fn=(
+            lambda seq_len: None,
+            lambda seq_len: _random_mask(jax.random.PRNGKey(1), seq_len, seq_len),
+        ),
+    )
+    def test_causal(
+        self,
+        base_cfg: attention.MultiheadAttention.Config,
+        attention_logit_biases_fn: Callable[[int], Tensor],
+    ):
+        """Tests that base_cfg(causal=True) is equivalent to applying a causal mask."""
+        model_dim = 16
+        num_heads = 4
+        ref_cfg = base_cfg.clone(
+            name="test",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+        )
+        self.assertFalse(ref_cfg.causal)
+        ref_layer = ref_cfg.instantiate(parent=None)
+        layer_params = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        test_cfg = ref_cfg.clone(causal=True)
+        test_layer = test_cfg.instantiate(parent=None)
+
+        batch_size, seq_len = 2, 4
+        query = jnp.zeros([batch_size, seq_len, model_dim], dtype=jnp.float32)
+        outputs = []
+        for layer in (ref_layer, test_layer):
+            attention_logit_biases = attention_logit_biases_fn(seq_len)
+            if layer is ref_layer:
+                # Apply causal mask on top of the logit biases for `ref_layer`.
+                causal_mask = make_causal_mask(seq_len)
+                if attention_logit_biases is None:
+                    attention_logit_biases = causal_mask
+                else:
+                    attention_logit_biases = apply_attention_logit_biases(
+                        attention_logit_biases, causal_mask
+                    )
+            inputs = dict(query=query, attention_logit_biases=attention_logit_biases)
+            layer_outputs, _ = F(
+                layer,
+                state=layer_params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(456),
+                inputs=inputs,
+            )
+            outputs.append(layer_outputs)
+        # The outputs are equivalent.
+        self.assertNestedAllClose(outputs[0], outputs[1])
+
     def test_gqa_kv_heads(self):
         """Checks that only the heads dim is repeated."""
         batch = source_length = num_heads = 8
@@ -2831,13 +2897,11 @@ class BaseTransformerTest(TestCase):
         batch_size, tgt_len = 2, 5
         rng = np.random.default_rng(seed=123)
         target = rng.random([batch_size, tgt_len, cfg.input_dim], dtype=np.float32)
-        attention_logit_biases = attention.make_causal_mask(tgt_len)[None, :, :]
 
         forward_outputs, _ = F(
             layer,
             inputs=dict(
                 data=jnp.asarray(target),
-                self_attention_logit_biases=attention_logit_biases,
                 **input_kwargs,
             ),
             state=layer_params,
@@ -2870,7 +2934,6 @@ class BaseTransformerTest(TestCase):
                     inputs=dict(
                         time_step=jnp.array([start_time_step] * batch_size, dtype=jnp.int32),
                         data=jnp.asarray(target),
-                        self_attention_logit_biases=attention_logit_biases,
                         **input_kwargs,
                     ),
                     state=layer_params,
@@ -2887,9 +2950,6 @@ class BaseTransformerTest(TestCase):
                     inputs=dict(
                         data=jnp.asarray(target[:, time_step : time_step + 1, :]),
                         cached_states=cached_states,
-                        self_attention_logit_biases=attention_logit_biases[
-                            :, time_step : time_step + 1, :
-                        ],
                         **input_kwargs,
                     ),
                     state=layer_params,
@@ -3028,7 +3088,7 @@ class TransformerTest(BaseTransformerTest):
     def test_decoding(self):
         model_dim, num_heads = 6, 2
         cfg = TransformerLayer.default_config().set(input_dim=model_dim)
-        cfg.self_attention.attention.set(num_heads=num_heads)
+        cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
         cfg.feed_forward.hidden_dim = model_dim * 4
         cfg.vlog = 5
         self._test_forward_vs_extend_step(cfg)
@@ -3044,7 +3104,7 @@ class TransformerTest(BaseTransformerTest):
         num_heads = 4
         base_cfg = TransformerLayer.default_config().set(name="test", input_dim=model_dim)
         base_cfg.feed_forward.set(hidden_dim=scaled_hidden_dim(4))
-        base_cfg.self_attention.attention.set(num_heads=num_heads)
+        base_cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
         base_layer: TransformerLayer = base_cfg.instantiate(parent=None)
         base_layer_params = base_layer.initialize_parameters_recursively(
             prng_key=jax.random.PRNGKey(0)
@@ -3801,7 +3861,7 @@ class StackedTransformerTest(BaseTransformerTest):
         model_dim, num_heads = 6, 2
         cfg = stack_cls.default_config().set(num_layers=5, input_dim=model_dim)
         layer_cfg = cfg.layer
-        layer_cfg.self_attention.attention.set(num_heads=num_heads)
+        layer_cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
         layer_cfg.feed_forward.hidden_dim = model_dim * 4
         self._test_forward_vs_extend_step(cfg)
         self._test_decoder_with_transformer(cfg)
@@ -3815,7 +3875,7 @@ class StackedTransformerTest(BaseTransformerTest):
         cfg = outer_stack_cls.default_config().set(num_layers=2, input_dim=model_dim)
         cfg.layer = inner_stack_cls.default_config().set(num_layers=3)
         layer_cfg = cfg.layer.layer
-        layer_cfg.self_attention.attention.set(num_heads=num_heads)
+        layer_cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
         layer_cfg.feed_forward.hidden_dim = model_dim * 4
         self._test_forward_vs_extend_step(cfg)
         self._test_decoder_with_transformer(cfg)

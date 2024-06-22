@@ -1556,6 +1556,9 @@ class MultiheadAttention(BaseLayer):
         key_scale: BaseScaleQK.Config = ScaleKey.default_config()
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = None
+        # If True, applies causal masking. If `attention_logit_biases` is given, causal masking
+        # will be applied on top of the biases. `key` and `value` must be None.
+        causal: Optional[bool] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1638,12 +1641,15 @@ class MultiheadAttention(BaseLayer):
             ValueError: If key & value are an invalid combination.
             ValueError: If `mode` is unsupported.
         """
+        cfg = self.config
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
                 "key and value must be both None or both set, "
                 f"key:{type(key)}, value:{type(value)}"
             )
+        if cfg.causal and (key is not None or value is not None):
+            raise ValueError("key and value are not expected when causal=True")
         if kv_state is not None:
             if key is not None or value is not None:
                 raise ValueError("kv_state should not be specified together with key/value")
@@ -1676,6 +1682,27 @@ class MultiheadAttention(BaseLayer):
         if attention_logit_biases is not None and attention_logit_biases.ndim == 3:
             # [batch, 1, target_length, source_length].
             attention_logit_biases = attention_logit_biases[:, None, :, :]
+        if cfg.causal:
+            if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
+                seq_len = q_proj.shape[1]
+                causal_mask = make_causal_mask(seq_len)[None, None, :, :]
+            elif mode == ForwardMode.EXTEND_STEP:
+                # [batch], representing query time_step.
+                time_step = cached_states["i_proj"]["time_step"]
+                kv_len = k_proj.shape[1]
+                indexes = jnp.arange(kv_len)
+                # [batch, 1, 1, kv_len].
+                # causal_mask[b, :, :, kv_pos] = 0 if kv_pos <= time_step[b] else NEG_INF.
+                causal_mask = (
+                    jax.lax.lt(time_step[:, None, None, None], indexes[None, None, None, :])
+                    * NEG_INF
+                )
+            else:
+                raise ValueError(f"Unrecognized mode {mode}.")
+            attention_logit_biases = apply_attention_logit_biases(
+                causal_mask.astype(q_proj.dtype),
+                attention_logit_biases,
+            )
         context, probs = self._compute_attention(
             q_proj=q_proj,
             k_proj=k_proj,
