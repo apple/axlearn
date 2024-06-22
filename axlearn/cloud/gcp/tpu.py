@@ -572,14 +572,14 @@ def _tpu_body(
     vm_tier_labels = {}
     # Create labels for vm tier that can be used to group tpu metrics.
     # TPUs are created via QRM. In QRM, vm tier can be one of guaranteed, spot, or, bestEffort.
-    # guaranteeded is mapped to label value reserved. bestEffort is implemented to create spot instance. 
-    # Hence, both spot and bestEffort are mapped to lable value spot. 
-    # See [`_qrm_body()`](#L651) for details on the tiers. 
+    # guaranteeded is mapped to label value reserved. bestEffort is implemented to create
+    # spot instance. Hence, both spot and bestEffort are mapped to lable value spot.
+    # See [`_qrm_body()`](#L651) for details on the tiers.
     if reserved or gcp_settings("reserved_tpu", default=False):
         vm_tier_labels["vmtier"] = "reserved"
     else:
         vm_tier_labels["vmtier"] = "spot"
-        
+
     body.update(
         {
             "acceleratorType": tpu_type,

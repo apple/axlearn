@@ -14,6 +14,7 @@ from axlearn.cloud.gcp.tpu import (
     QueuedResourceInfo,
     TPUCreationError,
     TpuInfo,
+    _tpu_body,
     create_queued_tpu,
     infer_tpu_cores,
     infer_tpu_resources,
@@ -22,7 +23,6 @@ from axlearn.cloud.gcp.tpu import (
     infer_tpu_workers,
     queued_resource_info_table,
     tpu_info_table,
-    _tpu_body,
 )
 
 
@@ -254,26 +254,27 @@ class TpuUtilsTest(parameterized.TestCase):
                     tpu_type="v4-16",  # 2 workers.
                     bundler_type="test-bundler",
                 )
-                
+
     @parameterized.parameters(
         #(reserved, reserved_tpu_gcp_setting, expected_vmtier_label)
-        (True, False, "reserved"), 
+        (True, False, "reserved"),
         (False, False, "spot"),
         (None, True, "reserved"),
         (None, False, "spot"),
     )
-    
+
     @mock.patch("pathlib.Path")
     @mock.patch("builtins.open")
-    
-    def test_tpu_body_reserved_param(self, reserved, reserved_tpu_setting, expected_vmtier, mock_open, mock_path):
+
+    def test_tpu_body_reserved_param(self, reserved, reserved_tpu_setting,
+                                     expected_vmtier, mock_open, mock_path):
         module = tpu.__name__
         mock_settings = mock_gcp_settings(
             module,
             settings={
-                "project": "project", 
-                "zone": "zone", 
-                "ttl_bucket": "ttl_bucket", 
+                "project": "project",
+                "zone": "zone",
+                "ttl_bucket": "ttl_bucket",
                 "reserved_tpu": reserved_tpu_setting,
                 "network": "network",
                 "subnetwork": "subnetwork",
@@ -283,5 +284,6 @@ class TpuUtilsTest(parameterized.TestCase):
         mock_path.return_value = mock.MagicMock()
 
         with mock_settings:
-            tpu_body = _tpu_body("test-tpu", tpu_type="v4-8", bundler_type="test", reserved=reserved)
+            tpu_body = _tpu_body("test-tpu", tpu_type="v4-8",
+                                 bundler_type="test", reserved=reserved)
             self.assertEqual(tpu_body["labels"]["vmtier"], expected_vmtier)
