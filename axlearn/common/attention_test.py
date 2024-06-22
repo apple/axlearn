@@ -2469,7 +2469,7 @@ class MultiheadAttentionTest(TestCase):
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
-            inputs=dict(query=query, return_aux={"probs"}),
+            inputs=dict(query=query),
         )
         return kwargs
 
@@ -2480,6 +2480,7 @@ class MultiheadAttentionTest(TestCase):
         kwargs = self._scale_query_kwargs(
             query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
         )
+        kwargs["inputs"]["return_aux"] = {"probs"}
         forward_outputs, _ = F(**kwargs)
         if query_scale_factor is None:
             query_scale_factor = kwargs["module"].per_head_dim() ** -0.5
@@ -2503,6 +2504,7 @@ class MultiheadAttentionTest(TestCase):
         kwargs = self._scale_query_kwargs(
             query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
         )
+        kwargs["inputs"]["return_aux"] = {"probs"}
         forward_outputs, _ = F(**kwargs)
         self.assertNestedAllClose(
             forward_outputs.probs[0, 0, 0, 0],
@@ -2523,7 +2525,6 @@ class MultiheadAttentionTest(TestCase):
         kwargs = self._scale_query_kwargs(
             query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
         )
-        kwargs["return_aux"] = None
 
         # Check optimized HLO scales by query_scale_factor and key_scale_factor as separate
         # multiplications. This only checks the default backend, so it doesn't check
