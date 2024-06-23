@@ -113,7 +113,7 @@ class WindowedAttentionTest(TestCase, tf.test.TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(123),
             state=attention_state,
-            inputs=dict(query=query),
+            inputs=dict(query=query, return_aux={"probs"}),
         )
         ref_data_shape = (batch_size, height * width, model_dim)
         ref_probs_shape = (batch_size, num_heads, height * width, height * width)

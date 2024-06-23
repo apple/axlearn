@@ -2111,12 +2111,14 @@ class MultiheadAttentionTest(TestCase):
         else:
             key = value = query
         attention_logit_biases = attention.make_causal_mask(tgt_len)
+        return_aux = {"probs"}
         inputs = dict(
             query=query,
             key=key,
             value=value,
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
+            return_aux=return_aux,
         )
         forward_outputs, _ = F(
             layer,
@@ -2136,7 +2138,7 @@ class MultiheadAttentionTest(TestCase):
         else:
             self.assertNotIn("key", initial_state["i_proj"])
             self.assertNotIn("value", initial_state["i_proj"])
-        inputs = dict(cached_states=initial_state, kv_state=kv_state)
+        inputs = dict(cached_states=initial_state, kv_state=kv_state, return_aux=return_aux)
         decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
         decoder_probs = jnp.zeros(shape=[tgt_len, batch_size, num_heads, tgt_len])
         for t in range(tgt_len):
@@ -2257,13 +2259,16 @@ class MultiheadAttentionTest(TestCase):
             jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
         )
         attention_logit_biases = attention.make_causal_mask(tgt_len)
+        return_aux = {"probs"}
 
         forward_outputs, _ = F(
             layer,
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
-            inputs=dict(query=query, attention_logit_biases=attention_logit_biases),
+            inputs=dict(
+                query=query, attention_logit_biases=attention_logit_biases, return_aux=return_aux
+            ),
         )
 
         time_step = jnp.arange(batch_size)
@@ -2273,7 +2278,10 @@ class MultiheadAttentionTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
             inputs=dict(
-                time_step=time_step, query=query, attention_logit_biases=attention_logit_biases
+                time_step=time_step,
+                query=query,
+                attention_logit_biases=attention_logit_biases,
+                return_aux=return_aux,
             ),
             method="prefill_states",
         )
@@ -2297,16 +2305,19 @@ class MultiheadAttentionTest(TestCase):
         time_step_mask = jnp.arange(tgt_len) < time_step[:, None]
         # [batch, tgt_len, model_dim].
         decoder_output = initial_output.data * time_step_mask[..., None]
-        # [batch, num_heads, tgt_len, src_len].
-        decoder_probs = initial_output.probs * time_step_mask[:, None, :, None]
-
         # [batch, tgt_len, model_dim] --> [batch, model_dim, tgt_len].
         decoder_output = jnp.moveaxis(decoder_output, -2, -1)
-        # [batch, num_heads, tgt_len, src_len] --> [batch, num_heads, src_len, tgt_len].
-        decoder_probs = jnp.moveaxis(decoder_probs, -2, -1)
+
+        # [batch, num_heads, tgt_len, src_len].
+        if initial_output.probs is None:
+            decoder_probs = None
+        else:
+            decoder_probs = initial_output.probs * time_step_mask[:, None, :, None]
+            # [batch, num_heads, tgt_len, src_len] --> [batch, num_heads, src_len, tgt_len].
+            decoder_probs = jnp.moveaxis(decoder_probs, -2, -1)
 
         # Call extend_step from time_step, ensuring that outputs match.
-        inputs = dict(cached_states=initial_states)
+        inputs = dict(cached_states=initial_states, return_aux=return_aux)
         while jnp.any(time_step < tgt_len):
             # [batch, tgt_len=1, model_dim].
             inputs["query"] = jnp.take_along_axis(
@@ -2469,6 +2480,7 @@ class MultiheadAttentionTest(TestCase):
         kwargs = self._scale_query_kwargs(
             query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
         )
+        kwargs["inputs"]["return_aux"] = {"probs"}
         forward_outputs, _ = F(**kwargs)
         if query_scale_factor is None:
             query_scale_factor = kwargs["module"].per_head_dim() ** -0.5
@@ -2492,6 +2504,7 @@ class MultiheadAttentionTest(TestCase):
         kwargs = self._scale_query_kwargs(
             query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
         )
+        kwargs["inputs"]["return_aux"] = {"probs"}
         forward_outputs, _ = F(**kwargs)
         self.assertNestedAllClose(
             forward_outputs.probs[0, 0, 0, 0],
@@ -3127,7 +3140,7 @@ class TransformerTest(BaseTransformerTest):
         target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
         base_layer_outputs, _ = F(
             base_layer,
-            inputs=dict(data=jnp.asarray(target)),
+            inputs=dict(data=jnp.asarray(target), return_aux={"self_attention_kv_state"}),
             state=base_layer_params,
             is_training=True,
             prng_key=jax.random.PRNGKey(0),
@@ -3139,6 +3152,7 @@ class TransformerTest(BaseTransformerTest):
             inputs=dict(
                 data=jnp.asarray(target),
                 self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
+                return_aux={"self_attention_kv_state"},
             ),
             state=test_layer_params,
             is_training=True,
@@ -3376,6 +3390,7 @@ class StackedTransformerTest(BaseTransformerTest):
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
+        return_aux = {"self_attention_probs", "cross_attention_probs"}
 
         forward_outputs, _ = F(
             layer,
@@ -3384,13 +3399,16 @@ class StackedTransformerTest(BaseTransformerTest):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
         )
         initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
-        inputs = dict(cached_states=initial_state, cross_attention_data=source)
+        inputs = dict(
+            cached_states=initial_state, cross_attention_data=source, return_aux=return_aux
+        )
         decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
 
         # [num_dec_layers, [num_stacked_layers,] batch_size, num_heads, tgt_len, tgt_len] -->
@@ -3496,6 +3514,7 @@ class StackedTransformerTest(BaseTransformerTest):
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
+        return_aux = {"self_attention_probs", "cross_attention_probs"}
 
         forward_outputs, _ = F(
             layer,
@@ -3504,6 +3523,7 @@ class StackedTransformerTest(BaseTransformerTest):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             state=layer_params,
             is_training=False,
@@ -3522,6 +3542,7 @@ class StackedTransformerTest(BaseTransformerTest):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             method="prefill_states",
         )
@@ -3548,7 +3569,9 @@ class StackedTransformerTest(BaseTransformerTest):
         decoder_cross_attention_probs = jnp.moveaxis(decoder_cross_attention_probs, -2, -1)
 
         # Call extend_step from time_step, ensuring that outputs match.
-        inputs = dict(cached_states=initial_states, cross_attention_data=source)
+        inputs = dict(
+            cached_states=initial_states, cross_attention_data=source, return_aux=return_aux
+        )
         while jnp.any(time_step < tgt_len):
             # [batch, tgt_len=1, model_dim].
             inputs["data"] = jnp.take_along_axis(
@@ -3983,7 +4006,7 @@ class StackedTransformerTest(BaseTransformerTest):
             is_training=is_training,
             prng_key=jax.random.PRNGKey(123),
             state=state,
-            inputs=dict(data=inputs),
+            inputs=dict(data=inputs, return_aux={"self_attention_kv_state"}),
         )
         self.assertEqual(
             BaseTransformerLayer.Output(
@@ -4041,7 +4064,11 @@ class StackedTransformerTest(BaseTransformerTest):
             is_training=True,
             prng_key=jax.random.PRNGKey(123),
             state=state,
-            inputs=dict(data=inputs, self_attention_kv_state=kv_state),
+            inputs=dict(
+                data=inputs,
+                self_attention_kv_state=kv_state,
+                return_aux={"self_attention_kv_state"},
+            ),
         )
         print(outputs)
         self.assertNestedAllClose(expected_output, outputs[0])
