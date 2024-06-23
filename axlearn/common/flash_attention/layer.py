@@ -94,6 +94,9 @@ class FlashAttention(GroupedQueryAttention):
         }
         return cfg
 
+    def _causal_mask(self, seq_len: int) -> Optional[Tensor]:
+        return None  # No need for mask because flash attention supports the causal mode natively.
+
     def _compute_attention(
         self,
         *,
@@ -159,6 +162,11 @@ class FlashAttention(GroupedQueryAttention):
         k_proj = with_sharding_constraint(k_proj, cfg.mha_dim_to_partition_spec["bsnh"])
         v_proj = with_sharding_constraint(v_proj, cfg.mha_dim_to_partition_spec["bsnh"])
         if attention_logit_biases is not None:
+            if attention_logit_biases.shape[0] != q_proj.shape[0]:
+                raise ValueError(
+                    "attention_logit_biases must have matching batch dim: "
+                    f"{attention_logit_biases.shape} vs. {q_proj.shape[0]}"
+                )
             attention_logit_biases = with_sharding_constraint(
                 attention_logit_biases, cfg.mha_dim_to_partition_spec["bnts"]
             )

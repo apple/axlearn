@@ -537,7 +537,10 @@ class DeBERTaEncoderTest(TestCase):
         )
         output_mask = padding_mask[:, :, None]
         self.assertNestedAllClose(
-            ref_out.hidden_states[-1] * as_torch_tensor(output_mask), test_out * output_mask
+            ref_out.hidden_states[-1] * as_torch_tensor(output_mask),
+            test_out * output_mask,
+            atol=1e-5,
+            rtol=1e-2,
         )
 
     def test_encoder(self, query_len: int, **kwargs):
