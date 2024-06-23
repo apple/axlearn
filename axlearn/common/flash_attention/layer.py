@@ -94,6 +94,9 @@ class FlashAttention(GroupedQueryAttention):
         }
         return cfg
 
+    def _causal_mask(self, seq_len: int) -> Optional[Tensor]:
+        return None  # No need for causal mask.
+
     def _compute_attention(
         self,
         *,

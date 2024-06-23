@@ -1706,8 +1706,7 @@ class MultiheadAttention(BaseLayer):
             attention_logit_biases = attention_logit_biases[:, None, :, :]
         if cfg.causal:
             if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
-                seq_len = q_proj.shape[1]
-                causal_mask = make_causal_mask(seq_len)[None, None, :, :]
+                causal_mask = self._causal_mask(seq_len=q_proj.shape[1])
             elif mode == ForwardMode.EXTEND_STEP:
                 # [batch], representing query time_step.
                 time_step = cached_states["i_proj"]["time_step"]
@@ -1721,10 +1720,11 @@ class MultiheadAttention(BaseLayer):
                 )
             else:
                 raise ValueError(f"Unrecognized mode {mode}.")
-            attention_logit_biases = apply_attention_logit_biases(
-                causal_mask.astype(q_proj.dtype),
-                attention_logit_biases,
-            )
+            if causal_mask is not None:
+                attention_logit_biases = apply_attention_logit_biases(
+                    causal_mask.astype(q_proj.dtype),
+                    attention_logit_biases,
+                )
         context, probs = self._compute_attention(
             q_proj=q_proj,
             k_proj=k_proj,
@@ -1745,6 +1745,13 @@ class MultiheadAttention(BaseLayer):
             kv_state=kv_state if "kv_state" in return_aux else None,
         )
         return dict(i_proj=i_proj_state), output
+
+    def _causal_mask(self, seq_len: int) -> Optional[Tensor]:
+        """Returns a causal mask that can be broadcasted to [batch, num_heads, seq_len, seq_len].
+
+        ... or None if the implementation of _compute_attention supports the causal mode natively.
+        """
+        return make_causal_mask(seq_len)[None, None, :, :]
 
     def _compute_attention(
         self,
