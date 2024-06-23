@@ -1750,6 +1750,8 @@ class MultiheadAttention(BaseLayer):
         """Returns a causal mask that can be broadcasted to [batch, num_heads, seq_len, seq_len].
 
         ... or None if the implementation of _compute_attention supports the causal mode natively.
+
+        Only used for (ForwardMode.FORWARD, ForwardMode.INIT_STATES).
         """
         return make_causal_mask(seq_len)[None, None, :, :]
 
