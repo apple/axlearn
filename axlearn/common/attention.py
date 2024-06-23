@@ -139,29 +139,37 @@ class BaseTransformerLayer(BaseLayer):
         input_dim: Required[int] = REQUIRED  # Input feature dim.
 
     class Output(NamedTuple):
-        """BaseTransformerLayer output."""
+        """BaseTransformerLayer output.
 
-        # [batch, target_length, input_dim]. The layer output.
+        Fields:
+            data: [batch, target_length, input_dim]. The layer output. Always present.
+
+            self_attention_probs: The attention probabilities returned by the self-attention layer.
+                Shape: [..., target_length, target_length].
+
+                self_attention_probs[..., i, j] represents self-attention probability on
+                input data[..., j, :] when computing output data[..., i, :].
+                self_attention_probs.sum(axis=-1) equals to all 1's.
+
+                Present if "self_attention_probs" is in `return_aux`.
+
+            self_attention_kv_state: The KV state used in self-attention.
+                Present if "self_attention_kv_state" is in `return_aux`.
+
+            cross_attention_probs: The attention probabilities returned by the cross-attention
+                layer. Shape: [..., target_length, source_length].
+
+                If not None, cross_attention_probs[..., i, j] represents attention probability on
+                cross_attention_data[..., j, :] when computing output data[..., i, :].
+                cross_attention_probs.sum(axis=-1) equals to all 1's.
+
+                Present if "cross_attention_probs" is in `return_aux`.
+        """
+
         data: Tensor
-
-        # The attention probabilities returned by the self-attention layer.
-        # Shape: [..., target_length, target_length].
-        #
-        # self_attention_probs[..., i, j] represents self-attention probability on
-        # input data[..., j, :] when computing output data[..., i, :].
-        # self_attention_probs.sum(axis=-1) equals to all 1's.
-        self_attention_probs: Optional[Tensor]
-
-        # The KV state used in self-attention.
-        self_attention_kv_state: Optional[KVState]
-
-        # The attention probabilities returned by the cross-attention layer.
-        # Shape: [..., target_length, source_length].
-        #
-        # If not None, cross_attention_probs[..., i, j] represents attention probability on
-        # cross_attention_data[..., j, :] when computing output data[..., i, :].
-        # cross_attention_probs.sum(axis=-1) equals to all 1's.
-        cross_attention_probs: Optional[Tensor]
+        self_attention_probs: Optional[Tensor] = None
+        self_attention_kv_state: Optional[KVState] = None
+        cross_attention_probs: Optional[Tensor] = None
 
     def forward(
         self,
@@ -1605,13 +1613,18 @@ class MultiheadAttention(BaseLayer):
         return hidden_dim // cfg.num_heads
 
     class Output(NamedTuple):
-        # [batch, target_length, output_dim]. The attention output.
+        """Outputs of MultiheadAttention.
+
+        Fields:
+            data: [batch, target_length, output_dim]. The attention output. Always present.
+            probs: [batch, num_heads, target_length, source_length]. The attention probabilities.
+                Populated if "probs" is in `return_aux`.
+            kv_state: The KV state used for computing the attention outputs.
+                Populated if "kv_state" is in `return_aux`.
+        """
+
         data: Tensor
-        # [batch, num_heads, target_length, source_length]. The attention probabilities.
-        # Populated if "probs" in return_aux.
         probs: Optional[Tensor] = None
-        # The KV state used for computing the attention outputs.
-        # Populated if "kv_state" in return_aux.
         kv_state: Optional[KVState] = None
 
     def _forward_for_mode(
@@ -1639,9 +1652,7 @@ class MultiheadAttention(BaseLayer):
             kv_state: An optional KVState. If specified, both `key` and `value` should be None.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
-            return_aux: a set of auxiliary output fields to return. Each element must be an
-                optional field of `Output`, e.g., `return_aux = {"probs", "kv_state"}` means that
-                `Output.{probs, kv_state}` will be populated.
+            return_aux: See comments on `Output`.
 
         Returns:
             An optional NestedTensor of cache states, depending on `mode`.
@@ -1784,7 +1795,7 @@ class MultiheadAttention(BaseLayer):
             value: an optional Tensor of shape [batch, source_length, source_dim].
             kv_state: an optional KVState. If not None, both key and value must be None.
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
-            return_aux: See comments in `Output`.
+            return_aux: See comments on `Output`.
 
         Returns:
             An Output instance, where .data is of the same shape as query and .probs is of shape
@@ -1864,7 +1875,7 @@ class MultiheadAttention(BaseLayer):
                 decoding.
             kv_state: an optional KVState.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            return_aux: See comments in `Output`.
+            return_aux: See comments on `Output`.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -1905,7 +1916,7 @@ class MultiheadAttention(BaseLayer):
                 Additionally, target_length is expected to be 1 since this is per time step.
                 The biases should already include causal masking for decoding, plus other biases
                 if necessary.
-            return_aux: See comments in `Output`.
+            return_aux: See comments on `Output`.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -2286,13 +2297,18 @@ class TransformerAttentionLayer(BaseLayer):
         self._add_child("stochastic_depth", cfg.stochastic_depth)
 
     class Output(NamedTuple):
-        # [batch, target_length, output_dim]. The attention output.
+        """Outputs of TransformerAttentionLayer.
+
+        Fields:
+            data: [batch, target_length, output_dim]. The attention output. Always present.
+            probs: The attention probabilities returned by the attention layer.
+                Populated if "probs" is in return_aux.
+            kv_state: The KV state used to compute output.
+                Populated if "kv_state" is in return_aux.
+        """
+
         data: Tensor
-        # The attention probabilities returned by the attention layer.
-        # Populated if "probs" in return_aux.
         probs: Optional[Tensor] = None
-        # KV state used to compute outputs.
-        # Populated if "probs" in return_aux.
         kv_state: Optional[KVState] = None
 
     def _forward_for_mode(
@@ -2315,6 +2331,7 @@ class TransformerAttentionLayer(BaseLayer):
                 If None, uses norm(target) as source (self-attention).
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
+            return_aux: See comments on `Output`.
 
         Returns:
             An optional NestedTensor of cache states, depending on `mode`.
@@ -2402,7 +2419,7 @@ class TransformerAttentionLayer(BaseLayer):
             source: an optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            return_aux: See comments in `Output`.
+            return_aux: See comments on `Output`.
 
         Returns:
             An Output instance, where .data is of the same shape as target and .probs is of shape
@@ -2469,7 +2486,7 @@ class TransformerAttentionLayer(BaseLayer):
             source: an optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            return_aux: See comments in `Output`.
+            return_aux: See comments on `Output`.
 
         Returns:
             A `NestedTensor` state depending on the `attention` layer implementation.
@@ -2509,7 +2526,7 @@ class TransformerAttentionLayer(BaseLayer):
                 Additionally, target_length is expected to be 1 since this is per time step.
                 attention_logit_biases should have already taken care of causal masking for
                 decoding, plus other maskings necessary.
-            return_aux: See comments in `Output`.
+            return_aux: See comments on `Output`.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
