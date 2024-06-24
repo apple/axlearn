@@ -53,11 +53,11 @@ export FI_EFA_USE_DEVICE_RDMA="1"
 export FI_PROVIDER="efa"
 export FI_EFA_FORK_SAFE=1
 
-OUTPUT_DIR="/shared_new/thangakr/axlearn_out"
+OUTPUT_DIR="/shared_new/apoorvgu/fs_drop/axlearn/c4_test/"
 DATA_DIR="gs://axlearn-public/tensorflow_datasets"
 # Run the training script
 python3 -m axlearn.common.launch_trainer_main \
-    --module=text.gpt.c4_trainer --config=fuji-7B \
+    --module=text.gpt.c4_trainer --config=fuji-7B-v1 \
     --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR \
     --jax_backend=neuron --mesh_selector=neuron-trn1.32xlarge-64 \
     --distributed_coordinator=$MASTER_ADDR:$JAX_COORDINATOR_PORT --num_processes=$num_nodes \
