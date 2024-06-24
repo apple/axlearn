@@ -277,7 +277,7 @@ class TreeUtilsTest(TestCase):
         tree = VDict(a=jnp.arange(10), b=jnp.arange(7) - 3, c=None)
         # Note that 'None' is considered part of the tree structure, not tree leaves.
         self.assertEqual(
-            "PyTreeDef(CustomNode(VDict[['a', 'b', 'c']], [*, *, None]))",
+            "PyTreeDef(CustomNode(VDict[('a', 'b', 'c')], [*, *, None]))",
             str(jax.tree_util.tree_structure(tree)),
         )
         self.assertLen(jax.tree_util.tree_leaves(tree), 2)
@@ -355,6 +355,24 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(4, sys.getrefcount(x))
         self.assertSequenceEqual(["x"], keys)
         self.assertLen(values, 1)
+
+    def test_vdict_tree_utils(self):
+        """Tests that tree_map and tree_flatten work on VDict the same way they work on dict."""
+        d1 = dict(b=2, a=1)
+        d2 = dict(b=3, a=2)
+        v1 = VDict(d1)
+        v2 = VDict(d2)
+
+        # Make sure keys are in sorted order after using tree utils like they are for dicts.
+        d_result = jax.tree_util.tree_map(lambda *args: args, d1, d2)
+        v_result = jax.tree_util.tree_map(lambda *args: args, v1, v2)
+        self.assertSequenceEqual(v_result, d_result)
+        self.assertSequenceEqual(list(v_result.values()), list(d_result.values()))
+
+        # Explicitly test that mismatching key orders work.
+        result = jax.tree_util.tree_map(lambda *args: args, VDict(b=2, a=1), VDict(a=1, b=2))
+        self.assertSequenceEqual(list(result), ["a", "b"])
+        self.assertSequenceEqual(list(result.values()), [(1, 1), (2, 2)])
 
     def test_get_and_set_recursively(self):
         tree = {"a": {"b": 2, "c": {"d": 3, "e": 4}}, "f.g": 5}
