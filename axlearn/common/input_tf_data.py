@@ -31,6 +31,7 @@ from axlearn.common.config import (
     REQUIRED,
     ConfigBase,
     ConfigOr,
+    FunctionConfigBase,
     InstantiableConfig,
     Required,
     config_class,
@@ -38,15 +39,19 @@ from axlearn.common.config import (
     maybe_instantiate,
     maybe_set_config,
 )
+from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.module import Module
 from axlearn.common.utils import (
     PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
     NestedTensor,
+    PartitionSpec,
     Tensor,
     as_numpy_array,
+    dispatch_input_batch,
     get_data_dir,
     get_recursively,
     set_recursively,
+    with_sharding_constraint,
 )
 
 
@@ -863,6 +868,79 @@ def batch(
     return fn
 
 
+def per_feed_batch(
+    feed_batch_size: int,
+    *,
+    is_training: bool,
+    pad_example_fn: PadExampleFn,
+    prefetch_buffer_size: Optional[int] = None,
+    post_batch_processor: Optional[ConfigOr[DatasetToDatasetFn]] = None,
+    repeat: Optional[int] = None,
+) -> DatasetToDatasetFn:
+    """Returns a function that generates a tf.data.Dataset object.
+
+    Note: per_feed_batch(is_training=True) requires sufficient number of examples
+    per feed. When your data is too small, you should add `ds = ds.repeat()`
+    before batching.
+
+    Args:
+        feed_batch_size: The per-feed batch size.
+        is_training: Whether the examples are used for training.
+        pad_example_fn: Create padded examples with the given function.
+        prefetch_buffer_size: Size of prefetch buffer. This allows later
+            elements to be prepared while the current element is being
+            processed. If not set, `tf.data.experimental.AUTOTUNE` is used.
+        post_batch_processor: An optional processor (or config instantiating to a processor) that
+            applies batch-wise processing functions.
+        repeat: The number of times to repeat the batches from the dataset.
+            If None, repeat indefinitely if is_training=True and do not repeat otherwise.
+            Otherwise must be a positive integer.
+
+    Returns:
+        A DatasetToDataset fn.
+
+    Raises:
+        ValueError: If repeat is not a positive integer.
+    """
+    if repeat is not None and (not isinstance(repeat, int) or repeat <= 0):
+        raise ValueError(f"Invalid repeat (must be a positive integer): {repeat}")
+
+    def fn(ds: tf.data.Dataset) -> tf.data.Dataset:
+        if not is_training:
+            # Pad for evaluation.
+            ds = _pad_for_evaluation(
+                ds,
+                per_feed_batch_size=feed_batch_size,
+                pad_example_fn=pad_example_fn,
+            )
+
+        # Batch.
+        ds = ds.batch(feed_batch_size, drop_remainder=True)
+
+        # Post batch processing methods at batch-level.
+        if post_batch_processor:
+            ds = maybe_instantiate(post_batch_processor)(ds)
+
+        if not is_training and jax.process_count() > 1:
+            num_eval_batches = _infer_cardinality(ds)
+            logging.info("Feed has %s eval batches.", num_eval_batches)
+            multihost_utils.assert_equal(
+                num_eval_batches,
+                f"Number of eval batches are not all equal ({num_eval_batches})",
+            )
+
+        if repeat is None:
+            if is_training:
+                ds = ds.repeat()
+        else:
+            ds = ds.repeat(repeat)
+        # If `prefetch_buffer_size` is not set, use autotune.
+        ds = ds.prefetch(prefetch_buffer_size or tf.data.experimental.AUTOTUNE)
+        return ds
+
+    return fn
+
+
 def identity() -> DatasetToDatasetFn:
     """Identity function, useful for example as batcher when data is already batched."""
 
@@ -1030,6 +1108,23 @@ def ragged_to_tensor(feature_shapes: Dict[str, Any], default_value: int = 0) -> 
     return seqio.map_over_dataset(fn)
 
 
+def set_read_config_recursively(source_config: ConfigBase, **kwargs):
+    """Sets **kwargs on all tfds_read_config in `source_config`."""
+
+    def enter_fn(_, value, default_kv):
+        if (
+            isinstance(value, FunctionConfigBase)
+            and value.fn is tfds_dataset
+            and value.read_config is None
+        ):
+            value.read_config = config_for_function(tfds_read_config).set(**kwargs)
+        if isinstance(value, FunctionConfigBase) and value.fn is tfds_read_config:
+            value.set(**kwargs)
+        return default_kv
+
+    source_config.visit(visit_fn=lambda k, v: None, enter_fn=enter_fn)
+
+
 class Input(Module):
     """A Module to generate input batches with tf.data.Dataset.
 
@@ -1064,9 +1159,24 @@ class Input(Module):
         # A config that instantiates to a DatasetToDatasetFn, which performs batching of examples.
         batcher: InstantiableConfig = config_for_function(batch)
 
+        # If not None, creates an InputDispatcher and use it for dispatching per-feed batches to
+        # global batches.
+        input_dispatcher: Optional[InputDispatcher] = None
+
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+        if cfg.input_dispatcher is not None:
+            self._add_child("input_dispatcher", cfg.input_dispatcher)
+            # Let input_dispatcher determine num_shards and shard_index for tfds_read_config.
+            feed_read_config = self.input_dispatcher.feed_read_config()
+            set_read_config_recursively(cfg.source, **feed_read_config)
+            if cfg.batcher.fn is per_feed_batch:
+                # If using `per_feed_batch`, set feed_batch_size according to `input_batcher`.
+                # If not, we rely on user to set up batcher correctly.
+                cfg.batcher.feed_batch_size = self.input_dispatcher.feed_logical_batch_size
+            logging.info("feed_read_config=%s", feed_read_config)
+            logging.info("Modified Input.config according to input_batcher:\n%s", cfg)
         self._source = maybe_set_config(cfg.source, is_training=cfg.is_training).instantiate()
         self._processor = maybe_set_config(cfg.processor, is_training=cfg.is_training).instantiate()
         self._batcher = maybe_set_config(cfg.batcher, is_training=cfg.is_training).instantiate()
@@ -1082,9 +1192,36 @@ class Input(Module):
     def dataset(self) -> tf.data.Dataset:
         return self._batcher(self._processor(self._source()))
 
+    def batches(self, it: tf.data.Iterator) -> Iterable[NestedTensor]:
+        for input_batch in it:
+            if "input_dispatcher" in self.children:
+                input_batch = self.input_dispatcher.logical_to_physical_batch(input_batch)
+            yield input_batch
+
     def __iter__(self) -> Iterable[NestedTensor]:
-        for input_batch in self.dataset():
+        it = iter(self.dataset())
+        for input_batch in self.batches(it):
             yield as_numpy_array(input_batch)
+
+    def dispatch_global_batch(
+        self,
+        global_physical_batch: NestedTensor,
+        *,
+        batch_axis_names: Union[str, Sequence[str]] = "data",
+    ) -> NestedTensor:
+        if "input_dispatcher" in self.children:
+            global_physical_batch = jax.tree_util.tree_map(
+                lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)),
+                global_physical_batch,
+            )
+            global_logical_batch = self.input_dispatcher.physical_to_logical_batch(
+                global_physical_batch
+            )
+        else:
+            global_logical_batch = dispatch_input_batch(
+                global_physical_batch, batch_axis_names=batch_axis_names
+            )
+        return global_logical_batch
 
 
 def disable_shuffle_recursively(cfg: Input.Config):

@@ -425,7 +425,7 @@ class SpmdTrainer(Module):
                 output = None
                 stop_trace_step = None
 
-                for input_batch in self._input_iter:
+                for input_batch in self.input.batches(self._input_iter):
                     self._maybe_record_event(measurement.Event.START_STEP, self._step)
                     logging.log_first_n(
                         logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
@@ -876,9 +876,10 @@ class SpmdTrainer(Module):
         state: TrainerState,
         input_batch: Dict[str, Any],
     ) -> Tuple[TrainerState, NestedTensor]:
+        cfg = self.config
         # Shard and (possibly) dispatch the input batch.
-        input_batch = utils.dispatch_input_batch(
-            input_batch, batch_axis_names=self.config.batch_axis_names
+        input_batch = self.input.dispatch_global_batch(
+            input_batch, batch_axis_names=cfg.batch_axis_names
         )
 
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
@@ -886,7 +887,7 @@ class SpmdTrainer(Module):
         )
 
         def train_cast(in_tree):
-            return utils.cast_floats(in_tree, to_dtype=self.config.train_dtype)
+            return utils.cast_floats(in_tree, to_dtype=cfg.train_dtype)
 
         # A nested tree of booleans.
         should_compute_gradients = self.learner.should_update_with_optimizers(state.model)
