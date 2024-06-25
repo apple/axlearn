@@ -63,7 +63,7 @@ class PostProcessor(beam.DoFn):
         print("-" * 80)
 
 
-def main(argv=None):
+def main():
     # Create a model handler
     model_handler = HuggingFaceModelHandlerKeyedTensor(
         model_uri="stevhliu/my_awesome_eli5_mlm_model",

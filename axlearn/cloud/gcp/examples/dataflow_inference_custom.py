@@ -48,7 +48,7 @@ $ axlearn gcp dataflow start \
 
 import copy
 import logging
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Sequence
 
 import apache_beam as beam
 import jax
@@ -57,8 +57,8 @@ from absl.flags import argparse_flags
 from apache_beam.ml.inference.base import ModelHandler, PredictionResult, RunInference
 from apache_beam.options.pipeline_options import PipelineOptions
 
-import axlearn.common.input_fake as input_fake
 import axlearn.common.launch_trainer as trainer_utils
+from axlearn.common import input_fake
 from axlearn.common.inference import InferenceRunner, MethodRunner
 from axlearn.common.utils import NestedTensor
 
@@ -66,6 +66,7 @@ from axlearn.common.utils import NestedTensor
 class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
     """Defines how to load a custom checkpoint and run inference."""
 
+    # pylint: disable-next=super-init-not-called
     def __init__(self, flag_dict: Dict):
         # Store absl FLAGS in a flag dictionary to avoid pickling issues
         self._flag_dict = flag_dict
@@ -76,6 +77,7 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
         for k, v in flag_values.items():
             try:
                 fv.set_default(k, v)
+            # pylint: disable-next=protected-access
             except flags._exceptions.UnrecognizedFlagError:
                 # Ignore unrecognized flags from other modules
                 pass
@@ -102,10 +104,7 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
         )
 
     def run_inference(
-        self,
-        batch: Sequence[NestedTensor],
-        model: MethodRunner,
-        inference_args: Optional[Dict[str, Any]] = None,
+        self, batch: Sequence[NestedTensor], model: MethodRunner
     ) -> Sequence[MethodRunner.Output]:
         """Runs inferences on a batch of NestedTensors.
         NestedTensor: https://github.com/apple/axlearn/blob/main/axlearn/common/utils.py#L56
@@ -130,7 +129,8 @@ class PostProcessFn(beam.DoFn):
     """Defines the transformations needed for post processing."""
 
     def process(self, element: Any):
-        logging.info(f"Inference finished. Output type: {type(element)}")
+        # Add your desired post processing here
+        logging.info("Inference finished.")
         yield None
 
 
@@ -151,7 +151,7 @@ def get_examples() -> Sequence[NestedTensor]:
     fake_input = input_fake.FakeLmInput(cfg)
     example_list = []
     for _ in range(cfg.total_num_batches):
-        example_list.append(fake_input.__next__())
+        example_list.append(fake_input.next())
 
     return example_list
 
@@ -178,7 +178,7 @@ def parse_flags(argv):
 
 
 def main(args):
-    FLAGS = flags.FLAGS
+    absl_flags = flags.FLAGS
 
     # get pipeline input
     pipeline_input = get_examples()
@@ -189,10 +189,11 @@ def main(args):
     pipeline = beam.Pipeline(options=pipeline_options)
 
     with pipeline as p:
-        (
+        # pylint: disable-next=unused-variable
+        result = (
             p
             | "CreateInput" >> beam.Create(pipeline_input)
-            | "RunInference" >> RunInference(CustomModelHandler(FLAGS.flag_values_dict()))
+            | "RunInference" >> RunInference(CustomModelHandler(absl_flags.flag_values_dict()))
             | "PrintOutput" >> beam.ParDo(PostProcessFn())
         )
 
