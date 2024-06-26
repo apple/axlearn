@@ -1,4 +1,5 @@
 # Copyright © 2024 Apple Inc.
+
 """Utility to help dispatching input batches from hosts to devices."""
 
 import copy
@@ -9,7 +10,7 @@ from jax import numpy as jnp
 
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module
-from axlearn.common.utils import PHYSICAL_TO_LOGICAL_DISPATCH_KEY, Nested, Tensor, as_numpy_array
+from axlearn.common.utils import PHYSICAL_TO_LOGICAL_DISPATCH_KEY, Nested, Tensor
 
 
 class InputDispatcher(Module):
@@ -53,6 +54,7 @@ class InputDispatcher(Module):
         logical_feed_indices: Optional[Sequence[int]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        cfg = cfg.clone()
         cfg.num_physical_feeds = cfg.num_physical_feeds or jax.process_count()
         cfg.physical_feed_index = cfg.physical_feed_index or jax.process_index()
         if cfg.logical_feed_indices is None:
@@ -133,6 +135,7 @@ class InputDispatcher(Module):
             non_logical_feed_indices = [
                 ix for ix in range(cfg.num_physical_feeds) if ix not in cfg.logical_feed_indices
             ]
+            assert len(non_logical_feed_indices) == cfg.num_physical_feeds - self.num_logical_feeds
             shard_index = non_logical_feed_indices.index(cfg.physical_feed_index) % num_shards
         return dict(num_shards=num_shards, shard_index=shard_index)
 
@@ -166,14 +169,11 @@ class InputDispatcher(Module):
                     f"{x.shape} vs. {feed_logical_batch_size}"
                 )
             if cfg.physical_feed_index not in cfg.logical_feed_indices:
-                x = jnp.zeros_like(as_numpy_array(x))
+                x = jnp.zeros_like(x)
             if feed_logical_batch_size == feed_physical_batch_size:
                 return x
             pad_size = feed_physical_batch_size - feed_logical_batch_size
-            if pad_size < 0:
-                raise ValueError(f"{feed_physical_batch_size} < {feed_logical_batch_size}")
-            # Convert to numpy array if necessary.
-            x = as_numpy_array(x)
+            assert pad_size >= 0, f"{feed_physical_batch_size} < {feed_logical_batch_size}"
             if not jnp.isdtype(x.dtype, ("numeric", "bool")):
                 raise NotImplementedError(f"dtype {x.dtype} is not supported")
             padding = jnp.zeros([pad_size] + list(x.shape[1:]), dtype=x.dtype)
