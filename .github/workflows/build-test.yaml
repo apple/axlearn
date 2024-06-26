@@ -10,7 +10,7 @@ jobs:
   pre-commit:
     runs-on: ubuntu-latest
     outputs:
-      pytest-files: ${{ steps.find-test-files.outputs.pytest-files }}
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
 
     steps:
       - uses: actions/checkout@v3
@@ -29,9 +29,9 @@ jobs:
       - name: Run pytype
         run: pytype -j auto .
       - name: define pytest testing matrix
-        id: matrix
+        id: set-matrix
         run: |
-          echo "matrix=$(python3 .github/workflows/set_matrix.py)"
+          echo "matrix=$(python3 .github/workflows/set_matrix.py)" >> $GITHUB_OUTPUT
 
   build-and-test:
     needs: pre-commit
