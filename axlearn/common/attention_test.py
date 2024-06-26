@@ -4043,6 +4043,9 @@ class StackedTransformerTest(BaseTransformerTest):
             output_self_attention_kv_state=True,
         )
         cfg.stack.repeat.carry = repeat_carry
+        cfg.stack.layer.remat_spec = build_remat_spec(
+            cfg.stack, self_attention=True, feed_forward=True
+        )
         if precomputed_kv_state:
             kv_shape = (batch_size, seq_len, num_heads, head_dim)
             kv_state = KVState(
