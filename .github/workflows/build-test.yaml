@@ -9,18 +9,15 @@ on:
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.9", "3.10"]
     outputs:
       pytest-files: ${{ steps.find-test-files.outputs.pytest-files }}
 
     steps:
       - uses: actions/checkout@v3
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.9"
           cache: "pip"
       - name: Install Dependencies
         run: |
