@@ -233,8 +233,8 @@ class BaseMetricCalculator(Module):
             (outputs, output_collection), where `outputs` are the return value of
             self._model.method(...).
         """
-        input_batch = self._dispatch_global_batch(input_batch)
         # Shard and (possibly) dispatch the input batch.
+        input_batch = self._dispatch_global_batch(input_batch)
         model_inputs = dict(
             input_batch=self._eval_cast(input_batch),
             **kwargs,
@@ -251,9 +251,7 @@ class BaseMetricCalculator(Module):
 
     def _dispatch_global_batch(self, input_batch: NestedTensor) -> NestedTensor:
         module = self.parent
-        while module is not None:
-            if isinstance(module, SpmdEvaler):
-                break
+        while module is not None and not isinstance(module, SpmdEvaler):
             module = module.parent
         if module is not None and hasattr(module.input, "dispatch_global_batch"):
             input_batch = module.input.dispatch_global_batch(input_batch)

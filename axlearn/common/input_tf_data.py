@@ -856,11 +856,10 @@ def batch(
                 f"Number of eval batches are not all equal ({num_eval_batches})",
             )
 
-        if repeat is None:
-            if is_training:
-                ds = ds.repeat()
-        else:
+        if repeat is not None:
             ds = ds.repeat(repeat)
+        elif is_training:
+            ds = ds.repeat()
         # If `prefetch_buffer_size` is not set, use autotune.
         ds = ds.prefetch(prefetch_buffer_size or tf.data.experimental.AUTOTUNE)
         return ds
@@ -877,7 +876,9 @@ def per_feed_batch(
     post_batch_processor: Optional[ConfigOr[DatasetToDatasetFn]] = None,
     repeat: Optional[int] = None,
 ) -> DatasetToDatasetFn:
-    """Returns a function that generates a tf.data.Dataset object.
+    """Returns a DatasetToDatasetFn that batches examples by `feed_feed_batch_size`.
+
+    This is a simplified version of `batch` to be used with InputDispatcher.
 
     Note: per_feed_batch(is_training=True) requires sufficient number of examples
     per feed. When your data is too small, you should add `ds = ds.repeat()`
@@ -929,11 +930,10 @@ def per_feed_batch(
                 f"Number of eval batches are not all equal ({num_eval_batches})",
             )
 
-        if repeat is None:
-            if is_training:
-                ds = ds.repeat()
-        else:
+        if repeat is not None:
             ds = ds.repeat(repeat)
+        elif is_training:
+            ds = ds.repeat()
         # If `prefetch_buffer_size` is not set, use autotune.
         ds = ds.prefetch(prefetch_buffer_size or tf.data.experimental.AUTOTUNE)
         return ds
@@ -1159,7 +1159,7 @@ class Input(Module):
         # A config that instantiates to a DatasetToDatasetFn, which performs batching of examples.
         batcher: InstantiableConfig = config_for_function(batch)
 
-        # If not None, creates an InputDispatcher and use it for dispatching per-feed batches to
+        # If not None, creates an InputDispatcher and uses it for dispatching per-feed batches to
         # global batches.
         input_dispatcher: Optional[InputDispatcher] = None
 
@@ -1172,7 +1172,7 @@ class Input(Module):
             feed_read_config = self.input_dispatcher.feed_read_config()
             set_read_config_recursively(cfg.source, **feed_read_config)
             if cfg.batcher.fn is per_feed_batch:
-                # If using `per_feed_batch`, set feed_batch_size according to `input_batcher`.
+                # If using `per_feed_batch`, set feed_batch_size according to `input_dispatcher`.
                 # If not, we rely on user to set up batcher correctly.
                 cfg.batcher.feed_batch_size = self.input_dispatcher.feed_logical_batch_size
             logging.info("feed_read_config=%s", feed_read_config)
@@ -1194,6 +1194,7 @@ class Input(Module):
 
     def batches(self, it: tf.data.Iterator) -> Iterable[NestedTensor]:
         for input_batch in it:
+            input_batch = as_numpy_array(input_batch)
             if "input_dispatcher" in self.children:
                 input_batch = self.input_dispatcher.logical_to_physical_batch(input_batch)
             yield input_batch
@@ -1201,7 +1202,7 @@ class Input(Module):
     def __iter__(self) -> Iterable[NestedTensor]:
         it = iter(self.dataset())
         for input_batch in self.batches(it):
-            yield as_numpy_array(input_batch)
+            yield input_batch
 
     def dispatch_global_batch(
         self,
