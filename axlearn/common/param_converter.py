@@ -452,13 +452,13 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
         check_supported(TextEmbeddingEncoder, BertModel)
         axlearn_to_torch(layer.encoder.emb, src["encoder"]["emb"], dst.embeddings)
         axlearn_to_torch(layer.encoder.transformer, src["encoder"]["transformer"], dst.encoder)
-        has_pooler = "head" in src and "pooler" in src["head"] and src["head"]["pooler"] != {}
-        if has_pooler != (dst.pooler is not None):
+        src_pooler = src.get("head", {}).get("pooler", None)
+        if (src_pooler is not None) != (dst.pooler is not None):
             raise ValueError(
                 "Input layer and output layer must either both have pooler, or both not."
             )
-        if has_pooler:
-            axlearn_to_torch(layer.head.pooler, src["head"]["pooler"], dst.pooler)
+        if src_pooler:
+            axlearn_to_torch(layer.head.pooler, src_pooler, dst.pooler)
     elif isinstance(dst, hf_roberta.RobertaModel):
         check_supported(TextEmbeddingEncoder, BertModel)
         axlearn_to_torch(layer.encoder.emb, src["encoder"]["emb"], dst.embeddings)
