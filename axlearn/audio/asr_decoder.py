@@ -12,7 +12,8 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from axlearn.common import struct
+from axlearn.common import decoding, struct
+from axlearn.common.attention import TransformerAttentionLayer
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import (
@@ -23,6 +24,7 @@ from axlearn.common.config import (
     config_class,
     maybe_instantiate,
 )
+from axlearn.common.decoder import Decoder
 from axlearn.common.decoding import (
     NEG_INF,
     PrefixMerger,
@@ -37,6 +39,7 @@ from axlearn.common.decoding import (
 )
 from axlearn.common.layers import Embedding, Linear
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
+from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, child_context
 from axlearn.common.rnn import BaseRNNCell, LSTMCell
@@ -162,7 +165,7 @@ class BaseASRDecoderModel(BaseModel):
     class Config(BaseModel.Config):
         """Configures BaseASRDecoderModel."""
 
-        # Dimensionality of inputs.
+        # Dimensionality of inputs from acoustic encoder.
         input_dim: Required[int] = REQUIRED
         # The vocab size.
         vocab_size: Required[int] = REQUIRED
@@ -213,28 +216,38 @@ class BaseASRDecoderModel(BaseModel):
         return target_paddings
 
     def _input_stats_summaries(
-        self, input_batch: Nested[Tensor]
+        self, input_batch: Nested[Tensor], *, target_paddings: Tensor, is_valid_example: Tensor
     ) -> Dict[str, Union[WeightedScalar, Tensor]]:
-        target_labels: Tensor = input_batch["target_labels"]
-        target_paddings = self._compute_target_paddings(target_labels)
-        batch_size = jnp.maximum(target_labels.shape[0], 1)
-        num_source_elements = jnp.maximum(input_batch["paddings"].size, 1)  # type: ignore
-        target_lengths = jnp.sum(1 - target_paddings, axis=-1)
-        source_lengths = jnp.sum(1 - input_batch["paddings"], axis=-1)
-        # pytype: disable=attribute-error
-        ret_dict = {
+        """Computes input lengths stats.
+
+        Args:
+            input_batch: See forward method signature.
+            target_paddings: See _compute_target_paddings method return value.
+            is_valid_example: A 0/1 Tensor of shape [batch_size], 1 if the example is
+                a valid input to the loss computation.
+
+        Returns:
+            A dictionary of input stats summaries.
+        """
+        valid_frames = (1.0 - input_batch["paddings"]) * is_valid_example[:, None]
+        valid_labels = (1.0 - target_paddings) * is_valid_example[:, None]
+
+        total_source_lengths = jnp.sum(valid_frames)
+        total_target_lengths = jnp.sum(valid_labels)
+        total_num_examples = jnp.maximum(is_valid_example.sum(), 1.0)
+        total_num_frames = jnp.maximum(jnp.size(input_batch["paddings"]), 1)
+        input_stats = {
             "input_stats/average_target_length": WeightedScalar(
-                jnp.mean(target_lengths), batch_size
+                total_target_lengths / total_num_examples, total_num_examples
             ),
             "input_stats/average_source_length": WeightedScalar(
-                jnp.mean(source_lengths), batch_size
+                total_source_lengths / total_num_examples, total_num_examples
             ),
             "input_stats/frame_packing_efficiency": WeightedScalar(
-                jnp.sum(source_lengths) / num_source_elements, num_source_elements
+                total_source_lengths / total_num_frames, total_num_frames
             ),
         }
-        # pytype: enable=attribute-error
-        return ret_dict
+        return input_stats
 
 
 class CTCDecoderModel(BaseASRDecoderModel):
@@ -282,32 +295,6 @@ class CTCDecoderModel(BaseASRDecoderModel):
         paddings = input_batch["paddings"]
         logits = self.lm_head(inputs)
         return logits * (1 - paddings[..., None])
-
-    def _input_stats_summaries(
-        self, input_batch: Nested[Tensor], per_example_weight: Tensor
-    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
-        paddings = input_batch["paddings"]
-        target_paddings = self._compute_target_paddings(input_batch)
-        valid_frame_mask = (1.0 - paddings) * per_example_weight[:, None]
-        valid_label_mask = (1.0 - target_paddings) * per_example_weight[:, None]
-        num_valid_frames = jnp.sum(valid_frame_mask)
-        num_valid_labels = jnp.sum(valid_label_mask)
-        total_example_weights = jnp.maximum(per_example_weight.sum(), 1.0)
-        # pytype: disable=attribute-error
-        num_total_frames = jnp.maximum(input_batch["paddings"].size, 1)
-        ret_dict = {
-            "input_stats/average_target_length": WeightedScalar(
-                num_valid_labels / total_example_weights, total_example_weights
-            ),
-            "input_stats/average_source_length": WeightedScalar(
-                num_valid_frames / total_example_weights, total_example_weights
-            ),
-            "input_stats/frame_packing_efficiency": WeightedScalar(
-                num_valid_frames / num_total_frames, num_total_frames
-            ),
-        }
-        # pytype: enable=attribute-error
-        return ret_dict
 
     def _loss_summaries(
         self,
@@ -365,9 +352,9 @@ class CTCDecoderModel(BaseASRDecoderModel):
                     per_example_weight: A float Tensor of shape [batch_size].
         """
         cfg: CTCDecoderModel.Config = self.config
-        target_paddings: Tensor = self._compute_target_paddings(input_batch)
         paddings: Tensor = input_batch["paddings"]
         target_labels: Tensor = input_batch["target_labels"]
+        target_paddings: Tensor = self._compute_target_paddings(input_batch)
 
         # Compute CTC loss.
         logits = self.predict(input_batch)
@@ -392,7 +379,9 @@ class CTCDecoderModel(BaseASRDecoderModel):
         aux_outputs = dict(per_example_weight=per_example_weight, per_example_loss=per_example_loss)
         # Add summaries.
         summary = self._input_stats_summaries(
-            input_batch=input_batch, per_example_weight=per_example_weight
+            input_batch=input_batch,
+            target_paddings=target_paddings,
+            is_valid_example=per_example_weight,
         )
         summary.update(
             self._loss_summaries(
@@ -845,6 +834,16 @@ class TransducerDecoderModel(BaseASRDecoderModel):
             per_example_weight.sum(), 1
         )
         aux_outputs = dict(per_example_weight=per_example_weight, per_example_loss=per_example_loss)
+
+        # Add input summaries.
+        input_summary = self._input_stats_summaries(
+            input_batch=input_batch,
+            target_paddings=target_paddings,
+            is_valid_example=per_example_weight,
+        )
+        for name, value in input_summary.items():
+            self.add_summary(name, value)
+
         self.add_summary(
             "loss/example_weight",
             WeightedScalar(jnp.mean(per_example_weight), per_example_weight.shape[0]),
@@ -986,9 +985,9 @@ class TransducerDecoderModel(BaseASRDecoderModel):
 
         Returns:
             DecodeOutputs, containing
-                raw_sequences: An int Tensor of shape [batch_size, num_decodes, num_frames].
-                sequences: An int Tensor of shape [batch_size, num_decodes, num_frames].
-                paddings: A 0/1 Tensor of shape [batch_size, num_decodes, num_frames].
+                raw_sequences: An int Tensor of shape [batch_size, num_decodes, max_decode_len].
+                sequences: An int Tensor of shape [batch_size, num_decodes, max_decode_len].
+                paddings: A 0/1 Tensor of shape [batch_size, num_decodes, max_decode_len].
                 scores: A Tensor of shape [batch_size, num_decodes].
 
         Raises:
@@ -1025,7 +1024,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
             num_decodes=num_decodes,
             max_decode_len=max_decode_len,
         )
-
+        # We drop eos token in the decoded sequence.
         decode_paddings = jnp.logical_or(
             jnp.cumsum(beam_search_outputs.sequences == eos_id, axis=-1),
             # Return all paddings for invalid sequences.
@@ -1045,4 +1044,251 @@ class TransducerDecoderModel(BaseASRDecoderModel):
             sequences=outputs["sequences"],
             paddings=outputs["paddings"],
             scores=beam_search_outputs.scores,
+        )
+
+
+def _paddings_from_decode_sequence(*, sequences: Tensor, scores: Tensor, eos_id: int) -> Tensor:
+    """Computes paddings from decoded outputs.
+
+    Args:
+        sequences: An integer Tensor of shape [batch_size, num_decodes, max_decode_len].
+        scores: A float Tensor of shape  [batch_size, num_decodes, 1 or max_decode_len]. Positions
+            corresponding to scores <= NEG_INF will be treated as paddings.
+        eos_id: An integer of eos token id.
+
+    Returns:
+        A 0/1 Tensor of shape [batch_size, num_decodes, max_decode_len].
+    """
+    # [batch_size, num_decodes, max_decode_len].
+    # Note: jax.lax.cummax doesn't support axis=-1.
+    eos_indicator = (sequences == eos_id).astype(sequences.dtype)
+    paddings_exclude_eos = jax.lax.cummax(eos_indicator, axis=sequences.ndim - 1)
+    paddings = jnp.pad(paddings_exclude_eos, ((0, 0), (0, 0), (1, 0)), constant_values=0)[:, :, :-1]
+    # Return all paddings for invalid tokens/sequences.
+    return jnp.logical_or(paddings, scores <= NEG_INF)
+
+
+class LASDecoderModel(BaseASRDecoderModel):
+    """Listen Attend and Spell decoder.
+
+    https://arxiv.org/abs/1508.01211
+    """
+
+    @config_class
+    class Config(BaseASRDecoderModel.Config):
+        """Configures LASDecoderModel.
+
+        Attributes:
+            decoder: A config that instantiates the autoregressive Decoder.
+            z_loss_scale: Coefficient for auxiliary z-loss loss term.
+            label_smoothing: The factor to control label smoothing in cross entropy.
+        """
+
+        decoder: Decoder.Config = Decoder.default_config()
+        z_loss_scale: float = 0.0
+        label_smoothing: float = 0.0
+
+    @classmethod
+    def default_config(cls) -> Config:
+        cfg = super().default_config()
+        transformer_cfg = cfg.decoder.transformer.layer
+        transformer_cfg.cross_attention = TransformerAttentionLayer.default_config()
+        return cfg
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        cfg.decoder.set(vocab_size=cfg.vocab_size)
+        cfg.decoder.transformer.layer.cross_attention.source_dim = cfg.input_dim
+        self._add_child("decoder", cfg.decoder)
+
+    def forward(self, input_batch: Nested[Tensor]) -> Tuple[Tensor, Nested[Tensor]]:
+        """Computes the cross entropy loss.
+
+        See BaseASRDecoderModel.forward docstring for details.
+        """
+        cfg = self.config
+        target_labels: Tensor = input_batch["target_labels"]
+        target_paddings: Tensor = self._compute_target_paddings(input_batch)
+
+        # Cross-attention logit biases: [batch_size, 1, 1, source_len].
+        cross_attention_logit_biases = self._compute_attention_logit_biases(
+            paddings=input_batch["paddings"]
+        )
+        predict_outputs = self.decoder(
+            input_ids=input_batch["target"]["input_ids"],
+            cross_attention_data=input_batch["inputs"],
+            cross_attention_logit_biases=cross_attention_logit_biases,
+        )
+        # Filter out empty source sequences.
+        # [batch_size].
+        is_valid_example = (1 - input_batch["paddings"]).sum(axis=-1) > 0
+        live_targets = (1 - target_paddings) * is_valid_example[:, None]
+        loss, loss_dict = cross_entropy(
+            logits=predict_outputs["logits"],  # [batch_size, target_len, num_classes].
+            target_labels=target_labels,  # [batch_size, target_len].
+            live_targets=live_targets,
+            z_loss_scale=cfg.z_loss_scale,
+            label_smoothing=cfg.label_smoothing,
+        )
+
+        # Add input summaries.
+        input_summary = self._input_stats_summaries(
+            input_batch=input_batch,
+            target_paddings=target_paddings,
+            is_valid_example=is_valid_example,
+        )
+        for name, value in input_summary.items():
+            self.add_summary(name, value)
+        # [batch_size, target_len].
+        per_token_loss = loss_dict["per_target_loss"] * live_targets
+        per_example_loss = jnp.sum(per_token_loss, axis=-1)
+        # Number of valid tokens per example.
+        per_example_weight = jnp.sum(live_targets, axis=-1)
+        num_targets = per_example_weight.sum()
+        self.add_summary("loss", WeightedScalar(loss, num_targets))
+        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
+        self.add_summary("token_accuracy", WeightedScalar(loss_dict["accuracy"], num_targets))
+        return loss, dict(per_example_loss=per_example_loss, per_example_weight=per_example_weight)
+
+    def _compute_attention_logit_biases(
+        self,
+        paddings: Tensor,
+    ) -> Tensor:
+        """Computes cross-attention logit biases for LAS decoder.
+
+        Args:
+            paddings: A 0/1 Tensor of shape [batch_size, source_len].
+
+        Returns:
+            Attention logit biases of shape [batch_size, num_heads, target_len, source_len].
+        """
+        # Compute padding logit biases: [batch_size, num_heads=1, target_len=1, source_len].
+        cross_attention_biases = (paddings == 1) * NEG_INF
+        cross_attention_biases = cross_attention_biases[:, None, None, :]
+        return cross_attention_biases
+
+    def _validate_decode_batch(self, input_batch: Nested[Tensor]):
+        """Raises ValueError if `prefix` is not present in `input_batch`."""
+        if "prefix" not in input_batch:
+            raise ValueError("Input batch is expected to contain `prefix`.")
+
+    def beam_search_decode(
+        self,
+        input_batch: Nested[Tensor],
+        num_decodes: int,
+        max_decode_len: int,
+        brevity_penalty: Optional[Callable[[jnp.array, Tensor], jnp.array]] = None,
+    ) -> DecodeOutputs:
+        """LAS beam search decode.
+
+        Args:
+            input_batch: A dict containing:
+                inputs: A Tensor of shape [batch_size, num_frames, dim].
+                paddings: A 0/1 Tensor of shape [batch_size, num_frames]. 1's represent paddings.
+                prefix: An int Tensor of shape [batch_size, prefix_length]. The prefix for
+                    each example in the batch should begin with the [BOS] token.
+            num_decodes: The number of decoded sequences to return. These are the number of
+                hypotheses per batch example.
+            max_decode_len: The maximum sequence length of decoded sequences, including prefix.
+            brevity_penalty: Brevity penalty function for length normalization during beam search.
+                Defaults to None, which is to use the function ((5 + length) / 6)^\alpha without
+                length normalization, i.e. alpha=0. See Eq. 14 https://arxiv.org/abs/1609.08144.
+                https://github.com/tensorflow/lingvo/blob/05a076b0783a8bbf4a770095966c472bb37bbf65/lingvo/core/beam_search_helper.py#L101-L107.
+
+        Returns:
+            DecodeOutputs, containing:
+                raw_sequences: An int Tensor of shape [batch_size, num_decodes, max_decode_len],
+                    raw sequences returned by beam search.
+                sequences: An int Tensor of shape [batch_size, num_decodes, max_decode_len].
+                    raw_sequences with padding and eos replaced with 0.
+                paddings: A 0/1 Tensor of shape [batch_size, num_decodes, max_decode_len].
+                scores: A Tensor of shape [batch_size, num_decodes].
+
+        Raises:
+             ValueError: If `prefix` is not present in `input_batch`.
+        """
+        dec_cfg = self.config.decoder
+        self._validate_decode_batch(input_batch)
+
+        # Cross-attention logit biases: [batch_size, num_heads=1, target_len=1, source_len].
+        cross_attention_logit_biases = self._compute_attention_logit_biases(
+            paddings=input_batch["paddings"]
+        )
+
+        with child_context("beam_search_decode", module=self.decoder):
+            beam_search_outputs: decoding.BeamSearchOutputs = self.decoder.beam_search_decode(
+                prefix=input_batch["prefix"],
+                max_sequence_length=max_decode_len,
+                num_decodes=num_decodes,
+                cross_attention_data=input_batch["inputs"],
+                cross_attention_logit_biases=cross_attention_logit_biases,
+                brevity_penalty=brevity_penalty,
+            )
+            paddings = _paddings_from_decode_sequence(
+                sequences=beam_search_outputs.sequences,
+                scores=beam_search_outputs.scores[..., None],
+                eos_id=dec_cfg.eos_token_id,
+            )
+            # Drop dummy decode position and mask outputs corresponding to padding.
+            sequences = beam_search_outputs.sequences * (1 - paddings)
+        return DecodeOutputs(
+            raw_sequences=beam_search_outputs.sequences,
+            sequences=sequences,
+            paddings=paddings,
+            scores=beam_search_outputs.scores,
+        )
+
+    def sample_decode(
+        self,
+        input_batch: Dict[str, Tensor],
+        num_decodes: int,
+        max_decode_len: int,
+        logits_modifier: Optional[ConfigOr[LogitsToLogitsFn]] = None,
+    ) -> DecodeOutputs:
+        """LAS sample decoding.
+
+        Args:
+            input_batch: See `beam_search_decode`.
+            num_decodes: See `beam_search_decode`.
+            max_decode_len: See `beam_search_decode`.
+            logits_modifier: An optional logits modifier to apply prior to softmax.
+                If None, do not modify the logits.
+
+        Returns:
+            See `beam_search_decode`.
+        """
+        dec_cfg = self.config.decoder
+        eos_id = dec_cfg.eos_token_id
+        self._validate_decode_batch(input_batch)
+
+        cross_attention_logit_biases = self._compute_attention_logit_biases(
+            paddings=input_batch["paddings"]
+        )
+
+        with child_context("sample_decode", module=self.decoder):
+            sample_decode_outputs: decoding.SampleOutputs = self.decoder.sample_decode(
+                prefix=input_batch["prefix"],
+                max_sequence_length=max_decode_len,
+                num_decodes=num_decodes,
+                cross_attention_data=input_batch["inputs"],
+                cross_attention_logit_biases=cross_attention_logit_biases,
+                logits_modifier=logits_modifier,
+                stop_decoding_condition=StopOnSubsequence([[eos_id]]),
+            )
+            paddings = _paddings_from_decode_sequence(
+                sequences=sample_decode_outputs.sequences,
+                scores=sample_decode_outputs.token_scores,
+                eos_id=eos_id,
+            )
+
+            # Drop dummy decode position and mask outputs corresponding to padding.
+            sequences = sample_decode_outputs.sequences * (1 - paddings)
+            # [batch_size, num_decodes].
+            scores = jnp.sum(sample_decode_outputs.token_scores * (1 - paddings), axis=-1)
+        return DecodeOutputs(
+            raw_sequences=sample_decode_outputs.sequences,
+            sequences=sequences,
+            paddings=paddings,
+            scores=scores,
         )

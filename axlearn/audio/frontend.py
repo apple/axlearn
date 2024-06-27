@@ -102,6 +102,8 @@ class LogMelFrontend(BaseFrontend):
         # low-energy signals.
         mel_floor: Required[float] = REQUIRED
         # Optional customized FFT implementation. Use `jnp.fft.fft` if None.
+        # This can be used to support a sharded implementation of FFT.
+        # See `sharded_fft` for an example.
         fft: Optional[InstantiableConfig[Callable[[Tensor], Tensor]]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
