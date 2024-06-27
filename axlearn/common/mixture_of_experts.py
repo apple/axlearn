@@ -40,7 +40,6 @@ from axlearn.common.param_init import FanAxes
 from axlearn.common.utils import NestedTensor, PartitionSpec, Tensor, with_sharding_constraint
 
 
-# pytype: disable=module-attr
 def _router_z_loss(logits: Tensor) -> Tensor:
     """Loss that encourages router logits to remain small and improves stability.
 
@@ -53,13 +52,12 @@ def _router_z_loss(logits: Tensor) -> Tensor:
     Returns:
         z_loss: A scalar loss.
     """
+    # pytype: disable=module-attr
     logits_sum = jax.scipy.special.logsumexp(logits, axis=-1, keepdims=True)
+    # pytype: enable=module-attr
     log_z = jnp.squeeze(logits_sum, axis=-1)
     z_loss = jax.lax.square(log_z).mean()
     return z_loss
-
-
-# pytype: enable=module-attr
 
 
 def _cum_sum(
