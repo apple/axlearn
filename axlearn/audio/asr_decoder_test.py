@@ -17,11 +17,13 @@ from axlearn.audio.asr_decoder import (
     CTCDecoderModel,
     CTCPrefixMerger,
     DecodeOutputs,
+    LASDecoderModel,
     RNNPredictionNetwork,
     TransducerDecoderModel,
     _is_valid_ctc_seq,
     _map_label_sequences,
 )
+from axlearn.common import attention, causal_lm
 from axlearn.common.config import config_for_function
 from axlearn.common.decoder import _scores_from_logits
 from axlearn.common.decoding import NEG_INF
@@ -1531,3 +1533,170 @@ class TransducerDecoderModelTest(TestCase):
                 )
             )
         )
+
+
+class LASDecoderModelTest(TestCase):
+    def _set_up_las(self, encoder_dim, decoder_dim, num_heads, vocab_size, pad_id=-1):
+        num_layers = 2
+        cfg = LASDecoderModel.default_config().set(
+            name="las_decoder",
+            input_dim=encoder_dim,
+            vocab_size=vocab_size,
+        )
+        cfg.decoder = causal_lm.gpt_decoder_config(
+            stack_cfg=attention.StackedTransformerLayer.default_config(),
+            num_layers=num_layers,
+            hidden_dim=decoder_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+            activation_function="nn.gelu",
+            max_position_embeddings=10,
+            layer_norm_epsilon=0.1,
+            dropout_rate=0.0,
+        )
+        cfg.decoder.pad_token_id = pad_id
+        transformer_cfg = cfg.decoder.transformer.layer
+        transformer_cfg.cross_attention = attention.TransformerAttentionLayer.default_config()
+        transformer_cfg.cross_attention.attention.num_heads = num_heads
+        return cfg
+
+    def test_forward(self):
+        encoder_dim, decoder_dim, num_heads, vocab_size = 8, 6, 3, 20
+        cfg: LASDecoderModel.Config = self._set_up_las(
+            encoder_dim=encoder_dim,
+            decoder_dim=decoder_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+        )
+        bos_id = eos_id = cfg.decoder.eos_token_id
+        pad_id = cfg.decoder.pad_token_id
+        # Initialize layer parameters.
+        layer: LASDecoderModel = cfg.set(name="test").instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, input_key = jax.random.split(prng_key, num=3)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        batch_size, max_src_len = 3, 10
+        target_labels = jnp.array(
+            [
+                [14, 8, 17, 19, 17, eos_id],  # length 5.
+                [17, 4, 18, eos_id, pad_id, pad_id],  # length 3.
+                [eos_id, pad_id, pad_id, pad_id, pad_id, pad_id],  # length 0.
+            ]
+        )
+        input_ids = jnp.concatenate(
+            [jnp.full([batch_size, 1], bos_id), target_labels[:, :-1]], axis=1
+        )
+
+        src_len = np.array([10, 0, 7])
+        target_len = np.array([6, 4, 1])
+        # [batch_size, src_len, am_dim].
+        inputs = jax.random.normal(input_key, [batch_size, max_src_len, encoder_dim]) * 1000
+        paddings = jnp.arange(max_src_len)[None, :] >= src_len[:, None]
+
+        @jax.jit
+        def jit_forward(input_batch):
+            (loss, aux_outputs), _ = F(
+                layer,
+                inputs=dict(input_batch=input_batch),
+                is_training=True,
+                prng_key=prng_key,
+                state=layer_params,
+            )
+            return loss, aux_outputs
+
+        # Compute test loss.
+        loss, aux_outputs = jit_forward(
+            dict(
+                inputs=inputs,
+                paddings=paddings,
+                target_labels=target_labels,
+                target=dict(input_ids=input_ids),
+            )
+        )
+        # Empty source example has weight 0.
+        expected_weight = target_len * (src_len > 0)
+        self.assertNestedAllClose(aux_outputs["per_example_weight"], expected_weight)
+        assert_allclose(
+            loss,
+            aux_outputs["per_example_loss"].sum() / aux_outputs["per_example_weight"].sum(),
+        )
+        assert_allclose(loss, 4.396218)
+
+    def test_decode(self):
+        encoder_dim, decoder_dim, num_heads, vocab_size = 5, 16, 4, 20
+        num_decodes = 5
+        cfg: LASDecoderModel.Config = self._set_up_las(
+            encoder_dim=encoder_dim,
+            decoder_dim=decoder_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+        )
+        pad_id = cfg.decoder.pad_token_id
+        # Initialize layer parameters.
+        layer: LASDecoderModel = cfg.set(name="test").instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        decode_key, init_key, input_key, prefix_key = jax.random.split(prng_key, num=4)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        batch_size, max_src_len, max_tgt_len = 3, 10, 8
+        src_len = jnp.array([10, 7, 5])
+        prefix_length = jnp.array([1, 3, 6])
+
+        # [batch_size, max_seq_len, dim].
+        inputs = jax.random.normal(input_key, [batch_size, max_src_len, cfg.input_dim]) * 1000
+        # [batch_size, max_seq_len].
+        paddings = (jnp.arange(max_src_len) >= src_len[:, None]).astype(jnp.int32)
+        prefix = jax.random.randint(
+            prefix_key,
+            shape=[batch_size, max_tgt_len],
+            # Prefix can consist of any tokens, including pad and eos.
+            minval=0,
+            maxval=vocab_size,
+        )
+        # Explicitly fill positions >= prefix_length with pad_id (-1).
+        # Note that each batch example may have a different prefix length.
+        # [batch_size, max_tgt_len].
+        prefix_mask = jnp.arange(max_tgt_len) < prefix_length[:, None]
+        prefix = prefix * prefix_mask + pad_id * (1 - prefix_mask)
+
+        @functools.partial(jax.jit, static_argnames=("method", "num_decodes", "logits_modifier"))
+        def jit_method(inputs, prng_key, method, num_decodes, logits_modifier=None):
+            if logits_modifier is not None:
+                inputs["logits_modifier"] = logits_modifier
+            outputs, _ = F(
+                layer,
+                inputs=dict(**inputs, max_decode_len=max_tgt_len, num_decodes=num_decodes),
+                is_training=True,
+                prng_key=prng_key,
+                state=layer_params,
+                method=method,
+            )
+            return outputs
+
+        decode_inputs = dict(
+            input_batch=dict(inputs=inputs, paddings=paddings, prefix=prefix),
+        )
+
+        # Beam search decode.
+        beam_search_outputs: DecodeOutputs = jit_method(
+            decode_inputs,
+            prng_key=decode_key,
+            method="beam_search_decode",
+            num_decodes=num_decodes,
+        )
+        # Check that beams are sorted descending by score.
+        self.assertTrue(jnp.all(jnp.diff(beam_search_outputs.scores, axis=-1) <= 0))
+        self.assertTrue(jnp.all(beam_search_outputs.sequences * beam_search_outputs.paddings == 0))
+        self.assertSequenceEqual(
+            beam_search_outputs.sequences.shape, [batch_size, num_decodes, max_tgt_len]
+        )
+
+        # Sample decode.
+        sample_outputs: DecodeOutputs = jit_method(
+            decode_inputs,
+            prng_key=decode_key,
+            method="sample_decode",
+            num_decodes=2,
+        )
+        self.assertSequenceEqual(sample_outputs.sequences.shape, [batch_size, 2, max_tgt_len])
