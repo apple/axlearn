@@ -52,9 +52,9 @@ def _router_z_loss(logits: Tensor) -> Tensor:
     Returns:
         z_loss: A scalar loss.
     """
-    # pytype: disable=module-attr
-    logits_sum = jax.scipy.special.logsumexp(logits, axis=-1, keepdims=True)
-    # pytype: enable=module-attr
+    logits_sum = jax.scipy.special.logsumexp(
+        logits, axis=-1, keepdims=True
+    )  # pytype: disable=module-attr
     log_z = jnp.squeeze(logits_sum, axis=-1)
     z_loss = jax.lax.square(log_z).mean()
     return z_loss
@@ -108,14 +108,13 @@ def _create_over_capacity_ratio_summary(
     return over_capacity_ratio
 
 
-# pytype: disable=bad-return-type
 def _compute_expert_capacity(
     *,
     group_size: int,
     num_experts: int,
     expert_capacity: Optional[int],
     capacity_factor: Optional[float],
-) -> int:
+) -> int:  # pytype: disable=bad-return-type
     """Computes the final expert capacity."""
     if not (capacity_factor or expert_capacity):
         raise ValueError("At least one of `capacity_factor` or `expert_capacity` needs to be set.")
@@ -137,9 +136,6 @@ def _compute_expert_capacity(
                 num_experts,
             )
     return expert_capacity
-
-
-# pytype: enable=bad-return-type
 
 
 def _cap_logits(logits: Tensor, gating_logit_cap: float) -> Tensor:
