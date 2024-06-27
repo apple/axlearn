@@ -175,8 +175,9 @@ def _normalize_by_scale(*, input_key: str, scale: float) -> input_tf_data.Datase
     if scale <= 0:
         raise ValueError(f"scale must be strictly positive, got {scale}.")
 
+    @seqio.map_over_dataset
     def process_example_fn(example: Nested[tf.Tensor]) -> Nested[tf.Tensor]:
         example[input_key] = tf.cast(example[input_key], tf.float32) / scale
         return example
 
-    return seqio.map_over_dataset(process_example_fn)
+    return process_example_fn
