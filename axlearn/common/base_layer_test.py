@@ -5,7 +5,7 @@
 import dataclasses
 import math
 from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import jax.ad_checkpoint
 import jax.core
@@ -147,10 +147,7 @@ class TestRematLayer(BaseLayer):
             lambda: self._forward_calls.append(None), lambda: self._backward_calls.append(None)
         )
 
-    def forward(self, x, *, static_arg: Any = None):
-        # static_arg is not really used, but added to test that the remat logic can handle
-        # static kwargs.
-        del static_arg
+    def forward(self, x):
         h = self._callback(self.op(x))
         y = self._remat_name(h, self.config.output_name)
         return y
@@ -181,8 +178,8 @@ class TestRematParentLayer(BaseLayer):
                 TestRematLayer.default_config().set(output_name=name, remat_spec=cfg.remat_spec),
             )
 
-    def forward(self, x, static_arg: Any = None):
-        return self.layer2(self.layer1(x, static_arg=static_arg), static_arg=static_arg)
+    def forward(self, x):
+        return self.layer2(self.layer1(x))
 
 
 class BaseLayerTest(TestCase):
@@ -255,11 +252,8 @@ class BaseLayerTest(TestCase):
         self.assertEqual(tagged_param.primitive.name, "name")
         self.assertEqual(f"{type(test_module).__name__}.{var_tag}", tagged_param.params.get("name"))
 
-    @parameterized.parameters(None, "static_arg_value")
     def test_remat_causes_additional_forwards(
-        self,
-        static_arg: Any,
-        remat_spec=RematSpec(policy=jax_remat_policies.nothing_saveable),
+        self, remat_spec=RematSpec(policy=jax_remat_policies.nothing_saveable)
     ):
         test_module: TestRematParentLayer = (
             TestRematParentLayer.default_config()
@@ -278,7 +272,7 @@ class BaseLayerTest(TestCase):
                 is_training=True,
                 state=state,
                 prng_key=jax.random.PRNGKey(123),
-                inputs=dict(x=inputs, static_arg=static_arg),
+                inputs=(inputs,),
             )[0]
 
         v, g = jax.value_and_grad(partial(loss, state=state, module=test_module))(jnp.ones([]))
@@ -554,14 +548,14 @@ class ComputeFanAxesTest(TestCase):
 
         def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
             return {
-                "weight_with_fan_axes": ParameterSpec(
+                "fan_axes_specified_weight": ParameterSpec(
                     shape=(6, 8, 12),  # B, H, W
                     fan_axes=FanAxes(in_axis=-2, out_axis=-1, batch_axis=0),
                 ),
             }
 
         def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
-            if name == "weight_with_fan_axes":
+            if name == "fan_axes_specified_weight":
                 raise RuntimeError("Should not be invoked.")
             super()._compute_fan_axes(name, parameter_spec)
 
@@ -654,13 +648,18 @@ class ComputeFanAxesTest(TestCase):
         layer_cfg = self.ExplicitFanLayer.default_config().set(name="test")
         layer = layer_cfg.instantiate(parent=None)
         param_spec_map = layer._create_layer_parameter_specs()
-        orig_fan_axes = param_spec_map["weight_with_fan_axes"].fan_axes
+        orig_fan_axes = param_spec_map["fan_axes_specified_weight"].fan_axes
 
         # FanAxes from _create_layer_parameter_specs should be respected.
         with self.assertRaises(RuntimeError):
-            layer._compute_fan_axes("weight_with_fan_axes", param_spec_map["weight_with_fan_axes"])
+            layer._compute_fan_axes(
+                "fan_axes_specified_weight", param_spec_map["fan_axes_specified_weight"]
+            )
         specs = layer.create_parameter_specs_recursively()
-        self.assertEqual(orig_fan_axes, specs["weight_with_fan_axes"].fan_axes)
+        self.assertEqual(orig_fan_axes, specs["fan_axes_specified_weight"].fan_axes)
+
+        # Initialize paras w.r.t. to the fan axes.
+        layer.initialize_parameters_recursively(jax.random.PRNGKey(123))
 
 
 if __name__ == "__main__":
