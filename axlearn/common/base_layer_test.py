@@ -5,7 +5,7 @@
 import dataclasses
 import math
 from functools import partial
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import jax.ad_checkpoint
 import jax.core
@@ -147,7 +147,10 @@ class TestRematLayer(BaseLayer):
             lambda: self._forward_calls.append(None), lambda: self._backward_calls.append(None)
         )
 
-    def forward(self, x):
+    def forward(self, x, *, static_arg: Any = None):
+        # static_arg is not really used, but added to test that the remat logic can handle
+        # static kwargs.
+        del static_arg
         h = self._callback(self.op(x))
         y = self._remat_name(h, self.config.output_name)
         return y
@@ -178,8 +181,8 @@ class TestRematParentLayer(BaseLayer):
                 TestRematLayer.default_config().set(output_name=name, remat_spec=cfg.remat_spec),
             )
 
-    def forward(self, x):
-        return self.layer2(self.layer1(x))
+    def forward(self, x, static_arg: Any = None):
+        return self.layer2(self.layer1(x, static_arg=static_arg), static_arg=static_arg)
 
 
 class BaseLayerTest(TestCase):
@@ -252,8 +255,11 @@ class BaseLayerTest(TestCase):
         self.assertEqual(tagged_param.primitive.name, "name")
         self.assertEqual(f"{type(test_module).__name__}.{var_tag}", tagged_param.params.get("name"))
 
+    @parameterized.parameters(None, "static_arg_value")
     def test_remat_causes_additional_forwards(
-        self, remat_spec=RematSpec(policy=jax_remat_policies.nothing_saveable)
+        self,
+        static_arg: Any,
+        remat_spec=RematSpec(policy=jax_remat_policies.nothing_saveable),
     ):
         test_module: TestRematParentLayer = (
             TestRematParentLayer.default_config()
@@ -272,7 +278,7 @@ class BaseLayerTest(TestCase):
                 is_training=True,
                 state=state,
                 prng_key=jax.random.PRNGKey(123),
-                inputs=(inputs,),
+                inputs=dict(x=inputs, static_arg=static_arg),
             )[0]
 
         v, g = jax.value_and_grad(partial(loss, state=state, module=test_module))(jnp.ones([]))
