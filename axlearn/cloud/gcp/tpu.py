@@ -290,6 +290,7 @@ def create_queued_tpu(
     tpu_type: str,
     bundler_type: str,
     num_slices: int = 1,
+    labels: Optional[Dict[str, str]] = None,
     metadata: Optional[Dict[str, str]] = None,
     service_account: Optional[str] = None,
     reserved: Optional[bool] = None,
@@ -302,6 +303,7 @@ def create_queued_tpu(
         tpu_type: Type of each TPU slice.
         bundler_type: Type of bundle intended to be loaded to VM.
         num_slices: The number of slices of type tpu_type to start.
+        labels: Optional instance labels.
         metadata: Optional metadata for the instance.
         service_account: Service account to execute the TPU creation.
         reserved: Whether to use reserved or preemptible quota. If None, infers from `gcp_settings`.
@@ -340,6 +342,7 @@ def create_queued_tpu(
                             name,
                             tpu_type=tpu_type,
                             bundler_type=bundler_type,
+                            labels=labels,
                             metadata=metadata,
                             service_account=service_account,
                         ),
@@ -539,6 +542,7 @@ def _tpu_body(
     *,
     tpu_type: str,
     bundler_type: str,
+    labels: Optional[Dict[str, str]] = None,
     metadata: Optional[Dict[str, str]] = None,
     service_account: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -570,6 +574,7 @@ def _tpu_body(
     body.update(
         {
             "acceleratorType": tpu_type,
+            "labels": labels or {},
             "metadata": {
                 "bundle_bucket": gcp_settings("ttl_bucket"),
                 "enable-oslogin": "false",
