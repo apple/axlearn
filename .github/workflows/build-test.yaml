@@ -28,16 +28,23 @@ jobs:
         run: pre-commit run --all-files
       - name: Run pytype
         run: pytype -j auto .
+
+  set-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v3
       - name: define pytest testing matrix
         id: set-matrix
         run: |
           echo "matrix=$(python3 .github/workflows/set_matrix.py)" >> $GITHUB_OUTPUT
 
   build-and-test:
-    needs: pre-commit
+    needs: set-matrix
     runs-on: ubuntu-latest
     strategy:
-      matrix: ${{ fromJson(needs.pre-commit.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v3
       - name: Set up Docker Buildx
