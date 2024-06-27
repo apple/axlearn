@@ -116,7 +116,6 @@ def _compute_expert_capacity(
     expert_capacity: Optional[int],
     capacity_factor: Optional[float],
 ) -> int:
-    # pytype: enable=bad-return-type
     """Computes the final expert capacity."""
     if not (capacity_factor or expert_capacity):
         raise ValueError("At least one of `capacity_factor` or `expert_capacity` needs to be set.")
@@ -138,6 +137,9 @@ def _compute_expert_capacity(
                 num_experts,
             )
     return expert_capacity
+
+
+# pytype: enable=bad-return-type
 
 
 def _cap_logits(logits: Tensor, gating_logit_cap: float) -> Tensor:
