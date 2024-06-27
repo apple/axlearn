@@ -317,7 +317,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
                 )
             # No parameter to set.
     elif isinstance(dst, torch.nn.Linear):
-        check_supported(Linear, MultiheadInputLinear)
+        check_supported(Linear, MultiheadInputLinear, BertSequenceClassificationHead)
         if isinstance(layer, MultiheadInputLinear):
             # Shape of src["weight"] is [model_dim, num_heads, per_head_dim].
             all_head_dim = src["weight"].shape[1] * src["weight"].shape[2]
@@ -326,6 +326,16 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
             )  # pytype: disable=attribute-error
             if "bias" in src:
                 dst.bias.data = as_torch_tensor(src["bias"].reshape(all_head_dim))
+        elif isinstance(layer, BertSequenceClassificationHead):
+            # We only convert the linear layer of BertSequenceClassificationHead here. The pooler
+            # of BertSequenceClassificationHead is handled outside with BertModel conversion.
+            # torch.nn.Linear.weight uses layout (output, input) while AXLearn uses (input,
+            # output).
+            dst.weight.data = as_torch_tensor(src["output"]["weight"]).transpose(
+                0, 1
+            )  # pytype: disable=attribute-error
+            if "bias" in src:
+                dst.bias.data = as_torch_tensor(src["output"]["bias"])
         else:
             # torch.nn.Linear.weight uses layout (output, input) while AXLearn uses
             # (input, output).
@@ -438,7 +448,18 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
         check_supported(BertPooler)
         axlearn_to_torch(layer.linear, src["linear"], dst.dense)
         # Note: always use tanh as activation here.
-    elif isinstance(dst, (hf_bert.BertModel, hf_roberta.RobertaModel)):
+    elif isinstance(dst, hf_bert.BertModel):
+        check_supported(TextEmbeddingEncoder, BertModel)
+        axlearn_to_torch(layer.encoder.emb, src["encoder"]["emb"], dst.embeddings)
+        axlearn_to_torch(layer.encoder.transformer, src["encoder"]["transformer"], dst.encoder)
+        src_pooler = src.get("head", {}).get("pooler", None)
+        if (src_pooler is not None) != (dst.pooler is not None):
+            raise ValueError(
+                "Input layer and output layer must either both have pooler, or both not."
+            )
+        if src_pooler:
+            axlearn_to_torch(layer.head.pooler, src_pooler, dst.pooler)
+    elif isinstance(dst, hf_roberta.RobertaModel):
         check_supported(TextEmbeddingEncoder, BertModel)
         axlearn_to_torch(layer.encoder.emb, src["encoder"]["emb"], dst.embeddings)
         axlearn_to_torch(layer.encoder.transformer, src["encoder"]["transformer"], dst.encoder)
@@ -507,6 +528,10 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
             )
 
         axlearn_to_torch(layer.norm, src["norm"], dst.output.LayerNorm)
+    elif isinstance(dst, hf_bert.BertForSequenceClassification):
+        check_supported(BertModel)
+        axlearn_to_torch(layer.head, src["head"], dst.classifier)
+        axlearn_to_torch(layer, src, dst.bert)
     elif isinstance(dst, hf_roberta.RobertaClassificationHead):
         check_supported(BertSequenceClassificationHead)
         axlearn_to_torch(layer.pooler.linear, src["pooler"]["linear"], dst.dense)
