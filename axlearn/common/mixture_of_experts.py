@@ -40,6 +40,7 @@ from axlearn.common.param_init import FanAxes
 from axlearn.common.utils import NestedTensor, PartitionSpec, Tensor, with_sharding_constraint
 
 
+# pytype: disable=module-attr
 def _router_z_loss(logits: Tensor) -> Tensor:
     """Loss that encourages router logits to remain small and improves stability.
 
@@ -56,6 +57,9 @@ def _router_z_loss(logits: Tensor) -> Tensor:
     log_z = jnp.squeeze(logits_sum, axis=-1)
     z_loss = jax.lax.square(log_z).mean()
     return z_loss
+
+
+# pytype: enable=module-attr
 
 
 def _cum_sum(
@@ -106,6 +110,7 @@ def _create_over_capacity_ratio_summary(
     return over_capacity_ratio
 
 
+# pytype: disable=bad-return-type
 def _compute_expert_capacity(
     *,
     group_size: int,
@@ -134,6 +139,9 @@ def _compute_expert_capacity(
                 num_experts,
             )
     return expert_capacity
+
+
+# pytype: enable=bad-return-type
 
 
 def _cap_logits(logits: Tensor, gating_logit_cap: float) -> Tensor:
