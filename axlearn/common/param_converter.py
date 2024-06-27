@@ -327,10 +327,10 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
             if "bias" in src:
                 dst.bias.data = as_torch_tensor(src["bias"].reshape(all_head_dim))
         elif isinstance(layer, BertSequenceClassificationHead):
-            # We only convert the linear layer of BertSequenceClassificationHead here.
-            # The pooler of BertSequenceClassificationHead is handled outside.
-            # torch.nn.Linear.weight uses layout (output, input) while AXLearn uses
-            # (input, output).
+            # We only convert the linear layer of BertSequenceClassificationHead here. The pooler
+            # of BertSequenceClassificationHead is handled outside with BertModel conversion.
+            # torch.nn.Linear.weight uses layout (output, input) while AXLearn uses (input,
+            # output).
             dst.weight.data = as_torch_tensor(src["output"]["weight"]).transpose(
                 0, 1
             )  # pytype: disable=attribute-error
