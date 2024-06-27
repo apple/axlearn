@@ -1,5 +1,8 @@
 """
-A script to define split up the test files into partitions
+A script to split up test files into partitions for GitHub Actions
+
+This allows us to run 10 partitions of tests at the same time on different
+GitHub action runners.
 """
 import glob
 import json
