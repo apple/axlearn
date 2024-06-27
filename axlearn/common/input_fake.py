@@ -2,7 +2,7 @@
 
 """Fake input modules."""
 import json
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import jax
 import numpy as np
@@ -11,7 +11,7 @@ import tensorflow as tf
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.input_tf_data import BuildDatasetFn
 from axlearn.common.module import Module
-from axlearn.common.utils import as_tensor
+from axlearn.common.utils import Nested, Tensor, as_numpy_array, as_tensor
 
 
 class FakeTextInput(Module):
@@ -44,6 +44,10 @@ class FakeTextInput(Module):
 
     def dataset(self):
         return self.__iter__()  # pylint: disable=unnecessary-dunder-call
+
+    def batches(self, it: tf.data.Iterator) -> Iterable[Nested[Tensor]]:
+        for input_batch in it:
+            yield as_numpy_array(input_batch)
 
 
 class FakeLmInput(FakeTextInput):

@@ -878,9 +878,10 @@ class SpmdTrainer(Module):
     ) -> Tuple[TrainerState, NestedTensor]:
         cfg = self.config
         # Shard and (possibly) dispatch the input batch.
-        input_batch = self.input.dispatch_global_batch(
-            input_batch, batch_axis_names=cfg.batch_axis_names
-        )
+        if hasattr(self.input, "dispatch_global_batch"):
+            input_batch = self.input.dispatch_global_batch(
+                input_batch, batch_axis_names=cfg.batch_axis_names
+            )
 
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
             state.prng_key, 4
