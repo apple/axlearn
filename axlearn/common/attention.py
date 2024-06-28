@@ -1306,6 +1306,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
         time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         cfg = self.config
