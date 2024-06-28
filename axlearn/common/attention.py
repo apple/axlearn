@@ -39,6 +39,7 @@ On `attention_logit_biases`:
   (therefore a -inf represents a disconnected position pair).
 * biases=None represents an all-zero tensor, i.e., all position pairs are connected.
 """
+
 # pylint: disable=abstract-method,too-many-lines
 import enum
 import functools
@@ -2369,10 +2370,13 @@ class TransformerAttentionLayer(BaseLayer):
 
         def attention_thunk(target: Tensor) -> Tuple[Optional[NestedTensor], Tensor]:
             if mode == ForwardMode.FORWARD:
-                atten_state, atten_output = None, self.attention(
-                    query=target,
-                    **kv_kwargs,
-                    attention_logit_biases=attention_logit_biases,
+                atten_state, atten_output = (
+                    None,
+                    self.attention(
+                        query=target,
+                        **kv_kwargs,
+                        attention_logit_biases=attention_logit_biases,
+                    ),
                 )
             elif mode == ForwardMode.INIT_STATES:
                 assert cached_states is not None
@@ -2888,11 +2892,14 @@ class TransformerLayer(BaseTransformerLayer):
             if "cross_attention_probs" in return_aux:
                 cross_attention_return_aux.add("probs")
         if mode == ForwardMode.FORWARD:
-            self_atten_state, self_atten_outputs = None, self.self_attention(
-                target=data,
-                source=self_attention_kv_state,
-                attention_logit_biases=self_attention_logit_biases,
-                return_aux=self_attention_return_aux,
+            self_atten_state, self_atten_outputs = (
+                None,
+                self.self_attention(
+                    target=data,
+                    source=self_attention_kv_state,
+                    attention_logit_biases=self_attention_logit_biases,
+                    return_aux=self_attention_return_aux,
+                ),
             )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
@@ -3673,8 +3680,11 @@ class _TransformerPipeline(Pipeline):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> TransformerLayer.Output:
         carry_in = dict(data=data)
+        return_aux = return_aux or set()
+
         # Even though attention logit biases do not change across layers, we
         # include them in the carry so that they are aligned with the microbatches.
         if self_attention_logit_biases is not None:
@@ -3691,7 +3701,9 @@ class _TransformerPipeline(Pipeline):
             layer_outputs: TransformerLayer.Output = self.layer(**carry)
             carry.pop("data")
             return dict(**carry, data=layer_outputs.data), {
-                k: v for k, v in layer_outputs._asdict().items() if k != "data"
+                k: v if k in return_aux else None
+                for k, v in layer_outputs._asdict().items()
+                if k != "data"
             }
 
         pipeline_outputs: Pipeline.Output = self._run(layer_fn, carry_in)
@@ -3750,12 +3762,14 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> TransformerLayer.Output:
         return self.pipeline(
             data,
             self_attention_logit_biases=self_attention_logit_biases,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
+            return_aux=return_aux,
         )
 
     # TODO(sneha): extend_step

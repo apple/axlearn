@@ -13,6 +13,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
 """Tests attention layers."""
+
 import contextlib
 import copy
 
@@ -2980,7 +2981,6 @@ class BaseTransformerTest(TestCase):
 
 
 class TransformerTest(BaseTransformerTest):
-
     """Tests TransformerLayer."""
 
     def _compare_against_roberta_attention(
@@ -4073,12 +4073,42 @@ class StackedTransformerTest(BaseTransformerTest):
                 return_aux={"self_attention_kv_state"},
             ),
         )
-        print(outputs)
         self.assertNestedAllClose(expected_output, outputs[0])
         if precomputed_kv_state:
             self.assertNestedAllClose(kv_state, outputs[1]["self_attention_kv_state"])
         else:
             self.assertIsInstance(outputs[1]["self_attention_kv_state"], KVState)
+
+    def test_pipeline_return_aux(self):
+        batch_size, num_heads, seq_len, dim = 2, 3, 4, 6
+
+        class DummyTransformerLayer(TransformerLayer):
+            def forward(self, data, **kwargs):
+                return TransformerLayer.Output(
+                    data=data,
+                    self_attention_probs=jnp.empty([batch_size, num_heads, seq_len, seq_len]),
+                    self_attention_kv_state=KVState(
+                        k_proj=jnp.empty([batch_size, seq_len, num_heads, dim]),
+                        v_proj=jnp.empty([batch_size, seq_len, num_heads, dim]),
+                    ),
+                )
+
+        cfg: PipelinedTransformerLayer.Config = PipelinedTransformerLayer.default_config().set(
+            num_stages=2,
+            num_microbatches=2,
+            num_layers=2,
+            input_dim=dim,
+            layer=DummyTransformerLayer.default_config(),
+        )
+        cfg.layer.self_attention.attention.set(num_heads=num_heads)
+        cfg.layer.feed_forward.hidden_dim = scaled_hidden_dim(4)
+
+        with test_utils.bind_layer(cfg) as layer:
+            data = jax.random.uniform(layer.prng_key, shape=[2, 3, 4])
+            out = layer(data, return_aux={"self_attention_kv_state"})
+            self.assertNestedAllClose(data, out.data)
+            self.assertIsNone(out.self_attention_probs)
+            self.assertIsNotNone(out.self_attention_kv_state)
 
 
 class ConfigHelperTest(TestCase):
