@@ -554,14 +554,14 @@ class ComputeFanAxesTest(TestCase):
 
         def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
             return {
-                "weight_with_fan_axes": ParameterSpec(
+                "fan_axes_specified_weight": ParameterSpec(
                     shape=(6, 8, 12),  # B, H, W
                     fan_axes=FanAxes(in_axis=-2, out_axis=-1, batch_axis=0),
                 ),
             }
 
         def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
-            if name == "weight_with_fan_axes":
+            if name == "fan_axes_specified_weight":
                 raise RuntimeError("Should not be invoked.")
             super()._compute_fan_axes(name, parameter_spec)
 
@@ -654,13 +654,18 @@ class ComputeFanAxesTest(TestCase):
         layer_cfg = self.ExplicitFanLayer.default_config().set(name="test")
         layer = layer_cfg.instantiate(parent=None)
         param_spec_map = layer._create_layer_parameter_specs()
-        orig_fan_axes = param_spec_map["weight_with_fan_axes"].fan_axes
+        orig_fan_axes = param_spec_map["fan_axes_specified_weight"].fan_axes
 
         # FanAxes from _create_layer_parameter_specs should be respected.
         with self.assertRaises(RuntimeError):
-            layer._compute_fan_axes("weight_with_fan_axes", param_spec_map["weight_with_fan_axes"])
+            layer._compute_fan_axes(
+                "fan_axes_specified_weight", param_spec_map["fan_axes_specified_weight"]
+            )
         specs = layer.create_parameter_specs_recursively()
-        self.assertEqual(orig_fan_axes, specs["weight_with_fan_axes"].fan_axes)
+        self.assertEqual(orig_fan_axes, specs["fan_axes_specified_weight"].fan_axes)
+
+        # Initialize paras w.r.t. to the fan axes.
+        layer.initialize_parameters_recursively(jax.random.PRNGKey(123))
 
 
 if __name__ == "__main__":
