@@ -1083,6 +1083,7 @@ class Bastion(Configurable):
                 except Exception as e:  # pylint: disable=broad-except
                     logging.warning("Fail to kill a job with error: %s", e)
             self._active_jobs = {}
+            self._uploader.cleanup()
             raise  # Re-raise.
 
 
