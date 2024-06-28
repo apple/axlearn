@@ -449,7 +449,11 @@ class BaseLayer(Module):
             prng_key=prng_key,
             shape=parameter_spec.shape,
             dtype=parameter_spec.dtype,
-            axes=self._compute_fan_axes(name, parameter_spec),
+            axes=(
+                parameter_spec.fan_axes
+                if parameter_spec.fan_axes is not None
+                else self._compute_fan_axes(name=name, parameter_spec=parameter_spec)
+            ),
         )
         return param
 
