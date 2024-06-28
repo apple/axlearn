@@ -397,7 +397,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         # hybridnorm: https://github.com/google/praxis/blob/main/praxis/layers/transformers.py#L273
         structure: str = "prenorm"
         # outputs = inputs + residual_weight * x. Same as
-        # https://github.pie.apple.com/foundation-models/axlearn/blob/fa92d5ba2885d717ea92eb254f1d51e7381c20e8/axlearn/common/attention.py#L1962
+        # https://github.com/apple/axlearn/blob/521b263c10976f6caf9877a7d40dd48a7261124e/axlearn/common/attention.py#L2630
         residual_weight: float = 1.0
         num_experts: Required[int] = REQUIRED
         # Number of groups for dispatching. Typically should be the same as num devices.
