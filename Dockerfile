@@ -91,6 +91,19 @@ RUN pip install .[tpu]
 COPY . .
 
 ################################################################################
+# GPU container spec.                                                          #
+################################################################################
+
+FROM base AS gpu
+
+RUN apt-get install -y google-perftools
+
+# TODO(markblee): Support extras.
+ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+RUN pip install .[gpu]
+COPY . .
+
+################################################################################
 # Final target spec.                                                           #
 ################################################################################
 

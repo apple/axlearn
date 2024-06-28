@@ -380,6 +380,151 @@ class TPUGKEJobTest(TestCase):
             self.assertEqual(location_hint, node_selector.get("cloud.google.com/gke-location-hint"))
 
 
+class GPUGKEJobTest(TestCase):
+    @property
+    def _mock_settings(self):
+        return {
+            "project": "settings-project",
+            "zone": "settings-zone",
+            "ttl_bucket": "settings-ttl-bucket",
+            "gke_cluster": "settings-cluster",
+            "k8s_service_account": "settings-account",
+            "docker_repo": "settings-repo",
+            "default_dockerfile": "settings-dockerfile",
+        }
+
+    @contextlib.contextmanager
+    def _job_config(
+        self,
+        bundler_cls: Type[Bundler],
+        service_account: Optional[str] = None,
+        queue: Optional[str] = None,
+        num_replicas: Optional[int] = None,
+        env_vars: Optional[dict] = None,
+    ):
+        with mock_gcp_settings([job.__name__, bundler.__name__], self._mock_settings):
+            fv = flags.FlagValues()
+            job.GPUGKEJob.define_flags(fv)
+            if service_account:
+                fv.set_default("service_account", service_account)
+            if num_replicas:
+                fv.set_default("num_replicas", num_replicas)
+            fv.mark_as_parsed()
+            cfg = job.GPUGKEJob.from_flags(fv)
+            cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
+            cfg.accelerator.instance_type = "gpu-a3-highgpu-8g-256"
+            cfg.queue = queue
+            cfg.command = "test-command"
+            cfg.env_vars = env_vars if env_vars is not None else {}
+            cfg.max_tries = 999
+            yield cfg
+
+    @parameterized.product(
+        service_account=[None, "sa"],
+        queue=[None, "queue-name"],
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        wrap_bundler=[False, True],
+        num_replicas=[None, 1, 2],
+        env_vars=[None, {"a": "b"}],
+    )
+    def test_instantiate(
+        self, service_account, bundler_cls, wrap_bundler, num_replicas, env_vars, queue
+    ):
+        class WrappedBundler(Bundler):
+            @config_class
+            class Config(Bundler.Config):
+                inner: Required[Bundler.Config] = REQUIRED
+
+        with self._job_config(
+            bundler_cls,
+            service_account=service_account,
+            env_vars=env_vars,
+            num_replicas=num_replicas,
+            queue=queue,
+        ) as cfg:
+            self.assertEqual(
+                cfg.service_account,
+                service_account or self._mock_settings.get("k8s_service_account", "default"),
+            )
+            # Should work with wrapped bundlers.
+            if wrap_bundler:
+                cfg.bundler = WrappedBundler.default_config().set(inner=cfg.bundler)
+            # Should be instantiable.
+            cfg.set(
+                project="test-project",
+                zone="test-zone",
+                command="",
+                max_tries=1,
+                retry_interval=1,
+                name="test",
+            )
+            gke_job: job.GPUGKEJob = cfg.instantiate()
+            job_cfg: job.GPUGKEJob.Config = gke_job.config
+            self.assertEqual("gpu-a3-highgpu-8g-256", job_cfg.accelerator.instance_type)
+            if num_replicas is None:
+                self.assertEqual(1, job_cfg.accelerator.num_replicas)
+            else:
+                self.assertEqual(num_replicas, job_cfg.accelerator.num_replicas)
+
+    @parameterized.product(
+        env_vars=[dict(), dict(XLA_FLAGS="--should-overwrite-all")],
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        num_replicas=[None, 1, 32],
+    )
+    def test_build_pod(
+        self,
+        bundler_cls,
+        env_vars: Optional[dict] = None,
+        num_replicas: Optional[int] = None,
+    ):
+        with self._job_config(bundler_cls, env_vars=env_vars, num_replicas=num_replicas) as cfg:
+            gke_job: job.GPUGKEJob = cfg.set(
+                name="test",
+            ).instantiate()
+            # pylint: disable-next=protected-access
+            pod = gke_job._build_pod()
+            pod_spec = pod["spec"]
+
+            self.assertEqual(len(pod_spec["containers"]), 2)
+            containers = {container["name"]: container for container in pod_spec["containers"]}
+            self.assertIn("tcpx-daemon", containers)
+            main_container = containers["test"]
+            main_container_env = main_container["env"]
+            main_container_env_vars = {env["name"]: env for env in main_container_env}
+            self.assertEqual(main_container["resources"]["limits"]["nvidia.com/gpu"], "8")
+            expected_num_replicas = 1 if num_replicas is None else num_replicas
+            self.assertEqual(
+                main_container_env_vars["NUM_PROCESSES"]["value"], f"{expected_num_replicas}"
+            )
+            # Verify that default XLA flags can be overwritten by user.
+            if env_vars and env_vars.get("XLA_FLAGS"):
+                self.assertEqual(
+                    main_container_env_vars["XLA_FLAGS"]["value"], env_vars["XLA_FLAGS"]
+                )
+
+    @parameterized.product(
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        queue=[None, "queue-name"],
+    )
+    def test_build_jobset(
+        self,
+        bundler_cls,
+        queue: Optional[str] = None,
+    ):
+        with self._job_config(bundler_cls, queue=queue) as cfg:
+            gke_job: job.GPUGKEJob = cfg.set(
+                name="test",
+            ).instantiate()
+            # pylint: disable-next=protected-access
+            jobset = gke_job._build_jobset()
+            jobset_annotations = jobset["metadata"]["annotations"]
+            self.assertEqual(jobset["metadata"]["name"], cfg.name)
+            if queue is None:
+                self.assertNotIn("kueue.x-k8s.io/queue-name", jobset_annotations)
+            else:
+                self.assertEqual(jobset_annotations["kueue.x-k8s.io/queue-name"], queue)
+
+
 if __name__ == "__main__":
     _private_flags()
     configure_logging(logging.INFO)

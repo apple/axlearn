@@ -164,7 +164,7 @@ def get_trainer_kwargs(
                 # Without sequence sharding, the maximum number of devices <= batch_size,
                 # so at most 512 GPUs (64 nodes) for training 7B-v3.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
             ),

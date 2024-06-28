@@ -40,7 +40,7 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import GCPJob, GKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.jobs.tpu_runner import with_tpu_training_defaults
 from axlearn.cloud.gcp.node_pool import (
@@ -446,9 +446,17 @@ class TPUGKERunnerJob(GKERunnerJob):
         return cfg
 
 
+class GPUGKERunnerJob(GKERunnerJob):
+    """A GKERunnerJob that uses GPUGKEJob."""
+
+    inner = GPUGKEJob
+
+
 def _get_runner_or_exit(instance_type: str):
     if instance_type.startswith("tpu"):
         return TPUGKERunnerJob
+    elif instance_type.startswith("gpu-a3"):
+        return GPUGKERunnerJob
     else:
         raise app.UsageError(f"Unknown instance_type {instance_type}")
 
