@@ -36,3 +36,7 @@ vision, and speech recognition and contains baseline configurations for training
 models.
 
 Please see [Concepts](docs/02-concepts.md) for more details on the core components and design of AXLearn, or [Getting Started](docs/01-start.md) if you want to get your hands dirty.
+
+## Changelog
+
+- [2024/06/28] Our Mixture-of-Experts (MoE) implementation and sharding strategy are released [[code]](https://github.com/apple/axlearn/blob/main/axlearn/common/mixture_of_experts.py). We also released a [tech report](https://arxiv.org/abs/2405.15052) that thoroughly studies the MoE LLMs and dense LLMs performance comparisons across a wide range of model scales.
