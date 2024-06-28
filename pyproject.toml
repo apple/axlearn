@@ -113,6 +113,7 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton==2.1.0",
+    "jax[cuda12_pip]==0.4.28",
 ]
 # Open API inference.
 open_api = [
