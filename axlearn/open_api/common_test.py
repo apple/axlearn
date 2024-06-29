@@ -6,7 +6,7 @@ import unittest
 from datetime import timedelta
 from unittest.mock import mock_open, patch
 
-from .mock_utils import mock_openai_package
+from axlearn.open_api.mock_utils import mock_openai_package
 
 mock_openai_package()
 

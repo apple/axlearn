@@ -15,8 +15,8 @@ _module_root = "axlearn"
 
 
 # pylint: disable=wrong-import-position
-from .common import ClientRateLimitError, Generator
-from .openai import OpenAIClient
+from axlearn.open_api.common import ClientRateLimitError, Generator
+from axlearn.open_api.openai import OpenAIClient
 
 # pylint: enable=wrong-import-position
 
@@ -81,7 +81,6 @@ class TestOpenAI(unittest.IsolatedAsyncioTestCase):
         open_api: Generator = cfg.instantiate()
         # Mock clients for concurrency.
         open_api._clients = [AsyncMock()]
-        open_api._clients[0].handle_error = MagicMock(return_value=False)
         open_api._semaphore = asyncio.Semaphore(1)
         self.open_api = open_api
         self.request = {"messages": [{"text": "Hello"}], "prompt": "Test prompt"}
@@ -107,7 +106,6 @@ class TestOpenAI(unittest.IsolatedAsyncioTestCase):
 
     async def test_async_generate_from_request_handles_rate_limiting(self):
         """Test handling of rate limiting by pausing and retrying."""
-        self.open_api._clients[0].handle_error = MagicMock(return_value=True)
         self.open_api._clients[0].async_generate = AsyncMock(
             side_effect=[ClientRateLimitError("Rate limiting"), "success response"]
         )
@@ -130,7 +128,6 @@ class TestOpenAI(unittest.IsolatedAsyncioTestCase):
         open_api = cfg.instantiate()
         # Mock clients for concurrency.
         open_api._clients = [MagicMock()]
-        open_api._clients[0].handle_error = MagicMock(return_value=False)
         open_api._clients[0].async_generate = AsyncMock(side_effect=[Exception("Error")])
         open_api._semaphore = asyncio.Semaphore(1)
         with self.assertRaises(ValueError):
