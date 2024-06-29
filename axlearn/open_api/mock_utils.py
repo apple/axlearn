@@ -19,7 +19,13 @@ def mock_openai_package():
     mock_openai_types = types.ModuleType("openai.types")
     mock_openai_types_chat = types.ModuleType("openai.types.chat")
     mock_chat_completion_message = types.ModuleType("openai.types.chat.chat_completion_message")
+    mock_chat_completion_message_tool_call = types.ModuleType(
+        "openai.types.chat.chat_completion_message_tool_call"
+    )
+
     mock_chat_completion_message.ChatCompletionMessage = MagicMock()
+    mock_chat_completion_message.ChatCompletionMessageToolCall = MagicMock()
+    mock_chat_completion_message_tool_call.Function = MagicMock()
 
     mock_openai_types_completion = types.ModuleType("openai.types.completion")
     mock_completion = MagicMock()
@@ -29,6 +35,10 @@ def mock_openai_package():
     mock_openai.types.chat = mock_openai_types_chat
     mock_openai.types.chat.ChatCompletion = MagicMock()
     mock_openai.types.chat.chat_completion_message = mock_chat_completion_message
+    mock_openai.types.chat.chat_completion_message_tool_call = (
+        mock_chat_completion_message_tool_call
+    )
+
     mock_openai.types.completion = mock_openai_types_completion
     mock_openai.types.completion.Completion = mock_completion
 
@@ -37,4 +47,36 @@ def mock_openai_package():
     sys.modules["openai.types"] = mock_openai_types
     sys.modules["openai.types.chat"] = mock_openai_types_chat
     sys.modules["openai.types.chat.chat_completion_message"] = mock_chat_completion_message
+    sys.modules[
+        "openai.types.chat.chat_completion_message_tool_call"
+    ] = mock_chat_completion_message_tool_call
     sys.modules["openai.types.completion"] = mock_openai_types_completion
+
+
+def mock_vertexai_package():
+    """Initialize vertexai package for unit tests."""
+    # Create mock for the vertexai module and its submodules.
+    mock_vertexai = types.ModuleType("vertexai")
+    mock_generative_models = types.ModuleType("vertexai.generative_models")
+
+    # Create mocks for each class in the generative_models submodule.
+    mock_content = MagicMock()
+    mock_function_declaration = MagicMock()
+    mock_generation_config = MagicMock()
+    mock_generative_model = MagicMock()
+    mock_part = MagicMock()
+    mock_tool = MagicMock()
+
+    # Set up the mock module structure.
+    mock_generative_models.Content = mock_content
+    mock_generative_models.FunctionDeclaration = mock_function_declaration
+    mock_generative_models.GenerationConfig = mock_generation_config
+    mock_generative_models.GenerativeModel = mock_generative_model
+    mock_generative_models.Part = mock_part
+    mock_generative_models.Tool = mock_tool
+
+    mock_vertexai.generative_models = mock_generative_models
+
+    # Patch sys.modules to replace the vertexai package with our mock.
+    sys.modules["vertexai"] = mock_vertexai
+    sys.modules["vertexai.generative_models"] = mock_generative_models

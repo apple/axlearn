@@ -52,7 +52,7 @@ class OpenAIClient(BaseClient):
         prompt: Optional[str] = None,
         **kwargs,
     ) -> str:
-        """Generate response asynchronously from the client.
+        """Generates response asynchronously from the client.
 
         Args:
             messages: OpenAI requests style messages.
