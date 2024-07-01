@@ -1193,6 +1193,10 @@ def create_device_mesh(
         logging.warning("Falling back to ICI-only mesh on GPU, performance may be reduced.")
         return build_standard_mesh(mesh_shape, devices=devices)
 
+    # Neuron also only uses standard mesh 
+    if device_platform == "neuron":
+        return build_standard_mesh(mesh_shape, devices=devices)
+
     # We only break the first device axis (the least communication intensive) across granules.
     assert (
         ici_mesh_shape[0] % num_granules == 0
