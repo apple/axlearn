@@ -24,7 +24,7 @@ from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 
 MODEL_SIZES = ("test", "7B")
 MAX_SEQUENCE_LENGTH = 2048
-
+GRADIENT_ACCUMULATION_MICROBATCHES = 8
 
 def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
@@ -78,6 +78,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int) -> Dict[str, Any]:
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
     trainer_kwargs["learner_cfg"] = learner_config(
         max_step=trainer_kwargs["max_step"],
+        gradient_accumulation_microbatches=GRADIENT_ACCUMULATION_MICROBATCHES,
         **trainer_kwargs.pop("learner_kwargs"),
     )
     # pylint: enable=use-dict-literal
