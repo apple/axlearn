@@ -176,7 +176,7 @@ class DataflowJob(GCPJob):
             sorted(flags.flag_dict_to_args(dataflow_spec, multi_flags=multi_flags))
         )
         cfg.setup_command = f"{docker_setup_cmd} && {docker_auth_cmd} && {bundle_cmd}"
-        cfg.command = f"{cfg.command} {dataflow_flags}"
+        cfg.command = f"{cfg.command.strip()} {dataflow_flags}"
         return cfg
 
     @classmethod
@@ -246,10 +246,12 @@ class DataflowJob(GCPJob):
             cmd = cfg.command
         else:
             cmd = (
-                "docker run --rm --entrypoint /bin/bash "
+                "docker run --rm "
+                "--mount type=bind,src=$HOME/.config/gcloud,dst=/root/.config/gcloud "
+                "--entrypoint /bin/bash "
                 f"{self._bundler.id(cfg.name)} -c '{cfg.command}'"
             )
-        cmd = f"{cfg.setup_command} && {cmd}"
+        cmd = f"{cfg.setup_command.strip()} && {cmd}"
         cmd = f"bash -c {shlex.quote(cmd)}"
         logging.info("Executing in subprocess: %s", cmd)
         with subprocess.Popen(cmd, shell=True, text=True) as proc:
