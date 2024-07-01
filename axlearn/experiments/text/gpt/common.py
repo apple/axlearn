@@ -11,8 +11,10 @@ See c4_trainer.py for how they are used.
 """
 
 import math
+import numpy as np
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
+import jax
 import jax.numpy as jnp
 import tensorflow as tf
 from jax.sharding import PartitionSpec
