@@ -56,6 +56,7 @@ MAX_SEQUENCE_LENGTH = {
     Version.V3: 8192,
 }
 
+GRADIENT_ACCUMULATION_MICROBATCHES = 8
 
 ROPE_THETA = {
     Version.V1: 1e4,
@@ -203,6 +204,7 @@ def get_trainer_kwargs(
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
     trainer_kwargs["learner_cfg"] = learner_config(
         max_step=trainer_kwargs["max_step"],
+        gradient_accumulation_microbatches=GRADIENT_ACCUMULATION_MICROBATCHES,
         **trainer_kwargs.pop("learner_kwargs"),
     )
     # pylint: enable=use-dict-literal
