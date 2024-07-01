@@ -202,6 +202,11 @@ class ConformerLayer(BaseLayer):
         )
         lconv: LConvLayer.Config = LConvLayer.default_config()
         norm: LayerNorm.Config = LayerNorm.default_config()
+        # Layer order. If None, default to "mhsa_before_conv", i.e., conformer layer order as
+        # secified in https://arxiv.org/abs/2005.08100.
+        # If not None, only "lconv_before_ff" "lconv_before_mhsa" "mhsa_before_lconv" is allowed.
+        # lconv_before_mhsa can be found in Figure 1 https://arxiv.org/pdf/2011.10798.
+        layer_order: Optional[str] = None
 
         # Config for computing relative position embeddings for range [-seq_len + 1, seq_len - 1].
         # It should only be used when attention is of class MultiheadAttention.
@@ -253,6 +258,12 @@ class ConformerLayer(BaseLayer):
                 f"cfg.right_context must be greater or equal to 0, get {cfg.right_context}."
             )
 
+        if cfg.layer_order is not None:
+            supperted_layer_order = ["lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv"]
+            if cfg.layer_order not in supperted_layer_order:
+                msg = f"Only {supperted_layer_order} is allowed, got {cfg.layer_order}"
+                raise ValueError(msg)
+
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Tensor:
         """Computes ConformerLayer outputs.
 
@@ -265,6 +276,13 @@ class ConformerLayer(BaseLayer):
         """
         cfg = self.config
         x = inputs
+
+        layer_order = cfg.layer_order
+        if layer_order is None:
+            layer_order = "mhsa_before_lconv"
+
+        if layer_order == "lconv_before_ff":
+            x = self.lconv(x, paddings=paddings)
         x = self.ff_start(x)
         attention_logit_biases = compute_attention_logit_biases(
             paddings=paddings,
@@ -275,8 +293,11 @@ class ConformerLayer(BaseLayer):
         # ToDo(zhiyunlu): test limited context mask with rel_pos_emb.
         if self.config.rel_pos_emb:
             attention_logit_biases = self.rel_pos_emb(attention_logit_biases)
+        if layer_order == "lconv_before_mhsa":
+            x = self.lconv(x, paddings=paddings)
         x = self.self_attention(target=x, attention_logit_biases=attention_logit_biases).data
-        x = self.lconv(x, paddings=paddings)
+        if layer_order == "mhsa_before_lconv":
+            x = self.lconv(x, paddings=paddings)
         x = self.ff_end(x)
         x = self.norm(x)
         return x

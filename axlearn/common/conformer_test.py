@@ -108,36 +108,51 @@ class ConformerLayerTest(TestCase):
         # Check that the outputs are the same despite differences in padding.
         assert_allclose(outputs[0, :num_tokens], outputs[1, :num_tokens])
 
-    def test_repeated_conformer_config(self):
+    @parameterized.parameters(None, "lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv")
+    def test_repeated_conformer_config(self, layer_order):
         """Tests RepeatedConformerLayer config.
 
         It tests the ConformerLayer default config is correctly set in RepeatedConformerLayer.
         """
         dim, num_heads = 6, 2
         cfg = RepeatedConformerLayer.default_config().set(
-            name="repeat_conformer", input_dim=dim, num_layers=3
+            name="repeat_conformer",
+            input_dim=dim,
+            num_layers=3,
         )
         cfg.layer.self_attention.attention.num_heads = num_heads
+        cfg.layer.layer_order = layer_order
         for ff_cfg in (cfg.layer.ff_start, cfg.layer.ff_end):
             self.assertEqual(ff_cfg.hidden_dim.scale, 4)
             self.assertEqual(ff_cfg.residual_weight, 0.5)
             self.assertEqual(ff_cfg.activation, "nn.silu")
         self.assertEqual(cfg.layer.self_attention.attention.input_linear.layer.bias, True)
 
-    @parameterized.parameters((True, True), (False, True), (True, False), (False, False))
-    def test_repeated_conformer_forward(self, checkpoint_self_attention, checkpoint_feed_forward):
+    @parameterized.product(
+        checkpoint_self_attention=(True, False),
+        checkpoint_feed_forward=(True, False),
+        layer_order=(None, "lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv"),
+    )
+    def test_repeated_conformer_forward(
+        self, checkpoint_self_attention, checkpoint_feed_forward, layer_order
+    ):
         """Tests RepeatedConformerLayer."""
         dim, num_heads = 6, 2
         # Create a conformer layer.
-        cfg = ConformerLayer.default_config().set(name="conformer", input_dim=dim)
+        cfg = ConformerLayer.default_config().set(
+            name="conformer", input_dim=dim, layer_order=layer_order
+        )
         cfg.self_attention.attention.num_heads = num_heads
         layer = cfg.instantiate(parent=None)  # type: ConformerLayer
 
         # Create a Repeat Conformer layer.
         num_layers = 5
         repeat_cfg = RepeatedConformerLayer.default_config().set(
-            name="repeat_conformer", input_dim=dim, num_layers=num_layers
+            name="repeat_conformer",
+            input_dim=dim,
+            num_layers=num_layers,
         )
+        repeat_cfg.layer.layer_order = layer_order
         repeat_cfg.layer.self_attention.attention.num_heads = num_heads
         repeat_cfg.layer.remat_spec = build_remat_spec(
             repeat_cfg,
