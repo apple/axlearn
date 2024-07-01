@@ -181,13 +181,15 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
 
     @parameterized.parameters(
         [
-            dict(running_from_vm=True, env={"BASTION_TIER": "0"}, expect_reserved=True, expected_label="reserved"),
-            dict(running_from_vm=True, env={"BASTION_TIER": "1"}, expect_reserved=False, expected_label="spot"),
+            dict(running_from_vm=True, env={"BASTION_TIER": "0"}, reserved_tpu_gcp_setting=None, expect_reserved=True, expected_label="reserved"),
+            dict(running_from_vm=True, env={"BASTION_TIER": "0"}, reserved_tpu_gcp_setting=True, expect_reserved=True, expected_label="reserved"),
+            dict(running_from_vm=True, env={"BASTION_TIER": "0"}, reserved_tpu_gcp_setting=False, expect_reserved=True, expected_label="reserved"),
+            dict(running_from_vm=True, env={"BASTION_TIER": "1"}, reserved_tpu_gcp_setting=None, expect_reserved=False, expected_label="spot"),
             dict(running_from_vm=True, env={"BASTION_TIER": "1"}, reserved_tpu_gcp_setting=True, expect_reserved=False, expected_label="spot"),
             dict(running_from_vm=True, env={"BASTION_TIER": "1"}, reserved_tpu_gcp_setting=False, expect_reserved=False, expected_label="spot"),
-            dict(running_from_vm=False, expect_reserved=None, expected_label="spot"),
-            dict(running_from_vm=False, reserved_tpu_gcp_setting=True, expect_reserved=None, expected_label="reserved"),
-            dict(running_from_vm=False, reserved_tpu_gcp_setting=False, expect_reserved=None, expected_label="spot"),
+            dict(running_from_vm=False, reserved_tpu_gcp_setting=None, expect_reserved=None, expected_label="spot"),
+            dict(running_from_vm=False, reserved_tpu_gcp_setting=True, expect_reserved=True, expected_label="reserved"),
+            dict(running_from_vm=False, reserved_tpu_gcp_setting=False, expect_reserved=False, expected_label="spot"),
         ]
     )
     def test_start(
@@ -220,7 +222,7 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
             mocks["create_queued_tpu"].assert_called()
             # TPU should be created with the right reservation.
             self.assertEqual(expect_reserved, mocks["create_queued_tpu"].call_args[1]["reserved"])
-            self.assertEqual(expected_label, mocks["create_queued_tpu"].call_args[1]["labels"]['vmtier'])
+            self.assertEqual(expected_label, mocks["create_queued_tpu"].call_args[1]["labels"]['bastion_tier'])
             # Bundling should happen if not on VM.
             self.assertEqual(not running_from_vm, job._bundler.bundle.called)
 

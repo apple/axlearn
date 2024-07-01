@@ -305,15 +305,9 @@ class TPURunnerJob(TPUQRMJob):
         # bestEffort is implemented to create spot instance. Hence,
         # guaranteeded -> reserved and bestEffort|spot -> spot 
         # BASTION_TIER env has presendence over the reserved_tpu
-        labels = {}
         if reserved is None:
-            reserved_tier = gcp_settings("reserved_tpu", default=False, required=False)
-        else:
-            reserved_tier = reserved 
-        if reserved_tier:
-            labels["vmtier"] = "reserved"
-        else:
-            labels["vmtier"] = "spot"
+            reserved = gcp_settings("reserved_tpu", default=False, required=False)
+        labels = {"bastion_tier": "reserved" if reserved else "spot"}
 
         self._call_qrm_api(
             create_queued_tpu,
