@@ -2,11 +2,20 @@
 
 """GPT models on C4.
 
+    # Example using fake configs/data (commonly for testing).
     mkdir -p /tmp/gpt_c4_test;
     python3 -m axlearn.common.launch_trainer_main \
         --module=text.gpt.c4_trainer --config=fuji-test-v1 \
         --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE --jax_backend=cpu \
         --status_port=7337
+
+    # Example training Fuji-7B with C4 dataset (can run on a single H100).
+    XLA_FLAGS=--xla_dump_to=/tmp/xla_dump;
+    mkdir -p /tmp/gpt_c4_test; \
+    python3 -m axlearn.common.launch_trainer_main \
+    --module=text.gpt.c4_trainer --config=fuji-7B-v2-single-host \
+    --trainer_dir=/tmp/gpt_c4_test --data_dir=gs://axlearn-public/tensorflow_datasets \
+    --jax_backend=gpu
 
     GS_ROOT=gs://my-bucket; \
     CONFIG=fuji-7B-v2; \
@@ -22,21 +31,8 @@
         --data_dir=$GS_ROOT/tensorflow_datasets \
         --mesh_selector=$INSTANCE_TYPE --jax_backend=tpu
 
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh; \
-bash Miniconda3-latest-Linux-x86_64.sh; \
-bash
-conda create -n axlearn python=3.10; \
-conda activate axlearn; \
-git clone https://github.com/apple/axlearn.git; \
-cd axlearn; \
-pip install -e .
-XLA_FLAGS=--xla_dump_to=/tmp/xla_dump; \
-mkdir -p /tmp/test_trainer; \
-python3 -m axlearn.common.launch_trainer_main \
-  --module=text.gpt.c4_trainer --config=fuji-7B-v2-single \
-  --trainer_dir=/tmp/test_trainer --data_dir=gs://axlearn-public/tensorflow_datasets \
-  --jax_backend=gpu
 """
+
 import functools
 from typing import Dict
 
