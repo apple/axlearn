@@ -228,7 +228,7 @@ class SummaryWriter(BaseWriter):
                         "SummaryWriter: %s: %s is not fully replicated", path, raw_value
                     )
                 elif isinstance(value, ImageSummary):
-                    tf_summary.image(path, raw_value, step=step)
+                    tf_summary.image(path, raw_value, step=step, max_outputs=32)
                 elif isinstance(raw_value, str):
                     tf_summary.text(path, raw_value, step=step)
                 elif isinstance(raw_value, numbers.Number) or raw_value.ndim == 0:
