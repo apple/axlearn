@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests state builders."""
+
 # pylint: disable=no-self-use,too-many-lines
 import os
 from copy import deepcopy
@@ -761,7 +762,7 @@ class DiffusersPretrainedBuilderTest(TestCase):
             pytest.skip(reason="Missing testdata.")
 
         # pylint: disable-next=import-outside-toplevel,import-error
-        from diffusers.models.vae_flax import FlaxAutoencoderKL
+        from diffusers.models.vae_flax import FlaxAutoencoderKL  # pytype: disable=import-error
 
         with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
             # Set up a minimal sized diffusers model.
