@@ -17,7 +17,7 @@ https://arxiv.org/abs/2005.08100
 https://github.com/tensorflow/lingvo/blob/d2f1e1b3cccdac8f73ae20f86afb03560b1c176d/lingvo/core/conformer_layer.py
 """
 
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Literal
 
 from jax import numpy as jnp
 
@@ -204,9 +204,10 @@ class ConformerLayer(BaseLayer):
         norm: LayerNorm.Config = LayerNorm.default_config()
         # Layer order. If None, default to "mhsa_before_conv", i.e., conformer layer order as
         # secified in https://arxiv.org/abs/2005.08100.
-        # If not None, only "lconv_before_ff" "lconv_before_mhsa" "mhsa_before_lconv" is allowed.
-        # lconv_before_mhsa can be found in Figure 1 https://arxiv.org/pdf/2011.10798.
-        layer_order: Optional[str] = None
+        # If not None, specify the layer order regarding conv and multihead self attention (mhsa).
+        # e.g., lconv_before_mhsa can be found in Figure 1 https://arxiv.org/pdf/2011.10798.
+        layer_order: Optional[
+            Literal["lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv"]] = None
 
         # Config for computing relative position embeddings for range [-seq_len + 1, seq_len - 1].
         # It should only be used when attention is of class MultiheadAttention.
@@ -261,8 +262,7 @@ class ConformerLayer(BaseLayer):
         if cfg.layer_order is not None:
             supperted_layer_order = ["lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv"]
             if cfg.layer_order not in supperted_layer_order:
-                msg = f"Only {supperted_layer_order} is allowed, got {cfg.layer_order}"
-                raise ValueError(msg)
+                raise ValueError("Only {supperted_layer_order} is allowed, got {cfg.layer_order}")
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Tensor:
         """Computes ConformerLayer outputs.
