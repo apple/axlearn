@@ -260,9 +260,9 @@ class ConformerLayer(BaseLayer):
             )
 
         if cfg.layer_order is not None:
-            supperted_layer_order = ["lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv"]
-            if cfg.layer_order not in supperted_layer_order:
-                raise ValueError("Only {supperted_layer_order} is allowed, got {cfg.layer_order}")
+            supported_layer_order = ["lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv"]
+            if cfg.layer_order not in supported_layer_order:
+                raise ValueError(f"Only {supported_layer_order} is allowed, got {cfg.layer_order}")
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Tensor:
         """Computes ConformerLayer outputs.
