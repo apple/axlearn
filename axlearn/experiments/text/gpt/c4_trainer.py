@@ -33,22 +33,14 @@
 
 """
 
-import functools
 from typing import Dict
 
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
-from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
-from axlearn.experiments.text.gpt import fuji
-from axlearn.experiments.text.gpt.common import (
-    evaler_config_dict,
-    get_trainer_config_fn,
-    make_config_name,
-    mixture_train_input_source,
-    tfds_input,
-)
+from axlearn.experiments.text.gpt import fuji, gspmd
+from axlearn.experiments.text.gpt.common import mixture_train_input_source, tfds_input
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 # Sentencepiece vocabs generated from c4/en:3.0.1.
@@ -57,134 +49,50 @@ _SENTENCEPIECE_MODEL_NAME = {
     32 * 1024: "bpe_32k_c4.model",
     128 * 1024: "bpe_128k_c4.model",  # TODO(ruoming): build the 128k vocab.
 }
+_train_data_mixture_components = [
+    DataMixtureComponent(
+        name="c4/en:3.0.1",
+        split="train",
+        shuffle_buffer_size=8192,
+        weight=1.0,
+    ),
+]
 
 
 def _eval_input_sources(
-    *, vocab_cfg: InstantiableConfig, max_sequence_length: int
+    *, vocab_size: int, max_sequence_length: int
 ) -> Dict[str, InstantiableConfig]:
     return {
         name: config_for_function(tfds_input).set(
             dataset_name="c4/en:3.0.1",
             split=split,
             is_training=False,
-            vocab_cfg=vocab_cfg,
+            vocab_cfg=config_for_function(vocab).set(
+                sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME[vocab_size]
+            ),
             max_sequence_length=max_sequence_length,
         )
         for name, split in (("train", "train[:8192]"), ("validation", "validation"))
     }
 
 
+def _train_input_source(*, vocab_size: int, max_sequence_length: int) -> InstantiableConfig:
+    source_cfg = config_for_function(mixture_train_input_source).set(
+        data_mixture_components=_train_data_mixture_components,
+        vocab_cfg=config_for_function(vocab).set(
+            sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME[vocab_size]
+        ),
+        max_sequence_length=max_sequence_length,
+        preprocessor=config_for_function(lm_text_preprocessor).set(max_padding_fraction=0.5),
+    )
+    if get_data_dir() == "FAKE":
+        source_cfg.preprocessor.shuffle_buffer_size = 0
+    return source_cfg
+
+
 def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
-    arch = "fuji"
-    train_data_mixture_components = [
-        DataMixtureComponent(
-            name="c4/en:3.0.1",
-            split="train",
-            shuffle_buffer_size=8192,
-            weight=1.0,
-        ),
-    ]
-
     config_map = {}
-    for version in fuji.Version:
-        vocab_size = fuji.VOCAB_SIZE[version]
-        vocab_cfg = config_for_function(vocab).set(
-            sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME[vocab_size]
-        )
-        train_input_source = config_for_function(mixture_train_input_source).set(
-            data_mixture_components=train_data_mixture_components,
-            vocab_cfg=vocab_cfg,
-            preprocessor=config_for_function(lm_text_preprocessor).set(max_padding_fraction=0.5),
-        )
-        if get_data_dir() == "FAKE":
-            train_input_source.preprocessor.shuffle_buffer_size = 0
-        for model_size in fuji.MODEL_SIZES:
-            config_name = make_config_name(
-                arch=arch, model_size=model_size, version=f"v{version.value}"
-            )
-            kwargs = fuji.get_trainer_kwargs(model_size, vocab_size=vocab_size, version=version)
-            max_sequence_length = kwargs.pop("max_sequence_length")
-            # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
-            config_map[config_name] = get_trainer_config_fn(
-                train_input_source=train_input_source.clone(
-                    max_sequence_length=max_sequence_length
-                ),
-                evalers=evaler_config_dict(
-                    _eval_input_sources(
-                        vocab_cfg=vocab_cfg, max_sequence_length=max_sequence_length
-                    ),
-                ),
-                **kwargs,
-            )
-            kwargs_flash = fuji.get_trainer_kwargs(
-                model_size,
-                vocab_size=vocab_size,
-                version=version,
-                flash_attention=True,
-            )
-            max_sequence_length = kwargs_flash.pop("max_sequence_length")
-            # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
-            config_map[(f"{config_name}-flash")] = get_trainer_config_fn(
-                train_input_source=train_input_source.clone(
-                    max_sequence_length=max_sequence_length
-                ),
-                evalers=evaler_config_dict(
-                    _eval_input_sources(
-                        vocab_cfg=vocab_cfg, max_sequence_length=max_sequence_length
-                    ),
-                ),
-                **kwargs_flash,
-            )
-            if model_size == "test":
-
-                def wrapper(config_name: str = config_name):
-                    trainer_cfg: SpmdTrainer.Config = config_map[config_name]()
-                    trainer_cfg.max_step = 5
-                    # Make learning rate large to accentuate any differences.
-                    trainer_cfg.learner.optimizer.args[1].learning_rate = 0.3
-                    trainer_cfg.learner.optimizer.args[1].update_schedule = 1
-                    trainer_cfg.vlog = 1
-                    return trainer_cfg
-
-                config_map[
-                    make_config_name(
-                        arch=arch, model_size="golden-run-test", version=f"v{version.value}"
-                    )
-                ] = wrapper
-            if model_size == "7B":
-
-                def make_single_host_config(base_config_name: str) -> SpmdTrainer.Config:
-                    """Make a single-host variant of the base config.
-
-                    gpu-p5.48xlarge 8x1 step time:
-                    128K tokens per batch: 2.03s for v1.
-                    64K tokens per batch:  1.1s for v1, 1.54s for v2.
-
-                    tpu-v5litepod-32 step time:
-                    128K tokens per batch: 1.93s for v1.
-
-                    Args:
-                        base_config_name: The multi-host config name.
-
-                    Returns:
-                        A trainer config that can run on a single host.
-                    """
-
-                    # pytype: disable=annotation-type-mismatch
-                    cfg: SpmdTrainer.Config = config_map[base_config_name]().clone()
-                    # pytype: enable=annotation-type-mismatch
-
-                    # The original config was supposed to run on >= 32 machines.
-                    cfg.input.batcher.global_batch_size //= 32
-                    for evaler in cfg.evalers.values():
-                        evaler.input.batcher.global_batch_size //= 32
-                    return cfg
-
-                config_map[f"{config_name}-single-host"] = functools.partial(
-                    make_single_host_config, config_name
-                )
-                config_map[f"{config_name}-flash-single-host"] = functools.partial(
-                    make_single_host_config, f"{config_name}-flash"
-                )
+    config_map.update(fuji.trainer_configs(_train_input_source, _eval_input_sources))
+    config_map.update(gspmd.trainer_configs(_train_input_source, _eval_input_sources))
     return config_map
