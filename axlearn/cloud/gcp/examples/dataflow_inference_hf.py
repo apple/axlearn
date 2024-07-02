@@ -10,7 +10,7 @@ run_inference_huggingface#runinference_with_a_pretrained_model_from_hugging_face
 
 import logging
 import warnings
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Tuple
 
 import apache_beam as beam
 import tensorflow as tf
@@ -54,7 +54,7 @@ class PostProcessor(beam.DoFn):
         super().__init__()
         self.tokenizer = tokenizer
 
-    def process(self, element: Tuple[str, PredictionResult]) -> Iterable[str]:
+    def process(self, element: Tuple[str, PredictionResult]) -> None:
         text, prediction_result = element
         inputs = prediction_result.example
         logits = prediction_result.inference["logits"]
