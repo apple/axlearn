@@ -80,3 +80,29 @@ def mock_vertexai_package():
     # Patch sys.modules to replace the vertexai package with our mock.
     sys.modules["vertexai"] = mock_vertexai
     sys.modules["vertexai.generative_models"] = mock_generative_models
+
+
+def mock_anthropic_package():
+    """Initializes anthropic package for unit tests."""
+    # Create mock for the anthropic module and its submodules.
+    mock_anthropic = types.ModuleType("anthropic")
+    mock_async_anthropic = MagicMock()
+    mock_rate_limit_error = type("RateLimitError", (BaseException,), {})
+    mock_anthropic.AsyncAnthropic = mock_async_anthropic
+    mock_anthropic.RateLimitError = mock_rate_limit_error
+
+    mock_anthropic_types = types.ModuleType("anthropic.types")
+    mock_anthropic_message = types.ModuleType("anthropic.types.message")
+
+    # Mock the Message class within message
+    mock_message = MagicMock()
+    mock_anthropic_message.Message = mock_message
+
+    # Set up the mock module structure.
+    mock_anthropic.types = mock_anthropic_types
+    mock_anthropic.types.message = mock_anthropic_message
+
+    # Patch sys.modules to replace the anthropic package with our mock.
+    sys.modules["anthropic"] = mock_anthropic
+    sys.modules["anthropic.types"] = mock_anthropic_types
+    sys.modules["anthropic.types.message"] = mock_anthropic_message
