@@ -1,3 +1,5 @@
+# Copyright © 2024 Google LLC
+
 """An Apache Beam example pipeline to run batch inference jobs using a model trained with AXLearn.
 
 Command line options:

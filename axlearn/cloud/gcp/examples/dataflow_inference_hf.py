@@ -1,3 +1,5 @@
+# Copyright © 2024 Google LLC
+
 """An Apache Beam example pipeline to run batch inference jobs with a HuggingFace model.
 
 Reference: https://cloud.google.com/dataflow/docs/notebooks/
