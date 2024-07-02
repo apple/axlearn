@@ -9,11 +9,13 @@ The fuji models are set up to imitate LLaMA models:
 * LLaMA 2: https://arxiv.org/abs/2307.09288
 * LLaMA 3: https://github.com/meta-llama/llama3
 """
+
 import enum
 from typing import Any, Dict, Optional, Union
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
+    BaseStackedTransformerLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
     GroupedQueryAttention,
@@ -220,6 +222,7 @@ def model_config(
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
     flash_attention: bool = False,
+    stack_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -234,6 +237,9 @@ def model_config(
             Defaults to 0.0 (i.e. no dropout).
         ffn_dim: The feed-forward dimension or config function.
             If None, defaults to a setting from https://arxiv.org/abs/2002.05202.
+        flash_attention: Whether to enable flash attention.
+        stack_cfg: The transformer stack config.
+            If None, defaults to a RepeatedTransformerLayer.
 
     Returns:
         A causal LM config.
@@ -262,7 +268,7 @@ def model_config(
         hidden_dim=hidden_dim,
         num_heads=num_heads,
         vocab_size=vocab_size,
-        stack_cfg=RepeatedTransformerLayer.default_config(),
+        stack_cfg=stack_cfg if stack_cfg is not None else RepeatedTransformerLayer.default_config(),
         activation_fn=activation_fn,
         ffn_dim=ffn_dim,
         normalization=RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),
