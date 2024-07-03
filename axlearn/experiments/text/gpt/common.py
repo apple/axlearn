@@ -11,8 +11,10 @@ See c4_trainer.py for how they are used.
 """
 
 import math
+import numpy as np
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
+import jax
 import jax.numpy as jnp
 import tensorflow as tf
 from jax.sharding import PartitionSpec
@@ -267,12 +269,17 @@ def model_config(
         batch_axis_names=batch_axis_names,
         seq_axis_names="seq",
     )
+
+    device_platform = np.asarray(jax.devices())[0].platform
+    # neuron uses Zero 3
+    fsdp_axis_names = ("expert", "fsdp", "seq") if device_platform != 'neuron' else ("data", "expert", "fsdp", "seq") 
+
     cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(
         cfg.decoder.transformer.layer,
         batch_axis_names=batch_axis_names,
-        fsdp_axis_names=("expert", "fsdp", "seq"),
+        fsdp_axis_names=fsdp_axis_names,
         tp_axis_names="model",
         seq_axis_names=("seq",),
     )
