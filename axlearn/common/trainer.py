@@ -38,6 +38,7 @@ from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.utils import (
+    HybridMeshShape,
     MeshShape,
     NestedPartitionSpec,
     NestedTensor,
@@ -85,9 +86,25 @@ class SpmdTrainer(Module):
 
         # The default mesh configuration.
         #
-        # The mesh shape, if specified, must have the same length as mesh_axis_names.
+        # If specified as a MeshShape, must have the same length as mesh_axis_names. Implicitly,
+        # this treats the mesh shape as the ICI mesh shape; we default to a DCN mesh shape that
+        # partitions the first non-singleton axis across granules (e.g. TPU slices or GPU nodes).
+        # If all axes are singletons, this implies a single-granule environment and therefore an
+        # all-1's DCN mesh shape.
+        #
+        # As an example on 2 H100 nodes, for mesh axes (pipeline, data, model) and a MeshShape of
+        # (1, 2, 8), we break the "data" axis across DCN -- this produces a DCN mesh shape (1, 2, 1)
+        # and an ICI mesh shape (1, 1, 8), i.e. 2-way data-parallelism across DCN, and 8-way model
+        # parallelism within-node (e.g. NVLink). If instead the MeshShape is provided as (2, 1, 8),
+        # we break along the "pipeline" axis, producing a DCN mesh shape of (2, 1, 1) and ICI mesh
+        # shape (1, 1, 8) for 2-way pipeline-parallelism across DCN and 8-way model parallelism
+        # within-node.
+        #
+        # If specified as a HybridMeshShape, each member must have the same length as
+        # mesh_axis_names.
+        #
         # Use `mesh_rules` to set different mesh shapes depending on the hardware platform.
-        mesh_shape: Required[MeshShape] = REQUIRED
+        mesh_shape: Required[Union[MeshShape, HybridMeshShape]] = REQUIRED
         # The mesh axis names. The names can be referenced in ParameterSpec.mesh_axes.
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
         # Subset of mesh axis names over which the leaves of the input batch are sharded.
