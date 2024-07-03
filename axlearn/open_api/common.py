@@ -10,10 +10,10 @@ import os
 import time
 from collections import defaultdict
 from datetime import timedelta
-from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Type
 
 import requests
+from absl import flags
 
 # isort: off
 from tqdm.asyncio import tqdm
@@ -49,12 +49,6 @@ _openai_decode_parameters = [
     # Not used in openai api but popular in other frameworks.
     "top_k",
 ]
-
-
-class ClientType(Enum):
-    """Type of different clients."""
-
-    OPENAI = "openai"
 
 
 class ClientRateLimitError(ValueError):
@@ -144,8 +138,6 @@ class Generator(Configurable):
     class Config(Configurable.Config):
         """Configures Generator."""
 
-        # Seconds for timeout requests.
-        timeout: int = 120
         # Number of concurrent clients for generations.
         concurrency: int = 8
         # Max number of retries for a request due to non rate limit error.
@@ -157,8 +149,8 @@ class Generator(Configurable):
         # True to allow non rate limit error and store empty response.
         allow_non_rate_limit_error: bool = True
         # A dict of decoding parameters.
-        # If None, max_tokens is 1024 and temperature is 0.0 for greedy decoding.
-        decode_parameters: Optional[Dict[str, Any]] = None
+        # By default, max_tokens is 1024 and temperature is 0.0 for greedy decoding.
+        decode_parameters: Dict[str, Any] = _default_decode_parameters
         # Client for API endpoint.
         client: Required[BaseClient.Config] = REQUIRED
 
@@ -271,6 +263,85 @@ class Generator(Configurable):
                 if "async_index" in item:
                     del item["async_index"]
         return responses
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        """Defines flags for generator.py."""
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        # For client.
+        flags.DEFINE_string("model", None, "The model name.", **common_kwargs)
+        flags.DEFINE_string("client_name", "openai", "Open api client name.", **common_kwargs)
+        flags.DEFINE_integer("timeout", 120, "Seconds for timeout requests.", **common_kwargs)
+        # For generator.
+        flags.DEFINE_integer(
+            "concurrency", 8, "Number of concurrent clients for generations.", **common_kwargs
+        )
+        flags.DEFINE_integer(
+            "max_non_rate_limit_retries",
+            5,
+            "Max number of retries for a request due to non rate limit error.",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "max_rate_limit_retries",
+            25,
+            "Max number of retries for a request due to rate limit error.",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "retry_sleep_in_seconds",
+            4,
+            "Seconds for retry sleep time when hitting rate limit.",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "allow_non_rate_limit_error",
+            True,
+            "True to allow non rate limit error and store empty response.",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "decode_parameters",
+            None,
+            "A json string of decoding parameters."
+            "If None, max_tokens is 1024 and temperature is 0.0 for greedy decoding.",
+            **common_kwargs,
+        )
+        # For file input.
+        flags.DEFINE_string(
+            "input_file",
+            None,
+            "Path to the input data file. Each line is a json string of OpenAI request style.",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "output_file",
+            None,
+            "Path to the output data file. Each line is a json string of OpenAI request style.",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "check_vllm_readiness",
+            True,
+            "True to verify the readiness of vllm server.",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "readiness_timeout",
+            1200,
+            "The timeout in seconds for checking the server readiness.",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "max_instances", None, "Maximum number of instances to test.", **common_kwargs
+        )
+        flags.DEFINE_boolean(
+            "repeat_requests_for_n",
+            True,
+            "Repeats requests for n in decode parameters.",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean("debug", False, "True to enable debug mode.", **common_kwargs)
 
 
 def check_vllm_readiness(timeout: timedelta, base_url: str):
