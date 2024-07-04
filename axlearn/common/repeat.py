@@ -67,7 +67,13 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
-from axlearn.common.module import Module, child_context, new_output_collection, scan_in_context
+from axlearn.common.module import (
+    Module,
+    child_context,
+    new_output_collection,
+    propagate_repeated_output_collections,
+    scan_in_context,
+)
 from axlearn.common.utils import (
     NestedTensor,
     Tensor,
@@ -201,19 +207,9 @@ class Repeat(BaseLayer):
                 drop_output=self._drop_output,
             )
 
-        this_output_collection = self.get_invocation_context().output_collection
-        layer_output = this_output_collection.add_child("layer")
-        layer_output.module_outputs.update(**layer_output_collection.module_outputs)
-        layer_output.state_updates.update(**layer_output_collection.state_updates)
-
-        # Each summary value in `layer_output_collection` has shape (num_layers, ...). For example,
-        # if a repeated layer outputs a scalar summary value, it will have shape [num_layers].
-        # Below we split the stacked values and output them separately under scope "layer{i}"
-        # so that scalar summaries can be handled correctly.
-        for i in range(num_layers):
-            layer_i_output = this_output_collection.add_child(f"layer{i}")
-            layer_i_output.summaries.update(
-                **jax.tree_util.tree_map(lambda x, i=i: x[i], layer_output_collection.summaries)
-            )
-
+        propagate_repeated_output_collections(
+            layer_output_collection,
+            child_prefix="layer",
+            target_output_collection=self.get_invocation_context().output_collection,
+        )
         return self.Output(carry=carry, ys=ys)

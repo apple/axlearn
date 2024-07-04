@@ -126,6 +126,46 @@ def new_output_collection():
     return OutputCollection(summaries={}, state_updates={}, module_outputs={})
 
 
+def propagate_repeated_output_collections(
+    repeated_output_collection: OutputCollection,
+    *,
+    child_prefix: str,
+    target_output_collection: OutputCollection,
+):
+    """Propagates contents from `repeated_output_collection` to `target_target_output_collection`.
+
+    Specifically:
+    * module_outputs and state_updates from `repeated_output_collection` will be added to
+      target_output_collection[child_prefix].
+    * For each summary value `v` of `repeated_output_collection`, `v[i]` will be added to
+      target_output_collection[f"{child_prefix}{i}"] for 0 <= i < N = num_children.
+
+    Args:
+        repeated_output_collection: An OutputCollection produced by a Jax loop (e.g., jax.vmap
+            or jax.scan). Each leaf tensor has shape [N, ...].
+        target_output_collection: The target OutputCollection.
+        child_prefix: The child name prefix used for children to be added to
+            `target_output_collection`.
+    """
+    # Fill `target_output_collection[child_prefix]` with `repeated_output_collection`.
+    child_output = target_output_collection.add_child(child_prefix)
+    child_output.module_outputs.update(**repeated_output_collection.module_outputs)
+    child_output.state_updates.update(**repeated_output_collection.state_updates)
+
+    # Each summary value in `repeated_output_collection` has shape (num_tracks, ...). For example,
+    # if a repeated track outputs a scalar summary value, it will have shape [num_tracks].
+    # Below we split the stacked values and output them separately under scope "track{i}"
+    # so that scalar summaries can be handled correctly.
+    summary_values = jax.tree_util.tree_leaves(repeated_output_collection.summaries)
+    if summary_values:
+        num_children = summary_values[0].shape()[0]
+        for i in range(num_children):
+            child_i_output = target_output_collection.add_child(f"{child_prefix}{i}")
+            child_i_output.summaries.update(
+                **jax.tree_util.tree_map(lambda x, i=i: x[i], repeated_output_collection.summaries)
+            )
+
+
 T = TypeVar("T")
 
 
