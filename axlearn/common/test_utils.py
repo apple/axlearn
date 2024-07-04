@@ -462,11 +462,11 @@ def read_param_init_specs_recursively(
 
     orig_vmap = jax.vmap
 
-    def patched_vmap(fn):
+    def patched_vmap(fn, **vmap_kwargs):
         def wrapped_fn(*args, **kwargs):
             return _cast_ordered_dict(fn(*args, **kwargs))
 
-        return orig_vmap(wrapped_fn)
+        return orig_vmap(wrapped_fn, **vmap_kwargs)
 
     patch_vmap = patch("jax.vmap", side_effect=patched_vmap, autospec=True)
 
