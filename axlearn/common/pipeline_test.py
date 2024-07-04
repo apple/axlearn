@@ -21,7 +21,7 @@ from axlearn.common.pipeline import (
     transpose_to_pipeline_stage_inputs,
 )
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import Nested, PartitionSpec, Tensor, VDict, shapes
+from axlearn.common.utils import Nested, PartitionSpec, Tensor, VDict, cast_floats, shapes
 
 
 class TransposeTest(absltest.TestCase):
@@ -154,8 +154,11 @@ class DummyMLP(BaseLayer):
 
 
 class PipelineTest(TestCase):
-    @parameterized.parameters(None, RematSpec(prevent_cse=False))
-    def test_pipeline(self, remat_spec):
+    @parameterized.product(
+        remat_spec=[None, RematSpec(prevent_cse=False)],
+        dtype=[jnp.float32, jnp.bfloat16],
+    )
+    def test_pipeline(self, remat_spec: Optional[RematSpec], dtype: jnp.dtype):
         batch_size, microbatch_size, num_layers = 14, 2, 4
         num_microbatches = batch_size // microbatch_size
         layer: TestPipeline = (
@@ -177,17 +180,22 @@ class PipelineTest(TestCase):
         logging.info("layer params=%s", layer_params)
 
         input_forward_state = layer.init_forward_state(batch_size)
+        inputs = (jnp.arange(batch_size, dtype=jnp.float32), input_forward_state)
         (carry, output_forward_state), output_collection = F(
             layer,
             prng_key=jax.random.PRNGKey(2),
-            state=layer_params,
-            inputs=(jnp.arange(batch_size, dtype=jnp.float32), input_forward_state),
+            state=cast_floats(layer_params, to_dtype=dtype),
+            inputs=cast_floats(inputs, to_dtype=dtype),
             is_training=True,
             drop_output_collections=(),
         )
         logging.info("forward_state=%s", output_forward_state)
         logging.info("state_outputs=%s", shapes(output_collection.state_updates))
         logging.info("module_outputs=%s", shapes(output_collection.module_outputs))
+
+        # Ensure carry dtype matches input.
+        jax.tree_util.tree_map(lambda x: self.assertEqual(x.dtype, dtype), carry)
+
         assert_allclose(carry, jnp.arange(num_layers, num_layers + batch_size))
         self.assertEqual(shapes(input_forward_state), shapes(output_forward_state))
         assert_allclose(
