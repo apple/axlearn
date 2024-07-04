@@ -160,6 +160,7 @@ class Repeat(BaseLayer):
 
         Args:
             fn: A function with args (carry, x) returning a dict(carry=..., y=...).
+                `fn` will be run in the context of `self.layer`.
             carry: a nested tensor for the iterative input of the 0'th sub-layer.
             xs: a nested tensor with separate inputs for each sub-layer,
                 where each leaf value T is a tensor of shape [num_layers, ...]
