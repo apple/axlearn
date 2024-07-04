@@ -14,11 +14,13 @@ import seqio
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from absl.testing import absltest, parameterized
+from jax import numpy as jnp
 from jax.sharding import Mesh
 
 from axlearn.common import test_utils, utils
 from axlearn.common.checkpointer import Checkpointer
 from axlearn.common.config import config_for_function
+from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.input_fake import fake_serialized_json_source, fake_source, fake_text_source
 from axlearn.common.input_tf_data import (
     BuildDatasetFn,
@@ -53,6 +55,7 @@ from axlearn.common.input_tf_data import (
     unpack,
     with_processor,
 )
+from axlearn.common.utils import as_numpy_array
 
 
 def build_ds_fn(
@@ -369,6 +372,21 @@ def _text_ds(texts: List[str], *, repeat=1) -> tf.data.Dataset:
     return tf.data.Dataset.from_tensor_slices(dataset).repeat(repeat)
 
 
+def _tokens_ds(tokens: List[List[int]], *, repeat=1) -> tf.data.Dataset:
+    dataset = {
+        "tokens": [],
+        "index": [],
+        "is_valid": [],
+    }
+
+    for index, tok in enumerate(tokens):
+        dataset["index"].append(tf.constant(index, dtype=tf.int32))
+        dataset["tokens"].append(tf.constant(tok, dtype=tf.int32))
+        dataset["is_valid"].append(tf.constant(True, dtype=tf.bool))
+
+    return tf.data.Dataset.from_tensor_slices(dataset).repeat(repeat)
+
+
 class PadTest(test_utils.TestCase):
     @parameterized.parameters(None, 1, 5)
     def test_infer_cardinality(self, num_repeats: Optional[int]):
@@ -552,6 +570,117 @@ class PadTest(test_utils.TestCase):
                 ckptr.save(step=step, state={"iterator": iterator}, evaler_summaries=None)
                 ckptr.wait_until_finished()
             self.assertTrue(os.path.exists(os.path.join(save_dir, f"step_{step:08d}", "index")))
+
+    @parameterized.product(
+        num_physical_feeds=(2, 4),
+        num_logical_feeds=(1, 2),
+        physical_batch_size=(4, 8, 16),
+    )
+    def test_input_dispatcher(
+        self,
+        num_physical_feeds: int,
+        num_logical_feeds: int,
+        physical_batch_size: int,
+    ):
+        """Checks that Input with input_dispatcher generates the same physical batches and global
+        logical batches as a manual feed generated through `_pad_logical_to_physical` and
+        `dispatch_input_batch`.
+        """
+        text_examples = [[1, 2], [3, 4], [5, 6], [7, 8]]
+        feed_logical_batch_size = 2
+        feed_physical_batch_size = physical_batch_size // num_physical_feeds
+        if feed_physical_batch_size < feed_logical_batch_size:
+            return  # skip invalid cases
+        num_logical_batches_per_feed = len(text_examples) // feed_logical_batch_size
+        logical_feed_indices = list(
+            range(num_physical_feeds - num_logical_feeds, num_physical_feeds)
+        )
+        global_logical_batch_size = feed_logical_batch_size * len(logical_feed_indices)
+
+        # Mappings from physical_feed_index to physical feed batches.
+        manual_feeds = {}
+        input_feeds = {}
+        for physical_feed_index in range(num_physical_feeds):
+            if physical_feed_index in logical_feed_indices:
+                logical_feed_index = logical_feed_indices.index(physical_feed_index)
+            else:
+                logical_feed_index = None
+            physical_feed_ds = _tokens_ds(text_examples)
+            if global_logical_batch_size != physical_batch_size:
+                with mock.patch("jax.process_count", return_value=num_physical_feeds):
+                    physical_feed_ds = _pad_logical_to_physical(
+                        physical_feed_ds,
+                        global_batch_size=physical_batch_size,
+                        global_logical_batch_size=global_logical_batch_size,
+                        num_logical_feeds=len(logical_feed_indices),
+                        logical_feed_index=logical_feed_index,
+                        pad_example_fn=default_pad_example_fn,
+                    )
+            physical_feed_ds = physical_feed_ds.batch(feed_physical_batch_size)
+            manual_feed_batches = list(iter(physical_feed_ds))
+            self.assertLen(manual_feed_batches, num_logical_batches_per_feed)
+
+            def source_fn() -> BuildDatasetFn:
+                def fn() -> tf.data.Dataset:
+                    return _tokens_ds(text_examples)
+
+                return fn
+
+            input_generator = (
+                Input.default_config()
+                .set(
+                    name="input",
+                    is_training=True,
+                    source=config_for_function(source_fn),
+                    processor=config_for_function(identity),
+                    batcher=config_for_function(batch).set(
+                        global_batch_size=feed_logical_batch_size,
+                        pad_example_fn=default_pad_example_fn,
+                        repeat=1,
+                    ),
+                    input_dispatcher=InputDispatcher.default_config().set(
+                        global_logical_batch_size=global_logical_batch_size,
+                        global_physical_batch_size=physical_batch_size,
+                        logical_feed_indices=logical_feed_indices,
+                        num_physical_feeds=num_physical_feeds,
+                        physical_feed_index=physical_feed_index,
+                    ),
+                )
+                .instantiate(parent=None)
+            )
+
+            input_it = iter(input_generator.dataset())
+            self.assertIsInstance(input_it, tf.data.Iterator)
+            self._check_iterator_saveable(input_it)
+
+            input_batches = list(input_generator.batches(input_it))
+            print(f"input_batch={input_batches[0]}")
+            self.assertLen(input_batches, num_logical_batches_per_feed)
+
+            for manual_batch, input_batch in zip(manual_feed_batches, input_batches):
+                print(f"manual_batch={manual_batch}")
+                print(f"input_batch={input_batch}")
+                self.assertNestedEqual(manual_batch, input_batch)
+
+            manual_feeds[physical_feed_index] = manual_feed_batches
+            input_feeds[physical_feed_index] = input_batches
+
+        for step in range(num_logical_batches_per_feed):
+            # For each step, assemble global logical batches from `manual_feeds` and
+            # `input_feeds` and check that they are equal.
+            manual_global_batch = utils.dispatch_input_batch(
+                jax.tree_util.tree_map(
+                    lambda *xs: jnp.concatenate(as_numpy_array(xs), axis=0),
+                    *[batches[step] for batches in manual_feeds.values()],
+                )
+            )
+            input_global_batch = input_generator.input_dispatcher.physical_to_logical_batch(
+                jax.tree_util.tree_map(
+                    lambda *xs: jnp.concatenate(as_numpy_array(xs), axis=0),
+                    *[batches[step] for batches in input_feeds.values()],
+                )
+            )
+            self.assertNestedEqual(manual_global_batch, input_global_batch)
 
 
 class BatchTest(test_utils.TestCase):

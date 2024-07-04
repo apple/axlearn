@@ -9,12 +9,13 @@ The fuji models are set up to imitate LLaMA models:
 * LLaMA 2: https://arxiv.org/abs/2307.09288
 * LLaMA 3: https://github.com/meta-llama/llama3
 """
+
 import enum
 from typing import Any, Dict, Optional, Union
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
-    CausalAttentionLogitBiasLayer,
+    BaseStackedTransformerLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
     GroupedQueryAttention,
@@ -24,11 +25,16 @@ from axlearn.common.attention import (
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
-from axlearn.experiments.text.gpt.common import STEP_DTYPE, learner_config, mesh_shape_from_axes
+from axlearn.experiments.text.gpt.common import (
+    STEP_DTYPE,
+    flash_attention_config,
+    learner_config,
+    mesh_shape_from_axes,
+)
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 
-MODEL_SIZES = ("test", "7B")
+MODEL_SIZES = ("test", "7B", "70B")
 
 
 class Version(enum.Enum):
@@ -62,16 +68,34 @@ ROPE_THETA = {
 
 # Mapping from Fuji versions to total number of tokens used in training.
 TOTAL_TOKENS = {
-    Version.V1: 1 * (1024**4),  # 1T tokens
-    Version.V2: 2 * (1024**4),  # 2T tokens
-    Version.V3: 15 * (1024**4),  # 15T tokens
+    Version.V1: {
+        "test": 1 * (1024**4),  # 1T tokens
+        "7B": 1 * (1024**4),  # 1T tokens
+        "70B": 1.4 * (1024**4),  # 1.4T tokens
+    },
+    Version.V2: {
+        "test": 2 * (1024**4),  # 2T tokens
+        "7B": 2 * (1024**4),  # 2T tokens
+        "70B": 2 * (1024**4),  # 2T tokens
+    },
+    Version.V3: {
+        "test": 15 * (1024**4),  # 15T tokens
+        "7B": 15 * (1024**4),  # 15T tokens
+        "70B": 15 * (1024**4),  # 15T tokens
+    },
 }
 
 
-def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) -> Dict[str, Any]:
+def get_trainer_kwargs(
+    model_size: str,
+    *,
+    vocab_size: int,
+    version: Version,
+    flash_attention: bool = False,
+) -> Dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 4 * (1024**2)  # 4M tokens.
-    max_step = TOTAL_TOKENS[version] // tokens_per_batch
+    max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
 
@@ -94,15 +118,19 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 num_kv_heads=2,
                 vocab_size=32,
                 rope_theta=rope_theta,
+                flash_attention=flash_attention,
             ),
             learner_kwargs=dict(
                 peak_lr=6e-4,
                 weight_decay=0.01,
             ),
             max_sequence_length=64,
-            train_batch_size=16,
+            train_batch_size=32,
+            eval_batch_size=32,
             max_step=3000,
-            mesh_shape=mesh_shape_from_axes(),  # cpu
+            eval_every_n_steps=1500,
+            save_every_n_steps=500,
+            mesh_shape=mesh_shape_from_axes(data=-1),
         )
     elif model_size == "7B":
         trainer_kwargs = dict(
@@ -112,6 +140,7 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 num_heads=32,
                 num_kv_heads=num_kv_heads,
                 rope_theta=rope_theta,
+                flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -137,8 +166,35 @@ def get_trainer_kwargs(model_size: str, *, vocab_size: int, version: Version) ->
                 # Without sequence sharding, the maximum number of devices <= batch_size,
                 # so at most 512 GPUs (64 nodes) for training 7B-v3.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+            ),
+        )
+    elif model_size == "70B":
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=80,
+                hidden_dim=128 * 64,
+                num_heads=64,
+                # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
+                num_kv_heads=None if version == Version.V1 else 8,
+                rope_theta=rope_theta,
+                flash_attention=flash_attention,
+            ),
+            learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
+            max_sequence_length=max_sequence_length,
+            train_batch_size=train_batch_size,
+            max_step=max_step,
+            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            mesh_rules=(
+                # tpu-v5e. step time: TBD.
+                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=256)),
+                # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
+                # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
+                (
+                    "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
+                    mesh_shape_from_axes(data=-1, fsdp=128),
                 ),
             ),
         )
@@ -165,6 +221,8 @@ def model_config(
     rope_theta: float,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
+    flash_attention: bool = False,
+    stack_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -179,6 +237,9 @@ def model_config(
             Defaults to 0.0 (i.e. no dropout).
         ffn_dim: The feed-forward dimension or config function.
             If None, defaults to a setting from https://arxiv.org/abs/2002.05202.
+        flash_attention: Whether to enable flash attention.
+        stack_cfg: The transformer stack config.
+            If None, defaults to a RepeatedTransformerLayer.
 
     Returns:
         A causal LM config.
@@ -207,14 +268,13 @@ def model_config(
         hidden_dim=hidden_dim,
         num_heads=num_heads,
         vocab_size=vocab_size,
-        stack_cfg=RepeatedTransformerLayer.default_config(),
+        stack_cfg=stack_cfg if stack_cfg is not None else RepeatedTransformerLayer.default_config(),
         activation_fn=activation_fn,
         ffn_dim=ffn_dim,
         normalization=RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),
         dropout_rate=dropout_rate,
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
-        attention_mask=CausalAttentionLogitBiasLayer.default_config(),
-        attention_cfg=atten_cfg,
+        attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
     )
     return cfg

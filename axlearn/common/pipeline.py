@@ -22,9 +22,10 @@ A pipeline layer consists a stack of N identical sub layers, where
     Or, expressed in layer-parallel terms, layers will process microbatch slice [t:t-N:-1] at step t
     (assuming that we pad the microbatches with N - 1 dummy microbatches at both ends).
 """
+
 import dataclasses
 import functools
-from typing import NamedTuple, Optional, Tuple, Union
+from typing import Callable, NamedTuple, Optional, Tuple, Union
 
 import jax.ad_checkpoint
 from jax import numpy as jnp
@@ -55,13 +56,13 @@ def transpose_to_pipeline_stage_inputs(x: Tensor, partition_spec: Optional[Parti
     """Transposes `x` from the 'layer-major' layout to the 'pipeline-major' layout.
 
     Args:
-        x: of shape [N, M, ...], where x[i, j] represents layerwise inputs for pipeline layer[i]
-            and microbatch[j].
-        partition_spec: the partition spec for x.
+        x: A Tensor of shape [N, M, ...], where x[i, j] represents layerwise inputs for pipeline
+            layer[i] and microbatch[j].
+        partition_spec: The partition spec for x.
 
     Returns:
-        x', a tensor of shape [M + N - 1, N, ...], where x'[t, i] represents the layerwise inputs
-        for timestep[t] and layer[i]: x'[i + j, i] == x[i, j].
+        A Tensor of shape [M + N - 1, N, ...], where x'[t, i] represents the layerwise inputs for
+        timestep[t] and layer[i]: x'[i + j, i] == x[i, j].
     """
     n, m = x.shape[:2]
     # [N, M + N, ...].
@@ -87,13 +88,13 @@ def transpose_from_pipeline_stage_outputs(
     """Transposes `x` from the 'pipeline-major' layout to the 'layer-major' layout.
 
     Args:
-        x: of shape [M + N - 1, N, ...], where x[t, i] represents the layerwise outputs of
+        x: A Tensor of shape [M + N - 1, N, ...], where x[t, i] represents the layerwise outputs of
             timestep[t] and layer[i].
-        partition_spec: the partition spec for x' (layer-major).
+        partition_spec: The partition spec for x' (layer-major).
 
     Returns:
-        x': of shape [N, M, ...], where x'[i, j] represents layerwise outputs of pipeline layer[i]
-            and microbatch[j]: x'[i, j] == x[i + j, i].
+        A Tensor of shape [N, M, ...], where x'[i, j] represents layerwise outputs of pipeline
+        layer[i] and microbatch[j]: x'[i, j] == x[i + j, i].
     """
     t, n = x.shape[:2]
     m = t - n + 1
@@ -128,11 +129,8 @@ class Pipeline(BaseLayer):
         cfg = self.config
         self._add_child("layer", cfg.layer)
 
-    # The following code block is similar (but not identical) to that in repeat.py.
-    # pylint: disable=duplicate-code
-
     def create_parameter_specs_recursively(self) -> NestedParameterSpec:
-        cfg = self.config
+        cfg: Pipeline.Config = self.config
         specs = VDict(**super().create_parameter_specs_recursively())
 
         def transform_factorization_spec(
@@ -168,21 +166,19 @@ class Pipeline(BaseLayer):
                 )
             )
 
-        cfg = self.config
+        cfg: Pipeline.Config = self.config
         return jax.vmap(init)(split_prng_key(prng_key, cfg.num_layers).keys, prebuilt)
 
     class Output(NamedTuple):
         carry: NestedTensor
         ys: NestedTensor
 
-    # pylint: enable=duplicate-code
-
     def _run(
         self,
-        fn,
-        carry=None,
+        fn: Callable[[NestedTensor, NestedTensor], NestedTensor],
+        carry: Optional[NestedTensor] = None,
         *,
-        xs=None,
+        xs: Optional[NestedTensor] = None,
         carry_partition_spec: Optional[NestedPartitionSpec] = None,
         xs_partition_spec: Optional[NestedPartitionSpec] = None,
         ys_partition_spec: Optional[NestedPartitionSpec] = None,
@@ -191,27 +187,27 @@ class Pipeline(BaseLayer):
 
         Args:
             fn: A function with args (carry, x) returning a dict(carry=..., y=...).
-            carry: a nested tensor for the iterative input of the 0'th sub-layer.
-                It must have shape [M, microbatch_size, ...]
-            xs: a nested tensor with separate inputs for each sub-layer, where each leaf value T is
+            carry: A nested tensor for the iterative input of the 0'th sub-layer.
+                It must have shape [M, microbatch_size, ...].
+            xs: A nested tensor with separate inputs for each sub-layer, where each leaf value T is
                 a tensor of shape [cfg.num_layers, M, microbatch_size, ...] and T[i, j, ...]
                 represents layer-wise inputs of microbatch j to the i'th sub-layer.
-            carry_partition_spec: partition spec for the carry tensors.
+            carry_partition_spec: Partition spec for the carry tensors.
                 If None, tensors will be replicated.
-            xs_partition_spec: partition spec for the input xs tensors. If None, tensors will be
+            xs_partition_spec: Partition spec for the input xs tensors. If None, tensors will be
                 replicated except for sharding along the "pipeline" mesh axis.
-            ys_partition_spec: partition spec for the output ys tensors. If None, tensors will be
+            ys_partition_spec: Partition spec for the output ys tensors. If None, tensors will be
                 replicated except for sharding along the "pipeline" mesh axis.
 
         Returns:
             A dict with the following keys:
-            - carry: a nested tensor with the same structure as iterative_input_0
+            - carry: A nested tensor with the same structure as iterative_input_0
                 representing the iterative output of the last sub-layer.
-            - ys: a nested tensor where each leaf value T is a tensor of shape
+            - ys: A nested tensor where each leaf value T is a tensor of shape
                 [cfg.num_layers, M, microbatch_size, ...] and T[i, ...] represents layer-wise output
                 from the i'th sub-layer.
         """
-        cfg = self.config
+        cfg: Pipeline.Config = self.config
         self.vlog(1, "carry=%s xs=%s", shapes(carry), shapes(xs))
         # Number of microbatches.
         m = jax.tree_util.tree_flatten(carry)[0][0].shape[0]
@@ -279,10 +275,10 @@ class Pipeline(BaseLayer):
                 """Invokes fn for one microbatch and one layer.
 
                 Args:
-                    state_n: the parameters of the n'th layer.
-                    prng_key_tn: the PRNG key for the v_carry'th timestep and n'th layer.
-                    carry_tn: the carry input for the v_carry'th timestep and n'th layer.
-                    x_tn: the xs input for the v_carry'th timestep and n'th layer.
+                    state_n: The parameters of the n'th layer.
+                    prng_key_tn: The PRNG key for the v_carry'th timestep and n'th layer.
+                    carry_tn: The carry input for the v_carry'th timestep and n'th layer.
+                    x_tn: The xs input for the v_carry'th timestep and n'th layer.
 
                 Returns:
                     dict(
@@ -336,9 +332,9 @@ class Pipeline(BaseLayer):
                     """Computes the carry input for timestep v_carry.
 
                     Args:
-                        v_input_t: a Tensor of shape [1, ...], where
+                        v_input_t: A Tensor of shape [1, ...], where
                             v_input_t of timestep t == microbatch[t] if t < M; otherwise padding.
-                        v_carry_output_t_1: a Tensor of shape [N, ...], representing carry output of
+                        v_carry_output_t_1: A Tensor of shape [N, ...], representing carry output of
                             timestep {t-1}.
                         partition_spec: PartitionSpec for carry values.
                     """
@@ -428,7 +424,7 @@ class Pipeline(BaseLayer):
 
     def _to_microbatches(self, inputs):
         """Reshapes inputs from [batch_size, ...] to [M, microbatch_size, ...]."""
-        cfg = self.config
+        cfg: Pipeline.Config = self.config
 
         def reshape_and_transpose(x: Tensor):
             # Keep batch partitioning along the 'microbatch_size' dim.

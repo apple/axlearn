@@ -14,6 +14,7 @@ import jax
 import tensorflow as tf
 from absl import logging
 from jax import numpy as jnp
+from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
 
 from axlearn.common import measurement, utils
@@ -37,6 +38,7 @@ from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.utils import (
+    HybridMeshShape,
     MeshShape,
     NestedPartitionSpec,
     NestedTensor,
@@ -45,25 +47,8 @@ from axlearn.common.utils import (
     count_model_params,
     flatten_items,
     match_regex_rules,
-    prune_tree,
     thread_stack_traces,
 )
-
-
-def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
-    """Returns a shallow copy of the input tree with empty subtrees pruned.
-
-    If a tree would be made empty by removal of its subtrees, it will also be pruned.
-    This is a shallow copy because leaf nodes (non-dict values) are not deep-copied.
-
-    Args:
-        in_tree: the input tree to be pruned.
-
-    Returns:
-        The pruned copy of the input tree.
-    """
-    # Note that falsey values or empty Tensors are not considered empty.
-    return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
 
 
 class TrainerState(NamedTuple):
@@ -101,9 +86,25 @@ class SpmdTrainer(Module):
 
         # The default mesh configuration.
         #
-        # The mesh shape, if specified, must have the same length as mesh_axis_names.
+        # If specified as a MeshShape, must have the same length as mesh_axis_names. Implicitly,
+        # this treats the mesh shape as the ICI mesh shape; we default to a DCN mesh shape that
+        # partitions the first non-singleton axis across granules (e.g. TPU slices or GPU nodes).
+        # If all axes are singletons, this implies a single-granule environment and therefore an
+        # all-1's DCN mesh shape.
+        #
+        # As an example on 2 H100 nodes, for mesh axes (pipeline, data, model) and a MeshShape of
+        # (1, 2, 8), we break the "data" axis across DCN -- this produces a DCN mesh shape (1, 2, 1)
+        # and an ICI mesh shape (1, 1, 8), i.e. 2-way data-parallelism across DCN, and 8-way model
+        # parallelism within-node (e.g. NVLink). If instead the MeshShape is provided as (2, 1, 8),
+        # we break along the "pipeline" axis, producing a DCN mesh shape of (2, 1, 1) and ICI mesh
+        # shape (1, 1, 8) for 2-way pipeline-parallelism across DCN and 8-way model parallelism
+        # within-node.
+        #
+        # If specified as a HybridMeshShape, each member must have the same length as
+        # mesh_axis_names.
+        #
         # Use `mesh_rules` to set different mesh shapes depending on the hardware platform.
-        mesh_shape: Required[MeshShape] = REQUIRED
+        mesh_shape: Required[Union[MeshShape, HybridMeshShape]] = REQUIRED
         # The mesh axis names. The names can be referenced in ParameterSpec.mesh_axes.
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
         # Subset of mesh axis names over which the leaves of the input batch are sharded.
@@ -410,7 +411,7 @@ class SpmdTrainer(Module):
                 last training step. If None or False, do not force run evalers and no evaler
                 summaries are returned; if True, force run all evalers at the last training step
                 and return summaries; if given as a set of strings, force run all the evalers
-                with the name in the set at teh last training step and return summaries.
+                with the name in the set at the last training step and return summaries.
 
         Returns:
             None if no training is run or a dict otherwise.
@@ -441,7 +442,7 @@ class SpmdTrainer(Module):
                 output = None
                 stop_trace_step = None
 
-                for input_batch in self._input_iter:
+                for input_batch in self.input.batches(self._input_iter):
                     self._maybe_record_event(measurement.Event.START_STEP, self._step)
                     logging.log_first_n(
                         logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
@@ -604,8 +605,9 @@ class SpmdTrainer(Module):
         self._step_log("Total number of model params: %s", f"{total_num_params:,}")
         self.summary_writer(0, {"num_model_params": total_num_params})
 
-        total_state_bytes = 0
         # Training state size.
+        total_state_bytes = 0
+        total_sharded_state_bytes = 0
         state_spec_map = dict(utils.flatten_items(self.trainer_state_specs))
         for path, value in utils.flatten_items(self._trainer_state):
             self._step_log(
@@ -616,10 +618,22 @@ class SpmdTrainer(Module):
                 state_spec_map.get(path),
             )
             total_state_bytes += value.size * value.dtype.itemsize
-        self._step_log("Training state size: %.2f GB", total_state_bytes / 1024**3)
-        trainer_state_structure = jax.tree_util.tree_structure(self._trainer_state)
-        utils.complete_partition_spec_tree(
-            trainer_state_structure, self._trainer_state_partition_specs
+            shard_shape = value.sharding.shard_shape(value.shape)
+            total_sharded_state_bytes += math.prod(shard_shape) * value.dtype.itemsize
+
+        total_sharded_state_gb = total_sharded_state_bytes / 1024**3
+        if jax.process_count() > 1:
+            max_sharded_state_gb = multihost_utils.process_allgather(total_sharded_state_gb).max()
+        else:
+            max_sharded_state_gb = total_sharded_state_gb
+
+        self._step_log(
+            "Training state size: %.2f GiB\n"
+            "Training state size (partitioned): %.2f GiB\n"
+            "Max training state size (partitioned): %.2f GiB",
+            total_state_bytes / 1024**3,
+            total_sharded_state_gb,
+            max_sharded_state_gb,
         )
 
     def _prepare_training(self, prng_key: Tensor) -> bool:
@@ -879,17 +893,19 @@ class SpmdTrainer(Module):
         state: TrainerState,
         input_batch: Dict[str, Any],
     ) -> Tuple[TrainerState, NestedTensor]:
+        cfg = self.config
         # Shard and (possibly) dispatch the input batch.
-        input_batch = utils.dispatch_input_batch(
-            input_batch, batch_axis_names=self.config.batch_axis_names
-        )
+        if hasattr(self.input, "dispatch_global_batch"):
+            input_batch = self.input.dispatch_global_batch(
+                input_batch, batch_axis_names=cfg.batch_axis_names
+            )
 
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
             state.prng_key, 4
         )
 
         def train_cast(in_tree):
-            return utils.cast_floats(in_tree, to_dtype=self.config.train_dtype)
+            return utils.cast_floats(in_tree, to_dtype=cfg.train_dtype)
 
         # A nested tree of booleans.
         should_compute_gradients = self.learner.should_update_with_optimizers(state.model)

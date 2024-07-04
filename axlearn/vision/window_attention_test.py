@@ -228,7 +228,7 @@ class WindowAttentionTest(TestCase, tf.test.TestCase):
             ),  # (200, 1, 1, 3), (10, 10)
         ]
     )
-    def test_window_partiton_unpartion_with_num_windows(
+    def test_window_partition_unpartition_with_num_windows(
         self,
         inputs_shape,
         num_windows,

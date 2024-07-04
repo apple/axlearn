@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Defines BaseLayer, the base class for layer implementations."""
+
 import dataclasses
 import math
 from typing import Any, Callable, Dict, Optional, Sequence, Union
@@ -298,12 +299,27 @@ class BaseLayer(Module):
         ):
             return nullary
 
+        static_kwargs = {}
+        tracer_kwargs = {}
+        for k, v in kwargs.items():
+            if isinstance(v, Tensor):
+                tracer_kwargs[k] = v
+            else:
+                static_kwargs[k] = v
+        self.vlog(
+            3,
+            "BaseLayer.nullary_with_remat %s.%s: static_kwargs=%s",
+            self.path(),
+            method_fn,
+            set(static_kwargs.keys()),
+        )
+
         # Remat always uses abstract tracers even if concrete information is available.
         # This means that all inputs and outputs to a remat function need to be JAX types.
         # We print a nice error if the inputs are not.
         check_jax_type(
             args=args,
-            kwargs=kwargs,
+            kwargs=tracer_kwargs,
             msg=f"Attempt to use remat on {self}.{method_fn} "
             "failed. Consider decorating with @no_remat.",
         )
@@ -314,7 +330,7 @@ class BaseLayer(Module):
                 output_collection = new_output_collection()
                 # We override output_collection to avoid leaking tracers.
                 with child_context("remat", module=self, output_collection=output_collection):
-                    outputs = method_fn(self, *args, **kwargs)
+                    outputs = method_fn(self, *args, **kwargs, **static_kwargs)
                 return outputs, output_collection
 
             logging.info("Applying remat on %s.%s: %s", self.path(), method_fn, cfg.remat_spec)
@@ -323,7 +339,7 @@ class BaseLayer(Module):
             outputs, output_collection = jax.ad_checkpoint.remat(
                 fn,
                 **{k: maybe_instantiate(v) for k, v in dataclasses.asdict(cfg.remat_spec).items()},
-            )(*args, **kwargs)
+            )(*args, **tracer_kwargs)
             self.get_invocation_context().output_collection.update(output_collection)
             return outputs
 
@@ -345,7 +361,11 @@ class BaseLayer(Module):
             param_spec = dataclasses.replace(
                 param_spec,
                 mesh_axes=PartitionSpec(*partition_spec),
-                fan_axes=self._compute_fan_axes(name=name, parameter_spec=param_spec),
+                fan_axes=(
+                    param_spec.fan_axes
+                    if param_spec.fan_axes is not None
+                    else self._compute_fan_axes(name=name, parameter_spec=param_spec)
+                ),
             )
             if param_spec.dtype is None:
                 param_spec = dataclasses.replace(param_spec, dtype=self.dtype())
@@ -429,7 +449,11 @@ class BaseLayer(Module):
             prng_key=prng_key,
             shape=parameter_spec.shape,
             dtype=parameter_spec.dtype,
-            axes=self._compute_fan_axes(name, parameter_spec),
+            axes=(
+                parameter_spec.fan_axes
+                if parameter_spec.fan_axes is not None
+                else self._compute_fan_axes(name=name, parameter_spec=parameter_spec)
+            ),
         )
         return param
 
@@ -459,14 +483,13 @@ class BaseLayer(Module):
             params = self._param_noise.apply(prng_key, params)
         return params
 
-    # pylint: disable-next=no-self-use
     def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
         if not name.endswith("weight"):
             return None
-        if len(parameter_spec.shape) < 2:
+        if len(parameter_spec.shape) != 2:
             raise NotImplementedError(
-                "Default _compute_fan_axes requires weight parameters to have at least 2 axes "
-                f"shape({name}) = {parameter_spec.shape}"
+                f"{type(self)} uses the default _compute_fan_axes, which requires weight "
+                f"parameters to have exactly 2 axes: shape({name}) = {parameter_spec.shape}"
             )
         return FanAxes(in_axis=-2, out_axis=-1)
 

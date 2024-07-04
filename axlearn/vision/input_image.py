@@ -240,7 +240,7 @@ def random_erasing(
 
     Args:
         image: the input image of shape [H, W, C].
-        erasing_probability: the probablity of applying random erasing.
+        erasing_probability: the probability of applying random erasing.
 
     Returns:
         The augmented image.

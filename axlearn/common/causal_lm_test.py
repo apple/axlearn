@@ -14,6 +14,7 @@ from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
 
 from axlearn.common import causal_lm, utils
 from axlearn.common.attention import (
+    CausalAttentionLogitBiasLayer,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
     TransformerFeedForwardLayer,
@@ -34,7 +35,8 @@ from axlearn.common.utils import Tensor
 
 
 class Gpt2TransformerTest(TestCase):
-    def test_against_hf_gpt2_lm(self):
+    @parameterized.parameters("attention_mask", "causal_attention")
+    def test_against_hf_gpt2_lm(self, causal_attention_mode: str):
         hidden_dim = 16
         vocab_size = 24
         num_heads = 4
@@ -66,6 +68,17 @@ class Gpt2TransformerTest(TestCase):
             layer_norm_epsilon=ref_cfg.layer_norm_epsilon,
             dropout_rate=ref_cfg.attn_pdrop,
         )
+        if causal_attention_mode == "attention_mask":
+            decoder_cfg.transformer.layer.self_attention.attention.causal = False
+            decoder_cfg.attention_mask = CausalAttentionLogitBiasLayer.default_config()
+            require_same_tree_structure = True
+        elif causal_attention_mode == "causal_attention":
+            decoder_cfg.transformer.layer.self_attention.attention.causal = True
+            decoder_cfg.attention_mask = None
+            require_same_tree_structure = False
+        else:
+            raise ValueError(f"Unknown causal_attention_mode: {causal_attention_mode}")
+
         decoder_cfg.param_init = DefaultInitializer.default_config().set(
             init_by_param_name={
                 PARAM_REGEXP_WEIGHT: WeightInitializer.default_config().set(
@@ -88,6 +101,7 @@ class Gpt2TransformerTest(TestCase):
             test_inputs=dict(input_batch=dict(input_ids=input_ids), return_aux=True),
             ref_inputs=as_torch_tensor(input_ids),
             parameters_from_ref_layer=parameters_from_torch_layer,
+            require_same_tree_structure=require_same_tree_structure,
         )
         test_logits = test_aux["logits"]
         ref_logits = ref_outputs.logits.detach().numpy()

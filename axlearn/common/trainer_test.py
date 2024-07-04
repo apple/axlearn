@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests SpmdTrainer."""
+
 # pylint: disable=no-self-use
 import copy
 import dataclasses
@@ -8,7 +9,7 @@ import os.path
 import shutil
 import tempfile
 import unittest
-from typing import Any, Callable, Dict, Literal, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, Literal, Optional, Sequence, Union
 
 import chex
 import jax
@@ -35,7 +36,14 @@ from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.trainer import SpmdTrainer, TrainerState, select_mesh_config
-from axlearn.common.utils import NestedTensor, Tensor, as_tensor, flatten_items, match_regex_rules
+from axlearn.common.utils import (
+    NestedTensor,
+    Tensor,
+    as_tensor,
+    dispatch_input_batch,
+    flatten_items,
+    match_regex_rules,
+)
 
 FLAGS = flags.FLAGS
 
@@ -124,6 +132,18 @@ class DummyInput(Module):
         if cfg.total_num_batches is None:
             ds = ds.repeat()
         return ds
+
+    def batches(self, it: tf.data.Iterator) -> Iterable[NestedTensor]:
+        for input_batch in it:
+            yield input_batch
+
+    def dispatch_global_batch(
+        self,
+        global_physical_batch: NestedTensor,
+        *,
+        batch_axis_names: Union[str, Sequence[str]] = "data",
+    ) -> NestedTensor:
+        return dispatch_input_batch(global_physical_batch, batch_axis_names=batch_axis_names)
 
     def __iter__(self):
         # Use a different __iter__ than iter(self.dataset()), to test that input iter can be
@@ -709,8 +729,15 @@ class TrainerTest(test_utils.TestCase):
     @parameterized.product(
         save_input_iterator=[False, True],
         restore_input_iterator=[False, True],
+        max_concurrent_gb=[None, 1],
     )
-    def test_checkpoint_policy(self, *, save_input_iterator: bool, restore_input_iterator: bool):
+    def test_checkpoint_policy(
+        self,
+        *,
+        save_input_iterator: bool,
+        restore_input_iterator: bool,
+        max_concurrent_gb: Optional[int],
+    ):
         """Test checkpoint policy when evaler and checkpointer run at different cadences."""
         model_cfg = DummyModel.default_config().set(dtype=jnp.float32)
 
@@ -724,7 +751,7 @@ class TrainerTest(test_utils.TestCase):
 
             return fn
 
-        cfg = SpmdTrainer.default_config().set(
+        cfg: SpmdTrainer.Config = SpmdTrainer.default_config().set(
             name="test_trainer",
             dir=tempfile.mkdtemp(),
             mesh_axis_names=("data", "model"),
@@ -754,6 +781,7 @@ class TrainerTest(test_utils.TestCase):
             ),
             save_input_iterator=save_input_iterator,
         )
+        cfg.checkpointer.storage.max_concurrent_gb = max_concurrent_gb
 
         # Run trainer.
         trainer: SpmdTrainer = cfg.instantiate(parent=None)

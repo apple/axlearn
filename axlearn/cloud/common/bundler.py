@@ -48,6 +48,7 @@ import tempfile
 from typing import Dict, Iterable, List, Optional, Sequence, Type, TypeVar, Union
 from urllib.parse import urlparse
 
+import prefixed
 from absl import app, flags, logging
 from tensorflow import io as tf_io
 
@@ -124,7 +125,7 @@ class Bundler(Configurable):
         exclude_paths = set(canonicalize_to_list(cfg.exclude))
 
         def copytree(src: pathlib.Path, dst: pathlib.Path, exclude: Iterable[str], root=None):
-            """Recusively copies `src` to `dst`.
+            """Recursively copies `src` to `dst`.
 
             Args:
                 src: A path to a file or directory.
@@ -195,6 +196,10 @@ class Bundler(Configurable):
             rel_config_file,
         )
         config.write_configs_with_header(str(rel_config_file), configs)
+
+        dir_size = sum(f.stat().st_size for f in temp_root.glob("**/*"))
+        dir_size = f"{prefixed.Float(dir_size):!.2k}B"
+        logging.info("Uncompressed size: %s", dir_size)
 
         return temp_dir
 
@@ -548,6 +553,8 @@ class BaseTarBundler(Bundler):
             with tarfile.open(tar_path, "w:gz") as tar:
                 for f in temp_root.glob("*"):
                     tar.add(f, arcname=f.name)
+            tar_size = f"{prefixed.Float(tar_path.stat().st_size):!.2k}B"
+            logging.info("Compressed size: %s", tar_size)
 
             # Upload to remote.
             remote_path = self.id(name)

@@ -5,7 +5,7 @@
 import dataclasses
 import sys
 from collections import OrderedDict
-from typing import Any, Iterable, NamedTuple, Optional, Sequence, Type
+from typing import Any, Iterable, NamedTuple, Optional, Sequence, Type, Union
 
 # pylint: disable=no-self-use
 import jax
@@ -39,6 +39,8 @@ from axlearn.common.test_utils import (
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import (
     PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
+    HybridMeshShape,
+    MeshShape,
     NestedTensor,
     StackedKeyArray,
     Tensor,
@@ -277,7 +279,7 @@ class TreeUtilsTest(TestCase):
         tree = VDict(a=jnp.arange(10), b=jnp.arange(7) - 3, c=None)
         # Note that 'None' is considered part of the tree structure, not tree leaves.
         self.assertEqual(
-            "PyTreeDef(CustomNode(VDict[['a', 'b', 'c']], [*, *, None]))",
+            "PyTreeDef(CustomNode(VDict[('a', 'b', 'c')], [*, *, None]))",
             str(jax.tree_util.tree_structure(tree)),
         )
         self.assertLen(jax.tree_util.tree_leaves(tree), 2)
@@ -355,6 +357,24 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(4, sys.getrefcount(x))
         self.assertSequenceEqual(["x"], keys)
         self.assertLen(values, 1)
+
+    def test_vdict_tree_utils(self):
+        """Tests that tree_map and tree_flatten work on VDict the same way they work on dict."""
+        d1 = dict(b=2, a=1)
+        d2 = dict(b=3, a=2)
+        v1 = VDict(d1)
+        v2 = VDict(d2)
+
+        # Make sure keys are in sorted order after using tree utils like they are for dicts.
+        d_result = jax.tree_util.tree_map(lambda *args: args, d1, d2)
+        v_result = jax.tree_util.tree_map(lambda *args: args, v1, v2)
+        self.assertSequenceEqual(v_result, d_result)
+        self.assertSequenceEqual(list(v_result.values()), list(d_result.values()))
+
+        # Explicitly test that mismatching key orders work.
+        result = jax.tree_util.tree_map(lambda *args: args, VDict(b=2, a=1), VDict(a=1, b=2))
+        self.assertSequenceEqual(list(result), ["a", "b"])
+        self.assertSequenceEqual(list(result.values()), [(1, 1), (2, 2)])
 
     def test_get_and_set_recursively(self):
         tree = {"a": {"b": 2, "c": {"d": 3, "e": 4}}, "f.g": 5}
@@ -1219,12 +1239,39 @@ class DummyMultiSliceTpuDevice(DummyTpuDevice):
 
 
 class DeviceMeshTest(TestCase):
+    def test_create_device_mesh_cpu(self):
+        # Check that all 1's mesh is still valid.
+        device_mesh = create_device_mesh(
+            mesh_shape=(1,) * 3,
+            devices=[DummyDevice(platform="cpu", device_kind="cpu", process_index=0)],
+        )
+        self.assertEqual((1,) * 3, device_mesh.shape)
+
     @parameterized.parameters(
         {"logical_mesh": (2, 8)},
         {"logical_mesh": (4, 4)},
         {"logical_mesh": (1, 2, 8)},
+        # Test a basic case with hybrid mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(4, 4), dcn_mesh_shape=(1, 1)),
+            "expected": (4, 4),
+        },
+        # Test a case where we infer -1 in ICI and DCN mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(-1, 4), dcn_mesh_shape=(-1, 1)),
+            "expected": (4, 4),
+        },
+        # Raise if DCN mesh does not match the single-slice TPU case.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(-1, 4), dcn_mesh_shape=(2, 1)),
+            "expected": ValueError("Product of DCN mesh"),
+        },
     )
-    def test_create_device_mesh_tpuv4(self, logical_mesh: Sequence[int]):
+    def test_create_device_mesh_tpuv4(
+        self,
+        logical_mesh: Union[MeshShape, HybridMeshShape],
+        expected: Optional[Union[MeshShape, Exception]] = None,
+    ):
         physical_mesh = (4, 4, 1)
         coords = [
             (x, y, z)
@@ -1241,16 +1288,55 @@ class DeviceMeshTest(TestCase):
             )
             for ix, coord in enumerate(coords)
         ]
-        # Check that the constructed mesh has the expected shape.
-        self.assertEqual(
-            create_device_mesh(mesh_shape=logical_mesh, devices=devices).shape, logical_mesh
-        )
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+        else:
+            # Check that the constructed mesh has the expected shape.
+            self.assertEqual(
+                expected or logical_mesh,
+                create_device_mesh(mesh_shape=logical_mesh, devices=devices).shape,
+            )
 
     @parameterized.parameters(
         {"logical_mesh": (2, 16)},
         {"logical_mesh": (2, 4, 4)},
+        # Use the first axis that divides number of granules for DCN mesh.
+        {"logical_mesh": (1, 2, 16)},
+        # First non-singleton dim does not divide number of granules.
+        {"logical_mesh": (3, 2, 16), "expected": ValueError("First non-singleton")},
+        # At least one ICI mesh should divide number of granules.
+        {"logical_mesh": (1, 1), "expected": ValueError("At least one")},
+        # Test a case where we infer -1 in ICI mesh.
+        {"logical_mesh": (2, -1), "expected": (2, 16)},
+        # Test a case where we infer -1 in DCN mesh.
+        {"logical_mesh": (-1, 16), "expected": (2, 16)},
+        # Test a basic hybrid mesh case.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 16), dcn_mesh_shape=(2, 1)),
+            "expected": (2, 16),
+        },
+        # Test a case where we infer -1 in ICI mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, -1), dcn_mesh_shape=(2, 1)),
+            "expected": (2, 16),
+        },
+        # Test a case where we infer -1 in DCN mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 16), dcn_mesh_shape=(-1, 1)),
+            "expected": (2, 16),
+        },
+        # Test a case where we infer -1 in both ICI and DCN mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, -1), dcn_mesh_shape=(-1, 1)),
+            "expected": (2, 16),
+        },
     )
-    def test_create_device_mesh_multi_slice_tpuv4(self, logical_mesh: Sequence[int]):
+    def test_create_device_mesh_multi_slice_tpuv4(
+        self,
+        logical_mesh: Union[MeshShape, HybridMeshShape],
+        expected: Optional[Union[MeshShape, Exception]] = None,
+    ):
         slice_physical_mesh = (4, 4, 1)
         num_slices = 2
         coords = [
@@ -1270,18 +1356,73 @@ class DeviceMeshTest(TestCase):
             for ix, coord in enumerate(coords)
             for slice_index in range(num_slices)
         ]
-        # Check that the constructed mesh has the expected shape.
-        device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
-        self.assertEqual(device_mesh.shape, logical_mesh)
-        # Check that the sub_mesh along the first axis only contains devices from one of the slices.
-        for ix, sub_mesh in enumerate(device_mesh):
-            self.assertTrue(all(el.slice_index == ix for el in sub_mesh.flatten()))
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+        else:
+            # Check that the constructed mesh has the expected shape.
+            device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+            self.assertEqual(expected or logical_mesh, device_mesh.shape)
+
+            # Check that the sub_mesh along the first non-singleton mesh axis only contains devices
+            # from one of the slices.
+            mesh_shape = device_mesh.shape
+            for dim in mesh_shape:
+                if dim != 1:
+                    break
+                device_mesh = device_mesh[0]
+            for ix, sub_mesh in enumerate(device_mesh):
+                self.assertTrue(all(el.slice_index == ix for el in sub_mesh.flatten()))
 
     @parameterized.parameters(
         {"logical_mesh": (2, 128, 2)},
         {"logical_mesh": (2, 16, 16)},
+        # Use the first axis that divides number of granules for DCN mesh.
+        {"logical_mesh": (1, 2, 16, 16)},
+        # First non-singleton dim does not divide number of granules.
+        {"logical_mesh": (3, 2, 16, 16), "expected": ValueError("First non-singleton")},
+        # At least one ICI mesh should divide number of granules.
+        {"logical_mesh": (1, 1), "expected": ValueError("At least one")},
+        # Test a case where we infer -1 in ICI mesh.
+        {"logical_mesh": (2, -1, 2), "expected": (2, 128, 2)},
+        # Test a case where we infer -1 in DCN mesh.
+        {"logical_mesh": (-1, 16, 16), "expected": (2, 16, 16)},
+        # Test a basic hybrid mesh case.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 128, 2), dcn_mesh_shape=(2, 1, 1)),
+            "expected": (2, 128, 2),
+        },
+        # Test that ICI mesh should respect the number of devices.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 64, 2), dcn_mesh_shape=(2, -1, 1)),
+            "expected": ValueError("Product of ICI"),
+        },
+        # Test that DCN mesh should respect the number of slices.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 64, 2), dcn_mesh_shape=(2, 2, 1)),
+            "expected": ValueError("Product of DCN"),
+        },
+        # Test a case where we infer -1 in ICI mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, -1, 2), dcn_mesh_shape=(2, 1, 1)),
+            "expected": (2, 128, 2),
+        },
+        # Test a case where we infer -1 in DCN mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 128, 2), dcn_mesh_shape=(-1, 1, 1)),
+            "expected": (2, 128, 2),
+        },
+        # Test a case where we infer -1 in both ICI and DCN mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, -1, 16), dcn_mesh_shape=(-1, 1, 1)),
+            "expected": (2, 16, 16),
+        },
     )
-    def test_create_device_mesh_multi_slice_tpuv5e(self, logical_mesh: Sequence[int]):
+    def test_create_device_mesh_multi_slice_tpuv5e(
+        self,
+        logical_mesh: Union[MeshShape, HybridMeshShape],
+        expected: Optional[Union[MeshShape, Exception]] = None,
+    ):
         slice_physical_mesh = (16, 16, 1)
         num_slices = 2
         coords = [
@@ -1301,19 +1442,74 @@ class DeviceMeshTest(TestCase):
             for ix, coord in enumerate(coords)
             for slice_index in range(num_slices)
         ]
-        # Check that the constructed mesh has the expected shape.
-        device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
-        self.assertEqual(device_mesh.shape, logical_mesh)
-        # Check that the sub_mesh along the first axis only contains devices from one of the slices.
-        for ix, sub_mesh in enumerate(device_mesh):
-            self.assertTrue(all(el.slice_index == ix for el in sub_mesh.flatten()))
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+        else:
+            # Check that the constructed mesh has the expected shape.
+            device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+            self.assertEqual(expected or logical_mesh, device_mesh.shape)
+
+            # Check that the sub_mesh along the first non-singleton mesh axis only contains devices
+            # from one of the slices.
+            mesh_shape = device_mesh.shape
+            for dim in mesh_shape:
+                if dim != 1:
+                    break
+                device_mesh = device_mesh[0]
+            for ix, sub_mesh in enumerate(device_mesh):
+                self.assertTrue(all(el.slice_index == ix for el in sub_mesh.flatten()))
 
     @parameterized.parameters(
         {"logical_mesh": (8, 2, 4)},
         {"logical_mesh": (16, 4)},
+        # Test fallback to standard mesh.
         {"logical_mesh": (2, 32)},
+        # Test a case where we infer -1 in ICI mesh.
+        {"logical_mesh": (8, -1, 4), "expected": (8, 2, 4)},
+        # Test a case where we infer -1 in DCN mesh.
+        {"logical_mesh": (-1, 2, 4), "expected": (8, 2, 4)},
+        # Test a basic hybrid mesh case.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 2, 4), dcn_mesh_shape=(8, 1, 1)),
+            "expected": (8, 2, 4),
+        },
+        # If expressed as a hybrid mesh, fail if DCN mesh is invalid rather than using fallback.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(4, 2, 4), dcn_mesh_shape=(2, 1, 1)),
+            "expected": ValueError("DCN mesh"),
+        },
+        # Test that ICI mesh should respect the number of devices.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(4, 1, 4), dcn_mesh_shape=(2, -1, 1)),
+            "expected": ValueError("Product of ICI"),
+        },
+        # Test that DCN mesh should respect the number of slices.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(2, 1, 4), dcn_mesh_shape=(2, 2, 1)),
+            "expected": ValueError("Product of DCN"),
+        },
+        # Test a case where we infer -1 in ICI mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 2, -1), dcn_mesh_shape=(8, 1, 1)),
+            "expected": (8, 2, 4),
+        },
+        # Test a case where we infer -1 in DCN mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 2, 4), dcn_mesh_shape=(-1, 1, 1)),
+            "expected": (8, 2, 4),
+        },
+        # Test a case where we infer -1 in both ICI and DCN mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, -1, 4), dcn_mesh_shape=(-1, 1, 1)),
+            "expected": (8, 2, 4),
+        },
     )
-    def test_create_device_mesh_gpu(self, logical_mesh: Sequence[int] = (8, 2, 4)):
+    def test_create_device_mesh_gpu(
+        self,
+        logical_mesh: Union[MeshShape, HybridMeshShape],
+        expected: Optional[Union[MeshShape, Exception]] = None,
+    ):
         num_gpus_per_process = 8
         num_granules = 8
         devices = [
@@ -1325,33 +1521,48 @@ class DeviceMeshTest(TestCase):
             for ix in range(num_gpus_per_process)
             for granule_index in range(num_granules)
         ]
-        # Check that the constructed mesh has the expected shape.
-        device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
-        self.assertEqual(device_mesh.shape, logical_mesh)
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+        else:
+            # Check that the constructed mesh has the expected shape.
+            device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+            self.assertEqual(expected or logical_mesh, device_mesh.shape)
 
 
 class InferMeshShapeTest(TestCase):
     """Tests infer_mesh_shape."""
 
     def test_infer_mesh_shape_config(self):
-        # When mesh sinfer_mesh_shape
         mesh_shape = infer_mesh_shape((4, 1, 8, 1))
         self.assertEqual(mesh_shape, (4, 1, 8, 1))
 
-        # When there is mutiple -1
-        with self.assertRaises(ValueError):
+        # Raise if there are multiple -1's.
+        with self.assertRaisesRegex(ValueError, "one axis"):
             infer_mesh_shape((-1, 1, -1, 8))
 
-        # When num_devices is not a mutiple of products of mesh_shape
-        with self.assertRaises(ValueError):
+        # Raise if num_devices is not a multiple of product of mesh_shape.
+        with self.assertRaisesRegex(ValueError, "product"):
             infer_mesh_shape((-1, 1, 8, 1), num_devices=4)
 
-        # When one -1 for a valid mesh shape
         mesh_shape = infer_mesh_shape((-1, 1, 8, 1), num_devices=32)
         self.assertEqual(mesh_shape, (4, 1, 8, 1))
 
         mesh_shape = infer_mesh_shape((4, 1, 8, -1), num_devices=32)
         self.assertEqual(mesh_shape, (4, 1, 8, 1))
+
+
+class HybridMeshShapeTest(TestCase):
+    """Tests HybridMeshShape."""
+
+    def test_length(self):
+        with self.assertRaisesRegex(ValueError, "same length"):
+            HybridMeshShape(
+                ici_mesh_shape=(1, 2),
+                dcn_mesh_shape=(3,),
+            )
+
+        self.assertEqual(2, len(HybridMeshShape(ici_mesh_shape=(1, 2), dcn_mesh_shape=(3, 4))))
 
 
 if __name__ == "__main__":

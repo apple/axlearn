@@ -13,13 +13,14 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
 """Tests attention layers."""
+
 import contextlib
 import copy
 
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
 from itertools import combinations
-from typing import List, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
 
 import jax
 import numpy as np
@@ -39,8 +40,10 @@ from axlearn.common import attention, test_utils, utils
 from axlearn.common.attention import (
     NEG_INF,
     BaseStackedTransformerLayer,
+    BaseTransformerLayer,
     BottleNeckAdapterTransformerLayer,
     FusedQKVLinear,
+    KVState,
     LearnedPositionalEmbedding,
     MultiheadAttentionXL,
     MultiheadInputLinear,
@@ -50,6 +53,7 @@ from axlearn.common.attention import (
     PerDimScale,
     PipelinedTransformerLayer,
     QKVLinear,
+    QLinear,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
     StackedTransformerLayer,
@@ -82,6 +86,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_set_config,
 )
+from axlearn.common.decoder import Decoder, TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm, set_bias_recursively
 from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
@@ -154,7 +159,7 @@ class MaskTest(absltest.TestCase):
         dim = 32
         logits = jnp.asarray(np.random.random(size=[batch_size, num_heads, dim]))
 
-        # Tesing for biases = None
+        # Testing for biases = None
         masked_logit = apply_attention_logit_biases(logits, attention_logit_biases=None)
         self.assertEqual(masked_logit.dtype, logits.dtype)
         np.testing.assert_array_equal(logits, masked_logit)
@@ -951,7 +956,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
     def llama_ref_precompute_freqs_cis(
         self, *, dim: int, end: int, theta: float = 10000.0
     ) -> torch.Tensor:
-        """Reference LLaMA-1 implemention.
+        """Reference LLaMA-1 implementation.
 
         Ref:
         https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L47-L52
@@ -1331,6 +1336,57 @@ class QKVLinearTest(TestCase):
                 cfg.set(num_kv_heads=num_kv_heads)
             layer = cfg.instantiate(parent=None)
             self.assertEqual(expected, layer.num_kv_heads)
+
+    def test_qlinear(self):
+        """Tests that QLinear is equivalent to QKVLinear with the same kv_state."""
+        with utils.numeric_checks(True):
+            model_dim = 12
+            num_heads = 4
+            per_head_dim = model_dim // num_heads
+            layer_kwargs = dict(
+                query_dim=model_dim,
+                key_dim=model_dim,
+                value_dim=model_dim,
+                num_heads=num_heads,
+                per_head_dim=per_head_dim,
+            )
+            base_cfg = QKVLinear.default_config().set(**layer_kwargs)
+            test_cfg = QLinear.default_config().set(**layer_kwargs)
+            maybe_set_config(test_cfg, num_kv_heads=num_heads)
+            base_layer = base_cfg.set(name="base").instantiate(parent=None)
+            test_layer = test_cfg.set(name="test").instantiate(parent=None)
+
+            # Construct base layer state.
+            base_state = base_layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
+            # Map state to QLinear.
+            test_state = {"q_proj": base_state["q_proj"]}
+
+            # Construct test inputs.
+            batch_size, src_len, tgt_len = 2, 6, 6
+            query = jax.random.uniform(jax.random.PRNGKey(0), [batch_size, tgt_len, model_dim])
+            key = jax.random.uniform(jax.random.PRNGKey(1), [batch_size, src_len, model_dim])
+            value = jax.random.uniform(jax.random.PRNGKey(2), [batch_size, src_len, model_dim])
+
+            outputs = {}
+            layer_names = ("base", "test")
+            kv_kwargs = {"key": key, "value": value}
+            for name, layer, state in zip(
+                layer_names, (base_layer, test_layer), (base_state, test_state)
+            ):
+                outputs[name], _ = F(
+                    layer,
+                    state=state,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(456),
+                    inputs=dict(query=query, **kv_kwargs),
+                )
+                if name == "base":
+                    kv_kwargs = {
+                        "kv_state": KVState(k_proj=outputs[name].key, v_proj=outputs[name].value)
+                    }
+            for layer_a, layer_b in combinations(layer_names, 2):
+                # Check that the outputs are close for all pairs.
+                self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
 
 
 class PerDimScaleTest(TestCase):
@@ -1840,6 +1896,72 @@ class MultiheadAttentionTest(TestCase):
         )
         self.assertEqual(layer_outputs.data.dtype, dtype)
 
+    @parameterized.product(
+        base_cfg=(
+            attention.MultiheadAttention.default_config(),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.GroupedQKVLinear.default_config().set(num_kv_heads=2)
+            ),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.FusedGroupedQKVLinear.default_config().set(num_kv_heads=2)
+            ),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.RoFormerQKVLinear.default_config().set(rotary_value=False)
+            ),
+        ),
+        attention_logit_biases_fn=(
+            lambda seq_len: None,
+            lambda seq_len: _random_mask(jax.random.PRNGKey(1), seq_len, seq_len),
+        ),
+    )
+    def test_causal(
+        self,
+        base_cfg: attention.MultiheadAttention.Config,
+        attention_logit_biases_fn: Callable[[int], Tensor],
+    ):
+        """Tests that base_cfg(causal=True) is equivalent to applying a causal mask."""
+        model_dim = 16
+        num_heads = 4
+        ref_cfg = base_cfg.clone(
+            name="test",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+        )
+        self.assertFalse(ref_cfg.causal)
+        ref_layer = ref_cfg.instantiate(parent=None)
+        layer_params = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        test_cfg = ref_cfg.clone(causal=True)
+        test_layer = test_cfg.instantiate(parent=None)
+
+        batch_size, seq_len = 2, 4
+        query = jnp.zeros([batch_size, seq_len, model_dim], dtype=jnp.float32)
+        outputs = []
+        for layer in (ref_layer, test_layer):
+            attention_logit_biases = attention_logit_biases_fn(seq_len)
+            if layer is ref_layer:
+                # Apply causal mask on top of the logit biases for `ref_layer`.
+                causal_mask = make_causal_mask(seq_len)
+                if attention_logit_biases is None:
+                    attention_logit_biases = causal_mask
+                else:
+                    attention_logit_biases = apply_attention_logit_biases(
+                        attention_logit_biases, causal_mask
+                    )
+            inputs = dict(query=query, attention_logit_biases=attention_logit_biases)
+            layer_outputs, _ = F(
+                layer,
+                state=layer_params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(456),
+                inputs=inputs,
+            )
+            outputs.append(layer_outputs)
+        # The outputs are equivalent.
+        self.assertNestedAllClose(outputs[0], outputs[1])
+
     def test_gqa_kv_heads(self):
         """Checks that only the heads dim is repeated."""
         batch = source_length = num_heads = 8
@@ -1971,16 +2093,33 @@ class MultiheadAttentionTest(TestCase):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
         batch_size, tgt_len = 2, 6
+        head_dim = model_dim // num_heads
         query = jax.random.normal(
             jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
         )
+        key = value = kv_state = None
         if attention_cfg.klass == attention.GroupedQueryAttention:
-            key = value = None
+            pass
+        elif attention_cfg.input_linear.klass == QLinear:
+            kv_state = KVState(
+                k_proj=jax.random.normal(
+                    jax.random.PRNGKey(124), [batch_size, tgt_len, num_heads, head_dim], dtype=dtype
+                ),
+                v_proj=jax.random.normal(
+                    jax.random.PRNGKey(125), [batch_size, tgt_len, num_heads, head_dim], dtype=dtype
+                ),
+            )
         else:
             key = value = query
         attention_logit_biases = attention.make_causal_mask(tgt_len)
+        return_aux = {"probs"}
         inputs = dict(
-            query=query, key=key, value=value, attention_logit_biases=attention_logit_biases
+            query=query,
+            key=key,
+            value=value,
+            kv_state=kv_state,
+            attention_logit_biases=attention_logit_biases,
+            return_aux=return_aux,
         )
         forward_outputs, _ = F(
             layer,
@@ -1990,11 +2129,17 @@ class MultiheadAttentionTest(TestCase):
             inputs=inputs,
         )
 
-        initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
-        for k in ["key", "value"]:
-            # Check that the cache dtype is inferred as the layer dtype.
-            self.assertEqual(initial_state["i_proj"][k].dtype, dtype)
-        inputs = dict(cached_states=initial_state)
+        initial_state = layer.init_states(
+            target_batch_size=batch_size, target_max_len=tgt_len, kv_state=kv_state
+        )
+        if kv_state is None:
+            for k in ["key", "value"]:
+                # Check that the cache dtype is inferred as the layer dtype.
+                self.assertEqual(initial_state["i_proj"][k].dtype, dtype)
+        else:
+            self.assertNotIn("key", initial_state["i_proj"])
+            self.assertNotIn("value", initial_state["i_proj"])
+        inputs = dict(cached_states=initial_state, kv_state=kv_state, return_aux=return_aux)
         decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
         decoder_probs = jnp.zeros(shape=[tgt_len, batch_size, num_heads, tgt_len])
         for t in range(tgt_len):
@@ -2035,7 +2180,7 @@ class MultiheadAttentionTest(TestCase):
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
         bias=(True, False),
-        input_linear=(attention.QKVLinear, attention.RoFormerQKVLinear),
+        input_linear=(QKVLinear, RoFormerQKVLinear, QLinear),
     )
     def test_extend_step(
         self,
@@ -2115,13 +2260,16 @@ class MultiheadAttentionTest(TestCase):
             jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
         )
         attention_logit_biases = attention.make_causal_mask(tgt_len)
+        return_aux = {"probs"}
 
         forward_outputs, _ = F(
             layer,
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
-            inputs=dict(query=query, attention_logit_biases=attention_logit_biases),
+            inputs=dict(
+                query=query, attention_logit_biases=attention_logit_biases, return_aux=return_aux
+            ),
         )
 
         time_step = jnp.arange(batch_size)
@@ -2131,7 +2279,10 @@ class MultiheadAttentionTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
             inputs=dict(
-                time_step=time_step, query=query, attention_logit_biases=attention_logit_biases
+                time_step=time_step,
+                query=query,
+                attention_logit_biases=attention_logit_biases,
+                return_aux=return_aux,
             ),
             method="prefill_states",
         )
@@ -2155,16 +2306,19 @@ class MultiheadAttentionTest(TestCase):
         time_step_mask = jnp.arange(tgt_len) < time_step[:, None]
         # [batch, tgt_len, model_dim].
         decoder_output = initial_output.data * time_step_mask[..., None]
-        # [batch, num_heads, tgt_len, src_len].
-        decoder_probs = initial_output.probs * time_step_mask[:, None, :, None]
-
         # [batch, tgt_len, model_dim] --> [batch, model_dim, tgt_len].
         decoder_output = jnp.moveaxis(decoder_output, -2, -1)
-        # [batch, num_heads, tgt_len, src_len] --> [batch, num_heads, src_len, tgt_len].
-        decoder_probs = jnp.moveaxis(decoder_probs, -2, -1)
+
+        # [batch, num_heads, tgt_len, src_len].
+        if initial_output.probs is None:
+            decoder_probs = None
+        else:
+            decoder_probs = initial_output.probs * time_step_mask[:, None, :, None]
+            # [batch, num_heads, tgt_len, src_len] --> [batch, num_heads, src_len, tgt_len].
+            decoder_probs = jnp.moveaxis(decoder_probs, -2, -1)
 
         # Call extend_step from time_step, ensuring that outputs match.
-        inputs = dict(cached_states=initial_states)
+        inputs = dict(cached_states=initial_states, return_aux=return_aux)
         while jnp.any(time_step < tgt_len):
             # [batch, tgt_len=1, model_dim].
             inputs["query"] = jnp.take_along_axis(
@@ -2327,6 +2481,7 @@ class MultiheadAttentionTest(TestCase):
         kwargs = self._scale_query_kwargs(
             query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
         )
+        kwargs["inputs"]["return_aux"] = {"probs"}
         forward_outputs, _ = F(**kwargs)
         if query_scale_factor is None:
             query_scale_factor = kwargs["module"].per_head_dim() ** -0.5
@@ -2350,6 +2505,7 @@ class MultiheadAttentionTest(TestCase):
         kwargs = self._scale_query_kwargs(
             query_scale_factor=query_scale_factor, key_scale_factor=key_scale_factor
         )
+        kwargs["inputs"]["return_aux"] = {"probs"}
         forward_outputs, _ = F(**kwargs)
         self.assertNestedAllClose(
             forward_outputs.probs[0, 0, 0, 0],
@@ -2428,8 +2584,8 @@ def oracle_xl_attention_logits(
 class TransformerXLTest(TestCase):
     """Tests TransformerXL."""
 
-    def test_rel_pos_to_abs_pos(self):
-        seq_len = 5
+    @parameterized.parameters(5, 2, 1)
+    def test_rel_pos_to_abs_pos(self, seq_len):
         # rel_offset[:, i] = i - (seq_len - 1), i.e., in range [-seq_len + 1, seq_len - 1].
         rel_offset = jnp.tile(jnp.arange(-seq_len + 1, seq_len)[None, :], [seq_len, 1])
         # abs_pos[i, j] = j - i.
@@ -2684,7 +2840,147 @@ class TransformerFeedForwardLayerTest(TestCase):
         )
 
 
-class TransformerTest(TestCase):
+class BaseTransformerTest(TestCase):
+    def _test_decoder_with_transformer(self, transformer_cfg: BaseTransformerLayer.Config):
+        prefix_length = jnp.asarray([0, 2])
+        batch_size, num_decodes, seq_len, vocab_size = prefix_length.shape[0], 3, 7, 6
+        bos_id = eos_id = 1
+        pad_token_id = 0
+
+        cfg = Decoder.default_config().set(
+            transformer=transformer_cfg.clone(name="transformer"),
+            dim=transformer_cfg.input_dim,
+            vocab_size=vocab_size,
+            emb=TransformerTextEmbeddings.default_config().set(
+                pos_emb=LearnedPositionalEmbedding.default_config().set(shape=(seq_len,))
+            ),
+            # output_norm=LayerNorm.default_config().set(eps=layer_norm_epsilon),
+            # dropout_rate=dropout_rate,
+            pad_token_id=pad_token_id,
+            eos_token_id=eos_id,
+        )
+
+        decoder: Decoder = cfg.set(name="decoder").instantiate(parent=None)
+        decoder_state = decoder.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        prefix = jax.random.randint(
+            jax.random.PRNGKey(124),
+            shape=[batch_size, seq_len],
+            # Prefix can consist of any tokens, including pad and eos.
+            minval=0,
+            maxval=vocab_size,
+        )
+        # Explicitly fill positions >= prefix_length with pad_token_id.
+        # Note that each batch example may have a different prefix length.
+        # [batch_size, seq_len].
+        prefix_mask = jnp.arange(seq_len) < prefix_length[:, None]
+        prefix = prefix * prefix_mask + pad_token_id * (1 - prefix_mask)
+        # Set last token to a non-pad token, to fix the prefix length.
+        oh_indices = jax.nn.one_hot(prefix_length - 1, seq_len, dtype=prefix.dtype)
+        prefix = prefix * (1 - oh_indices) + bos_id * oh_indices
+        inputs = dict(
+            prefix=prefix,
+            max_sequence_length=seq_len,
+            # cross_attention_data=None,
+            # cross_attention_logit_biases=None,
+            num_decodes=num_decodes,
+        )
+        outputs, _ = F(
+            decoder,
+            inputs=inputs,
+            state=decoder_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            method="sample_decode",
+        )
+        sequences = outputs.sequences
+        self.assertEqual(sequences.shape, (batch_size, num_decodes, seq_len))
+
+    def _test_forward_vs_extend_step(
+        self,
+        cfg: BaseTransformerLayer.Config,
+        *,
+        input_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+        """Tests that {init,prefill}_states + extend_step is equivalent to forward for `cfg`."""
+        if input_kwargs is None:
+            input_kwargs = {}
+        layer: BaseTransformerLayer = cfg.clone(name="layer").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        batch_size, tgt_len = 2, 5
+        rng = np.random.default_rng(seed=123)
+        target = rng.random([batch_size, tgt_len, cfg.input_dim], dtype=np.float32)
+
+        forward_outputs, _ = F(
+            layer,
+            inputs=dict(
+                data=jnp.asarray(target),
+                **input_kwargs,
+            ),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+
+        for start_time_step in (-1, 0, 2, tgt_len):
+            if start_time_step > tgt_len:
+                continue
+            print(f"start_time_step={start_time_step}")
+            if start_time_step < 0:
+                cached_states, _ = F(
+                    layer,
+                    inputs=dict(
+                        target_batch_size=batch_size,
+                        target_max_len=tgt_len,
+                        **input_kwargs,
+                    ),
+                    state=layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="init_states",
+                )
+                decoder_output = jnp.zeros_like(target)
+                start_time_step = 0
+            else:
+                (cached_states, prefill_outputs), _ = F(
+                    layer,
+                    inputs=dict(
+                        time_step=jnp.array([start_time_step] * batch_size, dtype=jnp.int32),
+                        data=jnp.asarray(target),
+                        **input_kwargs,
+                    ),
+                    state=layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="prefill_states",
+                )
+                decoder_output = prefill_outputs.data
+            # Transpose to [tgt_len, batch_size, model_dim].
+            decoder_output = jnp.einsum("bsd->sbd", decoder_output)
+            for time_step in range(start_time_step, tgt_len):
+                (cached_states, extend_step_outputs), _ = F(
+                    layer,
+                    inputs=dict(
+                        data=jnp.asarray(target[:, time_step : time_step + 1, :]),
+                        cached_states=cached_states,
+                        **input_kwargs,
+                    ),
+                    state=layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="extend_step",
+                )
+                decoder_output = decoder_output.at[time_step].set(
+                    jnp.squeeze(extend_step_outputs.data, axis=1)
+                )
+            # Transpose to [batch_size, tgt_len, model_dim].
+            decoder_output = jnp.einsum("sbd->bsd", decoder_output)
+            # Prefill + extend_step == forward.
+            assert_allclose(forward_outputs.data, decoder_output)
+
+
+class TransformerTest(BaseTransformerTest):
     """Tests TransformerLayer."""
 
     def _compare_against_roberta_attention(
@@ -2802,6 +3098,77 @@ class TransformerTest(TestCase):
         ref = hf_roberta.RobertaLayer(roberta_config)
         self._compare_against_roberta_layer(ref, layer)
 
+    def test_decoding(self):
+        model_dim, num_heads = 6, 2
+        cfg = TransformerLayer.default_config().set(input_dim=model_dim)
+        cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
+        cfg.feed_forward.hidden_dim = model_dim * 4
+        cfg.vlog = 5
+        self._test_forward_vs_extend_step(cfg)
+
+    def test_self_attention_kv_state(self):
+        """Tests TransformerLayer with explicit self_attention_kv_state.
+
+        Creates a base TransformerLayer and a test TransformerLayer with QLinear. Uses the kv_state
+        of the base layer as the explicit kv_state for the test layer. Checks that the outputs are
+        identical.
+        """
+        model_dim = 16
+        num_heads = 4
+        base_cfg = TransformerLayer.default_config().set(name="test", input_dim=model_dim)
+        base_cfg.feed_forward.set(hidden_dim=scaled_hidden_dim(4))
+        base_cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
+        base_layer: TransformerLayer = base_cfg.instantiate(parent=None)
+        base_layer_params = base_layer.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(0)
+        )
+
+        test_cfg = base_cfg.clone()
+        test_cfg.self_attention.attention.input_linear = QLinear.default_config()
+        test_layer: TransformerLayer = test_cfg.instantiate(parent=None)
+        # Let test_layer_params to be identical to base_layer_params except removing {k,v}_proj.
+        test_layer_params = copy.deepcopy(base_layer_params)
+        for k in ("k_proj", "v_proj"):
+            test_layer_params["self_attention"]["attention"]["i_proj"].pop(k)
+        self.assertEqual(
+            shapes(test_layer_params),
+            shapes(test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))),
+        )
+
+        batch_size, tgt_len = 2, 5
+        rng = np.random.default_rng(seed=123)
+        target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
+        base_layer_outputs, _ = F(
+            base_layer,
+            inputs=dict(data=jnp.asarray(target), return_aux={"self_attention_kv_state"}),
+            state=base_layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        test_layer_outputs, _ = F(
+            test_layer,
+            # Explicitly pass `self_attention_kv_state` from `base_layer_outputs` as inputs to
+            # test_layer.
+            inputs=dict(
+                data=jnp.asarray(target),
+                self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
+                return_aux={"self_attention_kv_state"},
+            ),
+            state=test_layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        assert_allclose(base_layer_outputs.data, test_layer_outputs.data)
+
+        # Tests prefill_state and extend_step.
+        self._test_forward_vs_extend_step(
+            test_cfg,
+            input_kwargs=dict(
+                # Explicitly pass `self_attention_kv_state`.
+                self_attention_kv_state=base_layer_outputs.self_attention_kv_state,
+            ),
+        )
+
 
 class ParallelTransformerTest(TestCase):
     """Tests ParallelTransformerLayer."""
@@ -2865,19 +3232,25 @@ class TestStackModel(BaseLayer):
     @config_class
     class Config(BaseLayer.Config):
         stack: Optional[BaseStackedTransformerLayer.Config] = None  # The transformer stack.
+        output_self_attention_kv_state: bool = False
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._add_child("stack", cfg.stack)
 
-    def forward(self, data, self_attention_logit_biases):
+    def forward(self, data, **layer_kwargs):
+        cfg = self.config
+
         # [batch, length, dim].
-        x = self.stack(data, self_attention_logit_biases=self_attention_logit_biases).data
+        output = self.stack(data, **layer_kwargs)
+        x = output.data
         x_mean = jnp.mean(x, axis=1, keepdims=True)
         # [batch, length].
         x_var = jnp.sum((x - x_mean) ** 2, axis=-1)
         loss = jnp.mean(x_var)
+        if cfg.output_self_attention_kv_state:
+            return loss, {"mean": x_mean, "self_attention_kv_state": output.self_attention_kv_state}
         return loss, {"mean": x_mean}
 
 
@@ -2927,11 +3300,33 @@ def _convert_from_stacked_params(
         raise NotImplementedError(target_stack_cfg)
 
 
-class StackedTransformerTest(TestCase):
+class NonUniformStack(StackedTransformerLayer):
+    def _aggregate_layer_outputs(
+        self, layer_outputs: Sequence[BaseTransformerLayer.Output]
+    ) -> BaseTransformerLayer.Output:
+        return BaseTransformerLayer.Output(
+            # Use data and self_attention_kv_state from the final layer outputs.
+            data=layer_outputs[-1].data,
+            self_attention_kv_state=layer_outputs[-1].self_attention_kv_state,
+            # Do not aggregate *_attention_probs.
+            self_attention_probs=None,
+            cross_attention_probs=None,
+        )
+
+
+class StackedTransformerTest(BaseTransformerTest):
     """Tests StackedTransformerLayer."""
 
     def _stack_config(
-        self, stack_cfg, *, num_layers, model_dim, num_heads, dtype, remat_spec
+        self,
+        stack_cfg,
+        *,
+        num_layers,
+        model_dim,
+        num_heads,
+        dtype,
+        remat_spec,
+        output_self_attention_kv_state=False,
     ) -> TestStackModel.Config:
         if isinstance(stack_cfg, type):
             stack_cfg = stack_cfg.default_config()
@@ -2946,6 +3341,7 @@ class StackedTransformerTest(TestCase):
                 dtype=dtype,
                 layer=TransformerLayer.default_config().set(remat_spec=remat_spec),
             ),
+            output_self_attention_kv_state=output_self_attention_kv_state,
         )
         layer_cfg = cfg.stack.layer
         layer_cfg.self_attention.attention.set(num_heads=num_heads)
@@ -2994,6 +3390,7 @@ class StackedTransformerTest(TestCase):
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
+        return_aux = {"self_attention_probs", "cross_attention_probs"}
 
         forward_outputs, _ = F(
             layer,
@@ -3002,13 +3399,16 @@ class StackedTransformerTest(TestCase):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
         )
         initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
-        inputs = dict(cached_states=initial_state, cross_attention_data=source)
+        inputs = dict(
+            cached_states=initial_state, cross_attention_data=source, return_aux=return_aux
+        )
         decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
 
         # [num_dec_layers, [num_stacked_layers,] batch_size, num_heads, tgt_len, tgt_len] -->
@@ -3043,7 +3443,7 @@ class StackedTransformerTest(TestCase):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                jax.tree_map(
+                jax.tree_util.tree_map(
                     lambda v: self.assertIsInstance(v, utils.VDict),
                     updated_states,
                     is_leaf=lambda v: isinstance(v, dict),
@@ -3114,6 +3514,7 @@ class StackedTransformerTest(TestCase):
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
+        return_aux = {"self_attention_probs", "cross_attention_probs"}
 
         forward_outputs, _ = F(
             layer,
@@ -3122,6 +3523,7 @@ class StackedTransformerTest(TestCase):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             state=layer_params,
             is_training=False,
@@ -3140,6 +3542,7 @@ class StackedTransformerTest(TestCase):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             method="prefill_states",
         )
@@ -3166,7 +3569,9 @@ class StackedTransformerTest(TestCase):
         decoder_cross_attention_probs = jnp.moveaxis(decoder_cross_attention_probs, -2, -1)
 
         # Call extend_step from time_step, ensuring that outputs match.
-        inputs = dict(cached_states=initial_states, cross_attention_data=source)
+        inputs = dict(
+            cached_states=initial_states, cross_attention_data=source, return_aux=return_aux
+        )
         while jnp.any(time_step < tgt_len):
             # [batch, tgt_len=1, model_dim].
             inputs["data"] = jnp.take_along_axis(
@@ -3196,7 +3601,7 @@ class StackedTransformerTest(TestCase):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                jax.tree_map(
+                jax.tree_util.tree_map(
                     lambda v: self.assertIsInstance(v, utils.VDict),
                     updated_states,
                     is_leaf=lambda v: isinstance(v, dict),
@@ -3474,6 +3879,30 @@ class StackedTransformerTest(TestCase):
             self.assertNestedAllClose(all_gradients[0], all_gradients[1])
             self.assertNestedAllClose(all_updates[0], all_updates[1])
 
+    @parameterized.parameters(StackedTransformerLayer, RepeatedTransformerLayer)
+    def test_stacked_decoding(self, stack_cls):
+        model_dim, num_heads = 6, 2
+        cfg = stack_cls.default_config().set(num_layers=5, input_dim=model_dim)
+        layer_cfg = cfg.layer
+        layer_cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
+        layer_cfg.feed_forward.hidden_dim = model_dim * 4
+        self._test_forward_vs_extend_step(cfg)
+        self._test_decoder_with_transformer(cfg)
+
+    @parameterized.product(
+        outer_stack_cls=(StackedTransformerLayer, RepeatedTransformerLayer),
+        inner_stack_cls=(StackedTransformerLayer, RepeatedTransformerLayer),
+    )
+    def test_nested_stacked_decoding(self, outer_stack_cls, inner_stack_cls):
+        model_dim, num_heads = 6, 2
+        cfg = outer_stack_cls.default_config().set(num_layers=2, input_dim=model_dim)
+        cfg.layer = inner_stack_cls.default_config().set(num_layers=3)
+        layer_cfg = cfg.layer.layer
+        layer_cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
+        layer_cfg.feed_forward.hidden_dim = model_dim * 4
+        self._test_forward_vs_extend_step(cfg)
+        self._test_decoder_with_transformer(cfg)
+
     @parameterized.parameters(None, 0.0, 0.2, 1.0)
     def test_stochastic_depth(self, rate):
         batch_size, tgt_len = 10, 6
@@ -3548,6 +3977,138 @@ class StackedTransformerTest(TestCase):
         )
         assert_allclose(outputs.data, ref_outputs.data)
         assert_allclose(outputs.self_attention_probs, ref_outputs.self_attention_probs)
+
+    @parameterized.product(is_training=(True, False))
+    def test_stacked_transformer_with_non_uniform_layers(self, is_training):
+        """Tests that a custom StackedTransformerLayer can support non-uniform layers."""
+        batch_size = 2
+        seq_len = 16
+        input_dim = 4
+        hidden_dim = 16
+        num_layers = 2
+
+        # Create a StackedTransformerLayer by specifying a sequence of non-uniform layer configs.
+        cfg = NonUniformStack.default_config().set(name="test")
+        cfg.input_dim = input_dim
+        cfg.num_layers = num_layers
+        cfg.layer = []
+        for i in range(num_layers):
+            transformer_cfg = TransformerLayer.default_config()
+            # Different numbers of heads between the layers.
+            transformer_cfg.self_attention.attention.num_heads = 2 if i == 0 else 1
+            transformer_cfg.feed_forward.hidden_dim = hidden_dim
+            cfg.layer.append(transformer_cfg)
+        layer: StackedTransformerLayer = cfg.instantiate(parent=None)
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim))
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        outputs, _ = F(
+            layer,
+            is_training=is_training,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(data=inputs, return_aux={"self_attention_kv_state"}),
+        )
+        self.assertEqual(
+            BaseTransformerLayer.Output(
+                data=(2, 16, 4),
+                self_attention_probs=None,
+                self_attention_kv_state=KVState(k_proj=(2, 16, 1, 4), v_proj=(2, 16, 1, 4)),
+                cross_attention_probs=None,
+            ),
+            shapes(outputs),
+        )
+
+    @parameterized.parameters(
+        [None, False],
+        [("data",), False],
+        [("data",), True],
+        [("data", "self_attention_kv_state"), True],
+    )
+    def test_repeated_layer_with_custom_carry(self, repeat_carry, precomputed_kv_state):
+        """Tests RepeatedTransformerLayer with customized `carry`."""
+        batch_size = 1
+        seq_len = 16
+        input_dim = 4
+        num_heads = 2
+        head_dim = input_dim // num_heads
+        num_layers = 3
+
+        cfg = self._stack_config(
+            RepeatedTransformerLayer,
+            num_layers=num_layers,
+            model_dim=input_dim,
+            num_heads=num_heads,
+            dtype=jnp.float32,
+            remat_spec=None,
+            output_self_attention_kv_state=True,
+        )
+        cfg.stack.repeat.carry = repeat_carry
+        cfg.stack.layer.remat_spec = build_remat_spec(
+            cfg.stack, self_attention=True, feed_forward=True
+        )
+        if precomputed_kv_state:
+            kv_shape = (batch_size, seq_len, num_heads, head_dim)
+            kv_state = KVState(
+                k_proj=jax.random.normal(key=jax.random.PRNGKey(1), shape=kv_shape),
+                v_proj=jax.random.normal(key=jax.random.PRNGKey(2), shape=kv_shape),
+            )
+            cfg.stack.layer.self_attention.attention.input_linear = QLinear.default_config()
+            expected_output = 1.8719857
+        else:
+            kv_state = None
+            # carry=None and carry=("data",) are equivalent.
+            expected_output = 5.3901253
+
+        layer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim))
+        outputs, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(
+                data=inputs,
+                self_attention_kv_state=kv_state,
+                return_aux={"self_attention_kv_state"},
+            ),
+        )
+        self.assertNestedAllClose(expected_output, outputs[0])
+        if precomputed_kv_state:
+            self.assertNestedAllClose(kv_state, outputs[1]["self_attention_kv_state"])
+        else:
+            self.assertIsInstance(outputs[1]["self_attention_kv_state"], KVState)
+
+    def test_pipeline_return_aux(self):
+        batch_size, num_heads, seq_len, dim = 2, 3, 4, 6
+
+        class DummyTransformerLayer(TransformerLayer):
+            def forward(self, data, **kwargs):
+                return TransformerLayer.Output(
+                    data=data,
+                    self_attention_probs=jnp.empty([batch_size, num_heads, seq_len, seq_len]),
+                    self_attention_kv_state=KVState(
+                        k_proj=jnp.empty([batch_size, seq_len, num_heads, dim]),
+                        v_proj=jnp.empty([batch_size, seq_len, num_heads, dim]),
+                    ),
+                )
+
+        cfg: PipelinedTransformerLayer.Config = PipelinedTransformerLayer.default_config().set(
+            num_stages=2,
+            num_microbatches=2,
+            num_layers=2,
+            input_dim=dim,
+            layer=DummyTransformerLayer.default_config(),
+        )
+        cfg.layer.self_attention.attention.set(num_heads=num_heads)
+        cfg.layer.feed_forward.hidden_dim = scaled_hidden_dim(4)
+
+        with test_utils.bind_layer(cfg) as layer:
+            data = jax.random.uniform(layer.prng_key, shape=[2, 3, 4])
+            out = layer(data, return_aux={"self_attention_kv_state"})
+            self.assertNestedAllClose(data, out.data)
+            self.assertIsNone(out.self_attention_probs)
+            self.assertIsNotNone(out.self_attention_kv_state)
 
 
 class ConfigHelperTest(TestCase):

@@ -259,7 +259,7 @@ class CoCaImageStreamEncoder(StreamEncoder):
             cfg.contrastive_pooler.set(input_dim=hidden_dim, output_dim=hidden_dim),
         )
         if cfg.pooler_mode != "bottleneck":
-            # allows pooler dimension to be overriden
+            # allows pooler dimension to be overridden
             output_dim = cfg.caption_pooler.output_dim or hidden_dim
             self._add_child(
                 "caption_pooler",
@@ -566,7 +566,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
                         [batch_size, num_sentences, seq_len]
 
         Returns:
-            loss: A Tensor represnting the loss
+            loss: A Tensor representing the loss
             A dictionary containing: TBA
 
         Raises:
@@ -759,7 +759,7 @@ def set_captioning_cfg(
     captioning_cfg.pad_token_id = pad_token_id
     captioning_cfg.use_cross_attention = use_cross_attention
 
-    # Deocder config
+    # Decoder config
     if remat:
         decoder_cfg = RepeatedTransformerLayer.default_config()
     else:
@@ -796,7 +796,7 @@ def set_captioning_cfg(
 class CoCaModel(MultiStreamModel, DecodingMixin):
     """A CoCa two stream model.
 
-    This class provides a customized predict funtion.
+    This class provides a customized predict function.
 
     The predict is called during the inference. As we only need to calculate the
         StreamEncoder outputs.
@@ -808,7 +808,7 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
     class Config(MultiStreamModel.Config):
         """Configures CoCaModel."""
 
-        # Required when running beacm_seach_decode, see details in `DecodingMixin`
+        # Required when running beacm_search_decode, see details in `DecodingMixin`
         pad_token_id: Optional[int] = None
         eos_token_id: Optional[int] = None
 

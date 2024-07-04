@@ -6,7 +6,7 @@
 # Copyright (c) 2019 OpenAI.
 # Licensed under a modified MIT license.
 
-"""An implemention of GPT2 BPE as a seqio Vocabulary.
+"""An implementation of GPT2 BPE as a seqio Vocabulary.
 
 Reference:
 https://github.com/openai/gpt-2/blob/a74da5d99abaaba920de8131d64da2862a8f213b/src/encoder.py
@@ -181,7 +181,7 @@ class BPEVocabulary(seqio.SentencePieceVocabulary):
             A tf.Tensor of shape [num_tokens] and dtype tf.string.
         """
         # Simulate the lookahead by splitting in two stages.
-        # `(?s).*` tells us to keep all delimeters ( `.` does not by default include e.g. `\n`).
+        # `(?s).*` tells us to keep all delimiters ( `.` does not by default include e.g. `\n`).
         s = tft.regex_split(s, f"[{self._spc}][^{self._spc}]+", keep_delim_regex_pattern="(?s).*")
         tokens = tft.regex_split(s, self._pat, keep_delim_regex_pattern="(?s).*")
         return tokens.flat_values

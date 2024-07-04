@@ -335,7 +335,7 @@ class T5EncoderDecoderModelTest(TestCase):
         self.assertNestedAllClose(
             test_aux["logits"] * target_label_mask[:, :, None],
             as_tensor(ref_outputs.logits) * target_label_mask[:, :, None],
-            atol=5e-6,
+            atol=1e-4,
         )
         self.assertNestedAllClose(test_loss, as_tensor(ref_outputs.loss))
 

@@ -34,7 +34,9 @@ dependencies = [
     "typing-extensions==4.9.0",  # needed for typing.Protocol. >4.9.0 runs into attribute error `__non_callable_proto_members__`.
     "scipy==1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
     "seqio==0.0.18",  # used for inputs
-    "aqtp==0.4.0" # aqtp>=0.5.0 requires python>=3.10 due to the use of Union shorthand "|" in type hints
+    "aqtp==0.4.0", # aqtp>=0.5.0 requires python>=3.10 due to the use of Union shorthand "|" in type hints.
+    "flax==0.8.2", # for AQT, param converter and adapter.
+    "prefixed==0.7.1", # For formatting file sizes, param counts, etc.
 ]
 
 [project.optional-dependencies]
@@ -52,8 +54,6 @@ dev = [
     "diffusers==0.26.3", # diffuser dependency for golden config updates
     "einops",
     "evaluate",
-    "fairseq==0.12.2",  # test-only; note Apple Silicon start.md instructions parse this specifier '==', please be careful when upgrading.
-    "flax==0.8.2",  # for param converter and adapter
     "isort",  # formatting
     "pre-commit",  # local pre commit hooks
     "pycocotools",  # COCO evaluation tools
@@ -69,7 +69,7 @@ dev = [
     "timm==0.6.12",  # DiT Dependency test-only
     "torch>=1.12.1",  # test-only
     "torchvision==0.16.1",  # test-only
-    "transformers==4.40.1",  # test-only
+    "transformers==4.41.2",  # test-only
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
 ]
@@ -113,6 +113,11 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton==2.1.0",
+    "jax[cuda12_pip]==0.4.28",
+]
+# Open API inference.
+open_api = [
+    "openai==1.35.1",
 ]
 
 [tool.flit.module]

@@ -99,7 +99,7 @@ class DataflowJobTest(TestWithTemporaryCWD):
             self.assertEqual("test_name", dataflow_spec["job_name"])
             self.assertEqual(fv.vm_type, dataflow_spec["worker_machine_type"])
 
-            # Test overridding specs (including a multi-flag)
+            # Test overriding specs (including a multi-flag)
             fv.set_default(
                 "dataflow_spec",
                 [

@@ -254,7 +254,7 @@ def delete_k8s_jobset(name: str, *, namespace: str):
         )
     except k8s.client.ApiException as e:
         if e.status == 404:
-            logging.info("%s does not exist, no need to delete.", name)
+            logging.info("Jobset %s does not exist, no need to delete.", name)
             return
         raise
 
