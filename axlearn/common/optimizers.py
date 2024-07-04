@@ -101,12 +101,6 @@ def named_chain(**kwargs):
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
-@dataclasses.dataclass
-class SubOptimizerRule:
-    param_regex: str  # Parameter path regex.
-    optimizer: ConfigOr[PartitionedGradientTransformation]
-
-
 def _no_op():
     def update_fn(
         updates: NestedTensor, state: optax.EmptyState, params: NestedOptParam
@@ -437,9 +431,11 @@ def scale_update_per_param(
             raise ValueError(optax.NO_PARAMS_MSG)  # pylint: disable=no-member
 
         param_scales = maybe_instantiate(per_param_scale)(params)
+        context = current_context()
         register_per_param_settings(
             param_scales,
             description=getattr(per_param_scale, "description", "update_scale"),
+            path=context.path() if context else None,
         )
 
         updates = jax.tree_map(
@@ -483,9 +479,11 @@ def _weight_decay_scales(
         return curr_scale
 
     scales = jax.tree_util.tree_map(maybe_override_scale, tree_paths(params), params, param_scales)
+    context = current_context()
     return register_per_param_settings(
         scales,
         description=getattr(per_param_scale, "description", "weight_decay_scale"),
+        path=context.path() if context else None,
     )
 
 
@@ -743,7 +741,7 @@ def adamw_decoupled_optimizer(
 ) -> PartitionedGradientTransformation:
     """A "decoupled" version of the AdamW optimizer, with optional parameter scaling.
 
-    Farthfully replicates Adam with "decoupled" weight decay from
+    Faithfully replicates Adam with "decoupled" weight decay from
     <https://arxiv.org/abs/1711.05101> Algorithm 2.
     Specifically, `learning_rate`, `weight_decay`, and `update_schedule` correspond to
     `alpha`, `lambda`, and `eta` in Algorithm 2, respectively.

@@ -8,7 +8,7 @@ import os
 import pathlib
 import re
 import tempfile
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from functools import partial
 from tempfile import mkdtemp
 from typing import Any, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
@@ -17,6 +17,7 @@ from unittest.mock import patch
 import jax
 import jax.random
 import numpy as np
+import optax
 from absl import logging
 from absl.testing import parameterized
 from jax import numpy as jnp
@@ -52,6 +53,7 @@ from axlearn.common.utils import (
     complete_partition_spec_tree,
     flatten_items,
     pop_data_dir,
+    prune_tree,
     push_data_dir,
     set_data_dir,
 )
@@ -477,7 +479,7 @@ def read_param_init_specs_recursively(
 
 def read_per_param_settings(
     module: Any, config_name: str, trainer_config: Optional[TrainerConfigFn] = None
-) -> Dict[str, NestedTensor]:
+) -> Dict[str, Dict[str, NestedTensor]]:
     """Extracts per-param settings for the given trainer config.
 
     Given a trainer config specified by `module` and `config_name`, initializes the trainer
@@ -490,10 +492,10 @@ def read_per_param_settings(
         trainer_config: Optional, the pre-cached trainer config used in golden config test.
 
     Returns:
-        A dictionary of trees, where the key is the description of the `register_per_param_settings`
-        call, and the value is a tree of the same structure as the model parameter, and has
-        per-parameter settings, e.g., a float number representing weight decay scale of the
-        parameter.
+        A nested dict, where the key is the description of the `register_per_param_settings` call,
+        and the value is a dictionary. The value maps the learner path to a tree of
+        the same structure as the corresponding model parameters, which records the
+        per-parameter settings (such as the weight decay scales of each parameter).
         It can be empty if the trainer config does not call `register_per_param_settings`.
     """
     # Define patchers.
@@ -509,18 +511,23 @@ def read_per_param_settings(
         autospec=True,
     )
 
-    all_param_settings = {}
+    all_param_settings = defaultdict(dict)
 
     def patched_register_per_param_settings(
-        settings: NestedTree, *, description: str
+        settings: NestedTree, *, description: str, path: Optional[str] = None
     ) -> NestedTree:
-        if description in all_param_settings:
-            raise ValueError(
-                f"{description} already populated:\n"
-                f"Existing: {all_param_settings[description]}\n"
-                f"New: {settings}\n"
-            )
-        all_param_settings[description] = settings
+        # Prune MaskedNode subtrees. If a tree would be made empty by removal of its subtrees,
+        # it will also be pruned.
+        pruned_settings = prune_tree(
+            settings,
+            lambda _, v: isinstance(v, optax.MaskedNode) or (isinstance(v, dict) and not v),
+        )
+        if all_param_settings[description]:
+            logging.info("There are multiple per_param_settings of %s.", description)
+        # Use the path if provided, else a counter.
+        key = path or str(len(all_param_settings[description]))
+
+        all_param_settings[description][key] = pruned_settings
         return settings
 
     with patch(
