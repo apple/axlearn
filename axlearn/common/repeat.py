@@ -67,13 +67,7 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
-from axlearn.common.module import (
-    Module,
-    child_context,
-    new_output_collection,
-    propagate_repeated_output_collections,
-    scan_in_context,
-)
+from axlearn.common.module import Module, child_context, new_output_collection, scan_in_context
 from axlearn.common.utils import (
     NestedTensor,
     Tensor,
@@ -205,11 +199,8 @@ class Repeat(BaseLayer):
                     state=layer_context.state,
                 ),
                 drop_output=self._drop_output,
+                child_name_prefix="layer",
             )
 
-        propagate_repeated_output_collections(
-            layer_output_collection,
-            child_prefix="layer",
-            target_output_collection=self.get_invocation_context().output_collection,
-        )
+        self.get_invocation_context().output_collection.update(layer_output_collection)
         return self.Output(carry=carry, ys=ys)
