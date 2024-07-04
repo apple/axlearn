@@ -143,27 +143,28 @@ def propagate_repeated_output_collections(
     Args:
         repeated_output_collection: An OutputCollection produced by a Jax loop (e.g., jax.vmap
             or jax.scan). Each leaf tensor has shape [N, ...].
-        target_output_collection: The target OutputCollection.
         child_name_prefix: The child name prefix used for children to be added to
             `target_output_collection`.
+        target_output_collection: The target OutputCollection.
     """
     # Fill `target_output_collection[child_name_prefix]` with `repeated_output_collection`.
     child_output = target_output_collection.add_child(child_name_prefix)
     child_output.module_outputs.update(**repeated_output_collection.module_outputs)
     child_output.state_updates.update(**repeated_output_collection.state_updates)
 
-    # Each summary value in `repeated_output_collection` has shape (num_tracks, ...). For example,
-    # if a repeated track outputs a scalar summary value, it will have shape [num_tracks].
-    # Below we split the stacked values and output them separately under scope "track{i}"
-    # so that scalar summaries can be handled correctly.
+    # Each summary value in `repeated_output_collection` has shape (N, ...). For example,
+    # if a repeated layer outputs a scalar summary value, it will have shape [N].
+    # Below we split the stacked values and output them separately under scope
+    # "{child_name_prefix}{i}" so that scalar summaries can be handled correctly.
     summary_values = jax.tree_util.tree_leaves(repeated_output_collection.summaries)
     if summary_values:
         first_summary_value = summary_values[0]
+        assert first_summary_value.shape, "Stacked summaries should have a leading stack dimension."
         num_children = first_summary_value.shape[0]
         for i in range(num_children):
             child_i_output = target_output_collection.add_child(f"{child_name_prefix}{i}")
             child_i_output.summaries.update(
-                **jax.tree_util.tree_map(lambda x, i=i: x[i], repeated_output_collection.summaries)
+                jax.tree_util.tree_map(lambda x, i=i: x[i], repeated_output_collection.summaries)
             )
 
 
