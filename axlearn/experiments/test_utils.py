@@ -28,7 +28,7 @@ from axlearn.common.test_utils import (
     read_per_param_settings,
 )
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.common.utils import Tensor, NestedTree, flatten_items, set_data_dir
+from axlearn.common.utils import NestedTree, Tensor, flatten_items, set_data_dir
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 from axlearn.huggingface.hf_module import HF_MODULE_KEY
 
@@ -254,13 +254,14 @@ class BaseGoldenConfigTest(TestCase):
                 self.compare_str,
             )
         elif test_type == GoldenTestType.LEARNER_RULE:
-            return (self._per_param_settings(
-                module=module,
-                config_name=config_name,
-                trainer_config=trainer_config,
-                setting_types=("learner_rule",),
-            ),
-                    self.compare_str,
+            return (
+                self._per_param_settings(
+                    module=module,
+                    config_name=config_name,
+                    trainer_config=trainer_config,
+                    setting_types=("learner_rule",),
+                ),
+                self.compare_str,
             )
         elif test_type == GoldenTestType.RUN:
             return self._golden_run(trainer_config=trainer_config)
