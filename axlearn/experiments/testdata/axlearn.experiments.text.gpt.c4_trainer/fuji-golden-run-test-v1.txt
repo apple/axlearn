@@ -1,8 +1,7 @@
-batch_axis_names[0]: 'pipeline'
-batch_axis_names[1]: 'data'
-batch_axis_names[2]: 'expert'
-batch_axis_names[3]: 'fsdp'
-batch_axis_names[4]: 'seq'
+batch_axis_names[0]: 'data'
+batch_axis_names[1]: 'expert'
+batch_axis_names[2]: 'fsdp'
+batch_axis_names[3]: 'seq'
 checkpointer.gc_loop_interval_seconds: 60
 checkpointer.keep_every_n_steps: 3000
 checkpointer.keep_last_n: 3
