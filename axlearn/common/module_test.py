@@ -14,6 +14,7 @@ from jax import numpy as jnp
 
 from axlearn.common import summary, test_utils
 from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import (
     InvocationContext,
     Module,
@@ -670,6 +671,7 @@ class ScanInContextTest(TestWithTemporaryCWD):
                     output=x_i,
                 ),
             )
+            ctx.add_summary("carry", WeightedScalar(carry_i.mean(), carry_i.size))
             return carry_i + 1, x_i + carry_i + state_i
 
         xs["xs"] = jnp.arange(num_iters, dtype=jnp.int32)[:, None] * jnp.ones(
@@ -723,10 +725,11 @@ class ScanInContextTest(TestWithTemporaryCWD):
 
     def test_drop_output(self):
         num_iters = 3
+        child_name_prefix = "foo"
 
         # By default, nothing is dropped.
         with self._dummy_context() as ctx:
-            self._invoke(num_iters=num_iters, xs={})
+            self._invoke(num_iters=num_iters, xs={}, child_name_prefix=child_name_prefix)
             self.assertNestedEqual(
                 {
                     "output": jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -735,12 +738,25 @@ class ScanInContextTest(TestWithTemporaryCWD):
                         "with_state": {"output": jnp.array([[0, 10], [2, 12], [4, 14]])},
                     },
                 },
-                ctx.output_collection.module_outputs["nested"],
+                ctx.output_collection.module_outputs[child_name_prefix]["nested"],
+            )
+            # Summary values are put in `{child_name_prefix}{i}`.
+            self.assertNestedEqual(
+                {
+                    f"{child_name_prefix}{i}": {"carry": WeightedScalar(i, 1)}
+                    for i in range(num_iters)
+                },
+                ctx.output_collection.summaries,
             )
 
         # Invoke with an output dropper that drops everything.
         with self._dummy_context() as ctx:
-            self._invoke(num_iters=num_iters, xs={}, drop_output=lambda _: True)
+            self._invoke(
+                num_iters=num_iters,
+                xs={},
+                drop_output=lambda _: True,
+                child_name_prefix=child_name_prefix,
+            )
             self.assertNestedEqual({}, ctx.output_collection.module_outputs)
 
         # Invoke with an output dropper that matches specific paths.
@@ -749,12 +765,13 @@ class ScanInContextTest(TestWithTemporaryCWD):
                 num_iters=num_iters,
                 xs={},
                 drop_output=lambda path: match_regex_rules(path, rules=[(".*/with_carry.*", True)]),
+                child_name_prefix=child_name_prefix,
             )
             self.assertNestedEqual(
                 {
                     "output": jnp.array([[0, 0], [1, 1], [2, 2]]),
                 },
-                ctx.output_collection.module_outputs["nested"],
+                ctx.output_collection.module_outputs[child_name_prefix]["nested"],
             )
 
         # Invoke with an output dropper that matches specific paths.
@@ -763,6 +780,7 @@ class ScanInContextTest(TestWithTemporaryCWD):
                 num_iters=num_iters,
                 xs={},
                 drop_output=lambda path: match_regex_rules(path, rules=[(".*/with_state.*", True)]),
+                child_name_prefix=child_name_prefix,
             )
             self.assertNestedEqual(
                 {
@@ -771,7 +789,7 @@ class ScanInContextTest(TestWithTemporaryCWD):
                         "output": jnp.array([[0, 0], [2, 2], [4, 4]]),
                     },
                 },
-                ctx.output_collection.module_outputs["nested"],
+                ctx.output_collection.module_outputs[child_name_prefix]["nested"],
             )
 
 

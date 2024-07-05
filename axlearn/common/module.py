@@ -126,6 +126,48 @@ def new_output_collection():
     return OutputCollection(summaries={}, state_updates={}, module_outputs={})
 
 
+def propagate_repeated_output_collections(
+    repeated_output_collection: OutputCollection,
+    *,
+    child_name_prefix: str,
+    target_output_collection: OutputCollection,
+):
+    """Propagates contents from `repeated_output_collection` to `target_target_output_collection`.
+
+    Specifically:
+    * module_outputs and state_updates from `repeated_output_collection` will be added to
+      target_output_collection[child_name_prefix].
+    * For each summary value `v` of `repeated_output_collection`, `v[i]` will be added to
+      target_output_collection[f"{child_name_prefix}{i}"] for 0 <= i < N = num_children.
+
+    Args:
+        repeated_output_collection: An OutputCollection produced by a Jax loop (e.g., jax.vmap
+            or jax.scan). Each leaf tensor has shape [N, ...].
+        child_name_prefix: The child name prefix used for children to be added to
+            `target_output_collection`.
+        target_output_collection: The target OutputCollection.
+    """
+    # Fill `target_output_collection[child_name_prefix]` with `repeated_output_collection`.
+    child_output = target_output_collection.add_child(child_name_prefix)
+    child_output.module_outputs.update(**repeated_output_collection.module_outputs)
+    child_output.state_updates.update(**repeated_output_collection.state_updates)
+
+    # Each summary value in `repeated_output_collection` has shape (N, ...). For example,
+    # if a repeated layer outputs a scalar summary value, it will have shape [N].
+    # Below we split the stacked values and output them separately under scope
+    # "{child_name_prefix}{i}" so that scalar summaries can be handled correctly.
+    summary_values = jax.tree_util.tree_leaves(repeated_output_collection.summaries)
+    if summary_values:
+        first_summary_value = summary_values[0]
+        assert first_summary_value.shape, "Stacked summaries should have a leading stack dimension."
+        num_children = first_summary_value.shape[0]
+        for i in range(num_children):
+            child_i_output = target_output_collection.add_child(f"{child_name_prefix}{i}")
+            child_i_output.summaries.update(
+                jax.tree_util.tree_map(lambda x, i=i: x[i], repeated_output_collection.summaries)
+            )
+
+
 T = TypeVar("T")
 
 
@@ -809,11 +851,15 @@ def scan_in_context(
     carry: NestedTensor,
     xs: NestedTensor,
     drop_output: Optional[Callable[[str], bool]] = None,
+    child_name_prefix: str = "iter",
 ) -> Tuple[NestedTensor, NestedTensor]:
     """A thin wrapper around `jax.lax.scan` which is compatible with `OutputCollection`.
 
     In particular, summaries and outputs added by `add_summary` and `add_module_output` respectively
     are accumulated in `current_context().output_collection`, subject to any output filtering.
+    Specifically, summaries from iteration `i` will be placed in
+    `summaries[f"{child_name_prefix}{i}"]`; module outputs will be stacked and placed in
+    `module_outputs[child_name_prefix]`.
 
     Args:
         fn: A function with args (carry, x) returning a dict(carry=..., y=...).
@@ -825,6 +871,8 @@ def scan_in_context(
         drop_output: A callable that takes a path and outputs a decision of whether to drop the
             output at the given path, where True means we drop. By default, the callable is None,
             meaning nothing is dropped.
+        child_name_prefix: The child name prefix used for children to be added to
+            `target_output_collection`.
 
     Returns:
         The scan outputs (carry, ys):
@@ -864,6 +912,10 @@ def scan_in_context(
         return carry_i, dict(y_i=y_i, output_collection=output_collection_i)
 
     carry, scan_ys = jax.lax.scan(scan_fn, init=carry, xs=xs)
-    ctx.output_collection.update(scan_ys.pop("output_collection"))
+    propagate_repeated_output_collections(
+        scan_ys.pop("output_collection"),
+        child_name_prefix=child_name_prefix,
+        target_output_collection=ctx.output_collection,
+    )
 
     return carry, scan_ys["y_i"]
