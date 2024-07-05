@@ -577,8 +577,11 @@ def get_trainer_config_fn(
             )
         cfg.mesh_axis_names = mesh_axis_names
         cfg.mesh_shape = mesh_shape
-        # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism).
-        cfg.batch_axis_names = tuple(el for el in mesh_axis_names if el != "model")
+        # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism) and
+        # "pipeline" axis (for pipeline parallelism).
+        cfg.batch_axis_names = tuple(
+            el for el in mesh_axis_names if el not in ("model", "pipeline")
+        )
         cfg.mesh_rules = mesh_rules
         # Maybe load state.
         if init_state_builder:
