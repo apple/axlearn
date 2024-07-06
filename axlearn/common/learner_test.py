@@ -16,6 +16,7 @@ import axlearn.common.update_transformation_test
 from axlearn.common import schedule
 from axlearn.common.base_layer import FactorizationSpec, ParameterSpec
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
+from axlearn.common.gradient_accumulation import with_minibatch_steps
 from axlearn.common.learner import (
     CompositeLearner,
     Learner,
@@ -26,6 +27,7 @@ from axlearn.common.learner import (
     _value_and_grad,
     should_update_with_optimizers,
 )
+from axlearn.common.metrics import MetricAccumulator, WeightedScalar
 from axlearn.common.module import OutputCollection
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection
@@ -591,6 +593,118 @@ class LearnerTest(TestCase):
             )
         )
         self.assertEqual(param_updates, dict(a=jnp.array(3)))
+
+    @parameterized.named_parameters(
+        ("one_step", 1),  # no accumulation
+        ("two_steps", 2),
+        ("four_steps", 4),
+    )
+    def test_gradient_accumulation_init(self, accumulation_steps):
+        sgd_cfg = config_for_function(sgd_optimizer).set(
+            learning_rate=1.0,
+            decouple_weight_decay=True,
+            weight_decay=1e-4,
+        )
+        optimizer_cfg = config_for_function(chain).set(
+            args=(config_for_function(clip_by_global_norm), sgd_cfg),
+        )
+        forward_fn_transformation_cfg = config_for_function(with_minibatch_steps).set(
+            steps=accumulation_steps,
+            metric_accumulator=MetricAccumulator.default_config(),
+        )
+        cfg = Learner.default_config().set(
+            name="test",
+            optimizer=optimizer_cfg,
+            forward_fn_transformation=forward_fn_transformation_cfg,
+        )
+        learner: Learner = cfg.instantiate(parent=None)
+        self.assertEqual(accumulation_steps, learner.config.forward_fn_transformation.steps)
+
+    def test_grad_accumulation_numeric(self):
+        """Test that the gradient accumulation works as expected."""
+        sgd_cfg = config_for_function(sgd_optimizer).set(
+            learning_rate=1.0,
+            decouple_weight_decay=True,
+            weight_decay=1e-4,
+        )
+        optimizer_cfg = config_for_function(chain).set(
+            args=(config_for_function(clip_by_global_norm), sgd_cfg),
+        )
+        forward_fn_transformation_cfg = config_for_function(with_minibatch_steps).set(
+            steps=4,
+            metric_accumulator=MetricAccumulator.default_config(),
+        )
+        cfg = Learner.default_config().set(
+            name="test",
+            optimizer=optimizer_cfg,
+            forward_fn_transformation=forward_fn_transformation_cfg,
+        )
+        learner: Learner = cfg.instantiate(parent=None)
+        params = dict(
+            weight=OptParam(
+                value=jnp.asarray([0, 2, 2, -3], dtype=jnp.float32),
+                factorization_spec=None,
+                weight_decay_scale=1.0,
+            ),
+            moving_mean=OptParam(
+                value=jnp.array([0, -1, 0, 0], dtype=jnp.float32),
+                factorization_spec=None,
+                weight_decay_scale=0.0,
+            ),
+        )
+        state = learner.init(model_params=params)
+
+        def loss_fn(*, model_params, inputs) -> ForwardOutputs:
+            del inputs
+            loss = -jax.nn.log_softmax(model_params["weight"] + model_params["moving_mean"])[1]
+            output_collection = new_output_collection()
+            output_collection.state_updates["weight"] = model_params["weight"] + 1
+            output_collection.summaries["loss"] = WeightedScalar(loss, 1)
+            return ForwardOutputs(loss=loss, aux={}, output_collection=output_collection)
+
+        loss, grads = jax.value_and_grad(lambda x: loss_fn(model_params=x, inputs=None).loss)(
+            jax.tree_util.tree_map(lambda p: p.value, params)
+        )
+        np.testing.assert_allclose(loss, 1.412078, atol=1e-6, rtol=1e-6)
+        expected_grads = jnp.asarray([0.089629, -0.756364, 0.662272, 0.004462])
+        # Grad test
+        self.assertNestedAllClose(
+            dict(
+                weight=expected_grads,
+                moving_mean=expected_grads,
+            ),
+            grads,
+            atol=1e-6,
+            rtol=1e-6,
+        )
+        # Updated params test
+        batch_key, forward_key, param_noise_key = jax.random.split(jax.random.PRNGKey(0), 3)
+        updated_params, _ = F(
+            learner,
+            method="forward_and_backward",
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(
+                fn=loss_fn,
+                opt_params=params,
+                inputs=dict(
+                    input_batch=jax.random.randint(batch_key, (32, 4096), 1, 100),
+                    forward_key=forward_key,
+                    param_noise_key=param_noise_key,
+                ),
+            ),
+        )
+        updated_params = updated_params.backward_outputs.updated_params
+        self.assertNestedAllClose(
+            dict(
+                weight=jnp.array([1.0, 3.0, 3.0, -2.0]),
+                moving_mean=jnp.array([-0.08962882, -0.24363643, -0.6622724, -0.00446236]),
+            ),
+            updated_params,
+            atol=1e-6,
+            rtol=1e-6,
+        )
 
 
 class HelperTest(TestCase):
