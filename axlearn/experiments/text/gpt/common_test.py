@@ -2,16 +2,35 @@
 
 """Tests common GPT trainer utils."""
 
+from absl.testing import parameterized
+
 from axlearn.common.config import config_for_function
 from axlearn.common.input_fake import fake_text_source
 from axlearn.common.learner import Learner
 from axlearn.common.test_utils import DummyForwardModel, TestCase
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.experiments.text.gpt.common import MESH_AXIS_NAMES, get_trainer_config_fn
+from axlearn.experiments.text.gpt.common import (
+    MESH_AXIS_NAMES,
+    get_trainer_config_fn,
+    make_config_name,
+)
 
 
 class TrainerConfigTest(TestCase):
     """Tests trainer config utils."""
+
+    @parameterized.parameters(
+        dict(arch="arch", model_size="test", expected="arch-test"),
+        dict(
+            arch="arch",
+            model_size="test",
+            version="v1",
+            suffix="-suffix",
+            expected="arch-test-v1-suffix",
+        ),
+    )
+    def test_make_config_name(self, *, expected, **kwargs):
+        self.assertEqual(expected, make_config_name(**kwargs))
 
     def test_mesh_axes(self):
         config_fn = get_trainer_config_fn(

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Utilities for testing experiments."""
+
 # pylint: disable=no-self-use
 import enum
 import gc
@@ -300,7 +301,8 @@ class BaseGoldenConfigTest(TestCase):
                 debug_str += settings_dict[setting_type]
                 debug_str += "\n"
         if not debug_str:
-            raise ValueError(f"No per param settings for {setting_types} is found.")
+            # Not all optimizer configs register per-param settings.
+            logging.warning("No per param settings for %s were found.", setting_types)
         return debug_str
 
     def _golden_run(self, trainer_config: TrainerConfigFn) -> Tuple[bytes, GoldenComparisonFn]:
@@ -338,9 +340,10 @@ class BaseGoldenConfigTest(TestCase):
                         f"Summary writer must be SummaryWriter, not {type(trainer.summary_writer)}"
                     )
 
-                with unittest.mock.patch.object(
-                    SummaryWriter, "__call__", add_summary
-                ), unittest.mock.patch.object(trainer, "_input_iter", input_iter):
+                with (
+                    unittest.mock.patch.object(SummaryWriter, "__call__", add_summary),
+                    unittest.mock.patch.object(trainer, "_input_iter", input_iter),
+                ):
                     trainer.run(prng_key=jax.random.PRNGKey(0))
                     loss = dict(all_summaries)[trainer_cfg.max_step]["loss"]
                     self.assertIsInstance(loss, Tensor)

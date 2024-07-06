@@ -11,7 +11,7 @@ See c4_trainer.py for how they are used.
 """
 
 import math
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Protocol, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 import tensorflow as tf
@@ -39,6 +39,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import (
+    ConfigOr,
     FunctionConfigBase,
     InstantiableConfig,
     config_for_function,
@@ -54,7 +55,7 @@ from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, 
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.summary_writer import BaseWriter
 from axlearn.common.trainer import MeshShape, SpmdTrainer
-from axlearn.common.utils import HybridMeshShape, get_data_dir
+from axlearn.common.utils import HybridMeshShape, Nested, get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, tfds_text_source
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
@@ -477,7 +478,9 @@ def evaler_config_dict(
     return evalers
 
 
-def make_config_name(arch: str, model_size: str, version: Optional[str] = None) -> str:
+def make_config_name(
+    arch: str, model_size: str, *, version: Optional[str] = None, suffix: Optional[str] = None
+) -> str:
     """Makes config name string as a function of architecture and model-size.
 
     Useful to keep config names synced with fine-tuning configs.
@@ -486,13 +489,18 @@ def make_config_name(arch: str, model_size: str, version: Optional[str] = None) 
         arch: The architecture of the model.
         model_size: The number of transformer parameters (not including vocab embeddings).
         version: An optional version string.
+        suffix: Optional config suffix.
 
     Returns:
-        f"{arch}-{model_size}" or f"{arch}-{model_size}-{version}".
+        f"{arch}-{model_size}".
+        If version is supplied, a f"-{version}" suffix will be appended.
+        If suffix is supplied, it will be appended last (without any delimiter).
     """
     name = f"{arch}-{model_size}"
     if version:
         name += f"-{version}"
+    if suffix:
+        name += suffix
     return name
 
 
@@ -589,3 +597,12 @@ def get_trainer_config_fn(
         return cfg
 
     return config_fn
+
+
+class SourceBuilder(Protocol):
+    """A protocol that builds an input source."""
+
+    def __call__(
+        self, *, vocab_size: int, max_sequence_length: int
+    ) -> Nested[ConfigOr[input_tf_data.BuildDatasetFn]]:
+        raise NotImplementedError(type(self))
