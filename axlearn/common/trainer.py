@@ -149,6 +149,9 @@ class SpmdTrainer(Module):
         # By default, only trace on host 0.
         start_trace_process_indices: Union[Literal["all"], Sequence[int]] = [0]
 
+        # Log the step time for each individual step
+        log_step_time: bool = False
+
         # Prune empty state updates.
         # Must be set to True.
         # The configuration option will be removed in a future AXLearn version.
@@ -452,6 +455,10 @@ class SpmdTrainer(Module):
                     stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
 
                     self._step = self._step + 1
+
+                    if cfg.log_step_time:
+                        step_start_time = time.perf_counter()
+
                     self.vlog(3, "Start step %s", self.step)
                     output = self._run_step(
                         utils.host_to_global_device_array(input_batch),
@@ -460,6 +467,12 @@ class SpmdTrainer(Module):
                         else None,
                     )
                     self.vlog(3, "Done step %s", self.step)
+
+                    if cfg.log_step_time:
+                        step_time = time.perf_counter() - step_start_time
+                        self._step_log("Step %s took %s seconds", self.step, step_time)
+                        self.summary_writer(self.step, {"step_time": step_time})
+
                     num_steps += 1
                     if num_steps % 100 == 0:
                         now = time.perf_counter()
