@@ -53,8 +53,10 @@ class TestGeminiClient(unittest.IsolatedAsyncioTestCase):
         client._client.generate_content_async = AsyncMock(return_value=mock_response)
 
         result = await client.async_generate(
-            messages=[{"role": "user", "content": "Hello"}],
-            tools=[{"name": "tool1"}],
+            request={
+                "messages": [{"role": "user", "content": "Hello"}],
+                "tools": [{"type": "function", "function": {"name": "func1"}}],
+            },
             temperature=0.7,
             top_k=50,
             top_p=0.9,

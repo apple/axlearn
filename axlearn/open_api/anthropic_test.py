@@ -44,8 +44,10 @@ class TestAnthropicClient(unittest.IsolatedAsyncioTestCase):
         mock_response.model_dump_json.return_value = json.dumps({"response": "test_response"})
         client._client.messages.create = AsyncMock(return_value=mock_response)
         result = await client.async_generate(
-            messages=[{"role": "user", "content": "Hello"}],
-            tools=[{"name": "tool1"}],
+            request={
+                "messages": [{"role": "user", "content": "Hello"}],
+                "tools": [{"name": "tool1"}],
+            },
             add_system_parallel_tools=True,
         )
         # Assert the expected result.

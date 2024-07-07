@@ -7,7 +7,7 @@ import copy
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # isort: off
 from axlearn.open_api.common import BaseClient, ClientRateLimitError, ValidationError
@@ -39,17 +39,13 @@ class AnthropicClient(BaseClient):
     async def async_generate(
         self,
         *,
-        messages: Optional[List[Dict[str, Any]]] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        prompt: Optional[str] = None,
+        request: Dict[str, Any],
         **kwargs,
     ) -> str:
         """Generates response asynchronously from the client.
 
         Args:
-            messages: OpenAI requests style messages.
-            tools: OpenAI tools definitions.
-            prompt: OpenAI prompt style.
+            request: OpenAI style request.
             **kwargs: API request keyword arguments.
 
         Returns:
@@ -57,14 +53,17 @@ class AnthropicClient(BaseClient):
 
         Raises:
             ClientRateLimitError: Hits rate limiting for retries.
+            ValidationError: Field messages must be in request.
         """
+        if "messages" not in request:
+            raise ValidationError("Field messages must be in request.")
         cfg: AnthropicClient.Config = self.config
         client: AsyncAnthropic = self._client
         request_kwargs = copy.deepcopy(kwargs)
         anthropic_tools = None
-        if tools is not None:
-            anthropic_tools = _convert_openai_tools_to_anthropic(tools=tools)
-        anthropic_messages = _convert_openai_messages_to_anthropic(messages=messages)
+        if request.get("tools", None) is not None:
+            anthropic_tools = _convert_openai_tools_to_anthropic(tools=request["tools"])
+        anthropic_messages = _convert_openai_messages_to_anthropic(messages=request["messages"])
         try:
             # A temporary solution to encourage claude models to generate parallel tool calls.
             if request_kwargs is not None and request_kwargs.get(
