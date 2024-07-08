@@ -185,7 +185,7 @@ class MultiStreamPipelineTest(TestCase):
         )
         assert_allclose(outputs["encoder"]["count_encoder"], 3)
 
-    def caluclate_loss(self, input_batch, loss_weights):
+    def calculate_loss(self, input_batch, loss_weights):
         encoder_name = "encoder"
         fusion_1_name = "fusion_1"
         fusion_2_name = "fusion_2"
@@ -219,9 +219,9 @@ class MultiStreamPipelineTest(TestCase):
         }
 
         # The input_batch is updated during feedforward. Therefore, copy.deepcopy is required.
-        loss_0 = self.caluclate_loss(copy.deepcopy(input_batch), {"fusion_1": 0, "fusion_2": 1})
-        loss_1 = self.caluclate_loss(copy.deepcopy(input_batch), {"fusion_1": 1, "fusion_2": 0})
-        loss_2 = self.caluclate_loss(copy.deepcopy(input_batch), {"fusion_1": 1, "fusion_2": 1})
+        loss_0 = self.calculate_loss(copy.deepcopy(input_batch), {"fusion_1": 0, "fusion_2": 1})
+        loss_1 = self.calculate_loss(copy.deepcopy(input_batch), {"fusion_1": 1, "fusion_2": 0})
+        loss_2 = self.calculate_loss(copy.deepcopy(input_batch), {"fusion_1": 1, "fusion_2": 1})
         assert_allclose(loss_0, loss_1)
         assert_allclose(loss_0 * 2, loss_2)
 

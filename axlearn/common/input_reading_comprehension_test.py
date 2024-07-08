@@ -19,7 +19,7 @@ from axlearn.common.input_reading_comprehension import (
     parse_examples_jsonl,
 )
 
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
+tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers")
 _BPE_DIR = os.path.join(tokenizers_dir, "bpe")
 _ROBERTA_BASE_VOCAB_FILE = os.path.join(_BPE_DIR, "roberta-base-vocab.json")
 _ROBERTA_BASE_MERGES_FILE = os.path.join(_BPE_DIR, "roberta-base-merges.txt")

@@ -29,7 +29,7 @@ Examples:
     axlearn gcp dataflow start \
         --name=$USER-dataflow \
         --bundler_spec=dockerfile=Dockerfile \
-        --bundler_spec=base_image=apache/beam_python3.8_sdk:2.38.0 \
+        --bundler_spec=base_image=apache/beam_python3.10_sdk:2.55.1 \
         --bundler_spec=target=dataflow \
         -- "'
         python3 -m apache_beam.examples.wordcount \
@@ -52,7 +52,7 @@ Examples:
             --name=$USER-dataflow \
             --dataflow_spec=runner=DirectRunner \
             --bundler_spec=dockerfile=Dockerfile \
-            --bundler_spec=base_image=apache/beam_python3.8_sdk:2.38.0 \
+            --bundler_spec=base_image=apache/beam_python3.10_sdk:2.55.1 \
             --bundler_spec=target=dataflow \
             -- "'
             rm -r /tmp/output_dir; \
@@ -72,20 +72,22 @@ https://cloud.google.com/dataflow/docs/quickstarts/create-pipeline-python#run-th
 """
 # pylint: disable=protected-access
 
+import platform
 import re
 import shlex
 import signal
 import subprocess
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple, cast
 
 from absl import app, flags, logging
 from google.auth.credentials import Credentials
 from googleapiclient import discovery, errors
 
-from axlearn.cloud.common.bundler import DockerBundler, bundler_flags, get_bundler_config
+from axlearn.cloud.common.bundler import BaseDockerBundler, get_bundler_config
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import (
     canonicalize_to_list,
+    canonicalize_to_string,
     configure_logging,
     generate_job_name,
     handle_popen,
@@ -97,33 +99,13 @@ from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import GCPJob
-from axlearn.cloud.gcp.utils import catch_auth, common_flags, get_credentials
+from axlearn.cloud.gcp.utils import catch_auth, get_credentials
 from axlearn.common.config import REQUIRED, Required, config_class
 
 FLAGS = flags.FLAGS
 
 
-def launch_flags(flag_values: flags.FlagValues = FLAGS):
-    common_flags(flag_values=flag_values)
-    bundler_flags(flag_values=flag_values)
-    flag_values.set_default("project", gcp_settings("project", required=False))
-    flag_values.set_default("zone", gcp_settings("zone", required=False))
-    flag_values.set_default("bundler_type", ArtifactRegistryBundler.TYPE)
-    # Note: don't use generate_taskname() here, as the VM may not have $USER.
-    flags.DEFINE_string("name", None, "Dataflow job name.", flag_values=flag_values)
-    flags.DEFINE_integer("max_tries", 1, "Max attempts to launch the job.", flag_values=flag_values)
-    flags.DEFINE_integer(
-        "retry_interval", 60, "Interval in seconds between tries.", flag_values=flag_values
-    )
-    flags.DEFINE_string("vm_type", "n2-standard-2", "Worker VM type.", flag_values=flag_values)
-    flags.DEFINE_multi_string(
-        "dataflow_spec",
-        [],
-        "Bundler spec provided as key=value.",
-        flag_values=flag_values,
-    )
-
-
+# TODO(markblee): Use CPURunner.
 class DataflowJob(GCPJob):
     """Launches a dataflow job from local."""
 
@@ -131,15 +113,38 @@ class DataflowJob(GCPJob):
     class Config(GCPJob.Config):
         # Worker VM type.
         vm_type: Required[str] = REQUIRED
+        # Setup command. This is used to prepare the local machine for running `cfg.command`,
+        # including installing docker (if not already present) and building the worker image.
+        # `cfg.command` will then be run within the worker image, to ensure a consistent build +
+        # execute environment.
+        setup_command: Required[str] = REQUIRED
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("vm_type", "n2-standard-2", "Worker VM type.", **common_kwargs)
+        flags.DEFINE_multi_string(
+            "dataflow_spec",
+            [],
+            "Bundler spec provided as key=value.",
+            **common_kwargs,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg = super().from_flags(fv, **kwargs)
         cfg.name = cfg.name or generate_job_name()
+        cfg.max_tries = cfg.max_tries or 1
+        cfg.retry_interval = cfg.retry_interval or 60
 
         # Construct bundler.
-        cfg.bundler = get_bundler_config(bundler_type=fv.bundler_type, spec=fv.bundler_spec)
-        if not issubclass(cfg.bundler.klass, DockerBundler):
+        cfg.bundler = get_bundler_config(
+            bundler_type=fv.bundler_type or ArtifactRegistryBundler.TYPE,
+            spec=fv.bundler_spec,
+            fv=fv,
+        )
+        if not issubclass(cfg.bundler.klass, BaseDockerBundler):
             raise NotImplementedError("Expected a DockerBundler.")
         cfg.bundler.image = cfg.bundler.image or cfg.name
 
@@ -149,7 +154,9 @@ class DataflowJob(GCPJob):
             # Buildkit is required for actual multi-stage '--target' (without it, docker will
             # attempt to build all stages up to the target).
             # https://docs.docker.com/engine/install/ubuntu/#install-using-the-convenience-script
+            # We use apt-get update and wait for apt lock to release (often held on first boot).
             "if [[ ! -x $(which docker) ]]; then "
+            "sudo apt-get -o DPkg::Lock::Timeout=60 update; "
             "curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh;"
             "fi"
         )
@@ -159,7 +166,7 @@ class DataflowJob(GCPJob):
         bundle_cmd = " ".join(
             [
                 f"python3 -m {bundler.__name__} --name={cfg.name}",
-                *_docker_bundler_to_flags(cfg.bundler),
+                *_docker_bundler_to_flags(cfg.bundler, fv=fv),
             ]
         )
 
@@ -168,9 +175,8 @@ class DataflowJob(GCPJob):
         dataflow_flags = " ".join(
             sorted(flags.flag_dict_to_args(dataflow_spec, multi_flags=multi_flags))
         )
-        dataflow_cmd = f"{cfg.command} {dataflow_flags}"
-
-        cfg.command = f"{docker_setup_cmd} && {docker_auth_cmd} && {bundle_cmd} && {dataflow_cmd}"
+        cfg.setup_command = f"{docker_setup_cmd} && {docker_auth_cmd} && {bundle_cmd}"
+        cfg.command = f"{cfg.command} {dataflow_flags}"
         return cfg
 
     @classmethod
@@ -179,18 +185,17 @@ class DataflowJob(GCPJob):
     ) -> Tuple[Dict[str, Any], List[str]]:
         """Returns a flag dict and a list of flags considered as 'multi-flags'."""
         # Construct dataflow args, providing some defaults.
-        service_account = cfg.service_account or gcp_settings("service_account_email")
+        service_account = cfg.service_account or gcp_settings("service_account_email", fv=fv)
         dataflow_spec = {
             "job_name": cfg.name,
             "project": cfg.project,
             "region": cfg.zone.rsplit("-", 1)[0],
             "worker_machine_type": cfg.vm_type,
             "sdk_container_image": f"{cfg.bundler.repo}/{cfg.bundler.image}:{cfg.name}",
-            "temp_location": f"gs://{gcp_settings('ttl_bucket')}/tmp/{cfg.name}/",
+            "temp_location": f"gs://{gcp_settings('ttl_bucket', fv=fv)}/tmp/{cfg.name}/",
             "service_account_email": service_account,
             "dataflow_service_options": ["enable_secure_boot", "enable_google_cloud_heap_sampling"],
             "experiments": ["use_network_tags=allow-internet-egress", "use_runner_v2"],
-            "number_of_worker_harness_threads": "1",
             "no_use_public_ips": None,
             "runner": "DataflowRunner",
         }
@@ -207,7 +212,7 @@ class DataflowJob(GCPJob):
         if "network" not in dataflow_spec and "subnetwork" not in dataflow_spec:
             # Following https://cloud.google.com/dataflow/docs/guides/specifying-networks,
             # only --subnetwork is required, and we use the "complete URL" format.
-            subnetwork = gcp_settings("subnetwork")
+            subnetwork = gcp_settings("subnetwork", fv=fv)
             subnetwork_pat = r"projects/.+/regions/.+/subnetworks/.+"
             if not re.match(subnetwork_pat, subnetwork):
                 raise ValueError(
@@ -225,7 +230,27 @@ class DataflowJob(GCPJob):
 
     def _execute(self):
         cfg: DataflowJob.Config = self.config
-        cmd = f"bash -c {shlex.quote(cfg.command)}"
+        # Run the setup command locally, but the launch command via docker.
+        # This is to ensure that the launch environment matches the worker environment.
+        processor = platform.processor().lower()
+        if "arm" in processor:
+            # Disable running from docker on Mac M1 chip due to qemu core dump bug.
+            # https://github.com/docker/for-mac/issues/5342.
+            logging.info(
+                (
+                    "%s processor detected. "
+                    "Skipping docker launch and running from local environment instead."
+                ),
+                processor,
+            )
+            cmd = cfg.command
+        else:
+            cmd = (
+                "docker run --rm --entrypoint /bin/bash "
+                f"{self._bundler.id(cfg.name)} -c '{cfg.command}'"
+            )
+        cmd = f"{cfg.setup_command} && {cmd}"
+        cmd = f"bash -c {shlex.quote(cmd)}"
         logging.info("Executing in subprocess: %s", cmd)
         with subprocess.Popen(cmd, shell=True, text=True) as proc:
             # Attempt to cleanup the process when exiting.
@@ -239,16 +264,31 @@ class DataflowJob(GCPJob):
             handle_popen(proc)
 
 
-def _docker_bundler_to_flags(cfg: DockerBundler.Config) -> List[str]:
+def _docker_bundler_to_flags(cfg: BaseDockerBundler.Config, *, fv: flags.FlagValues) -> List[str]:
     """Converts docker bundler config to a string of flags."""
-    spec_flags = [
-        f"--bundler_type={cfg.klass.TYPE}",
-        f"--bundler_spec=dockerfile={cfg.dockerfile}",
-        f"--bundler_spec=image={cfg.image}",
-        f"--bundler_spec=repo={cfg.repo}",
-    ]
-    spec_flags += [f"--bundler_spec={k}={v}" for k, v in cfg.build_args.items()]
-    return spec_flags
+    # TODO(markblee): Add a config to_spec() method to mirror from_spec().
+    specs = []
+    for name, value in cfg.items():
+        if value and isinstance(value, (int, str, bool, Sequence)):
+            specs.append(f"{name}={canonicalize_to_string(value)}")
+        elif value and isinstance(value, dict):
+            specs.extend([f"{k}={v}" for k, v in value.items()])
+        else:
+            logging.info("Skipping %s (%s) when converting bundler config to flags.", name, value)
+
+    # For sanity, reconstruct the bundler from the spec, and warn if mismatch.
+    re_cfg = cast(BaseDockerBundler, cfg.klass).from_spec(specs, fv=fv)
+    for re_name, re_value in re_cfg.items():
+        re_value = canonicalize_to_string(re_value)
+        orig_value = canonicalize_to_string(getattr(cfg, re_name, None))
+        if re_value != orig_value:
+            logging.warning(
+                "Reconstructed config %s has value %s which is different from original: %s",
+                re_name,
+                re_value,
+                orig_value,
+            )
+    return [f"--bundler_type={cfg.klass.TYPE}"] + [f"--bundler_spec={spec}" for spec in specs]
 
 
 def _dataflow_resource(credentials: Credentials):
@@ -346,6 +386,6 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
 
 
 if __name__ == "__main__":
-    launch_flags()
+    DataflowJob.define_flags(FLAGS)
     configure_logging(logging.INFO)
     app.run(main)

@@ -30,7 +30,7 @@ from tensorflow.python.ops import string_ops
 from tensorflow_text.python.ops.bert_tokenizer import AccentPreservingBasicTokenizer
 
 from axlearn.common import input_tf_data
-from axlearn.common.config import InstantiableConfig, maybe_instantiate
+from axlearn.common.config import ConfigOr, maybe_instantiate
 from axlearn.common.input_tf_data import DatasetToDatasetFn
 from axlearn.common.utils import Tensor
 
@@ -106,9 +106,9 @@ def strip_accents(
             normalized_utf8 = tf_text.normalize_utf8(
                 example[field], normalization_form=normalization_form
             )
-            # pylint: disable-next=line-too-long
             # Reference:
             # https://github.com/tensorflow/text/blob/4887f2034678bbac662040eeff6ec22d69724361/tensorflow_text/python/ops/bert_tokenizer.py#LL151C55-L151C69.
+            # pylint: disable-next=line-too-long
             # \p{Mn} is "a character intended to be combined with another character without taking up extra space".
             accent_removed = string_ops.regex_replace(normalized_utf8, r"\p{Mn}", "")
             example[field] = accent_removed
@@ -118,7 +118,7 @@ def strip_accents(
 
 
 def tokenize(
-    output_features: Union[InstantiableConfig, seqio.preprocessors.OutputFeaturesType],
+    output_features: ConfigOr[seqio.preprocessors.OutputFeaturesType],
     copy_pretokenized: bool = True,
     with_eos: bool = False,
 ) -> input_tf_data.DatasetToDatasetFn:

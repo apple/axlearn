@@ -1,9 +1,25 @@
 version: 2.1
+orbs:
+  apple: apple/pr-approval@0.1.0
 executors:
   build-and-test-executor:
     docker:
       - image: cimg/base:stable
 jobs:
+  pre-commit:
+    docker:
+      - image: cimg/python:3.9
+    resource_class: large
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: false
+      - run: pip install --upgrade pip
+      # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
+      - run: pip install '.[dev,gcp,vertexai_tensorboard]'
+      # pylint uses approx 12GB of memory during this run, look into split to decrease?
+      - run: pre-commit run --all-files
+      - run: pytype -j auto .
   build-and-test-job:
     executor: build-and-test-executor
     parallelism: 5
@@ -30,9 +46,35 @@ jobs:
             SPLIT_TESTFILES_ONELINE=$(cat pytest_files_split.txt | tr '\n' ' ')
 
             # Use single quotes to treat the whitespace-delimited file paths as a single string.
-            docker build --build-arg="PYTEST_FILES='${SPLIT_TESTFILES_ONELINE}'" -t mydockertarget --target=ci .
+            docker build \
+              --build-arg="PYTEST_FILES='${SPLIT_TESTFILES_ONELINE}'" \
+              --build-arg="SKIP_PRECOMMIT=--skip-pre-commit" \
+              -t mydockertarget --target=ci .
 
 workflows:
-  build-and-test-workflow:
+  wf-build:
+    when:
+      matches:
+        pattern: "^main|gh-readonly-queue/main/pr-\\d+-[0-9a-f]{40}.*$"
+        value: << pipeline.git.branch >>
     jobs:
+      - pre-commit
       - build-and-test-job
+
+  wf-pr:
+    when:
+      matches:
+        pattern: "^pull/\\d+(/head)?$"
+        value: << pipeline.git.branch >>
+    jobs:
+      - hold:
+          type: approval
+      - apple/authenticate:
+          context: validation-project-context
+      - pre-commit:
+          requires:
+            - hold
+      - build-and-test-job:
+          requires:
+            - hold
+            - pre-commit

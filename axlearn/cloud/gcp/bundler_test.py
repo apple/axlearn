@@ -4,7 +4,7 @@
 
 from absl.testing import parameterized
 
-from axlearn.cloud.common.bundler import get_bundler_config
+from axlearn.cloud.common.bundler import BaseDockerBundler, _bundlers, get_bundler_config
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
@@ -24,6 +24,7 @@ class RegistryTest(TestCase):
                     # Make sure parent configs can be set from spec.
                     "external=test_external",
                 ],
+                fv=None,
             )
             self.assertEqual(cfg.remote_dir, "test_bucket")
             self.assertEqual(cfg.external, "test_external")
@@ -33,6 +34,7 @@ class RegistryTest(TestCase):
             cfg = get_bundler_config(
                 bundler_type=GCSTarBundler.TYPE,
                 spec=["external=test_external"],
+                fv=None,
             )
             self.assertEqual(cfg.remote_dir, "gs://default_bucket/axlearn/jobs")
             self.assertEqual(cfg.external, "test_external")
@@ -41,7 +43,7 @@ class RegistryTest(TestCase):
     def test_get_docker_bundler(self, bundler_cls):
         # Test without settings.
         with mock_gcp_settings(bundler.__name__, settings={}):
-            cfg = get_bundler_config(
+            cfg: BaseDockerBundler.Config = get_bundler_config(
                 bundler_type=bundler_cls.TYPE,
                 spec=[
                     "image=test_image",
@@ -51,7 +53,9 @@ class RegistryTest(TestCase):
                     # Make sure parent configs can be set from spec.
                     "external=test_external",
                     "target=test_target",
+                    "cache_from=test_cache1,test_cache2",
                 ],
+                fv=None,
             )
             self.assertEqual(cfg.image, "test_image")
             self.assertEqual(cfg.repo, "test_repo")
@@ -59,6 +63,7 @@ class RegistryTest(TestCase):
             self.assertEqual(cfg.build_args, {"build_arg1": "test_build_arg"})
             self.assertEqual(cfg.external, "test_external")
             self.assertEqual(cfg.target, "test_target")
+            self.assertEqual(cfg.cache_from, ["test_cache1", "test_cache2"])
 
             self.assertEqual(cfg.instantiate().TYPE, bundler_cls.TYPE)
 
@@ -75,6 +80,7 @@ class RegistryTest(TestCase):
                     "external=test_external",
                     "target=test_target",
                 ],
+                fv=None,
             )
             self.assertEqual(cfg.image, "test_image")
             self.assertEqual(cfg.repo, "default_repo")
@@ -82,3 +88,21 @@ class RegistryTest(TestCase):
             self.assertEqual(cfg.build_args, {"build_arg1": "test_build_arg"})
             self.assertEqual(cfg.external, "test_external")
             self.assertEqual(cfg.target, "test_target")
+
+    @parameterized.parameters([bundler_klass.TYPE for bundler_klass in _bundlers.values()])
+    def test_with_tpu_extras(self, bundler_type):
+        # Test configuring bundle for TPU.
+        with mock_gcp_settings(bundler.__name__, settings={"ttl_bucket": "default_bucket"}):
+            cfg = get_bundler_config(
+                bundler_type=bundler_type, spec=["find_links=test", "extras=test"]
+            )
+            cfg = bundler.with_tpu_extras(cfg)
+            if hasattr(cfg, "find_links"):
+                self.assertSameElements(
+                    [
+                        "test",
+                        "https://storage.googleapis.com/jax-releases/libtpu_releases.html",
+                    ],
+                    cfg.find_links,
+                )
+            self.assertSameElements(["tpu", "test"], cfg.extras)

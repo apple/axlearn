@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Defines BaseLayer, the base class for layer implementations."""
+
 import dataclasses
 import math
 from typing import Any, Callable, Dict, Optional, Sequence, Union
@@ -16,6 +17,7 @@ from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, child_context, current_context, new_output_collection
 from axlearn.common.param_init import DefaultInitializer, FanAxes
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     PartitionSpec,
     Tensor,
@@ -126,6 +128,73 @@ class ParameterNoise(Configurable):
         raise NotImplementedError(self)
 
 
+class TensorStats(Module):
+    """An abstract Module to add summaries about the given Tensors."""
+
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        """Subclasses must implement this method."""
+        raise NotImplementedError(type(self))
+
+
+class CompositeTensorStats(TensorStats):
+    """A TensorStats consisting of multiple child TensorStats."""
+
+    @config_class
+    class Config(TensorStats.Config):
+        tensor_stats: Dict[str, TensorStats.Config] = {}
+
+        # Whether to inline child summaries.
+        #
+        # Suppose tensor_stats = {"foo": TensorRMSNorm.default_config()},
+        # if inline_child_summaries=False, the summaries will be {"foo": {"rms_norm": norm}};
+        # if inline_child_summaries=True, the summaries will be {"rms_norm": norm}.
+        inline_child_summaries: bool = False
+
+    def __init__(self, cfg: Config, *, parent: Optional["Module"]):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._child_stats = {}
+        for child_stats_name, child_stats_cfg in cfg.tensor_stats.items():
+            self._child_stats[child_stats_name] = self._add_child(child_stats_name, child_stats_cfg)
+
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        cfg = self.config
+        for child_name, child_stats in self._child_stats.items():
+            output_collection = new_output_collection()
+            with child_context(child_name, output_collection=output_collection):
+                child_stats.add_stats(name, value)
+            if cfg.inline_child_summaries:
+                self.get_invocation_context().output_collection.summaries.update(
+                    output_collection.summaries
+                )
+            else:
+                self.get_invocation_context().output_collection.summaries[
+                    child_name
+                ] = output_collection.summaries
+
+
+class TensorRMSNorm(TensorStats):
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        self.add_summary("rms_norm", (value**2.0).mean().astype(jnp.float32) ** 0.5)
+
+
+class TensorMaxAbs(TensorStats):
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        self.add_summary("max_abs", jnp.abs(value).max().astype(jnp.float32))
+
+
+class DefaultTensorStats(CompositeTensorStats):
+    """Default tensor stats that compute RMS norm and max value."""
+
+    @config_class
+    class Config(CompositeTensorStats.Config):
+        tensor_stats: Dict[str, TensorStats.Config] = {
+            "norm": TensorRMSNorm.default_config(),
+            "max": TensorMaxAbs.default_config(),
+        }
+        inline_child_summaries: bool = True
+
+
 class BaseLayer(Module):
     """A base class for layer implementations."""
 
@@ -161,6 +230,17 @@ class BaseLayer(Module):
         # before applying the parent layer's noise (if any).
         param_noise: Optional[ParameterNoise.Config] = None
 
+        # If not None, adds stats about the tensors given in the `_add_tensor_stats` calls.
+        #
+        # The tensor_stats abstraction allows users to compute stats (e.g., mean, RMS norm, max abs)
+        # on tensors such as layer inputs/outputs and add them to summaries.
+        #
+        # The abstraction decouples which tensors to collect stats on, which will be controlled by
+        # the layer implementation via `_add_tensor_stats(name, value)` calls, vs. how to compute
+        # and report the stats, which will be controlled by `Config.tensor_stats` and configured
+        # on a per-experiment basis.
+        tensor_stats: Optional[TensorStats.Config] = None
+
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg, parent=parent)
         cfg: BaseLayer.Config = self.config
@@ -175,6 +255,8 @@ class BaseLayer(Module):
             self._param_noise = cfg.param_noise.instantiate()
         else:
             self._param_noise = None
+        if cfg.tensor_stats is not None:
+            self._add_child("tensor_stats", cfg.tensor_stats)
         self._remat_methods = []  # List[str]. Used for testing.
 
     def _methods_to_wrap_for_auto_child_context(self) -> Dict[str, Callable]:
@@ -217,12 +299,27 @@ class BaseLayer(Module):
         ):
             return nullary
 
+        static_kwargs = {}
+        tracer_kwargs = {}
+        for k, v in kwargs.items():
+            if isinstance(v, Tensor):
+                tracer_kwargs[k] = v
+            else:
+                static_kwargs[k] = v
+        self.vlog(
+            3,
+            "BaseLayer.nullary_with_remat %s.%s: static_kwargs=%s",
+            self.path(),
+            method_fn,
+            set(static_kwargs.keys()),
+        )
+
         # Remat always uses abstract tracers even if concrete information is available.
         # This means that all inputs and outputs to a remat function need to be JAX types.
         # We print a nice error if the inputs are not.
         check_jax_type(
             args=args,
-            kwargs=kwargs,
+            kwargs=tracer_kwargs,
             msg=f"Attempt to use remat on {self}.{method_fn} "
             "failed. Consider decorating with @no_remat.",
         )
@@ -233,7 +330,7 @@ class BaseLayer(Module):
                 output_collection = new_output_collection()
                 # We override output_collection to avoid leaking tracers.
                 with child_context("remat", module=self, output_collection=output_collection):
-                    outputs = method_fn(self, *args, **kwargs)
+                    outputs = method_fn(self, *args, **kwargs, **static_kwargs)
                 return outputs, output_collection
 
             logging.info("Applying remat on %s.%s: %s", self.path(), method_fn, cfg.remat_spec)
@@ -242,7 +339,7 @@ class BaseLayer(Module):
             outputs, output_collection = jax.ad_checkpoint.remat(
                 fn,
                 **{k: maybe_instantiate(v) for k, v in dataclasses.asdict(cfg.remat_spec).items()},
-            )(*args, **kwargs)
+            )(*args, **tracer_kwargs)
             self.get_invocation_context().output_collection.update(output_collection)
             return outputs
 
@@ -264,12 +361,20 @@ class BaseLayer(Module):
             param_spec = dataclasses.replace(
                 param_spec,
                 mesh_axes=PartitionSpec(*partition_spec),
-                fan_axes=self._compute_fan_axes(name=name, parameter_spec=param_spec),
+                fan_axes=(
+                    param_spec.fan_axes
+                    if param_spec.fan_axes is not None
+                    else self._compute_fan_axes(name=name, parameter_spec=param_spec)
+                ),
             )
             if param_spec.dtype is None:
                 param_spec = dataclasses.replace(param_spec, dtype=self.dtype())
             specs[name] = param_spec
         for name, child in self._children.items():
+            if not isinstance(child, BaseLayer):
+                # `child` is not a BaseLayer and does not have parameters, e.g., it can be an
+                # instance of TensorStats.
+                continue
             assert name not in specs
             specs[name] = child.create_parameter_specs_recursively()
         return specs
@@ -296,6 +401,10 @@ class BaseLayer(Module):
                     parameter_spec=spec,
                 )
         for name, child in self._children.items():
+            if not isinstance(child, BaseLayer):
+                # `child` is not a BaseLayer and does not have parameters, e.g., it can be an
+                # instance of TensorStats.
+                continue
             assert name not in params
             prng_key, child_key = jax.random.split(prng_key)
             params[name] = child.initialize_parameters_recursively(
@@ -340,7 +449,11 @@ class BaseLayer(Module):
             prng_key=prng_key,
             shape=parameter_spec.shape,
             dtype=parameter_spec.dtype,
-            axes=self._compute_fan_axes(name, parameter_spec),
+            axes=(
+                parameter_spec.fan_axes
+                if parameter_spec.fan_axes is not None
+                else self._compute_fan_axes(name=name, parameter_spec=parameter_spec)
+            ),
         )
         return param
 
@@ -360,20 +473,23 @@ class BaseLayer(Module):
         cfg = self.config
         params = type(params)(**params)  # Make a copy of `params`.
         for name, child in self._children.items():
+            if not isinstance(child, BaseLayer):
+                # `child` is not a BaseLayer and does not have parameters, e.g., it can be an
+                # instance of TensorStats.
+                continue
             prng_key, child_key = jax.random.split(prng_key)
             params[name] = child.apply_parameter_noise_recursively(child_key, params[name])
         if cfg.param_noise is not None:
             params = self._param_noise.apply(prng_key, params)
         return params
 
-    # pylint: disable-next=no-self-use
     def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
         if not name.endswith("weight"):
             return None
-        if len(parameter_spec.shape) < 2:
+        if len(parameter_spec.shape) != 2:
             raise NotImplementedError(
-                "Default _compute_fan_axes requires weight parameters to have at least 2 axes "
-                f"shape({name}) = {parameter_spec.shape}"
+                f"{type(self)} uses the default _compute_fan_axes, which requires weight "
+                f"parameters to have exactly 2 axes: shape({name}) = {parameter_spec.shape}"
             )
         return FanAxes(in_axis=-2, out_axis=-1)
 
@@ -396,10 +512,34 @@ class BaseLayer(Module):
     def parameters(self):
         return self.state
 
+    def _add_tensor_stats(self, name: str, value: Nested[Tensor]):
+        """Adds tensor stats about `value`.
+
+        Suppose `self.tensor_stats` adds some summaries about `value`, e.g.,
+            self.add_summary("mean", jnp.mean(value))
+
+        The "mean" summary will show up under path f"{self.path()}/tensor_stats/{name}/mean".
+
+        Args:
+            name: The name for the `value`. E.g., "inputs".
+            value: A Tensor or a Nested[Tensor].
+        """
+        if "tensor_stats" in self.children:
+            output_collection = new_output_collection()
+            with child_context("tensor_stats", output_collection=output_collection):
+                with child_context(name, module=self.tensor_stats):
+                    self.tensor_stats.add_stats(name, value)
+            layer_summaries = self.get_invocation_context().output_collection.summaries
+            if "tensor_stats" not in layer_summaries:
+                layer_summaries["tensor_stats"] = {}
+            layer_summaries["tensor_stats"][name] = output_collection.summaries[name]
+
     def _add_activation_summary(
         self, *, name: str, activations: Tensor, activation_paddings: Optional[Tensor] = None
     ):
         """Add activation summaries.
+
+        TODO(ruoming): use cfg.tensor_stats to represent activation summaries.
 
         Args:
             name: Activation name.

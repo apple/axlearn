@@ -1,6 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
-"""Utilites used for testing."""
+"""Utilities used for testing."""
 import contextlib
 import copy
 import dataclasses
@@ -8,15 +8,16 @@ import os
 import pathlib
 import re
 import tempfile
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from functools import partial
 from tempfile import mkdtemp
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 from unittest.mock import patch
 
 import jax
 import jax.random
 import numpy as np
+import optax
 from absl import logging
 from absl.testing import parameterized
 from jax import numpy as jnp
@@ -27,19 +28,24 @@ from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     InstantiableConfig,
     Required,
+    RequiredFieldValue,
     config_class,
     config_for_function,
 )
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import Learner
+from axlearn.common.module import InvocationContext, Module, current_context
 from axlearn.common.module import functional as F
+from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import opt_param_values
 from axlearn.common.param_init import FanAxes, Initializer, Shape
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     NestedTree,
     Tensor,
@@ -47,13 +53,12 @@ from axlearn.common.utils import (
     complete_partition_spec_tree,
     flatten_items,
     pop_data_dir,
+    prune_tree,
     push_data_dir,
     set_data_dir,
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-# See utils_spmd.py for where we set "jax_default_prng_impl".
-_default_prng_impl = "rbg"
 _PYTEST_OPT_REGISTERED = {}
 
 
@@ -86,7 +91,7 @@ def is_supported_platform(target_platform: str) -> bool:
     return supported
 
 
-def is_supported_mesh_shape(mesh_shape: Tuple[int, int]) -> bool:
+def is_supported_mesh_shape(mesh_shape: Sequence[int]) -> bool:
     """Checks if a function intended for a mesh shape is compatible with the current device(s)."""
     device_count = jax.device_count()
     supported = device_count == np.prod(mesh_shape)
@@ -131,10 +136,16 @@ class TestCase(parameterized.TestCase):
         return "FAKE"
 
     def setUp(self):
-        utils_spmd.setup()
+        super().setUp()
         push_data_dir(self.data_dir)
+        utils_spmd.setup(jax_backend=self._jax_backend())
+
+    def _jax_backend(self) -> str:
+        # Setup without distributed initialization by default.
+        return "cpu"
 
     def tearDown(self) -> None:
+        super().tearDown()
         self.assertEqual(pop_data_dir(), self.data_dir)
 
     def _compute_layer_outputs(
@@ -244,10 +255,20 @@ class TrainerConfigTestCase(TestCase):
             cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
             cfg.mesh_shape = cfg.mesh_shape or (len(jax.devices()), 1)
             cfg.max_step = 3
+
+            # TODO(kelvin-zou): Remove this once bfloat16 bug on CPU is fixed.
+            if jax.devices()[0].platform == "cpu":
+                if cfg.train_dtype == jnp.bfloat16:
+                    cfg.train_dtype = jnp.float32
+                for evaler_cfg in cfg.evalers.values():
+                    if evaler_cfg.eval_dtype == jnp.bfloat16:
+                        evaler_cfg.eval_dtype = jnp.float32
+
             for evaler_cfg in cfg.evalers.values():
                 if getattr(evaler_cfg.eval_policy, "fn", None) is eval_every_n_steps_policy:
                     evaler_cfg.eval_policy.n = 2
                 evaler_cfg.vlog = max(evaler_cfg.vlog or 0, 3)
+
             if getattr(cfg.checkpointer.save_policy, "fn", None) is every_n_steps_policy:
                 cfg.checkpointer.save_policy.n = 2
             logging.info("_test_with_trainer_config: %s", trainer_config)
@@ -263,6 +284,8 @@ class TrainerConfigTestCase(TestCase):
                 if state_spec is None:
                     continue
                 self.assertSequenceEqual(value.shape, state_spec.shape)
+                if state_spec.mesh_axes is None:
+                    state_spec.mesh_axes = [None] * len(value.shape)
                 self.assertLen(
                     state_spec.mesh_axes,
                     len(value.shape),
@@ -310,11 +333,9 @@ class TestWithTemporaryCWD(TestCase):
 
 @contextlib.contextmanager
 def prng_impl(new_prng_impl: str):
-    old_prng_impl = _default_prng_impl
+    old_prng_impl = jax.config.jax_default_prng_impl
 
     def switch(value):
-        global _default_prng_impl  # pylint: disable=global-statement
-        _default_prng_impl = value
         jax.config.update("jax_default_prng_impl", value)
 
     switch(new_prng_impl)
@@ -443,11 +464,11 @@ def read_param_init_specs_recursively(
 
     orig_vmap = jax.vmap
 
-    def patched_vmap(fn):
+    def patched_vmap(fn, **vmap_kwargs):
         def wrapped_fn(*args, **kwargs):
             return _cast_ordered_dict(fn(*args, **kwargs))
 
-        return orig_vmap(wrapped_fn)
+        return orig_vmap(wrapped_fn, **vmap_kwargs)
 
     patch_vmap = patch("jax.vmap", side_effect=patched_vmap, autospec=True)
 
@@ -458,7 +479,7 @@ def read_param_init_specs_recursively(
 
 def read_per_param_settings(
     module: Any, config_name: str, trainer_config: Optional[TrainerConfigFn] = None
-) -> Dict[str, NestedTensor]:
+) -> Dict[str, Dict[str, NestedTensor]]:
     """Extracts per-param settings for the given trainer config.
 
     Given a trainer config specified by `module` and `config_name`, initializes the trainer
@@ -471,10 +492,10 @@ def read_per_param_settings(
         trainer_config: Optional, the pre-cached trainer config used in golden config test.
 
     Returns:
-        A dictionary of trees, where the key is the description of the `register_per_param_settings`
-        call, and the value is a tree of the same structure as the model parameter, and has
-        per-parameter settings, e.g., a float number representing weight decay scale of the
-        parameter.
+        A nested dict, where the key is the description of the `register_per_param_settings` call,
+        and the value is a dictionary. The value maps the learner path to a tree of
+        the same structure as the corresponding model parameters, which records the
+        per-parameter settings (such as the weight decay scales of each parameter).
         It can be empty if the trainer config does not call `register_per_param_settings`.
     """
     # Define patchers.
@@ -490,18 +511,23 @@ def read_per_param_settings(
         autospec=True,
     )
 
-    all_param_settings = {}
+    all_param_settings = defaultdict(dict)
 
     def patched_register_per_param_settings(
-        settings: NestedTree, *, description: str
+        settings: NestedTree, *, description: str, path: Optional[str] = None
     ) -> NestedTree:
-        if description in all_param_settings:
-            raise ValueError(
-                f"{description} already populated:\n"
-                f"Existing: {all_param_settings[description]}\n"
-                f"New: {settings}\n"
-            )
-        all_param_settings[description] = settings
+        # Prune MaskedNode subtrees. If a tree would be made empty by removal of its subtrees,
+        # it will also be pruned.
+        pruned_settings = prune_tree(
+            settings,
+            lambda _, v: isinstance(v, optax.MaskedNode) or (isinstance(v, dict) and not v),
+        )
+        if all_param_settings[description]:
+            logging.info("There are multiple per_param_settings of %s.", description)
+        # Use the path if provided, else a counter.
+        key = path or str(len(all_param_settings[description]))
+
+        all_param_settings[description][key] = pruned_settings
         return settings
 
     with patch(
@@ -553,6 +579,7 @@ def read_per_param_settings(
     return all_param_settings
 
 
+# TODO(markblee): Update to take prng_key explicitly.
 def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     """Builds a dummy attention mask where non-padding tokens are followed by padding tokens.
 
@@ -575,9 +602,10 @@ def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     input_len = jax.random.randint(
         jax.random.PRNGKey(123), shape=(batch_size,), minval=0, maxval=max_seq_len
     )
-    return lower_diag[input_len]
+    return lower_diag[input_len].astype(jnp.int32)
 
 
+# TODO(markblee): Update to take prng_key explicitly.
 def dummy_segments_positions(
     batch: int, seq_len: int, *, num_segments: int
 ) -> Tuple[Tensor, Tensor]:
@@ -588,7 +616,7 @@ def dummy_segments_positions(
         seq_len: 4
         num_segments: 3
         output: (
-            [[0, 1, 1, 1], [1, 1, 2, 2]],  # segment_ids
+            [[1, 2, 2, 2], [1, 1, 2, 2]],  # segment_ids
             [[0, 0, 1, 2], [0, 1, 0, 1]],  # positions
         )
 
@@ -704,3 +732,106 @@ def temp_chdir(new_cwd: Union[pathlib.Path, str]):
         yield
     finally:
         os.chdir(old_cwd)
+
+
+L = TypeVar("L", bound=BaseLayer)
+M = TypeVar("M", bound=Module)
+
+
+@contextlib.contextmanager
+def bind_module(
+    module: ConfigOr[M],
+    *,
+    is_training: bool = True,
+    prng_key: Optional[jax.random.PRNGKey] = None,
+    state: Nested[Tensor],
+) -> Iterator[M]:
+    """Creates a context in which `module` has `state`.`
+
+    This lets you write tests that make calls to a module without needing to call `functional()`
+    yourself.
+
+    It is similar in spirit to FLAX's `module.bind()` although that works differently due to the
+    fact that FLAX state is only associated with an instance of a module, whereas AXLearn state is
+    global.
+
+    Example:
+        ```
+        cfg = MyModule.default_config()
+        with test_utils.bind_layer(cfg) as module:
+            result = module.do_something(some_args)
+        ```
+
+    Args:
+        module: The module to create a context for.
+        is_training: Tell the module it is in training or not.
+        prng_key: The PRNG key to use. If None, `jax.random.PRNGKey(0)`.
+        state: The state to use.
+
+    Returns:
+        The initialized module.
+    """
+    if prng_key is None:
+        prng_key = jax.random.PRNGKey(0)
+
+    if isinstance(module, InstantiableConfig):
+        if isinstance(module, Module.Config) and isinstance(
+            getattr(module, "name", None), RequiredFieldValue
+        ):
+            setattr(module, "name", "tmp")
+        module = module.instantiate(parent=None)
+    ctx = InvocationContext(
+        name="root",
+        parent=None,
+        module=module,
+        is_training=is_training,
+        prng_key=prng_key,
+        state=state,
+        output_collection=new_output_collection(),
+    )
+    with set_current_context(ctx):
+        yield module
+
+
+@contextlib.contextmanager
+def bind_layer(
+    layer: ConfigOr[L],
+    *,
+    is_training: bool = True,
+    prng_key: Optional[jax.random.PRNGKey] = None,
+    state: Optional[Nested[Tensor]] = None,
+) -> Iterator[L]:
+    """Creates a context in which `layer` has state initialized using
+    `initialize_parameters_recursively`.
+
+    The only difference between this and `bind_module()` is this calls
+    `initialize_parameters_recursively`.
+
+    Example:
+        ```
+        cfg = Linear.default_config().set(input_dim=5, output_dim=7)
+        with test_utils.bind_layer(cfg) as layer:
+            result = layer(jnp.ones(5))
+        assert result.shape == (7,)
+        ```
+
+    Args:
+        layer: The layer to initialize.
+        is_training: Tell the layer it is in training or not.
+        prng_key: The PRNG key to use. If None, `jax.random.PRNGKey(0)`.
+        state: The state to use. If None, call `initialize_parameters_recursively()` to initialize
+               the state.
+
+    Returns:
+        The Initialized module.
+    """
+    if prng_key is None:
+        prng_key = jax.random.PRNGKey(0)
+
+    init_key, ctx_key = jax.random.split(prng_key)
+
+    with bind_module(layer, is_training=is_training, prng_key=ctx_key, state={}) as instance:
+        if state is None:
+            state = instance.initialize_parameters_recursively(prng_key=init_key)
+        current_context().state = state
+        yield instance

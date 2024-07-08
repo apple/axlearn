@@ -9,8 +9,8 @@
 """A generic repeat layer.
 
 Adapted from:
-https://github.com/tensorflow/lingvo/blob/master/lingvo/core/repeat_layer.py
-https://github.com/tensorflow/lingvo/blob/master/lingvo/jax/layers/repeats.py
+https://github.com/tensorflow/lingvo/blob/2d46faf8/lingvo/core/repeat_layer.py
+https://github.com/tensorflow/lingvo/blob/2d46faf8/lingvo/jax/layers/repeats.py
 
 A repeat layer consists a stack of N identical sub layers, where
   * The variables are stacked across layers. Each stacked variable has shape [N, ...].
@@ -155,18 +155,22 @@ class Repeat(BaseLayer):
     def _run(self, fn, carry=None, *, xs=None):
         """Invokes 'fn' for each sub-layer.
 
+        Note, the number of sub-layers used for the computation might be smaller than
+        `cfg.num_layers` depending on the invocation context.
+
         Args:
             fn: A function with args (carry, x) returning a dict(carry=..., y=...).
+                `fn` will be run in the context of `self.layer`.
             carry: a nested tensor for the iterative input of the 0'th sub-layer.
             xs: a nested tensor with separate inputs for each sub-layer,
-                where each leaf value T is a tensor of shape [cfg.num_layers, ...]
+                where each leaf value T is a tensor of shape [num_layers, ...]
                 and T[i, ...] represents layer-wise inputs to the i'th sub-layer.
 
         Returns:
             A dict with the following keys:
             - carry: a nested tensor with the same structure as iterative_input_0
                 representing the iterative output of the last sub-layer.
-            - ys: a nested tensor where each leaf value T is a tensor of shape [cfg.num_layers, ...]
+            - ys: a nested tensor where each leaf value T is a tensor of shape [num_layers, ...]
                 and T[i, ...] represents layer-wise output from the i'th sub-layer.
         """
         cfg = self.config
@@ -179,30 +183,25 @@ class Repeat(BaseLayer):
 
         layer_output_collection = new_output_collection()
         with child_context("layer", output_collection=layer_output_collection) as layer_context:
+            # Note, actual `num_layers` might be smaller than `cfg.num_layers` depending on
+            # the invocation context.
+            num_layers = jax.tree_util.tree_reduce(
+                lambda num, x: min(num, x.shape[0]),
+                tree=(layer_context.state, xs),
+                initializer=cfg.num_layers,
+            )
+
             carry, ys = scan_in_context(
                 fn,
                 carry=carry,
                 xs=dict(
                     xs=xs,
-                    prng_key=split_prng_key(prng_key, cfg.num_layers).keys,
+                    prng_key=split_prng_key(prng_key, num_layers).keys,
                     state=layer_context.state,
                 ),
                 drop_output=self._drop_output,
+                child_name_prefix="layer",
             )
 
-        this_output_collection = self.get_invocation_context().output_collection
-        layer_output = this_output_collection.add_child("layer")
-        layer_output.module_outputs.update(**layer_output_collection.module_outputs)
-        layer_output.state_updates.update(**layer_output_collection.state_updates)
-
-        # Each summary value in `layer_output_collection` has shape (num_layers, ...). For example,
-        # if a repeated layer outputs a scalar summary value, it will have shape [num_layers].
-        # Below we split the stacked values and output them separately under scope "layer{i}"
-        # so that scalar summaries can be handled correctly.
-        for i in range(cfg.num_layers):
-            layer_i_output = this_output_collection.add_child(f"layer{i}")
-            layer_i_output.summaries.update(
-                **jax.tree_util.tree_map(lambda x, i=i: x[i], layer_output_collection.summaries)
-            )
-
+        self.get_invocation_context().output_collection.update(layer_output_collection)
         return self.Output(carry=carry, ys=ys)

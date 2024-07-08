@@ -9,6 +9,10 @@
 # bzhangGo/rmsnorm:
 # Copyright (c) 2019, Biao Zhang. All rights reserved.
 # Licensed under the BSD 3-Clause License.
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
 
 # pylint: disable=too-many-lines
 """Basic layers."""
@@ -42,6 +46,7 @@ from axlearn.common.param_init import (
     WeightInitializer,
     constant_initializer,
 )
+from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.utils import (
     NestedTensor,
     Tensor,
@@ -519,11 +524,11 @@ class BatchNorm(BaseNormalizationLayer):
         return x
 
 
-class Linear(BaseLayer):
+class Linear(DenseGeneralBaseLayer):
     """The linear layer."""
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(DenseGeneralBaseLayer.Config):
         """Configures Linear."""
 
         # Input feature dim.
@@ -546,13 +551,18 @@ class Linear(BaseLayer):
         params = dict(
             weight=ParameterSpec(
                 shape=(cfg.input_dim, cfg.output_dim),
+                # A mapping from parameter axes to logical mesh axes (or None if replicating along
+                # an axis).
                 mesh_axes=cfg.param_partition_spec,
+                # Used by optimizers that maintain factored stats, e.g., Adafactor.
                 factorization=FactorizationSpec(axes=("row", "col")),
             )
         )
         if cfg.bias:
             params["bias"] = ParameterSpec(
-                shape=[cfg.output_dim], mesh_axes=(cfg.param_partition_spec[-1],)
+                shape=[cfg.output_dim],
+                # Follow the partitioning of the output dimension of the weight matrix.
+                mesh_axes=(cfg.param_partition_spec[-1],),
             )
         return params
 
@@ -565,7 +575,9 @@ class Linear(BaseLayer):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
-        output = x @ self.parameters["weight"]
+        output = self.einsum_maybe_quantized(
+            "...d,dh->...h", activation=x, kernel=self.parameters["weight"]
+        )
         if cfg.bias:
             output += self.parameters["bias"]
         return self._maybe_shard(output)
@@ -646,9 +658,29 @@ class MaxPool2D(BaseLayer):
         return [input_shape[0], output_height, output_width, input_shape[3]]
 
 
+class BaseConv(BaseLayer):
+    """Base class for convolution layers."""
+
+    @config_class
+    class Config(BaseLayer.Config):
+        input_dim: Required[int] = REQUIRED  # Input feature dim.
+
+    # pylint: disable-next=no-self-use
+    def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
+        if not name.endswith("weight"):
+            return None
+        if len(parameter_spec.shape) < 2:
+            raise NotImplementedError(
+                "Default _compute_fan_axes requires weight parameters to have at least 2 axes "
+                f"shape({name}) = {parameter_spec.shape}"
+            )
+        # All other axes represent receptive field.
+        return FanAxes(in_axis=-2, out_axis=-1)
+
+
 # The accuracy of the output of this layer currently doesn't match that of PyTorch
 # quite as closely as we would like. See layers_test.py:test_conv2d().
-class Conv2D(BaseLayer):
+class Conv2D(BaseConv):
     """The 2-D convolution layer.
 
     Kernel weights have the HWIO layout and in the shape of (window[0], window[1], input_dim,
@@ -656,14 +688,13 @@ class Conv2D(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(BaseConv.Config):
         """Configures Conv2D."""
 
         window: Tuple[int, int] = (1, 1)  # The convolution window.
         strides: Tuple[int, int] = (1, 1)  # The convolution strides.
         # Paddings: "SAME", "VALID", or ((top, bottom), (left, right)).
         padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int]]] = ((0, 0), (0, 0))
-        input_dim: Required[int] = REQUIRED  # Input feature dim.
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
         # The number of groups in which the input is split along the channel axis.
@@ -789,7 +820,7 @@ def _compute_conv_output_1d_padding(
     return out_paddings
 
 
-class Conv2DTranspose(BaseLayer):
+class Conv2DTranspose(BaseConv):
     """The 2-D transposed convolution layer.
 
     Kernel weights have the HWIO layout and in the shape of (window[0], window[1], output_dim,
@@ -797,13 +828,12 @@ class Conv2DTranspose(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(BaseConv.Config):
         """Configures Conv2DTranspose."""
 
         window: Tuple[int, int] = (1, 1)
         strides: Tuple[int, int] = (1, 1)
         padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int]]] = ((0, 0), (0, 0))
-        input_dim: Required[int] = REQUIRED  # Input feature dim.
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
 
@@ -923,7 +953,7 @@ class Conv2DWith1DPadding(Conv2D):
         return output, output_paddings
 
 
-class Conv3D(BaseLayer):
+class Conv3D(BaseConv):
     """The 3-D convolution layer.
 
     Kernel weights have the HWDIO layout and in the shape of (window[0], window[1],
@@ -931,7 +961,7 @@ class Conv3D(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(BaseConv.Config):
         """Configures Conv3D."""
 
         window: Tuple[int, int, int] = (1, 1, 1)  # The convolution window.
@@ -944,9 +974,7 @@ class Conv3D(BaseLayer):
             (0, 0),
         )
 
-        input_dim: Required[int] = REQUIRED  # Input feature dim.
         output_dim: Required[int] = REQUIRED  # Output feature dim.
-
         bias: bool = True  # Whether to add a bias.
 
         # The number of groups in which the input is split along the channel axis.
@@ -1033,7 +1061,7 @@ class Conv3D(BaseLayer):
         return [input_shape[0], *output_shape, cfg.output_dim]
 
 
-class Conv1D(BaseLayer):
+class Conv1D(BaseConv):
     """The 1D convolution layer.
 
     Kernel weights have the WIO layout and in the shape of (window, input_dim, output_dim).
@@ -1041,7 +1069,7 @@ class Conv1D(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(BaseConv.Config):
         """Configures Conv1D."""
 
         window: Required[int] = REQUIRED  # The convolution window.
@@ -1049,8 +1077,6 @@ class Conv1D(BaseLayer):
         # Paddings: "SAME", "VALID", or (left, right).
         # For causal convolution, set padding to (window - 1, 0).
         padding: Union[str, Tuple[int, int]] = (0, 0)
-        # Input feature dim, which is also the output dim.
-        input_dim: Required[int] = REQUIRED
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
         # The number of groups in which the input is split along the channel axis.
@@ -1062,12 +1088,24 @@ class Conv1D(BaseLayer):
         #   set of filters (of size output_dim / input_dim); if further output_dim == K * input_dim,
         #   where K is a positive integer, the operation is also known as a "depthwise convolution".
         num_input_dim_groups: Optional[int] = 1
+        # LHS_dilation is also known as transposed convolution. It is either None, or an int
+        # indicating the dilation factor applied on the input.
+        lhs_dilation: Optional[int] = None
+        # RHS_dilation is also known as atrous convolution. It is either None, or an int indicating
+        # dilation factor applied to the weight.
+        rhs_dilation: Optional[int] = None
 
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
         cfg.param_partition_spec = (None, None, "model")
         return cfg
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        # Check lhs_dilation and padding setting compatibility.
+        if cfg.lhs_dilation is not None and cfg.lhs_dilation != 1 and isinstance(cfg.padding, str):
+            raise ValueError("String padding is not supported for LHS dilation.")
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
         cfg = self.config
@@ -1099,13 +1137,15 @@ class Conv1D(BaseLayer):
             dimension_numbers=("NWC", "WIO", "NWC"),
             padding=cfg.padding if isinstance(cfg.padding, str) else (cfg.padding,),
             feature_group_count=cfg.num_input_dim_groups,
+            lhs_dilation=[cfg.lhs_dilation] if cfg.lhs_dilation is not None else None,
+            rhs_dilation=[cfg.rhs_dilation] if cfg.rhs_dilation is not None else None,
         )
         if cfg.bias:
             output += self.parameters["bias"]
         return output
 
 
-class DepthwiseConv1D(BaseLayer):
+class DepthwiseConv1D(BaseConv):
     """The 1-D depth-wise convolution layer.
 
     Kernel weights have the WIO layout and in the shape of (window, 1, output_dim=input_dim).
@@ -1113,7 +1153,7 @@ class DepthwiseConv1D(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(BaseConv.Config):
         """Configures DepthwiseConv1D."""
 
         window: Required[int] = REQUIRED  # The convolution window.
@@ -1121,8 +1161,6 @@ class DepthwiseConv1D(BaseLayer):
         # Paddings: "SAME", "VALID", or (left, right).
         # For causal convolution, set padding to (window - 1, 0).
         padding: Union[str, Tuple[int, int]] = (0, 0)
-        # Input feature dim, which is also the output dim.
-        input_dim: Required[int] = REQUIRED
         bias: bool = True  # Whether to add a bias.
 
     @classmethod
@@ -1292,13 +1330,13 @@ class ClassificationMetric(BaseClassificationMetric):
             A float Tensor represents the loss.
         """
         cfg = self.config
-        mask = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        num_examples = mask.sum()
+        live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
+        num_examples = live_targets.sum()
 
         loss, all_losses = cross_entropy(
             logits,
-            labels,
-            mask=mask,
+            target_labels=labels,
+            live_targets=live_targets,
             label_smoothing=cfg.label_smoothing,
             soft_target_labels=soft_labels,
         )
@@ -1360,17 +1398,17 @@ class BinaryClassificationMetric(BaseClassificationMetric):
                 f"Binary classification is only defined for two classes; "
                 f"{cfg.num_classes} were provided"
             )
-        mask = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        num_examples = mask.sum()
+        live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
+        num_examples = live_targets.sum()
         loss, all_losses = binary_cross_entropy(
             logits,
-            labels,
-            mask=mask,
+            target_labels=labels,
+            live_targets=live_targets,
         )
         preds = jnp.where(jnp.greater(nn.sigmoid(logits), cfg.prediction_threshold), 1, 0)
         scores = precision_recall_f_score(
-            y_true=(mask * labels).reshape(-1),
-            y_pred=(mask * preds).reshape(-1),
+            y_true=(live_targets * labels).reshape(-1),
+            y_pred=(live_targets * preds).reshape(-1),
         )
         self.add_summary("precision", scores["precision"])
         self.add_summary("recall", scores["recall"])
@@ -1428,20 +1466,20 @@ class CategoricalHingeLossMetric(BaseClassificationMetric):
 
         one_hot_labels = jax.nn.one_hot(labels, cfg.num_classes)
 
-        pre_mask_loss = categorical_hinge_loss(logits, one_hot_labels)
+        per_target_loss = categorical_hinge_loss(logits, one_hot_labels)
 
-        mask = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        mask = mask.astype(pre_mask_loss.dtype)
-        num_unmasked = mask.sum()
-        denominator = jnp.maximum(1, num_unmasked)
-        loss = (pre_mask_loss * mask).sum() / denominator
+        live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
+        live_targets = live_targets.astype(per_target_loss.dtype)
+        num_live_targets = live_targets.sum()
+        denominator = jnp.maximum(1, num_live_targets)
+        loss = (per_target_loss * live_targets).sum() / denominator
 
         predictions = jnp.argmax(logits, axis=-1)
         accuracy = jnp.equal(predictions, labels).sum() / denominator
 
-        self.add_summary("loss", WeightedScalar(loss, num_unmasked))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_unmasked))
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_unmasked))
+        self.add_summary("loss", WeightedScalar(loss, num_live_targets))
+        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_live_targets))
+        self.add_summary("accuracy", WeightedScalar(accuracy, num_live_targets))
 
         return loss
 

@@ -29,7 +29,7 @@ class MyModule(Module):
 `MyModule.__init__` will identify `MyModule.do_foo` as one of the methods to wrap through
 `Module._methods_to_wrap_for_auto_child_context` (which can be overridden by subclasses, e.g.,
 in RedirectToSharedModule). It will then wrap the method via
-`Modue._wrap_method_with_auto_child_context` and install the wrapped function as `self.do_foo`.
+`Module._wrap_method_with_auto_child_context` and install the wrapped function as `self.do_foo`.
 
 This allows MyModule's parents to invoke `do_foo` as `self.my_child.do_foo(...)` without having
 to create the child context explicitly.
@@ -54,7 +54,7 @@ from axlearn.common import traceback_util
 from axlearn.common.config import REQUIRED, Configurable, Required, RequiredFieldValue, config_class
 from axlearn.common.summary import Summary
 from axlearn.common.traceback_util import annotate_stack, no_stack_summary
-from axlearn.common.utils import NestedTensor, Tensor, partial_with_fn_metadata, prune_tree
+from axlearn.common.utils import Nested, NestedTensor, Tensor, partial_with_fn_metadata, prune_tree
 
 
 def _generate_seed_from_name(name: str) -> np.int64:
@@ -126,6 +126,48 @@ def new_output_collection():
     return OutputCollection(summaries={}, state_updates={}, module_outputs={})
 
 
+def propagate_repeated_output_collections(
+    repeated_output_collection: OutputCollection,
+    *,
+    child_name_prefix: str,
+    target_output_collection: OutputCollection,
+):
+    """Propagates contents from `repeated_output_collection` to `target_target_output_collection`.
+
+    Specifically:
+    * module_outputs and state_updates from `repeated_output_collection` will be added to
+      target_output_collection[child_name_prefix].
+    * For each summary value `v` of `repeated_output_collection`, `v[i]` will be added to
+      target_output_collection[f"{child_name_prefix}{i}"] for 0 <= i < N = num_children.
+
+    Args:
+        repeated_output_collection: An OutputCollection produced by a Jax loop (e.g., jax.vmap
+            or jax.scan). Each leaf tensor has shape [N, ...].
+        child_name_prefix: The child name prefix used for children to be added to
+            `target_output_collection`.
+        target_output_collection: The target OutputCollection.
+    """
+    # Fill `target_output_collection[child_name_prefix]` with `repeated_output_collection`.
+    child_output = target_output_collection.add_child(child_name_prefix)
+    child_output.module_outputs.update(**repeated_output_collection.module_outputs)
+    child_output.state_updates.update(**repeated_output_collection.state_updates)
+
+    # Each summary value in `repeated_output_collection` has shape (N, ...). For example,
+    # if a repeated layer outputs a scalar summary value, it will have shape [N].
+    # Below we split the stacked values and output them separately under scope
+    # "{child_name_prefix}{i}" so that scalar summaries can be handled correctly.
+    summary_values = jax.tree_util.tree_leaves(repeated_output_collection.summaries)
+    if summary_values:
+        first_summary_value = summary_values[0]
+        assert first_summary_value.shape, "Stacked summaries should have a leading stack dimension."
+        num_children = first_summary_value.shape[0]
+        for i in range(num_children):
+            child_i_output = target_output_collection.add_child(f"{child_name_prefix}{i}")
+            child_i_output.summaries.update(
+                jax.tree_util.tree_map(lambda x, i=i: x[i], repeated_output_collection.summaries)
+            )
+
+
 T = TypeVar("T")
 
 
@@ -138,15 +180,22 @@ class Summable(Protocol):
 # TODO(markblee): Link to docs on invocation contexts.
 @dataclass
 class InvocationContext:  # pylint: disable=too-many-instance-attributes
-    """The invocation context for `Module.__call__()`."""
+    """The invocation context for `Module.__call__()`.
 
-    # The context name. Must be unique among sibling contexts.
+    Attributes:
+        name: The context name. Must be unique among sibling contexts.
+        parent: The parent context, or None if `self` is the root context.
+        module: The Module associated with the context.
+        state: The state of the module.
+        is_training: Whether the invocation should run in the training mode.
+        prng_key: The pseudo-random number generator key (can be None if the computation does not
+            require random numbers).
+        output_collection: See `OutputCollection`.
+    """
+
     name: str
-    # The parent context, or None if `self` is the root context.
     parent: Optional["InvocationContext"]
-    # The Module associated with the context.
-    module: "Module"
-    # The state of the module.
+    module: Optional["Module"]
     state: NestedTensor
     is_training: bool
     prng_key: Optional[Tensor]
@@ -227,7 +276,7 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
     def add_summary(
         self,
         name: str,
-        value: Union[Summable, Tensor],
+        value: Nested[Union[Summary, Tensor]],
     ):
         """Adds the named value to the `OutputCollection.summaries`.
 
@@ -235,6 +284,13 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
             name: The name of the item to add.
             value: The value to add.
         """
+
+        def validate(leaf):
+            if isinstance(leaf, Summary):
+                leaf.validate()
+
+        jax.tree_util.tree_map(validate, value, is_leaf=lambda x: isinstance(x, Summary))
+
         self.output_collection.summaries[name] = value
 
     def add_state_update(self, name: str, value: Tensor):
@@ -405,8 +461,9 @@ class Module(Configurable):
     class Config(Configurable.Config):
         """Module config.
 
-        name: name of this module.
-        vlog: the maximum vlog level. If None, vlog is disabled.
+        Attributes:
+            name: Name of this module.
+            vlog: The maximum vlog level. If None, vlog is disabled.
         """
 
         name: Required[str] = REQUIRED
@@ -717,7 +774,15 @@ class Module(Configurable):
         # Build nullary that that evaluates <method_fn(self, *args, **kwargs)> when called.
         @no_stack_summary
         def nullary():
-            return method_fn(self, *args, **kwargs)
+            try:
+                return method_fn(self, *args, **kwargs)
+            except TypeError as e:
+                args_types = [type(arg) for arg in args]
+                kwargs_types = {k: type(v) for k, v in kwargs.items()}
+                raise TypeError(
+                    f"Type error when calling {self}.{method_fn} "
+                    f"with args={args_types} and kwargs={kwargs_types}"
+                ) from e
 
         return nullary
 
@@ -786,11 +851,15 @@ def scan_in_context(
     carry: NestedTensor,
     xs: NestedTensor,
     drop_output: Optional[Callable[[str], bool]] = None,
+    child_name_prefix: str = "iter",
 ) -> Tuple[NestedTensor, NestedTensor]:
     """A thin wrapper around `jax.lax.scan` which is compatible with `OutputCollection`.
 
     In particular, summaries and outputs added by `add_summary` and `add_module_output` respectively
     are accumulated in `current_context().output_collection`, subject to any output filtering.
+    Specifically, summaries from iteration `i` will be placed in
+    `summaries[f"{child_name_prefix}{i}"]`; module outputs will be stacked and placed in
+    `module_outputs[child_name_prefix]`.
 
     Args:
         fn: A function with args (carry, x) returning a dict(carry=..., y=...).
@@ -802,6 +871,8 @@ def scan_in_context(
         drop_output: A callable that takes a path and outputs a decision of whether to drop the
             output at the given path, where True means we drop. By default, the callable is None,
             meaning nothing is dropped.
+        child_name_prefix: The child name prefix used for children to be added to
+            `target_output_collection`.
 
     Returns:
         The scan outputs (carry, ys):
@@ -841,6 +912,10 @@ def scan_in_context(
         return carry_i, dict(y_i=y_i, output_collection=output_collection_i)
 
     carry, scan_ys = jax.lax.scan(scan_fn, init=carry, xs=xs)
-    ctx.output_collection.update(scan_ys.pop("output_collection"))
+    propagate_repeated_output_collections(
+        scan_ys.pop("output_collection"),
+        child_name_prefix=child_name_prefix,
+        target_output_collection=ctx.output_collection,
+    )
 
     return carry, scan_ys["y_i"]

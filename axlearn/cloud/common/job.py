@@ -9,17 +9,28 @@ from typing import Any, Optional
 
 from absl import flags
 
-from axlearn.cloud.common.bundler import Bundler
+from axlearn.cloud.common.bundler import Bundler, bundler_flags
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 
 
 class Job(Configurable):
-    """Base Job definition."""
+    """Base Job definition.
+
+    Job's main API method is `execute`, which sets up the environment according to `bundler`,
+    runs the specified `command`, and retries if necessary.
+
+    Subclasses of `Job` further specify the platform (e.g., TPUs on GCP) on which the job
+    should run.
+
+    The implementation of `execute` should be idempotent---invoking `execute` multiple times
+    should be equivalent to invoking it once.
+    """
 
     @config_class
     class Config(Configurable.Config):
         """Configures Job."""
 
+        # TODO(markblee): Convert all comments into config class docstrings.
         # Job name.
         name: Required[str] = REQUIRED
         # Max attempts to execute the Job.
@@ -27,18 +38,35 @@ class Job(Configurable):
         # Retry interval in seconds.
         retry_interval: Required[float] = REQUIRED
         # Command to execute on remote compute.
-        command: Required[str] = REQUIRED
+        command: Optional[str] = None
         # Bundler. See `axlearn.cloud.common.bundler` for valid bundlers.
         bundler: Optional[Bundler.Config] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
+        self._bundler = None
         if cfg.bundler:
             self._bundler: Bundler = cfg.bundler.instantiate()
 
     @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs):
+    def define_flags(cls, fv: flags.FlagValues):
+        """Defines absl flags to be read by `from_flags()`."""
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        # Note: don't use generate_job_name() here, as not all environments define $USER.
+        flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
+        flags.DEFINE_integer("max_tries", None, "Max attempts to execute the job.", **common_kwargs)
+        flags.DEFINE_integer(
+            "retry_interval",
+            None,
+            "Interval in seconds between attempts.",
+            **common_kwargs,
+        )
+        # Allow bundler to be optional.
+        bundler_flags(required=False, **common_kwargs)
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
         """Populate config partially using parsed absl flags."""
         flag_values = {**fv.flag_values_dict(), **kwargs}
         cfg = cls.default_config()
@@ -46,8 +74,16 @@ class Job(Configurable):
             **{field: flag_values[field] for field in cfg.keys() if field in flag_values}
         )
 
+    @property
+    def bundler(self):
+        return self._bundler
+
     def _delete(self):
-        """Cleans up the job. Called on termination."""
+        """Cleans up the job. Called on termination when all retries are exhausted.
+
+        Note that `_delete` is not called when `_execute` finishes successfully. It is up
+        to the implementation of `_execute` to clean up properly.
+        """
 
     def _execute(self) -> Any:
         """Performs some computation. The return value can be implementation dependent."""

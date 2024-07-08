@@ -12,8 +12,8 @@ RUN apt-get install -y apt-transport-https ca-certificates gnupg curl gcc g++
 RUN apt-get install -y git
 
 # Install gcloud. https://cloud.google.com/sdk/docs/install
-RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
-    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add - && \
+RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
+    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y && apt-get install google-cloud-cli -y
 
 # Install screen and other utils for launch script.
@@ -47,8 +47,10 @@ COPY . .
 
 # Defaults to an empty string, i.e. run pytest against all files.
 ARG PYTEST_FILES=''
+# Defaults to empty string, i.e. do NOT skip precommit
+ARG SKIP_PRECOMMIT=''
 # `exit 1` fails the build.
-RUN ./run_tests.sh "${PYTEST_FILES}"
+RUN ./run_tests.sh $SKIP_PRECOMMIT "${PYTEST_FILES}"
 
 ################################################################################
 # Bastion container spec.                                                      #
@@ -67,6 +69,9 @@ RUN pip install .[gcp,vertexai_tensorboard]
 
 FROM base AS dataflow
 
+# Beam workers default to creating a new virtual environment on startup. Instead, we want them to
+# pickup the venv setup above. An alternative is to install into the global environment.
+ENV RUN_PYTHON_SDK_IN_DEFAULT_ENVIRONMENT=1
 RUN pip install .[gcp,dataflow]
 COPY . .
 
@@ -76,11 +81,26 @@ COPY . .
 
 FROM base AS tpu
 
+RUN apt-get install -y google-perftools
+
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN pip install .[tpu]
+COPY . .
+
+################################################################################
+# GPU container spec.                                                          #
+################################################################################
+
+FROM base AS gpu
+
+RUN apt-get install -y google-perftools
+
+# TODO(markblee): Support extras.
+ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+RUN pip install .[gpu]
 COPY . .
 
 ################################################################################

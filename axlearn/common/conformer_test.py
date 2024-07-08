@@ -1,26 +1,28 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests Conformer layers."""
+
+import os
+
 import jax
 import numpy as np
 import torch
 from absl import logging
 from absl.testing import absltest, parameterized
-from fairseq.modules import conformer_layer as fairseq_conformer
 from jax import numpy as jnp
 
 from axlearn.common import utils
-from axlearn.common.attention import sinusoidal_positional_embeddings
+from axlearn.common.attention import build_remat_spec
 from axlearn.common.conformer import (
     ConformerLayer,
     RepeatedConformerLayer,
     compute_attention_logit_biases,
 )
 from axlearn.common.module import functional as F
-from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.t5 import T5RelativePositionalEmbedding
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.torch_utils import parameters_from_torch_layer
+
+testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
 
 
 class ConformerLayerTest(TestCase):
@@ -41,51 +43,23 @@ class ConformerLayerTest(TestCase):
         cfg.lconv.linear1.bias = cfg.lconv.linear2.bias = False  # follow ESPNET setup
         cfg.lconv.conv.window = 3  # use a small window to handle the padding difference.
         cfg.self_attention.attention.num_heads = num_heads
-        layer = cfg.instantiate(parent=None)  # type: ConformerLayer
-        ref_layer = fairseq_conformer.ConformerEncoderLayer(
-            embed_dim=dim,
-            ffn_embed_dim=dim * 4,
-            dropout=0,
-            attention_heads=num_heads,
-            use_fp16=False,
-            depthwise_conv_kernel_size=3,
-            activation_fn="swish",
-            attn_type="espnet",
-            pos_enc_type="rel_pos",
+        layer: ConformerLayer = cfg.instantiate(parent=None)
+        min_num_tokens = 5
+
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_against_fairseq.npy"),
+            allow_pickle=True,
+        ).item()
+
+        test_outputs, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=testcase["params"],
+            inputs=dict(inputs=testcase["inputs"], paddings=testcase["paddings"]),
         )
-        batch_size, seq_len, min_num_tokens = 2, 10, 5
-        inputs = jax.random.normal(jax.random.PRNGKey(123), [batch_size, seq_len, dim])
-        num_tokens = jax.random.randint(
-            jax.random.PRNGKey(101),
-            minval=min_num_tokens,
-            maxval=seq_len + 1,
-            shape=[batch_size],
-        )
-        # [batch_size, seq_len].
-        paddings = jnp.arange(seq_len)[None, :] >= num_tokens[:, None]
-        # [1, 2 * seq_len - 1, model_dim].
-        pos_emb = jnp.expand_dims(
-            sinusoidal_positional_embeddings(jnp.arange(seq_len - 1, -seq_len, -1), dim=dim), 0
-        )
-        test_outputs, (ref_outputs, _) = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=ref_layer,
-            test_inputs=dict(inputs=inputs, paddings=paddings),
-            ref_inputs=as_torch_tensor(
-                dict(
-                    # fairseq_conformer requires time-major inputs
-                    # (except for encoder_padding_mask)
-                    x=inputs.transpose([1, 0, 2]),
-                    encoder_padding_mask=paddings,  # mask.transpose([1, 0]),
-                    position_emb=pos_emb.transpose([1, 0, 2]),
-                )
-            ),
-            parameters_from_ref_layer=parameters_from_torch_layer,
-            # moving_{mean,variance} of the BatchNorm layer are not included
-            require_same_num_params=False,
-        )
-        # [batch_size, seq_len, model_dim].
-        ref_outputs = utils.as_tensor(ref_outputs).transpose([1, 0, 2])
+        ref_outputs = testcase["outputs"]
+
         # Only look at [:min_num_tokens - 1] because fairseq does not fully respect padding.
         test_outputs = test_outputs[:, : min_num_tokens - 1]
         ref_outputs = ref_outputs[:, : min_num_tokens - 1]
@@ -134,36 +108,57 @@ class ConformerLayerTest(TestCase):
         # Check that the outputs are the same despite differences in padding.
         assert_allclose(outputs[0, :num_tokens], outputs[1, :num_tokens])
 
-    def test_repeated_conformer_config(self):
+    @parameterized.parameters(None, "lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv")
+    def test_repeated_conformer_config(self, layer_order):
         """Tests RepeatedConformerLayer config.
 
         It tests the ConformerLayer default config is correctly set in RepeatedConformerLayer.
         """
         dim, num_heads = 6, 2
         cfg = RepeatedConformerLayer.default_config().set(
-            name="repeat_conformer", input_dim=dim, num_layers=3
+            name="repeat_conformer",
+            input_dim=dim,
+            num_layers=3,
         )
         cfg.layer.self_attention.attention.num_heads = num_heads
+        cfg.layer.layer_order = layer_order
         for ff_cfg in (cfg.layer.ff_start, cfg.layer.ff_end):
             self.assertEqual(ff_cfg.hidden_dim.scale, 4)
             self.assertEqual(ff_cfg.residual_weight, 0.5)
             self.assertEqual(ff_cfg.activation, "nn.silu")
         self.assertEqual(cfg.layer.self_attention.attention.input_linear.layer.bias, True)
 
-    def test_repeated_conformer_forward(self):
+    @parameterized.product(
+        checkpoint_self_attention=(True, False),
+        checkpoint_feed_forward=(True, False),
+        layer_order=(None, "lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv"),
+    )
+    def test_repeated_conformer_forward(
+        self, checkpoint_self_attention, checkpoint_feed_forward, layer_order
+    ):
         """Tests RepeatedConformerLayer."""
         dim, num_heads = 6, 2
         # Create a conformer layer.
-        cfg = ConformerLayer.default_config().set(name="conformer", input_dim=dim)
+        cfg = ConformerLayer.default_config().set(
+            name="conformer", input_dim=dim, layer_order=layer_order
+        )
         cfg.self_attention.attention.num_heads = num_heads
         layer = cfg.instantiate(parent=None)  # type: ConformerLayer
 
         # Create a Repeat Conformer layer.
         num_layers = 5
         repeat_cfg = RepeatedConformerLayer.default_config().set(
-            name="repeat_conformer", input_dim=dim, num_layers=num_layers
+            name="repeat_conformer",
+            input_dim=dim,
+            num_layers=num_layers,
         )
+        repeat_cfg.layer.layer_order = layer_order
         repeat_cfg.layer.self_attention.attention.num_heads = num_heads
+        repeat_cfg.layer.remat_spec = build_remat_spec(
+            repeat_cfg,
+            self_attention=checkpoint_self_attention,
+            feed_forward=checkpoint_feed_forward,
+        )
         repeat_layer = repeat_cfg.instantiate(parent=None)  # type: RepeatedConformerLayer
         repeat_state = repeat_layer.initialize_parameters_recursively(jax.random.PRNGKey(100))
         # Generate synthetic inputs.

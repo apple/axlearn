@@ -6,10 +6,12 @@ import collections
 import copy
 import dataclasses
 import math
+import typing
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import attr
+import attrs
 import numpy as np
 import tensorflow_datasets as tfds
 import wrapt
@@ -401,7 +403,8 @@ class ConfigTest(parameterized.TestCase):
 
         cfg = config.config_for_class(Layer)
         self.assertEqual(
-            f"config_for_class({Layer.__module__}.{Layer.__qualname__})", type(cfg).__name__
+            f"config_for_class({Layer.__module__}.{Layer.__qualname__})",
+            type(cfg).__name__,
         )
         self.assertIsInstance(cfg, config.InstantiableConfig)
         self.assertContainsSubset({"klass", "in_features", "out_features", "bias"}, cfg.keys())
@@ -473,9 +476,16 @@ class ConfigTest(parameterized.TestCase):
             expected=NotImplementedError("param kind POSITIONAL_ONLY"),
         ),
         # Not enough args, will fail when instantiating the config.
-        dict(kwargs=dict(x="x", y="y"), expected=RequiredFieldMissingError("required field .* z")),
+        dict(
+            kwargs=dict(x="x", y="y"),
+            expected=RequiredFieldMissingError("required field .* z"),
+        ),
         # Test configuring a function with `fn` as an arg.
-        dict(fn=lambda fn: fn + 1, kwargs=dict(fn=1), expected=ValueError("'fn' parameter")),
+        dict(
+            fn=lambda fn: fn + 1,
+            kwargs=dict(fn=1),
+            expected=ValueError("'fn' parameter"),
+        ),
         # Test configuring a function with `_` as an arg.
         dict(fn=lambda _: 1, kwargs=dict(x=2), expected=ValueError("'_' parameter")),
     )
@@ -493,6 +503,23 @@ class ConfigTest(parameterized.TestCase):
         else:
             self.assertEqual(build_and_invoke(), expected)
 
+    def test_config_for_function_has_type_information(self):
+        """Tests that type information is available when using `config_for_function`."""
+
+        # pylint: disable-next=unused-argument
+        def fn(w: int, x: str, y: Union[int, str], z: Required[float]):
+            pass
+
+        cfg = config.config_for_function(fn)
+        fields = attrs.fields(cfg.__class__)
+        fields_dict = {field.name: field.type for field in fields}
+        self.assertEqual(set(fields_dict.keys()), {"fn", "w", "x", "y", "z"})
+        # collections.abc.Callable is apparently not equal to typing.Callable.
+        # For forward compatibility, we just check the name.
+        self.assertEqual(typing.get_origin(fields_dict["fn"]).__name__, "Callable")
+        del fields_dict["fn"]
+        self.assertEqual(fields_dict, dict(w=int, x=str, y=Union[int, str], z=Required[float]))
+
     def test_to_dict_and_debug_string(self):
         def fn_with_args(*args):
             return list(args)
@@ -501,6 +528,12 @@ class ConfigTest(parameterized.TestCase):
         class Person:
             name: str
             age: int
+
+        @dataclasses.dataclass
+        class Cat:
+            name: str
+            bleed: Optional[str] = None
+            adopted: Optional[bool] = True
 
         @config_class
         class TestConfigA(ConfigBase):
@@ -511,6 +544,7 @@ class ConfigTest(parameterized.TestCase):
             person: Person = Person("Johnny Appleseed", 30)  # pytype: disable=invalid-annotation
             person_cls: type = Person
             notes: Optional[str] = None
+            cats: List[Cat] = [Cat(name="Ross", adopted=True)]  # pytype: disable=invalid-annotation
 
         @config_class
         class TestConfigB(ConfigBase):
@@ -540,6 +574,7 @@ class ConfigTest(parameterized.TestCase):
                     "fn": {"args": [1, 2, 3], "fn": None},
                     "person": {"name": "Johnny Appleseed", "age": 30},
                     "person_cls": "axlearn.common.config_test.Person",
+                    "cats": [{"name": "Ross"}],
                 },
                 "config_dict": {"config_b": {"count": 5}},
                 "config_list": [{"count": 5}, {"count": 1}],
@@ -571,6 +606,9 @@ class ConfigTest(parameterized.TestCase):
                 "my_config.person_cls": Person,
                 "my_config.required_int": REQUIRED,
                 "my_config.notes": None,
+                "my_config.cats[0]['name']": "Ross",
+                "my_config.cats[0]['bleed']": None,
+                "my_config.cats[0]['adopted']": True,
             },
         )
         self.assertCountEqual(
@@ -595,9 +633,12 @@ class ConfigTest(parameterized.TestCase):
                 "my_config.person['name']": "Johnny Appleseed",
                 "my_config.person['age']": 30,
                 "my_config.person_cls": Person,
+                "my_config.cats[0]['name']": "Ross",
+                "my_config.cats[0]['adopted']": True,
                 # REQUIRED/None are trivial default values and so are omitted.
                 # "my_config.required_int": REQUIRED,
                 # "my_config.notes": None,
+                # "my_config.cats[0]['bleed']": None,
             },
         )
         self.assertEqual(
@@ -611,6 +652,8 @@ class ConfigTest(parameterized.TestCase):
                 "config_list[1].count: 1\n"
                 "config_type: 'axlearn.common.config_test.ConfigTest'\n"
                 "foo: 'hello world'\n"
+                "my_config.cats[0]['name']: 'Ross'\n"
+                "my_config.cats[0]['adopted']: True\n"
                 "my_config.extra['alpha']: 1\n"
                 "my_config.extra['beta']: 2\n"
                 "my_config.fn.args[0]: 1\n"

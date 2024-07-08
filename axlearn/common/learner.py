@@ -9,7 +9,7 @@
 
 import dataclasses
 import enum
-from typing import Mapping, Optional, Sequence, Tuple
+from typing import Callable, Mapping, Optional, Protocol, Sequence, Tuple
 
 import jax
 import optax
@@ -23,15 +23,21 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
-from axlearn.common.module import Module
-from axlearn.common.optimizer_base import NestedOptParam, PartitionedGradientTransformation
+from axlearn.common.module import Module, OutputCollection, child_context, new_output_collection
+from axlearn.common.optimizer_base import (
+    NestedOptParam,
+    OptParam,
+    PartitionedGradientTransformation,
+)
 from axlearn.common.optimizers import param_ema
 from axlearn.common.utils import (
+    Nested,
     NestedPartitionSpec,
     NestedTensor,
     Tensor,
     flatten_items,
     match_regex_rules,
+    prune_tree,
     register_per_param_settings,
     tree_paths,
 )
@@ -72,6 +78,56 @@ def should_apply_state_updates(update_type: UpdateType) -> bool:
     return update_type in (UpdateType.STATE_UPDATES, UpdateType.ALL_UPDATES)
 
 
+def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
+    """Returns a shallow copy of the input tree with empty subtrees pruned.
+
+    If a tree would be made empty by removal of its subtrees, it will also be pruned.
+    This is a shallow copy because leaf nodes (non-dict values) are not deep-copied.
+
+    Args:
+        in_tree: the input tree to be pruned.
+
+    Returns:
+        The pruned copy of the input tree.
+    """
+    # Note that falsey values or empty Tensors are not considered empty.
+    return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
+
+
+@dataclasses.dataclass
+class ForwardOutputs:
+    loss: Tensor
+    aux: NestedTensor
+    output_collection: OutputCollection
+
+
+@dataclasses.dataclass
+class BackwardOutputs:
+    updated_params: NestedTensor
+
+
+@dataclasses.dataclass
+class ForwardBackwardOutputs:
+    forward_outputs: ForwardOutputs
+    backward_outputs: BackwardOutputs
+
+
+class ForwardFn(Protocol):
+    """Represents the model forward function."""
+
+    def __call__(self, *, inputs: NestedTensor, model_params: NestedTensor) -> ForwardOutputs:
+        """The forward function of a module.
+
+        Args:
+            inputs: The inputs for the forward function.
+            model_params: The model params.
+
+        Returns:
+            A ForwardOutputs value.
+        """
+        raise NotImplementedError(self)
+
+
 class BaseLearner(Module):
     """The base class of a learner."""
 
@@ -104,10 +160,27 @@ class BaseLearner(Module):
         """
         raise NotImplementedError(type(self))
 
+    def forward_and_backward(
+        self, *, fn: ForwardFn, inputs: NestedTensor, opt_params: NestedOptParam
+    ) -> ForwardBackwardOutputs:
+        """Computes updates to the parameters `opt_params` of loss function `fn`.
+
+        Args:
+            fn: The loss function to optimize.
+            inputs: Inputs to the loss function that are not optimized. E.g., the input batch.
+            opt_params: The model parameters that will be optimized.
+
+        Returns:
+            Forward and backward outputs of `fn`.
+        """
+        raise NotImplementedError(type(self))
+
     def should_update_with_optimizers(self, model_params: NestedOptParam) -> dict:
         """Returns whether each parameter should be updated with the optimizers.
 
-        This can be used in trainer to skip gradient computation in the backward pass.
+        This can be used to skip gradient computation in the backward pass.
+
+        Summaries, state updates, and other changes to OutputCollection may be ignored.
 
         Args:
             model_params: A nested structure with OptParams as leaf nodes.
@@ -178,7 +251,9 @@ class Learner(BaseLearner):
 
     def init(self, model_params: NestedOptParam) -> NestedTensor:
         update_types = self._update_types(model_params)
-        register_per_param_settings(update_types, description="learner_update_type")
+        register_per_param_settings(
+            update_types, description="learner_update_type", path=self.path()
+        )
         state = dict(
             optimizer=self.optimizer.init(self._get_optimizer_model_params(model_params)),
         )
@@ -209,8 +284,12 @@ class Learner(BaseLearner):
         )
 
     def update(
-        self, *, model_params: NestedOptParam, gradients: NestedTensor, state_updates: NestedTensor
-    ) -> NestedTensor:
+        self,
+        *,
+        model_params: Nested[OptParam],
+        gradients: Nested[Tensor],
+        state_updates: Nested[Tensor],
+    ) -> Nested[Tensor]:
         """Computes `model_params` updates with `gradients` and `state_updates`.
 
         Args:
@@ -225,7 +304,6 @@ class Learner(BaseLearner):
             The updated model parameters. The learner state updates will be placed in the output
             collection's 'state_update' section.
         """
-        cfg = self.config
         optimizer_model_params = self._get_optimizer_model_params(model_params)
         optimizer_parameter_updates, optimizer_state = self.optimizer.update(
             gradients,
@@ -233,6 +311,22 @@ class Learner(BaseLearner):
             params=optimizer_model_params,
         )
         self.add_state_update("optimizer", optimizer_state)
+        return self._compute_updated_params(
+            model_params,
+            gradients=gradients,
+            optimizer_parameter_updates=optimizer_parameter_updates,
+            state_updates=state_updates,
+        )
+
+    def _compute_updated_params(
+        self,
+        model_params: Nested[OptParam],
+        *,
+        gradients: Nested[Tensor],
+        optimizer_parameter_updates: Nested[Tensor],
+        state_updates: Nested[Tensor],
+    ) -> NestedTensor:
+        cfg = self.config
         if cfg.enable_per_variable_summaries:
             param_rms = jax.tree_util.tree_map(
                 lambda p: optax.safe_root_mean_squares(p.value, min_rms=1e-3), model_params
@@ -258,6 +352,7 @@ class Learner(BaseLearner):
         updated_model_params = optax.apply_updates(
             jax.tree_util.tree_map(lambda op: op.value, model_params), parameter_updates
         )
+        state_updates = _prune_empty(state_updates)
         apply_state_updates = jax.tree_util.tree_map(
             should_apply_state_updates,
             self._update_types(state_updates),
@@ -283,6 +378,27 @@ class Learner(BaseLearner):
             )
             self.add_state_update("ema", ema_state)
         return updated_model_params
+
+    def forward_and_backward(
+        self, *, fn: ForwardFn, inputs: NestedTensor, opt_params: NestedOptParam
+    ) -> ForwardBackwardOutputs:
+        should_compute_gradients = self.should_update_with_optimizers(opt_params)
+        model_params = jax.tree_util.tree_map(lambda opt_param: opt_param.value, opt_params)
+        forward_outputs, gradients = _value_and_grad(
+            fn,
+            model_params=model_params,
+            inputs=inputs,
+            should_compute_gradients=should_compute_gradients,
+        )
+        updated_params = self.update(
+            model_params=opt_params,
+            gradients=gradients,
+            state_updates=forward_outputs.output_collection.state_updates,
+        )
+        return ForwardBackwardOutputs(
+            forward_outputs=forward_outputs,
+            backward_outputs=BackwardOutputs(updated_params=updated_params),
+        )
 
 
 def _apply_updates(base: NestedTensor, updates: NestedTensor) -> NestedTensor:
@@ -334,6 +450,9 @@ class CompositeLearner(BaseLearner):
     """The composite learner supports different sub learners on different subset of parameters.
 
     Note that the ema is handled by the master learner instead of sublearners.
+
+    Note also that this class delegates to the `update()` methods of the sub-learners and does not
+    call their `forward_and_backward()` methods.
     """
 
     @config_class
@@ -424,7 +543,7 @@ class CompositeLearner(BaseLearner):
     def init(self, model_params: NestedOptParam) -> NestedTensor:
         cfg = self.config
         learner_tree = self._learner_tree(params=model_params)
-        register_per_param_settings(learner_tree, description="composite_learner")
+        register_per_param_settings(learner_tree, description="learner_rule", path=self.path())
         learner_state = {}
         for name in cfg.learners.keys():
             # Whether each parameter should apply the sub learner.
@@ -464,6 +583,7 @@ class CompositeLearner(BaseLearner):
         """
         cfg = self.config
         learner_tree = self._learner_tree(params=model_params)
+        state_updates = _prune_empty(state_updates)
         state_updates_tree = self._learner_tree(params=state_updates)
 
         updated_model_params = jax.tree_util.tree_map(
@@ -512,6 +632,30 @@ class CompositeLearner(BaseLearner):
             self.add_state_update("ema", ema_state)
         return updated_model_params
 
+    def forward_and_backward(
+        self, *, fn: ForwardFn, inputs: NestedTensor, opt_params: NestedOptParam
+    ) -> ForwardBackwardOutputs:
+        with child_context(
+            "should_compute_gradients", module=self, output_collection=new_output_collection()
+        ):
+            should_compute_gradients = self.should_update_with_optimizers(opt_params)
+        model_params = jax.tree_util.tree_map(lambda opt_param: opt_param.value, opt_params)
+        forward_outputs, gradients = _value_and_grad(
+            fn,
+            model_params=model_params,
+            inputs=inputs,
+            should_compute_gradients=should_compute_gradients,
+        )
+        updated_params = self.update(
+            model_params=opt_params,
+            gradients=gradients,
+            state_updates=forward_outputs.output_collection.state_updates,
+        )
+        return ForwardBackwardOutputs(
+            forward_outputs=forward_outputs,
+            backward_outputs=BackwardOutputs(updated_params=updated_params),
+        )
+
     def should_update_with_optimizers(self, model_params: NestedOptParam) -> dict:
         """Returns whether each parameter should be updated with the optimizers.
 
@@ -540,3 +684,83 @@ class CompositeLearner(BaseLearner):
                 should_update,
             )
         return should_update
+
+
+def _split_gradients(
+    fun: ForwardFn, *, should_compute_gradients: Nested[bool]
+) -> Tuple[Callable, Callable]:
+    """Return a function that is the same as `fun` but the first argument is split into two
+    arguments `(grad,no_grad)` according to whether `(should compute_gradients)` is True.
+
+    Args:
+        fun: The function to transform.
+        should_compute_gradients: The parameters to compute gradients for. Has the same
+                                  tree structure as the first argument of `fun`.
+
+    Returns:
+        A two-tuple of:
+        * The transformed version of `fun`.
+        * A function to split the parameters into `(grad, no_grad)`.
+    """
+
+    def filtered_forward(
+        model_parameters_grad: Nested[Tensor],
+        model_parameters_no_grad: Nested[Tensor],
+        /,
+        inputs: Nested[Tensor],
+    ) -> ForwardOutputs:
+        model_params = jax.tree_util.tree_map(
+            lambda compute_grad, pg, png: pg if compute_grad else png,
+            should_compute_gradients,
+            model_parameters_grad,
+            model_parameters_no_grad,
+        )
+        return fun(model_params=model_params, inputs=inputs)
+
+    def split_params_fn(model_params: Nested[Tensor]):
+        dummy_value = None
+        model_parameters_grad = jax.tree_util.tree_map(
+            lambda compute_gradients, v: v if compute_gradients else dummy_value,
+            should_compute_gradients,
+            model_params,
+        )
+        model_parameters_no_grad = jax.tree_util.tree_map(
+            lambda compute_gradients, v: dummy_value if compute_gradients else v,
+            should_compute_gradients,
+            model_params,
+        )
+        return model_parameters_grad, model_parameters_no_grad
+
+    return filtered_forward, split_params_fn
+
+
+def _value_and_grad(
+    fun: ForwardFn,
+    *,
+    model_params: Nested[Tensor],
+    inputs: Nested[Tensor],
+    should_compute_gradients: Nested[bool],
+) -> Tuple[ForwardOutputs, Nested[Tensor]]:
+    """Computes the value and grad of `fun`.
+
+    Args:
+        fun: The function to compute gradients for.
+        model_params: The model parameters.
+        inputs: The inputs to `fun`.
+        should_compute_gradients: The model parameters to compute gradients for.
+                                  Has the same tree structure as `model_params`..
+
+    Returns:
+        The outputs of `fun` and the gradients.
+    """
+
+    fun, split_params_fn = _split_gradients(fun, should_compute_gradients=should_compute_gradients)
+
+    def forward(*args):
+        outputs = fun(*args)
+        return outputs.loss, (outputs.aux, outputs.output_collection)
+
+    split_params = split_params_fn(model_params)
+    result, grads = jax.value_and_grad(forward, has_aux=True)(*split_params, inputs)
+    loss, (aux, output_collection) = result
+    return ForwardOutputs(loss=loss, aux=aux, output_collection=output_collection), grads

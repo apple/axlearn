@@ -11,9 +11,9 @@ import itertools
 from enum import Enum
 from typing import Dict, Sequence
 
-import chex
 from jax import numpy as jnp
 
+from axlearn.common import struct
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import BatchNorm, Conv2D, Linear, get_activation_fn
@@ -21,8 +21,7 @@ from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 
 
-@chex.dataclass
-class Detections:
+class Detections(struct.PyTreeNode):
     """A data class for detections.
 
     boxes: A float tensor of shape [batch, num_boxes, num_classes * 4] containing encoded box
@@ -192,8 +191,7 @@ class RCNNDetectionHead(BaseLayer):
         return Detections(boxes=boxes, scores=scores)
 
 
-@chex.dataclass
-class BoxProposals:
+class BoxProposals(struct.PyTreeNode):
     """A data class for bounding box proposals.
 
     boxes: A dictionary of float tensors of shape [batch, height_i, width_i, num_anchors * 4]

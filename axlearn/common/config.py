@@ -367,11 +367,34 @@ class ConfigBase:
         Returns:
             A dict where each key is a `.`-separated str of path and each value represents a
             leaf config field value.
+
+        Raises:
+            KeyError: Field name (key) is not in dataclass type value.
         """
         result = {}
 
         def enter(key: str, val: Any, default_result: Optional[List]) -> Optional[List]:
-            if key and isinstance(val, ConfigBase):
+            if dataclasses.is_dataclass(val) and not isinstance(val, type):
+                fields_default_dict = {}
+                for field in dataclasses.fields(val):
+                    # Concatenate field name to key as the full field key name.
+                    # Eg: key="my_config.cats[0]", field.name="adopted"
+                    #     cur_key="my_config.cats[0]['adopted']"
+                    cur_key = f"{key}['{field.name}']"
+                    fields_default_dict[cur_key] = field.default
+
+                kvs_to_traverse = []
+                for cur_key, cur_val in default_result:
+                    if cur_key not in fields_default_dict:
+                        raise KeyError(
+                            f"Field name {cur_key} is not found for dataclass type value."
+                        )
+                    default_val = fields_default_dict[cur_key]
+                    if cur_val is default_val and default_val in omit_default_values:
+                        continue
+                    kvs_to_traverse.append((cur_key, cur_val))
+                return kvs_to_traverse
+            elif key and isinstance(val, ConfigBase):
                 # Call `to_flat_dict` on any sub config. This allows a sub config to override
                 # the behavior of `to_flat_dict`.
                 val_entries = val.to_flat_dict(omit_default_values=omit_default_values)
@@ -662,7 +685,7 @@ def _attr_field_from_signature_param(param: inspect.Parameter) -> attr.Attribute
     default_value = param.default
     if default_value is inspect.Parameter.empty:
         default_value = REQUIRED
-    return attr.field(default=default_value)
+    return attr.field(default=default_value, type=param.annotation)
 
 
 def _prepare_args_and_kwargs(
@@ -793,6 +816,39 @@ def _config_class_for_class(cls: Type[T]) -> Type[ClassConfigBase[T]]:
 
 
 def config_for_class(cls: Type[T]) -> Union[Any, ClassConfigBase[T]]:
+    """Returns an instance of ClassConfigBase, which is an object factory for `cls`.
+
+    In other words, instantiating the config produces an instance of `cls`, where the configured
+    attributes will be provided as arguments to `__init__`.
+
+    Example:
+        ```
+        class MyClass:
+            def __init__(self, a: int, b: Optional[int] = None):
+                self.a = a
+                self.b = b
+
+            def values(self):
+                return (self.a, self.b)
+
+        cfg = config_for_class(MyClass).set(a=2)
+
+        # Should produce unique instances.
+        assert cfg.instantiate() is not cfg.instantiate()
+
+        # Should produce the correct values.
+        assert cfg.instantiate().values() == cfg.instantiate().values()
+        assert cfg.instantiate().values() == (2, None)
+        assert cfg.set(b=3).instantiate().values() == (2, 3)
+        ```
+
+    Args:
+        cls: The class to configure.
+
+    Returns:
+        A Config that when instantiated, invokes `cls.__init__` based on any config fields that have
+        been set.
+    """
     config_cls = _config_class_for_class(cls)
     return config_cls(klass=cls)
 

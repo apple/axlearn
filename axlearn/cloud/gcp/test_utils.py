@@ -3,17 +3,46 @@
 """Utilities for testing GCP tooling."""
 
 import contextlib
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence, Union
 from unittest import mock
+
+from absl import flags
+
+from axlearn.cloud.gcp import config
 
 
 @contextlib.contextmanager
-def mock_gcp_settings(module_name: str, settings: Dict[str, str]):
-    def gcp_settings(key: str, default: Optional[Any] = None, required: bool = True):
+def mock_gcp_settings(module_name: Union[str, Sequence[str]], settings: Dict[str, str]):
+    def gcp_settings(
+        key: str,
+        *,
+        fv: Optional[flags.FlagValues] = None,
+        default: Optional[Any] = None,
+        required: bool = True,
+    ):
+        del fv
         value = settings.get(key, default)
         if required and value is None:
             raise ValueError(f"{key} is required")
         return value
 
-    with mock.patch(f"{module_name}.gcp_settings", side_effect=gcp_settings):
+    def gcp_settings_from_active_config(project_or_zone: str):
+        return settings[project_or_zone]
+
+    if isinstance(module_name, str):
+        module_name = [module_name]
+
+    mocks = [mock.patch(f"{m}.gcp_settings", side_effect=gcp_settings) for m in module_name]
+    if "project" in settings or "zone" in settings:
+        mocks.append(
+            mock.patch(
+                f"{config.__name__}._gcp_settings_from_active_config",
+                side_effect=gcp_settings_from_active_config,
+            ),
+        )
+
+    with contextlib.ExitStack() as stack:
+        # Boilerplate to register multiple mocks at once.
+        for m in mocks:
+            stack.enter_context(m)
         yield

@@ -2,6 +2,7 @@
 
 """Tests learner."""
 import re
+from typing import Optional
 
 import jax.nn
 import numpy as np
@@ -14,11 +15,15 @@ from axlearn.common.base_layer import FactorizationSpec, ParameterSpec
 from axlearn.common.config import config_for_function
 from axlearn.common.learner import (
     CompositeLearner,
+    ForwardOutputs,
     Learner,
     UpdateType,
+    _prune_empty,
     should_update_with_optimizers,
 )
+from axlearn.common.module import OutputCollection
 from axlearn.common.module import functional as F
+from axlearn.common.module import new_output_collection
 from axlearn.common.optimizer_base import OptParam, OptStateSpec
 from axlearn.common.optimizers import (
     AddDecayedWeightsState,
@@ -34,8 +39,37 @@ from axlearn.common.utils import PartitionSpec, VDict, flatten_items, match_rege
 
 
 class LearnerTest(TestCase):
-    @parameterized.parameters(None, 0.9)
-    def test_learner(self, ema_decay):
+    def test_prune_empty_state(self):
+        state = {
+            "state": {
+                "tensor": jnp.array(0),
+                "nested": {
+                    "empty": {},
+                    "not_empty": jnp.array([]),
+                },
+            },
+            "removed": {
+                "nested": {
+                    "deep_nested": {},
+                },
+                "sibling": {
+                    "deep_nested": {},
+                },
+            },
+        }
+        expected = {
+            "state": {
+                "tensor": jnp.array(0),
+                "nested": {
+                    "not_empty": jnp.array([]),
+                },
+            },
+        }
+        actual = _prune_empty(state)
+        self.assertNestedAllClose(expected, actual)
+
+    @parameterized.product(ema_decay=(None, 0.9), method=("update", "forward_and_backward"))
+    def test_learner(self, ema_decay: Optional[float], method: str):
         learning_rate = config_for_function(schedule.stepwise).set(
             sub=[0.1, 0.01, 0.001],
             start_step=[100, 200],
@@ -117,27 +151,47 @@ class LearnerTest(TestCase):
         )
         state = learner.init(model_params=params)
 
-        def loss_fn(x):
-            return -jax.nn.log_softmax(x["v"])[1]
+        def loss_fn(model_params, inputs):
+            del inputs
+            output_collection = new_output_collection()
+            output_collection.state_updates["c"] = model_params["c"] + 1
+            return ForwardOutputs(
+                loss=-jax.nn.log_softmax(model_params["v"])[1],
+                aux={},
+                output_collection=output_collection,
+            )
 
-        loss, grads = jax.value_and_grad(loss_fn)(jax.tree_util.tree_map(lambda p: p.value, params))
+        loss, grads = jax.value_and_grad(lambda x: loss_fn(x, None).loss)(
+            jax.tree_util.tree_map(lambda p: p.value, params)
+        )
         np.testing.assert_allclose(loss, 1.412078, atol=1e-6)
         self.assertNestedAllClose(
             dict(v=jnp.asarray([0.089629, -0.756364, 0.662272, 0.004462]), c=0.0), grads, atol=1e-6
         )
 
-        updated_params, output_collection = F(
-            learner,
-            method="update",
-            is_training=True,
-            prng_key=jax.random.PRNGKey(123),
-            state=state,
-            inputs=dict(
+        if method == "update":
+            inputs = dict(
                 gradients=grads,
                 model_params=params,
                 state_updates=dict(c=params["c"].value + 1),
-            ),
+            )
+        elif method == "forward_and_backward":
+            inputs = dict(fn=loss_fn, inputs={}, opt_params=params)
+        else:
+            raise NotImplementedError
+
+        updated_params, output_collection = F(
+            learner,
+            method=method,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=inputs,
         )
+
+        if method == "forward_and_backward":
+            updated_params = updated_params.backward_outputs.updated_params
+
         v_value = params["v"].value
         expected_new_v = v_value - learning_rate_fn(step) * (grads["v"] + weight_decay * v_value)
         self.assertNestedAllClose(
@@ -151,6 +205,8 @@ class LearnerTest(TestCase):
                 "learning_rate": learning_rate_fn(step),
                 "lr_schedule_step": 0,
                 "gradient_norm": 1.0093285,
+                "schedule_step": 0,
+                "schedule_scale": -1.0 * learning_rate_fn(step),
             },
             summaries,
         )
@@ -319,6 +375,8 @@ class LearnerTest(TestCase):
                 "learning_rate": learning_rate_fn(step),
                 "lr_schedule_step": 0,
                 "gradient_norm": expected_grad_norm,
+                "schedule_step": 0,
+                "schedule_scale": -1.0 * learning_rate_fn(step),
             },
             summaries,
         )
@@ -479,15 +537,17 @@ class LearnerTest(TestCase):
                 "param_rms/moving_mean": 0.5,
                 "grad_rms/weight": jnp.sqrt(jnp.mean(expected_grad**2)),
                 "grad_rms/moving_mean": jnp.sqrt(jnp.mean(expected_grad**2)),
+                "schedule_step": 0,
+                "schedule_scale": -1.0,
             },
             output_collection.summaries,
         )
 
 
 class CompositeLearnerTest(TestCase):
-    @parameterized.parameters(None, 0.9)
+    @parameterized.product(ema_decay=(None, 0.9), method=("update", "forward_and_backward"))
     # pylint: disable-next=too-many-statements
-    def test_learner(self, ema_decay):
+    def test_learner(self, ema_decay: Optional[float], method: str):
         """Sets up two sub learners for encoder/decoder respectively."""
         encoder_lr = 0.1
         opt1_cfg = config_for_function(sgd_optimizer).set(
@@ -641,22 +701,52 @@ class CompositeLearnerTest(TestCase):
         )
         state = learner.init(model_params=params)
         self.assertEqual(set(state.keys()), expected_keys)
+
+        def loss_fn(model_params, inputs):
+            del inputs
+            output_collection = OutputCollection(
+                state_updates=dict(
+                    encoder=dict(mean=jnp.array([1.0, 2.0])),
+                    decoder=dict(scalar=model_params["decoder"]["scalar"] + 2.7),
+                ),
+                summaries={},
+                module_outputs={},
+            )
+            result = jax.tree_util.tree_reduce(lambda x, y: x.sum() + y.sum(), model_params)
+            return ForwardOutputs(loss=result, aux={}, output_collection=output_collection)
+
         grads = jax.tree_map(lambda p: jnp.ones_like(p.value), params)
-        updated_params, output_collection = F(
-            learner,
-            method="update",
-            is_training=True,
-            prng_key=jax.random.PRNGKey(123),
-            state=state,
-            inputs=dict(
+
+        if method == "update":
+            inputs = dict(
                 gradients=grads,
                 model_params=params,
                 state_updates=dict(
                     encoder=dict(mean=jnp.array([1.0, 2.0])),
                     decoder=dict(scalar=params["decoder"]["scalar"].value + 2.7),
                 ),
-            ),
+            )
+            # Deep copy tree structure; shallow copy leaves.
+            encoder_inputs = jax.tree_util.tree_map(lambda x: x, inputs)
+            del encoder_inputs["state_updates"]["decoder"]
+            decoder_inputs = jax.tree_util.tree_map(lambda x: x, inputs)
+            del decoder_inputs["state_updates"]["encoder"]
+        elif method == "forward_and_backward":
+            inputs = dict(fn=loss_fn, inputs={}, opt_params=params)
+            encoder_inputs = inputs
+            decoder_inputs = inputs
+        else:
+            raise NotImplementedError
+
+        updated_params, output_collection = F(
+            learner,
+            method=method,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=inputs,
         )
+
         # Expected updates from sub learner.
         encoder_learner_cfg = Learner.default_config().set(
             name="encoder_learner", optimizer=opt1_cfg, enable_per_variable_summaries=True
@@ -665,17 +755,11 @@ class CompositeLearnerTest(TestCase):
         encoder_learner = encoder_learner_cfg.instantiate(parent=None)
         updated_encoder, encoder_collection = F(
             encoder_learner,
-            method="update",
+            method=method,
             is_training=True,
             prng_key=jax.random.PRNGKey(123),
             state=encoder_learner.init(model_params=params),
-            inputs=dict(
-                gradients=grads,
-                model_params=params,
-                state_updates=dict(
-                    encoder=dict(mean=jnp.array([1.0, 2.0])),
-                ),
-            ),
+            inputs=encoder_inputs,
         )
         decoder_learner_cfg = Learner.default_config().set(
             name="decoder_learner", optimizer=opt2_cfg, enable_per_variable_summaries=False
@@ -684,16 +768,16 @@ class CompositeLearnerTest(TestCase):
         decoder_learner = decoder_learner_cfg.instantiate(parent=None)
         updated_decoder, decoder_collection = F(
             decoder_learner,
-            method="update",
+            method=method,
             is_training=True,
             prng_key=jax.random.PRNGKey(123),
             state=decoder_learner.init(model_params=params),
-            inputs=dict(
-                gradients=grads,
-                model_params=params,
-                state_updates=dict(decoder=dict(scalar=params["decoder"]["scalar"].value + 2.7)),
-            ),
+            inputs=decoder_inputs,
         )
+        if method == "forward_and_backward":
+            updated_params = updated_params.backward_outputs.updated_params
+            updated_encoder = updated_encoder.backward_outputs.updated_params
+            updated_decoder = updated_decoder.backward_outputs.updated_params
         # Test updated params match with sub learners.
         self.assertNestedAllClose(updated_params["decoder"], updated_decoder["decoder"])
         self.assertNestedAllClose(updated_params["encoder"], updated_encoder["encoder"])

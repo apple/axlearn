@@ -8,10 +8,21 @@ import tensorflow as tf
 
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.module import Module
-from axlearn.common.utils import NestedTensor
+from axlearn.common.utils import Nested, Tensor, as_numpy_array
 
 
-class ConcatenatedInput(Module):
+class BaseInput(Module):
+    def __iter__(self) -> Iterable[Nested[Tensor]]:
+        it = iter(self.dataset())
+        for input_batch in self.batches(it):
+            yield input_batch
+
+    def batches(self, it: Iterable[Nested[Tensor]]) -> Iterable[Nested[Tensor]]:
+        for input_batch in it:
+            yield as_numpy_array(input_batch)
+
+
+class ConcatenatedInput(BaseInput):
     """A Module to generate input batches from a sequence of sub inputs.
 
     The sub inputs will be iterated in the order that they are given. All sub inputs except the
@@ -19,7 +30,7 @@ class ConcatenatedInput(Module):
     """
 
     @config_class
-    class Config(Module.Config):
+    class Config(BaseInput.Config):
         is_training: Required[bool] = REQUIRED
         inputs: Sequence[InstantiableConfig] = []
 
@@ -33,12 +44,6 @@ class ConcatenatedInput(Module):
             for i, input_cfg in enumerate(cfg.inputs)
         ]
 
-    def __iter__(self) -> Iterable[NestedTensor]:
-        for input_i, sub_input in enumerate(self._inputs):
-            for element in sub_input:
-                yield element
-            self.vlog(1, "Finished input %s", input_i)
-
     def dataset(self) -> tf.data.Dataset:
         ds = self._inputs[0].dataset()
         for sub_input in self._inputs[1:]:
@@ -46,7 +51,7 @@ class ConcatenatedInput(Module):
         return ds
 
 
-class ZipInput(Module):
+class ZipInput(BaseInput):
     """A Module to generate input batches from a sequence of sub inputs.
 
     The sub inputs will be combined in the order that they are given.
@@ -55,7 +60,7 @@ class ZipInput(Module):
     """
 
     @config_class
-    class Config(Module.Config):
+    class Config(BaseInput.Config):
         is_training: Required[bool] = REQUIRED
         inputs: Dict[str, InstantiableConfig] = {}
 
@@ -73,6 +78,3 @@ class ZipInput(Module):
         return dataset.map(
             lambda *x: dict((self._inputs_name[i], data) for i, data in enumerate(x))
         )
-
-    def __iter__(self) -> Iterable[Dict]:
-        return iter(self.dataset())

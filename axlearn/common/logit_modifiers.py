@@ -88,20 +88,20 @@ def top_p_logits(p: float) -> LogitsToLogitsFn:
     def fn(logits: Tensor) -> Tensor:
         probs = jax.nn.softmax(logits, axis=-1)
         # Probs in a form suitable for efficient TPU reduction.
-        reduceable_probs = probs
-        reduce_axis = reduceable_probs.ndim - 1
-        if reduceable_probs.ndim > 1:
+        reducible_probs = probs
+        reduce_axis = reducible_probs.ndim - 1
+        if reducible_probs.ndim > 1:
             # As we will be doing many reductions over reduce_axis, transpose it to be
             # the penultimate dimension, so that these reductions happen within vector lanes.
             # (See ref. in docstring for more details).
-            reduceable_probs = jnp.swapaxes(reduceable_probs, -1, -2)
-            reduce_axis = reduceable_probs.ndim - 2
+            reducible_probs = jnp.swapaxes(reducible_probs, -1, -2)
+            reduce_axis = reducible_probs.ndim - 2
 
         def predicate(float32_query: Tensor) -> Tensor:
             float32_query = jnp.expand_dims(float32_query, reduce_axis)
             # [..., 1, float32_query.shape[-1]]
             probability_mass = jnp.sum(
-                jnp.where(reduceable_probs >= float32_query, reduceable_probs, 0.0),
+                jnp.where(reducible_probs >= float32_query, reducible_probs, 0.0),
                 axis=reduce_axis,
             )
             return probability_mass < p
@@ -133,20 +133,20 @@ def top_k_logits(k: int) -> LogitsToLogitsFn:
 
     def fn(logits: Tensor) -> Tensor:
         # Logits in a form suitable for efficient TPU reduction.
-        reduceable_logits = logits
-        reduce_axis = reduceable_logits.ndim - 1
-        if reduceable_logits.ndim > 1:
+        reducible_logits = logits
+        reduce_axis = reducible_logits.ndim - 1
+        if reducible_logits.ndim > 1:
             # As we will be doing many reductions over reduce_axis, transpose it to be
             # the penultimate dimension, so that these reductions happen within vector lanes.
             # (See ref. in docstring for more details).
-            reduceable_logits = jnp.swapaxes(reduceable_logits, -1, -2)
+            reducible_logits = jnp.swapaxes(reducible_logits, -1, -2)
             reduce_axis = logits.ndim - 2
 
         def predicate(float32_query: Tensor) -> Tensor:
             float32_query = -float32_query
             float32_query = jnp.expand_dims(float32_query, reduce_axis)
             # [..., 1, float32_query.shape[-1]]
-            count_number_gt = jnp.sum(reduceable_logits > float32_query, axis=reduce_axis)
+            count_number_gt = jnp.sum(reducible_logits > float32_query, axis=reduce_axis)
             return count_number_gt >= k
 
         batched_shape = logits.shape[:-1]  # All but the last axis are batched.
@@ -208,6 +208,7 @@ def _int32_binary_search(
     def loop_body(i: int, solution: Tensor) -> Tensor:
         # Loop over the non-sign bits.
         bit = jnp.int32(1 << 30 - i)
+        # pylint: disable-next=unsupported-binary-operation
         predicate_satisfied = predicate(solution | bit)
         solution = solution | jnp.where(predicate_satisfied, jnp.int32(0), bit)
         return solution

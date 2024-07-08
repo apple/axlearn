@@ -55,7 +55,7 @@ from axlearn.common.state_builder import (
     traverse_and_set_target_state_parameters,
 )
 from axlearn.common.test_utils import TestCase, mock_trainer_config
-from axlearn.common.trainer import SpmdTrainer, _TrainerState
+from axlearn.common.trainer import SpmdTrainer, TrainerState
 from axlearn.common.utils import (
     NestedTensor,
     PartitionSpec,
@@ -232,7 +232,7 @@ class ChainBuilderTest(TestCase):
             .instantiate(parent=None)
         )
         prng_key = jax.random.PRNGKey(0)
-        init_trainer_state = _TrainerState(
+        init_trainer_state = TrainerState(
             prng_key=prng_key,
             model=model.initialize_parameters_recursively(prng_key=prng_key),
             learner=None,
@@ -268,7 +268,7 @@ class ChainBuilderTest(TestCase):
             .instantiate(parent=None)
         )
         prng_key = jax.random.PRNGKey(0)
-        init_trainer_state = _TrainerState(
+        init_trainer_state = TrainerState(
             prng_key=prng_key,
             model=model.initialize_parameters_recursively(prng_key=prng_key),
             learner=None,
@@ -568,7 +568,7 @@ class _FakeMultimodalImageInput(Module):
         yield data
 
     def dataset(self):
-        return self.__iter__()
+        return self.__iter__()  # pylint: disable=unnecessary-dunder-call
 
 
 class TestConv2DStateBuilders(TestCase):
@@ -747,7 +747,7 @@ class DiffusersPretrainedBuilderTest(TestCase):
     def _init_state(self, model, prng_key: Tensor):
         prng_key, init_key = jax.random.split(prng_key)
         model_params = model.initialize_parameters_recursively(init_key)
-        return _TrainerState(
+        return TrainerState(
             prng_key=prng_key,
             model=model_params,
             learner=None,
@@ -788,7 +788,7 @@ class DiffusersPretrainedBuilderTest(TestCase):
 
             model = autoencoder_cfg.instantiate(parent=None)
             prng_key = jax.random.PRNGKey(0)
-            trainer_state_specs = _TrainerState(
+            trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
@@ -858,7 +858,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
     def _init_state(self, model, prng_key: Tensor):
         prng_key, init_key = jax.random.split(prng_key)
         model_params = model.initialize_parameters_recursively(init_key)
-        return _TrainerState(
+        return TrainerState(
             prng_key=prng_key,
             model=model_params,
             learner=None,
@@ -868,7 +868,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
         with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
             model = DummyModel.default_config().set(name="model").instantiate(parent=None)
             prng_key = jax.random.PRNGKey(0)
-            trainer_state_specs = _TrainerState(
+            trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
@@ -929,7 +929,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             model_cfg = DummyModel.default_config().set(child=repeat_cfg)
             model = model_cfg.set(name="model").instantiate(parent=None)
             prng_key = jax.random.PRNGKey(0)
-            trainer_state_specs = _TrainerState(
+            trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
@@ -998,7 +998,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             cfg.converter.dst_layer = dst_layer
 
         builder = cfg.instantiate(parent=None)
-        init_state = _TrainerState(
+        init_state = TrainerState(
             model=dict(weight=jnp.zeros([5, 2]), bias=jnp.zeros([2])), prng_key=None, learner=None
         )
         output = builder(Builder.State(step=0, trainer_state=init_state, built_keys=set()))
@@ -1180,13 +1180,14 @@ class ModelStateScopeConverterTest(TestCase):
 class EmaParamsConverterTest(TestCase):
     """Tests EmaParamsConverter."""
 
-    @parameterized.parameters(True, False)
+    @parameterized.parameters(["with_target_ema", "with_learner_no_ema", "with_no_learner"])
     def test_ema_params_converter(self, target_ema):
         _, source_state = _create_dummy_state(jax.random.PRNGKey(0), use_ema=True)
         target_state = clone_tree(source_state)
-        if not target_ema:
-            # Removes target_state learner state.
+        if target_ema == "with_no_learner":
             target_state.trainer_state = target_state.trainer_state._replace(learner=None)
+        elif target_ema == "with_learner_no_ema":
+            del target_state.trainer_state.learner["ema"]
 
         converter = (
             EmaParamsConverter.default_config()
@@ -1215,7 +1216,7 @@ class EmaParamsConverterTest(TestCase):
             source_state.trainer_state.learner["ema"].ema,
         )
 
-        if target_ema:
+        if target_ema == "with_target_ema":
             self.assertNestedAllClose(
                 output_state.trainer_state.learner["ema"],
                 source_state.trainer_state.learner["ema"],

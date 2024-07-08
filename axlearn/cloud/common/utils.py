@@ -2,18 +2,18 @@
 
 """General-purpose utilities."""
 
+import dataclasses
 import logging as pylogging
 import os
 import shlex
 import signal
 import subprocess
 import uuid
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 import pkg_resources
 import psutil
 from absl import app, logging
-from tensorflow import io as tf_io
 
 from axlearn.cloud import ROOT_MODULE_NAME
 
@@ -172,7 +172,7 @@ def format_table(*, headings: List[str], rows: List[List[str]]) -> str:
         A string formatted as a table, consisting of the provided headings and rows.
     """
     rows = [[h.upper() for h in headings]] + rows
-    max_lens = [max([len(str(row[i])) for row in rows]) for i in range(len(headings))]
+    max_lens = [max(len(str(row[i])) for row in rows) for i in range(len(headings))]
     fmt = "".join([f"{{:<{max_len + 6}}}" for max_len in max_lens])
     return "\n" + "\n".join([fmt.format(*[str(v) for v in row]) for row in rows]) + "\n"
 
@@ -230,9 +230,9 @@ def canonicalize_to_string(v: Union[str, Sequence[str]], *, delimiter: str = ","
     """Converts lists to delimited strings."""
     if not v:
         return ""
-    if not isinstance(v, str):
+    if not isinstance(v, str) and isinstance(v, Sequence):
         v = delimiter.join([elem.strip() for elem in v])
-    return v
+    return str(v)
 
 
 def parse_action(
@@ -278,12 +278,20 @@ def send_signal(popen: subprocess.Popen, sig: int = signal.SIGKILL):
     except psutil.NoSuchProcess:
         return  # Nothing to do.
     for child in parent.children(recursive=True):
-        child.send_signal(sig)
+        try:
+            child.send_signal(sig)
+        except psutil.NoSuchProcess:
+            pass  # Ignore NoSuchProcess exception and continue with the next child.
     popen.send_signal(sig)
 
 
 def copy_blobs(from_prefix: str, *, to_prefix: str):
     """Uses tf.io.gfile to replicate blobs with the from_prefix to the to_prefix."""
+
+    # tf.io import increases import time significantly, which hurts CLI experience.
+    # pylint: disable-next=import-outside-toplevel
+    from tensorflow import io as tf_io
+
     # As tf_io.gfile.copy requires a path to a file when reading from cloud storage,
     # we traverse the `from_prefix` to find and copy all suffixes.
     if not tf_io.gfile.isdir(from_prefix):
@@ -307,3 +315,64 @@ def merge(base: dict, overrides: dict):
     for k, v in overrides.items():
         base[k] = merge(base.get(k), v)
     return base
+
+
+_Row = List[Any]
+
+
+@dataclasses.dataclass(repr=False)
+class Table:
+    """A table which can be pretty-printed."""
+
+    headings: _Row
+    rows: List[_Row]
+
+    def __post_init__(self):
+        if not isinstance(self.headings, Sequence):
+            raise ValueError(f"Expected headings to be a sequence: {self.headings}")
+        if not isinstance(self.rows, Sequence):
+            raise ValueError(f"Expected rows to be a sequence: {self.rows}")
+        for row in self.rows:
+            self._check_row(row)
+
+    def _check_row(self, row: _Row):
+        if not isinstance(row, Sequence):
+            raise ValueError(f"Expected row to be a sequence: {row}")
+        if len(self.headings) != len(row):
+            raise ValueError(f"Expected row to have {len(self.headings)} columns.")
+
+    def add_row(self, row: _Row):
+        """Adds a row to the table."""
+        self._check_row(row)
+        self.rows.append(row)
+
+    def add_col(self, key: str, col: List[Any]):
+        """Adds a named column to the table. The name will be added as a heading."""
+        col = list(col)
+        if not self.rows:
+            self.headings.append(key)
+            self.rows = col
+        elif len(self.rows) != len(col):
+            raise ValueError(f"Expected column to have {len(self.rows)} rows.")
+        else:
+            self.headings.append(key)
+            for i, row in enumerate(self.rows):
+                row.append(col[i])
+
+    def get_col(self, *keys: str) -> List[_Row]:
+        """Gets one or more named columns from the table."""
+        idx = [self.headings.index(k) for k in keys]
+        return [[row[i] for i in idx] for row in self.rows]
+
+    def sort(self, key: Callable[[_Row], Any], reverse: bool = False):
+        """Sorts the table. Heading remains unchanged."""
+        self.rows.sort(key=key, reverse=reverse)
+
+    def __eq__(self, other: Any) -> bool:
+        return (
+            isinstance(other, Table) and other.headings == self.headings and other.rows == self.rows
+        )
+
+    def __repr__(self) -> str:
+        """Formats the table for printing."""
+        return format_table(headings=self.headings, rows=self.rows)

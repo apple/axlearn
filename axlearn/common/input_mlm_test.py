@@ -158,8 +158,10 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
         self.assertGreater(
             tf.reduce_sum(tf.cast(actual["input_ids"] != input_ids, dtype=tf.int32)), 0
         )
-        self.assertAllEqual(actual["input_ids"][-tf.size(padding_ids) :], padding_ids)
-        self.assertAllEqual(actual["target_labels"][-tf.size(padding_ids) :], padding_ids)
+        self.assertAllEqual(actual["input_ids"][tf.negative(tf.size(padding_ids)) :], padding_ids)
+        self.assertAllEqual(
+            actual["target_labels"][tf.negative(tf.size(padding_ids)) :], padding_ids
+        )
 
     @pytest.mark.skipif(
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."

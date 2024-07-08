@@ -48,17 +48,19 @@ Examples (cloudbuild):
 
 import os
 import subprocess
-from typing import Dict
+from typing import Dict, List, Optional
 
 from absl import app, flags, logging
 
-from axlearn.cloud.common.bundler import BaseDockerBundler, BaseTarBundler, DockerBundler
+from axlearn.cloud.common.bundler import BaseDockerBundler, BaseTarBundler, Bundler, DockerBundler
 from axlearn.cloud.common.bundler import main as bundler_main
 from axlearn.cloud.common.bundler import main_flags as bundler_main_flags
 from axlearn.cloud.common.bundler import register_bundler
 from axlearn.cloud.common.docker import registry_from_repo
+from axlearn.cloud.common.utils import canonicalize_to_list
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.utils import common_flags
+from axlearn.common.config import maybe_set_config
 
 FLAGS = flags.FLAGS
 
@@ -70,11 +72,18 @@ class GCSTarBundler(BaseTarBundler):
     TYPE = "gcs"
 
     @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> BaseTarBundler.Config:
+        """Converts a spec to a bundler.
+
+        Possible options:
+        - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf_io.
+        """
+        cfg = super().from_spec(spec, fv=fv)
         # Read from settings by default, if available.
-        if ttl_bucket := gcp_settings("ttl_bucket", required=False):
-            cfg.set(remote_dir=f"gs://{ttl_bucket}/axlearn/jobs")
+        if not cfg.remote_dir:
+            ttl_bucket = gcp_settings("ttl_bucket", required=False, fv=fv)
+            if ttl_bucket:
+                cfg.remote_dir = f"gs://{ttl_bucket}/axlearn/jobs"
         return cfg
 
     def _copy_to_local_command(self, *, remote_bundle_id: str, local_bundle_id: str) -> str:
@@ -89,10 +98,10 @@ class ArtifactRegistryBundler(DockerBundler):
     TYPE = "artifactregistry"
 
     @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
-        cfg.repo = gcp_settings("docker_repo", required=False)
-        cfg.dockerfile = gcp_settings("default_dockerfile", required=False)
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> DockerBundler.Config:
+        cfg = super().from_spec(spec, fv=fv)
+        cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
+        cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
         return cfg
 
     def _build_and_push(self, *args, **kwargs):
@@ -111,10 +120,12 @@ class CloudBuildBundler(BaseDockerBundler):
     TYPE = "cloudbuild"
 
     @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
-        cfg.repo = gcp_settings("docker_repo", required=False)
-        cfg.dockerfile = gcp_settings("default_dockerfile", required=False)
+    def from_spec(
+        cls, spec: List[str], *, fv: Optional[flags.FlagValues]
+    ) -> BaseDockerBundler.Config:
+        cfg = super().from_spec(spec, fv=fv)
+        cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
+        cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
         return cfg
 
     # pylint: disable-next=no-self-use,unused-argument
@@ -127,12 +138,21 @@ class CloudBuildBundler(BaseDockerBundler):
         context: str,
         labels: Dict[str, str],
     ):
-        cfg = self.config
+        cfg: CloudBuildBundler.Config = self.config
+        logging.info("CloudBuild build args: %s", args)
         build_args = "\n".join(
-            [f'    "--build-arg", "{key}={value}",' for key, value in args.items()]
+            [f'"--build-arg", "{k.strip().upper()}={v.strip()}",' for k, v in args.items()]
         )
-        labels = "\n".join([f'    "--label", "{key}={value}",' for key, value in labels.items()])
-        build_target = f'    "--build-target", "{cfg.target}",' if cfg.target else ""
+        labels = "\n".join([f'"--label", "{k.strip()}={v.strip()}",' for k, v in labels.items()])
+        build_target = f'"--target", "{cfg.target}",' if cfg.target else ""
+        build_platform = f'"--platform", "{cfg.platform}",' if cfg.platform else ""
+        cache_from = (
+            "\n".join([f'"--cache-from", "{cache_source}",' for cache_source in cfg.cache_from])
+            if cfg.cache_from
+            else ""
+        )
+        image_path = image.rsplit(":", maxsplit=1)[0]
+        latest_tag = f"{image_path}:latest"
         cloudbuild_yaml = f"""
 steps:
 - name: "gcr.io/cloud-builders/docker"
@@ -140,8 +160,12 @@ steps:
     "build",
     "-f", "{os.path.relpath(dockerfile, context)}",
     "-t", "{image}",
+    "-t", "{latest_tag}",
     "--cache-from", "{image}",
+    "--cache-from", "{latest_tag}",
+    {cache_from}
     {build_target}
+    {build_platform}
     {build_args}
     {labels}
     "."
@@ -151,6 +175,7 @@ steps:
 timeout: 3600s
 images:
 - "{image}"
+- "{latest_tag}"
 options:
   logging: CLOUD_LOGGING_ONLY
         """
@@ -169,8 +194,21 @@ options:
             context,
         ]
         logging.info("Running %s", cmd)
-        print(subprocess.run(cmd, check=False))
+        print(subprocess.run(cmd, check=True))
         return image
+
+
+def with_tpu_extras(bundler: Bundler.Config) -> Bundler.Config:
+    """Configures bundler to install 'tpu' extras."""
+    # Note: find_links is only applicable for tar bundlers.
+    # For docker bundlers, point to the TPU build target.
+    find_links = canonicalize_to_list(getattr(bundler, "find_links", []))
+    find_links.append("https://storage.googleapis.com/jax-releases/libtpu_releases.html")
+    maybe_set_config(bundler, find_links=find_links)
+    extras = canonicalize_to_list(bundler.extras)
+    extras.append("tpu")
+    bundler.set(extras=extras)
+    return bundler
 
 
 if __name__ == "__main__":

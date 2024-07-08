@@ -208,7 +208,7 @@ class Model(BaseModel):
             )
 
     def extract_logits(self, input_batch: NestedTensor) -> Tensor:
-        """Obtains logits from the langauge model.
+        """Obtains logits from the language model.
 
         Args:
             input_batch: A dict containing:
@@ -290,10 +290,10 @@ class Model(BaseModel):
         loss, loss_dict = cross_entropy(
             logits=logits,
             target_labels=target_labels,
-            mask=live_targets,
+            live_targets=live_targets,
             z_loss_scale=self.config.z_loss_scale,
         )
-        per_token_loss = loss_dict["pre_mask_loss"] * live_targets
+        per_token_loss = loss_dict["per_target_loss"] * live_targets
         self.add_summary("accuracy", WeightedScalar(accuracy, num_targets))
         self.add_summary("z_loss", WeightedScalar(loss_dict["z_loss"], num_targets))
         if target_num_bytes is not None:
@@ -417,6 +417,7 @@ def gpt_decoder_config(
     layer_cfg.feed_forward.hidden_dim = 4 * hidden_dim
     # Self attention transformer layer config.
     layer_cfg.self_attention.norm = LayerNorm.default_config().set(eps=layer_norm_epsilon)
+    layer_cfg.self_attention.attention.causal = True
     layer_cfg.self_attention.attention.num_heads = num_heads
     # Use residual initialization for output linear layer
     layer_cfg.self_attention.attention.output_linear.param_init = residual_initializer_cfg(
@@ -436,5 +437,6 @@ def gpt_decoder_config(
         ),
         output_norm=LayerNorm.default_config().set(eps=layer_norm_epsilon),
         dropout_rate=dropout_rate,
+        attention_mask=None,
     )
     return decoder

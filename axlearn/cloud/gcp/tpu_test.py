@@ -3,6 +3,7 @@
 """Tests TPU utilities."""
 
 import contextlib
+from typing import Union
 from unittest import mock
 
 from absl.testing import parameterized
@@ -13,12 +14,14 @@ from axlearn.cloud.gcp.tpu import (
     QueuedResourceInfo,
     TPUCreationError,
     TpuInfo,
-    _create_multislice_tpu,
-    format_queued_resource_info,
-    format_tpu_info,
+    create_queued_tpu,
     infer_tpu_cores,
+    infer_tpu_resources,
+    infer_tpu_type,
     infer_tpu_version,
     infer_tpu_workers,
+    queued_resource_info_table,
+    tpu_info_table,
 )
 
 
@@ -35,11 +38,33 @@ class TpuUtilsTest(parameterized.TestCase):
         self.assertEqual(cores, infer_tpu_cores(tpu_type))
         self.assertEqual(workers, infer_tpu_workers(tpu_type))
 
+    @parameterized.parameters(
+        dict(instance_type="v4-8", expected="v4-8"),
+        dict(instance_type="tpu-v4-8", expected="v4-8"),
+        dict(instance_type="gpu", expected=ValueError("Invalid")),
+        dict(instance_type=None, expected=ValueError("Invalid")),
+    )
+    def test_infer_tpu_type(self, instance_type, expected: Union[str, Exception]):
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                self.assertEqual(expected, infer_tpu_type(instance_type))
+        else:
+            self.assertEqual(expected, infer_tpu_type(instance_type))
+
+    @parameterized.parameters(
+        dict(instance_type="v4-128", num_replicas=1, expected={"v4": 128}),
+        dict(instance_type="tpu-v4-128", num_replicas=1, expected={"v4": 128}),
+        dict(instance_type="v4-128", num_replicas=2, expected={"v4": 256}),
+        dict(instance_type="tpu-v4-128", num_replicas=2, expected={"v4": 256}),
+    )
+    def test_infer_resources(self, instance_type, num_replicas, expected):
+        self.assertEqual(expected, infer_tpu_resources(instance_type, num_replicas))
+
     def test_unknown_tpu_version(self):
         with self.assertRaisesRegex(ValueError, "Unknown TPU version"):
             infer_tpu_version("v5lite-16")
 
-    def test_format_tpu_info(self):
+    def test_tpu_info_table(self):
         tpus = [
             TpuInfo(
                 name="test2",
@@ -63,7 +88,7 @@ class TpuUtilsTest(parameterized.TestCase):
                 "test2      v4-32                 READY        "
                 "\n"
             ),
-            format_tpu_info(tpus, metadata=None),
+            repr(tpu_info_table(tpus, metadata=None)),
         )
         # List with metadata.
         self.assertEqual(
@@ -74,7 +99,7 @@ class TpuUtilsTest(parameterized.TestCase):
                 "test2      v4-32                 READY        {'a': 123}      "
                 "\n"
             ),
-            format_tpu_info(tpus, metadata=["a"]),
+            repr(tpu_info_table(tpus, metadata=["a"])),
         )
         # List with metadata.
         self.assertEqual(
@@ -85,10 +110,10 @@ class TpuUtilsTest(parameterized.TestCase):
                 "test2      v4-32                 READY        {'b': None}      "
                 "\n"
             ),
-            format_tpu_info(tpus, metadata=["b"]),
+            repr(tpu_info_table(tpus, metadata=["b"])),
         )
 
-    def test_format_queued_resource_info(self):
+    def test_queued_resource_info_table(self):
         tpus = [
             QueuedResourceInfo(
                 name="test2",
@@ -117,7 +142,7 @@ class TpuUtilsTest(parameterized.TestCase):
                 "test2      v4-32                 READY        1               False         "
                 "\n"
             ),
-            format_queued_resource_info(tpus, metadata=None),
+            repr(queued_resource_info_table(tpus, metadata=None)),
         )
         # List with metadata.
         self.assertEqual(
@@ -128,7 +153,7 @@ class TpuUtilsTest(parameterized.TestCase):
                 "test2      v4-32                 READY        {'a': 123}      1               False         "
                 "\n"
             ),
-            format_queued_resource_info(tpus, metadata=["a"]),
+            repr(queued_resource_info_table(tpus, metadata=["a"])),
         )
         # List with metadata.
         self.assertEqual(
@@ -139,7 +164,7 @@ class TpuUtilsTest(parameterized.TestCase):
                 "test2      v4-32                 READY        {'b': None}      1               False         "
                 "\n"
             ),
-            format_queued_resource_info(tpus, metadata=["b"]),
+            repr(queued_resource_info_table(tpus, metadata=["b"])),
         )
         # pylint: enable=line-too-long
 
@@ -199,7 +224,7 @@ class TpuUtilsTest(parameterized.TestCase):
             list_blobs=[2, 2, 2],
         ),
     )
-    def test_create_multislice_tpu(self, nodes, list_blobs, expected=None):
+    def test_create_queued_tpu(self, nodes, list_blobs, expected=None):
         module = tpu.__name__
         # Mock sleep to finish instantly.
         mock_sleep = mock.patch(f"{module}.time.sleep")
@@ -207,7 +232,7 @@ class TpuUtilsTest(parameterized.TestCase):
             module,
             get_queued_tpu_node=mock.Mock(side_effect=nodes),
             _execute_create_tpu_request=mock.Mock(),
-            _delete_multislice_tpu=mock.Mock(),
+            delete_queued_tpu=mock.Mock(),
             list_blobs=mock.Mock(side_effect=[list(range(x)) for x in list_blobs]),
         )
         mock_settings = mock_gcp_settings(
@@ -222,9 +247,9 @@ class TpuUtilsTest(parameterized.TestCase):
 
             with ctx:
                 assert infer_tpu_workers("v4-16") == 2
-                _create_multislice_tpu(
+                create_queued_tpu(
                     "test",
+                    mock.Mock(),
                     tpu_type="v4-16",  # 2 workers.
-                    credentials=mock.Mock(),
                     bundler_type="test-bundler",
                 )

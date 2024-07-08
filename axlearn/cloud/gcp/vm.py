@@ -15,7 +15,7 @@ from googleapiclient import discovery, errors
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import format_table
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.utils import infer_cli_name, is_valid_resource_name
+from axlearn.cloud.gcp.utils import infer_cli_name, validate_resource_name
 
 
 class VMCreationError(RuntimeError):
@@ -51,11 +51,10 @@ def create_vm(
         metadata: Optional metadata for the instance.
 
     Raises:
-        VMCreationError: If an exeption is raised on the creation request.
+        VMCreationError: If an exception is raised on the creation request.
         ValueError: If an invalid name is provided.
     """
-    if not is_valid_resource_name(name):
-        raise ValueError(f"{name} is not a valid resource name.")
+    validate_resource_name(name)
     resource = _compute_resource(credentials)
     attempt = 0
     while True:
@@ -103,6 +102,8 @@ def create_vm(
                     "(which usually takes a few minutes)",
                     name,
                 )
+            elif status == "BOOT_FAILED":
+                raise VMCreationError("Fail to boot VM.")
             else:
                 logging.info("VM %s showing %s, waiting for RUNNING.", name, status)
             time.sleep(10)
@@ -120,6 +121,7 @@ def get_vm_node_status(node: Dict[str, Any]) -> str:
 
         On top of regular VM statuses, this also returns:
         * BOOTED: VM is RUNNING + finished booting.
+        * BOOT_FAILED: VM is RUNNING but fails to boot.
         * UNKNOWN: VM is missing a status.
     """
     status = node.get("status", "UNKNOWN")
@@ -127,6 +129,8 @@ def get_vm_node_status(node: Dict[str, Any]) -> str:
         # Check boot status.
         if node["labels"].get("boot_status", None) == "done":
             return "BOOTED"
+        if node["labels"].get("boot_status", None) == "failed":
+            return "BOOT_FAILED"
     return status
 
 
@@ -138,7 +142,7 @@ def delete_vm(name: str, *, credentials: Credentials):
         credentials: Credentials to use when interacting with GCP.
 
     Raises:
-        VMDeletionError: If an exeption is raised on the deletion request.
+        VMDeletionError: If an exception is raised on the deletion request.
     """
     resource = _compute_resource(credentials)
     node = get_vm_node(name, resource)
@@ -148,7 +152,11 @@ def delete_vm(name: str, *, credentials: Credentials):
     try:
         response = (
             resource.instances()
-            .delete(project=gcp_settings("project"), zone=gcp_settings("zone"), instance=name)
+            .delete(
+                project=gcp_settings("project"),
+                zone=gcp_settings("zone"),
+                instance=name,
+            )
             .execute()
         )
         while True:
@@ -200,7 +208,9 @@ def list_vm_info(credentials: Credentials) -> List[VmInfo]:
         results.append(
             VmInfo(
                 name=vm["name"],
-                metadata={item["key"]: item["value"] for item in vm["metadata"]["items"]},
+                metadata={
+                    item["key"]: item["value"] for item in vm.get("metadata", {}).get("items", [])
+                },
             )
         )
     return results
@@ -330,16 +340,21 @@ def get_vm_node(name: str, resource: discovery.Resource) -> Optional[Dict[str, A
     Returns:
         The VM with the given name, or None if it doesn't exist.
     """
-    up_nodes = (
-        resource.instances()
-        .list(
-            project=gcp_settings("project"),
-            zone=gcp_settings("zone"),
+    try:
+        node = (
+            resource.instances()
+            .get(
+                project=gcp_settings("project"),
+                zone=gcp_settings("zone"),
+                instance=name,
+            )
+            .execute()
         )
-        .execute()
-    )
-    nodes = [el for el in up_nodes.get("items", {}) if el.get("name", "").split("/")[-1] == name]
-    return None if not nodes else nodes.pop()
+    except errors.HttpError as e:
+        if e.status_code == 404:
+            return None
+        raise
+    return node
 
 
 def list_disk_images(creds: Credentials) -> List[str]:

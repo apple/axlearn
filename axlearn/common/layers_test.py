@@ -4,6 +4,10 @@
 #
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 (the "License").
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests basic layers."""
 # pylint: disable=no-self-use,too-many-lines,too-many-public-methods
@@ -1176,16 +1180,20 @@ class LayerTest(TestCase, tf.test.TestCase):
         self.assertAllEqual(outputs.shape, output_shape)
 
     @parameterized.named_parameters(
-        ("w3s1_VALID", 3, 1, "VALID"),
-        ("w3s1_SAME", 3, 1, "SAME"),
-        ("w4s1_SAME", 4, 1, "SAME"),
-        ("w4s1_CAUSAL", 4, 1, (3, 0)),
+        ("w3s1d1_VALID", 3, 1, "VALID", None),
+        ("w3s1d2_VALID", 3, 1, "VALID", 2),
+        ("w3s1d1_SAME", 3, 1, "SAME", None),
+        ("w4s1d1_SAME", 4, 1, "SAME", None),
+        ("w4s1d3_SAME", 4, 1, "SAME", 3),
+        ("w4s1d1_CAUSAL", 4, 1, (3, 0), None),
+        ("w4s1d5_CAUSAL", 4, 1, (3, 0), 5),
     )
     def test_conv1d(
         self,
         window: int,
         strides: int,
         padding: Union[str, Tuple[int, int]],
+        dilation: Optional[int] = None,
     ):
         input_dim, output_dim = 4, 6
         cfg = Conv1D.default_config().set(
@@ -1195,6 +1203,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             window=window,
             strides=strides,
             padding=padding,
+            rhs_dilation=dilation,
         )
         layer: Conv1D = cfg.instantiate(parent=None)
         # Initialize layer parameters.
@@ -1214,7 +1223,7 @@ class LayerTest(TestCase, tf.test.TestCase):
 
         # Random inputs.
         prng_key, input_key = jax.random.split(prng_key)
-        inputs = jax.random.normal(input_key, [2, 7, input_dim])
+        inputs = jax.random.normal(input_key, [2, 17, input_dim])
         # Compute layer outputs.
         outputs, _ = F(
             layer,
@@ -1239,12 +1248,77 @@ class LayerTest(TestCase, tf.test.TestCase):
             kernel_size=window,
             stride=strides,
             padding=ref_padding,
+            dilation=1 if dilation is None else dilation,
         )
         # torch.nn.Linear.weight is of shape (output_dim, input_dim, kernel_size...).
         _copy(layer_params["weight"].transpose(2, 1, 0), ref.weight)
         _copy(layer_params["bias"], ref.bias)
         ref_outputs = ref(as_torch_tensor(ref_inputs.transpose(0, 2, 1)))
         assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 1))
+
+    @parameterized.named_parameters(
+        ("w3s1d3_pad1", 3, 1, (1, 1), 3),
+        ("w3s1d3_pad1_causal", 3, 1, (1, 0), 3),
+        ("w3s2d3_pad1", 3, 2, (1, 1), 3),
+        ("w3s2d1_pad1", 3, 2, (1, 1), None),
+    )
+    def test_lhs_dilation_conv1d(
+        self,
+        window: int,
+        strides: int,
+        padding: Tuple[int, int],
+        dilation: Optional[int],
+    ):
+        input_dim, output_dim = 4, 6
+        cfg = Conv1D.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            strides=strides,
+            padding=padding,
+            lhs_dilation=dilation,
+        )
+        layer: Conv1D = cfg.instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        self.assertEqual(
+            dict(weight=(window, input_dim, output_dim), bias=(output_dim,)),
+            shapes(layer_params),
+        )
+        bias = layer_params["bias"]
+        assert_allclose(bias, jnp.zeros_like(bias))
+        # Randomize bias.
+        layer_params["bias"] = jax.random.normal(
+            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
+        )
+
+        prng_key, input_key = jax.random.split(prng_key)
+        input_length = 7
+        inputs = jax.random.normal(input_key, [2, input_length, input_dim])
+        outputs, _ = F(
+            layer, inputs=(inputs,), is_training=True, state=layer_params, prng_key=prng_key
+        )
+        expected_length = input_length + padding[0] + padding[1] - int((window + 1) / 2)
+        if dilation is not None:
+            expected_length = expected_length + (input_length - 1) * (dilation - 1)
+        expected_length = math.floor((expected_length - 1) / strides + 1)
+        self.assertNestedEqual(outputs.shape, (2, expected_length, output_dim))
+
+    def test_lhs_dilation_not_using_string_padding_conv1d(self):
+        input_dim, output_dim = 4, 6
+        cfg = Conv1D.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=3,
+            strides=1,
+            padding="SAME",
+            lhs_dilation=2,
+        )
+        with self.assertRaises(ValueError):
+            cfg.instantiate(parent=None)
 
     @parameterized.named_parameters(
         ("w3s1_VALID", 3, 1, "VALID"),

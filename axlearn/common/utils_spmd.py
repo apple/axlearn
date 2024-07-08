@@ -2,42 +2,45 @@
 
 """SPMD related utils."""
 
-import socket
+import logging
+import time
 from typing import Optional
 
 import jax
-import jax.numpy as jnp
 import portpicker
-from jax.experimental import multihost_utils
 
 _jax_distributed_initialized = False
 
 
 def setup(
     *,
+    jax_backend: str,
     distributed_coordinator: Optional[str] = None,
     num_processes: Optional[int] = None,
     process_id: Optional[int] = None,
-    jax_backend: Optional[str] = None,
+    initialization_timeout: Optional[int] = None,
 ):
-    """Sets up the Jax environment for SPMD/pjit.
+    """Sets up the JAX environment for SPMD.
 
     Args:
-        distributed_coordinator: The distributed coordinator address (in the form of <host>:<port>).
-            Needed only if not running on TPU *and* jax.process_count() > 1. Otherwise the
-            coordinator will be configured automatically.
-        num_processes: The number of processes (GPU backend: total number of gpus). Needed only
-            if not running on TPU *and* jax.process_count() > 1. Otherwise the coordinator will
-            be configured automatically.
-        process_id: The process id (GPU backend: the GPU rank). Needed only if not running
-            on TPU *and* jax.process_count() > 1. Otherwise the coordinator will be
-            configured automatically.
         jax_backend: The distributed backend, which can be "cpu", "gpu", or "tpu".
-            By default, it would be configured automatically.
+        distributed_coordinator: The distributed coordinator address (in the form of <host>:<port>).
+            Needed only for `jax_backend != "tpu"` and `num_processes > 1`. Otherwise, the
+            coordinator will be configured automatically when `num_processes` and `process_id` are
+            provided.
+        num_processes: The number of processes. Needed only if distributed initialization is desired
+            for `jax_backend != "tpu"`.
+        process_id: The process ID (the process rank). Needed only if distributed initialization is
+            desired for `jax_backend != "tpu"`.
+        initialization_timeout: The jax distributed initialization timeout in seconds. If None, uses
+            jax default.
 
     Raises:
-        ValueError: If distributed_coordinator, num_processes, or process_id are not None when
-            jax_backend is "tpu", or if distributed_coordinator is unsupported.
+        ValueError: If any of the following conditions are met:
+            * distributed_coordinator, num_processes, or process_id are not None when
+                jax_backend is "tpu";
+            * one of num_processes or process_id is None when jax_backend is not "tpu";
+            * distributed_coordinator is None when jax_backend is not "tpu" and num_processes > 1.
     """
     # Use a GSPMD-friendly PRNG implementation.
     jax.config.update("jax_default_prng_impl", "rbg")
@@ -46,56 +49,71 @@ def setup(
 
     global _jax_distributed_initialized  # pylint: disable=global-statement
     if not _jax_distributed_initialized:
-        # NOTE: calling JAX distributed APIs (e.g. jax.default_backend(), jax.process_index() or
-        # jax.process_count()) on GPU causes JAX to only view one process' GPUs.
-        jax_backend = jax_backend or jax.default_backend()
+        init_kwargs = {}
+        if initialization_timeout is not None:
+            init_kwargs["initialization_timeout"] = initialization_timeout
+
         if jax_backend == "tpu":
-            assert (
+            if not (
                 distributed_coordinator is None and num_processes is None and process_id is None
-            ), ValueError(
-                "distributed_coordinator, num_processes, process_id "
-                "should all be None for tpu backend"
-            )
-            jax.distributed.initialize(
-                coordinator_address=_infer_tpu_coordinator_address(),
-                num_processes=jax.process_count(),
-                process_id=jax.process_index(),
-            )
+            ):
+                raise ValueError(
+                    "distributed_coordinator, num_processes, and process_id "
+                    "should all be None for tpu backend."
+                )
         else:
-            num_processes = num_processes if num_processes is not None else jax.process_count()
-            process_id = process_id if process_id is not None else jax.process_index()
+            if distributed_coordinator is None and num_processes is None and process_id is None:
+                logging.info(
+                    "Skipping distributed initialization for %s backend, "
+                    "since distributed_coordinator, num_processes, and process_id are all None.",
+                    jax_backend,
+                )
+                return
+
+            if num_processes is None or process_id is None:
+                raise ValueError(
+                    "num_processes and process_id should be provided together "
+                    f"if distributed initialization is desired for backend {jax_backend}. "
+                    f"Instead, got num_processes={num_processes}, process_id={process_id}."
+                )
+
             if not distributed_coordinator:
                 if num_processes == 1:
                     distributed_coordinator = f"localhost:{portpicker.pick_unused_port()}"
                 else:
                     raise ValueError(f"Unknown distributed_coordinator: {distributed_coordinator}")
-            jax.distributed.initialize(
-                distributed_coordinator,
+
+            init_kwargs.update(
+                coordinator_address=distributed_coordinator,
                 num_processes=num_processes,
                 process_id=process_id,
             )
-        _jax_distributed_initialized = True
 
-
-def _infer_tpu_coordinator_address() -> str:
-    """Infers a viable JAX coordination address on TPU (including over multiple TPU slices).
-
-    TODO(markblee,tom_gunter): Delete this when multi-slice init is fully supported by JAX.
-
-    Returns:
-        A coordinator address string as "ip:port".
-    """
-    slice_local_coordinator_ip = socket.gethostbyname(socket.gethostname())
-    # E.g. "172.31.4.83".
-    slice_local_coordinator_ip_as_nums = [int(num) for num in slice_local_coordinator_ip.split(".")]
-    # E.g. [172, 31, 4, 83].
-    global_coordinator_ip_as_nums = multihost_utils.broadcast_one_to_all(
-        jnp.asarray(slice_local_coordinator_ip_as_nums)
-    )
-    global_coordinator_ip = ".".join([str(num) for num in global_coordinator_ip_as_nums])
-    # E.g. "172.31.4.83" on all hosts on all slices.
-    global_coordinator_port = multihost_utils.broadcast_one_to_all(
-        jnp.asarray(portpicker.pick_unused_port())
-    )
-    global_coordinator_address = f"{global_coordinator_ip}:{global_coordinator_port}"
-    return global_coordinator_address
+        # Ensure that coordinator initialization respects initialization_timeout.
+        # The current jax version hardcodes the number of attempts to discover coordinator address:
+        # https://github.com/google/jax/blob/33e1a96204bf88f76b9f8d982cb2fe92ebcf0151/jax/_src/clusters/cloud_tpu_cluster.py#L110-L125
+        # TODO(markblee): Remove this once we update jax to include:
+        # https://github.com/google/jax/commit/c5869feb92a175ce40b4e5a897f505e97bcc610b.
+        if initialization_timeout is not None:
+            max_time = time.time() + initialization_timeout
+            while not _jax_distributed_initialized and time.time() < max_time:
+                try:
+                    logging.info("Attempting to initialize JAX distributed system...")
+                    jax.distributed.initialize(**init_kwargs)
+                    _jax_distributed_initialized = True
+                except RuntimeError as e:
+                    err_str = str(e)
+                    if (
+                        "Failed to recognize coordinator" in err_str
+                        or "Barrier timed out" in err_str
+                    ):
+                        continue  # Retry. Sleep is handled by jax.distributed.initialize.
+                    raise
+            if not _jax_distributed_initialized:
+                raise RuntimeError(
+                    "Failed to initialize JAX distributed system within the specified timeout "
+                    f"({initialization_timeout} seconds)."
+                )
+        else:
+            jax.distributed.initialize(**init_kwargs)
+            _jax_distributed_initialized = True

@@ -1,14 +1,13 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests TPU runner job."""
+
 # pylint: disable=protected-access
 import contextlib
-import os
 import tempfile
-from typing import List
+from typing import List, Optional
 from unittest import mock
 
-import pytest
 from absl import app, flags
 from absl.testing import parameterized
 
@@ -55,11 +54,11 @@ def mock_tpu(module_name: str, running_from_vm: bool = True):
         ]
 
     mocks = {
-        "create_tpu": mock_create_tpu,
-        "get_tpu_node": mock_get_tpu_node,
+        "create_queued_tpu": mock_create_tpu,
         "get_queued_tpu_node": mock_get_tpu_node,
-        "_tpu_resource": mock_tpu_resource,
-        "delete_tpu": mock_delete_tpu,
+        "tpu_resource": mock_tpu_resource,
+        "qrm_resource": mock_tpu_resource,
+        "delete_queued_tpu": mock_delete_tpu,
         "running_from_vm": mock_running_from_vm,
         "list_tpu_info": mock_list_tpu_info,
     }
@@ -104,7 +103,6 @@ def mock_tpu_statuses(
 
     mock_tpu_status = mock.patch.multiple(
         tpu_runner.__name__,
-        get_tpu_node_status=mock.Mock(side_effect=mock_get_tpu_node_status),
         get_queued_tpu_node_status=mock.Mock(side_effect=mock_get_tpu_node_status),
     )
     mock_ssh_status = mock.patch.object(
@@ -116,14 +114,16 @@ def mock_tpu_statuses(
         yield
 
 
-def _mock_config():
+def _mock_config() -> tpu_runner.TPURunnerJob.Config:
     mock_bundler = mock.MagicMock()
     mock_bundler.install_command.return_value = "test_install"
     return tpu_runner.TPURunnerJob.default_config().set(
         name="test-name",
         output_dir="test_output",
-        tpu_type="v4-8",
-        num_slices=2,
+        accelerator=gcp_job.AcceleratorConfig(
+            instance_type="tpu-v4-8",
+            num_replicas=2,
+        ),
         project="test_project",
         zone="test_zone",
         max_tries=1,
@@ -148,14 +148,15 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
     """Tests TPURunnerJob."""
 
     @parameterized.parameters(
-        dict(num_workers=1, tpu_type="v4-8", num_slices=1),
-        dict(num_workers=2, tpu_type="v4-8", num_slices=2),
-        dict(num_workers=2, tpu_type="v4-16", num_slices=1),
-        dict(num_workers=4, tpu_type="v4-16", num_slices=2),
+        dict(num_workers=1, tpu_type="v4-8", num_replicas=1),
+        dict(num_workers=2, tpu_type="v4-8", num_replicas=2),
+        dict(num_workers=2, tpu_type="v4-16", num_replicas=1),
+        dict(num_workers=4, tpu_type="v4-16", num_replicas=2),
     )
-    def test_num_workers(self, num_workers, tpu_type, num_slices):
+    def test_num_workers(self, num_workers, tpu_type, num_replicas):
         cfg = _mock_config()
-        job = cfg.set(command="", tpu_type=tpu_type, num_slices=num_slices).instantiate()
+        cfg.accelerator.set(instance_type=f"tpu-{tpu_type}", num_replicas=num_replicas)
+        job = cfg.instantiate()
         self.assertEqual(num_workers, job._num_workers())
 
     @parameterized.parameters(
@@ -178,23 +179,40 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
         self.assertIn("-e TEST_ENV", cmd)
         self.assertIn(cfg.command, cmd)
 
-    @parameterized.parameters(True, False)
-    def test_start(self, running_from_vm):
+    @parameterized.parameters(
+        [
+            dict(running_from_vm=True, env={"BASTION_TIER": "0"}, expect_reserved=True),
+            dict(running_from_vm=True, env={"BASTION_TIER": "1"}, expect_reserved=False),
+            dict(running_from_vm=False, expect_reserved=None),
+        ]
+    )
+    def test_start(
+        self,
+        running_from_vm: bool,
+        expect_reserved: bool,
+        env: Optional[dict] = None,
+    ):
         cfg = _mock_config()
         job = cfg.set(command="").instantiate()
 
         mock_execute = mock.patch.object(job, "_execute_remote_cmd")
         mock_credentials = mock.patch.object(job, "_get_job_credentials")
+        mock_env = mock.patch.dict("os.environ", env or {})
 
-        with mock_execute, mock_credentials, mock_tpu(
-            tpu_runner.__name__, running_from_vm
-        ) as mocks:
+        with (
+            mock_env,
+            mock_execute,
+            mock_credentials,
+            mock_tpu(tpu_runner.__name__, running_from_vm) as mocks,
+        ):
             # Create a dummy TPU.
-            mocks["create_tpu"](cfg.name)
+            mocks["create_queued_tpu"](cfg.name)
             # Issue start command.
             job._start()
-            mocks["delete_tpu"].assert_called()
-            mocks["create_tpu"].assert_called()
+            mocks["delete_queued_tpu"].assert_called()
+            mocks["create_queued_tpu"].assert_called()
+            # TPU should be created with the right reservation.
+            self.assertEqual(expect_reserved, mocks["create_queued_tpu"].call_args[1]["reserved"])
             # Bundling should happen if not on VM.
             self.assertEqual(not running_from_vm, job._bundler.bundle.called)
 
@@ -207,11 +225,11 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
 
         with mock_credentials, mock_tpu(tpu_runner.__name__) as mocks, mock_execute as mock_exec:
             # Create a dummy TPU.
-            mocks["create_tpu"](cfg.name)
+            mocks["create_queued_tpu"](cfg.name)
             job._delete()
             # Outputs should be copied. call_args get the args of the last call.
             self.assertIn("gsutil cp", mock_exec.call_args.args[0])
-            self.assertIn(cfg.name, mocks["delete_tpu"].call_args.args)
+            self.assertIn(cfg.name, mocks["delete_queued_tpu"].call_args.args)
 
     def test_get_status(self):
         mocks = [
@@ -295,9 +313,10 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
                 job._execute()
                 mocks["_delete"].assert_called()
 
-            with self.assertRaisesRegex(ValueError, "failed"), mock_status(
-                tpu_runner.TPURunnerJob.Status.FAILED
-            ) as mocks:
+            with (
+                self.assertRaisesRegex(ValueError, "failed"),
+                mock_status(tpu_runner.TPURunnerJob.Status.FAILED) as mocks,
+            ):
                 job._execute()
                 mocks["_delete"].assert_called()
 
@@ -317,12 +336,9 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
         bundler_spec=[None, "find_links=/custom/python/archives"],
     )
     def test_from_flags(self, name, output_dir, bundler_spec):
-        if name is None and os.getenv("USER") is None:
-            pytest.skip(reason="No USER in env.")
-
         # Construct flags.
         fv = flags.FlagValues()
-        tpu_runner.launch_flags(flag_values=fv)
+        tpu_runner.TPURunnerJob.define_flags(fv)
         argv = ["cli"]
         if name is not None:
             argv.append(f"--name={name}")
@@ -331,14 +347,23 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
         if bundler_spec is not None:
             argv.append(f"--bundler_spec={bundler_spec}")
 
+        # Parsing without instance_type should be OK, e.g. for help/list/stop.
+        fv(argv)
+        argv.append("--instance_type=tpu-v4-8")
+
         # Parse argv.
         fv(argv)
-        assert fv.name == name
+        self.assertEqual(fv.name, name)
 
         # Construct config.
         mock_settings = {"ttl_bucket": "ttl_bucket"}
-        with mock_gcp_settings(tpu_runner.__name__, settings=mock_settings), mock_gcp_settings(
-            bundler.__name__, settings=mock_settings
+        mock_generate_job_name = mock.patch(
+            f"{tpu_runner.__name__}.generate_job_name", return_value="test-name"
+        )
+        with (
+            mock_generate_job_name,
+            mock_gcp_settings(tpu_runner.__name__, settings=mock_settings),
+            mock_gcp_settings(bundler.__name__, settings=mock_settings),
         ):
             cfg = tpu_runner.TPURunnerJob.from_flags(fv)
 
@@ -386,41 +411,49 @@ def _mock_job(running_from_vm: bool):
 class TPURunnerMainTest(TestWithTemporaryCWD):
     """Tests CLI entrypoint."""
 
-    def test_launch_flags(self):
+    def test_define_flags(self):
         fv = flags.FlagValues()
-        tpu_runner.launch_flags(flag_values=fv)
+        tpu_runner.TPURunnerJob.define_flags(fv)
         # Basic sanity check.
-        self.assertEqual(fv["num_slices"].default, 1)
+        self.assertEqual(fv["num_replicas"].default, 1)
 
     @parameterized.parameters(True, False)
     def test_list(self, running_from_vm):
+        fv = flags.FlagValues()
+        tpu_runner.TPURunnerJob.define_flags(fv)
+        fv.mark_as_parsed()
+
         # Test that list can be invoked without additional flags.
         with _mock_job(running_from_vm), _mock_credentials():
-            tpu_runner.main(["cli", "list"])
+            tpu_runner.main(["cli", "list"], flag_values=fv)
 
     @parameterized.parameters(True, False)
     def test_stop(self, running_from_vm):
+        fv = flags.FlagValues()
+        tpu_runner.TPURunnerJob.define_flags(fv)
+        fv.set_default("name", "test")
+        fv.mark_as_parsed()
+
         # Test that stop can be invoked with just --name.
         with _mock_job(running_from_vm):
-            tpu_runner.main(["cli", "stop", "--name=test"])
+            tpu_runner.main(["cli", "stop"], flag_values=fv)
 
     @parameterized.parameters(True, False)
     def test_start(self, running_from_vm):
         fv = flags.FlagValues()
-        tpu_runner.launch_flags(flag_values=fv)
+        tpu_runner.TPURunnerJob.define_flags(fv)
         fv.mark_as_parsed()
-        self.assertEqual(fv.bundler_type, bundler.GCSTarBundler.TYPE)
 
         with _mock_job(running_from_vm):
             with self.assertRaisesRegex(app.UsageError, "Invalid action"):
                 tpu_runner.main(["cli"], flag_values=fv)
 
-            with self.assertRaisesRegex(app.UsageError, "tpu_type is required"):
+            with self.assertRaisesRegex(app.UsageError, "instance_type is required"):
                 tpu_runner.main(["cli", "start"], flag_values=fv)
 
             with self.assertRaisesRegex(app.UsageError, "Command is required"):
-                fv.set_default("tpu_type", "v4-8")
+                fv.set_default("instance_type", "tpu-v4-8")
                 tpu_runner.main(["cli", "start"], flag_values=fv)
 
-            fv.set_default("tpu_type", "v4-8")
+            fv.set_default("instance_type", "tpu-v4-8")
             tpu_runner.main(["cli", "start", "--", "test_command"], flag_values=fv)

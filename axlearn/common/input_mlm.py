@@ -317,7 +317,7 @@ def apply_mlm_mask(
         # 1. Input already starts with a start-of-word. Masking behavior is unchanged, as the added
         #    dummy token is masked independently and then discarded.
         # 2. Input does not start with, but contains, a start-of-word. The leading segment is then
-        #    treated as a word. This is acceptible given that the segment is likely truncated from
+        #    treated as a word. This is acceptable given that the segment is likely truncated from
         #    an actual start-of-word, e.g. from the previous document.
         # 3. Input does not contain a start-of-word at all. To prevent masking the entire sequence,
         #    this falls back to masking tokens independently (see tf.cond).
@@ -557,13 +557,13 @@ def apply_mlm_mask_combinatorial_ngram(
     return lambda ds: ds.map(process_example_fn, num_parallel_calls=tf.data.AUTOTUNE).unbatch()
 
 
-# pylint: disable-next=redefined-outer-name
 def text_to_mlm_input(
     *,
     is_training: bool,
     sentence_piece_vocab: InstantiableConfig,
     normalization: InstantiableConfig,
     max_len: int,
+    # pylint: disable-next=redefined-outer-name
     apply_mlm_mask: InstantiableConfig,
     shuffle_buffer_size: int,
     mask_token: str = "[MASK]",

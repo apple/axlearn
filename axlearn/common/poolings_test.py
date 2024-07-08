@@ -293,6 +293,7 @@ class PoolingTest(TestCase):
         # Test w/o mask.
         outputs_expected = inputs[:, -2:][:, ::-1]
         assert_allclose(outputs, outputs_expected, atol=atol)
+        self.assertEqual(outputs.dtype, dtype)
 
         # Test w/ mask.
         paddings = jnp.hstack(
@@ -309,6 +310,7 @@ class PoolingTest(TestCase):
 
         outputs_expected = inputs[:, -3:-1][:, ::-1]
         assert_allclose(outputs, outputs_expected, atol=atol)
+        self.assertEqual(outputs.dtype, dtype)
 
         # Test w/ specific mask.
         inputs = jax.random.normal(input_key, [3, 3, input_dim])
@@ -322,6 +324,7 @@ class PoolingTest(TestCase):
         )
         outputs_expected = jnp.stack((inputs[0, :2], inputs[1, :2], inputs[2, 1:]), axis=0)[:, ::-1]
         assert_allclose(outputs, outputs_expected, atol=atol)
+        self.assertEqual(outputs.dtype, dtype)
 
         # Test w/ invalid masks.
         inputs = jnp.asarray(
@@ -341,11 +344,13 @@ class PoolingTest(TestCase):
             [[[0, 0, 0], [0.1, 0.2, 0.3]], [[0.4, 0.5, 0.6], [0.7, 0.8, 0.9]]]
         )[:, ::-1]
         assert_allclose(outputs, outputs_expected, atol=atol)
+        self.assertEqual(outputs.dtype, dtype)
 
         # Test w/ jit.
         jit_f = jax.jit(pooler.forward)
-        outputs = jit_f(inputs, paddings)
-        assert_allclose(outputs, outputs_expected)
+        outputs = jit_f(inputs.astype(dtype), paddings)
+        assert_allclose(outputs, outputs_expected, atol=atol)
+        self.assertEqual(outputs.dtype, dtype)
 
     @parameterized.parameters(
         itertools.product([1, 2, 3, 4, 5], [jnp.float32, jnp.bfloat16], [8, 10, 12])

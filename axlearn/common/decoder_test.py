@@ -3,29 +3,59 @@
 """Tests decoder layers."""
 # pylint: disable=no-self-use,too-many-branches
 import contextlib
-from typing import Literal, Optional
+import unittest
+from typing import Callable, Literal, Optional
 from unittest import mock
 
+import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
+from absl import logging
 from absl.testing import absltest, parameterized
-from jax.experimental import checkify
+from jax.experimental import checkify, mesh_utils
+from jax.sharding import Mesh
 
-from axlearn.common import decoding, utils
+from axlearn.common import causal_lm, decoding, logit_modifiers, utils
 from axlearn.common.attention import (
     NEG_INF,
     ALiBiAttentionLogitBiasLayer,
+    CausalAttentionLogitBiasLayer,
+    MultiheadAttention,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
     TransformerAttentionLayer,
+    TransformerLayer,
 )
-from axlearn.common.base_layer import RematSpec
+from axlearn.common.base_layer import DefaultTensorStats, RematSpec
 from axlearn.common.causal_lm import gpt_decoder_config
-from axlearn.common.config import InstantiableConfig
+from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.decoder import Decoder, LmHead, _segment_ids_from_causal_input_ids
+from axlearn.common.flash_attention.layer import FlashAttention
+from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import functional
 from axlearn.common.test_utils import TestCase, assert_allclose
+
+
+def _enable_causal_attention(cfg: Decoder.Config) -> Decoder.Config:
+    """Enables the causal mode of the MultiheadAttention layer."""
+    cfg.transformer.layer.self_attention.attention.causal = True
+    # We no longer need CausalAttentionLogitBiasLayer.
+    cfg.attention_mask = None
+    return cfg
+
+
+def _enable_flash_attention(cfg: Decoder.Config) -> Decoder.Config:
+    # Since FlashAttention supports the causal mode natively, we don't need attention_mask.
+    cfg.attention_mask = None
+    # Replace layer_cfg.self_attention.attention with a FlashAttention.Config.
+    layer_cfg: TransformerLayer.Config = cfg.transformer.layer
+    orig_atten: MultiheadAttention.Config = layer_cfg.self_attention.attention
+    kvs = {k: v for k, v in orig_atten.items() if k not in ("klass", "causal")}
+    logging.info("atten kvs=%s", kvs)
+    flash_atten = FlashAttention.default_config().set(causal=True, **kvs)
+    layer_cfg.self_attention.attention = flash_atten
+    return cfg
 
 
 class TestDecoder(TestCase):
@@ -91,6 +121,7 @@ class TestDecoder(TestCase):
         tied_logits = layer_output(tied_head_state, tied_head)
         untied_logits = layer_output(untied_head_state, untied_head)
         np.testing.assert_raises(AssertionError, assert_allclose, tied_logits, untied_logits)
+
         # pylint: enable=duplicate-code
 
         # Test grads.
@@ -113,6 +144,104 @@ class TestDecoder(TestCase):
         # Set untied head weight to tied lm_head value and check again.
         untied_head_state["lm_head"]["weight"] = tied_head_state["emb"]["token_emb"]["weight"]
         check_grads(tied_head_state, untied_head_state)
+
+    @parameterized.parameters(
+        # MultiheadAttention with causal=True and attention_mask=None.
+        _enable_causal_attention,
+        # FlashAttention with causal=True and attention_mask=None.
+        _enable_flash_attention,
+    )
+    def test_causal_attention(
+        self, make_test_decoder_config: Callable[[Decoder.Config], Decoder.Config]
+    ):
+        """Tests that make_test_decoder_config(ref_cfg) is equivalent to ref_cfg.
+
+        ... where `ref_cfg` is a Decoder config with a regular attention and
+        CausalAttentionLogitBiasLayer.
+        """
+        mesh = [1, 1, 1]
+        mesh_axis_names = ["data", "fsdp", "model"]
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            hidden_dim = 12
+            num_heads = 4
+            vocab_size = 24
+            source_length = 11
+
+            # Similarities with encoder_decoder_test.
+            # pylint: disable=duplicate-code
+            ref_cfg = gpt_decoder_config(
+                stack_cfg=StackedTransformerLayer.default_config(),
+                num_layers=2,
+                hidden_dim=hidden_dim,
+                num_heads=num_heads,
+                vocab_size=vocab_size,
+                activation_function="nn.relu",
+                max_position_embeddings=source_length,
+            ).set(name="decoder")
+            # Use CausalAttentionLogitBiasLayer for the ref layer.
+            ref_cfg.transformer.layer.self_attention.attention.causal = False
+            ref_cfg.attention_mask = CausalAttentionLogitBiasLayer.default_config()
+            # Flash attention does not support bias.
+            set_bias_recursively(ref_cfg, bias=False)
+            ref_decoder = ref_cfg.instantiate(parent=None)
+            # pylint: enable=duplicate-code
+            ref_decoder_state = ref_decoder.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+            test_decoder_cfg = make_test_decoder_config(ref_cfg.clone())
+            test_decoder = test_decoder_cfg.instantiate(parent=None)
+            test_decoder_state = ref_decoder_state
+
+            input_ids = jax.random.randint(
+                jax.random.PRNGKey(1), minval=1, maxval=vocab_size, shape=(3, source_length)
+            )
+
+            # Test values.
+            def layer_output(state, layer):
+                return functional(
+                    layer,
+                    inputs=dict(input_ids=input_ids),
+                    state=state,
+                    is_training=False,
+                    prng_key=jax.random.PRNGKey(2),
+                )[0]["logits"]
+
+            ref_decoder_logits = layer_output(ref_decoder_state, ref_decoder)
+            test_decoder_logits = layer_output(test_decoder_state, test_decoder)
+            assert_allclose(ref_decoder_logits, test_decoder_logits)
+
+            # Test decode.
+            # Explicitly fill positions >= prefix_length with pad_token_id.
+            # Note that each batch example may have a different prefix length.
+            # [batch_size, source_length].
+            prefix_length = jnp.array([1, 3, 6])
+            prefix_mask = jnp.arange(source_length) < prefix_length[:, None]
+            prefix = input_ids * prefix_mask + ref_cfg.pad_token_id * (1 - prefix_mask)
+            # Set last token to a non-pad token, to fix the prefix length.
+            oh_indices = jax.nn.one_hot(prefix_length - 1, source_length, dtype=prefix.dtype)
+            prefix = prefix * (1 - oh_indices) + ref_cfg.eos_token_id * oh_indices
+            inputs = dict(
+                prefix=prefix,
+                max_sequence_length=source_length,
+                num_decodes=2,
+            )
+            test_decoder_outputs, _ = functional(
+                test_decoder,
+                inputs=inputs,
+                state=test_decoder_state,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(2),
+                method="beam_search_decode",
+            )
+            with utils.numeric_checks(False):
+                ref_decoder_outputs, _ = functional(
+                    ref_decoder,
+                    inputs=inputs,
+                    state=ref_decoder_state,
+                    is_training=False,
+                    prng_key=jax.random.PRNGKey(2),
+                    method="beam_search_decode",
+                )
+        np.testing.assert_array_equal(test_decoder_outputs.sequences, ref_decoder_outputs.sequences)
 
     @parameterized.parameters(None, 0.0, 0.2)
     def test_dropout_rate(self, output_dropout_rate):
@@ -149,6 +278,44 @@ class TestDecoder(TestCase):
             layer_test.output_dropout.config.rate,
             dropout_rate if output_dropout_rate is None else output_dropout_rate,
         )
+
+    def test_add_tensor_stats(self):
+        hidden_dim = 12
+        num_heads = 4
+        vocab_size = 24
+        source_length = 11
+
+        decoder = gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=1,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+            activation_function="nn.relu",
+            max_position_embeddings=source_length,
+        )
+        decoder = decoder.set(tensor_stats=DefaultTensorStats.default_config())
+        layer = decoder.set(name="decoder").instantiate(parent=None)
+        layer_state = layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        inputs = jax.random.randint(
+            jax.random.PRNGKey(1), minval=1, maxval=vocab_size, shape=(3, source_length)
+        )
+
+        _, output_collection = functional(
+            layer,
+            inputs=dict(input_ids=inputs),
+            state=layer_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+        )
+        if "tensor_stats" in output_collection.summaries:
+            output_stats = output_collection.summaries["tensor_stats"]
+        else:
+            output_stats = {}
+        expected_stats = ["outputs", "norm_outputs"]
+        for k in expected_stats:
+            assert k in output_stats
 
     @parameterized.product(
         use_cross_attention=[False, True],
@@ -488,6 +655,28 @@ class TestDecoder(TestCase):
                 self.assertTrue(
                     jnp.all(sequences * (1 - prefix_mask) == (vocab_size - 1) * (1 - prefix_mask))
                 )
+
+    def test_output_logits_modifier(self):
+        """Tests the output_logits_modifier config property of `Decoder`."""
+
+        with unittest.mock.patch.object(
+            causal_lm.Decoder, "_forward_for_mode", lambda *args, **kwargs: (None, dict(logits=5))
+        ), unittest.mock.patch.object(causal_lm.Decoder, "compute_attention_logit_biases"):
+            decoder_cfg = gpt_decoder_config(
+                stack_cfg=StackedTransformerLayer.default_config(),
+                num_layers=2,
+                hidden_dim=5,
+                num_heads=1,
+                vocab_size=5,
+                activation_function="nn.relu",
+                max_position_embeddings=5,
+            )
+            output_logits_modifier = config_for_function(logit_modifiers.scale_by).set(
+                temperature=1 / 17
+            )
+            decoder_cfg.set(name="tmp", output_logits_modifier=output_logits_modifier)
+            decoder = decoder_cfg.instantiate(parent=None)
+            chex.assert_trees_all_close(decoder(5 * jnp.ones(3)), dict(logits=17 * 5 * jnp.ones(3)))
 
 
 class UtilsTest(TestCase):

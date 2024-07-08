@@ -11,12 +11,12 @@ from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 
 def _load_trainer_configs(
-    config_module: str, *, root_module: str, optional: bool = False
+    config_module: str, *, optional: bool = False
 ) -> Dict[str, TrainerConfigFn]:
     try:
-        module = import_module(f"{root_module}.experiments.{config_module}")
+        module = import_module(config_module)
         return module.named_trainer_configs()
-    except ImportError:
+    except (ImportError, AttributeError):
         if not optional:
             raise
         logging.warning(
@@ -25,15 +25,12 @@ def _load_trainer_configs(
     return {}
 
 
-def get_named_trainer_config(
-    config_name: str, *, config_module: str, root_module: str
-) -> TrainerConfigFn:
+def get_named_trainer_config(config_name: str, *, config_module: str) -> TrainerConfigFn:
     """Looks up TrainerConfigFn by config name.
 
     Args:
         config_name: Candidate config name.
         config_module: Config module name.
-        root_module: Root module containing config_module.
 
     Returns:
         A TrainerConfigFn corresponding to the config name.
@@ -41,7 +38,7 @@ def get_named_trainer_config(
     Raises:
         KeyError: Error containing the message to show to the user.
     """
-    config_map = _load_trainer_configs(config_module, root_module=root_module)
+    config_map = _load_trainer_configs(config_module)
     if callable(config_map):
         return config_map(config_name)
 
@@ -53,7 +50,10 @@ def get_named_trainer_config(
             message = f"Unrecognized config {config_name}; did you mean [{', '.join(similar)}]"
         else:
             message = (
-                f"Unrecognized config {config_name}; "
-                "please see the 'experiments' directory for available configs."
+                f"Unrecognized config {config_name} under {config_module}; "
+                f"Please make sure that the following conditions are met:\n"
+                f"    1. {config_module} can be imported; "
+                f"    2. {config_module} defines `named_trainer_configs()`; "
+                f"    3. `named_trainer_configs()` returns a dict with '{config_name}' as a key."
             )
         raise KeyError(message) from e

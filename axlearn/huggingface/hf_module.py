@@ -242,4 +242,4 @@ class HfModuleWrapper(BaseModel, ABC):
         """
         hf_module = self.children[HF_MODULE_KEY]
         hf_output = hf_module(**self._forward_kwargs(input_batch))
-        return hf_output
+        return dict(hf_output)

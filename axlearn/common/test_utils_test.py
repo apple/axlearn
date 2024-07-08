@@ -1,11 +1,41 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for test_utils.py."""
+import unittest
 
 import jax
+import jax.numpy as jnp
 from absl.testing import absltest, parameterized
 
 from axlearn.common import test_utils
+from axlearn.common.base_layer import BaseLayer
+from axlearn.common.config import ConfigOr
+from axlearn.common.layers import Linear
+
+
+class BindTest(test_utils.TestCase):
+    """Tests trainer config utils."""
+
+    LAYER_CFG = Linear.default_config().set(input_dim=5, output_dim=7)
+
+    def test_bind_module(self):
+        with test_utils.bind_module(
+            self.LAYER_CFG, state={"weight": jnp.ones((5, 7)), "bias": jnp.ones(7)}
+        ) as instantiated_layer:
+            result = instantiated_layer(jnp.ones(5))  # pylint:disable=not-callable
+        self.assertNestedAllClose(result, jnp.ones(7) * 6)
+
+    @parameterized.parameters(LAYER_CFG, LAYER_CFG.clone(name="tmp").instantiate(parent=None))
+    def test_bind_layer(self, layer: ConfigOr[BaseLayer]):
+        with test_utils.bind_layer(layer) as instantiated_layer:
+            result = instantiated_layer(jnp.ones(5))
+        self.assertEqual(result.shape, (7,))
+
+        with test_utils.bind_layer(
+            layer, state={"weight": jnp.ones((5, 7)), "bias": jnp.ones(7)}
+        ) as instantiated_layer:
+            result = instantiated_layer(jnp.ones(5))
+        self.assertNestedAllClose(result, jnp.ones(7) * 6)
 
 
 class CleanHLOTest(parameterized.TestCase):
@@ -32,6 +62,25 @@ class CleanHLOTest(parameterized.TestCase):
         hlo = "before" + hlo + "after"
         hlo = test_utils.clean_hlo(hlo)
         self.assertEqual(hlo, "beforeafter")
+
+
+class TestCaseTest(test_utils.TestCase):
+    def test_super_setup_teardown_called(self):
+        """Tests that super() calls are made in setUp and tearDown.
+
+        Without this, functionality like `self.enter_context()` breaks.
+        """
+        t = test_utils.TestCase()
+        with unittest.mock.patch.multiple(
+            parameterized.TestCase, setUp=unittest.mock.DEFAULT, tearDown=unittest.mock.DEFAULT
+        ) as mocks:
+            t.setUp()
+            mocks["setUp"].assert_called_once()
+            mocks["tearDown"].assert_not_called()
+
+            t.tearDown()
+            mocks["setUp"].assert_called_once()
+            mocks["tearDown"].assert_called_once()
 
 
 if __name__ == "__main__":

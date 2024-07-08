@@ -1,23 +1,20 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests dataflow launch."""
+
 import contextlib
 from unittest import mock
 
 from absl import app, flags
 from absl.testing import parameterized
 
-from axlearn.cloud.common.bundler import DockerBundler
-from axlearn.cloud.gcp import bundler
+from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE, BaseDockerBundler, _bundlers
+from axlearn.cloud.common.utils import canonicalize_to_string
+from axlearn.cloud.gcp import bundler, job
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.jobs import cpu_runner, dataflow
 from axlearn.cloud.gcp.jobs.cpu_runner_test import mock_vm
-from axlearn.cloud.gcp.jobs.dataflow import (
-    DataflowJob,
-    _docker_bundler_to_flags,
-    launch_flags,
-    main,
-)
+from axlearn.cloud.gcp.jobs.dataflow import DataflowJob, _docker_bundler_to_flags, main
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
@@ -37,6 +34,10 @@ def _mock_gcp_settings():
         mock_gcp_settings(module.__name__, settings=mock_settings)
         for module in [dataflow, bundler, cpu_runner]
     ]
+    mocks += [
+        mock.patch(f"{job.__name__}.default_project", return_value="test_project"),
+        mock.patch(f"{job.__name__}.default_zone", return_value="test_zone"),
+    ]
     with contextlib.ExitStack() as stack:
         for m in mocks:
             stack.enter_context(m)
@@ -45,20 +46,11 @@ def _mock_gcp_settings():
 
 def _mock_flags():
     fv = flags.FlagValues()
-    launch_flags(flag_values=fv)
+    DataflowJob.define_flags(fv)
     fv.mark_as_parsed()
     fv.set_default("bundler_spec", ["image=test_image"])
     fv.set_default("name", "test_name")
     return fv
-
-
-def _mock_dataflow(module_name: str):
-    return mock.patch.multiple(
-        module_name,
-        get_credentials=mock.MagicMock(),
-        _dataflow_resource=mock.MagicMock(),
-        _get_dataflow_jobs=mock.MagicMock(),
-    )
 
 
 class DataflowJobTest(TestWithTemporaryCWD):
@@ -87,14 +79,16 @@ class DataflowJobTest(TestWithTemporaryCWD):
             self.assertEqual(settings["project"], dataflow_spec["project"])
             self.assertEqual(settings["zone"], dataflow_spec["region"])
             self.assertEqual(
-                settings["service_account_email"], dataflow_spec["service_account_email"]
+                settings["service_account_email"],
+                dataflow_spec["service_account_email"],
             )
             self.assertEqual(
                 f"{settings['docker_repo']}/test_image:test_name",
                 dataflow_spec["sdk_container_image"],
             )
             self.assertEqual(
-                f"gs://{settings['ttl_bucket']}/tmp/test_name/", dataflow_spec["temp_location"]
+                f"gs://{settings['ttl_bucket']}/tmp/test_name/",
+                dataflow_spec["temp_location"],
             )
             self.assertEqual(
                 f"https://www.googleapis.com/compute/v1/{settings['subnetwork']}",
@@ -105,10 +99,14 @@ class DataflowJobTest(TestWithTemporaryCWD):
             self.assertEqual("test_name", dataflow_spec["job_name"])
             self.assertEqual(fv.vm_type, dataflow_spec["worker_machine_type"])
 
-            # Test overridding specs (including a multi-flag)
+            # Test overriding specs (including a multi-flag)
             fv.set_default(
                 "dataflow_spec",
-                ["project=other_project", "temp_location=other_location", "experiments=exp1,exp2"],
+                [
+                    "project=other_project",
+                    "temp_location=other_location",
+                    "experiments=exp1,exp2",
+                ],
             )
             cfg = DataflowJob.from_flags(fv)
             # pylint: disable-next=protected-access
@@ -125,24 +123,47 @@ class DataflowJobTest(TestWithTemporaryCWD):
 class UtilsTest(TestWithTemporaryCWD):
     """Tests util functions."""
 
-    def test_docker_bundler_to_flags(self):
-        cfg = DockerBundler.default_config().set(
-            dockerfile="test_dockerfile",
+    @parameterized.parameters(
+        [
+            bundler_klass
+            for bundler_klass in _bundlers.values()
+            if issubclass(bundler_klass, BaseDockerBundler)
+        ]
+    )
+    def test_docker_bundler_to_flags(self, bundler_klass: BaseDockerBundler):
+        cfg = bundler_klass.default_config().set(
             image="test_image",
             repo="test_repo",
-            build_args={"a": "test", "b": 123},
+            dockerfile="test_dockerfile",
+            build_args={"a": "test", "b": "123"},
+            allow_dirty=True,
+            cache_from=("cache1", "cache2"),
         )
-        self.assertEqual(
-            [
-                "--bundler_spec=a=test",
-                "--bundler_spec=b=123",
-                "--bundler_spec=dockerfile=test_dockerfile",
-                "--bundler_spec=image=test_image",
-                "--bundler_spec=repo=test_repo",
-                "--bundler_type=docker",
-            ],
-            sorted(_docker_bundler_to_flags(cfg)),
+        fv = flags.FlagValues()
+        fv.mark_as_parsed()
+        spec_flags = [
+            "--bundler_spec=a=test",
+            "--bundler_spec=allow_dirty=True",
+            "--bundler_spec=b=123",
+            "--bundler_spec=dockerfile=test_dockerfile",
+            f"--bundler_spec=exclude={canonicalize_to_string(BUNDLE_EXCLUDE)}",
+            "--bundler_spec=image=test_image",
+            "--bundler_spec=platform=linux/amd64",
+            "--bundler_spec=repo=test_repo",
+            "--bundler_spec=cache_from=cache1,cache2",
+        ]
+        all_flags = [f"--bundler_type={bundler_klass.TYPE}"] + spec_flags
+        actual = _docker_bundler_to_flags(cfg, fv=fv)
+        self.assertSameElements(all_flags, actual)
+
+        re_cfg = bundler_klass.from_spec(
+            [x.replace("--bundler_spec=", "") for x in spec_flags], fv=fv
         )
+        for name, value in re_cfg.items():
+            self.assertEqual(
+                canonicalize_to_string(getattr(cfg, name, None)),
+                canonicalize_to_string(value),
+            )
 
 
 @contextlib.contextmanager
@@ -158,11 +179,10 @@ def _mock_job(running_from_vm: bool, **kwargs):
 class DataflowMainTest(TestWithTemporaryCWD):
     """Tests CLI entrypoint."""
 
-    def test_launch_flags(self):
+    def test_define_flags(self):
         fv = flags.FlagValues()
-        launch_flags(flag_values=fv)
+        DataflowJob.define_flags(fv)
         # Basic sanity check.
-        self.assertEqual(fv["bundler_type"].default, ArtifactRegistryBundler.TYPE)
         self.assertEqual(fv["vm_type"].default, "n2-standard-2")
 
     @parameterized.parameters(True, False)

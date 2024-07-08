@@ -4,15 +4,17 @@
 # pylint: disable=protected-access
 import contextlib
 import threading
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import chex
 import jax.random
 import numpy as np
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
+from axlearn.common import summary, test_utils
 from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import (
     InvocationContext,
     Module,
@@ -30,9 +32,9 @@ from axlearn.common.module import (
     scan_in_context,
     set_current_context,
 )
-from axlearn.common.summary import ImageSummary
+from axlearn.common.summary import ImageSummary, Summary
 from axlearn.common.test_utils import TestWithTemporaryCWD
-from axlearn.common.utils import match_regex_rules
+from axlearn.common.utils import Nested, match_regex_rules
 
 
 class OutputCollectionTest(absltest.TestCase):
@@ -90,7 +92,7 @@ def new_test_module(name: str) -> TestModule:
     return TestModule.default_config().set(name=name).instantiate(parent=None)
 
 
-class InvocationContextTest(absltest.TestCase):
+class InvocationContextTest(test_utils.TestCase):
     def test_context_output_collection(self):
         context = InvocationContext(
             name="root",
@@ -201,6 +203,41 @@ class InvocationContextTest(absltest.TestCase):
             context2 = context1.add_child("context2", module=module2, state={"x": 2})
             self.assertEqual(context2.prng_key, None)
 
+    class MySummary(summary.Summary):
+        val: str
+
+        def validate(self):
+            if self.val == "s":
+                raise ValueError("not allowed")
+
+    @parameterized.parameters(
+        [MySummary("s"), True],
+        [dict(a=3, b=MySummary("s")), True],
+        [dict(a=3, b=MySummary("t")), False],
+        [dict(a=MySummary("t"), b=MySummary("s")), True],
+        [dict(a=MySummary("t"), b=MySummary("r")), False],
+    )
+    def test_add_summary_validation(
+        self, value: Nested[Union[Summary, Tensor]], should_raise: bool
+    ):
+        """Tests validation in `add_summary("summary", value)`."""
+        module1 = new_test_module("test1")
+        ctx = InvocationContext(
+            name="context1",
+            parent=None,
+            module=module1,
+            prng_key=None,
+            is_training=True,
+            state={"x": 1},
+            output_collection=new_output_collection(),
+        )
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(set_current_context(ctx))
+            if should_raise:
+                stack.enter_context(self.assertRaises(ValueError))
+            ctx.add_summary("summary", value)
+
 
 class NestedModule(Module):
     """A nested module."""
@@ -220,7 +257,7 @@ class NestedModule(Module):
         cfg = self.config
         # It is ok to call another method of 'self' directly, if it is invoked only once in the
         # current context.
-        self.vprint(1, "input={x} cfg.child=\n{child}", x=x, child=str(cfg.child))
+        self.vprint(1, "input={x}", x=x)
         x = self.inc(x)
         if cfg.child is not None:
             # Can also call children directly, if each child is invoked only once.
@@ -634,6 +671,7 @@ class ScanInContextTest(TestWithTemporaryCWD):
                     output=x_i,
                 ),
             )
+            ctx.add_summary("carry", WeightedScalar(carry_i.mean(), carry_i.size))
             return carry_i + 1, x_i + carry_i + state_i
 
         xs["xs"] = jnp.arange(num_iters, dtype=jnp.int32)[:, None] * jnp.ones(
@@ -687,10 +725,11 @@ class ScanInContextTest(TestWithTemporaryCWD):
 
     def test_drop_output(self):
         num_iters = 3
+        child_name_prefix = "foo"
 
         # By default, nothing is dropped.
         with self._dummy_context() as ctx:
-            self._invoke(num_iters=num_iters, xs={})
+            self._invoke(num_iters=num_iters, xs={}, child_name_prefix=child_name_prefix)
             self.assertNestedEqual(
                 {
                     "output": jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -699,12 +738,25 @@ class ScanInContextTest(TestWithTemporaryCWD):
                         "with_state": {"output": jnp.array([[0, 10], [2, 12], [4, 14]])},
                     },
                 },
-                ctx.output_collection.module_outputs["nested"],
+                ctx.output_collection.module_outputs[child_name_prefix]["nested"],
+            )
+            # Summary values are put in `{child_name_prefix}{i}`.
+            self.assertNestedEqual(
+                {
+                    f"{child_name_prefix}{i}": {"carry": WeightedScalar(i, 1)}
+                    for i in range(num_iters)
+                },
+                ctx.output_collection.summaries,
             )
 
         # Invoke with an output dropper that drops everything.
         with self._dummy_context() as ctx:
-            self._invoke(num_iters=num_iters, xs={}, drop_output=lambda _: True)
+            self._invoke(
+                num_iters=num_iters,
+                xs={},
+                drop_output=lambda _: True,
+                child_name_prefix=child_name_prefix,
+            )
             self.assertNestedEqual({}, ctx.output_collection.module_outputs)
 
         # Invoke with an output dropper that matches specific paths.
@@ -713,12 +765,13 @@ class ScanInContextTest(TestWithTemporaryCWD):
                 num_iters=num_iters,
                 xs={},
                 drop_output=lambda path: match_regex_rules(path, rules=[(".*/with_carry.*", True)]),
+                child_name_prefix=child_name_prefix,
             )
             self.assertNestedEqual(
                 {
                     "output": jnp.array([[0, 0], [1, 1], [2, 2]]),
                 },
-                ctx.output_collection.module_outputs["nested"],
+                ctx.output_collection.module_outputs[child_name_prefix]["nested"],
             )
 
         # Invoke with an output dropper that matches specific paths.
@@ -727,6 +780,7 @@ class ScanInContextTest(TestWithTemporaryCWD):
                 num_iters=num_iters,
                 xs={},
                 drop_output=lambda path: match_regex_rules(path, rules=[(".*/with_state.*", True)]),
+                child_name_prefix=child_name_prefix,
             )
             self.assertNestedEqual(
                 {
@@ -735,7 +789,7 @@ class ScanInContextTest(TestWithTemporaryCWD):
                         "output": jnp.array([[0, 0], [2, 2], [4, 4]]),
                     },
                 },
-                ctx.output_collection.module_outputs["nested"],
+                ctx.output_collection.module_outputs[child_name_prefix]["nested"],
             )
 
 

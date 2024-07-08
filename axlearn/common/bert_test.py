@@ -68,10 +68,7 @@ def dummy_inputs_for_mlm(
     np.putmask(input_ids, attention_mask, padding_input_id)
     # hf expects the opposite masking scheme as we do:
     # A float value of 0. represents padding and 1. represents non-padding.
-    attention_mask = np.logical_not(attention_mask)
-    hf_attention_mask = np.logical_and(
-        attention_mask[:, None, :], attention_mask[:, :, None]
-    ).astype(jnp.float32)
+    hf_attention_mask = np.logical_not(attention_mask)
 
     test_inputs = dict(
         input_ids=input_ids,
@@ -677,6 +674,14 @@ class BertTest(TestCase):
             assert_allclose(loss, utils.as_tensor(ref_outputs.loss))
 
     # pylint: enable=duplicate-code
+    def test_respect_custom_layer_norm_eps(self):
+        expected_eps = 1e-6
+        self.assertNotEqual(expected_eps, bert.bert_layer_norm_epsilon())
+        transformer_cfg = bert.bert_transformer_config(
+            num_layers=1, num_heads=2, layer_norm_epsilon=expected_eps
+        )
+        self.assertEqual(transformer_cfg.layer.self_attention.norm.eps, expected_eps)
+        self.assertEqual(transformer_cfg.layer.feed_forward.norm.eps, expected_eps)
 
 
 if __name__ == "__main__":

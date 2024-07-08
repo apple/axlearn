@@ -1,4 +1,8 @@
 # Copyright © 2023 Apple Inc.
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests audio frontends."""
 
@@ -10,8 +14,11 @@ import jax.numpy as jnp
 import pytest
 import tensorflow as tf
 from absl.testing import parameterized
+from jax.experimental import mesh_utils
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from axlearn.audio.frontend import LogMelFrontend, _ms_to_samples, normalize_by_mean_std
+from axlearn.audio.frontend_utils import sharded_fft
 from axlearn.audio.frontend_utils_test import (
     _ref_framer,
     _ref_log_mel_spectrogram,
@@ -36,6 +43,7 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             sample_rate=sample_rate,
             frame_size_ms=frame_size_ms,
             hop_size_ms=hop_size_ms,
+            mel_floor=1.0,
         )
         with self.assertRaisesRegex(ValueError, "must be an integer"):
             cfg.set(name="test").instantiate(parent=None)
@@ -93,6 +101,7 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             sample_rate=sample_rate,
             frame_size_ms=frame_size_ms,
             hop_size_ms=hop_size_ms,
+            mel_floor=1.0,
         )
         layer: LogMelFrontend = cfg.set(name="test").instantiate(parent=None)
         test_outputs = self._jit_forward(layer, inputs, paddings)
@@ -115,6 +124,7 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             sample_rate=sample_rate,
             frame_size_ms=frame_size_ms,
             hop_size_ms=hop_size_ms,
+            mel_floor=1.0,
         )
         layer = cfg.set(name="test").instantiate(parent=None)
 
@@ -153,9 +163,106 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             frame_size_ms=25,
             hop_size_ms=10,
             output_dim=2,
+            mel_floor=1.0,
         )
         with self.assertRaisesRegex(ValueError, "output_dim"):
             cfg.set(name="test").instantiate(parent=None)
+
+    def test_small_input(self):
+        sample_rate, batch_size, max_seconds = 16_000, 4, 13
+        num_filters = 80
+
+        # Construct fake inputs.
+        inputs, paddings = fake_audio(
+            prng_key=jax.random.PRNGKey(123),
+            batch_size=batch_size,
+            seq_len=max_seconds * sample_rate,
+            dtype=jnp.float64,
+            scale=1.0,
+        )
+
+        cfg: LogMelFrontend.Config = LogMelFrontend.default_config().set(
+            num_filters=num_filters,
+            sample_rate=sample_rate,
+            frame_size_ms=25,
+            hop_size_ms=10,
+            mel_floor=1.0,
+        )
+        layer: LogMelFrontend = cfg.set(name="test").instantiate(parent=None)
+        test_outputs = self._jit_forward(layer, inputs, paddings)
+        num_zero_elements = jnp.size(jnp.where(test_outputs["outputs"] == 0)[0])
+        total_elements = jnp.size(test_outputs["outputs"])
+        print(f"percentage of zero elements: {num_zero_elements / total_elements * 100}%")
+        # When the input signal is [-0.1, 0.1] uniform distributed noise,
+        # about 77.90% of the log-mel are zero;
+        # When the input signal is [-1, 1] uniform distributed noise,
+        # about 62.10% of the log-mel are zero.
+        # When the input signal is [-32768, 32767] uniform distributed noise,
+        # about 56.02% of the log-mel are zero.
+        output_with_large_mel_floor = test_outputs["outputs"]
+
+        cfg_with_small_floor = cfg.set(mel_floor=1e-6)
+        layer: LogMelFrontend = cfg_with_small_floor.set(name="test").instantiate(parent=None)
+        test_outputs = self._jit_forward(layer, inputs, paddings)
+        num_zero_elements = jnp.size(jnp.where(test_outputs["outputs"] == 0)[0])
+        total_elements = jnp.size(test_outputs["outputs"])
+        print(f"percentage of zero elements: {num_zero_elements / total_elements * 100}%")
+        # Regardless whether input signal is [-1, 1] or [-0.1, 0.1] or [-32768, 32768)
+        # about 56.02% of the log-mel are zero. This is due to the Mel matrix.
+        output_with_correct_mel_floor = test_outputs["outputs"]
+
+        # When the value of the incorrect output is not zero, then it should be right.
+        self.assertAllClose(
+            jnp.where(
+                output_with_large_mel_floor == 0,
+                output_with_correct_mel_floor,
+                output_with_large_mel_floor,
+            ),
+            output_with_correct_mel_floor,
+        )
+
+    def test_fft(self):
+        sample_rate, batch_size, max_seconds = 16_000, 8, 13
+        num_filters, frame_size_ms, hop_size_ms = 80, 25, 10
+        # Construct fake inputs.
+        inputs, paddings = fake_audio(
+            prng_key=jax.random.PRNGKey(123),
+            batch_size=batch_size,
+            seq_len=max_seconds * sample_rate,
+            dtype=jnp.float32,
+            scale=1.0,
+        )
+        cfg: LogMelFrontend.Config = LogMelFrontend.default_config().set(
+            num_filters=num_filters,
+            sample_rate=sample_rate,
+            frame_size_ms=frame_size_ms,
+            hop_size_ms=hop_size_ms,
+            mel_floor=1.0,
+        )
+        # Note we expect the fft_transformation to explicitly config sharding.
+        fft_cfg = config_for_function(sharded_fft).set(
+            partition_spec=PartitionSpec("data", None, None)
+        )
+        ref_layer = cfg.clone(name="ref").instantiate(parent=None)
+
+        with Mesh(
+            mesh_utils.create_device_mesh((len(jax.devices()), 1)), ("data", "model")
+        ) as mesh:
+            # The sharded fn should be within a mesh context.
+            layer = cfg.clone(name="test", fft=fft_cfg).instantiate(parent=None)
+            inputs = jax.device_put(
+                inputs,
+                NamedSharding(mesh, PartitionSpec("data", None)),
+            )
+            paddings = jax.device_put(
+                paddings,
+                NamedSharding(mesh, PartitionSpec("data", None)),
+            )
+            ref_outputs = self._jit_forward(ref_layer, inputs, paddings)
+            test_outputs = self._jit_forward(layer, inputs, paddings)
+
+        self.assertAllClose(ref_outputs["outputs"], test_outputs["outputs"])
+        self.assertAllClose(ref_outputs["paddings"], test_outputs["paddings"])
 
 
 def _ref_frontend(

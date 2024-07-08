@@ -2,6 +2,7 @@
 
 # pylint: disable=too-many-lines
 """A library to build trainer states, e.g., from checkpoints of other models."""
+
 import copy
 import enum
 import functools
@@ -21,6 +22,7 @@ from axlearn.common import utils
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.checkpointer import (
     CheckpointValidationType,
+    StateStorage,
     TensorStoreStateStorage,
     check_state_structure,
     parse_step_from_dir,
@@ -376,6 +378,8 @@ class TensorStoreStateStorageBuilder(Builder):
         dir: Required[str] = REQUIRED
         validation: CheckpointValidationType = CheckpointValidationType.EXACT
         concurrent_gb: int = 32
+        # A config that instantiates to a StateStorage.
+        storage: StateStorage.Config = TensorStoreStateStorage.default_config()
 
     @classmethod
     def spec_to_config(cls, spec: str) -> Config:
@@ -394,7 +398,7 @@ class TensorStoreStateStorageBuilder(Builder):
             The restored state.
         """
         cfg = self.config
-        storage = TensorStoreStateStorage.default_config().instantiate()
+        storage = cfg.storage.instantiate()
         step = parse_step_from_dir(cfg.dir)
         restored_state = storage.restore_from_dir(
             step=step,
@@ -438,6 +442,7 @@ class BaseConverterFromPretrainedModel(Converter):
             trainer_cfg.mesh_shape = infer_mesh_shape(
                 cfg.mesh_shape or trainer_cfg.mesh_shape or (len(jax.devices()), 1)
             )
+            trainer_cfg.evalers = {}
             trainer = trainer_cfg.instantiate(parent=None)
             # pytype: enable=attribute-error
             source = Builder.State(
@@ -543,7 +548,7 @@ def traverse_and_set_target_state_parameters(
 class FlaxPretrainedBuilder(Builder):
     """Builds (partial) model state from supplied flax states.
 
-    The function reads model parameters from cofigured state supplier, and
+    The function reads model parameters from configured state supplier, and
     sets the corresponding model state to these parameters.
 
     In the following context, the target refers to the model state.
@@ -962,6 +967,7 @@ class EmaParamsConverter(Converter):
         )
         if (
             aux.trainer_state.learner is not None
+            and "ema" in aux.trainer_state.learner
             and aux.trainer_state.learner["ema"].ema is not optax.EmptyState()
         ):
             # Load ema weight to target ema.

@@ -1,8 +1,12 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests bastion orchestrator."""
+
 # pylint: disable=no-self-use,protected-access
+# pytype: disable=wrong-arg-types
 import contextlib
+import copy
+import itertools
 import os
 import subprocess
 import tempfile
@@ -10,27 +14,35 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Sequence
 from unittest import mock
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common import bastion
 from axlearn.cloud.common.bastion import (
     _JOB_DIR,
     _LOG_DIR,
     Bastion,
+    BastionDirectory,
     Job,
     JobState,
+    JobStatus,
+    ValidationError,
+    _download_job_state,
     _load_runtime_options,
     _PipedProcess,
+    _upload_job_state,
+    _validate_jobspec,
     deserialize_jobspec,
     download_job_batch,
+    is_valid_job_name,
     new_jobspec,
     serialize_jobspec,
     set_runtime_options,
 )
 from axlearn.cloud.common.cleaner import Cleaner
-from axlearn.cloud.common.scheduler import JobMetadata, JobScheduler
+from axlearn.cloud.common.quota import UserQuotaInfo
+from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.scheduler_test import mock_quota_config
-from axlearn.cloud.common.types import ResourceMap
+from axlearn.cloud.common.types import JobMetadata, JobSpec, ResourceMap
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.common.config import config_for_function
 
@@ -44,16 +56,19 @@ class TestDownloadJobBatch(parameterized.TestCase):
         user_state_dir = "gs://user_state_dir"
 
         user_states = {
-            "job_test1": JobState.CANCELLING,
-            "job_test2": JobState.ACTIVE,
-            "job_test0": JobState.CANCELLING,
-            "job_test3": JobState.CANCELLING,
+            "job_test1": JobState(
+                status=JobStatus.CANCELLING,
+                metadata={"ignored": 123},
+            ),
+            "job_test2": JobState(status=JobStatus.ACTIVE, metadata={"ignored": 123}),
+            "job_test0": JobState(status=JobStatus.CANCELLING),
+            "job_test3": JobState(status=JobStatus.CANCELLING),
         }
         states = {
-            "job_test1": JobState.ACTIVE,
-            "job_test0": JobState.CLEANING,
-            "job_test3": JobState.COMPLETED,
-            "job_test4": JobState.PENDING,
+            "job_test1": JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
+            "job_test0": JobState(status=JobStatus.CLEANING, metadata={"tier": 0}),
+            "job_test3": JobState(status=JobStatus.COMPLETED, metadata={"tier": 1}),
+            "job_test4": JobState(status=JobStatus.PENDING),
         }
         jobspecs = {
             "job_test2": mock.Mock(),
@@ -65,14 +80,14 @@ class TestDownloadJobBatch(parameterized.TestCase):
         expected = {
             # User state is invalid and is ignored. Job state defaults to PENDING, since it's
             # missing a state.
-            "job_test2": JobState.PENDING,
-            # User state should take effect.
-            "job_test1": JobState.CANCELLING,
+            "job_test2": JobState(status=JobStatus.PENDING),
+            # User state should take effect. Note that we do not read metadata from user states.
+            "job_test1": JobState(status=JobStatus.CANCELLING, metadata={"tier": 0}),
             # User state should not affect CLEANING/COMPLETED.
-            "job_test0": JobState.CLEANING,
-            "job_test3": JobState.COMPLETED,
+            "job_test0": JobState(status=JobStatus.CLEANING, metadata={"tier": 0}),
+            "job_test3": JobState(status=JobStatus.COMPLETED, metadata={"tier": 1}),
             # Has no user state.
-            "job_test4": JobState.PENDING,
+            "job_test4": JobState(status=JobStatus.PENDING),
         }
 
         def mock_listdir(path):
@@ -92,7 +107,7 @@ class TestDownloadJobBatch(parameterized.TestCase):
             del kwargs
             if remote_dir == state_dir:
                 # Job state may be initially missing, thus defaults to PENDING.
-                return states.get(job_name, JobState.PENDING)
+                return states.get(job_name, JobState(status=JobStatus.PENDING))
             if remote_dir == user_state_dir:
                 # We should only query user states if one exists, so don't use get().
                 return user_states[job_name]
@@ -102,16 +117,17 @@ class TestDownloadJobBatch(parameterized.TestCase):
             bastion.__name__,
             _download_jobspec=mock.Mock(side_effect=mock_download_jobspec),
             _download_job_state=mock.Mock(side_effect=mock_download_job_state),
+            _listdir=mock.Mock(side_effect=mock_listdir),
+            _remove=mock.DEFAULT,
         )
-        patch_tfio = mock.patch(f"{bastion.__name__}.tf_io.gfile.listdir", side_effect=mock_listdir)
-
         # Ensure that results are in the right order and pairing.
-        with patch_fns, patch_tfio, tempfile.TemporaryDirectory() as tmpdir:
+        with patch_fns as mock_fns, tempfile.TemporaryDirectory() as tmpdir:
             jobs, jobs_with_user_states = download_job_batch(
                 spec_dir=spec_dir,
                 state_dir=state_dir,
                 user_state_dir=user_state_dir,
                 local_spec_dir=tmpdir,
+                remove_invalid_job_specs=True,
             )
             self.assertSameElements(expected.keys(), jobs.keys())
             # "job_test1" is the only valid user state, but we still cleanup the others.
@@ -119,6 +135,124 @@ class TestDownloadJobBatch(parameterized.TestCase):
             for job_name, job in jobs.items():
                 self.assertEqual(job.state, expected[job_name])
                 self.assertEqual(job.spec, jobspecs[job_name])
+            # Make sure we do not remove any valid jobspecs.
+            self.assertFalse(mock_fns["_remove"].called)
+
+    @parameterized.parameters(
+        dict(name="", valid=False),
+        dict(name="test", valid=True),
+        dict(name=".", valid=False),
+        dict(name="..", valid=False),
+        dict(name="test/dir", valid=False),
+        dict(name="..test", valid=True),  # This is a valid file name.
+        dict(name="test.job..", valid=True),  # This is a valid file name.
+    )
+    def test_is_valid_job_name(self, name, valid):
+        self.assertEqual(valid, is_valid_job_name(name))
+
+    def test_invalid_names(self):
+        # Test that we drop invalid names.
+        jobspecs = ["test-job", "test0123_job0123", "test/invalid"]
+        user_states = ["test/invalid_user_state"]
+        valid_jobspecs = [job_name for job_name in jobspecs if is_valid_job_name(job_name)]
+
+        def mock_listdir(d):
+            if d == "FAKE_SPECS":
+                return jobspecs
+            elif d == "FAKE_USER_STATES":
+                return user_states
+            return []
+
+        patch_fns = mock.patch.multiple(
+            bastion.__name__,
+            _listdir=mock.Mock(side_effect=mock_listdir),
+            _download_jobspec=mock.DEFAULT,
+            _download_job_state=mock.DEFAULT,
+            _remove=mock.DEFAULT,
+        )
+        with patch_fns as mock_fns:
+            download_job_batch(
+                spec_dir="FAKE_SPECS",
+                state_dir="FAKE_STATES",
+                user_state_dir="FAKE_USER_STATES",
+                local_spec_dir="FAKE",
+                remove_invalid_job_specs=True,
+            )
+            downloaded_jobs = []
+            for call_args in mock_fns["_download_jobspec"].call_args_list:
+                # call_args[0] is the positional args.
+                downloaded_jobs.append(call_args[0][0])
+            self.assertSequenceEqual(valid_jobspecs, downloaded_jobs)
+            self.assertContainsSubset(
+                ["FAKE_SPECS/test/invalid", "FAKE_USER_STATES/test/invalid_user_state"],
+                [call_args[0][0] for call_args in mock_fns["_remove"].call_args_list],
+            )
+
+    def test_invalid_membership(self):
+        # Test that we drop jobs where the user is not a member of the specified quota project id.
+        user_ids = ["a", "b", "c"]
+        project_ids = ["proj1", "proj2", "proj3", "non_existent_proj"]
+        jobspecs = {
+            str(i): JobSpec(
+                version=0,
+                name=str(i),
+                command="",
+                cleanup_command=None,
+                env_vars=None,
+                metadata=JobMetadata(
+                    user_id=user_id, project_id=project_id, creation_time=None, resources={}
+                ),
+            )
+            for i, (user_id, project_id) in enumerate(itertools.product(user_ids, project_ids))
+        }
+        user_states = []
+        project_membership = dict(proj1=["a", "b"], proj2=["a"], proj3=[".*"])
+        valid_jobspecs = [
+            name
+            for name, job_spec in jobspecs.items()
+            if job_spec.metadata.project_id == "proj3"
+            or job_spec.metadata.project_id != "non_existent_proj"
+            and job_spec.metadata.user_id in project_membership[job_spec.metadata.project_id]
+        ]
+
+        def mock_listdir(d):
+            if d == "FAKE_SPECS":
+                return list(jobspecs.keys())
+            elif d == "FAKE_USER_STATES":
+                return user_states
+            return []
+
+        def mock_download_jobspec(job_name, **kwargs):
+            del kwargs
+            return jobspecs[job_name]
+
+        mocked_download = mock.Mock(side_effect=mock_download_jobspec)
+
+        patch_fns = mock.patch.multiple(
+            bastion.__name__,
+            _listdir=mock.Mock(side_effect=mock_listdir),
+            _download_jobspec=mocked_download,
+            _download_job_state=mock.DEFAULT,
+            _remove=mock.DEFAULT,
+        )
+        with patch_fns as mock_fns:
+            returned_jobs, _ = download_job_batch(
+                spec_dir="FAKE_SPECS",
+                state_dir="FAKE_STATES",
+                user_state_dir="FAKE_USER_STATES",
+                local_spec_dir="FAKE",
+                remove_invalid_job_specs=True,
+                quota=lambda: UserQuotaInfo(
+                    total_resources=None,
+                    project_resources=None,
+                    project_membership=project_membership,
+                ),
+            )
+            self.assertSequenceEqual(valid_jobspecs, list(returned_jobs.keys()))
+            self.assertContainsSubset(
+                [f"FAKE_SPECS/{i}" for i in jobspecs if i not in valid_jobspecs],
+                [call_args[0][0] for call_args in mock_fns["_remove"].call_args_list],
+            )
 
 
 class TestJobSpec(parameterized.TestCase):
@@ -138,8 +272,9 @@ class TestJobSpec(parameterized.TestCase):
             metadata=JobMetadata(
                 user_id="test_id",
                 project_id="test_project",
-                creation_time=datetime.now(),
-                resources={"test": 8.0},
+                # Make sure str timestamp isn't truncated even when some numbers are 0.
+                creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
+                resources={"test": 8},
                 priority=1,
             ),
         )
@@ -149,6 +284,219 @@ class TestJobSpec(parameterized.TestCase):
             for key in test_spec.__dataclass_fields__:
                 self.assertIn(key, deserialized_jobspec.__dict__)
                 self.assertEqual(deserialized_jobspec.__dict__[key], test_spec.__dict__[key])
+
+    @parameterized.parameters(
+        # Test with Nones in place of Optional.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command=None,
+                env_vars=None,
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources={},
+                ),
+            ),
+            expected=None,
+        ),
+        # Test with values in place of Optional.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=None,
+        ),
+        # Test mismatch on child (wrong type on name).
+        dict(
+            x=JobSpec(
+                version=1,
+                name=123,
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("jobspec.name=123 to be a string"),
+        ),
+        # Test mismatch on child (name is None).
+        dict(
+            x=JobSpec(
+                version=1,
+                name=None,
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("jobspec.name=None to be a string"),
+        ),
+        # Test mismatch on grandchild (invalid user_id type).
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id=123,
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("metadata.user_id=123 to be a string"),
+        ),
+        # Test mismatch on grandchild (user_id is None).
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id=None,
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("metadata.user_id=None to be a string"),
+        ),
+        # Invalid type of env var keys.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars={123: "value1"},
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("string keys and values"),
+        ),
+        # Invalid type of env var values.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1=123),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1=123),
+                ),
+            ),
+            expected=ValidationError("string keys and values"),
+        ),
+        # Invalid type of resources keys.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources={123: 123},
+                ),
+            ),
+            expected=ValidationError("string keys and int values"),
+        ),
+        # Invalid type of resources values.
+        dict(
+            x=JobSpec(
+                version=1,
+                name="test",
+                command="test",
+                cleanup_command="test_cleanup",
+                env_vars=dict(env1="value1"),
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="project",
+                    creation_time=datetime.now(),
+                    resources=dict(resource1="test"),
+                ),
+            ),
+            expected=ValidationError("string keys and int values"),
+        ),
+    )
+    def test_validate_jobspec(self, x, expected):
+        if isinstance(expected, Exception):
+            ctx = self.assertRaisesRegex(type(expected), str(expected))
+        else:
+            ctx = contextlib.nullcontext()
+        with ctx:
+            _validate_jobspec(x)
+
+
+class TestJobState(parameterized.TestCase):
+    """Tests job state utils."""
+
+    @parameterized.parameters(
+        dict(state=JobState(status=JobStatus.PENDING)),
+        dict(state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0})),
+    )
+    def test_upload_download(self, state):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job_name = "test_job"
+            _upload_job_state(job_name, state, remote_dir=temp_dir)
+            downloaded = _download_job_state(job_name, remote_dir=temp_dir)
+            self.assertEqual(state, downloaded)
+
+    def test_download_not_found(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.assertEqual(
+                JobState(status=JobStatus.PENDING),
+                _download_job_state("unknown", remote_dir=temp_dir),
+            )
+
+    def test_download_compat(self):
+        # Test backwards compat with string statuses.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job_name = "test_job"
+            with open(os.path.join(temp_dir, job_name), "w", encoding="utf-8") as f:
+                f.write("active\n")
+            self.assertEqual(
+                JobState(status=JobStatus.ACTIVE),
+                _download_job_state(job_name, remote_dir=temp_dir),
+            )
 
 
 class TestRuntimeOptions(parameterized.TestCase):
@@ -180,12 +528,13 @@ def _mock_popen_fn(mock_spec: Dict[str, Dict]):
             mock.terminate()  # Raises ValueError.
     """
 
-    def popen(cmd, **kwargs):
+    def popen(cmd, env: Optional[Dict] = None, **kwargs):
         del kwargs
         if cmd not in mock_spec:
             raise ValueError(f"Don't know how to mock: {cmd}")
         m = mock.MagicMock()
         m.configure_mock(**mock_spec[cmd])
+        m.env = env
         return m
 
     return popen
@@ -197,16 +546,28 @@ def _mock_piped_popen_fn(mock_spec: Dict[str, Dict]):
     mock_popen_fn = _mock_popen_fn(mock_spec)
 
     def piped_popen(cmd, f, env_vars=None):
-        del env_vars
         mock_fd = mock.MagicMock()
         mock_fd.name = f
-        return _PipedProcess(popen=mock_popen_fn(cmd), fd=mock_fd)
+        return _PipedProcess(popen=mock_popen_fn(cmd, env=env_vars), fd=mock_fd)
 
     return piped_popen
 
 
 class BastionTest(parameterized.TestCase):
     """Tests Bastion."""
+
+    def test_piped_popen_env(self):
+        # Ensures that _piped_popen converts env values to strings.
+        # This avoids potential TypeError when invoking subprocess.Popen.
+        patch_popen = mock.patch.object(subprocess, "Popen", autospec=True)
+        with tempfile.NamedTemporaryFile("w") as f, patch_popen as mock_popen:
+            # Check that by default we call with os.environ.
+            bastion._piped_popen("test command", f.name, env_vars=None)
+            self.assertEqual(os.environ, mock_popen.call_args[1]["env"])
+
+            # Check that tier is converted to string.
+            bastion._piped_popen("test command", f.name, env_vars={"tier": 123})
+            self.assertEqual("123", mock_popen.call_args[1]["env"]["tier"])
 
     @contextlib.contextmanager
     def _patch_bastion(self, mock_popen_spec: Optional[Dict] = None):
@@ -239,16 +600,59 @@ class BastionTest(parameterized.TestCase):
                 stack.enter_context(m)
 
             cfg = Bastion.default_config().set(
-                scheduler=JobScheduler.default_config().set(
-                    quota=config_for_function(mock_quota_config)
-                ),
+                scheduler=JobScheduler.default_config(),
                 cleaner=NoOpCleaner.default_config(),
                 uploader=Uploader.default_config().set(
                     upload_fn=config_for_function(lambda: noop_upload_fn)
                 ),
                 output_dir=tmpdir,
+                quota=config_for_function(mock_quota_config),
             )
             yield cfg.instantiate()
+
+    def test_sync_jobs(self):
+        """Tests downloading jobspecs."""
+
+        with self._patch_bastion() as mock_bastion:
+            os.makedirs(mock_bastion._active_dir, exist_ok=True)
+            os.makedirs(_JOB_DIR, exist_ok=True)
+            # Create some jobspecs to download.
+            specs = [
+                new_jobspec(
+                    name="job1",
+                    command="",
+                    metadata=JobMetadata(
+                        user_id="user1",
+                        project_id="project1",
+                        creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
+                        resources={"test": 8},
+                    ),
+                ),
+                new_jobspec(
+                    name="job2",
+                    command="",
+                    metadata=JobMetadata(
+                        user_id="user2",
+                        project_id="project1",
+                        creation_time=datetime(1900, 1, 1, 0, 0, 0, 1),
+                        resources={"test": 8},
+                    ),
+                ),
+            ]
+            # Write them to the Bastion submission directory.
+            for spec in specs:
+                with tempfile.NamedTemporaryFile("w") as f:
+                    serialize_jobspec(spec, f)
+                    bastion_dir = (
+                        BastionDirectory.default_config()
+                        .set(root_dir=mock_bastion._output_dir)
+                        .instantiate()
+                    )
+                    bastion_dir.submit_job(spec.name, job_spec_file=f.name)
+            # Download the jobspecs.
+            mock_bastion._sync_jobs()
+            # Confirm expected jobs were downloaded.
+            self.assertSequenceEqual(list(mock_bastion._active_jobs), ["job1"])
 
     @parameterized.product(
         [
@@ -298,7 +702,7 @@ class BastionTest(parameterized.TestCase):
                     resources={"v4": 8},
                 ),
             ),
-            state=JobState.PENDING,
+            state=JobState(status=JobStatus.PENDING),
             command_proc=mock_proc("command", "test_command") if "command" in popen_spec else None,
             cleanup_proc=mock_proc("cleanup", "test_cleanup") if "cleanup" in popen_spec else None,
         )
@@ -313,15 +717,17 @@ class BastionTest(parameterized.TestCase):
             copy=mock.DEFAULT,
             remove=mock.DEFAULT,
         )
-        with self._patch_bastion(
-            popen_spec
-        ) as mock_bastion, patch_fns as mock_fns, patch_tfio as mock_tfio:
+        with (
+            self._patch_bastion(popen_spec) as mock_bastion,
+            patch_fns as mock_fns,
+            patch_tfio as mock_tfio,
+        ):
             # Run a couple updates to test transition to PENDING and staying in PENDING.
             for _ in range(2):
                 orig_command_proc = job.command_proc
                 updated_job = mock_bastion._update_single_job(job)
                 # Job should now be in pending.
-                self.assertEqual(updated_job.state, JobState.PENDING)
+                self.assertEqual(updated_job.state, JobState(status=JobStatus.PENDING))
                 # Command should be None.
                 self.assertIsNone(updated_job.command_proc)
 
@@ -405,7 +811,7 @@ class BastionTest(parameterized.TestCase):
                     resources={"v4": 8},
                 ),
             ),
-            state=JobState.ACTIVE,
+            state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 1}),
             command_proc=None,  # Initially, command is None.
             cleanup_proc=mock_proc("cleanup", "test_cleanup"),
         )
@@ -433,6 +839,9 @@ class BastionTest(parameterized.TestCase):
 
             # Command should be started on the first update.
             self.assertIsNotNone(updated_job.command_proc)
+            # Scheduling metadata should be set.
+            self.assertEqual({"BASTION_TIER": 1}, updated_job.command_proc.popen.env)
+
             # Log should be downloaded if it exists.
             download_call = mock.call(
                 os.path.join(mock_bastion._log_dir, job.spec.name),
@@ -443,11 +852,15 @@ class BastionTest(parameterized.TestCase):
 
             # Run until expected job completion.
             for _ in range(expect_poll_calls - 1):
-                self.assertEqual(updated_job.state, JobState.ACTIVE)
+                self.assertEqual(
+                    updated_job.state, JobState(status=JobStatus.ACTIVE, metadata={"tier": 1})
+                )
                 updated_job = mock_bastion._update_single_job(updated_job)
 
             # Job state should be CLEANING.
-            self.assertEqual(updated_job.state, JobState.CLEANING)
+            self.assertEqual(
+                updated_job.state, JobState(status=JobStatus.CLEANING, metadata={"tier": 1})
+            )
 
     # pylint: disable-next=too-many-branches
     def test_update_jobs(self):
@@ -490,7 +903,7 @@ class BastionTest(parameterized.TestCase):
                         resources={"v4": 12},  # Doesn't fit if "resume" job is scheduled.
                     ),
                 ),
-                state=JobState.PENDING,
+                state=JobState(status=JobStatus.PENDING),
                 command_proc=None,  # No command proc for PENDING jobs.
                 cleanup_proc=None,
             ),
@@ -507,7 +920,7 @@ class BastionTest(parameterized.TestCase):
                         resources={"v4": 5},  # Fits within v4 budget in project2.
                     ),
                 ),
-                state=JobState.PENDING,
+                state=JobState(status=JobStatus.PENDING),
                 command_proc=None,  # No command proc for PENDING jobs.
                 cleanup_proc=None,
             ),
@@ -524,7 +937,7 @@ class BastionTest(parameterized.TestCase):
                         resources={"v3": 2},  # Fits within the v3 budget in project2.
                     ),
                 ),
-                state=JobState.PENDING,
+                state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
                 command_proc=mock_proc("command"),
                 cleanup_proc=None,  # No cleanup_proc for ACTIVE jobs.
             ),
@@ -544,7 +957,7 @@ class BastionTest(parameterized.TestCase):
                         resources={"v4": 12},  # Uses part of project2 budget.
                     ),
                 ),
-                state=JobState.ACTIVE,
+                state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
                 command_proc=mock_proc("command"),
                 cleanup_proc=None,  # No cleanup_proc for ACTIVE.
             ),
@@ -561,7 +974,7 @@ class BastionTest(parameterized.TestCase):
                         resources={"v3": 2},  # Fits within the v3 budget in project2.
                     ),
                 ),
-                state=JobState.ACTIVE,
+                state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
                 command_proc=mock_proc("command", command_poll=1),
                 cleanup_proc=None,
             ),
@@ -580,7 +993,7 @@ class BastionTest(parameterized.TestCase):
                         resources={"v4": 100},  # Does not fit into v4 budget.
                     ),
                 ),
-                state=JobState.CANCELLING,
+                state=JobState(status=JobStatus.CANCELLING),
                 command_proc=mock_proc("command", command_poll=1),
                 cleanup_proc=None,
             ),
@@ -594,14 +1007,16 @@ class BastionTest(parameterized.TestCase):
                         user_id="e",
                         project_id="project3",
                         creation_time=yesterday + timedelta(seconds=2),
-                        resources={"v5": 2.5},
+                        resources={"v5": 2},
                     ),
                 ),
-                state=JobState.CLEANING,
+                state=JobState(status=JobStatus.CLEANING),
                 command_proc=None,
                 cleanup_proc=mock_proc("cleanup", cleanup_poll=1),  # Should have cleanup_proc.
             ),
         }
+        # Copy original jobs, since updates happen in-place.
+        orig_jobs = copy.deepcopy(active_jobs)
         # Pretend that only 'cleaning_cancel' came from a user state.
         jobs_with_user_states = {"cleaning_cancel"}
 
@@ -617,37 +1032,42 @@ class BastionTest(parameterized.TestCase):
             copy=mock.DEFAULT,
             remove=mock.DEFAULT,
         )
-        with self._patch_bastion(
-            popen_spec()
-        ) as mock_bastion, patch_fns as mock_fns, patch_tfio as mock_tfio:
+        with (
+            self._patch_bastion(popen_spec()) as mock_bastion,
+            patch_fns as mock_fns,
+            patch_tfio as mock_tfio,
+        ):
             mock_bastion._active_jobs = active_jobs
             mock_bastion._jobs_with_user_states = jobs_with_user_states
             mock_bastion._update_jobs()
 
             # Ensure _active_jobs membership stays same.
-            self.assertEqual(mock_bastion._active_jobs.keys(), active_jobs.keys())
+            self.assertEqual(mock_bastion._active_jobs.keys(), orig_jobs.keys())
 
+            # Note that scheduling metadata is also part of the state.
             expected_states = {
-                "pending": JobState.PENDING,
-                "resume": JobState.ACTIVE,
-                "active": JobState.ACTIVE,
-                "preempt": JobState.PENDING,
-                "cleaning": JobState.CLEANING,
-                "cleaning_cancel": JobState.CLEANING,
-                "completed": JobState.COMPLETED,
+                "pending": JobState(status=JobStatus.PENDING),
+                "resume": JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
+                "active": JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
+                "preempt": JobState(status=JobStatus.PENDING),
+                "cleaning": JobState(status=JobStatus.CLEANING, metadata={"tier": 0}),
+                "cleaning_cancel": JobState(status=JobStatus.CLEANING),
+                "completed": JobState(status=JobStatus.COMPLETED),
             }
             for job_name in active_jobs:
                 self.assertEqual(
-                    mock_bastion._active_jobs[job_name].state, expected_states[job_name]
+                    mock_bastion._active_jobs[job_name].state,
+                    expected_states[job_name],
+                    msg=job_name,
                 )
 
             for job in mock_bastion._active_jobs.values():
                 # For jobs that are ACTIVE, expect command_proc to be non-None.
-                if job.state == JobState.ACTIVE:
+                if job.state.status == JobStatus.ACTIVE:
                     self.assertIsNotNone(job.command_proc)
                     self.assertIsNone(job.cleanup_proc)
                 # For jobs that are COMPLETED, expect both procs to be None.
-                elif job.state == JobState.COMPLETED:
+                elif job.state.status == JobStatus.COMPLETED:
                     self.assertIsNone(job.command_proc)
                     self.assertIsNone(job.cleanup_proc)
 
@@ -670,13 +1090,24 @@ class BastionTest(parameterized.TestCase):
                 )
 
                 # For jobs that went from ACTIVE to PENDING, expect kill() to have been called.
-                if active_jobs[job.spec.name] == JobState.ACTIVE and job.state == JobState.PENDING:
+                if (
+                    orig_jobs[job.spec.name].state.status == JobStatus.ACTIVE
+                    and job.state.status == JobStatus.PENDING
+                ):
                     mock_fns["send_signal"].assert_called()
                     self.assertFalse(
-                        active_jobs[
+                        orig_jobs[
                             job.spec.name
                         ].command_proc.popen.terminate.called  # pytype: disable=attribute-error
                     )
+
+                # For jobs that went from PENDING to ACTIVE, expect command to have been invoked
+                # with "tier" in the env.
+                if (
+                    orig_jobs[job.spec.name].state.status == JobStatus.PENDING
+                    and job.state.status == JobStatus.ACTIVE
+                ):
+                    self.assertIn("BASTION_TIER", job.command_proc.popen.env)
 
             for job_name in active_jobs:
                 history_file = os.path.join(mock_bastion._job_history_dir, job_name)
@@ -716,13 +1147,14 @@ class BastionTest(parameterized.TestCase):
         """
         # Note: command_proc and cleanup_proc shouldn't matter for GC. We only look at state +
         # resources.
-        active_jobs = {}
+        active_jobs: Dict[str, Job] = {}
         init_job_states = {
-            "pending": JobState.PENDING,
-            "active": JobState.ACTIVE,
-            "cleaning": JobState.CLEANING,
-            "completed": JobState.COMPLETED,
-            "completed_gced": JobState.COMPLETED,
+            "pending": JobState(status=JobStatus.PENDING),
+            "active": JobState(status=JobStatus.ACTIVE),
+            "cleaning": JobState(status=JobStatus.CLEANING),
+            "completed": JobState(status=JobStatus.COMPLETED),
+            "completed_gced": JobState(status=JobStatus.COMPLETED),
+            "rescheduled": JobState(status=JobStatus.PENDING, metadata={"tier": "0"}),
         }
         for job_name, job_state in init_job_states.items():
             active_jobs[job_name] = Job(
@@ -743,6 +1175,7 @@ class BastionTest(parameterized.TestCase):
             )
         # We pretend that only some jobs are "fully gc'ed".
         fully_gced = ["completed_gced"]
+        rescheduled = ["rescheduled"]
 
         patch_tfio = mock.patch.multiple(
             f"{bastion.__name__}.tf_io.gfile",
@@ -753,10 +1186,16 @@ class BastionTest(parameterized.TestCase):
             def mock_clean(jobs: Dict[str, ResourceMap]) -> Sequence[str]:
                 self.assertTrue(
                     all(
-                        active_jobs[job_name].state in {JobState.PENDING, JobState.COMPLETED}
+                        active_jobs[job_name].state.status == JobStatus.COMPLETED
+                        or (
+                            active_jobs[job_name].state.status == JobStatus.PENDING
+                            and active_jobs[job_name].state.metadata.get("tier") is None
+                        )
                         for job_name in jobs
                     )
                 )
+                for job_spec in jobs.values():
+                    self.assertIsInstance(job_spec, JobSpec)
                 return fully_gced
 
             with mock.patch.object(mock_bastion, "_cleaner") as mock_cleaner:
@@ -775,17 +1214,25 @@ class BastionTest(parameterized.TestCase):
                     for delete_call in mock_tfio["remove"].mock_calls
                 )
                 self.assertEqual(
-                    active_jobs[job_name].state == JobState.COMPLETED,
+                    active_jobs[job_name].state == JobState(status=JobStatus.COMPLETED),
                     deleted_state and deleted_jobspec,
                 )
+
+            # Ensure that rescheduled jobs do not get deleted.
+            for job_name in rescheduled:
+                self.assertEqual(init_job_states[job_name], active_jobs[job_name].state)
+                for delete_call in mock_tfio["remove"].mock_calls:
+                    self.assertNotIn(
+                        os.path.join(mock_bastion._state_dir, job_name), delete_call.call_args
+                    )
 
     @parameterized.parameters(
         dict(
             initial_jobs={
-                "pending": JobState.PENDING,
-                "active": JobState.ACTIVE,
-                "cancelling": JobState.CANCELLING,
-                "completed": JobState.COMPLETED,
+                "pending": JobState(status=JobStatus.PENDING),
+                "active": JobState(status=JobStatus.ACTIVE),
+                "cancelling": JobState(status=JobStatus.CANCELLING),
+                "completed": JobState(status=JobStatus.COMPLETED),
             },
             runtime_options={},
             expect_schedulable=["pending", "active"],
@@ -853,61 +1300,114 @@ class BastionTest(parameterized.TestCase):
                 self.assertSameElements(expect_schedulable, args[0].keys())
                 self.assertEqual({"dry_run": expect_dry_run, "verbosity": expect_verbosity}, kwargs)
 
+    def test_exception(self):
+        patch_signal = mock.patch(f"{bastion.__name__}.send_signal")
+        with patch_signal, self._patch_bastion() as mock_bastion:
+            mock_job = Job(
+                spec=mock.Mock(),
+                state=mock.Mock(),
+                command_proc=mock.Mock(),
+                cleanup_proc=mock.Mock(),
+            )
 
-class StartBastionJobTest(parameterized.TestCase):
-    """Tests StartBastionJob."""
+            def mock_execute():
+                mock_bastion._active_jobs["test"] = mock_job
+                raise ValueError("Mock error")
 
-    def test_execute(self):
-        mock_bastion = mock.MagicMock()
-        cfg = bastion.StartBastionJob.default_config().set(
-            name="test",
-            bastion=config_for_function(lambda: mock_bastion),
-            max_tries=1,
-            retry_interval=1,
+            with mock.patch.multiple(
+                mock_bastion,
+                _wait_and_close_proc=mock.DEFAULT,
+                _execute=mock.Mock(side_effect=mock_execute),
+            ) as mock_methods:
+                with self.assertRaisesRegex(ValueError, "Mock error"):
+                    mock_bastion.execute()
+                self.assertIn(
+                    mock_job.command_proc, mock_methods["_wait_and_close_proc"].call_args_list[0][0]
+                )
+                self.assertIn(
+                    mock_job.cleanup_proc, mock_methods["_wait_and_close_proc"].call_args_list[1][0]
+                )
+
+    def test_execute_with_exception_and_job_failure(self):
+        job_1 = Job(
+            spec=mock.Mock(),
+            state=mock.Mock(),
+            command_proc=mock.Mock(),
+            cleanup_proc=mock.Mock(),
         )
-        job = cfg.instantiate()
-        job.execute()
-        self.assertTrue(mock_bastion.execute.called)
+        job_2 = Job(
+            spec=mock.Mock(),
+            state=mock.Mock(),
+            command_proc=mock.Mock(),
+            cleanup_proc=mock.Mock(),
+        )
+        active_jobs = {
+            "job1": job_1,
+            "job2": job_2,
+        }
+
+        with self._patch_bastion() as mock_bastion:
+            mock_bastion._execute = mock.Mock(side_effect=Exception("Execution failed"))
+            mock_bastion._kill_job = mock.Mock(side_effect=[Exception("Cannot kill job"), None])
+
+            mock_bastion._active_jobs = active_jobs
+
+            with self.assertRaises(Exception):
+                mock_bastion.execute()
+
+            self.assertEqual(mock_bastion._kill_job.call_count, 2)
+            expected_calls = [mock.call(job_1), mock.call(job_2)]
+            self.assertEqual(mock_bastion._kill_job.call_args_list, expected_calls)
 
 
-def _mock_submit_config():
-    return bastion.SubmitBastionJob.default_config().set(
-        name="test",
-        job_name="test-job",
-        job_spec_file="spec",
-        max_tries=1,
-        retry_interval=1,
-        bastion_dir="test-output",
+class BastionDirectoryTest(parameterized.TestCase):
+    """Tests BastionDirectory."""
+
+    @parameterized.product(
+        job_name=[
+            "test-job",
+            "test0123_job0123",
+            "test/invalid",
+        ],
+        spec_exists=[True, False],
     )
-
-
-class SubmitBastionJobTest(parameterized.TestCase):
-    """Tests SubmitBastionJob."""
-
-    @parameterized.parameters(True, False)
-    def test_execute(self, spec_exists):
-        cfg = _mock_submit_config()
-        job = cfg.instantiate()
-
+    def test_submit_job(self, job_name, spec_exists):
+        job_name = "test-job"
+        job_spec_file = "spec"
+        bastion_dir = (
+            bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
+        )
+        self.assertEqual("test-dir", str(bastion_dir))
+        self.assertEqual("test-dir/logs", bastion_dir.logs_dir)
+        self.assertEqual("test-dir/jobs/active", bastion_dir.active_job_dir)
+        self.assertEqual("test-dir/jobs/complete", bastion_dir.complete_job_dir)
+        self.assertEqual("test-dir/jobs/states", bastion_dir.job_states_dir)
+        self.assertEqual("test-dir/jobs/user_states", bastion_dir.user_states_dir)
         patch_tfio = mock.patch.multiple(
             f"{bastion.__name__}.tf_io.gfile",
             exists=mock.MagicMock(return_value=spec_exists),
             copy=mock.DEFAULT,
         )
-        with patch_tfio as mock_tfio:
-            job.execute()
+        if is_valid_job_name(job_name):
+            ctx = contextlib.nullcontext()
+        else:
+            ctx = self.assertRaisesRegex(ValueError, "not a valid job name")
+        with ctx, patch_tfio as mock_tfio:
+            bastion_dir.submit_job(job_name, job_spec_file=job_spec_file)
             if not spec_exists:
                 mock_tfio["copy"].assert_called_with(
-                    cfg.job_spec_file,
-                    os.path.join(job._job_dir(), "active", cfg.job_name),
+                    job_spec_file,
+                    os.path.join(bastion_dir.active_job_dir, job_name),
                 )
             else:
                 mock_tfio["copy"].assert_not_called()
 
     @parameterized.parameters(True, False)
     def test_delete(self, spec_exists):
-        cfg = _mock_submit_config()
-        job = cfg.instantiate()
+        job_name = "test-job"
+        bastion_dir = (
+            bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
+        )
         patch_tfio = mock.patch.multiple(
             f"{bastion.__name__}.tf_io.gfile",
             exists=mock.MagicMock(side_effect=[spec_exists, False]),
@@ -918,12 +1418,16 @@ class SubmitBastionJobTest(parameterized.TestCase):
             _upload_job_state=mock.DEFAULT,
         )
         with patch_tfio, patch_fns as mock_fns:
-            job._delete()
+            bastion_dir.cancel_job(job_name)
             if not spec_exists:
                 mock_fns["_upload_job_state"].assert_not_called()
             else:
                 mock_fns["_upload_job_state"].assert_called_with(
-                    cfg.job_name,
-                    JobState.CANCELLING,
-                    remote_dir=os.path.join(job._job_dir(), "user_states"),
+                    job_name,
+                    JobState(status=JobStatus.CANCELLING),
+                    remote_dir=bastion_dir.user_states_dir,
                 )
+
+
+if __name__ == "__main__":
+    absltest.main()

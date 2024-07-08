@@ -19,7 +19,7 @@ from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
 
-from axlearn.common import layers, test_utils, utils, utils_spmd
+from axlearn.common import layers, test_utils, utils
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import CheckpointValidationType, TensorStoreStateStorage
 from axlearn.common.config import Configurable, config_class, config_for_function
@@ -45,7 +45,7 @@ from axlearn.common.state_builder import (
     RestoreAndConvertBuilder,
     TensorStoreStateStorageBuilder,
 )
-from axlearn.common.trainer import _TrainerState
+from axlearn.common.trainer import TrainerState
 from axlearn.common.utils import (
     DataPartitionType,
     NestedTensor,
@@ -169,20 +169,20 @@ def is_supported(
     data_partition: DataPartitionType,
     use_ema: bool = False,
 ):
-    del param_dtype, inference_dtype, use_ema  # not used
+    del param_dtype, use_ema  # not used
+    # TODO(xuan-zou): jax 0.4.25 breaks bfloat16 on CPU due to high variance on
+    # the final result (up to 10% precision diff), will re-enable when fixed.
+    # NOTE: bfloat16 test on GPU is added and verified.
     return (
         test_utils.is_supported_platform(platform)
         and np.prod(mesh_shape) == jax.device_count()
         and (data_partition != DataPartitionType.FULL or global_batch_size >= jax.device_count())
+        and ((inference_dtype != jnp.bfloat16) or platform != "cpu")
     )
 
 
 class InferenceTest(test_utils.TestCase):
     """Inference tests."""
-
-    def setUp(self):
-        super().setUp()
-        utils_spmd.setup()
 
     @parameterized.parameters(
         (tf.constant("query"), "query"),
@@ -271,7 +271,7 @@ class InferenceTest(test_utils.TestCase):
                     learner_state = dict(
                         x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32)
                     )
-                return _TrainerState(
+                return TrainerState(
                     prng_key=prng_key,
                     model=params,
                     learner=learner_state,
@@ -290,7 +290,7 @@ class InferenceTest(test_utils.TestCase):
         filter(
             lambda params: is_supported(*params),
             itertools.product(
-                ("cpu", "tpu"),  # platform,
+                ("cpu", "gpu", "tpu"),  # platform,
                 ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
                 (jnp.float32, jnp.bfloat16),  # param_dtype
                 (None, jnp.float32, jnp.bfloat16),  # inference_dtype
@@ -350,6 +350,8 @@ class InferenceTest(test_utils.TestCase):
         restored_state = inference_runner.inference_runner_state
         self.assertNestedEqual(restored_state.prng_key, prng_key)
         expected_model = state.learner["ema"].ema if use_ema else state.model
+        if inference_dtype is not None:
+            expected_model = utils.cast_floats(expected_model, to_dtype=inference_dtype)
         if param_dtype == jnp.float32 and local_run:
             # We check for model state equality only if restored dtype matches,
             # and if we are doing a local run (to avoid process gather on weights).
@@ -362,7 +364,9 @@ class InferenceTest(test_utils.TestCase):
             # Same path.
             self.assertEqual(value[0], restored_value[0])
             # Restored dtype matches param_dtype.
-            self.assertEqual(restored_value[1].dtype, param_dtype)
+            self.assertEqual(
+                restored_value[1].dtype, param_dtype if inference_dtype is None else inference_dtype
+            )
 
         # Now try to run inference.
         input_generator_fn = _build_input(global_batch_size, data_partition=data_partition)
@@ -396,7 +400,7 @@ class InferenceTest(test_utils.TestCase):
         filter(
             lambda params: is_supported(*params),
             itertools.product(
-                ("cpu", "tpu"),  # platform,
+                ("cpu", "gpu", "tpu"),  # platform,
                 ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
                 (jnp.float32, jnp.bfloat16),  # param_dtype
                 (None, jnp.float32, jnp.bfloat16),  # inference_dtype
@@ -544,7 +548,7 @@ class InferenceTest(test_utils.TestCase):
         filter(
             lambda params: is_supported(*params),
             itertools.product(
-                ("cpu", "tpu"),  # platform,
+                ("cpu", "gpu", "tpu"),  # platform,
                 ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
                 (jnp.float32,),  # param_dtype
                 (jnp.float32,),  # inference_dtype
@@ -658,7 +662,7 @@ class InferenceTest(test_utils.TestCase):
         filter(
             lambda params: is_supported(*params),
             itertools.product(
-                ("cpu",),  # platform,
+                ("cpu", "gpu"),  # platform,
                 (
                     (1, 1),
                     (4, 1),

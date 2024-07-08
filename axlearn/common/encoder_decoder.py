@@ -1,12 +1,13 @@
 # Copyright © 2023 Apple Inc.
 
-"""Encoder decoder model."""
+"""Encoder-Decoder model."""
+
 from typing import Callable, Dict, Optional, Tuple
 
 from jax import numpy as jnp
 
 from axlearn.common.attention import NEG_INF, make_segment_mask
-from axlearn.common.base_model import BaseModel
+from axlearn.common.base_encoder_decoder import BaseEncoderDecoderModel
 from axlearn.common.config import ConfigOr, config_class
 from axlearn.common.decoder import Decoder
 from axlearn.common.decoding import BeamSearchOutputs, SampleOutputs
@@ -14,18 +15,24 @@ from axlearn.common.encoder import Encoder
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import WeightedScalar
-from axlearn.common.module import Module, NestedTensor, Tensor, child_context
+from axlearn.common.module import Module, Tensor, child_context
+from axlearn.common.utils import Nested
 
 
-class EncoderDecoderModel(BaseModel):
-    """Constructs an encoder decoder model to output loss and logits based on input ids."""
+class EncoderDecoderModel(BaseEncoderDecoderModel):
+    """Constructs an Encoder-Decoder model to output loss and logits based on input ids."""
 
     @config_class
-    class Config(BaseModel.Config):
-        encoder: Encoder.Config = Encoder.default_config()
-        decoder: Decoder.Config = Decoder.default_config()
+    class Config(BaseEncoderDecoderModel.Config):
         z_loss_scale: float = 0.0
         label_smoothing: float = 0.0
+
+    @classmethod
+    def default_config(cls):
+        cfg = super().default_config()
+        cfg.encoder = Encoder.default_config()
+        cfg.decoder = Decoder.default_config()
+        return cfg
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -35,59 +42,6 @@ class EncoderDecoderModel(BaseModel):
         cfg.decoder.transformer.layer.cross_attention.source_dim = cfg.encoder.dim
         self._add_child("decoder", cfg.decoder)
 
-    # We drop the kwargs from BaseModel, since they aren't used here.
-    # pylint: disable-next=arguments-differ
-    def forward(
-        self,
-        input_batch: Dict[str, Tensor],
-        return_aux: Optional[bool] = False,
-    ) -> Tuple[Tensor, NestedTensor]:
-        """Produces encoder-decoder loss and predictions including logits and decoder hidden states
-        in auxiliary outputs.
-
-        Args:
-            input_batch: A dict with the following entries:
-                source_ids: An int Tensor of shape [batch_size, source_len].
-                    Used as encoder input ids. Values should be in the range [0, vocab_size).
-                target_ids: An int Tensor of shape [batch_size, target_len].
-                    Used as decoder input ids. Values should be in the range [0, vocab_size).
-                target_labels: An optional int Tensor of shape [batch_size, target_len].
-                    Used to calculate loss. Values should be in the range [0, vocab_size).
-                    Out-of-class labels are ignored.
-                source_token_type_ids: An optional int Tensor of shape [batch_size, source_len].
-                    Values should be in the range [0, type_vocab_size).
-                source_segment_ids: An optional Tensor of same shape as `source_ids` with values in
-                    [0, num_segments). Tokens are only allowed to attend to other tokens within the
-                    same segment.
-                target_segment_ids: An optional Tensor of same shape as `target_ids` with values in
-                    [0, num_segments). Tokens are only allowed to attend to other tokens within the
-                    same segment.
-                source_positions: An optional int Tensor of shape [batch_size, source_len].
-                    If None, assumed to be jnp.arange(source_len) for each sequence.
-                target_positions: An optional int Tensor of shape [batch_size, target_len].
-                    If None, assumed to be jnp.arange(target_len) for each sequence.
-            return_aux: Boolean to determine whether logits, per_token_loss and decoder
-                hidden states are returned.
-
-        Returns:
-            loss: A scalar float Tensor representing the cross-entropy loss.
-            decoder_output a dict containing:
-                logits: A float Tensor of shape [batch_size, target_len, vocab_size]
-                hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim]
-        """
-        decoder_output = self.predict(input_batch)
-        loss_dict = self._metrics(decoder_output["logits"], input_batch["target_labels"])
-        aux_output = dict(
-            **decoder_output,
-            per_token_loss=loss_dict["per_token_loss"],
-        )
-        # If return_aux, return the logits and pre LM head hidden states (useful for downstream
-        # tasks).
-        #
-        # N.B. Do not enable for large-scale training since auxiliary outputs are not partitioned.
-        # TODO(rpang): support partitioning of auxiliary outputs.
-        return loss_dict["loss"], aux_output if return_aux else {}
-
     def predict(
         self,
         input_batch: Dict[str, Tensor],
@@ -96,22 +50,30 @@ class EncoderDecoderModel(BaseModel):
 
         Args:
             input_batch: A dict with the following entries:
-                source_ids: An int Tensor of shape [batch_size, source_len].
-                    Used as encoder input ids. Values should be in the range [0, vocab_size).
-                target_ids: An int Tensor of shape [batch_size, target_len].
-                    Used as decoder input ids. Values should be in the range [0, vocab_size).
-                source_token_type_ids: An optional int Tensor of shape [batch_size, source_len].
-                    Values should be in the range [0, source_type_vocab_size).
-                source_segment_ids: An optional Tensor of same shape as `source_ids` with values in
-                    [0, num_segments). Tokens are only allowed to attend to other tokens within the
-                    same segment.
-                target_segment_ids: An optional Tensor of same shape as `target_ids` with values in
-                    [0, num_segments). Tokens are only allowed to attend to other tokens within the
-                    same segment.
-                source_positions: An optional int Tensor of shape [batch_size, source_len].
-                    If None, assumed to be jnp.arange(source_len) for each sequence.
-                target_positions: An optional int Tensor of shape [batch_size, target_len].
-                    If None, assumed to be jnp.arange(target_len) for each sequence.
+                source: A dict containing keyword arguments for the encoder:
+                    input_ids: An int Tensor of shape [batch_size, source_len].
+                        Values should be in the range [0, vocab_size).
+                    input_segment_ids: An optional Tensor of same shape as input_ids with values
+                        in [0, num_segments). Tokens are only allowed to attend to other tokens
+                        within the same segment. By default, input_segment_ids == 0 represents
+                        paddings; if input_segment_ids is not provided, it will be inferred from
+                        input_ids != encoder.config.pad_token_id. See the corresponding `encoder`
+                        implementation for details.
+                    token_type_ids: An optional int Tensor of shape [batch_size, source_len].
+                        Values should be in the range [0, type_vocab_size).
+                    positions: An optional int Tensor of shape [batch_size, source_len].
+                        If None, assumed to be jnp.arange(source_len) for each sequence.
+                target: A dict containing keyword arguments for the decoder:
+                    input_ids: An int Tensor of shape [batch_size, target_len].
+                        Values should be in the range [0, vocab_size).
+                    input_segment_ids: An optional Tensor of same shape as input_ids with values
+                        in [0, num_segments). Tokens are only allowed to attend to other tokens
+                        within the same segment. By default, input_segment_ids == 0 represents
+                        paddings; if input_segment_ids is not provided, it will be inferred from
+                        input_ids != decoder.config.pad_token_id. See the corresponding `decoder`
+                        implementation for details.
+                    positions: An optional int Tensor of shape [batch_size, target_len].
+                        If None, assumed to be jnp.arange(target_len) for each sequence.
 
         Returns:
             A dict containing:
@@ -122,20 +84,18 @@ class EncoderDecoderModel(BaseModel):
         Raises:
             ValueError: If source_segment_ids and target_segment_ids are not provided together.
         """
-        source_ids: Tensor = input_batch["source_ids"]
-        target_ids: Tensor = input_batch["target_ids"]
-        source_segment_ids: Optional[Tensor] = input_batch.get("source_segment_ids")
-        target_segment_ids: Optional[Tensor] = input_batch.get("target_segment_ids")
+        self._validate_input_batch(input_batch, paths=["source/input_ids", "target/input_ids"])
+        source_batch: Dict[str, Tensor] = input_batch["source"]
+        target_batch: Dict[str, Tensor] = input_batch["target"]
+        source_segment_ids: Optional[Tensor] = source_batch.get("input_segment_ids")
+        target_segment_ids: Optional[Tensor] = target_batch.get("input_segment_ids")
 
         # Encoder hidden states: [batch_size, source_len, hidden_dim].
-        encoder_output = self.encoder(
-            input_ids=source_ids,
-            input_segment_ids=source_segment_ids,
-            token_type_ids=input_batch.get("source_token_type_ids"),
-            positions=input_batch.get("source_positions"),
-        )
+        encoder_output = self.encoder(**source_batch)
         # Cross-attention logit biases: [batch_size, target_len, source_len].
-        cross_attention_logit_biases = self.compute_attention_logit_biases(source_ids)
+        cross_attention_logit_biases = self.compute_attention_logit_biases(
+            source_batch["input_ids"]
+        )
         if source_segment_ids is not None and target_segment_ids is not None:
             cross_attention_logit_biases += make_segment_mask(
                 source_segments=source_segment_ids, target_segments=target_segment_ids
@@ -146,9 +106,7 @@ class EncoderDecoderModel(BaseModel):
             )
         # Decoder hidden states: [batch_size, target_len, hidden_dim].
         decoder_output = self.decoder(
-            input_ids=target_ids,
-            input_segment_ids=target_segment_ids,
-            positions=input_batch.get("target_positions"),
+            **target_batch,
             cross_attention_data=encoder_output,
             cross_attention_logit_biases=cross_attention_logit_biases,
         )
@@ -158,7 +116,7 @@ class EncoderDecoderModel(BaseModel):
         """Produces cross-attention logit biases.
 
         Args:
-            source_ids: A Tensor of shape [batch_size, source_len].
+            source_ids: An int Tensor of shape [batch_size, source_len].
 
         Returns:
             Attention logit biases of shape [batch_size, num_heads, target_len, source_len].
@@ -168,20 +126,27 @@ class EncoderDecoderModel(BaseModel):
         cross_attention_biases = cross_attention_biases[:, None, None, :]
         return cross_attention_biases
 
-    # TODO(gyin): add score/inference function
-    def _metrics(self, logits: Tensor, target_labels: Tensor) -> Dict[str, Tensor]:
+    def _metrics(
+        self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
+    ) -> Tuple[Tensor, Nested[Tensor]]:
         """Computes metrics from logits and target labels like loss and per token loss.
 
         Args:
-            logits: A float Tensor of shape [batch_size, target_len, vocab_size].
-            target_labels: An int Tensor of shape [batch_size, target_len].
-                Values should be in the range [0, vocab_size). Out-of-class labels are ignored.
+            input_batch: See parent `forward` for details.
+            predict_outputs: A dict containing:
+                logits: A float Tensor of shape [batch_size, target_len, vocab_size].
 
         Returns:
-            A dict containing:
+            A tuple (loss, aux_outputs):
                 loss: A scalar float Tensor.
-                per_token_loss: A float Tensor of shape [batch_size, target_len].
+                aux_outputs: A dict containing auxiliary metrics:
+                    per_token_loss: A float Tensor of shape [batch_size, target_len].
         """
+        self._validate_input_batch(input_batch, paths=["target_labels"])
+        self._validate_input_batch(predict_outputs, paths=["logits"])
+        logits: Tensor = predict_outputs["logits"]
+        target_labels: Tensor = input_batch["target_labels"]
+
         num_classes = logits.shape[-1]
         live_targets = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
         live_targets = jnp.logical_and(
@@ -192,20 +157,20 @@ class EncoderDecoderModel(BaseModel):
         loss, loss_dict = cross_entropy(
             logits=logits,
             target_labels=target_labels,
-            mask=live_targets,
+            live_targets=live_targets,
             z_loss_scale=cfg.z_loss_scale,
             label_smoothing=cfg.label_smoothing,
         )
-        per_token_loss = loss_dict["pre_mask_loss"] * live_targets
+        per_token_loss = loss_dict["per_target_loss"] * live_targets
         self.add_summary("loss", WeightedScalar(loss, num_targets))
         self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
         self.add_summary("token_accuracy", WeightedScalar(loss_dict["accuracy"], num_targets))
-        return dict(loss=loss, per_token_loss=per_token_loss)
+        return loss, dict(per_token_loss=per_token_loss)
 
     def beam_search_decode(
         self,
         input_batch: Dict[str, Tensor],
-        max_len: int,
+        max_sequence_length: int,
         num_decodes: int,
         brevity_penalty: Optional[Callable[[jnp.array, Tensor], jnp.array]] = None,
     ) -> BeamSearchOutputs:
@@ -214,30 +179,28 @@ class EncoderDecoderModel(BaseModel):
         Args:
             input_batch: A dict with the following entries:
                 prefix: An int Tensor of shape [batch_size, prefix_len] where
-                    prefix_len <= `max_len`.
-                source_ids: An int Tensor of shape [batch_size, source_len].
-                    Used as encoder input ids. Values should be in the range [0, vocab_size).
-                target_ids: An int Tensor of shape [batch_size, target_len].
-                    Used as decoder input ids. Values should be in the range [0, vocab_size).
-                target_labels: An int Tensor of shape [batch_size, target_len].
-                    Used as ground truth.
-            max_len: The maximum sequence length of tokens to generate.
-            num_decodes: The number of beams to decode. If set to 1, equivalent to greedy decoding.
-            brevity_penalty: The length normalization function for beam search.
+                    prefix_len <= `max_len`. See parent docstring for details.
+                source: A dict containing keyword arguments for the encoder:
+                    inputs_ids: An int Tensor of shape [batch_size, source_len].
+                        Values should be in the range [0, vocab_size).
+                        Paddings are inferred from input_ids == encoder.config.pad_token_id.
+            max_sequence_length: See parent docstring for details.
+            num_decodes: See parent docstring for details.
+            brevity_penalty: See parent docstring for details.
 
         Returns:
-            Beam search outputs with sequences of shape [batch_size, num_decodes, max_len] and
-            scores of shape [batch_size, num_decodes].
+            Beam search outputs. See parent docstring for details.
         """
-        source_ids: Tensor = input_batch["source_ids"]
+        self._validate_input_batch(input_batch, paths=["prefix", "source/input_ids"])
         prefix: Tensor = input_batch["prefix"]
-        encoder_output = self.encoder(input_ids=source_ids)
-        cross_attention_logit_biases = self.compute_attention_logit_biases(source_ids)
+        input_ids: Tensor = input_batch["source"]["input_ids"]
+        encoder_output = self.encoder(input_ids=input_ids)
+        cross_attention_logit_biases = self.compute_attention_logit_biases(input_ids)
 
         with child_context("beam_search_decode", module=self.decoder):
             return self.decoder.beam_search_decode(
                 prefix=prefix,
-                max_sequence_length=max_len,
+                max_sequence_length=max_sequence_length,
                 num_decodes=num_decodes,
                 cross_attention_data=encoder_output,
                 cross_attention_logit_biases=cross_attention_logit_biases,
@@ -247,7 +210,7 @@ class EncoderDecoderModel(BaseModel):
     def sample_decode(
         self,
         input_batch: Dict[str, Tensor],
-        max_len: int,
+        max_sequence_length: int,
         num_decodes: int,
         logits_modifier: Optional[ConfigOr[LogitsToLogitsFn]] = None,
     ) -> SampleOutputs:
@@ -256,28 +219,28 @@ class EncoderDecoderModel(BaseModel):
         Args:
             input_batch: A dict with the following entries:
                 prefix: An int Tensor of shape [batch_size, prefix_len] where
-                    prefix_len <= `max_len`.
-                source_ids: An int Tensor of shape [batch_size, source_len].
-                    Used as encoder input ids. Values should be in the range [0, vocab_size).
-            max_len: The maximum sequence length of tokens to generate.
-            num_decodes: The number of decoded sequences to return.
-                These are the number of hypotheses per batch example.
-            logits_modifier: Function used to adjust the raw next-token logit distribution values,
-                to e.g. implement top-k/top-p/etc sampling (see `logit_modifiers`).
-                If None, do not modify the logits.
+                    prefix_len <= `max_len`. See parent docstring for details.
+                source: A dict containing keyword arguments for the encoder:
+                    inputs_ids: An int Tensor of shape [batch_size, source_len].
+                        Values should be in the range [0, vocab_size).
+                        Paddings are inferred from input_ids == encoder.config.pad_token_id.
+            max_sequence_length: See parent docstring for details.
+            num_decodes: See parent docstring for details.
+            logits_modifier: See parent docstring for details.
 
         Returns:
-            The sample decoding outputs.
+            Sample decoding outputs. See parent docstring for details.
         """
-        source_ids: Tensor = input_batch["source_ids"]
+        self._validate_input_batch(input_batch, paths=["prefix", "source/input_ids"])
         prefix: Tensor = input_batch["prefix"]
-        encoder_output = self.encoder(input_ids=source_ids)
-        cross_attention_logit_biases = self.compute_attention_logit_biases(source_ids)
+        input_ids: Tensor = input_batch["source"]["input_ids"]
+        encoder_output = self.encoder(input_ids=input_ids)
+        cross_attention_logit_biases = self.compute_attention_logit_biases(input_ids)
 
         with child_context("sample_decode", module=self.decoder):
             return self.decoder.sample_decode(
                 prefix=prefix,
-                max_sequence_length=max_len,
+                max_sequence_length=max_sequence_length,
                 num_decodes=num_decodes,
                 cross_attention_data=encoder_output,
                 cross_attention_logit_biases=cross_attention_logit_biases,

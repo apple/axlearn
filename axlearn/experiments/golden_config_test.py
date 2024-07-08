@@ -24,6 +24,14 @@ _REGULARIZERS = [
     *test_utils.named_parameters(gpt.c4_trainer),
 ]
 
+_RUNS = [
+    *[
+        tup
+        for tup in test_utils.named_parameters(gpt.c4_trainer, data_dir="FAKE")
+        if "golden-run-test" in tup[0]
+    ],
+]
+
 
 class GoldenConfigTest(test_utils.BaseGoldenConfigTest):
     @parameterized.named_parameters(*_CONFIGS)
@@ -40,3 +48,9 @@ class GoldenConfigTest(test_utils.BaseGoldenConfigTest):
     @pytest.mark.golden_regularizer
     def test_regularizer(self, *args):
         self._test(*args, test_type=test_utils.GoldenTestType.REGULARIZER)
+
+    @parameterized.named_parameters(*_RUNS)
+    @pytest.mark.golden_run
+    @pytest.mark.skip("Intended to be run manually.")
+    def test_run(self, *args):
+        self._test(*args, test_type=test_utils.GoldenTestType.RUN)

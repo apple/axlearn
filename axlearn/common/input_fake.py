@@ -2,7 +2,7 @@
 
 """Fake input modules."""
 import json
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import jax
 import numpy as np
@@ -11,7 +11,7 @@ import tensorflow as tf
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.input_tf_data import BuildDatasetFn
 from axlearn.common.module import Module
-from axlearn.common.utils import as_tensor
+from axlearn.common.utils import Nested, Tensor, as_numpy_array, as_tensor
 
 
 class FakeTextInput(Module):
@@ -43,7 +43,11 @@ class FakeTextInput(Module):
         return self
 
     def dataset(self):
-        return self.__iter__()
+        return self.__iter__()  # pylint: disable=unnecessary-dunder-call
+
+    def batches(self, it: tf.data.Iterator) -> Iterable[Nested[Tensor]]:
+        for input_batch in it:
+            yield as_numpy_array(input_batch)
 
 
 class FakeLmInput(FakeTextInput):
@@ -404,4 +408,40 @@ def fake_classification_source_instruct_lm(
             for ix in range(2 * 2 if is_training else 2)
         ],
         shuffle_buffer_size=shuffle_buffer_size,
+    )
+
+
+def fake_speech_source(
+    *,
+    is_training: bool,
+    num_examples: int = 100,
+    speech_key: str = "speech",
+    shuffle_buffer_size: Optional[int] = None,
+) -> BuildDatasetFn:
+    """Fake speech data source.
+
+    Args:
+        is_training: A boolean indicating whether it is in the training mode.
+        num_examples: Integer of number of examples in the dataset.
+        shuffle_buffer_size: Shuffle buffer size used for training.
+
+    Returns:
+        A BuildDatasetFn producing fake examples with `speech_key` with random integer values
+        (assuming 16 bit-depth).
+    """
+    return fake_source(
+        is_training=is_training,
+        examples=[
+            {
+                speech_key: jax.random.randint(
+                    jax.random.PRNGKey(ix),
+                    minval=-(2**15),
+                    maxval=2**15,
+                    shape=[ix % 100 + 1],
+                ),
+            }
+            for ix in range(num_examples)
+        ],
+        shuffle_buffer_size=shuffle_buffer_size,
+        spec={speech_key: tf.TensorSpec(shape=(None,), dtype=tf.int16)},
     )

@@ -1,4 +1,8 @@
 # Copyright © 2023 Apple Inc.
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
 
 """Speech encoder layers."""
 
@@ -31,7 +35,7 @@ class SpeechFeatureLayer(BaseLayer):
         # Converts raw waveforms to features.
         frontend: BaseLayer.Config = LogMelFrontend.default_config()
         # Applies feature augmentation. Should not affect the shape of inputs.
-        augmenter: BaseLayer.Config = SpectrumAugmenter.default_config()
+        augmenter: Optional[BaseLayer.Config] = SpectrumAugmenter.default_config()
         # Applies feature subsampling.
         subsampler: BaseLayer.Config = ConvSubSampler.default_config()
 
@@ -39,7 +43,8 @@ class SpeechFeatureLayer(BaseLayer):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._add_child("frontend", cfg.frontend)
-        self._add_child("augmenter", cfg.augmenter)
+        if cfg.augmenter is not None:
+            self._add_child("augmenter", cfg.augmenter)
         self._add_child(
             "subsampler",
             cfg.subsampler.set(
@@ -78,8 +83,9 @@ class SpeechFeatureLayer(BaseLayer):
         features = self.frontend(inputs=inputs, paddings=paddings)
         x = features["outputs"]
 
-        # Apply augmentation.
-        x = self.augmenter(inputs=x, paddings=features["paddings"])
+        if "augmenter" in self.children:
+            # Apply augmentation.
+            x = self.augmenter(inputs=x, paddings=features["paddings"])
 
         # Apply subsampling.
         # [batch_size, subsampled_frames, subsampled_freq, output_dim].

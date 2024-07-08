@@ -24,7 +24,7 @@ from axlearn.common.module import Module, NestedTensor, Tensor, child_context
 
 # pylint: disable=no-self-use
 class MaskedImageModel(BaseModel):
-    """An impelementation for masked image modeling."""
+    """An implementation for masked image modeling."""
 
     @config_class
     class Config(BaseModel.Config):
@@ -86,7 +86,7 @@ class MaskedImageModel(BaseModel):
         Args:
             logits: The prediction logits in shape (batch, length, num_classes).
             labels: The prediction labels in shape (batch, length), with int values.
-            is_masked: a boolen Tensor in shape (batch, length), representing the masked positions
+            is_masked: a boolean Tensor in shape (batch, length), representing the masked positions
                 for the logits.
 
         Returns:
@@ -97,7 +97,7 @@ class MaskedImageModel(BaseModel):
         loss, _ = self.config.loss_fn(
             logits.astype(jnp.float32),
             labels.astype(jnp.float32),
-            mask=is_masked,
+            live_targets=is_masked,
         )
         return loss
 
@@ -106,7 +106,7 @@ class MaskedImageModel(BaseModel):
 
         Args:
             image: The input image. Shape: (batch, height_pixel, width_pixel, channels).
-            is_masked: a boolen Tensor in shape (batch, length), representing the masked positions
+            is_masked: a boolean Tensor in shape (batch, length), representing the masked positions
                 for the patchifie input image.
 
         Returns:
@@ -120,12 +120,12 @@ class MaskedImageModel(BaseModel):
 
     # pylint: disable-next=arguments-differ
     def forward(self, input_batch: Dict[str, Tensor]) -> Tuple[Tensor, NestedTensor]:
-        """Runs foward pass.
+        """Runs forward pass.
 
         Args:
             input_batch: a dictionary that contains:
             * image: The input image. Shape: (batch, height_pixel, width_pixel, channels).
-            * is_masked: a boolen Tensor in shape (batch, height_patch, width_patch),
+            * is_masked: a boolean Tensor in shape (batch, height_patch, width_patch),
                 representing the masked positions for the patchifie input image.
 
         Returns:

@@ -8,6 +8,7 @@ import jax
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
+from axlearn.common import logit_modifiers
 from axlearn.common.attention import (
     AttentionLogitBiasLayer,
     BaseStackedTransformerLayer,
@@ -26,6 +27,7 @@ from axlearn.common.config import (
 )
 from axlearn.common.decoding import (
     BeamSearchOutputs,
+    BrevityPenaltyFn,
     SampleOutputs,
     StopDecodingCondition,
     StopOnSubsequence,
@@ -204,7 +206,7 @@ class DecodingMixin(Module):
         num_decodes: int,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-        brevity_penalty: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
+        brevity_penalty: Optional[BrevityPenaltyFn] = None,
     ) -> BeamSearchOutputs:
         """Perform beam search decoding.
 
@@ -409,9 +411,11 @@ class Decoder(DecodingMixin, BaseLayer):
     class Config(BaseLayer.Config):
         """Configures Decoder."""
 
-        attention_mask: AttentionLogitBiasLayer.Config = (
-            CausalAttentionLogitBiasLayer.default_config()
-        )
+        # attention_mask can be None if the attention layer supports the causal mode, e.g.,
+        # FlashAttention with `causal=True`.
+        attention_mask: Optional[
+            AttentionLogitBiasLayer.Config
+        ] = CausalAttentionLogitBiasLayer.default_config()
         vocab_size: Required[int] = REQUIRED  # Size of vocabulary.
         # Dimensionality of embeddings and inputs to each transformer layer.
         dim: Required[int] = REQUIRED
@@ -437,13 +441,16 @@ class Decoder(DecodingMixin, BaseLayer):
             None,
             "model",
         )
+        # The logit modifier to apply. If None, does not modify logits.
+        output_logits_modifier: Optional[ConfigOr[logit_modifiers.LogitsToLogitsFn]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         set_dropout_rate_recursively(cfg, dropout_rate=cfg.dropout_rate, set_only_if_none=True)
 
-        self._add_child("attention_mask", cfg.attention_mask)
+        if cfg.attention_mask is not None:
+            self._add_child("attention_mask", cfg.attention_mask)
         self._add_child("emb", cfg.emb.set(dim=cfg.dim, vocab_size=cfg.vocab_size))
         self._add_child("transformer", cfg.transformer.set(input_dim=cfg.dim))
         if cfg.output_norm is not None:
@@ -453,13 +460,14 @@ class Decoder(DecodingMixin, BaseLayer):
             self._add_child(
                 "lm_head", cfg.lm_head.set(vocab_size=cfg.vocab_size, embedding_dim=cfg.dim)
             )
+        self._output_logits_modifier = maybe_instantiate(cfg.output_logits_modifier)
 
     def _forward_for_mode(
         self,
         *,
         mode: ForwardMode,
         input_ids: Tensor,
-        self_attention_logit_biases: Tensor,
+        self_attention_logit_biases: Optional[Tensor],
         token_type_ids: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
@@ -495,8 +503,11 @@ class Decoder(DecodingMixin, BaseLayer):
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
         x = x.data
+        self._add_tensor_stats("outputs", x)
+
         if "output_norm" in self.children:
             x = self.output_norm(x)
+            self._add_tensor_stats("norm_outputs", x)
         x = self.output_dropout(x)
         if "lm_head" in self.children:
             logits = self.lm_head(x)
@@ -527,7 +538,7 @@ class Decoder(DecodingMixin, BaseLayer):
             input_segment_ids: An optional Tensor of same shape as `input_ids` with values in
                 [0, num_segments). Tokens are only allowed to attend to other tokens within the same
                 segment. input_segment_ids == 0 represents paddings. If None, inferred from
-                input_segment_ids != pad_token_id.
+                input_ids != pad_token_id.
             token_type_ids: An optional int Tensor of shape [batch_size, target_len].
                 Values should be in the range [0, type_vocab_size).
             cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
@@ -555,6 +566,8 @@ class Decoder(DecodingMixin, BaseLayer):
             positions=positions,
             cached_states=None,
         )
+        if self._output_logits_modifier is not None:
+            output["logits"] = self._output_logits_modifier(output["logits"])
         return output
 
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
@@ -620,12 +633,13 @@ class Decoder(DecodingMixin, BaseLayer):
         # Note: if `time_step` exceeds `target_len`, e.g. in the case where one decode starts at a
         # later index than another, clip the indices instead of producing NaNs.
         # TODO(markblee): Update attention masks to support explicit positions, so we can skip this.
-        self_attention_biases = jnp.take_along_axis(
-            self_attention_biases,
-            time_step[:, None, None, None],
-            axis=2,
-            mode="clip",
-        )
+        if self_attention_biases is not None:
+            self_attention_biases = jnp.take_along_axis(
+                self_attention_biases,
+                time_step[:, None, None, None],
+                axis=2,
+                mode="clip",
+            )
 
         updated_states, outputs = self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
@@ -647,14 +661,13 @@ class Decoder(DecodingMixin, BaseLayer):
         )
         return updated_states, outputs
 
-    # TODO(bwzhang): check the T5 checkpoint to see whether this func is necessary.
     def compute_attention_logit_biases(
         self,
         input_ids: Tensor,
         *,
         segment_ids: Optional[Tensor] = None,
         positions: Optional[Tensor] = None,
-    ) -> Tensor:
+    ) -> Optional[Tensor]:
         """Produces self-attention logit biases.
 
         Args:
@@ -669,11 +682,14 @@ class Decoder(DecodingMixin, BaseLayer):
                 provided.
 
         Returns:
-            Attention logit biases of shape [batch_size, num_heads, seq_len, seq_len].
+            Attention logit biases of shape [batch_size, num_heads, seq_len, seq_len],
+            or None if cfg.attention_mask is None.
 
         Raises:
             ValueError: If segment_ids and positions are not both provided, or both omitted.
         """
+        if "attention_mask" not in self.children:
+            return None
         if (segment_ids is None) != (positions is None):
             raise ValueError("segment_ids and positions must be provided together")
         cfg = self.config

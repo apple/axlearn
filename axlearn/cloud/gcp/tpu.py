@@ -18,11 +18,12 @@ from googleapiclient import discovery, errors
 from googleapiclient.http import HttpRequest
 
 from axlearn.cloud.common.docker import registry_from_repo
-from axlearn.cloud.common.utils import format_table
+from axlearn.cloud.common.types import ResourceMap
+from axlearn.cloud.common.utils import Table
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.storage import list_blobs
-from axlearn.cloud.gcp.utils import is_valid_resource_name
+from axlearn.cloud.gcp.utils import validate_resource_name
 
 
 class TPUCreationError(RuntimeError):
@@ -41,60 +42,6 @@ class TPUDeletionError(RuntimeError):
     """An error with TPU deletion."""
 
     pass
-
-
-def create_tpu(
-    name: str,
-    *,
-    tpu_type: str,
-    credentials: Credentials,
-    bundler_type: str,
-    num_slices: int = 1,
-    metadata: Optional[Dict[str, str]] = None,
-    service_account: Optional[str] = None,
-):
-    """Create TPU.
-
-    Args:
-        name: Name of slice.
-        tpu_type: Type of each TPU slice.
-        credentials: Credentials to use when interacting with GCP.
-        bundler_type: Type of bundle intended to be loaded to VM.
-        num_slices: The number of slices of type tpu_type to start.
-        metadata: Optional metadata for the instance.
-        service_account: Service account to execute the TPU creation.
-
-    Raises:
-        TPUCreationError: If an exeption is raised on the creation request.
-        ValueError: If an invalid name is provided.
-    """
-    if not is_valid_resource_name(name):
-        raise ValueError(
-            f"{name} is not a valid resource name. Please see "
-            "https://cloud.google.com/compute/docs/naming-resources#resource-name-format."
-        )
-    # First try the QRM API, and fall-back to legacy API if we detect a quota-related error.
-    try:
-        _create_multislice_tpu(
-            name,
-            tpu_type=tpu_type,
-            credentials=credentials,
-            bundler_type=bundler_type,
-            num_slices=num_slices,
-            metadata=metadata,
-            service_account=service_account,
-        )
-    except TPUQuotaLimitError as e:
-        if num_slices != 1:
-            raise TPUCreationError("Unable to create multislice TPU without QRM quota") from e
-        _create_legacy_tpu(
-            name,
-            tpu_type=tpu_type,
-            credentials=credentials,
-            bundler_type=bundler_type,
-            metadata=metadata,
-            service_account=service_account,
-        )
 
 
 def _read_error(e: errors.HttpError) -> Dict[str, Any]:
@@ -127,23 +74,21 @@ def _execute_create_tpu_request(req: HttpRequest):
         raise  # Re-raise original.
 
 
-def _create_legacy_tpu(
+# TODO(markblee): Remove the legacy quota codepath.
+def create_legacy_tpu(
     name: str,
+    resource_tpu: discovery.Resource,
     *,
     tpu_type: str,
-    credentials: Credentials,
     bundler_type: str,
     metadata: Optional[Dict[str, str]] = None,
     service_account: Optional[str] = None,
 ):
     """Create TPU (using legacy quota).
 
-    TODO(markblee): Deprecate this when QRM becomes the default.
-
-    See `create_tpu` docstring for details.
+    Deprecated: use `create_queued_tpu_node` to create via QRM instead.
     """
     project, zone = gcp_settings("project"), gcp_settings("zone")
-    resource = _tpu_resource(credentials)
     tpu_path_prefix = f"projects/{project}/locations/{zone}"
     attempt = 0
     boot_timeout = (
@@ -151,7 +96,7 @@ def _create_legacy_tpu(
     )
     reserved_tpu = gcp_settings("reserved_tpu", default=False)
     while True:
-        node = get_tpu_node(name, resource)
+        node = get_tpu_node(name, resource_tpu)
         if node is not None:  # TPU exists.
             node_act = node["acceleratorType"]
             if node_act != tpu_type:
@@ -162,7 +107,11 @@ def _create_legacy_tpu(
                 # Wait for TPU to become healthy.
                 client = cloud_tpu_client.Client(name, project=project, zone=zone)
                 while (health := client.health()) != "HEALTHY":
-                    logging.info("TPU %s is not HEALTHY (%s), waiting until HEALTHY.", name, health)
+                    logging.info(
+                        "TPU %s is not HEALTHY (%s), waiting until HEALTHY.",
+                        name,
+                        health,
+                    )
                     time.sleep(10)
                 logging.info("TPU %s is READY and HEALTHY.", name)
                 # Now check for when boot script is complete.
@@ -180,7 +129,7 @@ def _create_legacy_tpu(
                 return
             if status["state"] == "PREEMPTED":
                 logging.info("TPU %s is PREEMPTED, will delete and restart.", name)
-                _delete_legacy_tpu(name, credentials=credentials)
+                delete_legacy_tpu(name, resource_tpu)
                 continue
             # TPU not ready, wait and check again.
             logging.info("TPU %s showing %s, waiting for READY.", name, status["state"])
@@ -190,7 +139,9 @@ def _create_legacy_tpu(
                 # Exponential backoff capped at 512s.
                 backoff_for = 2 ** min(attempt, 9)
                 logging.info(
-                    "Attempt %d to create TPU failed, backoff for %ds.", attempt, backoff_for
+                    "Attempt %d to create TPU failed, backoff for %ds.",
+                    attempt,
+                    backoff_for,
                 )
                 time.sleep(backoff_for)
             try:
@@ -208,7 +159,7 @@ def _create_legacy_tpu(
                     "preemptible": not reserved_tpu,
                     "reserved": reserved_tpu,
                 }
-                request = resource.create(
+                request = resource_tpu.create(
                     parent=tpu_path_prefix,
                     nodeId=name,
                     body=request_body,
@@ -237,7 +188,7 @@ def get_tpu_node_status(name: str, *, node: Dict[str, Any]) -> Dict[str, Union[s
         * "state": The current node state.
         * "num_booted": How many VMs have booted.
     """
-    state = node["state"]
+    state = node.get("state", "UNKNOWN")
     num_booted = 0
     if state == "READY":
         # Check for boot script status.
@@ -249,68 +200,52 @@ def get_tpu_node_status(name: str, *, node: Dict[str, Any]) -> Dict[str, Union[s
     return dict(state=state, num_booted=num_booted)
 
 
-def delete_tpu(name: str, *, credentials: Credentials, wait: bool = True):
-    """Delete TPU.
-
-    Args:
-        name: Name of TPU to delete.
-        credentials: Credentials to use when interacting with GCP.
-        wait: Whether to wait for completion.
-
-    Raises:
-        TPUDeletionError: If an exeption is raised on the deletion request.
-    """
-    # Try QRM quota first, then legacy quota.
-    _delete_multislice_tpu(name, credentials=credentials, wait=wait)
-    # TODO(markblee, tom_gunter): Remove when we can rely on QRM being the default option.
-    _delete_legacy_tpu(name, credentials=credentials, wait=wait)
-
-
-def _delete_legacy_tpu(name: str, *, credentials: Credentials, wait: bool = True):
+def delete_legacy_tpu(name: str, resource_tpu: discovery.Resource, wait: bool = True):
     """Delete TPU (using legacy quota).
 
-    See `delete_tpu` docstring for details.
+    Deprecated: Use `delete_queued_tpu` to delete via QRM instead.
     """
-    resource = _tpu_resource(credentials)
-    node = get_tpu_node(name, resource)
+    node = get_tpu_node(name, resource_tpu)
     if node is None:
         logging.info("TPU %s doesn't exist, no need to delete.", name)
         return
     try:
         logging.info("Deleting TPU %s.", name)
-        resource.delete(name=node["name"]).execute()
+        resource_tpu.delete(name=node["name"]).execute()
     except (errors.HttpError, Exception) as e:
         raise TPUDeletionError("Failed to delete TPU-VM") from e
 
     # Confirm deleted.
     while wait:
-        if get_tpu_node(name, resource) is None:
+        if get_tpu_node(name, resource_tpu) is None:
             logging.info("Deleted TPU %s.", name)
             return
         logging.info("Waiting for confirmed deletion of TPU %s", name)
         time.sleep(10)
 
 
-def list_tpu(credentials: Credentials) -> List[str]:
+def list_tpu(resource_tpu: discovery.Resource) -> List[str]:
     """List running TPUs.
 
     Args:
-        credentials: Gcloud credentials used by googleapiclient.discovery.
+        resource_tpu: discovery.Resource object, usually created by `tpu_resource()`.
 
     Returns:
         List of running TPU names.
     """
-    info = list_tpu_info(credentials)
+    info = list_tpu_info(resource_tpu)
     return [el.name for el in info]
 
 
-def _delete_multislice_tpu(name: str, *, credentials: Credentials, wait: bool = True):
-    """Delete multislice TPU.
+def delete_queued_tpu(name: str, resource_qrm: discovery.Resource, wait: bool = True):
+    """Delete TPU (using QRM API).
 
-    See `delete_tpu` docstring for details.
+    Args:
+        name: TPU name.
+        resource_qrm: discovery.Resource object, usually created by `qrm_resource()`.
+        wait: Whether to block until deletion is complete.
     """
-    resource = _qrm_resource(credentials)
-    node = get_queued_tpu_node(name, resource)
+    node = get_queued_tpu_node(name, resource_qrm)
     if node is None:
         logging.info("Multislice TPU %s doesn't exist, no need to delete.", name)
         return
@@ -319,7 +254,7 @@ def _delete_multislice_tpu(name: str, *, credentials: Credentials, wait: bool = 
         try:
             logging.info("Deleting multislice TPU %s", name)
             # N.B. force=True ensures that we tear down the associated TPU resources too.
-            resource.delete(name=node["name"], force=True).execute()
+            resource_qrm.delete(name=node["name"], force=True).execute()
         except (errors.HttpError, Exception) as e:
             # pytype: disable=attribute-error
             if isinstance(e, errors.HttpError) and e.resp.status == 404:
@@ -332,7 +267,7 @@ def _delete_multislice_tpu(name: str, *, credentials: Credentials, wait: bool = 
 
     # Confirm deleted.
     while wait:
-        node = get_queued_tpu_node(name, resource)
+        node = get_queued_tpu_node(name, resource_qrm)
         if node is None:
             logging.info("Deleted multislice TPU %s.", name)
             return
@@ -348,39 +283,54 @@ def _delete_multislice_tpu(name: str, *, credentials: Credentials, wait: bool = 
         time.sleep(10)
 
 
-def _create_multislice_tpu(
+def create_queued_tpu(
     name: str,
+    resource_qrm: discovery.Resource,
     *,
     tpu_type: str,
-    credentials: Credentials,
     bundler_type: str,
     num_slices: int = 1,
     metadata: Optional[Dict[str, str]] = None,
     service_account: Optional[str] = None,
+    reserved: Optional[bool] = None,
 ):
-    """Create multislice TPU.
+    """Create TPU (using QRM API).
 
-    See `create_tpu` docstring for details.
+    Args:
+        name: Name of slice.
+        resource_qrm: discovery.Resource object, usually created by `qrm_resource()`.
+        tpu_type: Type of each TPU slice.
+        bundler_type: Type of bundle intended to be loaded to VM.
+        num_slices: The number of slices of type tpu_type to start.
+        metadata: Optional metadata for the instance.
+        service_account: Service account to execute the TPU creation.
+        reserved: Whether to use reserved or preemptible quota. If None, infers from `gcp_settings`.
+
+    Raises:
+        TPUCreationError: If an exception is raised on the creation request.
+        ValueError: If an invalid name is provided.
     """
+    validate_resource_name(name)
     project, zone = gcp_settings("project"), gcp_settings("zone")
-    resource = _qrm_resource(credentials)
     attempt = 0
     # If we haven't booted all slices after READY + this many seconds, raise exception.
     boot_timeout = 3600
     while True:
-        node = get_queued_tpu_node(name, resource)
+        node = get_queued_tpu_node(name, resource_qrm)
         if node is None:
             # Multi-slice doesn't exist.
             if attempt:
                 # Exponential backoff capped at 512s.
                 backoff_for = 2 ** min(attempt, 9)
                 logging.info(
-                    "Attempt %d to create TPU failed, backoff for %ds.", attempt, backoff_for
+                    "Attempt %d to create TPU failed, backoff for %ds.",
+                    attempt,
+                    backoff_for,
                 )
                 time.sleep(backoff_for)
             try:
                 attempt += 1
-                request = resource.create(
+                request = resource_qrm.create(
                     parent=f"projects/{project}/locations/{zone}",
                     queuedResourceId=name,
                     body=_qrm_body(
@@ -393,6 +343,7 @@ def _create_multislice_tpu(
                             metadata=metadata,
                             service_account=service_account,
                         ),
+                        reserved=reserved,
                     ),
                 )
                 _execute_create_tpu_request(request)
@@ -429,17 +380,21 @@ def _create_multislice_tpu(
                 time.sleep(10)
             logging.info("All endpoints READY, HEALTHY and booted for multislice TPU %s", name)
             return
-        elif state in ["FAILED", "SUSPENDING", "SUSPENDED"]:
+        elif state in ["FAILED", "SUSPENDED"]:
+            # Per ttrimble@google.com, do not force delete if a node is in "SUSPENDING".
             logging.info("Deleting multislice TPU.")
             # By default, blocks until deleted.
-            _delete_multislice_tpu(name, credentials=credentials)
+            delete_queued_tpu(name, resource_qrm)
         elif state != "DELETING":
             # Poll until state change. Easier to track consecutive "unknown" count within this
             # block.
             for _ in range(10):
-                logging.warning("Unknown TPU state: %s. Will see if it resolves itself...", state)
+                logging.warning(
+                    "QR in unexpected state: %s. Will see if it resolves itself...",
+                    state,
+                )
                 time.sleep(60)
-                node = get_queued_tpu_node(name, resource)
+                node = get_queued_tpu_node(name, resource_qrm)
                 if get_queued_tpu_node_status(name, node=node)["state"] != state:
                     break
             else:
@@ -461,7 +416,7 @@ def get_queued_tpu_node_status(name: str, *, node: Dict[str, Any]) -> Dict[str, 
         * "state": The current node state.
         * "num_booted": How many VMs have booted.
     """
-    state = node["state"]["state"]
+    state = node.get("state", {}).get("state", "UNKNOWN")
     num_booted = 0
     if state == "ACTIVE":
         # Startup script has (in theory) begun running on all nodes in slice.
@@ -486,17 +441,16 @@ class TpuInfo:
     metadata: Dict[str, Any]
 
 
-def list_tpu_info(credentials: Credentials) -> List[TpuInfo]:
+def list_tpu_info(resource_tpu: discovery.Resource) -> List[TpuInfo]:
     """Collect info for running TPUs.
 
     Args:
-        credentials: Gcloud credentials used by googleapiclient.discovery.
+        resource_tpu: discovery.Resource object, usually created by `tpu_resource()`.
 
     Returns:
-        list of TPU info for running TPUs.
+        List of info for running TPUs.
     """
-    resource = _tpu_resource(credentials)
-    result = resource.list(
+    result = resource_tpu.list(
         parent=f"projects/{gcp_settings('project')}/locations/{gcp_settings('zone')}"
     ).execute()
     info = [
@@ -519,17 +473,16 @@ class QueuedResourceInfo(TpuInfo):
     reserved: bool
 
 
-def list_queued_resource_info(credentials: Credentials) -> List[QueuedResourceInfo]:
+def list_queued_resource_info(resource_qrm: discovery.Resource) -> List[QueuedResourceInfo]:
     """Collect info for live queued resources.
 
     Args:
-        credentials: Gcloud credentials used by googleapiclient.discovery.
+        resource_qrm: discovery.Resource object, usually created by `qrm_resource()`.
 
     Returns:
         List of info for running TPUs.
     """
-    resource = _qrm_resource(credentials)
-    result = resource.list(
+    result = resource_qrm.list(
         parent=f"projects/{gcp_settings('project')}/locations/{gcp_settings('zone')}"
     ).execute()
     info = []
@@ -548,7 +501,16 @@ def list_queued_resource_info(credentials: Credentials) -> List[QueuedResourceIn
     return info
 
 
-def _qrm_resource(credentials: Credentials) -> discovery.Resource:
+def _base_resource(credentials: Credentials) -> discovery.Resource:
+    """Builds base TPU v2alpha1 resource."""
+    return (
+        discovery.build("tpu", "v2alpha1", credentials=credentials, cache_discovery=False)
+        .projects()
+        .locations()
+    )
+
+
+def qrm_resource(credentials: Credentials) -> discovery.Resource:
     """Build gcloud TPU v2alpha1 QueuedResource API resource.
 
     Args:
@@ -557,16 +519,10 @@ def _qrm_resource(credentials: Credentials) -> discovery.Resource:
     Returns:
         discovery.Resource object for the TPU v2alpha1 QueuedResource API.
     """
-    resource = (
-        discovery.build("tpu", "v2alpha1", credentials=credentials, cache_discovery=False)
-        .projects()
-        .locations()
-        .queuedResources()
-    )
-    return resource
+    return _base_resource(credentials).queuedResources()
 
 
-def _tpu_resource(credentials: Credentials) -> discovery.Resource:
+def tpu_resource(credentials: Credentials) -> discovery.Resource:
     """Build gcloud TPU v2alpha1 API resource.
 
     Args:
@@ -575,13 +531,7 @@ def _tpu_resource(credentials: Credentials) -> discovery.Resource:
     Returns:
         discovery.Resource object for the TPU v2alpha1 API.
     """
-    resource = (
-        discovery.build("tpu", "v2alpha1", credentials=credentials, cache_discovery=False)
-        .projects()
-        .locations()
-        .nodes()
-    )
-    return resource
+    return _base_resource(credentials).nodes()
 
 
 def _tpu_body(
@@ -608,39 +558,61 @@ def _tpu_body(
     else:
         raise ValueError(f"Unknown TPU-VM runtime version for {tpu_type}.")
 
-    body = {
-        "acceleratorType": tpu_type,
-        "metadata": {
-            "bundle_bucket": gcp_settings("ttl_bucket"),
-            "enable-oslogin": "false",
-            "job_name": name,
-            "startup-script": startup_script_contents,
-            "zone": gcp_settings("zone"),
-            "tpu_type": tpu_type,
-            "docker_registry": registry_from_repo(docker_repo) if docker_repo else "",
-            "bundler_type": bundler_type,
-            "create_request_time": datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f"),
-            **(metadata or {}),
-        },
-        "networkConfig": {
-            "enableExternalIps": False,
-            "network": gcp_settings("network"),
-            "subnetwork": gcp_settings("subnetwork"),
-        },
-        "runtimeVersion": runtime_version,
-        "serviceAccount": {
-            "email": service_account or gcp_settings("service_account_email"),
-            "scope": DEFAULT_TPU_SCOPES,
-        },
-        "tags": ["allow-internet-egress"],
-    }
+    body = {}
+    if metadata is not None and "enable_ici_resiliency" in metadata:
+        # If we don't set this, the platform (GCP) decides whether or not to enable it.
+        body["ici_resilience_config"] = {
+            # If True, the TPU will continue with degraded ICI throughput in the event of
+            # some forms of hardware failure.
+            "enable_ici_resiliency": metadata.pop("enable_ici_resiliency"),
+        }
+
+    body.update(
+        {
+            "acceleratorType": tpu_type,
+            "metadata": {
+                "bundle_bucket": gcp_settings("ttl_bucket"),
+                "enable-oslogin": "false",
+                "job_name": name,
+                "startup-script": startup_script_contents,
+                "zone": gcp_settings("zone"),
+                "tpu_type": tpu_type,
+                "docker_registry": registry_from_repo(docker_repo) if docker_repo else "",
+                "bundler_type": bundler_type,
+                "create_request_time": datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f"),
+                **(metadata or {}),
+            },
+            "networkConfig": {
+                "enableExternalIps": False,
+                "network": gcp_settings("network"),
+                "subnetwork": gcp_settings("subnetwork"),
+            },
+            "runtimeVersion": runtime_version,
+            "serviceAccount": {
+                "email": service_account or gcp_settings("service_account_email"),
+                "scope": DEFAULT_TPU_SCOPES,
+            },
+            "tags": ["allow-internet-egress"],
+        }
+    )
+
     return body
 
 
-def _qrm_body(name: str, *, num_slices: int, tpu_body: Dict[str, Any]) -> Dict[str, Any]:
+def _qrm_body(
+    name: str, *, num_slices: int, tpu_body: Dict[str, Any], reserved: Optional[bool] = None
+) -> Dict[str, Any]:
     """Create configuration object for starting a multislice TPU.
 
     Reference: https://cloud.google.com/tpu/docs/queued-resources
+
+    Args:
+        name: QRM node name (will be suffixed if num_slices > 1).
+        num_slices: Number of TPU slices.
+        reserved: Whether to use reserved or preemptible quota. If None, infers from `gcp_settings`.
+
+    Returns:
+        The QRM request body.
     """
     node_spec = {
         "parent": f"projects/{gcp_settings('project')}/locations/{gcp_settings('zone')}",
@@ -655,28 +627,35 @@ def _qrm_body(name: str, *, num_slices: int, tpu_body: Dict[str, Any]) -> Dict[s
             "node_count": num_slices,
             "node_id_prefix": name,
         }
+    if reserved is None:
+        reserved = gcp_settings("reserved_tpu")
     body = {
-        "guaranteed": {"reserved": gcp_settings("reserved_tpu")},
         "tpu": {
             "node_spec": [node_spec],  # List, but only a single node spec is supported right now.
         },
     }
+    if reserved:
+        # https://cloud.google.com/tpu/docs/queued-resources#request_a_queued_resource_using_reserved_quota
+        body["guaranteed"] = {"reserved": True}
+    else:
+        # https://cloud.google.com/tpu/docs/queued-resources#request_a_preemptible_queued_resource
+        body["best_effort"] = {}
     return body
 
 
-def get_tpu_node(name: str, resource: discovery.Resource) -> Optional[Dict[str, Any]]:
+def get_tpu_node(name: str, resource_tpu: discovery.Resource) -> Optional[Dict[str, Any]]:
     """Gets information about a TPU node.
 
     Args:
         name: Name of TPU node.
-        resource: discovery.Resource object. See also `_tpu_resource`.
+        resource_tpu: discovery.Resource object, usually created by `tpu_resource()`.
 
     Returns:
         The node with the given name, or None if it doesn't exist.
     """
     # Get node if one exists.
     try:
-        return resource.get(
+        return resource_tpu.get(
             name=f"projects/{gcp_settings('project')}/locations/{gcp_settings('zone')}/nodes/{name}"
         ).execute()
     except errors.HttpError as e:
@@ -685,12 +664,12 @@ def get_tpu_node(name: str, resource: discovery.Resource) -> Optional[Dict[str, 
         raise  # Re-raise.
 
 
-def get_queued_tpu_node(name: str, resource: discovery.Resource) -> Optional[Dict[str, Any]]:
+def get_queued_tpu_node(name: str, resource_qrm: discovery.Resource) -> Optional[Dict[str, Any]]:
     """Gets information about a QueuedResource.
 
     Args:
         name: Name of QueuedResource.
-        resource: discovery.Resource object. See also `_qrm_resource`.
+        resource_qrm: discovery.Resource object, usually created by `qrm_resource()`.
 
     Returns:
         The QueuedResource with the given name, or None if it doesn't exist.
@@ -698,7 +677,7 @@ def get_queued_tpu_node(name: str, resource: discovery.Resource) -> Optional[Dic
     # Get node if one exists.
     while True:
         try:
-            return resource.get(
+            return resource_qrm.get(
                 # pylint: disable-next=line-too-long
                 name=f"projects/{gcp_settings('project')}/locations/{gcp_settings('zone')}/queuedResources/{name}"
             ).execute()
@@ -725,7 +704,8 @@ def infer_tpu_version(tpu_type: str) -> str:
     Raises:
         ValueError: if the TPU version string is unknown.
     """
-    tpu_version = tpu_type.rsplit("-", 1)[0]  # split from the last occurance of '-'
+    tpu_type = infer_tpu_type(tpu_type)
+    tpu_version = tpu_type.rsplit("-", 1)[0]  # split from the last occurrence of '-'
     if tpu_version not in _TPU_VERSIONS:
         raise ValueError(f"Unknown TPU version {tpu_version}. Expected one of {_TPU_VERSIONS}")
     return tpu_version
@@ -766,9 +746,21 @@ def infer_tpu_workers(tpu_type: str) -> int:
     raise NotImplementedError(tpu_type)
 
 
-# TODO(markblee): Dedup with other format_* utils.
-def format_tpu_info(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = None) -> str:
-    """Produce a tabular string view of the TPU infos provided.
+def infer_tpu_type(instance_type: str) -> str:
+    """Infers tpu type (e.g. v4-8) from instance type (e.g. tpu-v4-8 or v4-8)."""
+    if not (instance_type and re.fullmatch(r"(tpu-)?v.+-\d+", instance_type)):
+        raise ValueError(f"Invalid TPU instance: {instance_type}")
+    return instance_type.replace("tpu-", "")
+
+
+def infer_tpu_resources(instance_type: str, num_replicas: int) -> ResourceMap[int]:
+    """Infers resources required by the given instance type and number of replicas."""
+    tpu_type = infer_tpu_type(instance_type)
+    return {infer_tpu_version(tpu_type): infer_tpu_cores(tpu_type) * num_replicas}
+
+
+def tpu_info_table(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = None) -> Table:
+    """Produce a tabular view of the TPU infos provided.
 
     Args:
         tpus: Information on TPUs, e.g. as returned by `list_tpu_info`.
@@ -777,7 +769,7 @@ def format_tpu_info(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = Non
             scripts).
 
     Returns:
-        A table-formatted string.
+        A table that can be printed.
     """
     headings = [field.name for field in dataclasses.fields(TpuInfo)]
     if metadata:
@@ -788,7 +780,7 @@ def format_tpu_info(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = Non
         ]
     else:
         headings.remove("metadata")
-    return format_table(
+    return Table(
         headings=headings,
         rows=[
             [str(v) for k, v in info.__dict__.items() if k in headings]
@@ -797,10 +789,9 @@ def format_tpu_info(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = Non
     )
 
 
-# TODO(markblee): Dedup with other format_* utils.
-def format_queued_resource_info(
+def queued_resource_info_table(
     queued_resources: List[QueuedResourceInfo], metadata: Optional[Sequence[str]] = None
-) -> str:
+) -> Table:
     """Produce a tabular string view of the queued resource infos provided.
 
     Args:
@@ -811,7 +802,7 @@ def format_queued_resource_info(
             scripts).
 
     Returns:
-        A table-formatted string.
+        A table that can be printed.
     """
     headings = [field.name for field in dataclasses.fields(QueuedResourceInfo)]
     if metadata:
@@ -824,7 +815,7 @@ def format_queued_resource_info(
         ]
     else:
         headings.remove("metadata")
-    return format_table(
+    return Table(
         headings=headings,
         rows=[
             [str(v) for k, v in info.__dict__.items() if k in headings]

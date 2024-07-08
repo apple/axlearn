@@ -10,9 +10,14 @@
 
 import enum
 import math
+from functools import partial
+from typing import Callable
 
 import jax.numpy as jnp
 import numpy as np
+from jax.experimental.maps import thread_resources
+from jax.experimental.shard_map import shard_map
+from jax.sharding import PartitionSpec
 from numpy.typing import ArrayLike
 
 from axlearn.common.utils import Tensor
@@ -77,7 +82,7 @@ def sliding_window(x: Tensor, *, window_size: int, stride: int) -> Tensor:
     return x[..., idx]
 
 
-def pre_emphasis(x: Tensor, *, coeff: float) -> Tensor:
+def pre_emphasis(x: Tensor, *, coeff: Tensor) -> Tensor:
     """Applies a pre-emphasis filter to the input frames.
 
     Args:
@@ -105,19 +110,20 @@ def windowing(x: Tensor, *, window_type: WindowType, periodic: bool = True) -> T
     return (x * coeffs).astype(x.dtype)
 
 
-def magnitude_spectrogram(x: Tensor, *, fft_size: int) -> Tensor:
-    """Computes magnitude spectrogram from the input frames.
+def magnitude_spectrogram(ffts: Tensor, *, dtype: jnp.dtype) -> Tensor:
+    """Computes magnitude of the spectrogram from the FFT matrix.
 
     Args:
-        x: Input frames of shape `[..., num_frames, frame_size]`.
-        fft_size: Used to determine number of frequency bins. Should be a power of 2.
+        ffts: FFT of input audio frames of shape `[..., num_frames, fft_size]`.
+        dtype: dtype of output tensor.
 
     Returns:
         A spectrogram of shape `[..., num_frames, num_spectrogram_bins=fft_size // 2 + 1]`.
     """
-    out = jnp.abs(jnp.fft.fft(x, n=fft_size))
+    out = jnp.abs(ffts)
+    fft_size = ffts.shape[-1]
     out = out[..., : fft_size // 2 + 1]
-    return out.astype(x.dtype)
+    return out.astype(dtype)
 
 
 def linear_to_log_mel_spectrogram(
@@ -192,3 +198,24 @@ def linear_to_mel_weight_matrix(
 def next_power_of_2(n: float):
     """Computes next power of 2. Returns unchanged if already a power of 2."""
     return 2 ** math.ceil(math.log2(n))
+
+
+def sharded_fft(n: int, partition_spec: PartitionSpec) -> Callable[[Tensor], Tensor]:
+    """A manually sharded FFT implementation.
+
+    To get around a jax issue that FFT on GPU replicates the array instead of shard it.
+    https://github.com/google/jax/issues/15680.
+
+    Args:
+        n: FFT size. Should be a power of 2.
+        partition_spec: PartitionSpec for FFT inputs/outputs.
+
+    Returns:
+        A callable that computes FFT.
+    """
+    return shard_map(
+        partial(jnp.fft.fft, n=n),
+        mesh=thread_resources.env.physical_mesh,
+        in_specs=partition_spec,
+        out_specs=partition_spec,
+    )

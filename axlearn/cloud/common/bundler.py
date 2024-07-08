@@ -16,6 +16,28 @@ Example (docker):
         --bundler_spec=dockerfile=Dockerfile \
         --bundler_spec=build_arg1=my-build-arg
 
+    # Bundlers support packaging external directories (besides just CWD) via the `external` spec.
+    # For example, you can copy a specific file into the bundle root:
+    axlearn cloud bundle ... --bundler_spec=external=/path/to/file.txt
+
+    # When pointing `external` to a directory, bundling behaves similarly to the linux `cp` command:
+    # specifying a trailing slash copies directory contents, and omitting a trailing slash copies
+    # the directory itself.
+    #
+    # As an example, suppose we have a directory like:
+    # external_dir/
+    # -- my_file.txt
+
+    # The following command produces a structure like:
+    # bundle_root/
+    # -- external_dir/
+    axlearn cloud bundle ... --bundler_spec=external=/path/to/external_dir
+
+    # The following command produces a structure like:
+    # bundle_root/
+    # -- my_file.txt
+    axlearn cloud bundle ... --bundler_spec=external=/path/to/external_dir/
+
 """
 
 import os
@@ -23,9 +45,10 @@ import pathlib
 import shutil
 import tarfile
 import tempfile
-from typing import Dict, List, Optional, Sequence, Type, TypeVar, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Type, TypeVar, Union
 from urllib.parse import urlparse
 
+import prefixed
 from absl import app, flags, logging
 from tensorflow import io as tf_io
 
@@ -45,7 +68,19 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 
-BUNDLE_EXCLUDE = ["venv", ".git", ".idea", ".cache", ".pytest_cache", ".pytype", "__pycache__"]
+BUNDLE_EXCLUDE = [
+    # Each entry below specifies a subdir/file name or a relative path from the src dir whose
+    # contents should be excluded.
+    "venv",
+    ".git",
+    ".idea",
+    ".cache",
+    ".pytest_cache",
+    ".pytype",
+    "__pycache__",
+    ".ruff_cache",
+    ".DS_Store",
+]
 FLAGS = flags.FLAGS
 _DEFAULT_DOCKER_PLATFORM = "linux/amd64"
 
@@ -89,14 +124,32 @@ class Bundler(Configurable):
         temp_dir = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
         exclude_paths = set(canonicalize_to_list(cfg.exclude))
 
-        def copytree(src, dst, exclude):
+        def copytree(src: pathlib.Path, dst: pathlib.Path, exclude: Iterable[str], root=None):
+            """Recursively copies `src` to `dst`.
+
+            Args:
+                src: A path to a file or directory.
+                dst: A path to a file or directory.
+                exclude: Patterns to exclude.
+                root: The `src` of the original  call to `copytree` before recursing.
+                      I.e., the root of the tree being copied.
+            """
+            if root is None:
+                root = src
             for s in src.glob("*"):
                 d = dst / s.name
-                if s.name in exclude:
+                relative_s = s.relative_to(root)
+                # 1. Check if the final component of the path `s` is in exclude (which since we
+                # are walking the tree recursively, ultimately checks whether any component
+                # of the path is in exclude)
+                # 2. Check if the exclusion pattern specifies a parent path of `relative_s`,
+                # where both paths are relative to `root`. (`relative_s` is considered
+                # a parent of itself.)
+                if s.name in exclude or any(relative_s.is_relative_to(e) for e in exclude):
                     continue
                 if s.is_dir():
                     d.mkdir()
-                    copytree(s, d, exclude)
+                    copytree(s, d, exclude, root)
                 else:
                     shutil.copy2(s, d, follow_symlinks=True)
 
@@ -115,24 +168,43 @@ class Bundler(Configurable):
             if urlparse(dep).scheme:
                 # Has scheme so we try to use copy_blobs to handle.
                 copy_blobs(dep, to_prefix=temp_root.as_posix())
+                continue
+            # We rely on shutil for local-to-local copy as it follows symlinks.
+            dep_src = pathlib.Path(dep.strip())
+            if dep_src.is_file():
+                shutil.copy2(dep_src, temp_root / dep_src.name, follow_symlinks=True)
             else:
-                # We rely on shutil for local-to-local copy as it follows symlinks.
-                dep = pathlib.Path(dep.strip())
-                if dep.is_file():
-                    shutil.copy2(dep, temp_root / dep.name, follow_symlinks=True)
-                else:
-                    copytree(dep, temp_root, exclude_paths)
+                # If the external dir ends with /, copy only the contents of the directory.
+                # Otherwise, copy the directory itself. This is similar to linux `cp`.
+                dep_dst = temp_root
+                if not dep.endswith("/"):
+                    dep_dst = dep_dst / dep_src.name
+                    dep_dst.mkdir()
+                copytree(dep_src, dep_dst, exclude_paths)
 
         # Copy the configs to the bundle directory, since the config file(s) may not be in cwd.
         # Note that configs may comprise of multiple config files, so we serialize the full configs
         # to a new file in the search paths, instead of copying config_file.
-        rel_config_file = pathlib.Path(config_file).relative_to(package_dir)
-        config.write_configs_with_header(str(temp_root / rel_config_file), configs)
+        # We also always copy to a standard path `CONFIG_DIR / CONFIG_FILE` within the bundle.
+        # Note that this may override the existing config if it originated from `cwd / CONFIG_DIR /
+        # CONFIG_FILE` in the first place (but this new config will have merged the original).
+        rel_config_file = temp_root / config.CONFIG_DIR / config.CONFIG_FILE
+        rel_config_file.parent.mkdir(parents=True, exist_ok=True)
+        logging.info(
+            "Copying the config file from %s to the package under %s.",
+            config_file,
+            rel_config_file,
+        )
+        config.write_configs_with_header(str(rel_config_file), configs)
+
+        dir_size = sum(f.stat().st_size for f in temp_root.glob("**/*"))
+        dir_size = f"{prefixed.Float(dir_size):!.2k}B"
+        logging.info("Uncompressed size: %s", dir_size)
 
         return temp_dir
 
     @classmethod
-    def from_spec(cls, spec: List[str]) -> Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler."""
         raise NotImplementedError(cls)
 
@@ -199,9 +271,16 @@ class BaseDockerBundler(Bundler):
         # Build target.
         target: Optional[str] = None
         # Build target platform.
-        # Usually the image is to be run on the cloud on x86 machines, so
-        # "linux/amd64" is the default even on arm64 machines like Apple Silicon.
-        platform: str = _DEFAULT_DOCKER_PLATFORM
+        # Usually the image is to be run on the cloud on x86 machines, so "linux/amd64" is the
+        # default even on arm64 machines like Apple Silicon. If None, let docker pick the platform.
+        platform: Optional[str] = _DEFAULT_DOCKER_PLATFORM
+        # Allow git status to be dirty if bundling from source. This is sometimes necessary, e.g.
+        # during bundling-time modifications of files.
+        allow_dirty: bool = False
+        # Additional image(s) to cache from.
+        cache_from: Optional[Sequence[str]] = None
+        # Skip the build + push step (e.g., using a pre-built image).
+        skip_bundle: bool = False
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -223,27 +302,35 @@ class BaseDockerBundler(Bundler):
             )
 
     @classmethod
-    def from_spec(cls, spec: List[str]) -> Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler.
 
         Possible options:
-        - dockerfile: The Dockerfile path relative to project root.
         - image: The image name.
         - repo: The docker repo.
+        - dockerfile: The Dockerfile path relative to project root.
+        - target: The build target.
         - platform: The image target platform.
+        - allow_dirty: Whether to ignore dirty git status.
+        - cache_from: A comma-separated list of cache sources.
+        - skip_bundle: Whether to skip the build + push. This option is intended to be used when an
+            image has already been pre-built offline, in which case we may still want to leverage
+            the install commands implemented by the bundler.
 
         All other specs are treated as build args.
         """
-        cfg = cls.default_config()
+        del fv  # Not used.
+        cfg: BaseDockerBundler.Config = cls.default_config()
         kwargs = parse_kv_flags(spec, delimiter="=")
+        cache_from = canonicalize_to_list(kwargs.pop("cache_from", None))
         # Non-config specs are treated as build args.
         build_args = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k not in cfg}
-        return cfg.set(build_args=build_args, **kwargs)
+        return cfg.set(build_args=build_args, cache_from=cache_from, **kwargs)
 
     # pylint: disable-next=arguments-renamed
     def id(self, tag: str) -> str:
         """Returns the full image identifier from the tag."""
-        cfg = self.config
+        cfg: BaseDockerBundler.Config = self.config
         return f"{cfg.repo}/{cfg.image}:{tag}"
 
     # pylint: disable-next=arguments-renamed
@@ -260,11 +347,18 @@ class BaseDockerBundler(Bundler):
             ValueError: If image, repo, or dockerfile are invalid.
             RuntimeError: If attempting to bundle with dirty git status.
         """
-        cfg = self.config
+        cfg: BaseDockerBundler.Config = self.config
+        if cfg.skip_bundle:
+            bundle_id = self.id(tag)
+            logging.info("Skipping build + push and using: %s.", bundle_id)
+            return bundle_id
 
         # Fail early if git status is dirty.
-        if running_from_source() and get_git_status():
-            raise RuntimeError("Please commit your changes or gitignore them.")
+        if running_from_source() and (status := get_git_status()):
+            if cfg.allow_dirty:
+                logging.warning("Bundling with local changes:\n%s", status)
+            else:
+                raise RuntimeError("Please commit your changes or gitignore them.")
 
         # If path is relative, assume it is relative to CWD.
         dockerfile = pathlib.Path(cfg.dockerfile).expanduser()
@@ -306,7 +400,6 @@ class BaseDockerBundler(Bundler):
                 args=build_args,
                 context=str(temp_root),
                 labels=labels,
-                platform=cfg.platform,
             )
         return bundle_path
 
@@ -330,7 +423,6 @@ class BaseDockerBundler(Bundler):
         args: Dict[str, str],
         context: str,
         labels: Dict[str, str],
-        platform: str,
     ) -> str:
         """Builds and pushes the docker image.
 
@@ -340,7 +432,6 @@ class BaseDockerBundler(Bundler):
             args: Docker build args, e.g. as supplied via `--bundler_spec`.
             context: The full path to the temporary build context.
             labels: Docker labels.
-            platform: Docker image target platform.
 
         Returns:
             The full image tag of the built image. Will be returned from `bundle` as the bundle ID.
@@ -363,17 +454,18 @@ class DockerBundler(BaseDockerBundler):
         args: Dict[str, str],
         context: str,
         labels: Dict[str, str],
-        platform: str,
     ) -> str:
+        cfg: DockerBundler.Config = self.config
         return docker_push(
             docker_build(
                 dockerfile=dockerfile,
                 image=image,
                 args=args,
                 context=context,
-                target=self.config.target,
+                target=cfg.target,
                 labels=labels,
-                platform=platform,
+                platform=cfg.platform,
+                cache_from=cfg.cache_from,
             )
         )
 
@@ -392,16 +484,19 @@ class BaseTarBundler(Bundler):
         remote_dir: Required[str] = REQUIRED
         # Optional list of --find-links to use in pip install.
         find_links: Optional[Union[str, Sequence[str]]] = None
+        # Optional --index-url to use in pip install.
+        index_url: Optional[str] = None
         # Whether to install in editable mode.
         editable: bool = False
 
     @classmethod
-    def from_spec(cls, spec: List[str]) -> Config:
+    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler.
 
         Possible options:
         - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf_io.
         """
+        del fv  # Not used.
         return cls.default_config().set(**parse_kv_flags(spec, delimiter="="))
 
     def id(self, name: str) -> str:
@@ -419,11 +514,18 @@ class BaseTarBundler(Bundler):
         Returns:
             The remote path.
         """
-        cfg = self.config
+        cfg: BaseTarBundler.Config = self.config
 
         with self._local_dir_context() as temp_dir:
             temp_dir = pathlib.Path(temp_dir)
             temp_root = temp_dir / "axlearn"
+
+            # Tar bundling installs via `pip install`, which requires a pyproject or setup.py.
+            if not ((temp_root / "pyproject.toml").exists() or (temp_root / "setup.py").exists()):
+                logging.warning(
+                    "No pyproject.toml or setup.py found in the bundle root -- "
+                    "This means that bundle installation will likely fail!"
+                )
 
             # Add a requirements file indicating which deps/extras to install. This allows
             # install_command() to know how to install the bundle given just the bundle_id, without
@@ -434,6 +536,8 @@ class BaseTarBundler(Bundler):
             with requirements.open("w", encoding="utf-8") as f:
                 for find_links in canonicalize_to_list(cfg.find_links):
                     f.write(f"--find-links {find_links}\n")
+                if cfg.index_url:
+                    f.write(f"--index-url {cfg.index_url}\n")
                 pyproject_extras = []
                 for extra in canonicalize_to_list(cfg.extras):
                     # NOTE: .whl can also end with a pyproject section, e.g. axlearn.whl[dev].
@@ -449,6 +553,8 @@ class BaseTarBundler(Bundler):
             with tarfile.open(tar_path, "w:gz") as tar:
                 for f in temp_root.glob("*"):
                     tar.add(f, arcname=f.name)
+            tar_size = f"{prefixed.Float(tar_path.stat().st_size):!.2k}B"
+            logging.info("Compressed size: %s", tar_size)
 
             # Upload to remote.
             remote_path = self.id(name)
@@ -490,8 +596,7 @@ class BaseTarBundler(Bundler):
             The command to install the bundle.
         """
         copy_cmd = self._copy_to_local_command(
-            remote_bundle_id=bundle_id,
-            local_bundle_id="axlearn.tar.gz",
+            remote_bundle_id=bundle_id, local_bundle_id="axlearn.tar.gz"
         )
         pip_install_cmd = (
             f"if [[ -f {config.CONFIG_DIR}/requirements.txt ]]; then "
@@ -504,7 +609,12 @@ class BaseTarBundler(Bundler):
         )
 
 
-def get_bundler_config(*, bundler_type: str, spec: List[str]) -> Bundler.Config:
+def get_bundler_config(
+    *,
+    bundler_type: str,
+    spec: List[str],
+    fv: Optional[flags.FlagValues] = None,
+) -> Bundler.Config:
     """Constructs a bundler config from the given spec.
 
     Bundlers must be registered via `register_bundler`.
@@ -512,22 +622,23 @@ def get_bundler_config(*, bundler_type: str, spec: List[str]) -> Bundler.Config:
     Args:
         bundler_type: Type of bundler class.
         spec: Bundler specs. See the corresponding `from_spec` method of the bundler class.
+        fv: The flag values.
 
     Returns:
         The bundler config.
     """
     if bundler_class := _bundlers.get(bundler_type, None):
-        return bundler_class.from_spec(spec)
+        return bundler_class.from_spec(spec, fv=fv)
     raise NotImplementedError(
         f"Unknown bundler type: {bundler_type}. "
         f"Supported types are {sorted(list(_bundlers.keys()))}"
     )
 
 
-def bundler_flags(**kwargs):
+def bundler_flags(required: bool = True, **kwargs):
     """Common bundler flags. Keyword args will be forwarded to flag definitions."""
 
-    flags.DEFINE_string("bundler_type", None, "Bundler type.", required=True, **kwargs)
+    flags.DEFINE_string("bundler_type", None, "Bundler type.", required=required, **kwargs)
     flags.DEFINE_multi_string(
         "bundler_spec",
         [],
@@ -556,9 +667,9 @@ def main_flags():
 
 
 def main(_):
-    cfg = get_bundler_config(bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec).set(
-        exclude=FLAGS.bundler_exclude
-    )
+    cfg = get_bundler_config(
+        bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec, fv=FLAGS
+    ).set(exclude=FLAGS.bundler_exclude)
     bundler = cfg.instantiate()
     bundler.bundle(FLAGS.name)
 

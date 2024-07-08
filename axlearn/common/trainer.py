@@ -1,36 +1,44 @@
 # Copyright © 2023 Apple Inc.
 
 """Defines SpmdTrainer, a trainer that supports partitioning of computation and data with GSPMD."""
+
 import contextlib
+import itertools
 import math
 import os.path
-import sys
 import threading
 import time
-import traceback
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 import jax
 import tensorflow as tf
 from absl import logging
 from jax import numpy as jnp
+from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
 
-from axlearn.common import utils
+from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import Checkpointer
-from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.config import (
+    REQUIRED,
+    InstantiableConfig,
+    Required,
+    config_class,
+    maybe_instantiate,
+)
 from axlearn.common.evaler import SpmdEvaler
-from axlearn.common.learner import Learner, NestedOptParam
-from axlearn.common.module import InvocationContext, Module, clone_context_stack
+from axlearn.common.learner import ForwardOutputs, Learner, NestedOptParam
+from axlearn.common.module import InvocationContext, Module, child_context, clone_context_stack
 from axlearn.common.module import functional as F
-from axlearn.common.module import install_context_stack
+from axlearn.common.module import install_context_stack, new_output_collection
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.utils import (
+    HybridMeshShape,
     MeshShape,
     NestedPartitionSpec,
     NestedTensor,
@@ -39,38 +47,11 @@ from axlearn.common.utils import (
     count_model_params,
     flatten_items,
     match_regex_rules,
-    prune_tree,
+    thread_stack_traces,
 )
 
 
-def _thread_stack_traces() -> Sequence[str]:
-    lines = []
-    for thread in threading.enumerate():
-        thread_id = thread.ident
-        lines.append(f"Thread: {thread.name}({thread_id})")
-        # pylint: disable-next=protected-access
-        for line in traceback.format_stack(sys._current_frames()[thread_id]):
-            lines.append(f">>> {line.rstrip()}")
-    return lines
-
-
-def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
-    """Returns a shallow copy of the input tree with empty subtrees pruned.
-
-    If a tree would be made empty by removal of its subtrees, it will also be pruned.
-    This is a shallow copy because leaf nodes (non-dict values) are not deep-copied.
-
-    Args:
-        in_tree: the input tree to be pruned.
-
-    Returns:
-        The pruned copy of the input tree.
-    """
-    # Note that falsey values or empty Tensors are not considered empty.
-    return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
-
-
-class _TrainerState(NamedTuple):
+class TrainerState(NamedTuple):
     prng_key: Union[Tensor, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
     learner: Union[NestedTensor, NestedPartitionSpec]
@@ -105,9 +86,25 @@ class SpmdTrainer(Module):
 
         # The default mesh configuration.
         #
-        # The mesh shape, if specified, must have the same length as mesh_axis_names.
+        # If specified as a MeshShape, must have the same length as mesh_axis_names. Implicitly,
+        # this treats the mesh shape as the ICI mesh shape; we default to a DCN mesh shape that
+        # partitions the first non-singleton axis across granules (e.g. TPU slices or GPU nodes).
+        # If all axes are singletons, this implies a single-granule environment and therefore an
+        # all-1's DCN mesh shape.
+        #
+        # As an example on 2 H100 nodes, for mesh axes (pipeline, data, model) and a MeshShape of
+        # (1, 2, 8), we break the "data" axis across DCN -- this produces a DCN mesh shape (1, 2, 1)
+        # and an ICI mesh shape (1, 1, 8), i.e. 2-way data-parallelism across DCN, and 8-way model
+        # parallelism within-node (e.g. NVLink). If instead the MeshShape is provided as (2, 1, 8),
+        # we break along the "pipeline" axis, producing a DCN mesh shape of (2, 1, 1) and ICI mesh
+        # shape (1, 1, 8) for 2-way pipeline-parallelism across DCN and 8-way model parallelism
+        # within-node.
+        #
+        # If specified as a HybridMeshShape, each member must have the same length as
+        # mesh_axis_names.
+        #
         # Use `mesh_rules` to set different mesh shapes depending on the hardware platform.
-        mesh_shape: Required[MeshShape] = REQUIRED
+        mesh_shape: Required[Union[MeshShape, HybridMeshShape]] = REQUIRED
         # The mesh axis names. The names can be referenced in ParameterSpec.mesh_axes.
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
         # Subset of mesh axis names over which the leaves of the input batch are sharded.
@@ -153,6 +150,10 @@ class SpmdTrainer(Module):
         start_trace_process_indices: Union[Literal["all"], Sequence[int]] = [0]
 
         # Prune empty state updates.
+        # Must be set to True.
+        # The configuration option will be removed in a future AXLearn version.
+        # It has not been removed yet to prevent the need for a messy regeneration of large numbers
+        # of golden configs.
         prune_empty_state_updates: bool = True
 
         # Cast float inputs and model parameters to this dtype for the train step.
@@ -163,15 +164,31 @@ class SpmdTrainer(Module):
         # increment within this interval.
         watchdog_timeout_seconds: Optional[float] = None
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        # An optional recorder for measuring common metrics like step time.
+        recorder: Optional[InstantiableConfig[measurement.Recorder]] = None
+
+    def __init__(
+        self,
+        cfg: Config,
+        *,
+        parent: Optional[Module],
+        devices: Optional[Sequence[jax.Device]] = None,
+    ):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
+        if not cfg.prune_empty_state_updates:
+            raise ValueError(
+                "Setting prune_empty_state_updates to False is no longer supported.\n"
+                "The config option will be removed in a future AXLearn version."
+            )
+
         self._step: int = None
-        self._trainer_state: _TrainerState = None
+        self._trainer_state: TrainerState = None
         self._jit_train_step: jax.stages.Wrapped = None
         self._watchdog_stopping = None
         self._watchdog_thread = None
+        self._recorder = maybe_instantiate(cfg.recorder)
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
@@ -193,7 +210,9 @@ class SpmdTrainer(Module):
             [device.platform for device in jax.local_devices()],
         )
         self._step_log("Mesh shape: %s", cfg.mesh_shape)
-        devices = utils.create_device_mesh(mesh_shape=cfg.mesh_shape)
+        devices = (
+            utils.create_device_mesh(mesh_shape=cfg.mesh_shape) if devices is None else devices
+        )
         mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
         self._step_log("Global mesh: %s", mesh)
         self._mesh = mesh
@@ -226,7 +245,7 @@ class SpmdTrainer(Module):
             )
             for name, spec in utils.flatten_items(self._learner_state_partition_specs):
                 self._step_log("Learner state spec: %s=%s", name, spec)
-            self._trainer_state_specs = _TrainerState(
+            self._trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=self._model_param_specs,
                 learner=self._learner_state_partition_specs,
@@ -284,12 +303,6 @@ class SpmdTrainer(Module):
             **kwargs,
         )
 
-    def _maybe_prune_empty(self, state: NestedTensor) -> NestedTensor:
-        cfg = self.config
-        if cfg.prune_empty_state_updates:
-            state = _prune_empty(state)
-        return state
-
     def mesh(self):
         return jax.sharding.Mesh(self._mesh.devices, self._mesh.axis_names)
 
@@ -336,18 +349,90 @@ class SpmdTrainer(Module):
                     "in case the trainer is stuck.\n"
                     "Threads:\n%s",
                     cfg.watchdog_timeout_seconds,
-                    "\n".join(_thread_stack_traces()),
+                    "\n".join(itertools.chain.from_iterable(thread_stack_traces())),
                 )
             else:
                 self.vlog(1, "Watchdog check passed: %s -> %s", last_step, current_step)
         logging.info("Watchdog loop done")
 
+    def _should_force_run_evals(
+        self,
+        *,
+        return_evaler_summaries: Optional[Union[bool, Set[str]]] = None,
+        evalers: Dict[str, SpmdEvaler.Config],
+    ) -> Set[str]:
+        """Determines which, if any, evalers to force run at the last training step.
+
+        Args:
+            return_evaler_summaries: Whether to run evalers at the last training step.
+                If None or False, do not force run evalers; if True, force run all
+                evalers; if given as a set of strings, force run all the evalers with
+                the name in the set.
+            evalers: A dict of evaler configs. Only the keys are used to check against
+                return_evaler_summaries.
+
+        Returns:
+            A set of strings for the evalers to force run at the last training step.
+            If empty, no evaler is force run.
+
+        Raises:
+            ValueError: If return_evaler_summaries is a set of strings with any not matching
+                evaler names; or return_evaler_summaries is an invalid type.
+        """
+        force_run_evals = set()
+        if return_evaler_summaries is True:
+            force_run_evals = set(evalers.keys())
+        elif isinstance(return_evaler_summaries, Set):
+            for evaler_name in return_evaler_summaries:
+                if evaler_name not in evalers:
+                    raise ValueError(
+                        f"{evaler_name} does not match any evaler names: {evalers.keys()}"
+                    )
+                force_run_evals.add(evaler_name)
+        elif not isinstance(return_evaler_summaries, bool) and return_evaler_summaries is not None:
+            raise ValueError(
+                f"return_evaler_summaries must be bool, None or Set. Got {return_evaler_summaries}"
+            )
+        return force_run_evals
+
+    def _maybe_record_event(self, event: measurement.Event, *args, **kwargs):
+        if self._recorder is not None:
+            self._recorder.record(event, *args, **kwargs)
+
     # pylint: disable-next=too-many-statements,too-many-branches
-    def run(self, prng_key: Tensor) -> Optional[NestedTensor]:
+    def run(
+        self, prng_key: Tensor, *, return_evaler_summaries: Optional[Union[bool, Set[str]]] = None
+    ) -> Optional[NestedTensor]:
+        """Runs training.
+
+        Args:
+            prng_key: The pseudo random generator key.
+            return_evaler_summaries: Whether to force run evalers and return summaries at the
+                last training step. If None or False, do not force run evalers and no evaler
+                summaries are returned; if True, force run all evalers at the last training step
+                and return summaries; if given as a set of strings, force run all the evalers
+                with the name in the set at the last training step and return summaries.
+
+        Returns:
+            None if no training is run or a dict otherwise.
+            If returned is a dict, it contains the outputs from the last step of training,
+            with 'loss' and 'aux' outputs. If return_evaler_summaries is True or a set of strings,
+            it also contains 'evaler_summaries', which is a dict containing the evaler summaries
+            force run at the last training step. The dict will have evaler names as keys and
+            metrics summary dict as values (None for evalers not included in force run).
+            The metrics summary dict has string keys for the name of the metrics and can have
+            different types of values such as WeightedScalar, Tensor, or string, depending on
+            the specific `metric_calculator` config of the evaler.
+        """
         with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
             cfg = self.config
+            # Check if need to force run evals at the last training step.
+            force_run_eval_sets_at_max_step = self._should_force_run_evals(
+                return_evaler_summaries=return_evaler_summaries, evalers=cfg.evalers
+            )
+
             # Prepare training.
-            if not self._prepare_training(cfg, prng_key):
+            if not self._prepare_training(prng_key):
                 return None
 
             with self.checkpointer:
@@ -357,7 +442,8 @@ class SpmdTrainer(Module):
                 output = None
                 stop_trace_step = None
 
-                for input_batch in self._input_iter:
+                for input_batch in self.input.batches(self._input_iter):
+                    self._maybe_record_event(measurement.Event.START_STEP, self._step)
                     logging.log_first_n(
                         logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
                     )
@@ -367,7 +453,12 @@ class SpmdTrainer(Module):
 
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
-                    output = self._run_step(utils.host_to_global_device_array(input_batch))
+                    output = self._run_step(
+                        utils.host_to_global_device_array(input_batch),
+                        force_run_evals=force_run_eval_sets_at_max_step
+                        if self.step >= cfg.max_step
+                        else None,
+                    )
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
                     if num_steps % 100 == 0:
@@ -492,7 +583,7 @@ class SpmdTrainer(Module):
                 1, "tree_structure(model_params)=%s", jax.tree_util.tree_structure(model_params)
             )
             learner_params = self.learner.init(self._opt_params(model_params))
-            return _TrainerState(
+            return TrainerState(
                 prng_key=prng_key,
                 model=model_params,
                 learner=learner_params,
@@ -514,8 +605,9 @@ class SpmdTrainer(Module):
         self._step_log("Total number of model params: %s", f"{total_num_params:,}")
         self.summary_writer(0, {"num_model_params": total_num_params})
 
-        total_state_bytes = 0
         # Training state size.
+        total_state_bytes = 0
+        total_sharded_state_bytes = 0
         state_spec_map = dict(utils.flatten_items(self.trainer_state_specs))
         for path, value in utils.flatten_items(self._trainer_state):
             self._step_log(
@@ -526,13 +618,25 @@ class SpmdTrainer(Module):
                 state_spec_map.get(path),
             )
             total_state_bytes += value.size * value.dtype.itemsize
-        self._step_log("Training state size: %.2f GB", total_state_bytes / 1024**3)
-        trainer_state_structure = jax.tree_util.tree_structure(self._trainer_state)
-        utils.complete_partition_spec_tree(
-            trainer_state_structure, self._trainer_state_partition_specs
+            shard_shape = value.sharding.shard_shape(value.shape)
+            total_sharded_state_bytes += math.prod(shard_shape) * value.dtype.itemsize
+
+        total_sharded_state_gb = total_sharded_state_bytes / 1024**3
+        if jax.process_count() > 1:
+            max_sharded_state_gb = multihost_utils.process_allgather(total_sharded_state_gb).max()
+        else:
+            max_sharded_state_gb = total_sharded_state_gb
+
+        self._step_log(
+            "Training state size: %.2f GiB\n"
+            "Training state size (partitioned): %.2f GiB\n"
+            "Max training state size (partitioned): %.2f GiB",
+            total_state_bytes / 1024**3,
+            total_sharded_state_gb,
+            max_sharded_state_gb,
         )
 
-    def _prepare_training(self, cfg: Config, prng_key: Tensor) -> bool:
+    def _prepare_training(self, prng_key: Tensor) -> bool:
         """Prepares training.
 
         This function does the following to prepare the training procedure:
@@ -542,13 +646,13 @@ class SpmdTrainer(Module):
         4. Otherwise Jits self._train_step.
 
         Args:
-            cfg: The trainer config.
             prng_key: The PRNG key of the `run` method.
 
         Returns:
             A boolean indicating whether the model training should start. If not, return
                 None from the `run` function.
         """
+        cfg = self.config
 
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
         self.restore_checkpoint(restore_step=None)
@@ -575,7 +679,7 @@ class SpmdTrainer(Module):
             self._step_log("Already reached max_step=%s. Stopping", cfg.max_step)
             return False
 
-        self._pjit_train_step()
+        self._jit_train_step = self._pjit_train_step()
         return True
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
@@ -640,8 +744,8 @@ class SpmdTrainer(Module):
                     )
             if step is not None:
                 self._step = step
-                self._trainer_state = _TrainerState(
-                    **{k: v for k, v in ckpt_state.items() if k in _TrainerState._fields}
+                self._trainer_state = TrainerState(
+                    **{k: v for k, v in ckpt_state.items() if k in TrainerState._fields}
                 )
                 if cfg.save_input_iterator and "input_iter" in ckpt_state:
                     self._input_iter = ckpt_state["input_iter"]
@@ -680,14 +784,21 @@ class SpmdTrainer(Module):
         )
         return built_state
 
-    def _run_step(self, input_batch: NestedTensor) -> NestedTensor:
+    def _run_step(
+        self, input_batch: NestedTensor, *, force_run_evals: Optional[Set[str]] = None
+    ) -> NestedTensor:
         """Runs a single training step.
 
         Args:
             input_batch: a NestedTensor containing global arrays.
+            force_run_evals: Whether to force run evalers and return summaries.
+                If None, do not force run evalers and no evaler summaries are returned;
+                if given as a set of strings, force run all the evalers with the name in
+                the set and return summaries.
 
         Returns:
-            A dict containing 'loss' and 'aux' outputs.
+            A dict containing 'loss' and 'aux' outputs. If force_run_evals is a set,
+            force run the evalers in the set and return 'evaler_summaries' output.
         """
         with jax.profiler.StepTraceAnnotation("train", step_num=self.step):
             # Note(Jan 2022):
@@ -706,14 +817,26 @@ class SpmdTrainer(Module):
         self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
 
         # Aggregate summaries across evalers.
-        evaler_summaries = self._run_eval(train_summaries=outputs["summaries"])
+        evaler_summaries = self._run_eval(
+            train_summaries=outputs["summaries"], force_runs=force_run_evals
+        )
 
         # Checkpointer policy will decide if we should save.
         self.save_checkpoint(evaler_summaries=evaler_summaries)
 
-        return {"loss": outputs["loss"], "aux": outputs["aux"]}
+        return_dict = {"loss": outputs["loss"], "aux": outputs["aux"]}
+        # Returns evaler_summaries if force_run_evals is not None or empty set.
+        if force_run_evals:
+            return_dict["evaler_summaries"] = evaler_summaries
 
-    def _run_eval(self, *, train_summaries: Optional[NestedTensor] = None) -> Dict[str, Any]:
+        return return_dict
+
+    def _run_eval(
+        self,
+        *,
+        train_summaries: Optional[NestedTensor] = None,
+        force_runs: Optional[Set[str]] = None,
+    ) -> Dict[str, Any]:
         """Runs evaluations and returns the corresponding summaries."""
         evaler_summaries = {}
         # Note: we will use the same eval key as the training keys of the future step,
@@ -725,12 +848,13 @@ class SpmdTrainer(Module):
                 prng_key=prng_key,
                 model_params=self.model_params_for_eval(),
                 train_summaries=train_summaries,
+                force_run=bool(force_runs is not None and evaler_name in force_runs),
             )
             evaler_summaries[evaler_name] = summaries
         return evaler_summaries
 
-    def _pjit_train_step(self):
-        self._jit_train_step = pjit(
+    def _pjit_train_step(self) -> jax.stages.Wrapped:
+        return pjit(
             self._train_step,
             in_shardings=(
                 self._trainer_state_partition_specs,
@@ -747,22 +871,41 @@ class SpmdTrainer(Module):
             donate_argnums=(0,),  # donate the state
         )
 
+    def compile_train_step(self) -> jax.stages.Compiled:
+        with self.mesh():
+            # Do not run init(), which require real devices.
+            trainer_state_specs = jax.tree_util.tree_map(
+                lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
+                self.trainer_state_specs,
+            )
+            input_batch_specs = jax.tree_util.tree_map(
+                lambda tf_spec: jax.ShapeDtypeStruct(
+                    shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
+                ),
+                self.input.dataset().element_spec,
+            )
+            jit_train_step = self._pjit_train_step()
+            lowered_train_step = jit_train_step.lower(trainer_state_specs, input_batch_specs)
+            return lowered_train_step.compile()
+
     def _train_step(
         self,
-        state: _TrainerState,
+        state: TrainerState,
         input_batch: Dict[str, Any],
-    ) -> Tuple[_TrainerState, NestedTensor]:
+    ) -> Tuple[TrainerState, NestedTensor]:
+        cfg = self.config
         # Shard and (possibly) dispatch the input batch.
-        input_batch = utils.dispatch_input_batch(
-            input_batch, batch_axis_names=self.config.batch_axis_names
-        )
+        if hasattr(self.input, "dispatch_global_batch"):
+            input_batch = self.input.dispatch_global_batch(
+                input_batch, batch_axis_names=cfg.batch_axis_names
+            )
 
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
             state.prng_key, 4
         )
 
         def train_cast(in_tree):
-            return utils.cast_floats(in_tree, to_dtype=self.config.train_dtype)
+            return utils.cast_floats(in_tree, to_dtype=cfg.train_dtype)
 
         # A nested tree of booleans.
         should_compute_gradients = self.learner.should_update_with_optimizers(state.model)
@@ -770,66 +913,46 @@ class SpmdTrainer(Module):
             if not value:
                 self.vlog(1, "Skipping gradients on %s", path)
 
-        def _forward(model_parameters_grad, model_parameters_no_grad, forward_input_batch):
-            model_parameters = jax.tree_util.tree_map(
-                lambda compute_grad, pg, png: pg if compute_grad else png,
-                should_compute_gradients,
-                model_parameters_grad,
-                model_parameters_no_grad,
-            )
-            params = train_cast(model_parameters)  # A copy of `model_parameters`.
+        def _forward(*, inputs: NestedTensor, model_params: NestedTensor) -> ForwardOutputs:
+            params = train_cast(model_params)
             params = self.model.apply_parameter_noise_recursively(param_noise_key, params)
-            (loss, aux), model_output_collection = F(
-                self.model,
+            model_output_collection = new_output_collection()
+            with child_context(
+                "model",
+                module=self.model,
                 state=params,
-                is_training=True,
                 prng_key=forward_key,
-                inputs=dict(input_batch=train_cast(forward_input_batch)),
-            )
-            return loss, (aux, model_output_collection)
+                output_collection=model_output_collection,
+            ):
+                loss, aux = self.model(input_batch=train_cast(inputs))
+            return ForwardOutputs(loss=loss, aux=aux, output_collection=model_output_collection)
 
-        # By default `value_and_grad` only computes gradients on the first arg,
-        # `model_parameters_grad`.
-        forward_and_grad = jax.value_and_grad(_forward, has_aux=True)
-        dummy_value = None
-        model_parameters_grad = jax.tree_util.tree_map(
-            lambda compute_gradients, v: v if compute_gradients else dummy_value,
-            should_compute_gradients,
-            state.model,
-        )
-        model_parameters_nograd = jax.tree_util.tree_map(
-            lambda compute_gradients, v: dummy_value if compute_gradients else v,
-            should_compute_gradients,
-            state.model,
-        )
         # `grads` are computed for `model_parameters_grad`.
-        (loss, (forward_aux, forward_output_collection)), grads = forward_and_grad(
-            model_parameters_grad, model_parameters_nograd, input_batch
-        )
         opt_params = self._opt_params(state.model)
-        state_updates = self._maybe_prune_empty(forward_output_collection.state_updates)
-        updated_model_params, learner_output_collection = F(
+        fwd_bwd_outputs, learner_output_collection = F(
             self.learner,
-            method="update",
+            method="forward_and_backward",
             state=state.learner,
             is_training=True,
             prng_key=learner_key,
-            inputs=dict(model_params=opt_params, gradients=grads, state_updates=state_updates),
+            inputs=dict(fn=_forward, opt_params=opt_params, inputs=input_batch),
         )
-        updated_state = _TrainerState(
+        forward_outputs: ForwardOutputs = fwd_bwd_outputs.forward_outputs
+        updated_model_params = fwd_bwd_outputs.backward_outputs.updated_params
+        updated_state = TrainerState(
             prng_key=new_prng_key,
             model=updated_model_params,
             learner=learner_output_collection.state_updates,
         )
         # TODO(ruoming): only retrieve summaries when necessary.
         summaries = dict(
-            model=forward_output_collection.summaries,
+            model=forward_outputs.output_collection.summaries,
             learner=learner_output_collection.summaries,
         )
         return updated_state, dict(
             summaries=summaries,
-            loss=loss,
-            aux=forward_aux,
+            loss=forward_outputs.loss,
+            aux=forward_outputs.aux,
         )
 
     def _maybe_stop_or_start_tracing(

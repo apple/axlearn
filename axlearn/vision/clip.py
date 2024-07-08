@@ -489,7 +489,7 @@ class CLIPFusionNetwork(FusionNetwork):
                     *"output_features": A Tensor with shape [batch_size, num_sentences, dim]
 
         Returns:
-            loss: A Tensor represnting the loss
+            loss: A Tensor representing the loss
             A dictionary containing:
                 *"similarity": A Tensor representing the similarity between
                     the text and image.
@@ -529,7 +529,7 @@ class CLIPFusionNetwork(FusionNetwork):
 class CLIPModel(MultiStreamModel):
     """A CLIP two stream model.
 
-    This class provides a customized predict funtion.
+    This class provides a customized predict function.
 
     The predict is called during the inference. As we only need to calculate the
         StreamEncoder outputs.

@@ -9,7 +9,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
-from absl import logging
 from absl.testing import parameterized
 from transformers import DebertaV2Config, DebertaV2ForSequenceClassification
 from transformers.models.deberta_v2 import modeling_deberta_v2 as hf_deberta_v2
@@ -35,7 +34,6 @@ from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
-from axlearn.common.utils import shapes
 
 
 class RelativePositionTest(TestCase):
@@ -401,6 +399,7 @@ class DisentangledSelfAttentionTest(TestCase):
             jax.random.PRNGKey(333),
             [cfg.pos_emb.num_embeddings, cfg.pos_emb.dim],
         )
+        return_aux = {"probs"}
 
         # Patch in the pos_emb weights.
         layer_params["pos_emb"] = dict(weight=relative_pos_emb)
@@ -409,7 +408,11 @@ class DisentangledSelfAttentionTest(TestCase):
         layer_outputs, _ = F(
             layer,
             inputs=dict(
-                query=query, key=key, value=key, attention_logit_biases=attention_logit_biases
+                query=query,
+                key=key,
+                value=key,
+                attention_logit_biases=attention_logit_biases,
+                return_aux=return_aux,
             ),
             state=layer_params,
             is_training=False,
@@ -517,7 +520,7 @@ class DeBERTaEncoderTest(TestCase):
             jax.random.PRNGKey(111), [batch_size, query_len], minval=0, maxval=test_cfg.vocab_size
         )
         padding_mask = input_ids != cfg.pad_token_id
-        _, test_out = F(
+        test_out, _ = F(
             layer,
             jax.random.PRNGKey(0),
             layer_params["encoder"],
@@ -525,29 +528,20 @@ class DeBERTaEncoderTest(TestCase):
             is_training=False,
             drop_output_collections=[],
         )
-        logging.info("test_out=%s", shapes(test_out))
-        ref_outputs = hf_layer(
+        ref_out = hf_layer(
             as_torch_tensor(input_ids),
             attention_mask=as_torch_tensor(padding_mask),
             output_attentions=True,
             output_hidden_states=True,
             return_dict=True,
         )
-
-        # [batch, seq_len, seq_len]
-        attention_probs_mask = jnp.logical_and(padding_mask[:, :, None], padding_mask[:, None, :])
-        attention_probs_mask = attention_probs_mask[:, None, :, :]
-        hf_attention_probs_mask = as_torch_tensor(attention_probs_mask)
-
-        for i in range(ref_cfg.num_hidden_layers):
-            logging.info("Comparing layer %s attentions.", i)
-            test_attention_probs = test_out.module_outputs[
-                "transformer_outputs"
-            ].self_attention_probs[i]
-            self.assertNestedAllClose(
-                test_attention_probs * attention_probs_mask,
-                ref_outputs.attentions[i] * hf_attention_probs_mask,
-            )
+        output_mask = padding_mask[:, :, None]
+        self.assertNestedAllClose(
+            ref_out.hidden_states[-1] * as_torch_tensor(output_mask),
+            test_out * output_mask,
+            atol=1e-5,
+            rtol=1e-2,
+        )
 
     def test_encoder(self, query_len: int, **kwargs):
         torch.use_deterministic_algorithms(True)

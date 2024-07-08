@@ -4,10 +4,13 @@
 # pylint: disable=unused-argument
 
 import contextlib
+import datetime
 from unittest import mock
 
 from absl.testing import parameterized
 
+from axlearn.cloud.common.bastion import new_jobspec
+from axlearn.cloud.common.types import JobMetadata
 from axlearn.cloud.gcp import tpu_cleaner
 from axlearn.cloud.gcp.tpu import TpuInfo
 
@@ -26,6 +29,19 @@ class TestTPUCleaner(parameterized.TestCase):
             "b": dict(v4=32),  # Already cleaned up.
             "c": dict(v4=8),  # Inconsistent resource assignment.
             "d": dict(v4=64),  # Different TPU cores.
+        }
+        jobs = {
+            k: new_jobspec(
+                name="a",
+                command="cmd",
+                metadata=JobMetadata(
+                    user_id="user",
+                    project_id="jetpack",
+                    creation_time=datetime.datetime(1900, 1, 1, 0, 0, 0),
+                    resources=v,
+                ),
+            )
+            for k, v in jobs.items()
         }
 
         def mock_get_credentials(*args, **kwargs):
@@ -47,6 +63,8 @@ class TestTPUCleaner(parameterized.TestCase):
 
         module_name = tpu_cleaner.__name__
         mocks = [
+            mock.patch(f"{module_name}.qrm_resource", return_value=mock.MagicMock()),
+            mock.patch(f"{module_name}.tpu_resource", return_value=mock.MagicMock()),
             mock.patch(f"{module_name}.get_credentials", side_effect=mock_get_credentials),
             mock.patch(f"{module_name}.list_tpu_info", side_effect=mock_list_tpu_info),
             mock.patch(

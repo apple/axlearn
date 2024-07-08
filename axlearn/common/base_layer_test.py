@@ -1,10 +1,11 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests BaseLayer."""
+
 import dataclasses
 import math
 from functools import partial
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import jax.ad_checkpoint
 import jax.core
@@ -18,10 +19,13 @@ from jax import numpy as jnp
 from axlearn.common import param_init, utils
 from axlearn.common.base_layer import (
     BaseLayer,
+    CompositeTensorStats,
     NestedTensor,
     ParameterNoise,
     ParameterSpec,
     RematSpec,
+    TensorMaxAbs,
+    TensorRMSNorm,
     no_remat,
 )
 from axlearn.common.config import config_class
@@ -51,9 +55,11 @@ class TestLayer(BaseLayer):
 
     def forward(self, x):
         self.add_summary("x", x)
+        self._add_tensor_stats("x", x)
         self.add_state_update("moving_mean", 0.1 * x + 0.9 * self.state["moving_mean"])
         y = x - self.state["moving_mean"]
         self.add_module_output("forward", y)
+        self._add_tensor_stats("y", y)
         return y
 
 
@@ -141,7 +147,10 @@ class TestRematLayer(BaseLayer):
             lambda: self._forward_calls.append(None), lambda: self._backward_calls.append(None)
         )
 
-    def forward(self, x):
+    def forward(self, x, *, static_arg: Any = None):
+        # static_arg is not really used, but added to test that the remat logic can handle
+        # static kwargs.
+        del static_arg
         h = self._callback(self.op(x))
         y = self._remat_name(h, self.config.output_name)
         return y
@@ -172,8 +181,8 @@ class TestRematParentLayer(BaseLayer):
                 TestRematLayer.default_config().set(output_name=name, remat_spec=cfg.remat_spec),
             )
 
-    def forward(self, x):
-        return self.layer2(self.layer1(x))
+    def forward(self, x, static_arg: Any = None):
+        return self.layer2(self.layer1(x, static_arg=static_arg), static_arg=static_arg)
 
 
 class BaseLayerTest(TestCase):
@@ -246,8 +255,11 @@ class BaseLayerTest(TestCase):
         self.assertEqual(tagged_param.primitive.name, "name")
         self.assertEqual(f"{type(test_module).__name__}.{var_tag}", tagged_param.params.get("name"))
 
+    @parameterized.parameters(None, "static_arg_value")
     def test_remat_causes_additional_forwards(
-        self, remat_spec=RematSpec(policy=jax_remat_policies.nothing_saveable)
+        self,
+        static_arg: Any,
+        remat_spec=RematSpec(policy=jax_remat_policies.nothing_saveable),
     ):
         test_module: TestRematParentLayer = (
             TestRematParentLayer.default_config()
@@ -266,7 +278,7 @@ class BaseLayerTest(TestCase):
                 is_training=True,
                 state=state,
                 prng_key=jax.random.PRNGKey(123),
-                inputs=(inputs,),
+                inputs=dict(x=inputs, static_arg=static_arg),
             )[0]
 
         v, g = jax.value_and_grad(partial(loss, state=state, module=test_module))(jnp.ones([]))
@@ -290,6 +302,7 @@ class BaseLayerTest(TestCase):
     def test_apply_parameter_noise_recursively(self, param_noise_cfg):
         test_module: TestLayer = (
             TestLayer.default_config()
+            .set(tensor_stats=TensorRMSNorm.default_config())
             .set(name="test", param_noise=param_noise_cfg)
             .instantiate(parent=None)
         )
@@ -308,6 +321,50 @@ class BaseLayerTest(TestCase):
             ):
                 self.assertEqual(orig_path, noisy_path)
                 self.assertNestedAllClose(jnp.zeros_like(orig_value), noisy_value)
+
+    @parameterized.parameters(False, True)
+    def test_tensor_stats(self, inline_child_summaries: bool):
+        test_layer: TestLayer = (
+            TestLayer.default_config()
+            .set(
+                name="test",
+                tensor_stats=CompositeTensorStats.default_config().set(
+                    tensor_stats={
+                        "norm": TensorRMSNorm.default_config(),
+                        "max": TensorMaxAbs.default_config(),
+                    },
+                    inline_child_summaries=inline_child_summaries,
+                ),
+            )
+            .instantiate(parent=None)
+        )
+        data_key, init_key, prng_key = jax.random.split(jax.random.PRNGKey(567), num=3)
+        batch_size = 4
+        inputs = jax.random.normal(key=data_key, shape=[batch_size, 3, 2, 4]) * 10.0
+        layer_params = test_layer.initialize_parameters_recursively(prng_key=init_key)
+        _, output_collections = F(
+            test_layer,
+            inputs=dict(x=inputs),
+            is_training=True,
+            prng_key=prng_key,
+            state=layer_params,
+        )
+        if inline_child_summaries:
+            self.assertNestedAllClose(
+                {
+                    "x": {"rms_norm": 9.327524, "max_abs": 26.052944},
+                    "y": {"rms_norm": 9.231870, "max_abs": 26.109497},
+                },
+                output_collections.summaries["tensor_stats"],
+            )
+        else:
+            self.assertNestedAllClose(
+                {
+                    "x": {"norm": {"rms_norm": 9.327524}, "max": {"max_abs": 26.052944}},
+                    "y": {"norm": {"rms_norm": 9.231870}, "max": {"max_abs": 26.109497}},
+                },
+                output_collections.summaries["tensor_stats"],
+            )
 
     @parameterized.parameters(None, (jnp.array([0, 10, 5, 7]),), (jnp.array([0, 0, 0, 0]),))
     def test_activation_summary(self, lengths):
@@ -409,7 +466,7 @@ class BaseLayerTest(TestCase):
 
     def test_no_remat_inheritance(self):
         # Check that @no_remat is preserved by inheritance unless the method
-        # is explicitly overriden by one without @no_remat.
+        # is explicitly overridden by one without @no_remat.
         class AnotherTestLayer(BaseLayer):
             @no_remat
             def fn(self, st: str):
@@ -463,7 +520,7 @@ class BaseLayerTest(TestCase):
 class ComputeFanAxesTest(TestCase):
     """Tests compute_fan_axes."""
 
-    class DefaultFanLayer(BaseLayer):
+    class BaseFanLayer(BaseLayer):
         """A layer using default _compute_fan_axes."""
 
         def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
@@ -474,21 +531,48 @@ class ComputeFanAxesTest(TestCase):
                 ),
             }
 
-    class CustomFanLayer(DefaultFanLayer):
+    class ConvFanLayer(BaseFanLayer):
+        """A layer with convolution-like FanAxes (no batched axis)."""
+
+        def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> FanAxes:
+            return FanAxes(in_axis=-2, out_axis=-1)
+
+    class CustomFanLayer(BaseFanLayer):
         """A layer with FanAxes (no batched axis)."""
 
         def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> FanAxes:
             return FanAxes(in_axis=(1, 2), out_axis=3)
 
-    class BatchedCustomFanLayer(DefaultFanLayer):
+    class BatchedCustomFanLayer(BaseFanLayer):
         """A layer with FanAxes (with batched axis)."""
 
         def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> FanAxes:
             return FanAxes(in_axis=(1, 2), out_axis=3, batch_axis=0)
 
+    class ExplicitFanLayer(BaseFanLayer):
+        """A layer with FanAxes specified explicitly in parameter spec."""
+
+        def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+            return {
+                "fan_axes_specified_weight": ParameterSpec(
+                    shape=(6, 8, 12),  # B, H, W
+                    fan_axes=FanAxes(in_axis=-2, out_axis=-1, batch_axis=0),
+                ),
+            }
+
+        def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
+            if name == "fan_axes_specified_weight":
+                raise RuntimeError("Should not be invoked.")
+            super()._compute_fan_axes(name, parameter_spec)
+
     @parameterized.parameters(
         (
-            DefaultFanLayer,
+            BaseFanLayer,
+            None,
+            None,
+        ),
+        (
+            ConvFanLayer,
             FanAxes(in_axis=-2, out_axis=-1),
             {
                 "fan_in": 6 * 4 * 4 * 8,
@@ -530,28 +614,58 @@ class ComputeFanAxesTest(TestCase):
                     layer: BaseLayer = cfg.instantiate(parent=None)
                     # pylint: disable-next=protected-access
                     param_spec_map = layer._create_layer_parameter_specs()
-                    self.assertEqual(
-                        # pylint: disable-next=protected-access
-                        layer._compute_fan_axes("weight", param_spec_map["weight"]),
-                        fan_axes,
-                    )
-                    spec = dataclasses.replace(param_spec_map["weight"], fan_axes=fan_axes)
-                    self.assertEqual(spec.fans(), fans)
-                    layer_params = layer.initialize_parameters_recursively(jax.random.PRNGKey(1))
-                    weight = layer_params["weight"]
-                    fan = fans[fan_type]
-                    self.assertEqual(weight.dtype, jnp.float32)
-                    expected_std = scale / math.sqrt(fan)
-                    actual_std = np.std(weight)
-                    self.assertBetween(actual_std, expected_std / 1.5, expected_std * 1.5)
+
+                    if cls == ComputeFanAxesTest.BaseFanLayer:
+                        with self.assertRaisesRegex(
+                            NotImplementedError,
+                            "requires weight parameters to have exactly 2 axes",
+                        ):
+                            # pylint: disable-next=protected-access
+                            layer._compute_fan_axes("weight", param_spec_map["weight"])
+                    else:
+                        self.assertEqual(
+                            # pylint: disable-next=protected-access
+                            layer._compute_fan_axes("weight", param_spec_map["weight"]),
+                            fan_axes,
+                        )
+                        spec = dataclasses.replace(param_spec_map["weight"], fan_axes=fan_axes)
+                        self.assertEqual(spec.fans(), fans)
+                        layer_params = layer.initialize_parameters_recursively(
+                            jax.random.PRNGKey(1)
+                        )
+                        weight = layer_params["weight"]
+                        fan = fans[fan_type]
+                        self.assertEqual(weight.dtype, jnp.float32)
+                        expected_std = scale / math.sqrt(fan)
+                        actual_std = np.std(weight)
+                        self.assertBetween(actual_std, expected_std / 1.5, expected_std * 1.5)
 
     def test_fan_axes_in_create_parameter_specs_recursively(self):
         layer_cfg = self.BatchedCustomFanLayer.default_config().set(name="test")
+        layer_cfg = layer_cfg.set(tensor_stats=TensorRMSNorm.default_config())
         layer = layer_cfg.instantiate(parent=None)
         specs = layer.create_parameter_specs_recursively()
         self.assertEqual(
             specs["weight"].fan_axes, FanAxes(in_axis=(1, 2), out_axis=3, batch_axis=0)
         )
+
+    def test_fan_axes_respects_parameter_spec(self):
+        # pylint: disable=protected-access
+        layer_cfg = self.ExplicitFanLayer.default_config().set(name="test")
+        layer = layer_cfg.instantiate(parent=None)
+        param_spec_map = layer._create_layer_parameter_specs()
+        orig_fan_axes = param_spec_map["fan_axes_specified_weight"].fan_axes
+
+        # FanAxes from _create_layer_parameter_specs should be respected.
+        with self.assertRaises(RuntimeError):
+            layer._compute_fan_axes(
+                "fan_axes_specified_weight", param_spec_map["fan_axes_specified_weight"]
+            )
+        specs = layer.create_parameter_specs_recursively()
+        self.assertEqual(orig_fan_axes, specs["fan_axes_specified_weight"].fan_axes)
+
+        # Initialize paras w.r.t. to the fan axes.
+        layer.initialize_parameters_recursively(jax.random.PRNGKey(123))
 
 
 if __name__ == "__main__":

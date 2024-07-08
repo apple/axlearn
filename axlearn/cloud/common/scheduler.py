@@ -3,50 +3,40 @@
 """Utilities to decide whether to schedule jobs according to resource constraints.
 
 The main API is `JobScheduler`, which makes scheduling decisions based on a quota file (see
-`quota.py`) and has `Scheduler` and `ProjectJobSorter` as children.
+`quota.py`) and a corresponding `BaseScheduler` implementation, configured as a child.
 
-`Scheduler` takes run-or-not verdicts for each job, based on available resources, demands of each
-job, per-project quotas, and the priorities of jobs within each project. It uses
-`ResourceLimitCalculator` to compute per-project resource limits based on the total limit,
-per-project quotas, and demands.
-
-Job priorities with a project can be determined with `ProjectJobSorter`, which sorts the jobs
-based on the user id, creation time, and resource demands.
+See corresponding class docstrings for details.
 """
 
 import collections
 import dataclasses
 import datetime
 import queue
-from collections import defaultdict
-from typing import Dict, Mapping, NamedTuple, Optional, Set
+from typing import Any, Dict, Mapping, NamedTuple, Optional, Sequence, Set, Tuple
 
 from absl import logging
 
 from axlearn.cloud.common.quota import QuotaFn
 from axlearn.cloud.common.types import (
+    JobMetadata,
     JobQueue,
     ProjectJobs,
     ProjectResourceMap,
     ResourceMap,
     ResourceType,
 )
-from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
-
-_EPSILON = 1e-3
-
-
-@dataclasses.dataclass
-class JobMetadata:
-    user_id: str
-    project_id: str
-    creation_time: datetime.datetime
-    resources: Dict[ResourceType, float]
-    priority: int = 5  # 1 - highest, 5 - lowest
+from axlearn.common.config import (
+    REQUIRED,
+    ConfigOr,
+    Configurable,
+    Required,
+    config_class,
+    maybe_instantiate,
+)
 
 
 class ProjectJobSorter(Configurable):
-    """Sorts jobs within a project."""
+    """Sorts jobs within a project based on the user id, creation time, and resource demands."""
 
     def sort(self, jobs: Mapping[str, JobMetadata]) -> JobQueue:
         """Sorts jobs into a queue.
@@ -80,7 +70,7 @@ class ProjectJobSorter(Configurable):
             # First sort by job priority.
             priority: int
             # Then sort by the aggregate usage of the user across resource types.
-            usage: float
+            usage: int
             # Tie-break by creation time of the next job of the user to be sorted.
             creation_time: datetime.datetime
             # The ID of the next job of the user.
@@ -109,7 +99,7 @@ class ProjectJobSorter(Configurable):
             assert queue_item.creation_time == job_create_time
             assert queue_item.job_id == job_id
             job_metadata: JobMetadata = jobs[job_id]
-            job_queue.append((job_id, job_metadata.resources))
+            job_queue.append((job_id, job_metadata))
             if user_jobs:
                 # The user has more jobs. Add it back to `user_queue`.
                 next_priority, next_creation_time, next_job_id = user_jobs[0]
@@ -125,214 +115,313 @@ class ProjectJobSorter(Configurable):
         return job_queue
 
     # pylint: disable-next=no-self-use
-    def _aggregate_resources(self, resource_map: ResourceMap) -> float:
+    def _aggregate_resources(self, resource_map: ResourceMap[int]) -> int:
         """Subclasses can override this method."""
         return sum(resource_map.values())
 
 
-class ResourceLimitCalculator(Configurable):
-    """Calculates per-project resource limits.
-
-    When some projects do not use all their quotas, this implementation allocates the spare
-    capacity proportionally among projects whose demands exceed their quotas.
-
-    If there is still spare capacity left after all demands from the projects with non-zero quotas
-    are met, the rest capacity will be evenly divided among projects without quota
-    (aka "best-effort quotas").
-    """
-
-    def calculate(
-        self, *, limit: float, quotas: Dict[str, float], demands: Dict[str, float]
-    ) -> Dict[str, float]:
-        """Calculates per-project limits on available resources, quotas, and demands.
-
-        Args:
-            limit: The total amount of available resources.
-            quotas: A mapping from project ids to quotas. If a project id is missing, assume
-                quota of 0.
-            demands: A mapping from project ids to demands. If a project id is missing, assume
-                demand of 0.
-
-        Returns:
-            A mapping from project ids to resource limits.
-
-        Raises:
-            ValueError: if total quota exceeds `limit`.
-        """
-        total_quota = sum(quotas.values())
-        if total_quota > limit + _EPSILON:
-            raise ValueError(f"Total quotas ({total_quota}) exceeds limit ({limit})")
-        if not quotas or not demands:
-            return {}
-
-        demands_within_quota = set(
-            project_id
-            for project_id, quota in quotas.items()
-            if demands.get(project_id, 0) <= quota + _EPSILON
-        )
-        if not demands_within_quota:
-            # No spare capacity from any project. Set limits to project quotas.
-            return {project_id: quotas.get(project_id, 0) for project_id in demands}
-
-        # Mapping from project ids to resource limits.
-        project_limits = {}
-
-        # There is some spare capacity. Compute the per-project limits as follows:
-        # (1) For each project where demand <= quota, simply set project limit to its demand;
-        # (2) Re-compute the project limits with the remaining capacity and projects, where:
-        #     new_limit = limit - sum(demands of projects within quota)
-        #     new_demands = demands of remaining projects
-        #     new_quota = quotas of remaining projects scaled to new_limit
-        new_limit = limit
-        # Mapping from project ids to demands for projects not in `demands_within_quota`.
-        new_demands = {}
-        # Mapping from project ids to quotas for projects not in `demands_within_quota`.
-        remaining_quotas = {}
-        for project_id, demand in demands.items():
-            if project_id in demands_within_quota:
-                project_limits[project_id] = demand
-                new_limit -= demand
-            else:
-                new_demands[project_id] = demand
-                remaining_quotas[project_id] = quotas.get(project_id, 0)
-
-        if new_limit > _EPSILON and remaining_quotas:
-            remaining_quota_sum = sum(remaining_quotas.values())
-            if remaining_quota_sum == 0:
-                # This happens when the only projects whose demands exceed quotas are those with
-                # zero quotas (aka "best-effort quotas").
-                #
-                # In this case we divide new_limit evenly among the remaining projects.
-                new_quotas = {
-                    project_id: new_limit / len(remaining_quotas) for project_id in remaining_quotas
-                }
-            else:
-                # Scale quotas by (new_limit / remaining_quota_sum).
-                new_quotas = {
-                    project_id: quota * new_limit / remaining_quota_sum
-                    for project_id, quota in remaining_quotas.items()
-                }
-            # Call `self.calculate` again with the remaining projects.
-            new_limits = self.calculate(limit=new_limit, quotas=new_quotas, demands=new_demands)
-            # Merge the results into `project_limits`.
-            project_limits.update(new_limits)
-        return project_limits
-
-
 @dataclasses.dataclass
 class JobVerdict:
-    """Describes whether the job should run."""
+    """Describes whether the job should run.
+
+    Attributes:
+        over_limits: If the job cannot be scheduled, the set of resource types on which the job's
+            demands exceed the project limits.
+        metadata: Metadata for each verdict. Defaults to an empty dict.
+    """
+
+    over_limits: Optional[Set[ResourceType]] = None
+    metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def should_run(self):
         return not self.over_limits
 
-    # If the job cannot be scheduled, the set of resource types on which the job's demands exceed
-    # the project limits.
-    over_limits: Optional[Set[ResourceType]] = None
+    def __bool__(self):
+        return self.should_run()
+
+    def __or__(self, other: Optional["JobVerdict"]) -> Optional["JobVerdict"]:
+        return self if self.should_run() else other
 
 
-class Scheduler(Configurable):
-    """A job scheduler."""
-
-    @config_class
-    class Config(Configurable.Config):
-        """Configures Scheduler."""
-
-        limit_calculator: ResourceLimitCalculator.Config = ResourceLimitCalculator.default_config()
+class BaseScheduler(Configurable):
+    """The job scheduler interface."""
 
     @dataclasses.dataclass
     class ScheduleResults:
-        # The effective resource limits.
-        project_limits: ProjectResourceMap
-        # Mapping: project_id -> (job_id -> run_or_not).
-        job_verdicts: Dict[str, Dict[str, JobVerdict]]
+        """Scheduling results.
 
-    def __init__(self, cfg: Config):
-        super().__init__(cfg)
-        cfg = self.config
-        self.limit_calculator = cfg.limit_calculator.instantiate()
+        Attributes:
+            project_limits: The effective resource limits.
+            project_usages: The resource usages.
+            job_verdicts: A mapping of project_id -> (job_id -> run_or_not).
+        """
+
+        project_limits: ProjectResourceMap[int]
+        project_usages: ProjectResourceMap[int]
+        job_verdicts: Dict[str, Dict[str, JobVerdict]]
 
     def schedule(
         self,
         *,
-        resource_limits: ResourceMap,
-        project_quotas: ProjectResourceMap,
+        resource_limits: Sequence[ResourceMap[int]],
+        project_quotas: ProjectResourceMap[float],
         project_jobs: ProjectJobs,
+        verbosity: int = 0,
     ) -> ScheduleResults:
         """Makes per-job scheduling decisions based on available resources, quotas, and jobs.
 
         Args:
-            resource_limits: A mapping from resource types to the amount of available resources.
+            resource_limits: A sequence of mappings from resource types to the integer amount of
+                available resources.
             project_quotas: A mapping from project ids to quotas.
             project_jobs: A mapping from project ids to its job queue.
+            verbosity: The logging verbosity.
 
         Returns:
-            A mapping from project ids to a mapping of job ids to schedule decisions.
+            Scheduling results consisting of:
+            * project_limits: The resource limits assigned to each project.
+            * project_usages: The total resource usage by project and resource type.
+            * job_verdicts: The run-or-not verdicts for each job.
         """
-        project_limits: ProjectResourceMap = collections.defaultdict(dict)
-        for resource_type, limit in resource_limits.items():
-            resource_quotas = {
-                project_id: quota_map.get(resource_type, 0)
-                for project_id, quota_map in project_quotas.items()
-            }
-            resource_demands = {
-                project_id: sum(job_demands.get(resource_type, 0) for _, job_demands in jobs)
-                for project_id, jobs in project_jobs.items()
-            }
-            resource_limits = self.limit_calculator.calculate(
-                limit=limit,
-                quotas=resource_quotas,
-                demands=resource_demands,
+        raise NotImplementedError(type(self))
+
+
+def _normalize_quotas(
+    quotas: ProjectResourceMap, resource_limits: ResourceMap[int]
+) -> ProjectResourceMap:
+    """Converts the quotas (expressed as proportions) to absolute resource values."""
+    quota_sums = collections.defaultdict(float)
+    for project_quotas in quotas.values():
+        for resource_type, quota in project_quotas.items():
+            quota_sums[resource_type] += quota
+
+    normalized_quotas = collections.defaultdict(lambda: collections.defaultdict(float))
+    for project_id, project_quotas in quotas.items():
+        for resource_type, quota in project_quotas.items():
+            normalized_quotas[project_id][resource_type] = (
+                quota / max(quota_sums[resource_type], 1e-8)
+            ) * resource_limits.get(resource_type, 0)
+    return normalized_quotas
+
+
+def _job_verdict(demands: Dict[ResourceType, int], limits: ResourceMap[int]) -> JobVerdict:
+    """Constructs a verdict for the job."""
+    over_limits = set()
+    for resource_type, demand in demands.items():
+        if demand > limits.get(resource_type, 0):
+            over_limits.add(resource_type)
+    verdict = JobVerdict()
+    if over_limits:
+        verdict.over_limits = over_limits
+    return verdict
+
+
+def _recursively_to_dict(x: Any) -> Any:
+    """Recursively converts defaultdicts to dicts."""
+    if isinstance(x, collections.defaultdict):
+        x = {k: _recursively_to_dict(v) for k, v in x.items()}
+    return x
+
+
+def _compute_total_limits(resource_limits: Sequence[ResourceMap[int]]) -> ResourceMap[int]:
+    """Computes total limits from a sequence of limits."""
+    total_limits = {}
+    for limits in resource_limits:
+        for resource_type, limit in limits.items():
+            total_limits[resource_type] = total_limits.get(resource_type, 0) + limit
+    return total_limits
+
+
+def _demote_unschedulable_jobs(jobs: JobQueue, *, limits: ResourceMap[int]) -> JobQueue:
+    schedulable = []
+    unschedulable = []
+    for job_name, job_metadata in jobs:
+        resources = job_metadata.resources
+        is_schedulable = True
+        for resource_type, demand in resources.items():
+            if demand > limits.get(resource_type, 0):
+                is_schedulable = False
+                break
+        if is_schedulable:
+            schedulable.append((job_name, job_metadata))
+        else:
+            logging.info("Unschedulable job: %s: %s", job_name, job_metadata)
+            unschedulable.append((job_name, job_metadata))
+    # Put unscheduable jobs after the schedable ones.
+    return schedulable + unschedulable
+
+
+class TierScheduler(BaseScheduler):
+    """A scheduler which greedily assigns jobs to tiers.
+
+    Tiers can be used to express different reservation types, such as:
+    1. Reserved quota: instances scheduled onto this tier are SLO backed.
+    2. Reserved pre-emptible quota: instances scheduled onto this tier may be pre-empted, e.g. by
+        defragmentation, machine repairs, or other events, but still belong to a reservation.
+    3. On-demand quota: instances scheduled onto this tier are provisioned as capacity allows,
+        possibly outside of a reservation.
+
+    We make some basic assumptions:
+    1. Jobs can tolerate scheduling on any given tier.
+    2. Tiers have an implicit priority order.
+    3. Tiers should partition the full quota, i.e., they must be disjoint and add up to the full
+        resources.
+    4. Lower priority tiers can borrow from higher priority tiers.
+
+    With these assumptions, scheduling proceeds as follows:
+    1. Projects are ordered based on the ratio `cumulative project usage / project quota`, breaking
+        ties by creation time of the job to-be-scheduled for each project (first come first serve).
+        If there are multiple resource types, we take the max usage ratio across resource types.
+    2. Within each project, jobs are assumed to be already ordered.
+    3. A job-to-be-scheduled will greedily acquire resources starting from the highest priority tier
+        to the lowest priority tier. Once its demands are met, it will be scheduled on the last
+        (lowest priority) tier which contributed quota.
+    """
+
+    def schedule(
+        self,
+        *,
+        resource_limits: Sequence[ResourceMap[int]],
+        project_quotas: ProjectResourceMap,
+        project_jobs: ProjectJobs,
+        verbosity: int = 0,
+    ) -> BaseScheduler.ScheduleResults:
+        """See `BaseScheduler.schedule` for details."""
+        if not isinstance(resource_limits, Sequence):
+            raise ValueError(f"Expected resource tiers to be a sequence, got {resource_limits=}.")
+        if len(resource_limits) < 1:
+            raise ValueError(f"Expected at least one tier, got {resource_limits=}.")
+
+        project_queue = queue.PriorityQueue()
+        # Avoid modifying in-place.
+        resource_limits = [{**limits} for limits in resource_limits]
+        # Maps resource_type -> total limits.
+        remaining_limits = _compute_total_limits(resource_limits)
+        # Maps project_id -> resource_type -> quota.
+        project_quotas = _normalize_quotas(project_quotas, remaining_limits)
+        # Maps project_id -> resource_type -> usage.
+        project_usages = collections.defaultdict(lambda: collections.defaultdict(int))
+        # Maps project_id -> deque of (job_id, job_metadata).
+        project_jobs: Dict[str, collections.deque[Tuple[str, JobMetadata]]] = {
+            project_id: collections.deque(
+                _demote_unschedulable_jobs(sorted_jobs, limits=remaining_limits)
             )
-            for project_id, project_limit in resource_limits.items():
-                project_limits[project_id][resource_type] = project_limit
+            for project_id, sorted_jobs in project_jobs.items()
+        }
 
-        job_verdicts = {}
-        for project_id, jobs in project_jobs.items():
-            job_verdicts[project_id] = {}
-            resource_limits: ResourceMap = project_limits.get(project_id, {})
-            resource_usages: ResourceMap = collections.defaultdict(lambda: 0)
-            for job_id, job_demands in jobs:
-                over_limits = set()
-                for resource_type, demand in job_demands.items():
-                    if resource_usages[resource_type] + demand > resource_limits.get(
-                        resource_type, 0
-                    ):
-                        over_limits.add(resource_type)
-                verdict = JobVerdict()
-                if over_limits:
-                    verdict.over_limits = over_limits
-                else:
-                    # The job can fit.
-                    for resource_type, demand in job_demands.items():
-                        resource_usages[resource_type] += demand
-                job_verdicts[project_id][job_id] = verdict
+        def project_queue_item(project_id: str) -> Tuple[float, datetime.datetime, str]:
+            """Constructs a queue entry for the given project."""
+            assert len(project_jobs[project_id]) > 0
+            usages = project_usages[project_id]
+            _, next_job = project_jobs[project_id][0]
+            usage_ratios = [
+                (usages[resource_type] + usage)
+                / max(project_quotas[project_id][resource_type], 1e-8)
+                for resource_type, usage in next_job.resources.items()
+            ]
+            # Smaller values have higher priority.
+            return max((0, *usage_ratios)), next_job.creation_time, project_id
 
-        return Scheduler.ScheduleResults(project_limits=project_limits, job_verdicts=job_verdicts)
+        # Initialize queue with projects.
+        for project_id, sorted_jobs in project_jobs.items():
+            if sorted_jobs:
+                project_queue.put(project_queue_item(project_id))
+
+        def traverse_tiers(
+            tier_limits: dict[int, ResourceMap], demands: ResourceMap
+        ) -> dict[int, ResourceMap]:
+            """Visits tiers in the order specified in tier_limits, until we can satisfy demands."""
+            tier_usages = collections.defaultdict(lambda: collections.defaultdict(int))
+            demands = {**demands}
+            for tier, limits in tier_limits.items():
+                for resource_type in list(demands.keys()):
+                    if tier_usage := min(demands[resource_type], limits.get(resource_type, 0)):
+                        tier_usages[tier][resource_type] += tier_usage
+                        demands[resource_type] -= tier_usage
+                        if demands[resource_type] <= 0:
+                            del demands[resource_type]
+                if not demands:
+                    break
+            return tier_usages
+
+        job_verdicts = collections.defaultdict(dict)
+        while not project_queue.empty() and remaining_limits:
+            project_usage_ratio, _, project_id = project_queue.get()
+            job_id, job_metadata = project_jobs[project_id].popleft()
+
+            # Admit the highest priority job within the project.
+            verdict = _job_verdict(job_metadata.resources, remaining_limits)
+            if verdict:
+                # In the forward pass, we greedily identify the minimum set of tiers that are
+                # required to satisfy the job's demands.
+                tier_usages = traverse_tiers(
+                    dict(enumerate(resource_limits)), job_metadata.resources
+                )
+                final_tier = max((0, *tier_usages.keys()))
+                # In the backward pass, we greedily acquire resources from the lowest-priority tier
+                # first, since the job will ultimately be scheduled on the lowest-priority tier.
+                tier_usages = traverse_tiers(
+                    dict(reversed(list(enumerate(resource_limits[: final_tier + 1])))),
+                    job_metadata.resources,
+                )
+                verdict = JobVerdict(metadata={"tier": final_tier})
+
+                # Update resource_limits, remaining_limits and project_usages.
+                for tier, usages in tier_usages.items():
+                    for resource_type, usage in usages.items():
+                        resource_limits[tier][resource_type] -= usage
+                        remaining_limits[resource_type] -= usage
+                        if remaining_limits[resource_type] <= 0:
+                            del remaining_limits[resource_type]
+                        project_usages[project_id][resource_type] += usage
+
+            if verbosity > 0:
+                logging.info(
+                    "Schedule %s(%s)/%s: %s", project_id, project_usage_ratio, job_id, verdict
+                )
+
+            job_verdicts[project_id][job_id] = verdict
+            if project_jobs[project_id]:
+                project_queue.put(project_queue_item(project_id))
+
+        # Remaining jobs are rejected.
+        for project_id, job_queue in project_jobs.items():
+            for job_id, job_metadata in job_queue:
+                job_verdicts[project_id][job_id] = JobVerdict(
+                    over_limits=set(job_metadata.resources.keys())
+                )
+
+        return BaseScheduler.ScheduleResults(
+            # Treat the usages as the limits.
+            project_limits=_recursively_to_dict(project_usages),
+            project_usages=_recursively_to_dict(project_usages),
+            job_verdicts=_recursively_to_dict(job_verdicts),
+        )
 
 
-# TODO(markblee): Consider merging with sorter and scheduler.
 class JobScheduler(Configurable):
-    """Schedules jobs."""
+    """Schedules jobs, possibly onto multiple tiers of quotas."""
 
     @config_class
     class Config(Configurable.Config):
-        """Configures JobScheduler."""
+        """Configures JobScheduler.
 
-        # A config that instantiates to a QuotaFn.
-        quota: Required[InstantiableConfig[QuotaFn]] = REQUIRED
-        # Sorter that decides ordering of jobs-to-schedule.
+        Attributes:
+            quota: A config that instantiates to a QuotaFn.
+            sorter: Sorter that decides ordering of jobs-to-schedule.
+            scheduler: Scheduler that decides whether to resume/suspend jobs.
+        """
+
+        quota: Required[ConfigOr[QuotaFn]] = REQUIRED
         sorter: ProjectJobSorter.Config = ProjectJobSorter.default_config()
-        # Scheduler that decides whether to resume/suspend jobs.
-        scheduler: Scheduler.Config = Scheduler.default_config()
+        scheduler: BaseScheduler.Config = TierScheduler.default_config()
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
-        # Instantiate children.
-        self._quota = cfg.quota.instantiate()
-        self._sorter = cfg.sorter.instantiate()
-        self._scheduler = cfg.scheduler.instantiate()
+        self._quota = maybe_instantiate(cfg.quota)
+        self._sorter: ProjectJobSorter = cfg.sorter.instantiate()
+        self._scheduler: BaseScheduler = cfg.scheduler.instantiate()
 
     def schedule(
         self,
@@ -340,8 +429,10 @@ class JobScheduler(Configurable):
         *,
         dry_run: bool = False,
         verbosity: int = 0,
-    ) -> Scheduler.ScheduleResults:
+    ) -> BaseScheduler.ScheduleResults:
         """Schedules jobs according to quotas.
+
+        The scheduling behavior depends on the configured `cfg.scheduler`.
 
         Args:
             jobs: A mapping from {job_name: job_metadata}.
@@ -353,7 +444,7 @@ class JobScheduler(Configurable):
             The scheduling results.
         """
         # Group jobs by project.
-        project_jobs = defaultdict(dict)
+        project_jobs = collections.defaultdict(dict)
         for job_name, job_metadata in jobs.items():
             project_jobs[job_metadata.project_id][job_name] = job_metadata
 
@@ -363,14 +454,14 @@ class JobScheduler(Configurable):
 
         # Fetch quotas each time.
         quota_info = self._quota()
-        total_resources = quota_info.total_resources
-        project_resources = quota_info.project_resources
+        resource_limits = quota_info.total_resources
+        project_quotas = quota_info.project_resources
 
-        # Decide whether each job should run.
-        schedule_results: Scheduler.ScheduleResults = self._scheduler.schedule(
-            resource_limits=total_resources,
-            project_quotas=project_resources,
+        schedule_results = self._scheduler.schedule(
+            resource_limits=resource_limits,
+            project_quotas=project_quotas,
             project_jobs=project_jobs,
+            verbosity=verbosity,
         )
 
         # Log the job verdicts.
@@ -379,29 +470,35 @@ class JobScheduler(Configurable):
         if verbosity > 0:
             logging.info("")
             logging.info("==Begin scheduling report")
-            logging.info("Total resource limits: %s", total_resources)
+            logging.info("Total resource limits: %s", resource_limits)
             for project_id, project_verdicts in schedule_results.job_verdicts.items():
                 logging.info(
                     "Verdicts for Project [%s] Quota [%s] Effective limits [%s]:",
                     project_id,
-                    project_resources.get(project_id, {}),
+                    project_quotas.get(project_id, {}),
                     schedule_results.project_limits.get(project_id, {}),
                 )
                 for job_name, job_verdict in project_verdicts.items():
                     logging.info(
-                        "Job %s: Resources [%s] Over limits [%s] Should Run? [%s]",
+                        "Job %s: Resources [%s] Over limits [%s] Should Run? [%s] Metadata [%s]",
                         job_name,
                         jobs[job_name].resources,
                         job_verdict.over_limits,
                         job_verdict.should_run(),
+                        job_verdict.metadata,
                     )
             logging.info("==End of scheduling report")
             logging.info("")
 
         # Construct mock verdicts allowing everything to be scheduled.
         if dry_run:
-            schedule_results = Scheduler.ScheduleResults(
+            project_usages = collections.defaultdict(lambda: collections.defaultdict(int))
+            for job_metadata in jobs.values():
+                for resource_type, usage in job_metadata.resources.items():
+                    project_usages[job_metadata.project_id][resource_type] += usage
+            schedule_results = BaseScheduler.ScheduleResults(
                 project_limits=schedule_results.project_limits,
+                project_usages=project_usages,
                 job_verdicts={
                     project_id: {job_name: JobVerdict() for job_name in project_verdicts}
                     for project_id, project_verdicts in schedule_results.job_verdicts.items()

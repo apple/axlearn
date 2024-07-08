@@ -346,7 +346,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
         return cfg.output_dim // cfg.num_heads
 
     @property
-    def _num_enbaled(self):
+    def _num_enabled(self):
         cfg = self.config
         return sum(cfg.enable_lora.values())
 
@@ -373,7 +373,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
             cfg.lora_down.set(
                 input_dim=cfg.input_dim,
                 output_dim=cfg.rank,
-                num_enabled=self._num_enbaled,
+                num_enabled=self._num_enabled,
             ),
         )
         self._add_child(
@@ -382,7 +382,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
                 input_dim=cfg.rank,
                 num_heads=cfg.num_heads,
                 per_head_dim=self._per_head_dim,
-                num_enabled=self._num_enbaled,
+                num_enabled=self._num_enabled,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
                         PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
@@ -516,6 +516,7 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         cfg = self.config
         if key is None and value is None:
@@ -523,7 +524,7 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         else:
             raise ValueError("Key and value should be both None in LoraFusedQKVLinear.")
 
-        q_proj, k_proj, v_proj = self.layer(query, key=key, value=value)
+        q_proj, k_proj, v_proj = self.layer(query, key=key, value=value, time_step=time_step)
         adapter_outputs = self.adapter(inputs)
 
         index = 0

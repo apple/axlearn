@@ -13,6 +13,7 @@ from axlearn.common.attention import (
     StackedTransformerLayer,
     TransformerFeedForwardLayer,
     TransformerLayer,
+    build_remat_spec,
     make_causal_mask,
 )
 from axlearn.common.module import functional as F
@@ -31,8 +32,14 @@ from axlearn.vision import mask_generator
 
 
 class ModelTest(parameterized.TestCase):
-    @parameterized.parameters(1, 3)
-    def test_stacked_with_multiway_transformer_layer(self, num_ffn):
+    @parameterized.product(
+        num_ffn=(1, 3),
+        checkpoint_feed_forward=(False, True),
+        checkpoint_self_attention=(False, True),
+    )
+    def test_stacked_with_multiway_transformer_layer(
+        self, num_ffn, checkpoint_feed_forward, checkpoint_self_attention
+    ):
         batch_size, tgt_len = 10, 6
         num_dec_layers, model_dim, num_heads = 3, 16, 4
         model_dim = 16
@@ -48,6 +55,9 @@ class ModelTest(parameterized.TestCase):
         layer_cfg.feed_forward.hidden_dim = model_dim * 4
         layer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        layer_cfg.remat_spec = build_remat_spec(
+            cfg, self_attention=checkpoint_self_attention, feed_forward=checkpoint_feed_forward
+        )
 
         # Test forward pass for all experts.
         data = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
@@ -120,6 +130,7 @@ class ModelTest(parameterized.TestCase):
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
+        return_aux = {"self_attention_probs", "cross_attention_probs"}
 
         forward_outputs, _ = F(
             layer,
@@ -128,13 +139,16 @@ class ModelTest(parameterized.TestCase):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
         )
         initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
-        inputs = dict(cached_states=initial_state, cross_attention_data=source)
+        inputs = dict(
+            cached_states=initial_state, cross_attention_data=source, return_aux=return_aux
+        )
         decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
         decoder_self_attention_probs = jnp.zeros(
             shape=[tgt_len, num_dec_layers, batch_size, num_heads, tgt_len]
@@ -218,6 +232,7 @@ class ModelTest(parameterized.TestCase):
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
+        return_aux = {"self_attention_probs", "cross_attention_probs"}
 
         forward_outputs, _ = F(
             layer,
@@ -226,6 +241,7 @@ class ModelTest(parameterized.TestCase):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             state=layer_params,
             is_training=False,
@@ -244,6 +260,7 @@ class ModelTest(parameterized.TestCase):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             method="prefill_states",
         )
@@ -270,7 +287,9 @@ class ModelTest(parameterized.TestCase):
         decoder_cross_attention_probs = jnp.moveaxis(decoder_cross_attention_probs, -2, -1)
 
         # Call extend_step from time_step, ensuring that outputs match.
-        inputs = dict(cached_states=initial_states, cross_attention_data=source)
+        inputs = dict(
+            cached_states=initial_states, cross_attention_data=source, return_aux=return_aux
+        )
         while jnp.any(time_step < tgt_len):
             # [batch, tgt_len=1, model_dim].
             inputs["data"] = jnp.take_along_axis(

@@ -14,7 +14,9 @@ sleep $((1 + $RANDOM % 30))
 
 # Get env-vars
 get_metadata() {
-  curl http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1 -H "Metadata-Flavor: Google"
+  attribute="$1"
+  shift
+  curl http://metadata.google.internal/computeMetadata/v1/instance/attributes/${attribute} -H "Metadata-Flavor: Google" "$@"
 }
 
 BUCKET=$(get_metadata bundle_bucket)
@@ -35,12 +37,34 @@ echo "Using bundler type: ${BUNDLER_TYPE}" >> ${SETUP_LOG_PATH}
 tar_bundlers=("tar" "gcs")
 docker_bundlers=("docker" "artifactregistry" "cloudbuild")
 
+# Function to retry command until success.
+with_retry() {
+  local attempt=1
+  local exit_code=0
+
+  while true; do
+    "$@"
+    exit_code=$?
+
+    if [[ exit_code -eq 0 ]]; then
+      return 0
+    fi
+
+    attempt=$((attempt + 1))
+    sleep $((RANDOM % 10 + 1))
+    echo "Retry command, attempt: ${attempt}"
+  done
+}
+
+# Disable snap updates.
+with_retry snap refresh --hold=24h
+
 if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
   echo "Running tar bundler setup..." >> ${SETUP_LOG_PATH}
 
   # Install screen as it's seemingly the only way to persist via gcloud ssh command.
-  apt-get update
-  apt-get -y install screen htop tmux ca-certificates
+  with_retry apt-get update
+  with_retry apt-get -y install screen htop tmux ca-certificates
 
   if [[ $TPU_TYPE == v3* ]]; then
     # If torch is installed, symlink the Intel MKL interface.
@@ -54,33 +78,54 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
     # The default httplib2==0.19.1 that is installed accidentally removed support for a method.
     # We have to force install the right version of httplib2.
     # https://github.com/PAIR-code/what-if-tool/issues/185
-    pip install -U httplib2==0.20.2
+    with_retry pip install -U httplib2==0.20.2
   fi
 fi
 
-# Ensure that gcloud is installed.
-while [[ ! -x $(which gcloud) ]]
-do
-  echo "gcloud not found, installing..." >> ${SETUP_LOG_PATH}
+
+add_gcloud_key() {
+  # Ensure that the latest gcloud key is available.
+  curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+}
+
+with_retry add_gcloud_key
+
+
+install_gcloud() {
+  echo "gcloud not installed, installing..." >> ${SETUP_LOG_PATH}
   # Install google-cloud-sdk via apt.
   echo "deb https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
   apt-get update && apt-get -y install google-cloud-sdk
-  sleep 1
+}
+
+# Ensure that gcloud is installed.
+until (gcloud -v); do
+  # Sometimes the install command succeeds but gcloud is corrupted.
+  with_retry install_gcloud
 done
+
+install_docker() {
+  echo "Installing docker..." >> ${SETUP_LOG_PATH}
+  apt-get update && apt-get -y install docker.io >> ${SETUP_LOG_PATH} 2>&1
+}
 
 # Run after gcloud is guaranteed to be available.
 if [[ " ${docker_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
   echo "Running docker bundler setup..." >> ${SETUP_LOG_PATH}
-
-  while [[ ! -x $(which docker) ]]
-  do
-    echo "docker not found, installing..." >> ${SETUP_LOG_PATH}
-    apt-get update && apt-get -y install docker.io >> ${SETUP_LOG_PATH} 2>&1
-    sleep 1
+  until (docker -v); do
+    # Sometimes the install command succeeds but docker is corrupted.
+    with_retry install_docker
   done
   echo "Using docker version: $(docker --version)" >> ${SETUP_LOG_PATH} 2>&1
   # Docker auth.
-  yes | gcloud auth configure-docker ${DOCKER_REGISTRY} >> ${SETUP_LOG_PATH} 2>&1
+  with_retry gcloud -q auth configure-docker ${DOCKER_REGISTRY} >> ${SETUP_LOG_PATH} 2>&1
+
+  # If image metadata is set, pull image.
+  if [ $(get_metadata docker_image --write-out "%{http_code}" --silent --output /dev/null) -eq 200 ]; then
+      docker_image=$(get_metadata docker_image)
+      echo "Docker image: ${docker_image}" >> ${SETUP_LOG_PATH} 2>&1
+      with_retry docker pull "${docker_image}" >> ${SETUP_LOG_PATH} 2>&1
+  fi
 fi
 
 # Workaround an auth bug on v5lites.
@@ -94,7 +139,7 @@ set_ready_label() {
   REMOTE_FLAG="${GS_JOB_PATH}/tpu_vm_ready_flags/${CREATE_REQUEST_TIME}/$(hostname)-ready"
   LOCAL_FLAG="/tmp/label"
   journalctl -u google-startup-scripts.service > "${LOCAL_FLAG}"
-  gsutil cp "${LOCAL_FLAG}" "${REMOTE_FLAG}"
+  with_retry gsutil cp "${LOCAL_FLAG}" "${REMOTE_FLAG}"
   echo "Finished setting ready label" >> ${SETUP_LOG_PATH}
 }
 
@@ -103,4 +148,4 @@ echo "Begin setting ready label" >> ${SETUP_LOG_PATH}
 set_ready_label
 
 # Copy logs.
-gsutil cp ${SETUP_LOG_PATH} "${GS_JOB_PATH}/logs/setup_log-$(hostname)"
+with_retry gsutil cp ${SETUP_LOG_PATH} "${GS_JOB_PATH}/logs/setup_log-$(hostname)"

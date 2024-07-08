@@ -14,15 +14,16 @@ from absl.testing import parameterized
 from axlearn.cloud.common.bastion import (
     Job,
     JobState,
+    JobStatus,
     _load_runtime_options,
     new_jobspec,
     set_runtime_options,
 )
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.gcp.jobs import bastion_vm
-from axlearn.cloud.gcp.jobs.bastion_vm import CreateBastionJob
+from axlearn.cloud.gcp.jobs.bastion_vm import RemoteBastionJob
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
-from axlearn.common.config import _validate_required_fields, config_for_function
+from axlearn.common.config import _validate_required_fields, config_class, config_for_function
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
@@ -53,7 +54,7 @@ def _mock_create_config():
     mock_bundler = mock.MagicMock()
     mock_bundler.TYPE = "test-bundler"
     mock_bundler.install_command.return_value = "test_install"
-    return CreateBastionJob.default_config().set(
+    return RemoteBastionJob.default_config().set(
         name="test",
         project="test-project",
         zone="test-zone",
@@ -62,11 +63,12 @@ def _mock_create_config():
         max_tries=1,
         retry_interval=1,
         bundler=config_for_function(lambda: mock_bundler),
+        root_dir="temp_dir",
     )
 
 
-class CreateBastionJobTest(TestWithTemporaryCWD):
-    """Tests CreateBastionJob."""
+class RemoteBastionJobTest(TestWithTemporaryCWD):
+    """Tests RemoteBastionJob."""
 
     def test_create(self):
         cfg = _mock_create_config()
@@ -132,7 +134,7 @@ class MainTest(TestWithTemporaryCWD):
             "default_dockerfile": "default-dockerfile",
         }
         mock_job = _mock_job(
-            bastion_vm.CreateBastionJob,
+            bastion_vm.RemoteBastionJob,
             bundler_kwargs=bundler_kwargs,
             settings_kwargs=settings_kwargs,
         )
@@ -153,12 +155,30 @@ class MainTest(TestWithTemporaryCWD):
             "permanent_bucket": "test-bucket",
             "private_bucket": "test-private",
         }
-        mock_job = _mock_job(
-            bastion_vm.StartBastionJob, bundler_kwargs={}, settings_kwargs=settings_kwargs
+
+        class FakeBastion(bastion_vm.Bastion):
+            """A fake Bastion for testing."""
+
+            @config_class
+            class Config(bastion_vm.Bastion.Config):
+                def instantiate(self):
+                    return FakeBastion()
+
+            # pylint: disable-next=super-init-not-called
+            def __init__(self):
+                pass
+
+            def execute(self):
+                pass
+
+        bastion_cfg = FakeBastion.default_config()
+        mock_bastion_config = mock.patch(
+            f"{bastion_vm.__name__}.Bastion.default_config",
+            return_value=bastion_cfg,
         )
-        with mock_job as (mock_cfg, _, _):
+        mock_settings = mock_gcp_settings(bastion_vm.__name__, settings_kwargs)
+        with mock_settings, mock_bastion_config:
             bastion_vm.main(["cli", "start"], flag_values=fv)
-            bastion_cfg = mock_cfg.set.call_args.kwargs["bastion"]
             _validate_required_fields(bastion_cfg)
             self.assertIn("test-bucket", bastion_cfg.output_dir)
             self.assertIn("test-bastion", bastion_cfg.output_dir)
@@ -218,11 +238,11 @@ class MainTest(TestWithTemporaryCWD):
                         resources={"v4": 8},
                     ),
                 ),
-                state=state,
+                state=JobState(status=status),
                 command_proc=None,
                 cleanup_proc=None,
             )
-            for i, state in enumerate([JobState.PENDING, JobState.ACTIVE, JobState.CANCELLING])
+            for i, status in enumerate([JobStatus.PENDING, JobStatus.ACTIVE, JobStatus.CANCELLING])
         }
         mock_utils = mock.patch.multiple(
             bastion_vm.__name__,
@@ -268,7 +288,7 @@ class MainTest(TestWithTemporaryCWD):
             with tempfile.TemporaryDirectory() as temp_dir:
                 if original is not None:
                     set_runtime_options(temp_dir, **original)
-                with mock.patch(f"{bastion_vm.__name__}.output_dir", return_value=temp_dir):
+                with mock.patch(f"{bastion_vm.__name__}.bastion_root_dir", return_value=temp_dir):
                     bastion_vm.main(["cli", "set"], flag_values=fv)
                 return _load_runtime_options(temp_dir)
 

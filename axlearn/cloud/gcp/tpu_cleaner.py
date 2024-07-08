@@ -2,21 +2,21 @@
 
 """TPU job cleaner, e.g. to be used with BastionJob."""
 
-import functools
-from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Sequence
 
 from absl import logging
-from google.auth.credentials import Credentials
+from googleapiclient import discovery
 
 from axlearn.cloud.common.cleaner import Cleaner
-from axlearn.cloud.common.types import ResourceMap
+from axlearn.cloud.common.types import JobSpec
 from axlearn.cloud.gcp.tpu import (
     TPUDeletionError,
-    delete_tpu,
+    delete_queued_tpu,
     infer_tpu_version,
     list_queued_resource_info,
     list_tpu_info,
+    qrm_resource,
+    tpu_resource,
 )
 from axlearn.cloud.gcp.utils import get_credentials
 
@@ -24,14 +24,14 @@ from axlearn.cloud.gcp.utils import get_credentials
 class TPUCleaner(Cleaner):
     """Cleans up unused TPUs."""
 
-    def sweep(self, jobs: Dict[str, ResourceMap]) -> Sequence[str]:
+    def sweep(self, jobs: Dict[str, JobSpec]) -> Sequence[str]:
         """Removes TPU resources in a non-blocking manner.
 
         Note: If jobs use multiple resources, we only remove the TPU resources.
         Jobs are currently responsible for cleaning other resources.
 
         Args:
-            jobs: A mapping {job_name: resource_map} of jobs to delete.
+            jobs: A mapping {job_name: job_spec} of jobs to delete.
 
         Returns:
             The list of job_names that are no longer associated with any TPUs. The bastion should
@@ -39,13 +39,16 @@ class TPUCleaner(Cleaner):
             `jobs` arg).
         """
         credentials = get_credentials()
+        resource_qrm = qrm_resource(credentials)
+        resource_tpu = tpu_resource(credentials)
         running_tpus = {
             tpu_info.name: tpu_info
-            for tpu_info in list_tpu_info(credentials) + list_queued_resource_info(credentials)
+            for tpu_info in list_tpu_info(resource_tpu) + list_queued_resource_info(resource_qrm)
         }
         already_terminated = []
         need_termination = []
-        for job_name, resources in jobs.items():
+        for job_name, spec in jobs.items():
+            resources = spec.metadata.resources
             tpu_info = running_tpus.get(job_name)
             # The job has no associated TPU -- it's already terminated.
             if tpu_info is None:
@@ -66,11 +69,11 @@ class TPUCleaner(Cleaner):
 
         logging.info("Need termination: %s", need_termination)
         logging.info("Already terminated: %s", already_terminated)
-        self._delete_batch(need_termination, credentials=credentials)
+        self._delete_batch(need_termination, resource_qrm=resource_qrm)
         return already_terminated
 
     # pylint: disable-next=no-self-use
-    def _delete_batch(self, tpu_names: Sequence[str], *, credentials: Credentials):
+    def _delete_batch(self, tpu_names: Sequence[str], *, resource_qrm: discovery.Resource):
         """Deletes the TPU jobs with the given names.
 
         We handle deletes in a separate method for easier testing.
@@ -83,15 +86,12 @@ class TPUCleaner(Cleaner):
         still present and retry the delete if necessary.
         """
 
-        def _delete_tpu_async(tpu_name: str, *, credentials: Credentials):
+        def _delete_tpu_async(tpu_name: str, *, resource_qrm: discovery.Resource):
             try:
                 logging.info("Attempting to delete %s", tpu_name)
-                delete_tpu(tpu_name, credentials=credentials, wait=False)
+                delete_queued_tpu(tpu_name, resource_qrm, wait=False)
             except TPUDeletionError as e:
                 logging.warning("Failed to delete TPU %s: %s", tpu_name, e)
 
-        with ThreadPoolExecutor() as pool:
-            pool.map(
-                functools.partial(_delete_tpu_async, credentials=credentials),
-                tpu_names,
-            )
+        for tpu_name in tpu_names:
+            _delete_tpu_async(tpu_name, resource_qrm=resource_qrm)

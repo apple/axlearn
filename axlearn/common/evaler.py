@@ -21,13 +21,12 @@ from typing import (
     Union,
 )
 
-import chex
 import jax
 from absl import logging
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 
-from axlearn.common import summary_writer, utils
+from axlearn.common import struct, summary_writer, utils
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import (
     REQUIRED,
@@ -235,7 +234,7 @@ class BaseMetricCalculator(Module):
             self._model.method(...).
         """
         # Shard and (possibly) dispatch the input batch.
-        input_batch = utils.dispatch_input_batch(input_batch)
+        input_batch = self._dispatch_global_batch(input_batch)
         model_inputs = dict(
             input_batch=self._eval_cast(input_batch),
             **kwargs,
@@ -250,8 +249,16 @@ class BaseMetricCalculator(Module):
             is_training=False,
         )
 
+    def _dispatch_global_batch(self, input_batch: NestedTensor) -> NestedTensor:
+        module = self.parent
+        while module is not None and not isinstance(module, SpmdEvaler):
+            module = module.parent
+        if module is not None and hasattr(module.input, "dispatch_global_batch"):
+            input_batch = module.input.dispatch_global_batch(input_batch)
+        return input_batch
+
     def formatted_metric_name(self, metric_name):
-        """Prepand the prefix to the metric_name."""
+        """Prepend the prefix to the metric_name."""
         if self.config.prefix is not None:
             return f"{self.config.prefix}/{metric_name}"
         else:
@@ -359,8 +366,7 @@ class CompositeMetricCalculator(BaseMetricCalculator):
     actually read the new keys.
     """
 
-    @chex.dataclass
-    class Dependency:
+    class Dependency(struct.PyTreeNode):
         # Source calculator name.
         src: str
         # Destination calculator name.
@@ -611,6 +617,7 @@ class SpmdEvaler(Module):
         model_params: NestedTensor,
         return_aux: bool = False,
         train_summaries: Optional[NestedTensor] = None,
+        force_run: bool = False,
     ) -> Tuple[Tensor, Optional[Dict[str, Any]], Optional[List[NestedTensor]]]:
         """Runs eval for the given step.
 
@@ -621,6 +628,7 @@ class SpmdEvaler(Module):
             return_aux: Boolean to determine whether outputs are returned.
             train_summaries: Summaries from the most recent training step. Can be used in the
                 `evaler_policy`.
+            force_run: If True, force run the eval for the given step.
 
         Returns:
             A tuple (prng_key, summaries, outputs), where
@@ -633,7 +641,9 @@ class SpmdEvaler(Module):
         """
         cfg = self.config
 
-        if not self._eval_policy(step=step, train_summaries=(train_summaries or {})):
+        if not force_run and not self._eval_policy(
+            step=step, train_summaries=(train_summaries or {})
+        ):
             return prng_key, None, None
 
         self.vlog(

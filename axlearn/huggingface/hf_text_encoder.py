@@ -48,8 +48,8 @@ class TextEmbeddingEncoder(nn.Module):
             attention_mask: Attention mask in shape of [batch_size, max_seq_len].
 
         Returns:
-            Output embeddings in shape of [batch_size, output_dim] where ouput_dim==hidden_size when
-                there is no linear projection, projection_dim otherwise.
+            Output embeddings in shape of [batch_size, output_dim] where output_dim==hidden_size
+                when there is no linear projection, projection_dim otherwise.
         """
         base_model_outputs = self.base_model(
             input_ids=input_ids, attention_mask=attention_mask, return_dict=True
@@ -82,14 +82,16 @@ class MultiStreamTextEmbeddingModel(nn.Module):
         super().__init__()
         self.stream_encoders = stream_encoders
 
-    def save_pretrained(self, save_directory: str):
+    def save_pretrained(self, save_directory: str, *, safe_serialization: bool = True):
         """Save a model and its configuration file to a directory, so that it can be re-loaded
         using the `:func:`~transformers.PreTrainedModel.from_pretrained`` class method.
         """
         for encoder_name in self.stream_encoders:
             encoder_output_dir = os.path.join(save_directory, encoder_name)
             os.makedirs(encoder_output_dir, exist_ok=True)
-            self.stream_encoders[encoder_name].save_pretrained(encoder_output_dir)
+            self.stream_encoders[encoder_name].save_pretrained(
+                encoder_output_dir, safe_serialization=safe_serialization
+            )
 
     def forward(
         self, input_batch: Dict[str, Dict[str, torch.Tensor]]

@@ -3,6 +3,7 @@
 """Tests speech encoder layers."""
 
 import jax.random
+import pytest
 from absl.testing import parameterized
 from jax import numpy as jnp
 
@@ -28,18 +29,22 @@ class SpeechFeatureLayerTest(TestCase):
     """Tests SpeechFeatureLayer."""
 
     @parameterized.parameters([True, False])
+    @pytest.mark.fp64
     def test_speech_feature_layer(self, is_training: bool):
         num_filters, sample_rate, frame_size_ms, hop_size_ms = 80, 16000, 25, 10
         hidden_dim, output_dim = 32, 16
 
         cfg: SpeechFeatureLayer.Config = SpeechFeatureLayer.default_config().set(
-            output_dim=output_dim
+            output_dim=output_dim,
+            # Slightly higher diff without fp64 from conv subsampler on jax>=0.4.21.
+            dtype=jnp.float64,
         )
         cfg.frontend.set(
             num_filters=num_filters,
             sample_rate=sample_rate,
             frame_size_ms=frame_size_ms,
             hop_size_ms=hop_size_ms,
+            mel_floor=1e-6,
         )
         cfg.augmenter.freq_mask_sampler.set(max_num_masks=2, max_mask_length=27)
         cfg.augmenter.time_mask_sampler.set(max_num_masks_ratio=0.05, max_mask_length=10)
@@ -99,12 +104,12 @@ class SpeechContextNetworkTest(TestCase):
     """Tests SpeechContextNetwork."""
 
     @parameterized.parameters([True, False])
+    @pytest.mark.fp64
     def test_speech_context_network(self, is_training: bool):
         input_dim, output_dim, dropout_rate, num_layers = 32, 16, 0.2, 2
 
         cfg = SpeechContextNetwork.default_config().set(
-            input_dim=input_dim,
-            output_dim=output_dim,
+            input_dim=input_dim, output_dim=output_dim, dtype=jnp.float64
         )
         cfg.dropout.rate = dropout_rate
         cfg.context.num_layers = num_layers
@@ -144,7 +149,7 @@ class SpeechContextNetworkTest(TestCase):
 
         # If is_training, outputs should always be different due to augmentation.
         # Otherwise, outputs should be the same despite differences in padding.
-        self.assertEqual(not is_training, jnp.allclose(outputs[:2], outputs[2:]))
+        self.assertEqual(not is_training, bool(jnp.allclose(outputs[:2], outputs[2:])))
 
         outputs = outputs * (1 - output_paddings[:, :, None])
         weights = jnp.sum(1 - output_paddings)
@@ -171,16 +176,18 @@ class SpeechContextNetworkTest(TestCase):
 class ASREncoderTest(TestCase):
     """Tests ASREncoder."""
 
-    @parameterized.parameters([True, False])
-    def test_asr_encoder(self, is_training: bool):
+    @parameterized.product(is_training=[True, False], use_augmenter=[True, False])
+    @pytest.mark.fp64
+    def test_asr_encoder(self, is_training: bool, use_augmenter: bool):
         conv_dim, output_dim = 12, 36
         num_filters, sample_rate, frame_size_ms, hop_size_ms = 80, 16000, 25, 10
-        num_layers, num_heads, dropout_rate = 2, 4, 0.2
+        num_layers, num_heads, dropout_rate = 2, 4, 0.0
 
         cfg = ASREncoder.default_config().set(
             dim=output_dim,
             feature=SpeechFeatureLayer.default_config(),
             context=SpeechContextNetwork.default_config(),
+            dtype=jnp.float64,
         )
         # Feature layers.
         cfg.feature.frontend.set(
@@ -188,9 +195,15 @@ class ASREncoderTest(TestCase):
             sample_rate=sample_rate,
             frame_size_ms=frame_size_ms,
             hop_size_ms=hop_size_ms,
+            mel_floor=1e-6,
         )
-        cfg.feature.augmenter.freq_mask_sampler.set(max_num_masks=2, max_mask_length=27)
-        cfg.feature.augmenter.time_mask_sampler.set(max_num_masks_ratio=0.05, max_mask_length=10)
+        if use_augmenter:
+            cfg.feature.augmenter.freq_mask_sampler.set(max_num_masks=2, max_mask_length=27)
+            cfg.feature.augmenter.time_mask_sampler.set(
+                max_num_masks_ratio=0.05, max_mask_length=10
+            )
+        else:
+            cfg.feature.augmenter = None
         cfg.feature.subsampler.hidden_dim = conv_dim
         cfg.feature.output_dim = conv_dim
 
@@ -232,6 +245,8 @@ class ASREncoderTest(TestCase):
         self.assertEqual(output_paddings.shape, (batch_size, output_shape[1]))
         self.assertTrue(jnp.all(output_paddings[:2] == output_paddings[2:]))
 
-        # If is_training, outputs should always be different due to augmentation.
-        # Otherwise, outputs should be the same despite differences in padding.
-        self.assertEqual(not is_training, jnp.allclose(outputs[:2], outputs[2:]))
+        # If is_training and use_augmenter, outputs should always be different due to augmentation.
+        # Otherwise, outputs should be the same.
+        self.assertEqual(
+            not (is_training and use_augmenter), jnp.allclose(outputs[:2], outputs[2:])
+        )

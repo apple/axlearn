@@ -77,15 +77,17 @@ class LogitsToLogProbFn(Protocol):
 
 
 def classic_logits_to_log_probs(
-    *, blank_logit_bias: float = 0, blank_id: int = 0
+    *,
+    blank_id: int,
+    blank_logit_bias: float = 0,
 ) -> LogitsToLogProbFn:
     """Computes blank and token log_probs from the given logits.
 
     ... according to the classic (https://arxiv.org/abs/1211.3711) formulation.
 
     Args:
-        blank_logit_bias: a scalar bias to be applied on the blank logit before sigmoid.
         blank_id: an int in range [0, vocab_size) representing the blank id.
+        blank_logit_bias: a scalar bias to be applied on the blank logit before sigmoid.
 
     Returns:
         A LogitsToLogProbFn.
@@ -102,14 +104,14 @@ def classic_logits_to_log_probs(
     return fn
 
 
-def hat_logits_to_log_probs(*, blank_logit_bias: float = 0, blank_id: int = 0):
+def hat_logits_to_log_probs(*, blank_id: int, blank_logit_bias: float = 0):
     """Computes blank and token log_probs from the given logits.
 
     ... according to the HAT (https://arxiv.org/abs/2003.07705) formulation.
 
     Args:
-        blank_logit_bias: a scalar bias to be applied on the blank logit before sigmoid.
         blank_id: an int in range [0, vocab_size) representing the blank id.
+        blank_logit_bias: a scalar bias to be applied on the blank logit before sigmoid.
 
     Returns:
         A LogitsToLogProbFn.
@@ -134,7 +136,7 @@ def hat_logits_to_log_probs(*, blank_logit_bias: float = 0, blank_id: int = 0):
 
 
 def log_probs_from_blank_and_tokens(
-    log_prob_blank: Tensor, log_prob_tokens: Tensor, *, blank_id: int = 0
+    log_prob_blank: Tensor, log_prob_tokens: Tensor, *, blank_id: int
 ):
     """Computes full log_probs tensor from log_prob_blank and log_prob_tokens.
 
@@ -182,6 +184,7 @@ class Transducer(BaseLayer):
         super().__init__(cfg, parent=parent)
         cfg: Transducer.Config = self.config
         self._add_child("proj", cfg.proj.set(input_dim=cfg.input_dim, output_dim=cfg.vocab_size))
+        self._logits_to_log_probs: LogitsToLogProbFn = cfg.logits_to_log_probs.instantiate()
 
     def forward(
         self,
@@ -300,7 +303,7 @@ class Transducer(BaseLayer):
         )
         # [..., am_max_len, lm_max_len, vocab_size].
         logits = self.proj(hidden)
-        return cfg.logits_to_log_probs.instantiate()(logits)
+        return self._logits_to_log_probs(logits)
 
 
 def _tilt(x: Tensor, pad_value: Tensor) -> Tensor:

@@ -1,0 +1,23 @@
+{
+  "pad_id": 0,
+  "eos_id": 1,
+  "unk_id": 2,
+  "bos_id": -1,
+  "pad_piece": "<pad>",
+  "eos_piece": "</s>",
+  "unk_piece": "<unk>",
+  "bos_piece": "<s>",
+  "byte_fallback": true,
+  "vocab_size": 128000,
+  "user_defined_symbols": "<n>",
+  "control_symbols": "<mask>",
+  "character_coverage": 0.9995,
+  "model_type": "bpe",
+  "max_sentence_length": 32768,
+  "allow_whitespace_only_pieces": true,
+  "split_by_whitespace": false,
+  "remove_extra_whitespaces": false,
+  "shuffle_input_sentence": false,
+  "split_digits": true,
+  "normalization_rule_name": "identity"
+}
