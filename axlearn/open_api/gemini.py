@@ -65,7 +65,7 @@ class GeminiClient(BaseClient):
         """
         if "messages" not in request:
             raise ValidationError("Field messages must be in request.")
-        _santize_request(request=request)
+        _format_request(request=request)
         contents = _convert_openai_messages_to_gemini(messages=request["messages"])
         if request.get("tools", None) is not None:
             gemini_tools = _convert_openai_tools_to_gemini(tools=request["tools"])
@@ -187,13 +187,12 @@ def _aggregate_tool_role_messages(messages: List[Dict[str, Any]]) -> List[Dict[s
     return aggregated_messages
 
 
-def _santize_request(request: Dict[str, Any]):
-    """Santizes request to follow Gemini request rules."""
+def _format_request(request: Dict[str, Any]):
+    """Formats request to follow Gemini request rules."""
     if "messages" in request:
-        new_messages = []
-        for message in request["messages"]:
-            new_messages.append(_format_tool_message(message=message))
-        request["messages"] = new_messages
+        request["messages"] = [
+            _format_tool_message(message=message) for message in request["messages"]
+        ]
     if "target_message" in request:
         message = request["target_message"]
         request["target_message"] = _format_tool_message(message=message)

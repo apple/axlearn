@@ -67,9 +67,8 @@ class OpenAIClient(BaseClient):
         client: AsyncOpenAI = self._client
         prompt = request.get("prompt", None)
         messages = request.get("messages", None)
-        assert prompt is None or messages is None, ValidationError(
-            "Either prompt or messages must be not None."
-        )
+        if prompt is None and messages is None:
+            raise ValidationError("Both prompt and messages are None.")
         try:
             if prompt is not None:
                 response: Completion = await client.completions.create(

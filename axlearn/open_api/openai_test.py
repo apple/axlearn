@@ -15,10 +15,27 @@ _module_root = "axlearn"
 
 
 # pylint: disable=wrong-import-position
-from axlearn.open_api.common import ClientRateLimitError, Generator
+from axlearn.open_api.common import ClientRateLimitError, Generator, ValidationError
 from axlearn.open_api.openai import OpenAIClient
 
 # pylint: enable=wrong-import-position
+
+
+class TestOpenAIClient(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for class OpenAIClient."""
+
+    def setUp(self):
+        self.client: OpenAIClient = (
+            OpenAIClient.default_config().set(model="gpt-3.5-turbo").instantiate()
+        )
+        self.client._client = AsyncMock()
+
+    async def test_async_generate_raises_validation_error(self):
+        request = {}
+        with self.assertRaises(ValidationError) as context:
+            await self.client.async_generate(request=request)
+
+        self.assertEqual(str(context.exception), "Both prompt and messages are None.")
 
 
 class TestOpenAIAsyncGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
