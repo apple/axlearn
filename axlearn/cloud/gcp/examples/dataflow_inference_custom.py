@@ -66,7 +66,15 @@ from axlearn.common.utils import NestedTensor
 
 
 class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
-    """Defines how to load a custom checkpoint and run inference."""
+    """Defines how to load a custom checkpoint and run inference.
+
+    The RunInference transform natively supports TF, PyTorch, HF pre-trained models.
+    For JAX models, we can define a custom model handler like the example here.
+
+    References:
+    https://cloud.google.com/dataflow/docs/notebooks/run_inference_pytorch
+    https://cloud.google.com/dataflow/docs/notebooks/run_custom_inference
+    """
 
     # pylint: disable-next=super-init-not-called
     def __init__(self, flag_dict: Dict):
