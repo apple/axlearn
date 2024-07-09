@@ -106,19 +106,16 @@ class BaseClient(Configurable):
     async def async_generate(
         self,
         *,
-        messages: Optional[Sequence[Dict[str, Any]]] = None,
-        tools: Optional[Sequence[Dict[str, Any]]] = None,
-        prompt: Optional[str] = None,
+        request: Dict[str, Any],
         **kwargs,
     ) -> str:
         """Generates response asynchronously from the client.
 
         Args:
             client: Endpoint client.
-            messages: OpenAI requests style messages. Ref:
+            request: OpenAI style request. Ref:
+                https://github.com/openai/openai-python/blob/50371bf3151ebb1a43017abfe205d4d9b2e5faac/src/openai/resources/chat/completions.py#L237
                 https://github.com/openai/openai-python/blob/f3e6e634a86d5789ab1274ae27f43adc842f4ba8/src/openai/types/chat/chat_completion_message.py#L25
-            tools: OpenAI tools definitions.
-            prompt: OpenAI prompt style.
             **kwargs: API request keyword arguments.
 
         Returns:
@@ -188,9 +185,7 @@ class Generator(Configurable):
             while True:
                 try:
                     response = await client.async_generate(
-                        messages=request.get("messages", None),
-                        tools=request.get("tools", None),
-                        prompt=request.get("prompt", None),
+                        request=request,
                         **kwargs,
                     )
                     break

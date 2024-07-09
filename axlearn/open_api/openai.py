@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # isort: off
 from axlearn.open_api.common import BaseClient, ClientRateLimitError, ValidationError
@@ -47,17 +47,13 @@ class OpenAIClient(BaseClient):
     async def async_generate(
         self,
         *,
-        messages: Optional[List[Dict[str, Any]]] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        prompt: Optional[str] = None,
+        request: Dict[str, Any],
         **kwargs,
     ) -> str:
         """Generates response asynchronously from the client.
 
         Args:
-            messages: OpenAI requests style messages.
-            tools: OpenAI tools definitions.
-            prompt: OpenAI prompt style.
+            request: OpenAI style request.
             **kwargs: API request keyword arguments.
 
         Returns:
@@ -69,20 +65,21 @@ class OpenAIClient(BaseClient):
         """
         cfg: OpenAIClient.Config = self.config
         client: AsyncOpenAI = self._client
-        assert prompt is not None or messages is not None, ValidationError(
-            "Either prompt or messages must be not None."
-        )
+        prompt = request.get("prompt", None)
+        messages = request.get("messages", None)
+        if prompt is None and messages is None:
+            raise ValidationError("Both prompt and messages are None.")
         try:
             if prompt is not None:
                 response: Completion = await client.completions.create(
-                    prompt=prompt,
+                    prompt=request["prompt"],
                     extra_body=cfg.extra_body,
                     **kwargs,
                 )
             else:
                 response: ChatCompletion = await client.chat.completions.create(
                     messages=messages,
-                    tools=tools,
+                    tools=request.get("tools", None),
                     extra_body=cfg.extra_body,
                     **kwargs,
                 )

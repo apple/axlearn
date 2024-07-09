@@ -48,26 +48,27 @@ class GeminiClient(BaseClient):
     async def async_generate(
         self,
         *,
-        messages: Optional[List[Dict[str, Any]]] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        prompt: Optional[str] = None,
+        request: Dict[str, Any],
         **kwargs,
     ) -> str:
         """Generates response asynchronously from the client.
 
         Args:
-            messages: OpenAI requests style messages.
-            tools: OpenAI tools definitions.
-            prompt: OpenAI prompt style.
+            request: OpenAI style request.
             **kwargs: API request keyword arguments.
 
         Returns:
             Response in string format.
-        """
 
-        contents = _convert_openai_messages_to_gemini(messages=messages)
-        if tools is not None:
-            gemini_tools = _convert_openai_tools_to_gemini(tools=tools)
+        Raises:
+            ValidationError: Field messages must be in request.
+        """
+        if "messages" not in request:
+            raise ValidationError("Field messages must be in request.")
+        _format_request(request=request)
+        contents = _convert_openai_messages_to_gemini(messages=request["messages"])
+        if request.get("tools", None) is not None:
+            gemini_tools = _convert_openai_tools_to_gemini(tools=request["tools"])
         else:
             gemini_tools = None
         client: GenerativeModel = self._client
@@ -176,8 +177,6 @@ def _aggregate_tool_role_messages(messages: List[Dict[str, Any]]) -> List[Dict[s
         if message["role"] != "tool":
             aggregated_messages.append(message)
             continue
-        # Reduce tool name length which is smaller than OpenAI models.
-        message = _format_tool_message(message=message)
         if len(aggregated_messages) > 0 and aggregated_messages[-1]["role"] == "tool":
             tool_messages: list = aggregated_messages[-1]["tool_messages"]
             aggregated_messages[-1]["tool_messages"] = tool_messages.append(message)
@@ -186,6 +185,23 @@ def _aggregate_tool_role_messages(messages: List[Dict[str, Any]]) -> List[Dict[s
         aggregated_messages.append({"role": "tool", "tool_messages": [message]})
 
     return aggregated_messages
+
+
+def _format_request(request: Dict[str, Any]):
+    """Formats request to follow Gemini request rules."""
+    if "messages" in request:
+        request["messages"] = [
+            _format_tool_message(message=message) for message in request["messages"]
+        ]
+    if "target_message" in request:
+        message = request["target_message"]
+        request["target_message"] = _format_tool_message(message=message)
+    if "tools" in request:
+        new_tools = []
+        for tool in request["tools"]:
+            tool["function"]["name"] = tool["function"]["name"][-_max_tool_name_length:]
+            new_tools.append(tool)
+        request["tools"] = new_tools
 
 
 def _convert_openai_messages_to_gemini(messages: List[Dict[str, Any]]) -> List[Content]:
