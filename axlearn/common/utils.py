@@ -159,7 +159,7 @@ def _concat(*, prefix: str, suffix: str, separator: str):
 
 
 def tree_paths(
-    tree: NestedTree, separator: str = "/", is_leaf: Optional[Callable] = None
+    tree: NestedTree, separator: str = "/", is_leaf: Optional[Callable[[Any], bool]] = None
 ) -> NestedTree:
     """Returns a tree of the same structure as `nested_tensor` but with corresponding paths instead
     of values.
@@ -222,9 +222,11 @@ class PathAndValue:
     value: Any
 
 
-def flatten_items(tree: NestedTensor, separator="/") -> Sequence[Tuple[str, Tensor]]:
+def flatten_items(
+    tree: NestedTensor, separator="/", is_leaf: Optional[Callable[[Any], bool]] = None
+) -> Sequence[Tuple[str, Tensor]]:
     """Flattens `tree` and returns a list of (path, value) pairs."""
-    paths = tree_paths(tree, separator=separator)
+    paths = tree_paths(tree, separator=separator, is_leaf=is_leaf)
     paths_and_values = jax.tree_util.tree_map(
         # pylint: disable-next=unnecessary-lambda
         lambda path, value: PathAndValue(path, value),
