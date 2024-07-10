@@ -1708,8 +1708,8 @@ def adastar_optimizer(
             gradients ** 2 + eps_square, gradient_square_ema_decay, gradient_square_ema_debias)
         # Normalized gradients.
         raw_updates = smoothed_gradients / ((smoothed_gradient_squares) ** 0.5 + eps)
-        clipped_updates = clip(scaled_gradients, raw_update_clipping_threshold)
-        smoothed_updates = ema(clipped_scaled_gradients, update_ema_decay, update_ema_debias)
+        clipped_updates = clip(raw_updates, raw_update_clipping_threshold)
+        smoothed_updates = ema(clipped_updates, update_ema_decay, update_ema_debias)
 
         # Apply per-param transformation.
         transformed_updates = adam_update_transformation(smoothed_updates)

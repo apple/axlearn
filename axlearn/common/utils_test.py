@@ -174,6 +174,20 @@ class TreeUtilsTest(TestCase):
         d2 = OrderedDict(reversed(kv))
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d1)))
         self.assertEqual([("a", 1), ("b", 2)], sorted(flatten_items(d2)))
+        # Test is_leaf.
+        self.assertEqual(
+            [("a/head", 3), ("a/tail", 4), ("b", 5)],
+            flatten_items(
+                {"a": Combo(head=3, tail=4), "b": 5},
+            ),
+        )
+        self.assertEqual(
+            [("a", Combo(head=3, tail=4)), ("b", 5)],
+            flatten_items(
+                {"a": Combo(head=3, tail=4), "b": 5},
+                is_leaf=lambda x: isinstance(x, Combo),
+            ),
+        )
 
     def test_expand_vdicts(self):
         # An empty VDict is not expanded.
