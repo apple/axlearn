@@ -29,6 +29,7 @@ from axlearn.common import (
     state_builder,
 )
 from axlearn.common.attention import (
+    AttentionLogitBiasLayer,
     BaseQKVLinear,
     FusedQKVLinear,
     MultiheadAttention,
@@ -52,6 +53,7 @@ from axlearn.common.evaler import BaseMetricCalculator, ModelSummaryAccumulator,
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, set_norm_recursively
+from axlearn.common.optimizer_base import PartitionedGradientTransformation
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.summary_writer import BaseWriter
 from axlearn.common.trainer import MeshShape, SpmdTrainer
@@ -181,6 +183,34 @@ def mesh_shape_from_axes(
     return tuple((max(x, 1) if x != -1 else -1 for x in [pipeline, data, expert, fsdp, seq, model]))
 
 
+def update_model_remat_config(
+    *, stack_cfg: causal_lm.TransformerStackConfig, layer_cfg: TransformerLayer.Config
+):
+    """Recomputes and sets the remat_spec based on provided layer_cfg.
+
+    Only applied if the stack_cfg is a RepeatedTransformerLayer.
+
+    Args:
+        stack_cfg: The transformer stack config.
+        layer_cfg: The transformer layer config.
+
+    Raises:
+        NotImplementedError: If `stack_cfg.klass` is not a RepeatedTransformerLayer.
+    """
+    if stack_cfg.klass is not RepeatedTransformerLayer:
+        raise NotImplementedError(
+            f"Remat spec is not implemented for stack_cfg with klass={type(stack_cfg.klass)}"
+        )
+
+    if layer_cfg.self_attention.attention.klass is not FlashAttention:
+        # Enable remat to reduce memory usage for larger models.
+        remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg))
+    else:
+        # Checkpointing both ffn and attention to give the best performance.
+        remat_spec = build_remat_spec(stack_cfg, feed_forward=True, self_attention=True)
+    layer_cfg.set(remat_spec=remat_spec)
+
+
 def model_config(
     *,
     hidden_dim: int,
@@ -193,8 +223,10 @@ def model_config(
     dropout_rate: float = 0.0,
     stack_cfg: causal_lm.TransformerStackConfig = RepeatedTransformerLayer.default_config(),
     emb_cfg: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config(),
+    layer_cfg: TransformerLayer.Config = TransformerLayer.default_config(),
     attention_cfg: MultiheadAttention.Config = MultiheadAttention.default_config(),
     attention_qkv_linear: Optional[BaseQKVLinear.Config] = FusedQKVLinear.default_config(),
+    attention_mask: Optional[AttentionLogitBiasLayer.Config] = None,
     z_loss_scale: float = 0.0,
     ffn_structure: str = "prenorm",
     atten_structure: str = "prenorm",
@@ -203,9 +235,9 @@ def model_config(
     """Returns an LM model config based on the given hyperparams.
 
     Args:
-        hidden_dim: The Transformer layer input/output dim.
+        hidden_dim: The transformer layer input/output dim.
         num_heads: The number of attention heads.
-        num_layers: The number of Transformer Layers.
+        num_layers: The number of transformer Layers.
         vocab_size: The vocabulary size.
         activation_fn: The activation function used for the feed-forward network.
         ffn_dim: The feed-forward dimension or function (e.g., returned by `scaled_hidden_dim`).
@@ -214,8 +246,11 @@ def model_config(
         dropout_rate: The dropout rate applied throughout the model.
             Defaults to 0.0 (i.e. no dropout).
         stack_cfg: The transformer stack config.
-        emb_cfg: The Transformer embedding layer config.
+        emb_cfg: The transformer embedding layer config.
+        layer_cfg: The transformer layer config.
+        attention_cfg: The attention config.
         attention_qkv_linear: The attention QKV linear layer.
+        attention_mask: The AttentionLogitBiasLayer config.
         z_loss_scale: The scalar weight for the z-loss to encourages the cross-entropy loss
             normalizer to be well-behaved.
         ffn_structure: The inner structure of the feedforward layer.
@@ -228,7 +263,6 @@ def model_config(
     Returns:
         A causal LM config.
     """
-    layer_cfg = TransformerLayer.default_config()
     # Feed-forward.
     layer_cfg.feed_forward.activation = activation_fn
     layer_cfg.feed_forward.hidden_dim = ffn_dim
@@ -243,19 +277,12 @@ def model_config(
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
     if stack_cfg.klass is RepeatedTransformerLayer:
-        if layer_cfg.self_attention.attention.klass is not FlashAttention:
-            # Enable remat to reduce memory usage for larger models.
-            layer_cfg.remat_spec = build_remat_spec(stack_cfg)
-        else:
-            # Checkpointing both ffn and attention to give the best performance.
-            layer_cfg.remat_spec = build_remat_spec(
-                stack_cfg, feed_forward=True, self_attention=True
-            )
+        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
     # Stack.
     transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(
         transformer=transformer_cfg,
-        attention_mask=None,
+        attention_mask=attention_mask,
         dim=hidden_dim,
         vocab_size=vocab_size,
         emb=emb_cfg,
@@ -292,6 +319,38 @@ def model_config(
     return cfg
 
 
+def mup_simple_adam_update_transformation(scale_factor: float) -> InstantiableConfig:
+    """Builds a transform which scales the adam update for linear layers.
+
+    References:
+    - <https://arxiv.org/abs/2309.14322> Section 3.2.4.
+
+    Args:
+        scale_factor: The factor by which the update will be scaled for linear layers.
+
+    Returns:
+        A config that instantiates to a partitioned gradient transformation.
+    """
+    return config_for_function(optimizers.scale_update_per_param).set(
+        per_param_scale=config_for_function(optimizers.per_param_scale_by_path).set(
+            scale_by_path=[
+                (".*attention/o_proj/weight", scale_factor),
+                (".*attention/i_proj/i_proj/qkv_proj/weight", scale_factor),
+                # Dense FFN weights.
+                (".*feed_forward/linear1_0/weight", scale_factor),
+                (".*feed_forward/linear1_1/weight", scale_factor),
+                (".*feed_forward/linear2/weight", scale_factor),
+                # MoE FFN weights.
+                (".*feed_forward/wi_0_weight", scale_factor),
+                (".*feed_forward/wi_1_weight", scale_factor),
+                (".*feed_forward/wo_weight", scale_factor),
+            ],
+            description="scale_by_mup_simple",
+            default_scale=1.0,
+        )
+    )
+
+
 def learner_config(
     *,
     peak_lr: float,
@@ -302,6 +361,7 @@ def learner_config(
     b1: float = 0.9,
     b2: float = 0.95,
     eps: float = 1e-8,
+    adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
 ) -> learner.Learner.Config:
     """Build learner using the AdamW optimizer and a cosine lr schedule with linear warmup."""
     update_schedule = config_for_function(schedule.cosine_with_linear_warmup).set(
@@ -323,7 +383,7 @@ def learner_config(
                 update_schedule=update_schedule,
                 weight_decay=weight_decay,
                 weight_decay_per_param_scale=None,
-                adam_update_transformation=None,
+                adam_update_transformation=adam_update_transformation,
             ),
         ]
     )
