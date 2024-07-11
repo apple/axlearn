@@ -98,7 +98,7 @@ cd axlearn
 
 In order to iterate locally and run tests, install the package in editable mode along with `dev` dependencies:
 ```shell
-pip install -e '.[dev]'
+pip install -e '.[core,dev]'
 ```
 
 If you intend to launch jobs to GCP, install `gcp` dependencies:
