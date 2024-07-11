@@ -20,6 +20,7 @@ from axlearn.common.lora import (
     LoraFusedQKVAdapter,
     LoraFusedQKVLinear,
     LoraLinear,
+    LoraLinearAdapter,
     LoraMultiheadOutputLinear,
 )
 from axlearn.common.module import functional as F
