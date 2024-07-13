@@ -189,14 +189,14 @@ class BaseTransformerLayer(BaseLayer):
         See comments at the beginning of this file for semantics of *_attention_logit_biases.
 
         Args:
-            data: a Tensor of shape [batch, target_length, input_dim].
-            self_attention_kv_state: an optional KVState used for self-attention.
-            self_attention_logit_biases: an optional Tensor representing the self-attention biases.
-            cross_attention_data: an optional Tensor representing cross-attention data of shape
+            data: A Tensor of shape [batch, target_length, input_dim].
+            self_attention_kv_state: An optional KVState used for self-attention.
+            self_attention_logit_biases: An optional Tensor representing the self-attention biases.
+            cross_attention_data: An optional Tensor representing cross-attention data of shape
                 [source_batch, source_length, source_dim].
-            cross_attention_logit_biases: an optional Tensor representing the cross-attention
+            cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
-            return_aux: a set of auxiliary output fields to return. Each element must be an
+            return_aux: A set of auxiliary output fields to return. Each element must be an
                 optional field of `Output`, e.g.,
                 `return_aux = {"self_attention_probs", "self_attention_kv_state"}` means that
                 `Output.{self_attention_probs, self_attention_kv_state}` will be populated.
@@ -218,7 +218,7 @@ class BaseTransformerLayer(BaseLayer):
         Args:
             target_batch_size: The batch size for target sequences.
             target_max_len: The maximum number of tokens in a target sequence.
-            self_attention_kv_state: an optional KVState used for self-attention.
+            self_attention_kv_state: An optional KVState used for self-attention.
 
         Returns:
             A nested tree of Tensors, which can be used as `cached_states` for the initial call
@@ -246,7 +246,7 @@ class BaseTransformerLayer(BaseLayer):
                 indicating where decoding will start from.
             data: A Tensor of shape [batch, target_length, input_dim]. For batch index `i`, only
                 `data[i, :time_step[i], ...]` will affect subsequent decoding.
-            self_attention_kv_state: an optional KVState used for self-attention.
+            self_attention_kv_state: An optional KVState used for self-attention.
             self_attention_logit_biases: An optional Tensor representing the self-attention biases.
             cross_attention_data: An optional Tensor representing cross-attention data of shape
                 [batch, source_length, source_dim].
@@ -275,18 +275,18 @@ class BaseTransformerLayer(BaseLayer):
         """Computes incremental outputs.
 
         Args:
-            cached_states: a NestedTensor returned by `init_states()` or a previous invocation of
+            cached_states: A NestedTensor returned by `init_states()` or a previous invocation of
                 `extend_step()`.
-            data: a Tensor of shape [target_batch_size, target_step_length, input_dim], where
+            data: A Tensor of shape [target_batch_size, target_step_length, input_dim], where
                 `target_step_length` is usually 1. For self-attention, `data` will be used as the
                 `query` sequence and will be appended to key and value sequences.
-            self_attention_kv_state: an optional KVState used for self-attention.
-            self_attention_logit_biases: an optional Tensor of shape
+            self_attention_kv_state: An optional KVState used for self-attention.
+            self_attention_logit_biases: An optional Tensor of shape
                 [..., target_step_length, target_max_len], where `target_step_length` must match
                 the shape of `data` and `target_max_len` must match the value given for
                 `init_states()`.
-            cross_attention_data: an optional Tensor of shape [..., source_length, source_dim].
-            cross_attention_logit_biases: an optional Tensor of shape
+            cross_attention_data: An optional Tensor of shape [..., source_length, source_dim].
+            cross_attention_logit_biases: An optional Tensor of shape
                 [..., target_step_length, source_length], where `target_step_length` must match
                 the shape of `data`.
 
@@ -303,7 +303,7 @@ def make_causal_mask(seq_len: int) -> Tensor:
     """Generates attention logit biases for causal masking.
 
     Args:
-        seq_len: sequence length.
+        seq_len: Sequence length.
 
     Returns:
         A float tensor of shape [seq_len, seq_len] where the value at [i, j] = -inf if i < j,
@@ -394,7 +394,7 @@ class LearnedPositionalEmbedding(BaseLayer):
     def forward(self, positions: Tensor) -> Tensor:
         """
         Args:
-            positions: an integer tensor with arbitrary shape [...].
+            positions: An integer tensor with arbitrary shape [...].
 
         Returns:
             Embeddings with shape [..., *cfg.dim[1:], dim].
@@ -421,11 +421,11 @@ def sinusoidal_positional_embeddings(
     Specifically: timescale(0) = min_timescale and timescale(num_timescales) = max_timescale.
 
     Args:
-        positions: an integer tensor of any shape [...]. Each value represents an
+        positions: An integer tensor of any shape [...]. Each value represents an
             absolute or relative position.
         dim: the embedding dimension. Must be divisible by 2.
-        min_timescale: the minimum timescale (used for channel 0 and dim // 2).
-        max_timescale: the maximum timescale (used for channel dim // 2 - 1 and dim - 1).
+        min_timescale: The minimum timescale (used for channel 0 and dim // 2).
+        max_timescale: The maximum timescale (used for channel dim // 2 - 1 and dim - 1).
 
     Returns:
         Embeddings of shape [..., dim].
@@ -577,8 +577,8 @@ def apply_attention_logit_biases(
     """Applies `attention_logit_biases` on `logits`.
 
     Args:
-        logits: a float Tensor.
-        attention_logit_biases: a float Tensor. If None, assume all zeros.
+        logits: A float Tensor.
+        attention_logit_biases: A float Tensor. If None, assume all zeros.
 
     Returns:
         logits + attention_logit_biases, in logits.dtype.
@@ -592,8 +592,8 @@ def softmax_with_biases(logits: Tensor, attention_logit_biases: Optional[Tensor]
     """Computes softmax with optional masking.
 
     Args:
-        logits: a Tensor of any shape.
-        attention_logit_biases: a Tensor that is broadcastable with logits.
+        logits: A Tensor of any shape.
+        attention_logit_biases: A Tensor that is broadcastable with logits.
             See ``On attention logit biases`` in the file comments.
 
     Returns:
@@ -608,6 +608,31 @@ def softmax_with_biases(logits: Tensor, attention_logit_biases: Optional[Tensor]
     probs = jax.nn.softmax(logits, axis=-1)
     if probs.dtype != logits_dtype:
         probs = probs.astype(logits_dtype)
+    check_numerics(probs)
+    return probs
+
+
+def sigmoid_with_biases(
+    logits: Tensor,
+    attention_logit_biases: Optional[Tensor] = None,
+) -> Tensor:
+    """Computes sigmoid with optional masking.
+
+    Args:
+        logits: A Tensor of any shape.
+        attention_logit_biases: A Tensor that is broadcastable with logits.
+            See ``On attention logit biases`` in the file comments.
+
+    Returns:
+        A Tensor of same shape and dtype as logits.
+    """
+    check_numerics(logits)
+    logits = apply_attention_logit_biases(logits, attention_logit_biases)
+    # Avoid computing sigmoid in 16-bit floats.
+    logits_dtype = logits.dtype
+    if logits_dtype in (jnp.bfloat16, jnp.float16):
+        logits = logits.astype(jnp.float32)
+    probs = jax.nn.sigmoid(logits)
     check_numerics(probs)
     return probs
 
@@ -690,13 +715,13 @@ class BaseQKVLinear(BaseLayer):
         """Computes per-head query, key, and value for the input query, key, value.
 
         Args:
-            query: a Tensor of shape [batch, target_length, target_dim].
+            query: A Tensor of shape [batch, target_length, target_dim].
             key:   an optional Tensor of shape [batch, source_length, source_dim].
                    If None, will use `query`.
-            value: an optional Tensor of shape [batch, source_length, source_dim].
+            value: An optional Tensor of shape [batch, source_length, source_dim].
                    If None, will use `query`.
-            kv_state: an optional KVState. If not None, both key and value must be None.
-            time_step: an optional Tensor of shape [batch]. If None, will ignore.
+            kv_state: An optional KVState. If not None, both key and value must be None.
+            time_step: An optional Tensor of shape [batch]. If None, will ignore.
 
         Returns:
             An Output instance, where query is of size
@@ -729,7 +754,7 @@ class BaseQKVLinear(BaseLayer):
                 `query`.
             value: An optional Tensor of shape [batch, source_length, source_dim]. If None, will
                 use `query`.
-            kv_state: an optional KVState. If not None, both key and value must be None.
+            kv_state: An optional KVState. If not None, both key and value must be None.
 
         Returns:
             A `NestedTensor` state of `key`, `value` of shape
@@ -800,7 +825,7 @@ class BaseQKVLinear(BaseLayer):
                 `query`.
             value: An optional Tensor of shape [batch, source_length, source_dim]. If None, will
                 use `query`.
-            kv_state: an optional KVState. If not None, both key and value must be None.
+            kv_state: An optional KVState. If not None, both key and value must be None.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -1800,10 +1825,10 @@ class MultiheadAttention(BaseLayer):
         If key and value are both None, computes self-attention using query.
 
         Args:
-            query: a Tensor of shape [batch, target_length, target_dim].
-            key:   an optional Tensor of shape [batch, source_length, source_dim].
-            value: an optional Tensor of shape [batch, source_length, source_dim].
-            kv_state: an optional KVState. If not None, both key and value must be None.
+            query: A Tensor of shape [batch, target_length, target_dim].
+            key:   An optional Tensor of shape [batch, source_length, source_dim].
+            value: An optional Tensor of shape [batch, source_length, source_dim].
+            kv_state: An optional KVState. If not None, both key and value must be None.
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
             return_aux: See comments on `Output`.
 
@@ -1848,9 +1873,9 @@ class MultiheadAttention(BaseLayer):
         """Initializes cache for autoregressive cached decoding.
 
         Args:
-            target_batch_size: the batch size of the target to be decoded.
-            target_max_len: the sequence length of the target to be decoded.
-            kv_state: an optional KVState.
+            target_batch_size: The batch size of the target to be decoded.
+            target_max_len: The sequence length of the target to be decoded.
+            kv_state: An optional KVState.
 
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
@@ -1883,7 +1908,7 @@ class MultiheadAttention(BaseLayer):
             query: Tensor of shape [B, T, D] corresponding to query vector up to `time_step`. For
                 batch index `i`, only `query[i, :time_step[i], ...]` will affect subsequent
                 decoding.
-            kv_state: an optional KVState.
+            kv_state: An optional KVState.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             return_aux: See comments on `Output`.
 
@@ -1921,7 +1946,7 @@ class MultiheadAttention(BaseLayer):
                 previous attentions, and index used for fast decoding. Contains "key" and "value" of
                 shape [B, N, H, T], and a Tensor "time_step" of shape [B].
             query: Tensor of shape [B, 1, D] corresponding to query vector at "time_step" indices.
-            kv_state: an optional KVState.
+            kv_state: An optional KVState.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
                 Additionally, target_length is expected to be 1 since this is per time step.
                 The biases should already include causal masking for decoding, plus other biases
@@ -2003,6 +2028,57 @@ class GroupedQueryAttention(MultiheadAttention):
             v_proj=v_proj,
             attention_logit_biases=attention_logit_biases,
         )
+
+
+class SigmoidAttention(MultiheadAttention):
+    """A multi-head sigmoid-based attention layer, instead of softmax.
+
+    TODO(floris_weers): Add paper reference.
+    """
+
+    @config_class
+    class Config(MultiheadAttention.Config):
+        """Configures SigmoidAttention."""
+
+        seq_len: Required[int] = REQUIRED  #  Maximum sequence length used.
+
+    def _compute_attention(
+        self,
+        *,
+        q_proj: Tensor,
+        k_proj: Tensor,
+        v_proj: Tensor,
+        attention_logit_biases: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        """Computes attention context and probs.
+
+        Args:
+            q_proj: [batch_size, target_length, num_heads, per_head_dim].
+            k_proj: [batch_size, source_length, num_heads, per_head_dim].
+            v_proj: [batch_size, source_length, num_heads, per_head_dim].
+
+        Returns:
+            The context of shape [batch_size, target_length, num_heads, per_head_dim],
+            and probs of shape [batch, num_heads, target_length, source_length].
+        """
+        cfg = self.config
+        logits = self._compute_logits(q_proj, k_proj)
+        logits = self._cap_logits(logits)
+        self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
+
+        if attention_logit_biases is None:
+            attention_logit_biases = 0
+        # To approximate softmax, we subtract a bias dependent on sequence length.
+        attention_logit_biases = attention_logit_biases - jnp.log(cfg.seq_len)
+        probs = sigmoid_with_biases(
+            logits,
+            attention_logit_biases=attention_logit_biases,
+        )
+        probs = self.dropout(probs)
+
+        context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
+        context = self._remat_name(context, "context")
+        return context, probs
 
 
 def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
@@ -2092,20 +2168,20 @@ def xl_attention_logits(
     while lingvo computes from query_i - key_i.
 
     Args:
-        q_proj: a Tensor of shape [batch, target_length, num_heads, per_head_dim], representing
+        q_proj: A Tensor of shape [batch, target_length, num_heads, per_head_dim], representing
             projected queries.
-        k_proj: a Tensor of shape [batch, target_length, num_heads, per_head_dim], representing
+        k_proj: A Tensor of shape [batch, target_length, num_heads, per_head_dim], representing
             projected keys.
-        relative_pos_emb: a Tensor of shape [num_embeddings, num_heads, per_head_dim], representing
+        relative_pos_emb: A Tensor of shape [num_embeddings, num_heads, per_head_dim], representing
             projected relative positional embeddings, where num_embeddings = 2 * target_length - 1.
             relative_pos_emb[key_i - query_i + target_length - 1] represents positional
             embeddings between query[:, query_i] and key[:, key_i] and is usually computed from
             sinusoidal_positional_embeddings(query_i - key_i), i.e.,
             relative_pos_emb[0] represents query_i = target_length - 1 and key_i = 0.
             relative_pos_emb[-1] represents query_i = 0 and key_i = target_length - 1.
-        u: a Tensor of shape [num_heads, per_head_dim].
+        u: A Tensor of shape [num_heads, per_head_dim].
             The trainable `u` in https://arxiv.org/pdf/1901.02860.pdf 3.3 used for term 'ac'.
-        v: a Tensor of shape [num_heads, per_head_dim].
+        v: A Tensor of shape [num_heads, per_head_dim].
             The trainable `v` in https://arxiv.org/pdf/1901.02860.pdf 3.3 used for term 'bd'.
 
     Returns:
@@ -2432,8 +2508,8 @@ class TransformerAttentionLayer(BaseLayer):
         """Computes attention with target as query and source as key and value.
 
         Args:
-            target: a Tensor of shape [batch, target_length, target_dim].
-            source: an optional KVState or Tensor of shape [batch, source_length, source_dim].
+            target: A Tensor of shape [batch, target_length, target_dim].
+            source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             return_aux: See comments on `Output`.
@@ -2465,9 +2541,9 @@ class TransformerAttentionLayer(BaseLayer):
         """Initializes cache for autoregressive cached decoding.
 
         Args:
-            target_batch_size: the batch size of the target to be decoded.
-            target_max_len: the sequence length of the target to be decoded.
-            kv_state: an optional KVState.
+            target_batch_size: The batch size of the target to be decoded.
+            target_max_len: The sequence length of the target to be decoded.
+            kv_state: An optional KVState.
 
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
@@ -2500,7 +2576,7 @@ class TransformerAttentionLayer(BaseLayer):
             target: Tensor of shape [batch, target_length, target_dim] corresponding to query vector
                 at `time_step` indices. For batch index `i`, only `target[i, :time_step[i], ...]`
                 will affect subsequent decoding.
-            source: an optional KVState or Tensor of shape [batch, source_length, source_dim].
+            source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             return_aux: See comments on `Output`.
@@ -2537,7 +2613,7 @@ class TransformerAttentionLayer(BaseLayer):
                 "attention" cached states.
             target: Tensor of shape [B, 1, D] corresponding to query vector at index
                 time_step.
-            source: an optional KVState or Tensor of shape [batch, source_length, source_dim].
+            source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
                 Additionally, target_length is expected to be 1 since this is per time step.
@@ -2864,7 +2940,7 @@ class TransformerLayer(BaseTransformerLayer):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             data: A Tensor of shape [batch, target_length, target_dim].
-            self_attention_kv_state: an optional KVState used for self-attention.
+            self_attention_kv_state: An optional KVState used for self-attention.
             self_attention_logit_biases: An optional Tensor representing the self-attention biases.
             cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
             cross_attention_logit_biases: An optional Tensor representing the cross-attention

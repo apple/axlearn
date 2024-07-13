@@ -2,7 +2,7 @@
 
 """Utilities to set up the 'fuji' GPT model trainer configs.
 
-Architecture names follow apple varieties: fuji, gala, honeycrisp, etc.
+Architecture names follow apple varieties: Fuji, Gala, Honeycrisp, etc.
 
 The fuji models are set up to imitate LLaMA models:
 * LLaMA: https://arxiv.org/abs/2302.13971

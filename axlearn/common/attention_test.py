@@ -1908,6 +1908,15 @@ class MultiheadAttentionTest(TestCase):
             attention.GroupedQueryAttention.default_config().set(
                 input_linear=attention.RoFormerQKVLinear.default_config().set(rotary_value=False)
             ),
+            attention.SigmoidAttention.default_config().set(
+                input_linear=attention.RoFormerQKVLinear.default_config().set(rotary_value=False),
+                seq_len=4,
+            ),
+            attention.SigmoidAttention.default_config().set(
+                # Used in ALiBi position encoding.
+                input_linear=FusedQKVLinear.default_config(),
+                seq_len=4,
+            ),
         ),
         attention_logit_biases_fn=(
             lambda seq_len: None,
@@ -2543,6 +2552,72 @@ class MultiheadAttentionTest(TestCase):
         self.assertIn(str(query_scale_factor), hlo)
         self.assertIn(str(key_scale_factor), hlo)
         self.assertNotIn(str(query_scale_factor * key_scale_factor), hlo)
+
+    @parameterized.parameters(
+        [
+            (
+                1.0,
+                jax.nn.sigmoid((1.0 * 1.0) * 2 - jnp.log(6)),
+                6,
+            ),
+            (
+                1.0,
+                jax.nn.sigmoid((1.0 * 1.0) * 2 - jnp.log(4)),
+                4,
+            ),
+            (
+                2.0,
+                jax.nn.sigmoid((2.0 * 2.0) * 2 - jnp.log(6)),
+                6,
+            ),
+        ]
+    )
+    def test_sigmoid_compute_attention(self, qkv_value: float, expected_value: float, seq_len: int):
+        model_dim = 16
+        num_heads = 4
+        batch_size = 2
+        init_key = jax.random.PRNGKey(123)
+
+        cfg = attention.SigmoidAttention.default_config().set(
+            seq_len=seq_len,
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            query_scale=attention.ScaleQuery.default_config(),
+            atten_logit_cap=0.0,
+            dtype=jnp.float32,
+        )
+        sigmoid_attention = cfg.set(name="sigmoid_attention").instantiate(parent=None)
+        state = sigmoid_attention.initialize_parameters_recursively(prng_key=init_key)
+
+        qkv_shape = [batch_size, seq_len, num_heads, num_heads]
+        inputs = dict(
+            q_proj=jnp.full(qkv_shape, fill_value=qkv_value),
+            k_proj=jnp.full(qkv_shape, fill_value=qkv_value),
+            v_proj=jnp.full(qkv_shape, fill_value=qkv_value),
+            attention_logit_biases=attention.make_causal_mask(seq_len),
+        )
+
+        # Get outputs.
+        forward_key = jax.random.PRNGKey(456)
+
+        (_, probs), _ = F(
+            sigmoid_attention,
+            method="_compute_attention",
+            state=state,
+            is_training=False,
+            prng_key=forward_key,
+            inputs=inputs,
+        )
+
+        output_shape = [batch_size, num_heads, seq_len, seq_len]
+        indexes = jnp.arange(seq_len)
+        # Zeros outside of the causal triangle.
+        causal_mask = jax.lax.ge(indexes[:, None], indexes[None, :])
+        expected_output = jnp.full(output_shape, fill_value=expected_value) * causal_mask
+
+        self.assertNestedAllClose(probs, expected_output)
 
 
 def oracle_xl_attention_logits(

@@ -2,35 +2,42 @@
 
 """GPT models on C4.
 
-    # Example using fake configs/data (commonly for testing).
-    mkdir -p /tmp/gpt_c4_test;
+First setup your local environment and install AXLearn following `docs/01-start.md`.
+Test the trainer locally on CPU with fake configs/data (commonly used for testing):
+```shell
+mkdir -p /tmp/gpt_c4_test;
+python3 -m axlearn.common.launch_trainer_main \
+    --module=text.gpt.c4_trainer --config=fuji-test-v1 \
+    --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE --jax_backend=cpu \
+    --status_port=7337
+```
+
+Example training Fuji-7B with C4 dataset (can run on a single H100):
+```shell
+XLA_FLAGS=--xla_dump_to=/tmp/xla_dump; \
+mkdir -p /tmp/gpt_c4_test; \
+python3 -m axlearn.common.launch_trainer_main \
+  --module=text.gpt.c4_trainer --config=fuji-7B-v2-single-host \
+  --trainer_dir=/tmp/gpt_c4_test --data_dir=gs://axlearn-public/tensorflow_datasets \
+  --jax_backend=gpu
+```
+
+Launch this on TPU using:
+```shell
+GS_ROOT=gs://my-bucket; \
+CONFIG=fuji-7B-v2; \
+INSTANCE_TYPE=tpu-v4-1024; \
+NUM_TPU_SLICES=1; \
+EXP=$(echo "text-gpt-c4-${CONFIG}-$(date +%F-%H%M)" | tr '[:upper:]' '[:lower:]'); \
+OUTPUT_DIR=$GS_ROOT/$USER/experiments/$EXP; \
+axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NUM_TPU_SLICES} \
+    --output_dir=$OUTPUT_DIR --name=$USER-$EXP -- \
     python3 -m axlearn.common.launch_trainer_main \
-        --module=text.gpt.c4_trainer --config=fuji-test-v1 \
-        --trainer_dir=/tmp/gpt_c4_test --data_dir=FAKE --jax_backend=cpu \
-        --status_port=7337
-
-    # Example training Fuji-7B with C4 dataset (can run on a single H100).
-    XLA_FLAGS=--xla_dump_to=/tmp/xla_dump;
-    mkdir -p /tmp/gpt_c4_test; \
-    python3 -m axlearn.common.launch_trainer_main \
-    --module=text.gpt.c4_trainer --config=fuji-7B-v2-single-host \
-    --trainer_dir=/tmp/gpt_c4_test --data_dir=gs://axlearn-public/tensorflow_datasets \
-    --jax_backend=gpu
-
-    GS_ROOT=gs://my-bucket; \
-    CONFIG=fuji-7B-v2; \
-    INSTANCE_TYPE=tpu-v4-1024; \
-    NUM_TPU_SLICES=1; \
-    EXP=$(echo "text-gpt-c4-${CONFIG}-$(date +%F-%H%M)" | tr '[:upper:]' '[:lower:]'); \
-    OUTPUT_DIR=$GS_ROOT/$USER/experiments/$EXP; \
-    axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NUM_TPU_SLICES} \
-        --output_dir=$OUTPUT_DIR --name=$USER-$EXP -- \
-        python3 -m axlearn.common.launch_trainer_main \
-        --module=text.gpt.c4_trainer --config=$CONFIG \
-        --trainer_dir=$OUTPUT_DIR \
-        --data_dir=$GS_ROOT/tensorflow_datasets \
-        --mesh_selector=$INSTANCE_TYPE --jax_backend=tpu
-
+    --module=text.gpt.c4_trainer --config=$CONFIG \
+    --trainer_dir=$OUTPUT_DIR \
+    --data_dir=$GS_ROOT/tensorflow_datasets \
+    --mesh_selector=$INSTANCE_TYPE --jax_backend=tpu
+```
 """
 
 from typing import Dict
