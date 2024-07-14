@@ -13,6 +13,7 @@
 
 Reference: https://arxiv.org/abs/2405.15052.
 """
+import re
 from typing import Dict, NamedTuple, Optional, Tuple, Union
 
 import jax
@@ -37,7 +38,15 @@ from axlearn.common.layers import (
 )
 from axlearn.common.module import Module
 from axlearn.common.param_init import FanAxes
-from axlearn.common.utils import NestedTensor, PartitionSpec, Tensor, with_sharding_constraint
+from axlearn.common.utils import (
+    Nested,
+    NestedTensor,
+    PartitionSpec,
+    Tensor,
+    flatten_items,
+    set_recursively,
+    with_sharding_constraint,
+)
 
 
 def _router_z_loss(logits: Tensor) -> Tensor:
@@ -603,3 +612,42 @@ class TransformerFeedForwardMoE(BaseLayer):
             x = jnp.einsum("oegcm,emh->oegch", x, self.parameters["wi_weight"])
             x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegch"])
             return get_activation_fn(cfg.activation)(x)
+
+
+def convert_dense_to_sparse_parameters(
+    dense_parameters: Nested[Tensor],
+    *,
+    num_experts: int,
+    sparse_parameter_specs: Nested[ParameterSpec],
+) -> Nested[Tensor]:
+    """Upcycles parameters of a TransformerFeedForwardLayer to those of a TransformerFeedForwardMoE.
+
+    Args:
+        dense_parameters:
+        num_experts:
+        sparse_parameter_specs:
+
+    Returns:
+        Parameters of a TransformerFeedForwardMoE.
+    """
+    sparse_parameters = jax.tree_util.tree_map(
+        lambda x: x,
+        sparse_parameter_specs,
+    )
+    for path, value in flatten_items(dense_parameters):
+        m = re.fullmatch("linear([0-9_]+)/(weight|bias)", path)
+        if not m:
+            set_recursively(sparse_parameters, path=path, value=value)
+            continue
+        if m.group(2) == "bias":
+            raise NotImplementedError("TransformerFeedForwardMoE does not support bias")
+        linear_name = m.group(1)
+        # linear_name can be "linear1", "linear2", "linear1_0", or "linear1_1" and should map to
+        # wi, wo, wi_0, wi_1, respectively.
+        m = re.fullmatch("([0-9]+)(|_[0-9]+)", linear_name)
+        sparse_weight_prefix = "wi" if m.group(1) == "1" else "wo"
+        sparse_weight_suffix = m.group(2)
+        sparse_parameters[f"{sparse_weight_prefix}{sparse_weight_suffix}_weight"] = jnp.tile(
+            value, (num_experts, 1, 1)
+        )
+    return sparse_parameters

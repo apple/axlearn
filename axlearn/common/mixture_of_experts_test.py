@@ -18,9 +18,14 @@ import numpy as np
 from absl.testing import absltest, parameterized
 
 from axlearn.common.attention import TransformerFeedForwardLayer
-from axlearn.common.mixture_of_experts import Top2Gating, TransformerFeedForwardMoE
+from axlearn.common.mixture_of_experts import (
+    Top2Gating,
+    TransformerFeedForwardMoE,
+    convert_dense_to_sparse_parameters,
+)
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import assert_allclose
+from axlearn.common.utils import shapes
 
 
 # pylint: disable=no-self-use,protected-access
@@ -337,6 +342,52 @@ class TransformerFeedForwardMoETest(parameterized.TestCase):
         for k, v in fans_o.items():
             assert k in fans2_o
             self.assertEqual(v, fans2_o[k])
+
+
+class ParamConversionTest(parameterized.TestCase):
+    @parameterized.product(
+        activation=("relu", ("linear", "silu")),
+        num_experts=(1, 2),
+        bias=(False, True),
+    )
+    def test_dense_to_sparse_parameters(self, *, activation, num_experts: int, bias: bool):
+        input_dim, hidden_dim = 4, 16
+        cfg_dense = TransformerFeedForwardLayer.default_config().set(name="test")
+        cfg_dense.input_dim = input_dim
+        cfg_dense.hidden_dim = hidden_dim
+        cfg_dense.activation = activation
+        cfg_dense.linear1.bias = bias
+        cfg_dense.linear2.bias = bias
+        layer_dense: TransformerFeedForwardLayer = cfg_dense.instantiate(parent=None)
+        state_dense = layer_dense.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(123)
+        )
+
+        cfg_sparse = TransformerFeedForwardMoE.default_config().set(name="test")
+        cfg_sparse.input_dim = input_dim
+        cfg_sparse.hidden_dim = hidden_dim
+        cfg_sparse.num_experts = num_experts
+        cfg_sparse.activation = activation
+        cfg_sparse.num_groups = 1
+        # A large capacity factor to prevent dropping tokens.
+        cfg_sparse.gating.train_capacity_factor = 100.0
+        cfg_sparse.gating.eval_capacity_factor = 100.0
+        layer_sparse: TransformerFeedForwardMoE = cfg_sparse.instantiate(parent=None)
+        state_sparse = layer_sparse.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(123)
+        )
+        param_specs_sparse = layer_sparse.create_parameter_specs_recursively()
+
+        if bias:
+            with self.assertRaisesRegex(NotImplementedError, "bias"):
+                convert_dense_to_sparse_parameters(
+                    state_dense, num_experts=num_experts, sparse_parameter_specs=param_specs_sparse
+                )
+            return
+        state_sparse_converted = convert_dense_to_sparse_parameters(
+            state_dense, num_experts=num_experts, sparse_parameter_specs=param_specs_sparse
+        )
+        self.assertEqual(shapes(state_sparse), shapes(state_sparse_converted))
 
 
 if __name__ == "__main__":
