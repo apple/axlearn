@@ -17,11 +17,18 @@ import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
 
-from axlearn.common.attention import TransformerFeedForwardLayer
+from axlearn.common.attention import (
+    RepeatedTransformerLayer,
+    StackedTransformerLayer,
+    TransformerFeedForwardLayer,
+    TransformerLayer,
+)
+from axlearn.common.layers import set_bias_recursively
 from axlearn.common.mixture_of_experts import (
     Top2Gating,
     TransformerFeedForwardMoE,
-    convert_dense_to_sparse_parameters,
+    _convert_feedforward_to_moe_parameters,
+    convert_dense_to_moe_parameters,
 )
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import assert_allclose
@@ -350,44 +357,98 @@ class ParamConversionTest(parameterized.TestCase):
         num_experts=(1, 2),
         bias=(False, True),
     )
-    def test_dense_to_sparse_parameters(self, *, activation, num_experts: int, bias: bool):
+    def test_feed_forward_to_moe_parameters(self, *, activation, num_experts: int, bias: bool):
         input_dim, hidden_dim = 4, 16
         cfg_dense = TransformerFeedForwardLayer.default_config().set(name="test")
         cfg_dense.input_dim = input_dim
         cfg_dense.hidden_dim = hidden_dim
         cfg_dense.activation = activation
-        cfg_dense.linear1.bias = bias
-        cfg_dense.linear2.bias = bias
+        cfg_dense.linear1.bias = cfg_dense.linear2.bias = bias
         layer_dense: TransformerFeedForwardLayer = cfg_dense.instantiate(parent=None)
         state_dense = layer_dense.initialize_parameters_recursively(
             prng_key=jax.random.PRNGKey(123)
         )
 
-        cfg_sparse = TransformerFeedForwardMoE.default_config().set(name="test")
-        cfg_sparse.input_dim = input_dim
-        cfg_sparse.hidden_dim = hidden_dim
-        cfg_sparse.num_experts = num_experts
-        cfg_sparse.activation = activation
-        cfg_sparse.num_groups = 1
+        cfg_moe = TransformerFeedForwardMoE.default_config().set(name="test")
+        cfg_moe.input_dim = input_dim
+        cfg_moe.hidden_dim = hidden_dim
+        cfg_moe.num_experts = num_experts
+        cfg_moe.activation = activation
+        cfg_moe.num_groups = 1
         # A large capacity factor to prevent dropping tokens.
-        cfg_sparse.gating.train_capacity_factor = 100.0
-        cfg_sparse.gating.eval_capacity_factor = 100.0
-        layer_sparse: TransformerFeedForwardMoE = cfg_sparse.instantiate(parent=None)
-        state_sparse = layer_sparse.initialize_parameters_recursively(
-            prng_key=jax.random.PRNGKey(123)
-        )
-        param_specs_sparse = layer_sparse.create_parameter_specs_recursively()
+        cfg_moe.gating.train_capacity_factor = 100.0
+        cfg_moe.gating.eval_capacity_factor = 100.0
+        layer_moe: TransformerFeedForwardMoE = cfg_moe.instantiate(parent=None)
+        state_moe = layer_moe.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        param_specs_moe = layer_moe.create_parameter_specs_recursively()
 
         if bias:
             with self.assertRaisesRegex(NotImplementedError, "bias"):
-                convert_dense_to_sparse_parameters(
-                    state_dense, num_experts=num_experts, sparse_parameter_specs=param_specs_sparse
+                _convert_feedforward_to_moe_parameters(
+                    state_dense, num_experts=num_experts, moe_parameter_specs=param_specs_moe
                 )
             return
-        state_sparse_converted = convert_dense_to_sparse_parameters(
-            state_dense, num_experts=num_experts, sparse_parameter_specs=param_specs_sparse
+        state_moe_converted = _convert_feedforward_to_moe_parameters(
+            state_dense, num_experts=num_experts, moe_parameter_specs=param_specs_moe
         )
-        self.assertEqual(shapes(state_sparse), shapes(state_sparse_converted))
+        state_moe_converted = jax.tree_util.tree_map(
+            lambda spec, param: spec if param is None else param,
+            param_specs_moe,
+            state_moe_converted,
+        )
+        self.assertEqual(shapes(state_moe), shapes(state_moe_converted))
+
+    def test_dense_to_moe_parameters(self):
+        """Tests _convert_feedforward_to_moe_parameters."""
+        num_layers, input_dim, hidden_dim, num_heads = 6, 4, 16, 2
+        cfg_dense = RepeatedTransformerLayer.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            num_layers=num_layers,
+            layer=TransformerLayer.default_config(),
+        )
+        cfg_dense.layer.self_attention.attention.set(num_heads=num_heads)
+        cfg_ff_dense = cfg_dense.layer.feed_forward.set(
+            hidden_dim=hidden_dim, activation=("linear", "silu")
+        )
+        set_bias_recursively(cfg_dense, bias=False)
+        layer_dense = cfg_dense.instantiate(parent=None)
+        state_dense = layer_dense.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(123)
+        )
+
+        cfg_ff_moe = TransformerFeedForwardMoE.default_config().set(
+            hidden_dim=hidden_dim,
+            num_experts=3,
+            num_groups=1,
+            activation=cfg_ff_dense.activation,
+        )
+        cfg_moe = RepeatedTransformerLayer.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            num_layers=num_layers // 2,
+            layer=StackedTransformerLayer.default_config().set(
+                num_layers=2,
+                layer=[cfg_dense.layer.clone(), cfg_dense.layer.clone(feed_forward=cfg_ff_moe)],
+            ),
+        )
+        set_bias_recursively(cfg_moe, bias=False)
+
+        layer_moe = cfg_moe.instantiate(parent=None)
+        state_moe = layer_moe.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        param_specs_moe = layer_moe.create_parameter_specs_recursively()
+
+        state_moe_converted = convert_dense_to_moe_parameters(
+            state_dense, target_layer=layer_moe, target_parameter_specs=param_specs_moe
+        )
+        print(jax.tree_util.tree_structure(state_moe))
+        print(jax.tree_util.tree_structure(state_moe_converted))
+        state_moe_converted = jax.tree_util.tree_map(
+            lambda spec, param: spec if param is None else param,
+            param_specs_moe,
+            state_moe_converted,
+        )
+        self.assertEqual(shapes(state_moe), shapes(state_moe_converted))
 
 
 if __name__ == "__main__":

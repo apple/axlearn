@@ -13,14 +13,21 @@
 
 Reference: https://arxiv.org/abs/2405.15052.
 """
+import dataclasses
 import re
-from typing import Dict, NamedTuple, Optional, Tuple, Union
+from typing import Dict, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
 
+from axlearn.common.attention import (
+    BaseTransformerLayer,
+    RepeatedTransformerLayer,
+    StackedTransformerLayer,
+    TransformerLayer,
+)
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
@@ -43,6 +50,7 @@ from axlearn.common.utils import (
     NestedTensor,
     PartitionSpec,
     Tensor,
+    VDict,
     flatten_items,
     set_recursively,
     with_sharding_constraint,
@@ -614,30 +622,27 @@ class TransformerFeedForwardMoE(BaseLayer):
             return get_activation_fn(cfg.activation)(x)
 
 
-def convert_dense_to_sparse_parameters(
-    dense_parameters: Nested[Tensor],
+def _convert_feedforward_to_moe_parameters(
+    source_parameters: Nested[Tensor],
     *,
     num_experts: int,
-    sparse_parameter_specs: Nested[ParameterSpec],
+    moe_parameter_specs: Nested[ParameterSpec],
 ) -> Nested[Tensor]:
     """Upcycles parameters of a TransformerFeedForwardLayer to those of a TransformerFeedForwardMoE.
 
     Args:
-        dense_parameters:
+        source_parameters:
         num_experts:
-        sparse_parameter_specs:
+        moe_parameter_specs:
 
     Returns:
         Parameters of a TransformerFeedForwardMoE.
     """
-    sparse_parameters = jax.tree_util.tree_map(
-        lambda x: x,
-        sparse_parameter_specs,
-    )
-    for path, value in flatten_items(dense_parameters):
+    moe_parameters = jax.tree_util.tree_map(lambda x: None, moe_parameter_specs)
+    for path, value in flatten_items(source_parameters):
         m = re.fullmatch("linear([0-9_]+)/(weight|bias)", path)
         if not m:
-            set_recursively(sparse_parameters, path=path, value=value)
+            set_recursively(moe_parameters, path=path, value=value)
             continue
         if m.group(2) == "bias":
             raise NotImplementedError("TransformerFeedForwardMoE does not support bias")
@@ -645,9 +650,92 @@ def convert_dense_to_sparse_parameters(
         # linear_name can be "linear1", "linear2", "linear1_0", or "linear1_1" and should map to
         # wi, wo, wi_0, wi_1, respectively.
         m = re.fullmatch("([0-9]+)(|_[0-9]+)", linear_name)
-        sparse_weight_prefix = "wi" if m.group(1) == "1" else "wo"
-        sparse_weight_suffix = m.group(2)
-        sparse_parameters[f"{sparse_weight_prefix}{sparse_weight_suffix}_weight"] = jnp.tile(
+        moe_weight_prefix = "wi" if m.group(1) == "1" else "wo"
+        moe_weight_suffix = m.group(2)
+        moe_parameters[f"{moe_weight_prefix}{moe_weight_suffix}_weight"] = jnp.tile(
             value, (num_experts, 1, 1)
         )
-    return sparse_parameters
+    return moe_parameters
+
+
+@dataclasses.dataclass
+class _LayerConversionSpec:
+    num_experts: Optional[int] = None
+    moe_layer_parameter_specs: Optional[Nested[ParameterSpec]] = None
+
+
+def _convert_repeated_dense_to_moe_parameters(
+    source_parameters: Nested[Tensor],
+    *,
+    num_stages: int,
+    stage_spec: Sequence[_LayerConversionSpec],
+) -> Nested[Tensor]:
+    target_parameters = {}
+    for layer_i, layer_spec in enumerate(stage_spec):
+
+        def convert_layer(
+            layer_index: Tensor,
+            num_experts=layer_spec.num_experts,
+            moe_layer_parameter_specs=layer_spec.moe_layer_parameter_specs,
+        ) -> Nested[Tensor]:
+            """Converts source_parameters[layer_index] to params of a target layer."""
+            layer_parameters = jax.tree_util.tree_map(lambda w: w[layer_index], source_parameters)
+            if not num_experts:
+                return layer_parameters
+
+            layer_parameters["feed_forward"] = _convert_feedforward_to_moe_parameters(
+                layer_parameters["feed_forward"],
+                num_experts=num_experts,
+                moe_parameter_specs=moe_layer_parameter_specs,
+            )
+            return layer_parameters
+
+        source_layer_indices = [s * len(stage_spec) + layer_i for s in range(num_stages)]
+        target_parameters[f"layer{layer_i}"] = jax.vmap(convert_layer)(
+            jnp.asarray(source_layer_indices, dtype=jnp.int32)
+        )
+
+    return target_parameters
+
+
+def convert_dense_to_moe_parameters(
+    source_parameters: Nested[Tensor],
+    *,
+    target_layer: BaseTransformerLayer,
+    target_parameter_specs: Nested[ParameterSpec],
+) -> Nested[Tensor]:
+    if isinstance(target_layer, RepeatedTransformerLayer):
+        target_parameters = {"repeat": VDict({"layer": {}})}
+        target_stage = target_layer.repeat.layer
+        stage_parameter_specs = target_parameter_specs["repeat"]["layer"]
+        stage_spec: Sequence[_LayerConversionSpec] = []
+        if isinstance(target_stage, StackedTransformerLayer):
+            for layer_i in range(target_stage.config.num_layers):
+                inner_name = f"layer{layer_i}"
+                inner_layer = target_stage.children[inner_name]
+                inner_parameter_specs = stage_parameter_specs[inner_name]
+                if not isinstance(inner_layer, TransformerLayer):
+                    raise NotImplementedError(
+                        f"Expected TransformerLayer in Repeated(Stacked(...)), got {inner_layer}"
+                    )
+                ff_layer = inner_layer.feed_forward
+                ff_layer_parameter_specs = inner_parameter_specs["feed_forward"]
+                layer_spec = _LayerConversionSpec()
+                if isinstance(ff_layer, TransformerFeedForwardMoE):
+                    layer_spec = _LayerConversionSpec(
+                        num_experts=ff_layer.config.num_experts,
+                        moe_layer_parameter_specs=ff_layer_parameter_specs,
+                    )
+                stage_spec.append(layer_spec)
+            target_parameters["repeat"]["layer"] = _convert_repeated_dense_to_moe_parameters(
+                source_parameters["repeat"]["layer"],
+                num_stages=target_layer.config.num_layers,
+                stage_spec=stage_spec,
+            )
+            return target_parameters
+        else:
+            raise NotImplementedError(
+                f"Expected StackedTransformerLayer in Repeated(...), got {target_stage}"
+            )
+    else:
+        raise NotImplementedError(f"Expected RepeatedTransformerLayer, got {target_layer}")
