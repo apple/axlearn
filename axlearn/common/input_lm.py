@@ -118,7 +118,9 @@ def text_to_lm_training_input(
         """Chunks each jagged input window into a batch of equal-length training examples."""
         # A ragged tensor with dim 0 of size `window_size`.
         tokens = tokenize_example(
-            inputs["text"], sp_vocab=vocab, replace_newlines_with=replace_newlines_with
+            inputs["text"],
+            sp_vocab=vocab,
+            replace_newlines_with=replace_newlines_with,
         )
         # Append EOS to every sequence.
         eos_id = tf.constant(vocab.eos_id, dtype=tf.int32)
@@ -150,6 +152,16 @@ def text_to_lm_training_input(
         if is_training:
             # Repeat the input dataset.
             ds = ds.repeat()
+
+        # Ensure input text has a shape. Shape information can be lost if ds is created using a
+        # `tfds.decode.Decoder` (e.g., if `decoders` is not None in `input_tf_data.tfds_dataset`).
+        ds = ds.map(
+            lambda inputs: {
+                k: tf.ensure_shape(v, []) if k == "text" else v for k, v in inputs.items()
+            },
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+
         # Group into sets of `window_size` documents and map document groups into batched token
         # stream.
         ds = ds.batch(window_size, drop_remainder=True).map(

@@ -51,7 +51,7 @@ def create_vm(
         metadata: Optional metadata for the instance.
 
     Raises:
-        VMCreationError: If an exeption is raised on the creation request.
+        VMCreationError: If an exception is raised on the creation request.
         ValueError: If an invalid name is provided.
     """
     validate_resource_name(name)
@@ -142,7 +142,7 @@ def delete_vm(name: str, *, credentials: Credentials):
         credentials: Credentials to use when interacting with GCP.
 
     Raises:
-        VMDeletionError: If an exeption is raised on the deletion request.
+        VMDeletionError: If an exception is raised on the deletion request.
     """
     resource = _compute_resource(credentials)
     node = get_vm_node(name, resource)

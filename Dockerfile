@@ -42,7 +42,7 @@ RUN pip install --upgrade pip
 FROM base as ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
-RUN pip install .[dev,gcp,vertexai_tensorboard]
+RUN pip install .[core,dev,gcp,vertexai_tensorboard]
 COPY . .
 
 # Defaults to an empty string, i.e. run pytest against all files.
@@ -86,11 +86,26 @@ ENTRYPOINT ["/opt/apache/beam/boot"]
 
 FROM base AS tpu
 
+RUN apt-get install -y google-perftools
+
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN pip install .[tpu]
+COPY . .
+
+################################################################################
+# GPU container spec.                                                          #
+################################################################################
+
+FROM base AS gpu
+
+RUN apt-get install -y google-perftools
+
+# TODO(markblee): Support extras.
+ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+RUN pip install .[gpu]
 COPY . .
 
 ################################################################################

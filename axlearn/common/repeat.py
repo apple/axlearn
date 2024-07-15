@@ -160,6 +160,7 @@ class Repeat(BaseLayer):
 
         Args:
             fn: A function with args (carry, x) returning a dict(carry=..., y=...).
+                `fn` will be run in the context of `self.layer`.
             carry: a nested tensor for the iterative input of the 0'th sub-layer.
             xs: a nested tensor with separate inputs for each sub-layer,
                 where each leaf value T is a tensor of shape [num_layers, ...]
@@ -199,21 +200,8 @@ class Repeat(BaseLayer):
                     state=layer_context.state,
                 ),
                 drop_output=self._drop_output,
+                child_name_prefix="layer",
             )
 
-        this_output_collection = self.get_invocation_context().output_collection
-        layer_output = this_output_collection.add_child("layer")
-        layer_output.module_outputs.update(**layer_output_collection.module_outputs)
-        layer_output.state_updates.update(**layer_output_collection.state_updates)
-
-        # Each summary value in `layer_output_collection` has shape (num_layers, ...). For example,
-        # if a repeated layer outputs a scalar summary value, it will have shape [num_layers].
-        # Below we split the stacked values and output them separately under scope "layer{i}"
-        # so that scalar summaries can be handled correctly.
-        for i in range(num_layers):
-            layer_i_output = this_output_collection.add_child(f"layer{i}")
-            layer_i_output.summaries.update(
-                **jax.tree_util.tree_map(lambda x, i=i: x[i], layer_output_collection.summaries)
-            )
-
+        self.get_invocation_context().output_collection.update(layer_output_collection)
         return self.Output(carry=carry, ys=ys)

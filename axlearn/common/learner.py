@@ -251,7 +251,9 @@ class Learner(BaseLearner):
 
     def init(self, model_params: NestedOptParam) -> NestedTensor:
         update_types = self._update_types(model_params)
-        register_per_param_settings(update_types, description="learner_update_type")
+        register_per_param_settings(
+            update_types, description="learner_update_type", path=self.path()
+        )
         state = dict(
             optimizer=self.optimizer.init(self._get_optimizer_model_params(model_params)),
         )
@@ -541,7 +543,7 @@ class CompositeLearner(BaseLearner):
     def init(self, model_params: NestedOptParam) -> NestedTensor:
         cfg = self.config
         learner_tree = self._learner_tree(params=model_params)
-        register_per_param_settings(learner_tree, description="composite_learner")
+        register_per_param_settings(learner_tree, description="learner_rule", path=self.path())
         learner_state = {}
         for name in cfg.learners.keys():
             # Whether each parameter should apply the sub learner.

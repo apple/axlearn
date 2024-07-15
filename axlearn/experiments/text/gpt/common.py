@@ -11,10 +11,11 @@ See c4_trainer.py for how they are used.
 """
 
 import math
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Protocol, Sequence, Tuple, Union
 
 import jax.numpy as jnp
 import tensorflow as tf
+from jax.sharding import PartitionSpec
 
 from axlearn.common import (
     base_model,
@@ -30,7 +31,6 @@ from axlearn.common import (
 from axlearn.common.attention import (
     AttentionLogitBiasLayer,
     BaseQKVLinear,
-    CausalAttentionLogitBiasLayer,
     FusedQKVLinear,
     MultiheadAttention,
     RepeatedTransformerLayer,
@@ -40,6 +40,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import (
+    ConfigOr,
     FunctionConfigBase,
     InstantiableConfig,
     config_for_function,
@@ -50,11 +51,13 @@ from axlearn.common.decoder import Decoder
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.evaler import BaseMetricCalculator, ModelSummaryAccumulator, SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
+from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, set_norm_recursively
+from axlearn.common.optimizer_base import PartitionedGradientTransformation
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.summary_writer import BaseWriter
 from axlearn.common.trainer import MeshShape, SpmdTrainer
-from axlearn.common.utils import get_data_dir
+from axlearn.common.utils import HybridMeshShape, Nested, get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, tfds_text_source
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
@@ -69,7 +72,7 @@ STEP_DTYPE = jnp.bfloat16
 
 # The default mesh-axis names for LM training, from least to most communication intensive.
 # See mesh_shape_from_axes() docstring for more details.
-MESH_AXIS_NAMES = ("data", "expert", "fsdp", "seq", "model")
+MESH_AXIS_NAMES = ("pipeline", "data", "expert", "fsdp", "seq", "model")
 
 
 def scaled_hidden_dim(scale: float, *, round_up_to_multiples_of: int = 256) -> FunctionConfigBase:
@@ -79,6 +82,22 @@ def scaled_hidden_dim(scale: float, *, round_up_to_multiples_of: int = 256) -> F
     return config_for_function(scale_fn).set(
         scale=scale,
         round_up_to_multiples_of=round_up_to_multiples_of,
+    )
+
+
+def flash_attention_config() -> FlashAttention.Config:
+    """Builds a FlashAttention config with sharding config."""
+    return FlashAttention.default_config().set(
+        causal=True,
+        mha_dim_to_partition_spec={
+            "btnh": PartitionSpec(("data", "expert", "fsdp"), None, ("seq", "model"), None),
+            "bsnh": PartitionSpec(("data", "expert", "fsdp"), None, ("seq", "model"), None),
+            "bnts": PartitionSpec(("data", "expert", "fsdp"), None, None, None),
+        },
+        output_dim_to_partition_spec={
+            "btnh": PartitionSpec(("data", "expert", "fsdp"), "seq", "model", None),
+            "bnts": PartitionSpec(("data", "expert", "fsdp"), "model", "seq", None),
+        },
     )
 
 
@@ -132,12 +151,20 @@ def tfds_input(
 
 
 def mesh_shape_from_axes(
-    *, data: int = 1, expert: int = 1, fsdp: int = 1, seq: int = 1, model: int = 1
+    *,
+    pipeline: int = 1,
+    data: int = 1,
+    expert: int = 1,
+    fsdp: int = 1,
+    seq: int = 1,
+    model: int = 1,
 ) -> Sequence[int]:
     """Builds a 5D logical mesh from the provided spec.
 
     Args:
-        data: For data-paralellism. Expect model state to be fully replicated over this axis.
+        pipeline: Pipeline-paralellism. Typically means partitioning model layers across this axis.
+            E.g. <https://arxiv.org/abs/1811.06965>.
+        data: For data-parallelism. Expect model state to be fully replicated over this axis.
             Useful for e.g. multi-slice/granule partitioning with slow networking between granules.
         expert: Designed to be used for partitioning "experts" in mixture-of-expert models.
             E.g. <https://arxiv.org/abs/2006.16668>.
@@ -151,9 +178,37 @@ def mesh_shape_from_axes(
     Returns:
         A tuple describing the logical mesh shape (from least to most communication intensive).
     """
-    assert MESH_AXIS_NAMES == ("data", "expert", "fsdp", "seq", "model")
+    assert MESH_AXIS_NAMES == ("pipeline", "data", "expert", "fsdp", "seq", "model")
     # We set the minimum size for a mesh axis to 1 as anything lower is degenerate, except -1.
-    return tuple((max(x, 1) if x != -1 else -1 for x in [data, expert, fsdp, seq, model]))
+    return tuple((max(x, 1) if x != -1 else -1 for x in [pipeline, data, expert, fsdp, seq, model]))
+
+
+def update_model_remat_config(
+    *, stack_cfg: causal_lm.TransformerStackConfig, layer_cfg: TransformerLayer.Config
+):
+    """Recomputes and sets the remat_spec based on provided layer_cfg.
+
+    Only applied if the stack_cfg is a RepeatedTransformerLayer.
+
+    Args:
+        stack_cfg: The transformer stack config.
+        layer_cfg: The transformer layer config.
+
+    Raises:
+        NotImplementedError: If `stack_cfg.klass` is not a RepeatedTransformerLayer.
+    """
+    if stack_cfg.klass is not RepeatedTransformerLayer:
+        raise NotImplementedError(
+            f"Remat spec is not implemented for stack_cfg with klass={type(stack_cfg.klass)}"
+        )
+
+    if layer_cfg.self_attention.attention.klass is not FlashAttention:
+        # Enable remat to reduce memory usage for larger models.
+        remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg))
+    else:
+        # Checkpointing both ffn and attention to give the best performance.
+        remat_spec = build_remat_spec(stack_cfg, feed_forward=True, self_attention=True)
+    layer_cfg.set(remat_spec=remat_spec)
 
 
 def model_config(
@@ -168,9 +223,10 @@ def model_config(
     dropout_rate: float = 0.0,
     stack_cfg: causal_lm.TransformerStackConfig = RepeatedTransformerLayer.default_config(),
     emb_cfg: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config(),
-    attention_mask: AttentionLogitBiasLayer.Config = CausalAttentionLogitBiasLayer.default_config(),
+    layer_cfg: TransformerLayer.Config = TransformerLayer.default_config(),
     attention_cfg: MultiheadAttention.Config = MultiheadAttention.default_config(),
     attention_qkv_linear: Optional[BaseQKVLinear.Config] = FusedQKVLinear.default_config(),
+    attention_mask: Optional[AttentionLogitBiasLayer.Config] = None,
     z_loss_scale: float = 0.0,
     ffn_structure: str = "prenorm",
     atten_structure: str = "prenorm",
@@ -179,9 +235,9 @@ def model_config(
     """Returns an LM model config based on the given hyperparams.
 
     Args:
-        hidden_dim: The Transformer layer input/output dim.
+        hidden_dim: The transformer layer input/output dim.
         num_heads: The number of attention heads.
-        num_layers: The number of Transformer Layers.
+        num_layers: The number of transformer Layers.
         vocab_size: The vocabulary size.
         activation_fn: The activation function used for the feed-forward network.
         ffn_dim: The feed-forward dimension or function (e.g., returned by `scaled_hidden_dim`).
@@ -190,9 +246,11 @@ def model_config(
         dropout_rate: The dropout rate applied throughout the model.
             Defaults to 0.0 (i.e. no dropout).
         stack_cfg: The transformer stack config.
-        emb_cfg: The Transformer embedding layer config.
-        attention_mask: The AttentionLogitBiasLayer config.
+        emb_cfg: The transformer embedding layer config.
+        layer_cfg: The transformer layer config.
+        attention_cfg: The attention config.
         attention_qkv_linear: The attention QKV linear layer.
+        attention_mask: The AttentionLogitBiasLayer config.
         z_loss_scale: The scalar weight for the z-loss to encourages the cross-entropy loss
             normalizer to be well-behaved.
         ffn_structure: The inner structure of the feedforward layer.
@@ -205,7 +263,6 @@ def model_config(
     Returns:
         A causal LM config.
     """
-    layer_cfg = TransformerLayer.default_config()
     # Feed-forward.
     layer_cfg.feed_forward.activation = activation_fn
     layer_cfg.feed_forward.hidden_dim = ffn_dim
@@ -213,18 +270,18 @@ def model_config(
     # Attention.
     if attention_cfg is not None:
         layer_cfg.self_attention.attention = attention_cfg
+    layer_cfg.self_attention.attention.causal = True
     layer_cfg.self_attention.attention.num_heads = num_heads
     if attention_qkv_linear is not None:
         layer_cfg.self_attention.attention.input_linear = attention_qkv_linear
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
     if stack_cfg.klass is RepeatedTransformerLayer:
-        # Enable remat to reduce memory usage for larger models.
-        layer_cfg.remat_spec = build_remat_spec(stack_cfg)
+        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
     # Stack.
-    transformer_cls = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
+    transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(
-        transformer=transformer_cls,
+        transformer=transformer_cfg,
         attention_mask=attention_mask,
         dim=hidden_dim,
         vocab_size=vocab_size,
@@ -262,6 +319,38 @@ def model_config(
     return cfg
 
 
+def mup_simple_adam_update_transformation(scale_factor: float) -> InstantiableConfig:
+    """Builds a transform which scales the adam update for linear layers.
+
+    References:
+    - <https://arxiv.org/abs/2309.14322> Section 3.2.4.
+
+    Args:
+        scale_factor: The factor by which the update will be scaled for linear layers.
+
+    Returns:
+        A config that instantiates to a partitioned gradient transformation.
+    """
+    return config_for_function(optimizers.scale_update_per_param).set(
+        per_param_scale=config_for_function(optimizers.per_param_scale_by_path).set(
+            scale_by_path=[
+                (".*attention/o_proj/weight", scale_factor),
+                (".*attention/i_proj/i_proj/qkv_proj/weight", scale_factor),
+                # Dense FFN weights.
+                (".*feed_forward/linear1_0/weight", scale_factor),
+                (".*feed_forward/linear1_1/weight", scale_factor),
+                (".*feed_forward/linear2/weight", scale_factor),
+                # MoE FFN weights.
+                (".*feed_forward/wi_0_weight", scale_factor),
+                (".*feed_forward/wi_1_weight", scale_factor),
+                (".*feed_forward/wo_weight", scale_factor),
+            ],
+            description="scale_by_mup_simple",
+            default_scale=1.0,
+        )
+    )
+
+
 def learner_config(
     *,
     peak_lr: float,
@@ -272,6 +361,7 @@ def learner_config(
     b1: float = 0.9,
     b2: float = 0.95,
     eps: float = 1e-8,
+    adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
 ) -> learner.Learner.Config:
     """Build learner using the AdamW optimizer and a cosine lr schedule with linear warmup."""
     update_schedule = config_for_function(schedule.cosine_with_linear_warmup).set(
@@ -293,7 +383,7 @@ def learner_config(
                 update_schedule=update_schedule,
                 weight_decay=weight_decay,
                 weight_decay_per_param_scale=None,
-                adam_update_transformation=None,
+                adam_update_transformation=adam_update_transformation,
             ),
         ]
     )
@@ -448,7 +538,9 @@ def evaler_config_dict(
     return evalers
 
 
-def make_config_name(arch: str, model_size: str, version: Optional[str] = None) -> str:
+def make_config_name(
+    arch: str, model_size: str, *, version: Optional[str] = None, suffix: Optional[str] = None
+) -> str:
     """Makes config name string as a function of architecture and model-size.
 
     Useful to keep config names synced with fine-tuning configs.
@@ -457,13 +549,18 @@ def make_config_name(arch: str, model_size: str, version: Optional[str] = None) 
         arch: The architecture of the model.
         model_size: The number of transformer parameters (not including vocab embeddings).
         version: An optional version string.
+        suffix: Optional config suffix.
 
     Returns:
-        f"{arch}-{model_size}" or f"{arch}-{model_size}-{version}".
+        f"{arch}-{model_size}".
+        If version is supplied, a f"-{version}" suffix will be appended.
+        If suffix is supplied, it will be appended last (without any delimiter).
     """
     name = f"{arch}-{model_size}"
     if version:
         name += f"-{version}"
+    if suffix:
+        name += suffix
     return name
 
 
@@ -473,11 +570,11 @@ def get_trainer_config_fn(
     learner_cfg: learner.Learner.Config,
     max_step: int,
     train_batch_size: int,
-    mesh_shape: Sequence[int],
     train_input_source: InstantiableConfig[input_tf_data.BuildDatasetFn],
     evalers: Dict[str, SpmdEvaler.Config],
+    mesh_shape: Union[MeshShape, HybridMeshShape],
     mesh_axis_names: Sequence[str] = MESH_AXIS_NAMES,
-    mesh_rules: Optional[Sequence[Tuple[str, Optional[MeshShape]]]] = None,
+    mesh_rules: Optional[Sequence[Tuple[str, Optional[Union[MeshShape, HybridMeshShape]]]]] = None,
     eval_every_n_steps: int = 5000,
     eval_batch_size: Optional[int] = None,
     keep_every_n_steps: int = 50_000,
@@ -491,11 +588,11 @@ def get_trainer_config_fn(
         learner_cfg: The learner config.
         max_step: The maximum number of training steps.
         train_batch_size: The global batch size for training inputs.
-        mesh_shape: The mesh shape.
         train_input_source: A config (often constructed via `tfds_input` or
             `mixture_train_input_source`) that instantiates to a BuildDatasetFn.
         evalers: A dict whose keys represent evaler names and values are configs
             that each instantiates to a SpmdEvaler.
+        mesh_shape: The mesh shape.
         mesh_axis_names: The mesh axis names.
         mesh_rules: Optional rules to use different mesh shapes based on the mesh_selector.
         eval_every_n_steps: How often to run evaluation.
@@ -511,7 +608,7 @@ def get_trainer_config_fn(
     """
 
     def config_fn() -> InstantiableConfig:
-        cfg = SpmdTrainer.default_config()
+        cfg: SpmdTrainer.Config = SpmdTrainer.default_config()
         cfg.name = "gpt_trainer"
         cfg.model = model_cfg
         cfg.learner = learner_cfg
@@ -541,14 +638,18 @@ def get_trainer_config_fn(
         cfg.checkpointer.keep_every_n_steps = min(max_step, keep_every_n_steps)
         cfg.checkpointer.keep_last_n = 3
         cfg.summary_writer.write_every_n_steps = min(eval_every_n_steps, 100)
-        if mesh_shape:
-            assert len(mesh_axis_names) == len(
-                mesh_shape
-            ), f"Len mismatch: {mesh_axis_names} vs. {mesh_shape}"
-            cfg.mesh_axis_names = mesh_axis_names
-            cfg.mesh_shape = mesh_shape
-            # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism).
-            cfg.batch_axis_names = tuple(el for el in mesh_axis_names if el != "model")
+        if len(mesh_axis_names) != len(mesh_shape):
+            raise ValueError(
+                f"Number of mesh axis names ({mesh_axis_names}) "
+                f"must match number of mesh dims ({mesh_shape})."
+            )
+        cfg.mesh_axis_names = mesh_axis_names
+        cfg.mesh_shape = mesh_shape
+        # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism) and
+        # "pipeline" axis (for pipeline parallelism).
+        cfg.batch_axis_names = tuple(
+            el for el in mesh_axis_names if el not in ("model", "pipeline")
+        )
         cfg.mesh_rules = mesh_rules
         # Maybe load state.
         if init_state_builder:
@@ -556,3 +657,12 @@ def get_trainer_config_fn(
         return cfg
 
     return config_fn
+
+
+class SourceBuilder(Protocol):
+    """A protocol that builds an input source."""
+
+    def __call__(
+        self, *, vocab_size: int, max_sequence_length: int
+    ) -> Nested[ConfigOr[input_tf_data.BuildDatasetFn]]:
+        raise NotImplementedError(type(self))

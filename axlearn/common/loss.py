@@ -57,7 +57,7 @@ def _reduce_loss(
         loss: A [...] float tensor of arbitrary shape.
         reduction: The reduction method.
         sample_weight: A [...] float tensor, must be broadcastable to same shape as loss.
-        eps: A small number to prevent divison by zero.
+        eps: A small number to prevent division by zero.
 
     Returns:
         A float tensor:
@@ -99,7 +99,7 @@ def cross_entropy(
         / jnp.sum(live_targets, axis=-1)
     where targets is a categorical one-hot float array based on target_labels.
 
-    This function extends the T5X implmentation by supporting masked labels.
+    This function extends the T5X implementation by supporting masked labels.
 
     Ref: https://github.com/google-research/t5x/blob/90d74f/t5x/losses.py#L26
 
@@ -111,7 +111,7 @@ def cross_entropy(
         live_targets: Indicates which examples should contribute to the loss.
             A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
             contribute to the loss. If None, infer from 0 <= target_labels < num_classes.
-        z_loss_scale: Coefficient for auxilliary z-loss loss term.
+        z_loss_scale: Coefficient for auxiliary z-loss loss term.
         label_smoothing: The factor to control label smoothing.
         soft_target_labels: Optional labels that are already smoothed/in one-hot form. If provided,
             target_labels will only be used for inferring the live targets during loss calculation.
@@ -239,7 +239,7 @@ def _stable_cross_entropy(logits: Tensor, targets: Tensor, z_loss_scale: float) 
       logits: [..., num_classes] float array.
       targets: categorical one-hot targets [..., num_classes] float
         array.
-      z_loss_scale: coefficient for auxilliary z-loss loss term.
+      z_loss_scale: coefficient for auxiliary z-loss loss term.
 
     Returns:
       tuple with the total loss and the z_loss, both
@@ -250,7 +250,7 @@ def _stable_cross_entropy(logits: Tensor, targets: Tensor, z_loss_scale: float) 
     logits_sum = jax.scipy.special.logsumexp(logits, axis=-1, keepdims=True)
     log_softmax = logits - logits_sum
     cross_entropy_loss = -jnp.sum(targets * log_softmax, axis=-1)
-    # Add auxilliary z-loss term.
+    # Add auxiliary z-loss term.
     log_z = jnp.squeeze(logits_sum, axis=-1)
     total_z_loss = jax.lax.square(log_z)
     loss = cross_entropy_loss + total_z_loss * z_loss_scale
@@ -269,7 +269,7 @@ def _stable_cross_entropy_fwd(logits: Tensor, targets: Tensor, z_loss_scale: flo
     sum_exp = jnp.sum(exp_shifted, axis=-1, keepdims=True)
     log_softmax = shifted - jnp.log(sum_exp)
     cross_entropy_loss = -jnp.sum(targets * log_softmax, axis=-1)
-    # Add auxilliary z-loss term.
+    # Add auxiliary z-loss term.
     log_z = jnp.squeeze(jnp.log(sum_exp) + max_logit, axis=-1)
     total_z_loss = jax.lax.square(log_z)
     loss = cross_entropy_loss + total_z_loss * z_loss_scale
@@ -733,7 +733,7 @@ def categorical_hinge_loss(
             targets must be of the same size of logits.
 
     Returns:
-        A tensor of the  shape [...] which accumlates the hinge loss over all categories.
+        A tensor of the  shape [...] which accumulates the hinge loss over all categories.
 
     Reference:
         https://github.com/keras-team/keras/blob/v2.11.0/keras/losses.py#L1833-L1865
@@ -946,7 +946,7 @@ def giou_loss(
             Box format is y1, x1, y2, x2.
         reduction: The reduction method on the final loss.
         sample_weight: A float tensor of shape [...] normalizes per sample loss.
-        eps: Small number to prevent divison by zero.
+        eps: Small number to prevent division by zero.
 
     Returns:
         A float32 tensor representing the loss.

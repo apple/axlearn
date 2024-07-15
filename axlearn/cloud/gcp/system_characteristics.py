@@ -452,3 +452,10 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
         "N/A", 2048, "N/A", "n2-standard-32", 1, AcceleratorType["CPU"], "n2-standard-32-2048"
     ),
 }
+
+# Reference doc https://cloud.google.com/tpu/docs/tpus-in-gke.
+GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS = {
+    "ct5p-hightpu-4t": 448,
+    "ct4p-hightpu-4t": 407,
+    "ct5lp-hightpu-4t": 192,
+}

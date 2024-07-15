@@ -8,7 +8,7 @@
 
 """Attention layers for ViT variant vision transformers."""
 import math
-from typing import Dict, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, NamedTuple, Optional, Sequence, Set, Tuple
 
 import jax.nn
 from jax import numpy as jnp
@@ -16,6 +16,7 @@ from jax import numpy as jnp
 from axlearn.common import param_init
 from axlearn.common.attention import (
     BaseStackedTransformerLayer,
+    KVState,
     MultiheadAttention,
     TransformerAttentionLayer,
     softmax_with_biases,
@@ -165,6 +166,7 @@ class WindowedAttention(MultiheadAttention):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> MultiheadAttention.Output:
         """Computes self-windowed attention for the given query and attention logit biases.
 
@@ -175,6 +177,7 @@ class WindowedAttention(MultiheadAttention):
             key:   an optional Tensor of shape [batch, source_length, source_dim].
             value: an optional Tensor of shape [batch, source_length, source_dim].
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
+            return_aux: See comments in MultiheadAttention.Output.
 
         Returns:
             An Output instance, where .data is of the same shape as query and .probs is of shape
@@ -223,7 +226,13 @@ class WindowedAttention(MultiheadAttention):
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
-        return self.Output(data=outputs, probs=probs)
+        kv_state = KVState(k_proj=k_proj, v_proj=v_proj)
+        return_aux = return_aux or set()
+        return self.Output(
+            data=outputs,
+            probs=probs if "probs" in return_aux else None,
+            kv_state=kv_state if "kv_state" in return_aux else None,
+        )
 
 
 class WindowedSelfAttentionLayer(TransformerAttentionLayer):
@@ -245,6 +254,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
         target: Tensor,
         source: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> TransformerAttentionLayer.Output:
         """Computes attention with target as query and source as key and value.
 
@@ -252,6 +262,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
             target: a Tensor of shape [batch, target_length, target_dim].
             source: None, uses norm(target) as source for self-attention
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
+            return_aux: See comments in TransformerAttentionLayer.Output.
 
         Returns:
             An Output instance, where .data is of the same shape as target and .probs is of shape
@@ -276,6 +287,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
                 key=source,
                 value=source,
                 attention_logit_biases=attention_logit_biases,
+                return_aux=return_aux,
             )
             x = atten_output.data
 
@@ -289,7 +301,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
             data = skip_input + self.stochastic_depth(self.dropout(x))
         else:
             raise NotImplementedError(cfg.structure)
-        return self.Output(data=data, probs=atten_output.probs)
+        return self.Output(data=data, probs=atten_output.probs, kv_state=atten_output.kv_state)
 
 
 class StackedWindowedTransformerLayer(BaseStackedTransformerLayer):

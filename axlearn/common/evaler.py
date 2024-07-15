@@ -234,7 +234,7 @@ class BaseMetricCalculator(Module):
             self._model.method(...).
         """
         # Shard and (possibly) dispatch the input batch.
-        input_batch = utils.dispatch_input_batch(input_batch)
+        input_batch = self._dispatch_global_batch(input_batch)
         model_inputs = dict(
             input_batch=self._eval_cast(input_batch),
             **kwargs,
@@ -249,8 +249,16 @@ class BaseMetricCalculator(Module):
             is_training=False,
         )
 
+    def _dispatch_global_batch(self, input_batch: NestedTensor) -> NestedTensor:
+        module = self.parent
+        while module is not None and not isinstance(module, SpmdEvaler):
+            module = module.parent
+        if module is not None and hasattr(module.input, "dispatch_global_batch"):
+            input_batch = module.input.dispatch_global_batch(input_batch)
+        return input_batch
+
     def formatted_metric_name(self, metric_name):
-        """Prepand the prefix to the metric_name."""
+        """Prepend the prefix to the metric_name."""
         if self.config.prefix is not None:
             return f"{self.config.prefix}/{metric_name}"
         else:

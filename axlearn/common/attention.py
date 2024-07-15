@@ -39,12 +39,13 @@ On `attention_logit_biases`:
   (therefore a -inf represents a disconnected position pair).
 * biases=None represents an all-zero tensor, i.e., all position pairs are connected.
 """
+
 # pylint: disable=abstract-method,too-many-lines
 import enum
 import functools
 import math
 from enum import Enum, unique
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 import jax
 from jax import numpy as jnp
@@ -92,6 +93,7 @@ from axlearn.common.utils import (
     Tensor,
     VDict,
     check_numerics,
+    flatten_items,
     get_or_none,
     shapes,
     split_prng_key,
@@ -116,6 +118,13 @@ class ForwardMode(enum.Enum):
     EXTEND_STEP = 2
 
 
+class KVState(NamedTuple):
+    """Represents key/value projections, of shape [batch, source_length, num_kv_heads, head_dim]."""
+
+    k_proj: Tensor
+    v_proj: Tensor
+
+
 class BaseTransformerLayer(BaseLayer):
     """An abstract class to define the common interface of all *TransformerLayer classes, including:
 
@@ -131,34 +140,47 @@ class BaseTransformerLayer(BaseLayer):
         input_dim: Required[int] = REQUIRED  # Input feature dim.
 
     class Output(NamedTuple):
-        """BaseTransformerLayer output."""
+        """BaseTransformerLayer output.
 
-        # [batch, target_length, input_dim]. The layer output.
+        Fields:
+            data: [batch, target_length, input_dim]. The layer output. Always present.
+
+            self_attention_probs: The attention probabilities returned by the self-attention layer.
+                Shape: [..., target_length, target_length].
+
+                self_attention_probs[..., i, j] represents self-attention probability on
+                input data[..., j, :] when computing output data[..., i, :].
+                self_attention_probs.sum(axis=-1) equals to all 1's.
+
+                Present if "self_attention_probs" is in `return_aux`.
+
+            self_attention_kv_state: The KV state used in self-attention.
+                Present if "self_attention_kv_state" is in `return_aux`.
+
+            cross_attention_probs: The attention probabilities returned by the cross-attention
+                layer. Shape: [..., target_length, source_length].
+
+                If not None, cross_attention_probs[..., i, j] represents attention probability on
+                cross_attention_data[..., j, :] when computing output data[..., i, :].
+                cross_attention_probs.sum(axis=-1) equals to all 1's.
+
+                Present if "cross_attention_probs" is in `return_aux`.
+        """
+
         data: Tensor
-
-        # The attention probabilities returned by the self-attention layer.
-        # Shape: [..., target_length, target_length].
-        #
-        # self_attention_probs[..., i, j] represents self-attention probability on
-        # input data[..., j, :] when computing output data[..., i, :].
-        # self_attention_probs.sum(axis=-1) equals to all 1's.
-        self_attention_probs: Tensor
-
-        # The attention probabilities returned by the cross-attention layer.
-        # Shape: [..., target_length, source_length].
-        #
-        # If not None, cross_attention_probs[..., i, j] represents attention probability on
-        # cross_attention_data[..., j, :] when computing output data[..., i, :].
-        # cross_attention_probs.sum(axis=-1) equals to all 1's.
-        cross_attention_probs: Optional[Tensor]
+        self_attention_probs: Optional[Tensor] = None
+        self_attention_kv_state: Optional[KVState] = None
+        cross_attention_probs: Optional[Tensor] = None
 
     def forward(
         self,
         data: Tensor,
         *,
+        self_attention_kv_state: Optional[KVState] = None,
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> Output:
         """Computes transformer layer outputs given full-sequence inputs.
 
@@ -167,24 +189,36 @@ class BaseTransformerLayer(BaseLayer):
         See comments at the beginning of this file for semantics of *_attention_logit_biases.
 
         Args:
-            data: a Tensor of shape [batch, target_length, input_dim].
-            self_attention_logit_biases: an optional Tensor representing the self-attention biases.
-            cross_attention_data: an optional Tensor representing cross-attention data of shape
+            data: A Tensor of shape [batch, target_length, input_dim].
+            self_attention_kv_state: An optional KVState used for self-attention.
+            self_attention_logit_biases: An optional Tensor representing the self-attention biases.
+            cross_attention_data: An optional Tensor representing cross-attention data of shape
                 [source_batch, source_length, source_dim].
-            cross_attention_logit_biases: an optional Tensor representing the cross-attention
+            cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
+            return_aux: A set of auxiliary output fields to return. Each element must be an
+                optional field of `Output`, e.g.,
+                `return_aux = {"self_attention_probs", "self_attention_kv_state"}` means that
+                `Output.{self_attention_probs, self_attention_kv_state}` will be populated.
 
         Returns:
             BaseTransformerLayer.Output.
         """
         raise NotImplementedError(type(self))
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
+    def init_states(
+        self,
+        *,
+        target_batch_size: int,
+        target_max_len: int,
+        self_attention_kv_state: Optional[KVState] = None,
+    ) -> NestedTensor:
         """Initializes cached states for incremental computation.
 
         Args:
             target_batch_size: The batch size for target sequences.
             target_max_len: The maximum number of tokens in a target sequence.
+            self_attention_kv_state: An optional KVState used for self-attention.
 
         Returns:
             A nested tree of Tensors, which can be used as `cached_states` for the initial call
@@ -197,6 +231,7 @@ class BaseTransformerLayer(BaseLayer):
         *,
         time_step: Tensor,
         data: Tensor,
+        self_attention_kv_state: Optional[KVState] = None,
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
@@ -211,6 +246,7 @@ class BaseTransformerLayer(BaseLayer):
                 indicating where decoding will start from.
             data: A Tensor of shape [batch, target_length, input_dim]. For batch index `i`, only
                 `data[i, :time_step[i], ...]` will affect subsequent decoding.
+            self_attention_kv_state: An optional KVState used for self-attention.
             self_attention_logit_biases: An optional Tensor representing the self-attention biases.
             cross_attention_data: An optional Tensor representing cross-attention data of shape
                 [batch, source_length, source_dim].
@@ -231,6 +267,7 @@ class BaseTransformerLayer(BaseLayer):
         cached_states: NestedTensor,
         data: Tensor,
         *,
+        self_attention_kv_state: Optional[KVState] = None,
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
@@ -238,17 +275,18 @@ class BaseTransformerLayer(BaseLayer):
         """Computes incremental outputs.
 
         Args:
-            cached_states: a NestedTensor returned by `init_states()` or a previous invocation of
+            cached_states: A NestedTensor returned by `init_states()` or a previous invocation of
                 `extend_step()`.
-            data: a Tensor of shape [target_batch_size, target_step_length, input_dim], where
+            data: A Tensor of shape [target_batch_size, target_step_length, input_dim], where
                 `target_step_length` is usually 1. For self-attention, `data` will be used as the
                 `query` sequence and will be appended to key and value sequences.
-            self_attention_logit_biases: an optional Tensor of shape
+            self_attention_kv_state: An optional KVState used for self-attention.
+            self_attention_logit_biases: An optional Tensor of shape
                 [..., target_step_length, target_max_len], where `target_step_length` must match
                 the shape of `data` and `target_max_len` must match the value given for
                 `init_states()`.
-            cross_attention_data: an optional Tensor of shape [..., source_length, source_dim].
-            cross_attention_logit_biases: an optional Tensor of shape
+            cross_attention_data: An optional Tensor of shape [..., source_length, source_dim].
+            cross_attention_logit_biases: An optional Tensor of shape
                 [..., target_step_length, source_length], where `target_step_length` must match
                 the shape of `data`.
 
@@ -265,7 +303,7 @@ def make_causal_mask(seq_len: int) -> Tensor:
     """Generates attention logit biases for causal masking.
 
     Args:
-        seq_len: sequence length.
+        seq_len: Sequence length.
 
     Returns:
         A float tensor of shape [seq_len, seq_len] where the value at [i, j] = -inf if i < j,
@@ -339,6 +377,16 @@ class LearnedPositionalEmbedding(BaseLayer):
             )
         )
 
+    def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
+        if not name.endswith("weight"):
+            return None
+        if len(parameter_spec.shape) != 3:
+            raise NotImplementedError(
+                "_compute_fan_axes requires weight parameters to have exactly 3 axes "
+                f"shape({name}) = {parameter_spec.shape}"
+            )
+        return FanAxes(batch_axis=0, in_axis=1, out_axis=2)
+
     def embeddings(self) -> Tensor:
         """Returns weights of shape cfg.shape + [dim]."""
         return self.parameters["weight"].squeeze(0)
@@ -346,7 +394,7 @@ class LearnedPositionalEmbedding(BaseLayer):
     def forward(self, positions: Tensor) -> Tensor:
         """
         Args:
-            positions: an integer tensor with arbitrary shape [...].
+            positions: An integer tensor with arbitrary shape [...].
 
         Returns:
             Embeddings with shape [..., *cfg.dim[1:], dim].
@@ -373,11 +421,11 @@ def sinusoidal_positional_embeddings(
     Specifically: timescale(0) = min_timescale and timescale(num_timescales) = max_timescale.
 
     Args:
-        positions: an integer tensor of any shape [...]. Each value represents an
+        positions: An integer tensor of any shape [...]. Each value represents an
             absolute or relative position.
         dim: the embedding dimension. Must be divisible by 2.
-        min_timescale: the minimum timescale (used for channel 0 and dim // 2).
-        max_timescale: the maximum timescale (used for channel dim // 2 - 1 and dim - 1).
+        min_timescale: The minimum timescale (used for channel 0 and dim // 2).
+        max_timescale: The maximum timescale (used for channel dim // 2 - 1 and dim - 1).
 
     Returns:
         Embeddings of shape [..., dim].
@@ -529,8 +577,8 @@ def apply_attention_logit_biases(
     """Applies `attention_logit_biases` on `logits`.
 
     Args:
-        logits: a float Tensor.
-        attention_logit_biases: a float Tensor. If None, assume all zeros.
+        logits: A float Tensor.
+        attention_logit_biases: A float Tensor. If None, assume all zeros.
 
     Returns:
         logits + attention_logit_biases, in logits.dtype.
@@ -544,8 +592,8 @@ def softmax_with_biases(logits: Tensor, attention_logit_biases: Optional[Tensor]
     """Computes softmax with optional masking.
 
     Args:
-        logits: a Tensor of any shape.
-        attention_logit_biases: a Tensor that is broadcastable with logits.
+        logits: A Tensor of any shape.
+        attention_logit_biases: A Tensor that is broadcastable with logits.
             See ``On attention logit biases`` in the file comments.
 
     Returns:
@@ -560,6 +608,31 @@ def softmax_with_biases(logits: Tensor, attention_logit_biases: Optional[Tensor]
     probs = jax.nn.softmax(logits, axis=-1)
     if probs.dtype != logits_dtype:
         probs = probs.astype(logits_dtype)
+    check_numerics(probs)
+    return probs
+
+
+def sigmoid_with_biases(
+    logits: Tensor,
+    attention_logit_biases: Optional[Tensor] = None,
+) -> Tensor:
+    """Computes sigmoid with optional masking.
+
+    Args:
+        logits: A Tensor of any shape.
+        attention_logit_biases: A Tensor that is broadcastable with logits.
+            See ``On attention logit biases`` in the file comments.
+
+    Returns:
+        A Tensor of same shape and dtype as logits.
+    """
+    check_numerics(logits)
+    logits = apply_attention_logit_biases(logits, attention_logit_biases)
+    # Avoid computing sigmoid in 16-bit floats.
+    logits_dtype = logits.dtype
+    if logits_dtype in (jnp.bfloat16, jnp.float16):
+        logits = logits.astype(jnp.float32)
+    probs = jax.nn.sigmoid(logits)
     check_numerics(probs)
     return probs
 
@@ -599,7 +672,13 @@ class BaseQKVLinear(BaseLayer):
     def num_kv_heads(self):
         raise NotImplementedError(type(self))
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
+    def init_states(
+        self,
+        *,
+        target_batch_size: int,
+        target_max_len: int,
+        kv_state: Optional[KVState] = None,
+    ) -> NestedTensor:
         cfg = self.config
         # Default to base layer dtype for initialization if cache_dtype is None.
         dtype = cfg.cache_dtype or cfg.dtype
@@ -608,17 +687,19 @@ class BaseQKVLinear(BaseLayer):
         # advantage of TPU optimizations (see `extend_step`).
         # Reference:
         # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
-        cache = dict(
-            key=jnp.zeros(
-                shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
-                dtype=dtype,
-            ),
-            value=jnp.zeros(
-                shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
-                dtype=dtype,
-            ),
-            time_step=jnp.zeros(target_batch_size, dtype=jnp.int32),
-        )
+        cache = dict(time_step=jnp.zeros(target_batch_size, dtype=jnp.int32))
+        # If `kv_state` is provided externally, we do not have to maintain key/value in cache.
+        if kv_state is None:
+            cache.update(
+                key=jnp.zeros(
+                    shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
+                    dtype=dtype,
+                ),
+                value=jnp.zeros(
+                    shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
+                    dtype=dtype,
+                ),
+            )
         # TODO(sneha,markblee): Add sharding annotations for all elements in the cache.
         return cache
 
@@ -628,17 +709,19 @@ class BaseQKVLinear(BaseLayer):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
         time_step: Optional[Tensor] = None,
     ) -> Output:
         """Computes per-head query, key, and value for the input query, key, value.
 
         Args:
-            query: a Tensor of shape [batch, target_length, target_dim].
+            query: A Tensor of shape [batch, target_length, target_dim].
             key:   an optional Tensor of shape [batch, source_length, source_dim].
                    If None, will use `query`.
-            value: an optional Tensor of shape [batch, source_length, source_dim].
+            value: An optional Tensor of shape [batch, source_length, source_dim].
                    If None, will use `query`.
-            time_step: an optional Tensor of shape [batch]. If None, will ignore.
+            kv_state: An optional KVState. If not None, both key and value must be None.
+            time_step: An optional Tensor of shape [batch]. If None, will ignore.
 
         Returns:
             An Output instance, where query is of size
@@ -654,6 +737,7 @@ class BaseQKVLinear(BaseLayer):
         query: Tensor,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
     ) -> Tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -670,6 +754,7 @@ class BaseQKVLinear(BaseLayer):
                 `query`.
             value: An optional Tensor of shape [batch, source_length, source_dim]. If None, will
                 use `query`.
+            kv_state: An optional KVState. If not None, both key and value must be None.
 
         Returns:
             A `NestedTensor` state of `key`, `value` of shape
@@ -682,27 +767,36 @@ class BaseQKVLinear(BaseLayer):
         # Default to base layer dtype for initialization if cache_dtype is None.
         dtype = cfg.cache_dtype or cfg.dtype
 
+        if kv_state is not None:
+            if key is not None or value is not None:
+                raise ValueError("kv_state should not be specified together with key/value")
+            kv_kwargs = dict(kv_state=kv_state)
+        else:
+            kv_kwargs = dict(key=key, value=value)
         # In the prefill state, the time_step filtering is not provided in the QKV forward function,
         # but in the time_step_mask defined below.
         # Therefore, time_step argument for the forward is set as None.
-        q_proj, k_proj, v_proj = self.forward(query, key=key, value=value)
+        q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs)
 
-        # Zero-out everything from time_step onwards. Being able to assume that non-filled cache
-        # values are 0 allows us to do a slightly more efficient update to `cached_{key,value}` in
-        # `extend_step`, by doing a simple add instead of a mask + add.
-        time_step_mask = (jnp.arange(k_proj.shape[1]) < time_step[:, None])[..., None, None]
-        k_proj = k_proj * time_step_mask
-        v_proj = v_proj * time_step_mask
+        init_state = dict(time_step=time_step)
+        # If external kv_state is provided, we don't need to maintain key/value in cached_state.
+        if kv_state is None:
+            # Zero-out everything from time_step onwards.
+            # Being able to assume that non-filled cache values are 0 allows us to do a slightly
+            # more efficient update to `cached_{key,value}` in `extend_step`, by doing a simple add
+            # instead of a mask + add.
+            time_step_mask = (jnp.arange(k_proj.shape[1]) < time_step[:, None])[..., None, None]
+            k_proj = k_proj * time_step_mask
+            v_proj = v_proj * time_step_mask
 
-        # Following T5X, we cache key, value as [batch, num_heads, head_dim, seq_len] to take
-        # advantage of TPU optimizations (see `extend_step`).
-        # Reference:
-        # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
-        init_state = dict(
-            key=jnp.moveaxis(k_proj, -3, -1).astype(dtype),
-            value=jnp.moveaxis(v_proj, -3, -1).astype(dtype),
-            time_step=time_step,
-        )
+            # Following T5X, we cache key, value as [batch, num_heads, head_dim, seq_len] to take
+            # advantage of TPU optimizations (see `extend_step`).
+            # Reference:
+            # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
+            init_state.update(
+                key=jnp.moveaxis(k_proj, -3, -1).astype(dtype),
+                value=jnp.moveaxis(v_proj, -3, -1).astype(dtype),
+            )
         return init_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
 
     def extend_step(
@@ -712,6 +806,7 @@ class BaseQKVLinear(BaseLayer):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
     ) -> Tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -730,6 +825,7 @@ class BaseQKVLinear(BaseLayer):
                 `query`.
             value: An optional Tensor of shape [batch, source_length, source_dim]. If None, will
                 use `query`.
+            kv_state: An optional KVState. If not None, both key and value must be None.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -740,33 +836,41 @@ class BaseQKVLinear(BaseLayer):
         time_step = cached_states["time_step"]
         assert time_step.ndim == 1
 
+        if kv_state is not None:
+            if key is not None or value is not None:
+                raise ValueError("kv_state should not be specified together with key/value")
+            kv_kwargs = dict(kv_state=kv_state)
+        else:
+            kv_kwargs = dict(key=key, value=value)
         # Project inputs to key, value and query. Each has shape [B, 1, N, H].
-        q_proj, k_proj, v_proj = self.forward(query, key=key, value=value, time_step=time_step)
+        q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, time_step=time_step)
 
-        # Move the length axis to the back. This allows us to update the cache key, value with
-        # the "scatter via one-hot broadcast" trick, rather than a scatter/gather operation.
-        # Profiling suggests moveaxis is competitive with tweaking einsum in `i_proj` -- it's
-        # also a bit simpler, so we keep it for now.
-        # [B, 1, N, H] --> [B, N, H, 1].
-        k_proj = jnp.moveaxis(k_proj, -3, -1)
-        v_proj = jnp.moveaxis(v_proj, -3, -1)
+        updated_state = dict(time_step=time_step + 1)
+        if kv_state is None:
+            # Move the length axis to the back. This allows us to update the cache key, value with
+            # the "scatter via one-hot broadcast" trick, rather than a scatter/gather operation.
+            # Profiling suggests moveaxis is competitive with tweaking einsum in `i_proj` -- it's
+            # also a bit simpler, so we keep it for now.
+            # [B, 1, N, H] --> [B, N, H, 1].
+            k_proj = jnp.moveaxis(k_proj, -3, -1)
+            v_proj = jnp.moveaxis(v_proj, -3, -1)
 
-        # Update the cache via one-hot broadcast and addition.
-        cached_key = cached_states["key"]
-        cached_value = cached_states["value"]
-        target_len = cached_key.shape[-1]
-        oh_indices = jax.nn.one_hot(time_step, target_len, dtype=k_proj.dtype)
-        # [B, 1, 1, T] to broadcast.
-        oh_indices = oh_indices[:, None, None, :]
-        # Ensure that we accumulate in original dtype.
-        new_k_proj = cached_key + (k_proj * oh_indices).astype(cached_key.dtype)
-        new_v_proj = cached_value + (v_proj * oh_indices).astype(cached_value.dtype)
+            # Update the cache via one-hot broadcast and addition.
+            cached_key = cached_states["key"]
+            cached_value = cached_states["value"]
+            target_len = cached_key.shape[-1]
+            oh_indices = jax.nn.one_hot(time_step, target_len, dtype=k_proj.dtype)
+            # [B, 1, 1, T] to broadcast.
+            oh_indices = oh_indices[:, None, None, :]
+            # Ensure that we accumulate in original dtype.
+            new_k_proj = cached_key + (k_proj * oh_indices).astype(cached_key.dtype)
+            new_v_proj = cached_value + (v_proj * oh_indices).astype(cached_value.dtype)
 
-        # Move back to original [B, T, N, H] layout.
-        k_proj = jnp.moveaxis(new_k_proj, -1, -3)
-        v_proj = jnp.moveaxis(new_v_proj, -1, -3)
+            # Move back to original [B, T, N, H] layout.
+            k_proj = jnp.moveaxis(new_k_proj, -1, -3)
+            v_proj = jnp.moveaxis(new_v_proj, -1, -3)
 
-        updated_state = dict(key=new_k_proj, value=new_v_proj, time_step=time_step + 1)
+            updated_state.update(key=new_k_proj, value=new_v_proj)
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
@@ -847,6 +951,50 @@ class GroupedQKVLinear(QKVLinear):
     @property
     def num_kv_heads(self):
         return self.config.num_kv_heads
+
+
+class QLinear(BaseQKVLinear):
+    """Maps input query to multi-headed output query. Assumes external KVState."""
+
+    @config_class
+    class Config(BaseQKVLinear.Config):
+        """Configures for QKVLinear."""
+
+        # The layer used to project.
+        layer: MultiheadInputLinear.Config = MultiheadInputLinear.default_config()
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        proj_cfg = cfg.layer
+        proj_cfg.model_dim = cfg.query_dim
+        proj_cfg.num_heads = cfg.num_heads
+        proj_cfg.per_head_dim = cfg.per_head_dim
+        self._add_child("q_proj", proj_cfg)
+
+    @property
+    def num_kv_heads(self):
+        raise NotImplementedError(type(self))
+
+    def forward(
+        self,
+        query: Tensor,
+        *,
+        kv_state: KVState,
+        key: Optional[Tensor] = None,
+        value: Optional[Tensor] = None,
+        time_step: Optional[Tensor] = None,
+    ) -> BaseQKVLinear.Output:
+        """Computes projects for the given query. Uses {k,v}_proj from `kv_state`.
+
+        See parent class for full docstring.
+        """
+        if kv_state is None or key is not None or value is not None:
+            raise ValueError(
+                f"Only kv_state is expected: key={key}, value={value}, kv_state={kv_state}"
+            )
+        q_proj = self.q_proj(query)
+        return self.Output(query=q_proj, key=kv_state.k_proj, value=kv_state.v_proj)
 
 
 class FusedQKVLinear(BaseQKVLinear):
@@ -1447,6 +1595,9 @@ class MultiheadAttention(BaseLayer):
         key_scale: BaseScaleQK.Config = ScaleKey.default_config()
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = None
+        # If True, applies causal masking. If `attention_logit_biases` is given, causal masking
+        # will be applied on top of the biases. `key` and `value` must be None.
+        causal: Optional[bool] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1488,10 +1639,19 @@ class MultiheadAttention(BaseLayer):
         return hidden_dim // cfg.num_heads
 
     class Output(NamedTuple):
-        # [batch, target_length, output_dim]. The attention output.
+        """Outputs of MultiheadAttention.
+
+        Fields:
+            data: [batch, target_length, output_dim]. The attention output. Always present.
+            probs: [batch, num_heads, target_length, source_length]. The attention probabilities.
+                Populated if "probs" is in `return_aux`.
+            kv_state: The KV state used for computing the attention outputs.
+                Populated if "kv_state" is in `return_aux`.
+        """
+
         data: Tensor
-        # [batch, num_heads, target_length, source_length]. The attention probabilities.
-        probs: Tensor
+        probs: Optional[Tensor] = None
+        kv_state: Optional[KVState] = None
 
     def _forward_for_mode(
         self,
@@ -1500,8 +1660,10 @@ class MultiheadAttention(BaseLayer):
         query: Tensor,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> Tuple[Optional[NestedTensor], Output]:
         """Computes attention for the given query, key, value, and attention logit biases.
 
@@ -1513,8 +1675,10 @@ class MultiheadAttention(BaseLayer):
             query: A Tensor of shape [batch, target_length, target_dim].
             key:   An optional Tensor of shape [batch, source_length, source_dim].
             value: An optional Tensor of shape [batch, source_length, source_dim].
+            kv_state: An optional KVState. If specified, both `key` and `value` should be None.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
+            return_aux: See comments on `Output`.
 
         Returns:
             An optional NestedTensor of cache states, depending on `mode`.
@@ -1525,27 +1689,38 @@ class MultiheadAttention(BaseLayer):
             ValueError: If key & value are an invalid combination.
             ValueError: If `mode` is unsupported.
         """
+        cfg = self.config
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
                 "key and value must be both None or both set, "
                 f"key:{type(key)}, value:{type(value)}"
             )
+        if cfg.causal and (key is not None or value is not None):
+            raise ValueError("key and value are not expected when causal=True")
+        if kv_state is not None:
+            if key is not None or value is not None:
+                raise ValueError("kv_state should not be specified together with key/value")
+            kv_kwargs = dict(kv_state=kv_state)
+        else:
+            kv_kwargs = dict(key=key, value=value)
+
         if mode == ForwardMode.FORWARD:
-            i_proj_state, (q_proj, k_proj, v_proj) = None, self.i_proj(query, key=key, value=value)
+            i_proj_state, (q_proj, k_proj, v_proj) = None, self.i_proj(query, **kv_kwargs)
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
             i_proj_state, (q_proj, k_proj, v_proj) = self.i_proj.prefill_states(
-                time_step=cached_states["i_proj"], query=query, key=key, value=value
+                time_step=cached_states["i_proj"], query=query, **kv_kwargs
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
             i_proj_state, (q_proj, k_proj, v_proj) = self.i_proj.extend_step(
-                cached_states["i_proj"], query, key=key, value=value
+                cached_states["i_proj"], query, **kv_kwargs
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
 
+        kv_state = KVState(k_proj=k_proj, v_proj=v_proj)
         q_proj = self._remat_name(q_proj, "q_proj")
         k_proj = self._remat_name(k_proj, "k_proj")
         v_proj = self._remat_name(v_proj, "v_proj")
@@ -1555,6 +1730,27 @@ class MultiheadAttention(BaseLayer):
         if attention_logit_biases is not None and attention_logit_biases.ndim == 3:
             # [batch, 1, target_length, source_length].
             attention_logit_biases = attention_logit_biases[:, None, :, :]
+        if cfg.causal:
+            if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
+                causal_mask = self._causal_mask(seq_len=q_proj.shape[1])
+            elif mode == ForwardMode.EXTEND_STEP:
+                # [batch], representing query time_step.
+                time_step = cached_states["i_proj"]["time_step"]
+                kv_len = k_proj.shape[1]
+                indexes = jnp.arange(kv_len)
+                # [batch, 1, 1, kv_len].
+                # causal_mask[b, :, :, kv_pos] = 0 if kv_pos <= time_step[b] else NEG_INF.
+                causal_mask = (
+                    jax.lax.lt(time_step[:, None, None, None], indexes[None, None, None, :])
+                    * NEG_INF
+                )
+            else:
+                raise ValueError(f"Unrecognized mode {mode}.")
+            if causal_mask is not None:
+                attention_logit_biases = apply_attention_logit_biases(
+                    causal_mask.astype(q_proj.dtype),
+                    attention_logit_biases,
+                )
         context, probs = self._compute_attention(
             q_proj=q_proj,
             k_proj=k_proj,
@@ -1568,7 +1764,22 @@ class MultiheadAttention(BaseLayer):
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
         self._add_tensor_stats("o_proj_outputs", outputs)
-        return dict(i_proj=i_proj_state), self.Output(data=outputs, probs=probs)
+        return_aux = return_aux or set()
+        output = self.Output(
+            data=outputs,
+            probs=probs if "probs" in return_aux else None,
+            kv_state=kv_state if "kv_state" in return_aux else None,
+        )
+        return dict(i_proj=i_proj_state), output
+
+    def _causal_mask(self, seq_len: int) -> Optional[Tensor]:
+        """Returns a causal mask that can be broadcasted to [batch, num_heads, seq_len, seq_len].
+
+        ... or None if the implementation of _compute_attention supports the causal mode natively.
+
+        Only used for (ForwardMode.FORWARD, ForwardMode.INIT_STATES).
+        """
+        return make_causal_mask(seq_len)[None, None, :, :]
 
     def _compute_attention(
         self,
@@ -1605,17 +1816,21 @@ class MultiheadAttention(BaseLayer):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> Output:
         """Computes attention for the given query, key, value, and attention logit biases.
 
         If key and value are both None, computes self-attention using query.
 
         Args:
-            query: a Tensor of shape [batch, target_length, target_dim].
-            key:   an optional Tensor of shape [batch, source_length, source_dim].
-            value: an optional Tensor of shape [batch, source_length, source_dim].
+            query: A Tensor of shape [batch, target_length, target_dim].
+            key:   An optional Tensor of shape [batch, source_length, source_dim].
+            value: An optional Tensor of shape [batch, source_length, source_dim].
+            kv_state: An optional KVState. If not None, both key and value must be None.
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
+            return_aux: See comments on `Output`.
 
         Returns:
             An Output instance, where .data is of the same shape as query and .probs is of shape
@@ -1629,7 +1844,9 @@ class MultiheadAttention(BaseLayer):
             query=query,
             key=key,
             value=value,
+            kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
+            return_aux=return_aux,
         )
         return output
 
@@ -1646,19 +1863,28 @@ class MultiheadAttention(BaseLayer):
         k_proj = self.scale_key(k_proj)
         return jnp.einsum("btnh,bsnh->bnts", q_proj, k_proj)
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
+    def init_states(
+        self,
+        *,
+        target_batch_size: int,
+        target_max_len: int,
+        kv_state: Optional[KVState] = None,
+    ) -> NestedTensor:
         """Initializes cache for autoregressive cached decoding.
 
         Args:
-            target_batch_size: the batch size of the target to be decoded.
-            target_max_len: the sequence length of the target to be decoded.
+            target_batch_size: The batch size of the target to be decoded.
+            target_max_len: The sequence length of the target to be decoded.
+            kv_state: An optional KVState.
 
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
         """
         return dict(
             i_proj=self.i_proj.init_states(
-                target_batch_size=target_batch_size, target_max_len=target_max_len
+                target_batch_size=target_batch_size,
+                target_max_len=target_max_len,
+                kv_state=kv_state,
             )
         )
 
@@ -1667,7 +1893,9 @@ class MultiheadAttention(BaseLayer):
         *,
         time_step: Tensor,
         query: Tensor,
+        kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor],
+        return_aux: Optional[Set[str]] = None,
     ) -> Tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -1680,7 +1908,9 @@ class MultiheadAttention(BaseLayer):
             query: Tensor of shape [B, T, D] corresponding to query vector up to `time_step`. For
                 batch index `i`, only `query[i, :time_step[i], ...]` will affect subsequent
                 decoding.
+            kv_state: An optional KVState.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
+            return_aux: See comments on `Output`.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -1691,7 +1921,9 @@ class MultiheadAttention(BaseLayer):
             mode=ForwardMode.INIT_STATES,
             query=query,
             cached_states=dict(i_proj=time_step),
+            kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
+            return_aux=return_aux,
         )
 
     def extend_step(
@@ -1699,7 +1931,9 @@ class MultiheadAttention(BaseLayer):
         cached_states: NestedTensor,
         query: Tensor,
         *,
+        kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor],
+        return_aux: Optional[Set[str]] = None,
     ) -> Tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -1712,10 +1946,12 @@ class MultiheadAttention(BaseLayer):
                 previous attentions, and index used for fast decoding. Contains "key" and "value" of
                 shape [B, N, H, T], and a Tensor "time_step" of shape [B].
             query: Tensor of shape [B, 1, D] corresponding to query vector at "time_step" indices.
+            kv_state: An optional KVState.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
                 Additionally, target_length is expected to be 1 since this is per time step.
                 The biases should already include causal masking for decoding, plus other biases
                 if necessary.
+            return_aux: See comments on `Output`.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -1726,7 +1962,9 @@ class MultiheadAttention(BaseLayer):
             mode=ForwardMode.EXTEND_STEP,
             query=query,
             cached_states=cached_states,
+            kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
+            return_aux=return_aux,
         )
 
     @staticmethod
@@ -1767,7 +2005,7 @@ class GroupedQueryAttention(MultiheadAttention):
 
     def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
         """Repeats key or value heads dim to match the query."""
-        num_head_repeats = self.config.num_heads // self.num_kv_heads
+        num_head_repeats = self.config.num_heads // key_or_value.shape[2]
         if num_head_repeats == 1:
             return key_or_value
         # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
@@ -1790,6 +2028,57 @@ class GroupedQueryAttention(MultiheadAttention):
             v_proj=v_proj,
             attention_logit_biases=attention_logit_biases,
         )
+
+
+class SigmoidAttention(MultiheadAttention):
+    """A multi-head sigmoid-based attention layer, instead of softmax.
+
+    TODO(floris_weers): Add paper reference.
+    """
+
+    @config_class
+    class Config(MultiheadAttention.Config):
+        """Configures SigmoidAttention."""
+
+        seq_len: Required[int] = REQUIRED  #  Maximum sequence length used.
+
+    def _compute_attention(
+        self,
+        *,
+        q_proj: Tensor,
+        k_proj: Tensor,
+        v_proj: Tensor,
+        attention_logit_biases: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        """Computes attention context and probs.
+
+        Args:
+            q_proj: [batch_size, target_length, num_heads, per_head_dim].
+            k_proj: [batch_size, source_length, num_heads, per_head_dim].
+            v_proj: [batch_size, source_length, num_heads, per_head_dim].
+
+        Returns:
+            The context of shape [batch_size, target_length, num_heads, per_head_dim],
+            and probs of shape [batch, num_heads, target_length, source_length].
+        """
+        cfg = self.config
+        logits = self._compute_logits(q_proj, k_proj)
+        logits = self._cap_logits(logits)
+        self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
+
+        if attention_logit_biases is None:
+            attention_logit_biases = 0
+        # To approximate softmax, we subtract a bias dependent on sequence length.
+        attention_logit_biases = attention_logit_biases - jnp.log(cfg.seq_len)
+        probs = sigmoid_with_biases(
+            logits,
+            attention_logit_biases=attention_logit_biases,
+        )
+        probs = self.dropout(probs)
+
+        context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
+        context = self._remat_name(context, "context")
+        return context, probs
 
 
 def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
@@ -1824,6 +2113,7 @@ def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
     Args:
         x: a Tensor of shape [T, 2*T - 1], where x[i, j] represents the bias between query[i] and
             absolute position k = i + j - (T - 1), if 0 <= k < T, otherwise the value is not used.
+            T is expected to be >= 1.
 
     Returns:
         y: a Tensor of shape [T, T], s.t. y[i, k] = x[i, j] where k = i + j - (T - 1),
@@ -1831,14 +2121,17 @@ def rel_pos_to_abs_pos(x: Tensor) -> Tensor:
     """
     t, offset_length = x.shape
     assert offset_length == 2 * t - 1
+    if t <= 1:
+        return x
     # [t * (2t - 1)].
     x = x.reshape([-1])
     # [t * (2t - 2)].
     x = x[t - 1 : -1]
     # [t, 2t - 2].
     x = x.reshape([t, -1])
-    # [t, t].
-    x = x[:, : -(t - 2)]
+    # [t, t]. When t = 2, do not trim.
+    if t > 2:
+        x = x[:, : -(t - 2)]
     return x
 
 
@@ -1875,20 +2168,20 @@ def xl_attention_logits(
     while lingvo computes from query_i - key_i.
 
     Args:
-        q_proj: a Tensor of shape [batch, target_length, num_heads, per_head_dim], representing
+        q_proj: A Tensor of shape [batch, target_length, num_heads, per_head_dim], representing
             projected queries.
-        k_proj: a Tensor of shape [batch, target_length, num_heads, per_head_dim], representing
+        k_proj: A Tensor of shape [batch, target_length, num_heads, per_head_dim], representing
             projected keys.
-        relative_pos_emb: a Tensor of shape [num_embeddings, num_heads, per_head_dim], representing
+        relative_pos_emb: A Tensor of shape [num_embeddings, num_heads, per_head_dim], representing
             projected relative positional embeddings, where num_embeddings = 2 * target_length - 1.
             relative_pos_emb[key_i - query_i + target_length - 1] represents positional
             embeddings between query[:, query_i] and key[:, key_i] and is usually computed from
             sinusoidal_positional_embeddings(query_i - key_i), i.e.,
             relative_pos_emb[0] represents query_i = target_length - 1 and key_i = 0.
             relative_pos_emb[-1] represents query_i = 0 and key_i = target_length - 1.
-        u: a Tensor of shape [num_heads, per_head_dim].
+        u: A Tensor of shape [num_heads, per_head_dim].
             The trainable `u` in https://arxiv.org/pdf/1901.02860.pdf 3.3 used for term 'ac'.
-        v: a Tensor of shape [num_heads, per_head_dim].
+        v: A Tensor of shape [num_heads, per_head_dim].
             The trainable `v` in https://arxiv.org/pdf/1901.02860.pdf 3.3 used for term 'bd'.
 
     Returns:
@@ -1983,11 +2276,11 @@ class MultiheadAttentionXL(MultiheadAttention):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
-        attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> MultiheadAttention.Output:
         if key is not None or value is not None:
             raise ValueError("Both key and value must be None for MultiheadAttentionXL")
-        return super().forward(query, attention_logit_biases=attention_logit_biases)
+        return super().forward(query, **kwargs)
 
     def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
         cfg = self.config
@@ -2035,8 +2328,7 @@ class MultiheadAttentionXL(MultiheadAttention):
         self,
         cached_states: NestedTensor,
         query: Tensor,
-        *,
-        attention_logit_biases: Optional[Tensor],
+        **kwargs,
     ) -> Tuple[NestedTensor, MultiheadAttention.Output]:
         raise NotImplementedError(type(self))
 
@@ -2095,19 +2387,29 @@ class TransformerAttentionLayer(BaseLayer):
         self._add_child("stochastic_depth", cfg.stochastic_depth)
 
     class Output(NamedTuple):
-        # [batch, target_length, output_dim]. The attention output.
+        """Outputs of TransformerAttentionLayer.
+
+        Fields:
+            data: [batch, target_length, output_dim]. The attention output. Always present.
+            probs: The attention probabilities returned by the attention layer.
+                Populated if "probs" is in return_aux.
+            kv_state: The KV state used to compute output.
+                Populated if "kv_state" is in return_aux.
+        """
+
         data: Tensor
-        # The attention probabilities returned by the attention layer.
-        probs: Tensor
+        probs: Optional[Tensor] = None
+        kv_state: Optional[KVState] = None
 
     def _forward_for_mode(
         self,
         *,
         mode: ForwardMode,
         target: Tensor,
-        source: Optional[Tensor] = None,
+        source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> Tuple[Optional[NestedTensor], Output]:
         """Computes either self-attention or cross-attention for the given target and source.
 
@@ -2115,10 +2417,11 @@ class TransformerAttentionLayer(BaseLayer):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             target: A Tensor of shape [batch, target_length, target_dim].
-            source: An optional Tensor of shape [batch, source_length, source_dim].
+            source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention).
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
+            return_aux: See comments on `Output`.
 
         Returns:
             An optional NestedTensor of cache states, depending on `mode`.
@@ -2131,19 +2434,32 @@ class TransformerAttentionLayer(BaseLayer):
         """
         cfg = self.config
 
+        if source is None:
+            kv_kwargs = {}
+        elif isinstance(source, KVState):
+            kv_kwargs = {"kv_state": source}
+        elif isinstance(source, Tensor):
+            kv_kwargs = {"key": source, "value": source}
+        else:
+            raise NotImplementedError(source)
+        kv_kwargs["return_aux"] = return_aux
+
         def attention_thunk(target: Tensor) -> Tuple[Optional[NestedTensor], Tensor]:
             if mode == ForwardMode.FORWARD:
-                atten_state, atten_output = None, self.attention(
-                    query=target,
-                    key=source,
-                    value=source,
-                    attention_logit_biases=attention_logit_biases,
+                atten_state, atten_output = (
+                    None,
+                    self.attention(
+                        query=target,
+                        **kv_kwargs,
+                        attention_logit_biases=attention_logit_biases,
+                    ),
                 )
             elif mode == ForwardMode.INIT_STATES:
                 assert cached_states is not None
                 atten_state, atten_output = self.attention.prefill_states(
                     time_step=cached_states["attention"],
                     query=target,
+                    **kv_kwargs,
                     attention_logit_biases=attention_logit_biases,
                 )
             elif mode == ForwardMode.EXTEND_STEP:
@@ -2151,6 +2467,7 @@ class TransformerAttentionLayer(BaseLayer):
                 atten_state, atten_output = self.attention.extend_step(
                     cached_states["attention"],
                     target,
+                    **kv_kwargs,
                     attention_logit_biases=attention_logit_biases,
                 )
             else:
@@ -2176,22 +2493,26 @@ class TransformerAttentionLayer(BaseLayer):
             )
         else:
             raise NotImplementedError(cfg.structure)
-        return dict(attention=atten_state), self.Output(data=data, probs=atten_output.probs)
+        return dict(attention=atten_state), self.Output(
+            data=data, probs=atten_output.probs, kv_state=atten_output.kv_state
+        )
 
     def forward(
         self,
         *,
         target: Tensor,
-        source: Optional[Tensor] = None,
+        source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> Output:
         """Computes attention with target as query and source as key and value.
 
         Args:
-            target: a Tensor of shape [batch, target_length, target_dim].
-            source: a Tensor of shape [batch, source_length, source_dim].
+            target: A Tensor of shape [batch, target_length, target_dim].
+            source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
+            return_aux: See comments on `Output`.
 
         Returns:
             An Output instance, where .data is of the same shape as target and .probs is of shape
@@ -2206,22 +2527,32 @@ class TransformerAttentionLayer(BaseLayer):
             source=source,
             attention_logit_biases=attention_logit_biases,
             cached_states=None,
+            return_aux=return_aux,
         )
         return output
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
+    def init_states(
+        self,
+        *,
+        target_batch_size: int,
+        target_max_len: int,
+        kv_state: Optional[KVState] = None,
+    ) -> NestedTensor:
         """Initializes cache for autoregressive cached decoding.
 
         Args:
-            target_batch_size: the batch size of the target to be decoded.
-            target_max_len: the sequence length of the target to be decoded.
+            target_batch_size: The batch size of the target to be decoded.
+            target_max_len: The sequence length of the target to be decoded.
+            kv_state: An optional KVState.
 
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
         """
         return dict(
             attention=self.attention.init_states(
-                target_batch_size=target_batch_size, target_max_len=target_max_len
+                target_batch_size=target_batch_size,
+                target_max_len=target_max_len,
+                kv_state=kv_state,
             )
         )
 
@@ -2230,7 +2561,9 @@ class TransformerAttentionLayer(BaseLayer):
         *,
         time_step: NestedTensor,
         target: Tensor,
-        attention_logit_biases: Optional[Tensor],
+        source: Optional[Union[Tensor, KVState]] = None,
+        attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> Tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -2243,7 +2576,10 @@ class TransformerAttentionLayer(BaseLayer):
             target: Tensor of shape [batch, target_length, target_dim] corresponding to query vector
                 at `time_step` indices. For batch index `i`, only `target[i, :time_step[i], ...]`
                 will affect subsequent decoding.
+            source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
+                If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
+            return_aux: See comments on `Output`.
 
         Returns:
             A `NestedTensor` state depending on the `attention` layer implementation.
@@ -2253,8 +2589,10 @@ class TransformerAttentionLayer(BaseLayer):
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             target=target,
+            source=source,
             cached_states=dict(attention=time_step),
             attention_logit_biases=attention_logit_biases,
+            return_aux=return_aux,
         )
 
     def extend_step(
@@ -2262,7 +2600,9 @@ class TransformerAttentionLayer(BaseLayer):
         cached_states: NestedTensor,
         target: Tensor,
         *,
-        attention_logit_biases: Optional[Tensor],
+        source: Optional[Union[Tensor, KVState]] = None,
+        attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> Tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -2273,10 +2613,13 @@ class TransformerAttentionLayer(BaseLayer):
                 "attention" cached states.
             target: Tensor of shape [B, 1, D] corresponding to query vector at index
                 time_step.
+            source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
+                If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
                 Additionally, target_length is expected to be 1 since this is per time step.
                 attention_logit_biases should have already taken care of causal masking for
                 decoding, plus other maskings necessary.
+            return_aux: See comments on `Output`.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -2289,8 +2632,10 @@ class TransformerAttentionLayer(BaseLayer):
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             target=target,
+            source=source,
             cached_states=cached_states,
             attention_logit_biases=attention_logit_biases,
+            return_aux=return_aux,
         )
 
 
@@ -2582,22 +2927,26 @@ class TransformerLayer(BaseTransformerLayer):
         *,
         mode: ForwardMode,
         data: Tensor,
+        self_attention_kv_state: Optional[KVState] = None,
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
-    ) -> Tuple[Optional[NestedTensor], Tensor]:
+        return_aux: Optional[Set[str]] = None,
+    ) -> Tuple[Optional[NestedTensor], BaseTransformerLayer.Output]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
         Args:
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             data: A Tensor of shape [batch, target_length, target_dim].
+            self_attention_kv_state: An optional KVState used for self-attention.
             self_attention_logit_biases: An optional Tensor representing the self-attention biases.
             cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
+            return_aux: See comments on BaseTransformerLayer.forward.
 
         Returns:
             An optional NestedTensor of cache states, depending on `mode`.
@@ -2609,23 +2958,42 @@ class TransformerLayer(BaseTransformerLayer):
             ValueError: If `mode` is unsupported.
         """
         self.vlog(3, "transformer.input=%s", data.sum())
+        self_attention_return_aux = set()
+        cross_attention_return_aux = set()
+        if return_aux:
+            if "self_attention_probs" in return_aux:
+                self_attention_return_aux.add("probs")
+            if "self_attention_kv_state" in return_aux:
+                self_attention_return_aux.add("kv_state")
+            if "cross_attention_probs" in return_aux:
+                cross_attention_return_aux.add("probs")
         if mode == ForwardMode.FORWARD:
-            self_atten_state, self_atten_outputs = None, self.self_attention(
-                target=data, attention_logit_biases=self_attention_logit_biases
+            self_atten_state, self_atten_outputs = (
+                None,
+                self.self_attention(
+                    target=data,
+                    source=self_attention_kv_state,
+                    attention_logit_biases=self_attention_logit_biases,
+                    return_aux=self_attention_return_aux,
+                ),
             )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
             self_atten_state, self_atten_outputs = self.self_attention.prefill_states(
                 time_step=cached_states["self_attention"],
                 target=data,
+                source=self_attention_kv_state,
                 attention_logit_biases=self_attention_logit_biases,
+                return_aux=self_attention_return_aux,
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
             self_atten_state, self_atten_outputs = self.self_attention.extend_step(
                 cached_states=cached_states["self_attention"],
                 target=data,
+                source=self_attention_kv_state,
                 attention_logit_biases=self_attention_logit_biases,
+                return_aux=self_attention_return_aux,
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
@@ -2636,6 +3004,7 @@ class TransformerLayer(BaseTransformerLayer):
                 target=data,
                 source=cross_attention_data,
                 attention_logit_biases=cross_attention_logit_biases,
+                return_aux=cross_attention_return_aux,
             )
             data = cross_atten_outputs.data
             cross_attention_probs = cross_atten_outputs.probs
@@ -2646,31 +3015,35 @@ class TransformerLayer(BaseTransformerLayer):
         return dict(self_attention=self_atten_state), BaseTransformerLayer.Output(
             data=data,
             self_attention_probs=self_atten_outputs.probs,
+            self_attention_kv_state=self_atten_outputs.kv_state,
             cross_attention_probs=cross_attention_probs,
         )
 
     def forward(
         self,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> BaseTransformerLayer.Output:
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             cached_states=None,
+            **kwargs,
         )
         return output
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
+    def init_states(
+        self,
+        *,
+        target_batch_size: int,
+        target_max_len: int,
+        self_attention_kv_state: Optional[KVState] = None,
+    ) -> NestedTensor:
         return dict(
             self_attention=self.self_attention.init_states(
-                target_batch_size=target_batch_size, target_max_len=target_max_len
+                target_batch_size=target_batch_size,
+                target_max_len=target_max_len,
+                kv_state=self_attention_kv_state,
             )
         )
 
@@ -2679,35 +3052,26 @@ class TransformerLayer(BaseTransformerLayer):
         *,
         time_step: Tensor,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> Tuple[NestedTensor, BaseTransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(self_attention=time_step),
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **kwargs,
         )
 
     def extend_step(
         self,
         cached_states: NestedTensor,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> Tuple[NestedTensor, BaseTransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             cached_states=cached_states,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **kwargs,
         )
 
 
@@ -2780,6 +3144,7 @@ class ParallelTransformerLayer(BaseTransformerLayer):
         return BaseTransformerLayer.Output(
             data=outputs,
             self_attention_probs=self_atten_outputs.probs,
+            self_attention_kv_state=self_atten_outputs.kv_state,
             cross_attention_probs=None,
         )
 
@@ -2828,10 +3193,8 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         *,
         mode: ForwardMode,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
+        **kwargs,
     ) -> Tuple[Optional[NestedTensor], Tensor]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
@@ -2856,103 +3219,70 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         """
         self.vlog(3, "transformer.input=%s", data.sum())
         if mode == ForwardMode.FORWARD:
-            output = self.layer.forward(
-                data=data,
-                self_attention_logit_biases=self_attention_logit_biases,
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
-            )
+            output = self.layer.forward(data=data, **kwargs)
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
             cached_states, output = self.layer.prefill_states(
                 time_step=cached_states["layer"],
                 data=data,
-                self_attention_logit_biases=self_attention_logit_biases,
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
+                **kwargs,
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
             cached_states, output = self.layer.extend_step(
                 cached_states=cached_states,
                 data=data,
-                self_attention_logit_biases=self_attention_logit_biases,
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
+                **kwargs,
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
-        self_attention_probs = output.self_attention_probs
-        cross_attention_probs = output.cross_attention_probs
         skip_input = output.data
         data = self.adapter(output.data)
         data += skip_input
         self.vlog(3, "adapted_transformer.output=%s", data.sum())
-        return cached_states, BaseTransformerLayer.Output(
-            data=data,
-            self_attention_probs=self_attention_probs,
-            cross_attention_probs=cross_attention_probs,
-        )
+        return cached_states, output._replace(data=data)
 
     def forward(
         self,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> BaseTransformerLayer.Output:
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             cached_states=None,
+            **kwargs,
         )
         return output
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
-        return dict(
-            layer=self.layer.init_states(
-                target_batch_size=target_batch_size, target_max_len=target_max_len
-            )
-        )
+    def init_states(self, **kwargs) -> NestedTensor:
+        return dict(layer=self.layer.init_states(**kwargs))
 
     def prefill_states(
         self,
         *,
         time_step: Tensor,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> Tuple[NestedTensor, BaseTransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(layer=time_step),
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **kwargs,
         )
 
     def extend_step(
         self,
         cached_states: NestedTensor,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> Tuple[NestedTensor, BaseTransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             cached_states=cached_states,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **kwargs,
         )
 
 
@@ -3008,6 +3338,13 @@ class BaseStackedTransformerLayer(BaseTransformerLayer):
 
     Note that BaseStackedTransformerLayer is a subclass of BaseTransformerLayer and therefore
     can be used where a BaseTransformerLayer is expected.
+
+    The Output returned by BaseStackedTransformerLayer has the following fields:
+        * .data is of the same shape as query, from the output of the final layer;
+        * .self_attention_kv_state is of shape [batch, target_length, num_heads, head_dim],
+          from the self-attention KV state of the final layer;
+        * .probs is of shape [num_layers, batch, num_heads, target_length, source_length],
+          from all layers of the stack;
     """
 
     @config_class
@@ -3083,9 +3420,6 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         *,
         mode: ForwardMode,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         **layer_kwargs,
     ) -> Tuple[List[Optional[NestedTensor]], TransformerLayer.Output]:
@@ -3095,15 +3429,12 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             data: A Tensor of shape [batch, target_length, target_dim].
-            self_attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
-            cross_attention_logit_biases: See ``On attention logit biases`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
 
         Returns:
-            An optional NestedTensor of cache states, depending on `mode`.
-            An Output instance, where .data is of the same shape as query and .probs is of shape
-            [batch, num_heads, target_length, source_length].
+            (updated_cache_states, outputs), where
+            updated_cached_states is an optional NestedTensor of cache states, depending on `mode`;
+            outputs is an instance of Output (see comments on BaseStackedTransformerLayer).
 
         Raises:
             ValueError: If `mode` is unsupported.
@@ -3112,21 +3443,12 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         all_layer_states = []
         for i, layer in enumerate(self._layers):
             if mode == ForwardMode.FORWARD:
-                layer_states, layer_outputs = None, layer(
-                    data,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
-                    **layer_kwargs,
-                )
+                layer_states, layer_outputs = None, layer(data, **layer_kwargs)
             elif mode == ForwardMode.INIT_STATES:
                 assert cached_states is not None
                 layer_states, layer_outputs = layer.prefill_states(
                     time_step=cached_states,
                     data=data,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
                     **layer_kwargs,
                 )
             elif mode == ForwardMode.EXTEND_STEP:
@@ -3134,9 +3456,6 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
                 layer_states, layer_outputs = layer.extend_step(
                     cached_states=cached_states[i],
                     data=data,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
                     **layer_kwargs,
                 )
             else:
@@ -3144,33 +3463,38 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             all_layer_outputs.append(layer_outputs)
             all_layer_states.append(layer_states)
             data = layer_outputs.data
-        aux_outputs = {}
-        for field in TransformerLayer.Output._fields:
-            if field == "data":
-                continue
-            values = [getattr(output, field) for output in all_layer_outputs]
-            if None in values:
-                assert all(v is None for v in values), f"{field}: {values}"
-                aux_outputs[field] = None
-            else:
-                aux_outputs[field] = jnp.stack(values, axis=0)
-        return all_layer_states, TransformerLayer.Output(data=data, **aux_outputs)
+            # Prepare inputs to the next layer.
+            self._update_layer_kwargs(layer_kwargs, outputs=layer_outputs)
+
+        return all_layer_states, self._aggregate_layer_outputs(all_layer_outputs)
+
+    def _update_layer_kwargs(
+        self, layer_kwargs: Dict[str, Any], *, outputs: BaseTransformerLayer.Output
+    ):
+        pass  # Do nothing by default.
+
+    def _aggregate_layer_outputs(
+        self,
+        layer_outputs: Sequence[BaseTransformerLayer.Output],
+    ) -> BaseTransformerLayer.Output:
+        """Aggregates outputs from the stack."""
+        data = layer_outputs[-1].data
+        self_attention_kv_state = layer_outputs[-1].self_attention_kv_state
+        aux_outputs = [
+            output._replace(data=None, self_attention_kv_state=None) for output in layer_outputs
+        ]
+        # Stack auxiliary outputs along axis 0.
+        outputs = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *aux_outputs)
+        return outputs._replace(data=data, self_attention_kv_state=self_attention_kv_state)
 
     def forward(
         self,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         **layer_kwargs,
     ) -> TransformerLayer.Output:
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             cached_states=None,
             **layer_kwargs,
         )
@@ -3185,18 +3509,12 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         *,
         time_step: Tensor,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         **layer_kwargs,
     ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=time_step,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             **layer_kwargs,
         )
 
@@ -3204,19 +3522,12 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         self,
         cached_states: List[NestedTensor],
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         **layer_kwargs,
     ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             cached_states=cached_states,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             **layer_kwargs,
         )
 
@@ -3224,15 +3535,26 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
 class _TransformerRepeat(Repeat):
     """A Repeat layer with layer=TransformerLayer."""
 
+    @config_class
+    class Config(Repeat.Config):
+        """Configures QKVLinearWithExternalKVState."""
+
+        # The additional fields of BaseTransformerLayer.Output that should propagate as input to
+        # the next layer.
+        #
+        # For example, carry=("data", "self_attention_kv_state") means that both `data` and
+        # `self_attention_kv_state` will propagate between layers.
+        #
+        # If None, only "data" is propagated.
+        carry: Optional[Sequence[str]] = None
+
     def _forward_for_mode(
         self,
         *,
         mode: ForwardMode,
         data: Tensor,
         cached_states: Optional[NestedTensor] = None,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> Tuple[Optional[NestedTensor], TransformerLayer.Output]:
         """Computes transformer stack outputs.
 
@@ -3240,89 +3562,89 @@ class _TransformerRepeat(Repeat):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             data: A Tensor of shape [batch, target_length, target_dim].
-            self_attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
-            cross_attention_logit_biases: See ``On attention logit biases`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
 
         Returns:
-            An optional NestedTensor of cache states, depending on `mode`.
-            An Output instance, where .data is of the same shape as query and .probs is of shape
-            [batch, num_heads, target_length, source_length].
+            (updated_cache_states, outputs), where
+            updated_cached_states is an optional NestedTensor of cache states, depending on `mode`;
+            outputs is an instance of Output (see comments on BaseStackedTransformerLayer).
 
         Raises:
             ValueError: If `mode` is unsupported.
         """
+        cfg = self.config
+
+        if cached_states is not None:
+            for path, value in flatten_items(cached_states):
+                assert value.shape[0] == cfg.num_layers, f"{path}={shapes(value)}"
 
         def layer_fn(carry, x_i):
             if mode == ForwardMode.FORWARD:
-                layer_states, layer_outputs = None, self.layer(
-                    carry,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
-                )
+                layer_states, layer_outputs = None, self.layer(**carry, **layer_kwargs)
             elif mode == ForwardMode.INIT_STATES:
                 assert x_i is not None
                 layer_states, layer_outputs = self.layer.prefill_states(
                     time_step=x_i,
-                    data=carry,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
+                    **carry,
+                    **layer_kwargs,
                 )
             elif mode == ForwardMode.EXTEND_STEP:
                 assert x_i is not None
                 layer_states, layer_outputs = self.layer.extend_step(
-                    x_i,
-                    carry,
-                    self_attention_logit_biases=self_attention_logit_biases,
-                    cross_attention_data=cross_attention_data,
-                    cross_attention_logit_biases=cross_attention_logit_biases,
+                    cached_states=x_i,
+                    **carry,
+                    **layer_kwargs,
                 )
             else:
                 raise ValueError(f"Unrecognized mode {mode}.")
 
-            ys = {k: v for k, v in layer_outputs._asdict().items() if k != "data"}
+            ys = {k: v for k, v in layer_outputs._asdict().items() if k not in carry}
             if layer_states is not None:
-                # Vectorize over scan axis.
-                ys["cached_states"] = jax.tree_map(
-                    VDict, layer_states, is_leaf=lambda v: isinstance(v, dict)
-                )
-            return layer_outputs.data, ys
+                ys["cached_states"] = layer_states
+            return {k: getattr(layer_outputs, k) for k in carry}, ys
 
-        repeat_outputs: Repeat.Output = self._run(layer_fn, carry=data, xs=cached_states)
+        if cfg.carry is None:
+            carry = {"data": data}
+        else:
+            layer_kwargs["data"] = data
+            carry = {k: layer_kwargs.pop(k) for k in cfg.carry}
+        repeat_outputs: Repeat.Output = self._run(layer_fn, carry=carry, xs=cached_states)
+        carry = repeat_outputs.carry
         ys = repeat_outputs.ys
         updated_states = ys.pop("cached_states", None)
-        return updated_states, TransformerLayer.Output(data=repeat_outputs.carry, **ys)
+
+        for k in ("data", "self_attention_kv_state"):
+            if k in carry:
+                continue
+            v = ys.pop(k, None)
+            if v is not None:
+                # Take the output from the last layer.
+                if isinstance(v, KVState):
+                    v = KVState(k_proj=v.k_proj[-1], v_proj=v.v_proj[-1])
+                else:
+                    v = v[-1]
+            carry[k] = v
+        return updated_states, TransformerLayer.Output(**carry, **ys)
 
     def forward(
         self,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> TransformerLayer.Output:
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             cached_states=None,
+            **layer_kwargs,
         )
         return output
 
     def init_states(self, *args: Any, **kwargs: Any) -> NestedTensor:
-        def layer_fn(_):
-            return jax.tree_map(
-                VDict,
-                self.layer.init_states(*args, **kwargs),
-                is_leaf=lambda v: isinstance(v, dict),
-            )
-
         cfg = self.config
+
+        def layer_fn(_):
+            return self.layer.init_states(*args, **kwargs)
+
         return jax.vmap(layer_fn)(jnp.empty(cfg.num_layers))
 
     def prefill_states(
@@ -3330,36 +3652,27 @@ class _TransformerRepeat(Repeat):
         *,
         time_step: Tensor,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> Tuple[NestedTensor, TransformerLayer.Output]:
         cfg = self.config
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             data=data,
             cached_states=jnp.tile(time_step, [cfg.num_layers, 1]),
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **layer_kwargs,
         )
 
     def extend_step(
         self,
         cached_states: NestedTensor,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> Tuple[NestedTensor, TransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             data=data,
             cached_states=cached_states,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **layer_kwargs,
         )
 
 
@@ -3400,54 +3713,37 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
     def forward(
         self,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> TransformerLayer.Output:
-        return self.repeat(
-            data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
-        )
+        return self.repeat(data, **layer_kwargs)
 
     def init_states(self, *args: Any, **kwargs: Any) -> NestedTensor:
-        return self.repeat.init_states(*args, **kwargs)
+        return VDict(repeat=self.repeat.init_states(*args, **kwargs))
 
     def prefill_states(
         self,
         *,
         time_step: Tensor,
         data: Tensor,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
-        return self.repeat.prefill_states(
-            time_step=time_step,
-            data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+        repeat_cached_states, output = self.repeat.prefill_states(
+            time_step=time_step, data=data, **layer_kwargs
         )
+        return VDict(repeat=repeat_cached_states), output
 
     def extend_step(
         self,
         cached_states: NestedTensor,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **layer_kwargs,
     ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
-        return self.repeat.extend_step(
-            cached_states=cached_states,
+        repeat_cached_states, output = self.repeat.extend_step(
+            cached_states=cached_states["repeat"],
             data=data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **layer_kwargs,
         )
+        return VDict(repeat=repeat_cached_states), output
 
 
 class _TransformerPipeline(Pipeline):
@@ -3460,8 +3756,11 @@ class _TransformerPipeline(Pipeline):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> TransformerLayer.Output:
         carry_in = dict(data=data)
+        return_aux = return_aux or set()
+
         # Even though attention logit biases do not change across layers, we
         # include them in the carry so that they are aligned with the microbatches.
         if self_attention_logit_biases is not None:
@@ -3478,7 +3777,9 @@ class _TransformerPipeline(Pipeline):
             layer_outputs: TransformerLayer.Output = self.layer(**carry)
             carry.pop("data")
             return dict(**carry, data=layer_outputs.data), {
-                k: v for k, v in layer_outputs._asdict().items() if k != "data"
+                k: v if k in return_aux else None
+                for k, v in layer_outputs._asdict().items()
+                if k != "data"
             }
 
         pipeline_outputs: Pipeline.Output = self._run(layer_fn, carry_in)
@@ -3537,12 +3838,14 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
+        return_aux: Optional[Set[str]] = None,
     ) -> TransformerLayer.Output:
         return self.pipeline(
             data,
             self_attention_logit_biases=self_attention_logit_biases,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
+            return_aux=return_aux,
         )
 
     # TODO(sneha): extend_step
@@ -3551,7 +3854,9 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
 def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
-    ]
+    ],
+    self_attention: bool = True,
+    feed_forward: bool = False,
 ) -> Optional[RematSpec]:
     """Configures how the Transformer or Conformer stack will save the linearization points.
 
@@ -3567,6 +3872,8 @@ def build_remat_spec(
 
     Args:
         stack_cfg: A transformer config.
+        self_attention: Checkpoint self attention layer activations if true.
+        feed_forward: Checkpoint feed-forward layer activations if true.
 
     Returns:
         None (if no rematerialization is needed) or a RematSpec.
@@ -3574,16 +3881,23 @@ def build_remat_spec(
     # TODO(markblee): Switch to using isinstance everywhere.
     if stack_cfg.klass is PipelinedTransformerLayer:
         return None
-    attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
+
+    checkpoints = []
+    if self_attention:
+        attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
+        checkpoints.extend(
+            [f"{attention_name}.{el}" for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]]
+        )
+    if feed_forward and hasattr(stack_cfg.layer, "feed_forward"):
+        ffn_name = stack_cfg.layer.feed_forward.klass.__name__
+        checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
+
     return RematSpec(
         prevent_cse=stack_cfg.klass is StackedTransformerLayer,
         # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
         # or Repeated Conformers) we can enable common subexpression elimination optimizations.
         policy=config_for_function(jax_remat_policies.save_only_these_names).set(
-            names_which_can_be_saved=[
-                f"{attention_name}.{el}"
-                for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]
-            ]
+            names_which_can_be_saved=checkpoints
         ),
     )
 

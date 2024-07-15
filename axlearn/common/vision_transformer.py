@@ -361,7 +361,7 @@ class VisionTransformer(BaseLayer):
 
         Args:
             image: The input image. Shape: (batch, height, width, channels).
-            is_masked: a boolen Tensor in shape (batch, length), representing masked positions
+            is_masked: a boolean Tensor in shape (batch, length), representing masked positions
                 for the patchifie input sequence.
 
         Returns:

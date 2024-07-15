@@ -57,13 +57,39 @@ NestedTensor = Union[Tensor, Dict[str, Any]]
 NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, Any]]]
 
 # The device mesh shape in the form of a tuple of ints.
-MeshShape = Sequence[int]
+# We avoid subscripting Sequence[int] so it can be used for isinstance checks.
+MeshShape = Sequence
 
 _enable_numeric_checks = False
 _enable_xla_runtime_errors = False
 
 # The set of supported floating point dtypes.
 _supported_float_dtypes = [jnp.bfloat16, jnp.float32]
+
+
+@dataclasses.dataclass
+class HybridMeshShape:
+    """A mesh shape for hybrid (i.e., ICI and DCN) parallelism.
+
+    For example, with mesh axes (data, model):
+    - Pure fsdp on a v4-8:
+        HybridMeshShape(ici_mesh_shape=(1, 4), dcn_mesh_shape=(1, 1))
+    - Two-way data parallelism over 2 H100 nodes, and fsdp within-node:
+        HybridMeshShape(ici_mesh_shape=(1, 8), dcn_mesh_shape=(2, 1))
+    """
+
+    ici_mesh_shape: MeshShape
+    dcn_mesh_shape: MeshShape
+
+    def __post_init__(self) -> None:
+        if len(self.ici_mesh_shape) != len(self.dcn_mesh_shape):
+            raise ValueError(
+                f"{self.ici_mesh_shape=} should have the same length as {self.dcn_mesh_shape}."
+            )
+
+    def __len__(self):
+        assert len(self.ici_mesh_shape) == len(self.dcn_mesh_shape)
+        return len(self.ici_mesh_shape)
 
 
 @dataclasses.dataclass
@@ -133,7 +159,7 @@ def _concat(*, prefix: str, suffix: str, separator: str):
 
 
 def tree_paths(
-    tree: NestedTree, separator: str = "/", is_leaf: Optional[Callable] = None
+    tree: NestedTree, separator: str = "/", is_leaf: Optional[Callable[[Any], bool]] = None
 ) -> NestedTree:
     """Returns a tree of the same structure as `nested_tensor` but with corresponding paths instead
     of values.
@@ -196,9 +222,11 @@ class PathAndValue:
     value: Any
 
 
-def flatten_items(tree: NestedTensor, separator="/") -> Sequence[Tuple[str, Tensor]]:
+def flatten_items(
+    tree: NestedTensor, separator="/", is_leaf: Optional[Callable[[Any], bool]] = None
+) -> Sequence[Tuple[str, Tensor]]:
     """Flattens `tree` and returns a list of (path, value) pairs."""
-    paths = tree_paths(tree, separator=separator)
+    paths = tree_paths(tree, separator=separator, is_leaf=is_leaf)
     paths_and_values = jax.tree_util.tree_map(
         # pylint: disable-next=unnecessary-lambda
         lambda path, value: PathAndValue(path, value),
@@ -218,7 +246,13 @@ class VDict(dict):
 
     def tree_flatten(self):
         # Convert dict_values and dict_keys to lists to avoid holding reference to the VDict.
-        return (list(self.values()), list(self.keys()))
+        # We sort the keys so that tree_map works with VDicts that have different key orderings,
+        # matching jax's behavior for dicts.
+        items = sorted(self.items(), key=lambda x: x[0])
+        if not items:
+            return ((), ())
+        keys, values = zip(*items)
+        return (values, keys)
 
     @classmethod
     def tree_unflatten(cls, keys, values):
@@ -525,6 +559,9 @@ def dispatch_input_batch(
     """Constrains all leaf values in the input batch, then (optionally) dispatches examples
     to a subset along the batch axis.
 
+    The dispatchings are applied to all nested dicts which contain a special dispatching key in
+    their root.
+
     Args:
         input_batch: The input batch, where the first dimension of each leaf is the batch dim.
         batch_axis_names: The name(s) of the batch axes.
@@ -540,13 +577,19 @@ def dispatch_input_batch(
         lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)), input_batch
     )
 
-    # Dispatch from physical batch dimensions to logical batch.
-    if PHYSICAL_TO_LOGICAL_DISPATCH_KEY in input_batch:
-        dispatch = input_batch.pop(PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
-        return jax.tree_util.tree_map(
-            lambda x: jnp.einsum("b...,bl->l...", x, dispatch), input_batch
-        )
-    return input_batch
+    def traverse_and_dispatch(data: NestedTensor) -> NestedTensor:
+        if isinstance(data, dict):
+            # Dispatch from physical batch dimensions to logical batch.
+            if PHYSICAL_TO_LOGICAL_DISPATCH_KEY in data:
+                dispatch = data.pop(PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
+                return jax.tree_util.tree_map(
+                    lambda x: jnp.einsum("b...,bl->l...", x, dispatch), data
+                )
+            for key, value in data.items():
+                data[key] = traverse_and_dispatch(value)
+        return data
+
+    return traverse_and_dispatch(input_batch)
 
 
 class DataPartitionType(Enum):
@@ -1050,24 +1093,43 @@ def match_regex_rules(
     return default_value
 
 
-def _register_per_param_settings(settings: NestedTree, *, description: str):
-    del settings, description
+def _register_per_param_settings(
+    settings: NestedTree, *, description: str, path: Optional[str] = None
+):
+    del settings, description, path
 
 
-def register_per_param_settings(settings: NestedTree, *, description: str):
+def register_per_param_settings(
+    settings: NestedTree, *, description: str, path: Optional[str] = None
+) -> NestedTree:
     """Registers per-parameter setting.
 
     This function can be patched in testing to inspect per-param settings.
+
+    Args:
+        settings: A nested tree of per parameter settings, e.g. a per parameter learner update rule.
+        description: A string description of the per-param settings.
+        path: An optional string of where the per param settings is registered.
+
+    Returns:
+        A nested tree of per parameter settings.
     """
-    _register_per_param_settings(settings, description=description)
+    _register_per_param_settings(settings, description=description, path=path)
     if logging.vlog_is_on(1):
-        for path, setting in flatten_items(settings):
-            logging.info("Per-param setting %s: %s=%s", description, path, setting)
+        for param_path, param_setting in flatten_items(settings):
+            logging.info(
+                "Per-param setting %s registered in %s: %s=%s",
+                description,
+                path,
+                param_path,
+                param_setting,
+            )
     return settings
 
 
-def build_standard_mesh(mesh_shape: Sequence[int], *, devices: np.ndarray) -> np.ndarray:
+def build_standard_mesh(mesh_shape: MeshShape, *, devices: np.ndarray) -> np.ndarray:
     logging.info("Building device mesh.")
+    mesh_shape = infer_mesh_shape(mesh_shape, num_devices=devices.size)
     try:
         return mesh_utils.create_device_mesh(mesh_shape, devices=devices)
     except NotImplementedError as e:
@@ -1081,36 +1143,36 @@ def build_standard_mesh(mesh_shape: Sequence[int], *, devices: np.ndarray) -> np
 
 
 def create_hybrid_device_mesh(
-    mesh_shape: Sequence[int],
+    mesh_shape: HybridMeshShape,
     *,
-    dcn_mesh_shape: Sequence[int],
-    devices: Optional[Sequence[Any]] = None,
+    devices: Sequence[Any],
     process_is_granule: bool = False,
 ) -> np.ndarray:
     """Extends the method to have an option to fall back to naive mesh.
+
     Reference:
     https://github.com/google/jax/blob/1189d61bc086fcfb548e73235a601ec46c3623c5/jax/experimental/mesh_utils.py#L324
 
     Args:
-        mesh_shape: shape of the logical mesh for the faster/inner network, ordered
-            by increasing network intensity, e.g. [data, fsdp, model] where model has
-            the most network communication requirements.
-        dcn_mesh_shape: shape of the logical mesh for the slower/outer network, in
-            the same order as mesh_shape.
-        devices: optionally, the devices to construct a mesh for. Defaults to jax.devices().
-        process_is_granule: if True, this function will treat processes as the units
-            of the slower/outer network. Otherwise it will look for slice_index
-            attributes on devices and use slices as the units. Enabling this is meant
-            as a fallback for platforms (e.g., GPU) that don't set slice_index.
+        mesh_shape: Shape of the logical mesh for both ICI and DCN.
+            The ICI mesh corresponds to the faster/inner network, ordered by increasing network
+            intensity, e.g. [data, fsdp, model] where model has the most network communication
+            requirements.
+            The DCN mesh corresponds to the slower/outer network in the same order as the ICI mesh.
+            We expect the shapes to be fully specified, i.e., they should not contain -1 dims.
+        devices: The devices to construct a mesh for.
+        process_is_granule: If True, this function will treat processes as the units of the
+            slower/outer network by looking for "process_index" attributes on devices. Otherwise it
+            will treat slices as the units and look for "slice_index" attributes on devices.
 
     Raises:
-        ValueError: if the number of slices to which the `devices` belong doesn't
-            equal the product of `dcn_mesh_shape`, or if the number of devices
-            belonging to any single slice does not equal the product of `mesh_shape`.
+        ValueError: If the number of granules to which the `devices` belong doesn't equal the
+            product of `dcn_mesh_shape`, or if the number of devices belonging to any single granule
+            does not equal the product of `mesh_shape`.
 
     Returns:
-        A np.ndarray of JAX devices with mesh_shape * dcn_mesh_shape as its shape
-        that can be fed into jax.sharding.Mesh for hybrid parallelism.
+        A np.ndarray of JAX devices with `ici_mesh_shape * dcn_mesh_shape` as its shape that can be
+        fed into jax.sharding.Mesh for hybrid parallelism.
     """
     attr = "process_index" if process_is_granule else "slice_index"
     assert hasattr(devices[0], attr)
@@ -1118,36 +1180,41 @@ def create_hybrid_device_mesh(
     for dev in devices:
         granule_dict[getattr(dev, attr)].append(dev)
     granules = list(granule_dict[key] for key in sorted(granule_dict.keys()))
-    if np.prod(dcn_mesh_shape) != len(granules):
+    if np.prod(mesh_shape.dcn_mesh_shape) != len(granules):
         raise ValueError(
-            f"Number of slices {len(granules)} must equal the product of "
-            f"dcn_mesh_shape {dcn_mesh_shape}"
+            f"Number of slices/granules {len(granules)} must equal the product of "
+            f"dcn_mesh_shape {mesh_shape.dcn_mesh_shape}"
         )
     per_granule_meshes = [
-        build_standard_mesh(mesh_shape, devices=np.asarray(granule)) for granule in granules
+        build_standard_mesh(mesh_shape.ici_mesh_shape, devices=np.asarray(granule))
+        for granule in granules
     ]
-    granule_mesh = np.arange(len(granules)).reshape(dcn_mesh_shape)
+    granule_mesh = np.arange(len(granules)).reshape(mesh_shape.dcn_mesh_shape)
     blocks = np.vectorize(lambda i: per_granule_meshes[i], otypes=[object])(granule_mesh)
     device_mesh = np.block(blocks.tolist())
     return device_mesh
 
 
 def create_device_mesh(
-    mesh_shape: Sequence[int], *, devices: Optional[Sequence[Any]] = None
+    mesh_shape: Union[MeshShape, HybridMeshShape],
+    *,
+    devices: Optional[Sequence[Any]] = None,
 ) -> np.ndarray:
     """Constructs a device mesh.
 
-    We first determine whether we are running in a TPU or GPU environment.
+    If `mesh_shape` is specified as a `HybridMeshShape`, we use the `ici_mesh_shape` and
+    `dcn_mesh_shape` directly to construct the mesh.
+
+    If `mesh_shape` is specified as a `MeshShape`, we first determine whether we are running in a
+    TPU or GPU environment.
         - If running in a TPU environment:
-            - If multi-slice/granule, we split the first axis of the configured
-                mesh shape across the slices.
+            - If multi-slice/granule, we split the first non-singleton axis of the configured mesh
+                shape across the slices.
         - If running in a GPU environment:
-            - If the first axis divides the number of processes (GPU-nodes/granules), we
-                split the first axis across the processes.
+            - If multi-node, and the first non-singleton axis divides the number of processes
+                (GPU-nodes/granules), we split the first axis across the processes.
 
     In all other cases we construct a standard mesh according to the configured mesh_shape.
-
-    TODO(tom_gunter): Allow for more inter/intra granule mesh config flexibility.
 
     Args:
         mesh_shape: The desired logical mesh shape.
@@ -1172,38 +1239,77 @@ def create_device_mesh(
     if not all(el.platform == device_platform for el in devices):
         raise NotImplementedError(f"Not all devices had platform: {device_platform}.")
 
-    # Return standard mesh if not a multi-slice/granule env.
-    if not is_multi_granule_env:
-        return build_standard_mesh(mesh_shape, devices=devices)
+    num_granules = (
+        max(getattr(el, attr) for el in devices.flatten()) + 1 if is_multi_granule_env else 1
+    )
+    num_devices = len(devices)
+    assert num_devices % num_granules == 0, "Number of devices should divide number of granules."
+    num_devices_per_granule = num_devices // num_granules
 
-    ici_mesh_shape = mesh_shape
-    num_granules = max(getattr(el, attr) for el in devices.flatten()) + 1
-
-    # Return standard mesh if on GPU with incompatible multi-slice/granule mesh.
-    if device_platform == "gpu" and ici_mesh_shape[0] % num_granules != 0:
+    # Fallback to a standard mesh if on GPU with incompatible multi-granule mesh.
+    if (
+        device_platform == "gpu"
+        and isinstance(mesh_shape, MeshShape)
+        and mesh_shape[0] % num_granules != 0
+    ):
         logging.warning("Falling back to ICI-only mesh on GPU, performance may be reduced.")
         return build_standard_mesh(mesh_shape, devices=devices)
 
-    # We only break the first device axis (the least communication intensive) across granules.
-    assert (
-        ici_mesh_shape[0] % num_granules == 0
-    ), "First mesh shape axis must divide num slices/granules."
-    logging.info("Building multi-slice/granule device mesh.")
-    # Truncate intra-slice/granule mesh.
-    ici_mesh_shape = (ici_mesh_shape[0] // num_granules, *ici_mesh_shape[1:])
-    logging.info("Inferred intra-slice/granule mesh shape: %s", ici_mesh_shape)
-    # Configure data center (inter-slice/granule) mesh.
-    dcn_mesh_shape = (num_granules,) + (1,) * len(ici_mesh_shape[1:])
-    logging.info("Inferred inter-slice/granule mesh shape: %s", dcn_mesh_shape)
-    # Check we have the right number of devices.
-    total_parallelism = np.product(dcn_mesh_shape) * np.product(ici_mesh_shape)
-    assert total_parallelism == len(devices), (
-        f"Num devices {len(devices)} does not match the product of "
-        f"inter and intra slice/granule parallelism {total_parallelism}."
-    )
+    # Canonicalize to HybridMeshShape. If DCN mesh is not specified, break the first non-singleton
+    # device axis (the least communication intensive) over the number of slices/granules. If all
+    # axes are singletons, this is effectively a no-op, since this implies a single-granule
+    # environment.
+    if isinstance(mesh_shape, MeshShape):
+        mesh_shape = infer_mesh_shape(mesh_shape, num_devices=num_devices)
+        for axis, dim in enumerate(mesh_shape):
+            if dim % num_granules == 0:
+                break
+            elif dim != 1:
+                raise ValueError(
+                    f"First non-singleton mesh axis {axis} with value {dim} does not divide "
+                    f"the number of slices/granules {num_granules}."
+                )
+        else:
+            raise ValueError(f"At least one axis of {mesh_shape=} must divide {num_granules=}.")
+
+        if num_granules > 1:
+            logging.info("Building multi-slice/granule device mesh over axis %s.", axis)
+        # Truncate intra-slice/granule mesh.
+        mesh_shape = (*mesh_shape[:axis], dim // num_granules, *mesh_shape[axis + 1 :])
+        logging.info("Inferred intra-slice/granule mesh shape: %s", mesh_shape)
+        # Configure data center (inter-slice/granule) mesh.
+        dcn_mesh_shape = (1,) * axis + (num_granules,) + (1,) * len(mesh_shape[axis + 1 :])
+        logging.info("Inferred inter-slice/granule mesh shape: %s", dcn_mesh_shape)
+
+        mesh_shape = HybridMeshShape(ici_mesh_shape=mesh_shape, dcn_mesh_shape=dcn_mesh_shape)
+    else:
+        # Infer -1 values in the mesh.
+        mesh_shape = HybridMeshShape(
+            ici_mesh_shape=infer_mesh_shape(
+                mesh_shape.ici_mesh_shape, num_devices=num_devices_per_granule
+            ),
+            dcn_mesh_shape=infer_mesh_shape(mesh_shape.dcn_mesh_shape, num_devices=num_granules),
+        )
+    logging.info("Using hybrid mesh shape: %s.", mesh_shape)
+
+    # Check that we have the right number of devices.
+    assert num_granules * num_devices_per_granule == len(devices)
+    if np.prod(mesh_shape.dcn_mesh_shape) != num_granules:
+        raise ValueError(
+            f"Product of DCN mesh {mesh_shape.dcn_mesh_shape} does not match {num_granules=}."
+        )
+    if np.prod(mesh_shape.ici_mesh_shape) != num_devices_per_granule:
+        raise ValueError(
+            f"Product of ICI mesh {mesh_shape.ici_mesh_shape} does not match "
+            f"{num_devices_per_granule=}."
+        )
+
+    # Return a standard mesh if not a multi-granule env.
+    if num_granules == 1:
+        return build_standard_mesh(mesh_shape.ici_mesh_shape, devices=devices)
+
     return create_hybrid_device_mesh(
-        ici_mesh_shape,
-        dcn_mesh_shape=dcn_mesh_shape,
+        mesh_shape,
         devices=devices,
         process_is_granule=attr == "process_index",
     )
@@ -1224,7 +1330,7 @@ def infer_mesh_shape(mesh_shape: MeshShape, *, num_devices: Optional[int] = None
         return mesh_shape
 
     if mesh_shape.count(-1) > 1:
-        raise ValueError(f"only one axis can be -1 in mesh shape, but get {mesh_shape}")
+        raise ValueError(f"Only one axis can be -1 in {mesh_shape=}.")
 
     # Handle the case with one -1.
     prod = math.prod(mesh_shape, start=-1)
@@ -1236,10 +1342,7 @@ def infer_mesh_shape(mesh_shape: MeshShape, *, num_devices: Optional[int] = None
             f"is not a multiple of the product {prod} of mesh axes."
         )
 
-    new_mesh_shape = tuple(x if x != -1 else num_devices // prod for x in mesh_shape)
-    logging.info("Infer mesh shape from %s to %s", mesh_shape, new_mesh_shape)
-
-    return new_mesh_shape
+    return tuple(x if x != -1 else num_devices // prod for x in mesh_shape)
 
 
 def thread_stack_traces() -> Sequence[Sequence[str]]:

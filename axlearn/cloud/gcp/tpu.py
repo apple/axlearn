@@ -307,7 +307,7 @@ def create_queued_tpu(
         reserved: Whether to use reserved or preemptible quota. If None, infers from `gcp_settings`.
 
     Raises:
-        TPUCreationError: If an exeption is raised on the creation request.
+        TPUCreationError: If an exception is raised on the creation request.
         ValueError: If an invalid name is provided.
     """
     validate_resource_name(name)
@@ -705,7 +705,7 @@ def infer_tpu_version(tpu_type: str) -> str:
         ValueError: if the TPU version string is unknown.
     """
     tpu_type = infer_tpu_type(tpu_type)
-    tpu_version = tpu_type.rsplit("-", 1)[0]  # split from the last occurance of '-'
+    tpu_version = tpu_type.rsplit("-", 1)[0]  # split from the last occurrence of '-'
     if tpu_version not in _TPU_VERSIONS:
         raise ValueError(f"Unknown TPU version {tpu_version}. Expected one of {_TPU_VERSIONS}")
     return tpu_version

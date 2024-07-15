@@ -158,7 +158,7 @@ class DecodeTest(parameterized.TestCase):
         init_cache = {}
         init_cache["cur_iter"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
 
-        # alpha is zero and beam search will perfer shorter sequences.
+        # alpha is zero and beam search will prefer shorter sequences.
         inputs = np.zeros([batch_size, decode_length])
         beam_search_output = decoding.beam_search_decode(
             inputs=inputs,

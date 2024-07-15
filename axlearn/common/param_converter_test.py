@@ -10,7 +10,7 @@ import pytest
 import torch
 from absl.testing import parameterized
 from jax import numpy as jnp
-from transformers import BertConfig
+from transformers import BertConfig, PreTrainedModel
 from transformers.models.bert import modeling_bert as hf_bert
 from transformers.models.deberta_v2 import modeling_deberta_v2 as hf_deberta_v2
 from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
@@ -31,6 +31,7 @@ from axlearn.common.attention import (
     TransformerAttentionLayer,
 )
 from axlearn.common.base_layer import BaseLayer
+from axlearn.common.bert import BertSequenceClassificationHead
 from axlearn.common.bert_test import bert_encoder_config_from_hf, dummy_inputs_for_mlm
 from axlearn.common.deberta import DisentangledSelfAttention
 from axlearn.common.deberta_test import (
@@ -39,6 +40,7 @@ from axlearn.common.deberta_test import (
 from axlearn.common.deberta_test import build_cfg as deberta_build_cfg
 from axlearn.common.deberta_test import build_model_config as deberta_build_model_config
 from axlearn.common.layers import (
+    BaseClassificationHead,
     Embedding,
     L2Norm,
     LayerNorm,
@@ -124,7 +126,7 @@ class BaseParamConverterTest(TestCase):
 class ParameterTest(BaseParamConverterTest):
     def setUp(self):
         super().setUp()
-        self.hf_cfg = hf_roberta.RobertaConfig(
+        hf_cfg_kwargs = dict(
             vocab_size=24,
             hidden_size=16,
             num_hidden_layers=2,
@@ -139,8 +141,14 @@ class ParameterTest(BaseParamConverterTest):
             bos_token_id=3,
             eos_token_id=1,
         )
+        self.hf_cfg = hf_roberta.RobertaConfig(**hf_cfg_kwargs)
+        self.hf_bert_cfg = hf_bert.BertConfig(**hf_cfg_kwargs)
 
-    def _bert_model_config(self, type_vocab_size=None):
+    def _bert_model_config(
+        self,
+        type_vocab_size: Optional[int] = None,
+        head_cfg: Optional[BaseClassificationHead] = None,
+    ):
         # TODO(markblee): Consider adding a shared util to convert HF to AXLearn config, something
         # like a config_converter, to avoid the many copies/variants of this code.
         model_cfg = bert.bert_model_config(
@@ -155,9 +163,8 @@ class ParameterTest(BaseParamConverterTest):
                 num_layers=self.hf_cfg.num_hidden_layers,
                 num_heads=self.hf_cfg.num_attention_heads,
             ),
+            head_cfg=head_cfg,
         )
-        # TODO(markblee): Add back pooler after we add classification head.
-        # pooler=bert.BertPooler.default_config()
         return model_cfg
 
     @parameterized.parameters(LayerNorm, LayerNormStateless)
@@ -428,22 +435,59 @@ class ParameterTest(BaseParamConverterTest):
         )
         self.assertNestedAllClose(out.data, hf_out[0])
 
-    @parameterized.parameters(hf_bert.BertModel, hf_roberta.RobertaModel)
-    def test_bert_model(self, hf_model):
-        layer = self._bert_model_config().set(name="convert_test").instantiate(parent=None)
-        # TODO(markblee): Add back pooler after we add classification head.
-        hf_layer = hf_model(self.hf_cfg, add_pooling_layer=False)
+    @parameterized.parameters(
+        hf_bert.BertModel,
+        hf_roberta.RobertaModel,
+        hf_bert.BertForSequenceClassification,
+        hf_roberta.RobertaForSequenceClassification,
+    )
+    def test_bert_model(self, hf_model: PreTrainedModel):
+        batch_size, num_classes = 3, 2
+        has_seq_cls_head = hf_model in (
+            hf_bert.BertForSequenceClassification,
+            hf_roberta.RobertaForSequenceClassification,
+        )
+        head_cfg = (
+            BertSequenceClassificationHead.default_config().set(num_classes=num_classes)
+            if has_seq_cls_head
+            else None
+        )
+        layer = (
+            self._bert_model_config(head_cfg=head_cfg)
+            .set(name="convert_test")
+            .instantiate(parent=None)
+        )
+        hf_cfg = (
+            self.hf_bert_cfg
+            if hf_model in (hf_bert.BertModel, hf_bert.BertForSequenceClassification)
+            else self.hf_cfg
+        )
+        if has_seq_cls_head:
+            hf_cfg.num_label = num_classes
+            hf_layer = hf_model(hf_cfg)
+        else:
+            hf_layer = hf_model(hf_cfg, add_pooling_layer=False)
 
         padding_input_id = 0
         test_inputs, hf_inputs = dummy_inputs_for_mlm(
-            batch_size=3,
-            max_seq_len=self.hf_cfg.max_position_embeddings,
-            vocab_size=self.hf_cfg.vocab_size,
-            type_vocab_size=self.hf_cfg.type_vocab_size,
+            batch_size=batch_size,
+            max_seq_len=hf_cfg.max_position_embeddings,
+            vocab_size=hf_cfg.vocab_size,
+            type_vocab_size=hf_cfg.type_vocab_size,
             mask_input_id=5,
             padding_input_id=padding_input_id,
             ignored_target_id=0,
         )
+        if has_seq_cls_head:
+            target_labels = jax.random.randint(
+                jax.random.PRNGKey(432),
+                shape=(batch_size,),
+                minval=0,
+                maxval=num_classes,
+            )
+            test_inputs["target_labels"] = target_labels
+            hf_inputs["labels"] = as_torch_tensor(target_labels).to(torch.long)
+
         out, hf_out = self._compute_layer_outputs(
             test_layer=layer,
             ref_layer=hf_layer,
@@ -458,17 +502,18 @@ class ParameterTest(BaseParamConverterTest):
                 return_dict=False,
             ),
         )
-        # Construct padding mask of shape [batch_size, max_seq_len, 1].
-        non_padding = (test_inputs["input_ids"] != padding_input_id).astype(jnp.float32)
-        non_padding = non_padding[..., None]
-        # Compare only at non-padding positions.
-        self.assertNestedAllClose(
-            out[1]["sequence_output"] * non_padding,
-            hf_out[0] * non_padding,
-        )
-        # Pooling just considers first token, which is always non-padding by construction.
-        # TODO(markblee): Add back pooler after we add classification head.
-        # self.assertNestedAllClose(out[1]["pooled_output"], hf_out[1])
+
+        if has_seq_cls_head:
+            self.assertNestedAllClose(out[1]["logits"], hf_out[0])
+        else:
+            # Construct padding mask of shape [batch_size, max_seq_len, 1].
+            non_padding = (test_inputs["input_ids"] != padding_input_id).astype(jnp.float32)
+            non_padding = non_padding[..., None]
+            # Compare only at non-padding positions.
+            self.assertNestedAllClose(
+                out[1]["sequence_output"] * non_padding,
+                hf_out[0] * non_padding,
+            )
 
     @parameterized.parameters(hf_bert.BertModel, hf_roberta.RobertaModel)
     def test_roundtrip(self, hf_model):

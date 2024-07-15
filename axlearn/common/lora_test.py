@@ -20,6 +20,7 @@ from axlearn.common.lora import (
     LoraFusedQKVAdapter,
     LoraFusedQKVLinear,
     LoraLinear,
+    LoraLinearAdapter,
     LoraMultiheadOutputLinear,
 )
 from axlearn.common.module import functional as F
@@ -29,6 +30,21 @@ from axlearn.common.utils import Tensor
 
 
 class LoraLinearTest(TestCase):
+    def test_set_param_spec_config(self):
+        layer_cfg = LoraLinearAdapter.default_config().set(
+            name="test",
+            rank=2,
+            alpha=1.0,
+            input_dim=2,
+            output_dim=4,
+        )
+        layer_cfg.lora_down.param_partition_spec = ["data", None]
+        layer_cfg.lora_up.param_partition_spec = [None, "data"]
+        layer = layer_cfg.instantiate(parent=None)
+        param_specs = layer.create_parameter_specs_recursively()
+        self.assertEqual(param_specs["lora_down"]["weight"].mesh_axes, ("data", None))
+        self.assertEqual(param_specs["lora_up"]["weight"].mesh_axes, (None, "data"))
+
     def test_forward(self):
         input_dim = 2
         output_dim = 4

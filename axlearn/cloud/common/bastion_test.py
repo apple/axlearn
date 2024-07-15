@@ -191,7 +191,7 @@ class TestDownloadJobBatch(parameterized.TestCase):
     def test_invalid_membership(self):
         # Test that we drop jobs where the user is not a member of the specified quota project id.
         user_ids = ["a", "b", "c"]
-        project_ids = ["proj1", "proj2", "proj3", "non_existant_proj"]
+        project_ids = ["proj1", "proj2", "proj3", "non_existent_proj"]
         jobspecs = {
             str(i): JobSpec(
                 version=0,
@@ -211,7 +211,7 @@ class TestDownloadJobBatch(parameterized.TestCase):
             name
             for name, job_spec in jobspecs.items()
             if job_spec.metadata.project_id == "proj3"
-            or job_spec.metadata.project_id != "non_existant_proj"
+            or job_spec.metadata.project_id != "non_existent_proj"
             and job_spec.metadata.user_id in project_membership[job_spec.metadata.project_id]
         ]
 
@@ -1327,6 +1327,37 @@ class BastionTest(parameterized.TestCase):
                 self.assertIn(
                     mock_job.cleanup_proc, mock_methods["_wait_and_close_proc"].call_args_list[1][0]
                 )
+
+    def test_execute_with_exception_and_job_failure(self):
+        job_1 = Job(
+            spec=mock.Mock(),
+            state=mock.Mock(),
+            command_proc=mock.Mock(),
+            cleanup_proc=mock.Mock(),
+        )
+        job_2 = Job(
+            spec=mock.Mock(),
+            state=mock.Mock(),
+            command_proc=mock.Mock(),
+            cleanup_proc=mock.Mock(),
+        )
+        active_jobs = {
+            "job1": job_1,
+            "job2": job_2,
+        }
+
+        with self._patch_bastion() as mock_bastion:
+            mock_bastion._execute = mock.Mock(side_effect=Exception("Execution failed"))
+            mock_bastion._kill_job = mock.Mock(side_effect=[Exception("Cannot kill job"), None])
+
+            mock_bastion._active_jobs = active_jobs
+
+            with self.assertRaises(Exception):
+                mock_bastion.execute()
+
+            self.assertEqual(mock_bastion._kill_job.call_count, 2)
+            expected_calls = [mock.call(job_1), mock.call(job_2)]
+            self.assertEqual(mock_bastion._kill_job.call_args_list, expected_calls)
 
 
 class BastionDirectoryTest(parameterized.TestCase):

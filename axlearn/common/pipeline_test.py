@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Pipeline layer tests."""
+
 # pylint: disable=no-self-use,duplicate-code
 from typing import Dict, Optional
 
@@ -11,7 +12,7 @@ from jax import numpy as jnp
 
 from axlearn.common import param_init
 from axlearn.common.base_layer import BaseLayer, ParameterSpec, RematSpec
-from axlearn.common.config import config_class
+from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module, OutputCollection
 from axlearn.common.module import functional as F
 from axlearn.common.pipeline import (
@@ -19,8 +20,8 @@ from axlearn.common.pipeline import (
     transpose_from_pipeline_stage_outputs,
     transpose_to_pipeline_stage_inputs,
 )
-from axlearn.common.test_utils import assert_allclose
-from axlearn.common.utils import PartitionSpec, VDict, shapes
+from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.utils import Nested, PartitionSpec, Tensor, VDict, cast_floats, shapes
 
 
 class TransposeTest(absltest.TestCase):
@@ -88,6 +89,7 @@ class TestComplicatedLayer(BaseLayer):
         return carry, forward_state
 
 
+# TODO(markblee): Rename dummy layers to avoid confusion with the actual test cases.
 class TestPipeline(Pipeline):
     """A dummy pipeline layer."""
 
@@ -119,9 +121,44 @@ class TestPipeline(Pipeline):
         return carry, dict(layer=forward_state)
 
 
-class PipelineTest(parameterized.TestCase):
-    @parameterized.parameters(None, RematSpec(prevent_cse=False))
-    def test_pipeline(self, remat_spec):
+class DummyMLP(BaseLayer):
+    """A dummy MLP layer."""
+
+    @config_class
+    class Config(BaseLayer.Config):
+        input_dim: Required[int] = REQUIRED
+        hidden_dim: Required[int] = REQUIRED
+
+    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+        cfg: DummyMLP.Config = self.config
+        return dict(
+            linear1=ParameterSpec(
+                shape=[cfg.input_dim, cfg.hidden_dim],
+                initializer=param_init.gaussian_initializer(1),
+            ),
+            linear2=ParameterSpec(
+                shape=[cfg.hidden_dim, cfg.input_dim],
+                initializer=param_init.gaussian_initializer(1),
+            ),
+        )
+
+    def init_forward_state(self, batch_size):
+        return jnp.zeros([batch_size])
+
+    def forward(self, x: Tensor, forward_state):
+        x = jnp.einsum("bd,dh->bh", x, self.parameters["linear1"])
+        x = jax.nn.relu(x)
+        x = jnp.einsum("bh,hd->bd", x, self.parameters["linear2"])
+        self.add_summary("carry_mean", jnp.mean(x))
+        return x, forward_state
+
+
+class PipelineTest(TestCase):
+    @parameterized.product(
+        remat_spec=[None, RematSpec(prevent_cse=False)],
+        dtype=[jnp.float32, jnp.bfloat16],
+    )
+    def test_pipeline(self, remat_spec: Optional[RematSpec], dtype: jnp.dtype):
         batch_size, microbatch_size, num_layers = 14, 2, 4
         num_microbatches = batch_size // microbatch_size
         layer: TestPipeline = (
@@ -143,17 +180,22 @@ class PipelineTest(parameterized.TestCase):
         logging.info("layer params=%s", layer_params)
 
         input_forward_state = layer.init_forward_state(batch_size)
+        inputs = (jnp.arange(batch_size, dtype=jnp.float32), input_forward_state)
         (carry, output_forward_state), output_collection = F(
             layer,
             prng_key=jax.random.PRNGKey(2),
-            state=layer_params,
-            inputs=(jnp.arange(batch_size, dtype=jnp.float32), input_forward_state),
+            state=cast_floats(layer_params, to_dtype=dtype),
+            inputs=cast_floats(inputs, to_dtype=dtype),
             is_training=True,
             drop_output_collections=(),
         )
         logging.info("forward_state=%s", output_forward_state)
         logging.info("state_outputs=%s", shapes(output_collection.state_updates))
         logging.info("module_outputs=%s", shapes(output_collection.module_outputs))
+
+        # Ensure carry dtype matches input.
+        jax.tree_util.tree_map(lambda x: self.assertEqual(x.dtype, dtype), carry)
+
         assert_allclose(carry, jnp.arange(num_layers, num_layers + batch_size))
         self.assertEqual(shapes(input_forward_state), shapes(output_forward_state))
         assert_allclose(
@@ -297,6 +339,80 @@ class PipelineTest(parameterized.TestCase):
                     for i in range(num_layers)
                 ],
             )
+
+    @parameterized.parameters(None, RematSpec(prevent_cse=False))
+    def test_pipeline_gradients(self, remat_spec):
+        """Test gradients against a ref implementation."""
+
+        batch_size, microbatch_size, num_stages, input_dim = 14, 2, 4, 8
+        num_microbatches = batch_size // microbatch_size
+
+        class DummyPipelineWithNaNs(TestPipeline):
+            """Wraps carry input by filling bubbles with NaNs."""
+
+            def _compute_carry_input(
+                self,
+                per_stage_inputs: Nested[Tensor],
+                carry_output_t_1: Nested[Tensor],
+                *,
+                t: Tensor,
+            ) -> Tensor:
+                x = super()._compute_carry_input(per_stage_inputs, carry_output_t_1, t=t)
+
+                def inject_nans(x):
+                    return jnp.where(self._is_valid_stage(x, t=t), x, jnp.nan)
+
+                return jax.tree_util.tree_map(inject_nans, x)
+
+        layer: TestPipeline = (
+            DummyPipelineWithNaNs.default_config()
+            .set(
+                name="test",
+                num_layers=num_stages,
+                num_microbatches=num_microbatches,
+                remat_spec=remat_spec,
+                layer=DummyMLP.default_config().set(input_dim=input_dim, hidden_dim=input_dim * 2),
+                vlog=3,
+            )
+            .instantiate(parent=None)
+        )
+
+        def test_fn(layer_params, data, prng_key):
+            layer_outputs, output_collection = F(
+                layer,
+                inputs=data,
+                state=layer_params,
+                is_training=True,
+                prng_key=prng_key,
+            )
+            # Ignore forward state.
+            data, _ = layer_outputs
+            return jnp.sum(data**2), output_collection
+
+        def ref_fn(layer_params, data):
+            linear1 = layer_params["layer"]["linear1"]
+            linear2 = layer_params["layer"]["linear2"]
+            for i in range(num_stages):
+                data = jnp.einsum("bd,dh->bh", data, linear1[i])
+                data = jax.nn.relu(data)
+                data = jnp.einsum("bh,hd->bd", data, linear2[i])
+            return jnp.sum(data**2)
+
+        layer_params = layer.initialize_parameters_recursively(jax.random.PRNGKey(1))
+        dummy_forward_state = layer.init_forward_state(batch_size)
+        inputs = jax.random.uniform(
+            jax.random.PRNGKey(2), [batch_size, input_dim], dtype=jnp.float32
+        )
+        (test_out, output_collection), test_grads = jax.value_and_grad(test_fn, has_aux=True)(
+            layer_params, (inputs, dummy_forward_state), jax.random.PRNGKey(3)
+        )
+        ref_out, ref_grads = jax.value_and_grad(ref_fn)(layer_params, inputs)
+
+        self.assertNestedAllClose(test_out, ref_out)
+        self.assertNestedAllClose(test_grads, ref_grads)
+        jax.tree_util.tree_map(
+            lambda x: self.assertFalse(jnp.isnan(x).any().item()), output_collection
+        )
 
 
 if __name__ == "__main__":

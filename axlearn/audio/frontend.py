@@ -1,7 +1,12 @@
 # Copyright © 2023 Apple Inc.
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
 
 """Audio frontends for feature extraction."""
 
+from functools import partial
 from typing import Callable, Dict, Optional, Sequence, Union
 
 import jax.numpy as jnp
@@ -96,6 +101,10 @@ class LogMelFrontend(BaseFrontend):
         # Recommend to set to 1e-6 or smaller to capture
         # low-energy signals.
         mel_floor: Required[float] = REQUIRED
+        # Optional customized FFT implementation. Use `jnp.fft.fft` if None.
+        # This can be used to support a sharded implementation of FFT.
+        # See `sharded_fft` for an example.
+        fft: Optional[InstantiableConfig[Callable[[Tensor], Tensor]]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -111,15 +120,19 @@ class LogMelFrontend(BaseFrontend):
 
         # Mel filterbank, used to convert magnitude spectrogram to mel spectrogram. Only needs to be
         # constructed once.
-        self._fft_size = next_power_of_2(self._frame_size)
+        fft_size = next_power_of_2(self._frame_size)
         self._filterbank = linear_to_mel_weight_matrix(
             num_filters=cfg.num_filters,
-            num_spectrogram_bins=self._fft_size // 2 + 1,
+            num_spectrogram_bins=fft_size // 2 + 1,
             sample_rate=cfg.sample_rate,
             lower_edge_hertz=125.0,
             upper_edge_hertz=7600.0,
         )
         self._mel_floor = cfg.mel_floor
+        if cfg.fft is not None:
+            self._fft = maybe_instantiate(cfg.fft.set(n=fft_size))
+        else:
+            self._fft = partial(jnp.fft.fft, n=fft_size)
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
         """Computes log-mel spectrogram features.
@@ -137,11 +150,14 @@ class LogMelFrontend(BaseFrontend):
         # Framer. Add 1 to frame size for pre-emphasis.
         frames = sliding_window(inputs, window_size=self._frame_size + 1, stride=self._hop_size)
         # Pre-emphasis filter.
-        frames = pre_emphasis(frames, coeff=0.97)
+        # Native python float is fp64, explicitly cast it to fp32.
+        frames = pre_emphasis(frames, coeff=jnp.array(0.97, dtype=jnp.float32))
         # Windowing. Defaults to a Hann window.
+        # [batch_size, num_frames, frame_size].
         frames = windowing(frames, window_type=WindowType.HANN)
         # FFT.
-        spectrogram = magnitude_spectrogram(frames, fft_size=self._fft_size)
+        # [batch_size, num_frames, fft_size] -> [batch_size, num_frames, fft_size // 2 + 1].
+        spectrogram = magnitude_spectrogram(self._fft(frames), dtype=frames.dtype)
         # Convert to log-mel. [batch, num_frames, num_filters].
         outputs = linear_to_log_mel_spectrogram(
             spectrogram,
