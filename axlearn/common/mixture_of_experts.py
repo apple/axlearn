@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
+from jax.experimental.pjit import pjit
 
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
@@ -47,6 +48,7 @@ from axlearn.common.utils import (
     VDict,
     flatten_items,
     set_recursively,
+    tree_paths,
     with_sharding_constraint,
 )
 
@@ -622,7 +624,7 @@ def _convert_feedforward_to_moe_parameters(
     num_experts: int,
     moe_parameter_specs: Nested[ParameterSpec],
 ) -> Nested[Tensor]:
-    """Upcycles parameters of a TransformerFeedForwardLayer to those of a TransformerFeedForwardMoE.
+    """Converts parameters of a TransformerFeedForwardLayer to those of a TransformerFeedForwardMoE.
 
     Args:
         source_parameters:
@@ -698,43 +700,57 @@ def convert_dense_to_moe_parameters(
     target_parameter_specs: Nested[ParameterSpec],
 ) -> Nested[Tensor]:
     """Converts parameters of a dense BaseTransformerLayer to parameters of a target layer."""
-    if "repeat" in target_parameter_specs:
+
+    def convert_fn(source_parameters: Nested[Tensor]) -> Nested[Tensor]:
+        if "repeat" not in target_parameter_specs:
+            raise NotImplementedError(
+                f"Expected RepeatedTransformerLayer, got {target_parameter_specs}"
+            )
+        # The target layer is a RepeatedTransformerLayer.
         target_parameters = {"repeat": VDict({"layer": {}})}
         stage_parameter_specs = target_parameter_specs["repeat"]["layer"]
         num_stages = jax.tree_util.tree_leaves(stage_parameter_specs)[0].shape[0]
         stage_spec: Sequence[_LayerConversionSpec] = []
-        if "layer0" in stage_parameter_specs:
-            num_layers = len(stage_parameter_specs)
-            for layer_i in range(num_layers):
-                layer_name = f"layer{layer_i}"
-                layer_parameter_specs = stage_parameter_specs[layer_name]
-                if "feed_forward" not in layer_parameter_specs:
-                    raise NotImplementedError(
-                        "Expected TransformerLayer in Repeated(Stacked(...))"
-                        f", got {layer_parameter_specs}"
-                    )
-                ff_layer_parameter_specs = layer_parameter_specs["feed_forward"]
-                layer_spec = _LayerConversionSpec()
-                if "gate_weight" in ff_layer_parameter_specs:
-                    layer_spec = _LayerConversionSpec(
-                        num_experts=ff_layer_parameter_specs["gate_weight"].shape[-1],
-                        moe_layer_parameter_specs=ff_layer_parameter_specs,
-                    )
-                stage_spec.append(layer_spec)
-            target_parameters["repeat"]["layer"] = _convert_repeated_dense_to_moe_parameters(
-                source_parameters["repeat"]["layer"],
-                num_stages=num_stages,
-                stage_spec=stage_spec,
-            )
-        else:
+        if "layer0" not in stage_parameter_specs:
             raise NotImplementedError(
                 f"Expected StackedTransformerLayer in Repeated(...), got {stage_parameter_specs}"
             )
-    else:
-        raise NotImplementedError(
-            f"Expected RepeatedTransformerLayer, got {target_parameter_specs}"
+        # The target stage is a StackedTransformerLayer.
+        num_layers_per_stage = len(stage_parameter_specs)
+        for layer_i in range(num_layers_per_stage):
+            layer_name = f"layer{layer_i}"
+            layer_parameter_specs = stage_parameter_specs[layer_name]
+            if "feed_forward" not in layer_parameter_specs:
+                raise NotImplementedError(
+                    "Expected TransformerLayer in Repeated(Stacked(...))"
+                    f", got {layer_parameter_specs}"
+                )
+            ff_layer_parameter_specs = layer_parameter_specs["feed_forward"]
+            layer_spec = _LayerConversionSpec()
+            if "gate_weight" in ff_layer_parameter_specs:
+                # The target feed_forward layer is a TransformerFeedForwardMoE.
+                layer_spec = _LayerConversionSpec(
+                    num_experts=ff_layer_parameter_specs["gate_weight"].shape[-1],
+                    moe_layer_parameter_specs=ff_layer_parameter_specs,
+                )
+            stage_spec.append(layer_spec)
+        target_parameters["repeat"]["layer"] = _convert_repeated_dense_to_moe_parameters(
+            source_parameters["repeat"]["layer"],
+            num_stages=num_stages,
+            stage_spec=stage_spec,
         )
+        return target_parameters
 
+    def compute_out_sharding(path: str, parameter_spec: ParameterSpec) -> Optional[PartitionSpec]:
+        if path.endswith("/gate_weight"):
+            # `convert_fn` will not generate gate_weight
+            return None
+        return parameter_spec.mesh_axes
+
+    out_shardings = jax.tree_util.tree_map(
+        compute_out_sharding, tree_paths(target_parameter_specs), target_parameter_specs
+    )
+    target_parameters = pjit(convert_fn, out_shardings=out_shardings)(source_parameters)
     target_parameters = jax.tree_util.tree_map(
         lambda spec, param: spec if param is None else param,
         target_parameter_specs,

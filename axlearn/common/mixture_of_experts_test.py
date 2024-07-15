@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
+from jax.experimental import mesh_utils
 
 from axlearn.common.attention import (
     RepeatedTransformerLayer,
@@ -400,50 +401,56 @@ class ParamConversionTest(parameterized.TestCase):
 
     def test_dense_to_moe_parameters(self):
         """Tests _convert_feedforward_to_moe_parameters."""
-        num_layers, input_dim, hidden_dim, num_heads = 6, 4, 16, 2
-        cfg_dense = RepeatedTransformerLayer.default_config().set(
-            name="test",
-            input_dim=input_dim,
-            num_layers=num_layers,
-            layer=TransformerLayer.default_config(),
-        )
-        cfg_dense.layer.self_attention.attention.set(num_heads=num_heads)
-        cfg_ff_dense = cfg_dense.layer.feed_forward.set(
-            hidden_dim=hidden_dim, activation=("linear", "silu")
-        )
-        set_bias_recursively(cfg_dense, bias=False)
-        layer_dense = cfg_dense.instantiate(parent=None)
-        state_dense = layer_dense.initialize_parameters_recursively(
-            prng_key=jax.random.PRNGKey(123)
-        )
+        mesh_shape = (1, 1, 1)
+        devices = mesh_utils.create_device_mesh(mesh_shape)
+        mesh = jax.sharding.Mesh(devices, ("expert", "data", "model"))
+        with mesh:
+            num_layers, input_dim, hidden_dim, num_heads = 6, 4, 16, 2
+            cfg_dense = RepeatedTransformerLayer.default_config().set(
+                name="test",
+                input_dim=input_dim,
+                num_layers=num_layers,
+                layer=TransformerLayer.default_config(),
+            )
+            cfg_dense.layer.self_attention.attention.set(num_heads=num_heads)
+            cfg_ff_dense = cfg_dense.layer.feed_forward.set(
+                hidden_dim=hidden_dim, activation=("linear", "silu")
+            )
+            set_bias_recursively(cfg_dense, bias=False)
+            layer_dense = cfg_dense.instantiate(parent=None)
+            state_dense = layer_dense.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(123)
+            )
 
-        cfg_ff_moe = TransformerFeedForwardMoE.default_config().set(
-            hidden_dim=hidden_dim,
-            num_experts=3,
-            num_groups=1,
-            activation=cfg_ff_dense.activation,
-        )
-        cfg_moe = RepeatedTransformerLayer.default_config().set(
-            name="test",
-            input_dim=input_dim,
-            num_layers=num_layers // 2,
-            layer=StackedTransformerLayer.default_config().set(
-                num_layers=2,
-                layer=[cfg_dense.layer.clone(), cfg_dense.layer.clone(feed_forward=cfg_ff_moe)],
-            ),
-        )
-        set_bias_recursively(cfg_moe, bias=False)
+            cfg_ff_moe = TransformerFeedForwardMoE.default_config().set(
+                hidden_dim=hidden_dim,
+                num_experts=3,
+                num_groups=1,
+                activation=cfg_ff_dense.activation,
+            )
+            cfg_moe = RepeatedTransformerLayer.default_config().set(
+                name="test",
+                input_dim=input_dim,
+                num_layers=num_layers // 2,
+                layer=StackedTransformerLayer.default_config().set(
+                    num_layers=2,
+                    layer=[cfg_dense.layer.clone(), cfg_dense.layer.clone(feed_forward=cfg_ff_moe)],
+                ),
+            )
+            set_bias_recursively(cfg_moe, bias=False)
 
-        layer_moe = cfg_moe.instantiate(parent=None)
-        state_moe = layer_moe.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
-        param_specs_moe = layer_moe.create_parameter_specs_recursively()
+            layer_moe = cfg_moe.instantiate(parent=None)
+            state_moe = layer_moe.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(123)
+            )
+            param_specs_moe = layer_moe.create_parameter_specs_recursively()
 
-        state_moe_converted = convert_dense_to_moe_parameters(
-            state_dense, target_parameter_specs=param_specs_moe
-        )
-        print(shapes(state_moe))
-        print(shapes(state_moe_converted))
-        self.assertEqual(shapes(state_moe), shapes(state_moe_converted))
+            state_moe_converted = convert_dense_to_moe_parameters(
+                state_dense, target_parameter_specs=param_specs_moe
+            )
+            print(shapes(state_moe))
+            print(shapes(state_moe_converted))
+            self.assertEqual(shapes(state_moe), shapes(state_moe_converted))
 
 
 if __name__ == "__main__":
