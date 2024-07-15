@@ -8,7 +8,20 @@ import math
 import os.path
 import threading
 import time
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence, Set, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Dict,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+)
 
 import jax
 import tensorflow as tf
@@ -23,17 +36,18 @@ from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import Checkpointer
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     InstantiableConfig,
     Required,
     config_class,
     maybe_instantiate,
 )
 from axlearn.common.evaler import SpmdEvaler
-from axlearn.common.learner import ForwardOutputs, Learner, NestedOptParam
+from axlearn.common.learner import ForwardOutputs, Learner
 from axlearn.common.module import InvocationContext, Module, child_context, clone_context_stack
 from axlearn.common.module import functional as F
 from axlearn.common.module import install_context_stack, new_output_collection
-from axlearn.common.optimizer_base import OptParam
+from axlearn.common.optimizer_base import NestedOptParam, OptParam
 from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
@@ -167,6 +181,10 @@ class SpmdTrainer(Module):
         # An optional recorder for measuring common metrics like step time.
         recorder: Optional[InstantiableConfig[measurement.Recorder]] = None
 
+        # An additional context manager to run the training loop and initialization inside of.
+        # The provided config should instantiate to a thunk that returns the context manager.
+        context_manager: Optional[ConfigOr[Callable[[], ContextManager]]] = None
+
     def __init__(
         self,
         cfg: Config,
@@ -216,6 +234,9 @@ class SpmdTrainer(Module):
         mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
         self._step_log("Global mesh: %s", mesh)
         self._mesh = mesh
+        self._context_manager: Callable[[], ContextManager] = (
+            maybe_instantiate(cfg.context_manager) or contextlib.nullcontext
+        )
 
         # Create all children within the mesh context so that utils.input_partition_spec() works
         # properly.
@@ -424,7 +445,9 @@ class SpmdTrainer(Module):
             different types of values such as WeightedScalar, Tensor, or string, depending on
             the specific `metric_calculator` config of the evaler.
         """
-        with self._watchdog(), self.mesh(), jax.log_compiles(self.vlog_is_on(1)):
+        with self._watchdog(), self.mesh(), jax.log_compiles(
+            self.vlog_is_on(1)
+        ), self._context_manager():
             cfg = self.config
             # Check if need to force run evals at the last training step.
             force_run_eval_sets_at_max_step = self._should_force_run_evals(
@@ -872,7 +895,7 @@ class SpmdTrainer(Module):
         )
 
     def compile_train_step(self) -> jax.stages.Compiled:
-        with self.mesh():
+        with self.mesh(), self._context_manager():
             # Do not run init(), which require real devices.
             trainer_state_specs = jax.tree_util.tree_map(
                 lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
