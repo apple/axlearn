@@ -654,8 +654,9 @@ def _convert_feedforward_to_moe_parameters(
             raise NotImplementedError(f"Unexpected {linear_name} in {path}")
         moe_weight_prefix = "wi" if m.group(1) == "1" else "wo"
         moe_weight_suffix = m.group(2)
-        moe_parameters[f"{moe_weight_prefix}{moe_weight_suffix}_weight"] = jnp.tile(
-            value, (num_experts, 1, 1)
+        dispatch = jnp.ones([num_experts], dtype=value.dtype)
+        moe_parameters[f"{moe_weight_prefix}{moe_weight_suffix}_weight"] = jnp.einsum(
+            "xy,e->exy", value, dispatch
         )
     return moe_parameters
 
