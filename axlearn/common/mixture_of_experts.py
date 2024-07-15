@@ -47,6 +47,7 @@ from axlearn.common.utils import (
     Tensor,
     VDict,
     flatten_items,
+    get_recursively,
     set_recursively,
     tree_paths,
     with_sharding_constraint,
@@ -666,6 +667,7 @@ def _convert_repeated_dense_to_moe_parameters(
     num_stages: int,
     stage_spec: Sequence[_LayerConversionSpec],
 ) -> Nested[Tensor]:
+    """Converts a parameters of Repeated(Stacked(TransformerLayer)) to"""
     target_parameters = {}
     for layer_i, layer_spec in enumerate(stage_spec):
 
@@ -699,33 +701,55 @@ def convert_dense_to_moe_parameters(
     *,
     target_parameter_specs: Nested[ParameterSpec],
 ) -> Nested[Tensor]:
-    """Converts parameters of a dense BaseTransformerLayer to parameters of a target layer."""
+    """Converts parameters of a dense BaseTransformerLayer to parameters of a target layer.
+
+    Current limitations:
+    - The source and target must have the same total number of TransformerLayers.
+    - `source_parameters` must represent a `RepeatedTransformerLayer(TransformerLayer)` stack;
+    - `target_parameter_specs` must represent a `RepeatedTransformerLayer(StackedTransformerLayer)`
+      stack, where every layer in the `StackedTransformerLayer` must be TransformerLayer, containing
+      either a (dense) TransformerFeedForwardLayer or a TransformerFeedForwardMoE as its
+      `feed_forward` child.
+
+    Args:
+        source_parameters: The dense Transformer parameters.
+        target_parameter_specs: The target layer parameter specs.
+
+    Returns:
+        The target layer parameters, where:
+        - The expert feed-forward weights are replicated from the corresponding dense feed-forward
+          weights.
+        - The `gate_weight` of TransformerFeedForwardMoE layers will be in the form of
+          a ParameterSpec instead of a Tensor, since the conversion does not generate
+          `gate_weight`.
+        - All other parameters will be copied from the corresponding parameters of
+          `source_parameters`.
+    """
 
     def convert_fn(source_parameters: Nested[Tensor]) -> Nested[Tensor]:
-        if "repeat" not in target_parameter_specs:
+        try:
+            stage_parameter_specs = get_recursively(target_parameter_specs, ("repeat", "layer"))
+        except KeyError as e:
             raise NotImplementedError(
                 f"Expected RepeatedTransformerLayer, got {target_parameter_specs}"
-            )
+            ) from e
         # The target layer is a RepeatedTransformerLayer.
         target_parameters = {"repeat": VDict({"layer": {}})}
-        stage_parameter_specs = target_parameter_specs["repeat"]["layer"]
         num_stages = jax.tree_util.tree_leaves(stage_parameter_specs)[0].shape[0]
-        stage_spec: Sequence[_LayerConversionSpec] = []
-        if "layer0" not in stage_parameter_specs:
-            raise NotImplementedError(
-                f"Expected StackedTransformerLayer in Repeated(...), got {stage_parameter_specs}"
-            )
-        # The target stage is a StackedTransformerLayer.
+        # The target stage is expected to be a StackedTransformerLayer.
         num_layers_per_stage = len(stage_parameter_specs)
+        # Build `stage_spec` based on `stage_parameter_specs`.
+        stage_spec: Sequence[_LayerConversionSpec] = []
         for layer_i in range(num_layers_per_stage):
             layer_name = f"layer{layer_i}"
-            layer_parameter_specs = stage_parameter_specs[layer_name]
-            if "feed_forward" not in layer_parameter_specs:
-                raise NotImplementedError(
-                    "Expected TransformerLayer in Repeated(Stacked(...))"
-                    f", got {layer_parameter_specs}"
+            try:
+                ff_layer_parameter_specs = get_recursively(
+                    stage_parameter_specs, (layer_name, "feed_forward")
                 )
-            ff_layer_parameter_specs = layer_parameter_specs["feed_forward"]
+            except KeyError as e:
+                raise NotImplementedError(
+                    f"Expected Repeated(Stacked(TransformerLayer)), got {stage_parameter_specs}"
+                ) from e
             layer_spec = _LayerConversionSpec()
             if "gate_weight" in ff_layer_parameter_specs:
                 # The target feed_forward layer is a TransformerFeedForwardMoE.
