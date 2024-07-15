@@ -13,9 +13,8 @@
 
 Reference: https://arxiv.org/abs/2405.15052.
 """
-import dataclasses
 import re
-from typing import Dict, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Dict, NamedTuple, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -628,12 +627,16 @@ def _convert_feedforward_to_moe_parameters(
     """Converts parameters of a TransformerFeedForwardLayer to those of a TransformerFeedForwardMoE.
 
     Args:
-        source_parameters:
-        num_experts:
-        moe_parameter_specs:
+        source_parameters: The parameters of a TransformerFeedForwardLayer.
+        num_experts: The number of experts for the target TransformerFeedForwardMoE.
+        moe_parameter_specs: The parameter specs for the target TransformerFeedForwardMoE.
 
     Returns:
         Parameters of a TransformerFeedForwardMoE.
+
+    Raises:
+        NotImplementedError: if the source TransformerFeedForwardLayer includes bias in its linear
+            parameters or upon unexpected source parameter names.
     """
     moe_parameters = jax.tree_util.tree_map(lambda x: None, moe_parameter_specs)
     for path, value in flatten_items(source_parameters):
@@ -647,53 +650,14 @@ def _convert_feedforward_to_moe_parameters(
         # linear_name can be "linear1", "linear2", "linear1_0", or "linear1_1" and should map to
         # wi, wo, wi_0, wi_1, respectively.
         m = re.fullmatch("([0-9]+)(|_[0-9]+)", linear_name)
+        if not m:
+            raise NotImplementedError(f"Unexpected {linear_name} in {path}")
         moe_weight_prefix = "wi" if m.group(1) == "1" else "wo"
         moe_weight_suffix = m.group(2)
         moe_parameters[f"{moe_weight_prefix}{moe_weight_suffix}_weight"] = jnp.tile(
             value, (num_experts, 1, 1)
         )
     return moe_parameters
-
-
-@dataclasses.dataclass
-class _LayerConversionSpec:
-    num_experts: Optional[int] = None
-    moe_layer_parameter_specs: Optional[Nested[ParameterSpec]] = None
-
-
-def _convert_repeated_dense_to_moe_parameters(
-    source_parameters: Nested[Tensor],
-    *,
-    num_stages: int,
-    stage_spec: Sequence[_LayerConversionSpec],
-) -> Nested[Tensor]:
-    """Converts a parameters of Repeated(Stacked(TransformerLayer)) to"""
-    target_parameters = {}
-    for layer_i, layer_spec in enumerate(stage_spec):
-
-        def convert_layer(
-            layer_index: Tensor,
-            num_experts=layer_spec.num_experts,
-            moe_layer_parameter_specs=layer_spec.moe_layer_parameter_specs,
-        ) -> Nested[Tensor]:
-            """Converts source_parameters[layer_index] to params of a target layer."""
-            layer_parameters = jax.tree_util.tree_map(lambda w: w[layer_index], source_parameters)
-            if not num_experts:
-                return layer_parameters
-
-            layer_parameters["feed_forward"] = _convert_feedforward_to_moe_parameters(
-                layer_parameters["feed_forward"],
-                num_experts=num_experts,
-                moe_parameter_specs=moe_layer_parameter_specs,
-            )
-            return layer_parameters
-
-        source_layer_indices = [s * len(stage_spec) + layer_i for s in range(num_stages)]
-        target_parameters[f"layer{layer_i}"] = jax.vmap(convert_layer)(
-            jnp.asarray(source_layer_indices, dtype=jnp.int32)
-        )
-
-    return target_parameters
 
 
 def convert_dense_to_moe_parameters(
@@ -738,8 +702,6 @@ def convert_dense_to_moe_parameters(
         num_stages = jax.tree_util.tree_leaves(stage_parameter_specs)[0].shape[0]
         # The target stage is expected to be a StackedTransformerLayer.
         num_layers_per_stage = len(stage_parameter_specs)
-        # Build `stage_spec` based on `stage_parameter_specs`.
-        stage_spec: Sequence[_LayerConversionSpec] = []
         for layer_i in range(num_layers_per_stage):
             layer_name = f"layer{layer_i}"
             try:
@@ -750,19 +712,37 @@ def convert_dense_to_moe_parameters(
                 raise NotImplementedError(
                     f"Expected Repeated(Stacked(TransformerLayer)), got {stage_parameter_specs}"
                 ) from e
-            layer_spec = _LayerConversionSpec()
+
+            num_experts = None
             if "gate_weight" in ff_layer_parameter_specs:
                 # The target feed_forward layer is a TransformerFeedForwardMoE.
-                layer_spec = _LayerConversionSpec(
-                    num_experts=ff_layer_parameter_specs["gate_weight"].shape[-1],
-                    moe_layer_parameter_specs=ff_layer_parameter_specs,
+                num_experts = ff_layer_parameter_specs["gate_weight"].shape[-1]
+            source_layer_parameters = source_parameters["repeat"]["layer"]
+
+            def convert_layer(
+                layer_index: Tensor,
+                source_layer_parameters=source_layer_parameters,
+                num_experts=num_experts,
+                moe_layer_parameter_specs=ff_layer_parameter_specs,
+            ) -> Nested[Tensor]:
+                """Converts source_layer_parameters[layer_index] to params of a target layer."""
+                layer_parameters = jax.tree_util.tree_map(
+                    lambda w: w[layer_index], source_layer_parameters
                 )
-            stage_spec.append(layer_spec)
-        target_parameters["repeat"]["layer"] = _convert_repeated_dense_to_moe_parameters(
-            source_parameters["repeat"]["layer"],
-            num_stages=num_stages,
-            stage_spec=stage_spec,
-        )
+                if not num_experts:
+                    return layer_parameters
+
+                layer_parameters["feed_forward"] = _convert_feedforward_to_moe_parameters(
+                    layer_parameters["feed_forward"],
+                    num_experts=num_experts,
+                    moe_parameter_specs=moe_layer_parameter_specs,
+                )
+                return layer_parameters
+
+            source_layer_indices = [s * num_layers_per_stage + layer_i for s in range(num_stages)]
+            target_parameters["repeat"]["layer"][layer_name] = jax.vmap(convert_layer)(
+                jnp.asarray(source_layer_indices, dtype=jnp.int32)
+            )
         return target_parameters
 
     def compute_out_sharding(path: str, parameter_spec: ParameterSpec) -> Optional[PartitionSpec]:
