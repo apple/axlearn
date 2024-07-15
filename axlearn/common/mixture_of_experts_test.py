@@ -439,15 +439,10 @@ class ParamConversionTest(parameterized.TestCase):
         param_specs_moe = layer_moe.create_parameter_specs_recursively()
 
         state_moe_converted = convert_dense_to_moe_parameters(
-            state_dense, target_layer=layer_moe, target_parameter_specs=param_specs_moe
+            state_dense, target_parameter_specs=param_specs_moe
         )
-        print(jax.tree_util.tree_structure(state_moe))
-        print(jax.tree_util.tree_structure(state_moe_converted))
-        state_moe_converted = jax.tree_util.tree_map(
-            lambda spec, param: spec if param is None else param,
-            param_specs_moe,
-            state_moe_converted,
-        )
+        print(shapes(state_moe))
+        print(shapes(state_moe_converted))
         self.assertEqual(shapes(state_moe), shapes(state_moe_converted))
 
 

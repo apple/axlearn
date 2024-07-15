@@ -22,12 +22,6 @@ import jax.numpy as jnp
 import numpy as np
 from absl import logging
 
-from axlearn.common.attention import (
-    BaseTransformerLayer,
-    RepeatedTransformerLayer,
-    StackedTransformerLayer,
-    TransformerLayer,
-)
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
@@ -701,41 +695,49 @@ def _convert_repeated_dense_to_moe_parameters(
 def convert_dense_to_moe_parameters(
     source_parameters: Nested[Tensor],
     *,
-    target_layer: BaseTransformerLayer,
     target_parameter_specs: Nested[ParameterSpec],
 ) -> Nested[Tensor]:
-    if isinstance(target_layer, RepeatedTransformerLayer):
+    """Converts parameters of a dense BaseTransformerLayer to parameters of a target layer."""
+    if "repeat" in target_parameter_specs:
         target_parameters = {"repeat": VDict({"layer": {}})}
-        target_stage = target_layer.repeat.layer
         stage_parameter_specs = target_parameter_specs["repeat"]["layer"]
+        num_stages = jax.tree_util.tree_leaves(stage_parameter_specs)[0].shape[0]
         stage_spec: Sequence[_LayerConversionSpec] = []
-        if isinstance(target_stage, StackedTransformerLayer):
-            for layer_i in range(target_stage.config.num_layers):
-                inner_name = f"layer{layer_i}"
-                inner_layer = target_stage.children[inner_name]
-                inner_parameter_specs = stage_parameter_specs[inner_name]
-                if not isinstance(inner_layer, TransformerLayer):
+        if "layer0" in stage_parameter_specs:
+            num_layers = len(stage_parameter_specs)
+            for layer_i in range(num_layers):
+                layer_name = f"layer{layer_i}"
+                layer_parameter_specs = stage_parameter_specs[layer_name]
+                if "feed_forward" not in layer_parameter_specs:
                     raise NotImplementedError(
-                        f"Expected TransformerLayer in Repeated(Stacked(...)), got {inner_layer}"
+                        "Expected TransformerLayer in Repeated(Stacked(...))"
+                        f", got {layer_parameter_specs}"
                     )
-                ff_layer = inner_layer.feed_forward
-                ff_layer_parameter_specs = inner_parameter_specs["feed_forward"]
+                ff_layer_parameter_specs = layer_parameter_specs["feed_forward"]
                 layer_spec = _LayerConversionSpec()
-                if isinstance(ff_layer, TransformerFeedForwardMoE):
+                if "gate_weight" in ff_layer_parameter_specs:
                     layer_spec = _LayerConversionSpec(
-                        num_experts=ff_layer.config.num_experts,
+                        num_experts=ff_layer_parameter_specs["gate_weight"].shape[-1],
                         moe_layer_parameter_specs=ff_layer_parameter_specs,
                     )
                 stage_spec.append(layer_spec)
             target_parameters["repeat"]["layer"] = _convert_repeated_dense_to_moe_parameters(
                 source_parameters["repeat"]["layer"],
-                num_stages=target_layer.config.num_layers,
+                num_stages=num_stages,
                 stage_spec=stage_spec,
             )
-            return target_parameters
         else:
             raise NotImplementedError(
-                f"Expected StackedTransformerLayer in Repeated(...), got {target_stage}"
+                f"Expected StackedTransformerLayer in Repeated(...), got {stage_parameter_specs}"
             )
     else:
-        raise NotImplementedError(f"Expected RepeatedTransformerLayer, got {target_layer}")
+        raise NotImplementedError(
+            f"Expected RepeatedTransformerLayer, got {target_parameter_specs}"
+        )
+
+    target_parameters = jax.tree_util.tree_map(
+        lambda spec, param: spec if param is None else param,
+        target_parameter_specs,
+        target_parameters,
+    )
+    return target_parameters
