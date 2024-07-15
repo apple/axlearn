@@ -82,7 +82,7 @@ def jobs_table(jobs: Dict[str, BastionJob]) -> Table:
         A table which can be printed.
     """
     return Table(
-        headings=["NAME", "USER_ID", "JOB_STATE", "PROJECT_ID", "RESOURCES", "PRIORITY"],
+        headings=["NAME", "USER_ID", "JOB_STATE", "PROJECT_ID", "RESOURCES", "PRIORITY", "JOB_ID"],
         rows=[
             [
                 job.spec.name,
@@ -91,6 +91,7 @@ def jobs_table(jobs: Dict[str, BastionJob]) -> Table:
                 job.spec.metadata.project_id,
                 str(job.spec.metadata.resources),
                 str(job.spec.metadata.priority),
+                job.spec.metadata.job_id,
             ]
             for job in jobs.values()
         ],

@@ -62,6 +62,11 @@ def generate_job_name() -> str:
     return f"{os.environ['USER'].replace('_', '')}-{uuid.uuid4().hex.lower()[:6]}"
 
 
+def generate_job_id() -> str:
+    """Generate a unique job uuid."""
+    return str(uuid.uuid4())
+
+
 # TODO(markblee): Consider using git python.
 def get_git_revision(revision: str) -> str:
     """Gets the commit hash for the revision."""

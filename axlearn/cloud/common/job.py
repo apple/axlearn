@@ -33,6 +33,8 @@ class Job(Configurable):
         # TODO(markblee): Convert all comments into config class docstrings.
         # Job name.
         name: Required[str] = REQUIRED
+        # Job UUID.
+        id: Optional[str] = None
         # Max attempts to execute the Job.
         max_tries: Required[int] = REQUIRED
         # Retry interval in seconds.

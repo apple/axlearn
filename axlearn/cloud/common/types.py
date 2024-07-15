@@ -24,6 +24,8 @@ class JobMetadata:
     creation_time: datetime.datetime
     resources: Dict[ResourceType, int]
     priority: int = 5  # 1 - highest, 5 - lowest
+    # ID of the job (aka job_id).
+    job_id: Optional[str] = None
 
 
 @dataclasses.dataclass

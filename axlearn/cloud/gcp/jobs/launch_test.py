@@ -124,6 +124,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                     test_fixture.assertEqual(spec.metadata.user_id, cfg.user_id)
                     test_fixture.assertEqual(spec.metadata.project_id, cfg.project_id or "none")
                     test_fixture.assertEqual(spec.metadata.priority, cfg.priority)
+                    test_fixture.assertIsNotNone(spec.metadata.job_id)
 
         return cfg.set(bastion_dir=FakeBastionDirectory.default_config().set(root_dir="temp_dir"))
 
@@ -191,6 +192,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         project_id="test_project",
                         creation_time=datetime.now(),
                         resources={"v4": 8},
+                        job_id="test-id0",
                     ),
                 ),
                 state=BastionJobState(status=JobStatus.PENDING),
@@ -206,6 +208,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         project_id="test_project",
                         creation_time=datetime.now(),
                         resources={"v4": 8, "v5": 16},
+                        job_id="test-id1",
                     ),
                 ),
                 state=BastionJobState(status=JobStatus.ACTIVE),
@@ -221,6 +224,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         project_id="test_project1",
                         creation_time=datetime.now(),
                         resources={"v4": 16},
+                        job_id="test-id2",
                     ),
                 ),
                 state=BastionJobState(status=JobStatus.ACTIVE),
@@ -242,6 +246,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         "PROJECT_ID",
                         "RESOURCES",
                         "PRIORITY",
+                        "JOB_ID",
                     ],
                     rows=[
                         [
@@ -251,6 +256,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                             "test_project",
                             "{'v4': 8}",
                             "5",
+                            "test-id0",
                         ],
                         [
                             "test_job1",
@@ -259,6 +265,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                             "test_project",
                             "{'v4': 8, 'v5': 16}",
                             "5",
+                            "test-id1",
                         ],
                         [
                             "test_job2",
@@ -267,6 +274,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                             "test_project1",
                             "{'v4': 16}",
                             "5",
+                            "test-id2",
                         ],
                     ],
                 ),
@@ -375,7 +383,6 @@ class TestBastionManagedTPUJob(TestWithTemporaryCWD):
             self.assertEqual(fv.output_dir, output_dir)
 
             cfg = BastionManagedTPUJob.from_flags(fv, command="test command", action=action)
-
             self.assertIsNone(cfg.bundler)
             if action == "start":
                 self.assertIsNotNone(cfg.runner)
