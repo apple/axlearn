@@ -52,7 +52,7 @@ import os
 import shlex
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, NamedTuple, Optional, Protocol, Sequence, TextIO, Type
 
 from absl import app, flags, logging
@@ -322,7 +322,7 @@ class BaseBastionManagedJob(Job):
             metadata = JobMetadata(
                 user_id=cfg.user_id,
                 project_id=cfg.project_id or "none",
-                creation_time=datetime.now(),
+                creation_time=datetime.now(timezone.utc),
                 resources=maybe_instantiate(cfg.resources),
                 priority=cfg.priority,
             )
