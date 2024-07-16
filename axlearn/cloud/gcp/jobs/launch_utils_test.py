@@ -153,9 +153,25 @@ class TestListUtils(parameterized.TestCase):
         print(jobs_table(self._mock_jobs))
         self.assertEqual(
             Table(
-                headings=["NAME", "USER_ID", "JOB_STATE", "PROJECT_ID", "RESOURCES", "PRIORITY", "JOB_ID"],
+                headings=[
+                    "NAME",
+                    "USER_ID",
+                    "JOB_STATE",
+                    "PROJECT_ID",
+                    "RESOURCES",
+                    "PRIORITY",
+                    "JOB_ID",
+                ],
                 rows=[
-                    [f"job_{p}{u}{i}", f"user_{u}", "ACTIVE", f"project_{p}", "{'v4': 8}", "5", "test-id"]
+                    [
+                        f"job_{p}{u}{i}",
+                        f"user_{u}",
+                        "ACTIVE",
+                        f"project_{p}",
+                        "{'v4': 8}",
+                        "5",
+                        "test-id",
+                    ]
                     for p in range(2)
                     for u in range(2)
                     for i in range(2)
