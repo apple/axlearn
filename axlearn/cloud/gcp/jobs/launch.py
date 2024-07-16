@@ -349,8 +349,6 @@ class BaseBastionManagedJob(Job):
             "\nCheck project history with:\n"
             f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
             f"{cfg.project_id or ''}"
-            "\n\nView job in UI (may take 1-2 minutes):\n "
-            f"https://bastion.us-west-3s.app.apple.com/zone/{cfg.zone}/jobs/{job_id}"
         )
 
 
