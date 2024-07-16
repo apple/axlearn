@@ -52,17 +52,24 @@ import copy
 import logging
 from typing import Any, Dict, Sequence
 
-import apache_beam as beam
+# pylint: disable=import-error
+import apache_beam as beam  # pytype: disable=import-error
 import jax
 from absl import app, flags
 from absl.flags import argparse_flags
-from apache_beam.ml.inference.base import ModelHandler, PredictionResult, RunInference
-from apache_beam.options.pipeline_options import PipelineOptions
+from apache_beam.ml.inference.base import (  # pytype: disable=import-error
+    ModelHandler,
+    PredictionResult,
+    RunInference,
+)
+from apache_beam.options.pipeline_options import PipelineOptions  # pytype: disable=import-error
 
 import axlearn.common.launch_trainer as trainer_utils
 from axlearn.common import input_fake
 from axlearn.common.inference import InferenceRunner, MethodRunner
 from axlearn.common.utils import NestedTensor
+
+# pylint: enable=import-error
 
 
 class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):

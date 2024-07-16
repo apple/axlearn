@@ -12,13 +12,23 @@ import logging
 import warnings
 from typing import Dict, Tuple
 
-import apache_beam as beam
+# pylint: disable=import-error
+import apache_beam as beam  # pytype: disable=import-error
 import tensorflow as tf
 from absl import app
-from apache_beam.ml.inference.base import KeyedModelHandler, PredictionResult, RunInference
-from apache_beam.ml.inference.huggingface_inference import HuggingFaceModelHandlerKeyedTensor
-from apache_beam.options.pipeline_options import PipelineOptions
+from apache_beam.ml.inference.base import (  # pytype: disable=import-error
+    KeyedModelHandler,
+    PredictionResult,
+    RunInference,
+)
+from apache_beam.ml.inference.huggingface_inference import (  # pytype: disable=import-error
+    HuggingFaceModelHandlerKeyedTensor,
+)
+from apache_beam.options.pipeline_options import PipelineOptions  # pytype: disable=import-error
 from transformers import AutoTokenizer, TFAutoModelForMaskedLM
+
+# pylint: enable=import-error
+
 
 warnings.filterwarnings("ignore")
 
