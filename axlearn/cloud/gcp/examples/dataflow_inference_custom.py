@@ -138,6 +138,7 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
 class PostProcessFn(beam.DoFn):
     """Defines the transformations needed for post processing."""
 
+    # pylint: disable-next=unused-argument
     def process(self, element: Any):
         # Add your desired post processing here
         logging.info("Inference finished.")
