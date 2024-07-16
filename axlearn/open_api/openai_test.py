@@ -78,7 +78,10 @@ class TestOpenAIAsyncGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response["response"], "test response")  # Validate response content
 
         # Check if async_generate_from_request is called correctly.
-        calls = [unittest.mock.call(client=ANY, request=ANY) for i in range(len(mock_requests))]
+        calls = [
+            unittest.mock.call(client=ANY, request=ANY, **self.open_api.config.decode_parameters)
+            for _ in range(len(mock_requests))
+        ]
         mock_async_generate_from_request.assert_has_calls(
             calls, any_order=True
         )  # Ensure each request is processed

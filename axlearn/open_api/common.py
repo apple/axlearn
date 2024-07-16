@@ -10,7 +10,8 @@ import os
 import time
 from collections import defaultdict
 from datetime import timedelta
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Type
+from enum import Enum
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple, Type
 
 import requests
 from absl import flags
@@ -233,6 +234,8 @@ class Generator(Configurable):
             A list of copied requests where each request has a new field response.
         """
         cfg: Generator.Config = self.config
+        # Passes decode parameters if kwargs is not set.
+        kwargs = {**cfg.decode_parameters, **(kwargs or {})}
         # Collect responses for each prompt.
         tasks = []
         # Run async requests for each prompt with limited concurrency.
@@ -471,12 +474,7 @@ def load_requests(
         A list of dictionaries, where each dictionary represents a prompt object
             loaded from the file.
     """
-    gen_requests: List[Dict[str, Any]] = []
-    logging.info("Loading prompts.")
-    with open(file_path, "r", encoding="utf-8") as file:
-        for line in file:
-            json_data = json.loads(line)
-            gen_requests.append(json_data)
+    gen_requests: List[Dict[str, Any]] = _load_jsonl_file(file_path=file_path)
     if max_instances is not None:
         gen_requests = gen_requests[:max_instances]
     logging.info("Loaded %d prompts.", len(gen_requests))
@@ -527,3 +525,137 @@ def parse_responses(
             logging.error("Parsing error: %s.", str(e))
             parsed_responses.append(response)
     return parsed_responses
+
+
+class EvalGeneratorType(Enum):
+    """The type of generator in Evaluator.
+
+    Attributes:
+        RESPONSE: The original response generator.
+        GRADER: The LLM grader generator.
+    """
+
+    RESPONSE = "response"
+    GRADER = "grader"
+
+
+class MetricFn(Protocol):
+    """Defines a protocol of metric calculation function."""
+
+    def __call__(
+        self,
+        *,
+        responses: List[Dict[str, Any]],
+        generators: Dict[EvalGeneratorType, Generator],
+        debug: bool = False,
+    ) -> Dict[str, Any]:
+        """Implements a protocol to compute metrics from responses.
+
+        Args:
+            responses: A list of responses in dictionary.
+            generators: A dict of generator instances.
+            debug: True to add debug information in the metric.
+
+        Returns:
+            A dictionary of metrics.
+        """
+
+
+class Evaluator(Configurable):
+    """Defines an evaluator to load generated responses and compute metrics."""
+
+    @config_class
+    class Config(Configurable.Config):
+        """Configures Evaluator."""
+
+        # A dict of generators including RESPONSE, GRADER type.
+        generators: Required[Dict[EvalGeneratorType, Generator.Config]] = REQUIRED
+        # True to add debug information in metrics.
+        debug: bool = False
+
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        cfg = self.config
+        # Initializes generators.
+        generators = {}
+        for generator_type, generator_cfg in cfg.generators.items():
+            generators[generator_type] = generator_cfg.instantiate()
+        self._generators = generators
+        self._metrics = {}
+
+    def evaluate(
+        self,
+        *,
+        input_file: str,
+        output_file: str,
+        metric_fn: MetricFn,
+    ) -> Dict[str, Any]:
+        """Evaluates from generated response from an input file
+            and writes out metrics to an output file.
+
+        Args:
+            input_file: The input path of generated responses.
+            output_file: The output path of generated responses.
+            metric_fn: A callable function to compute metrics.
+
+        Returns:
+            A dict of metrics.
+        """
+        responses = _load_jsonl_file(file_path=input_file)
+        metrics = metric_fn(
+            responses=responses,
+            generators=self._generators,
+            debug=self.config.debug,
+        )
+        _write_metrics(metrics=metrics, file_path=output_file)
+        return metrics
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        """Defines extra flags for evaluator.py."""
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string(
+            "grader_model", "gpt-3.5-turbo-0125", "The model name.", **common_kwargs
+        )
+        flags.DEFINE_string(
+            "grader_client_name", "openai", "Open api client name.", **common_kwargs
+        )
+        flags.DEFINE_string(
+            "grader_decode_parameters",
+            None,
+            "A json string of decoding parameters for grader."
+            "If None, it will use decode_parameters in response generator.",
+            **common_kwargs,
+        )
+        flags.DEFINE_string("metric_name", None, "The name of metric.", **common_kwargs)
+
+
+def _write_metrics(metrics: Dict[str, Any], *, file_path: str):
+    """Writes to a json file with computed metrics.
+
+    Args:
+        file_path: Path to the metrics output path.
+    """
+    if not os.path.exists(os.path.dirname(file_path)):
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    logging.info("Writing metrics %s to %s", metrics, file_path)
+    with open(file_path, "w", encoding="utf-8") as file:
+        json.dump(metrics, file, indent=2)
+
+
+def _load_jsonl_file(file_path: str) -> List[Dict[str, Any]]:
+    """Loads a file with each line in json line.
+
+    Args:
+        file_path: Path to the model outputs file in JSON Lines format.
+
+    Returns:
+        A list of responses.
+    """
+    logging.info("Loading file [%s]", file_path)
+    responses = []
+    with open(file_path, "r", encoding="utf-8") as file:
+        for line in file.readlines():
+            response = json.loads(line)
+            responses.append(response)
+    return responses
