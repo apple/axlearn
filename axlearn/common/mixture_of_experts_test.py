@@ -398,6 +398,22 @@ class ParamConversionTest(parameterized.TestCase):
             state_moe_converted,
         )
         self.assertEqual(shapes(state_moe), shapes(state_moe_converted))
+        for expert_i in range(num_experts):
+            # The dense weights are replicated to each expert.
+            if "linear1" in state_dense:
+                np.testing.assert_array_equal(
+                    state_dense["linear1"]["weight"], state_moe_converted["wi_weight"][expert_i]
+                )
+            else:
+                np.testing.assert_array_equal(
+                    state_dense["linear1_0"]["weight"], state_moe_converted["wi_0_weight"][expert_i]
+                )
+                np.testing.assert_array_equal(
+                    state_dense["linear1_1"]["weight"], state_moe_converted["wi_1_weight"][expert_i]
+                )
+            np.testing.assert_array_equal(
+                state_dense["linear2"]["weight"], state_moe_converted["wo_weight"][expert_i]
+            )
 
     def test_dense_to_moe_parameters(self):
         """Tests _convert_feedforward_to_moe_parameters."""
