@@ -126,9 +126,24 @@ class FlashAttention(GroupedQueryAttention):
                 )
             attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
+        # During GPU decoding, fall back to plain MHA implementation
+        # since the seq_len will not be divisible by block size.
+        # For prefilling, seq_len can be > 1 and logit biases may not always be provided,
+        # so we retain `cfg.causal`.
+        # For decoding, seq_len = 1 and logit biases are always provided,
+        # so we set "causal" flag to False.
+        causal = cfg.causal
+        if q_proj.shape[1] % 128 != 0:
+            backend = "xla"
+            # TODO(senyut): Implement FlashDecoding kernel and support TPU decoding.
+            if q_proj.shape[1] == 1:
+                causal = False
+        else:
+            backend = jax.default_backend()
+
         jit_attn: MultiHeadAttentionImpl = flash_attention_implementation(
-            backend=jax.default_backend(),
-            causal=cfg.causal,
+            backend=backend,
+            causal=causal,
             softmax_scale=1.0,
             block_size=cfg.tpu_block_size,
         )
