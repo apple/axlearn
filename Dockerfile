@@ -75,6 +75,11 @@ ENV RUN_PYTHON_SDK_IN_DEFAULT_ENVIRONMENT=1
 RUN pip install .[gcp,dataflow]
 COPY . .
 
+# Dataflow workers can't start properly if the entrypoint is not set
+# See: https://cloud.google.com/dataflow/docs/guides/build-container-image#use_a_custom_base_image
+COPY --from=apache/beam_python3.9_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
+ENTRYPOINT ["/opt/apache/beam/boot"]
+
 ################################################################################
 # TPU container spec.                                                          #
 ################################################################################
