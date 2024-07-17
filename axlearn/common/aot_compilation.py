@@ -16,7 +16,7 @@ import numpy as np
 from jax.experimental.topologies import get_topology_desc
 
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.common.utils import infer_mesh_shape
+from axlearn.common.utils import HybridMeshShape, MeshShape, infer_mesh_shape
 
 os.environ["TPU_SKIP_MDS_QUERY"] = "1"
 
@@ -180,6 +180,7 @@ def compile_trainer_programs(
                 f"Supported values are {USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.keys()}"
             )
         target_hardware = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[topology]
+        devices_per_slice = target_hardware.devices_per_slice
         topology_devices = get_topology_desc(
             platform=target_hardware.platform,
             topology_name=target_hardware.topology_name,
@@ -189,13 +190,31 @@ def compile_trainer_programs(
         ).devices
     else:
         topology_devices = jax.devices()
+        assert topology_num_slices == 1
+        devices_per_slice = len(topology_devices)
 
     cfg = trainer_config.clone(dir="NOT_USED")
     if cfg.mesh_shape is None:
         cfg.mesh_shape = [len(topology_devices)] + [1] * (len(cfg.mesh_axis_names) - 1)
-    else:
+    elif isinstance(cfg.mesh_shape, MeshShape):
         cfg.mesh_shape = infer_mesh_shape(cfg.mesh_shape, num_devices=len(topology_devices))
-    topology_devices = np.reshape(topology_devices, cfg.mesh_shape)
+        topology_devices = np.reshape(topology_devices, cfg.mesh_shape)
+    else:
+        assert isinstance(cfg.mesh_shape, HybridMeshShape)
+        cfg.mesh_shape = HybridMeshShape(
+            ici_mesh_shape=infer_mesh_shape(
+                cfg.mesh_shape.ici_mesh_shape, num_devices=devices_per_slice
+            ),
+            dcn_mesh_shape=infer_mesh_shape(
+                cfg.mesh_shape.dcn_mesh_shape, num_devices=topology_num_slices
+            ),
+        )
+        topology_devices = np.reshape(
+            topology_devices,
+            tuple(
+                x * y for x, y in zip(cfg.mesh_shape.ici_mesh_shape, cfg.mesh_shape.dcn_mesh_shape)
+            ),
+        )
     trainer: SpmdTrainer = cfg.instantiate(parent=None, devices=topology_devices)
     compiled_train_step = trainer.compile_train_step()
     return {"train_step": compiled_train_step}
