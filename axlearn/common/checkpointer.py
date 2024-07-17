@@ -423,7 +423,7 @@ class TensorStoreStateStorage(StateStorage):
             )
 
         # Run serialization of GDA values in parallel.
-        logging.info(
+        logging.debug(
             "array_values=%s tensorstore=%s", utils.shapes(spec.gda_values), spec.tensorstore_specs
         )
         self._manager.serialize(spec.gda_values, spec.tensorstore_specs, on_commit_callback=commit)
