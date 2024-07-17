@@ -81,6 +81,7 @@ class SpeechFeatureLayer(BaseLayer):
         """
         # Compute frontend features.
         features = self.frontend(inputs=inputs, paddings=paddings)
+        self.add_module_output("spectrogram", features)
         x = features["outputs"]
 
         if "augmenter" in self.children:

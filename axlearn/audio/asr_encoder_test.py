@@ -225,12 +225,13 @@ class ASREncoderTest(TestCase):
             prng_key=input_key, batch_size=batch_size, seq_len=seq_len
         )
 
-        output_batch, _ = F(
+        output_batch, output_collections = F(
             layer,
             inputs=dict(inputs=inputs, paddings=paddings),
             is_training=is_training,
             prng_key=prng_key,
             state=layer_params,
+            drop_output_collections=(),
         )
         outputs, output_paddings = output_batch["outputs"], output_batch["paddings"]
         output_shape, _ = F(
@@ -244,6 +245,14 @@ class ASREncoderTest(TestCase):
         self.assertEqual(outputs.shape, (batch_size, output_shape[1], output_dim))
         self.assertEqual(output_paddings.shape, (batch_size, output_shape[1]))
         self.assertTrue(jnp.all(output_paddings[:2] == output_paddings[2:]))
+
+        spectrogram = output_collections.module_outputs["feature"]["spectrogram"]
+        spec, spec_paddings = spectrogram["outputs"], spectrogram["paddings"]
+        expected_spec_len = (seq_len - frame_size_ms * sample_rate // 1000) // (
+            hop_size_ms * sample_rate // 1000
+        ) + 1
+        self.assertEqual(spec.shape, (batch_size, expected_spec_len, num_filters, 1))
+        self.assertEqual(spec_paddings.shape, (batch_size, expected_spec_len))
 
         # If is_training and use_augmenter, outputs should always be different due to augmentation.
         # Otherwise, outputs should be the same.
