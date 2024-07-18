@@ -677,6 +677,21 @@ def convert_dense_to_moe_parameters(
       either a (dense) TransformerFeedForwardLayer or a TransformerFeedForwardMoE as its
       `feed_forward` child.
 
+    For example, `target_parameter_specs` may have the following structure, representing
+    interleaving dense/MoE layers in a RepeatedTransformerLayer stack.
+    - repeat
+        - layer (StackedTransformerLayer)
+            - layer0 (TransformerLayer)
+                - self_attention
+                - feed_forward (TransformerFeedForwardLayer)
+            - layer1 (TransformerLayer)
+                - self_attention
+                - feed_forward (TransformerFeedForwardMoE)
+                    - wi_weight (or wi_0_weight and wi_1_weight if using .*GLU.)
+                    - wo_weight
+                    - norm
+                    - gate_weight
+
     Args:
         source_parameters: The dense Transformer parameters.
         target_parameter_specs: The target layer parameter specs.

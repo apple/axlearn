@@ -33,7 +33,7 @@ from axlearn.common.mixture_of_experts import (
 )
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import assert_allclose
-from axlearn.common.utils import shapes
+from axlearn.common.utils import get_recursively, set_recursively, shapes
 
 
 # pylint: disable=no-self-use,protected-access
@@ -354,7 +354,7 @@ class TransformerFeedForwardMoETest(parameterized.TestCase):
 
 class ParamConversionTest(parameterized.TestCase):
     @parameterized.product(
-        activation=("relu", ("linear", "silu")),
+        activation=("relu", ("linear", "nn.silu")),
         num_experts=(1, 2),
         bias=(False, True),
     )
@@ -430,7 +430,7 @@ class ParamConversionTest(parameterized.TestCase):
             )
             cfg_dense.layer.self_attention.attention.set(num_heads=num_heads)
             cfg_ff_dense = cfg_dense.layer.feed_forward.set(
-                hidden_dim=hidden_dim, activation=("linear", "silu")
+                hidden_dim=hidden_dim, activation=("linear", "nn.silu")
             )
             set_bias_recursively(cfg_dense, bias=False)
             layer_dense = cfg_dense.instantiate(parent=None)
@@ -444,6 +444,9 @@ class ParamConversionTest(parameterized.TestCase):
                 num_groups=1,
                 activation=cfg_ff_dense.activation,
             )
+            # A large capacity factor to prevent dropping tokens.
+            cfg_ff_moe.gating.train_capacity_factor = 100.0
+            cfg_ff_moe.gating.eval_capacity_factor = 100.0
             cfg_moe = RepeatedTransformerLayer.default_config().set(
                 name="test",
                 input_dim=input_dim,
@@ -467,6 +470,33 @@ class ParamConversionTest(parameterized.TestCase):
             print(shapes(state_moe))
             print(shapes(state_moe_converted))
             self.assertEqual(shapes(state_moe), shapes(state_moe_converted))
+
+            # Initialize `gate_weight` randomly.
+            gate_weight_path = ("repeat", "layer", "layer1", "feed_forward", "gate_weight")
+            gate_weight_spec = get_recursively(state_moe_converted, path=gate_weight_path)
+            gate_weight = jax.random.normal(
+                jax.random.PRNGKey(1), shape=gate_weight_spec.shape, dtype=gate_weight_spec.dtype
+            )
+            set_recursively(state_moe_converted, path=gate_weight_path, value=gate_weight)
+
+            # Feed the same inputs to `layer_dense` and `layer_moe`.
+            inputs = jax.random.normal(jax.random.PRNGKey(123), (2, 7, input_dim))
+            outputs_dense, _ = F(
+                module=layer_dense,
+                state=state_dense,
+                inputs=(inputs,),
+                prng_key=jax.random.PRNGKey(456),
+                is_training=True,
+            )
+            outputs_moe, _ = F(
+                module=layer_moe,
+                state=state_moe_converted,
+                inputs=(inputs,),
+                prng_key=jax.random.PRNGKey(456),
+                is_training=True,
+            )
+            # Expect the same outputs since all experts are identical to the dense one.
+            assert_allclose(outputs_dense.data, outputs_moe.data)
 
 
 if __name__ == "__main__":
