@@ -43,7 +43,7 @@ from axlearn.common.config import (
     maybe_instantiate,
 )
 from axlearn.common.evaler import SpmdEvaler
-from axlearn.common.learner import ForwardOutputs, Learner
+from axlearn.common.learner import Learner
 from axlearn.common.module import InvocationContext, Module, child_context, clone_context_stack
 from axlearn.common.module import functional as F
 from axlearn.common.module import install_context_stack, new_output_collection
@@ -51,6 +51,7 @@ from axlearn.common.optimizer_base import NestedOptParam, OptParam
 from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
+from axlearn.common.update_transformation import ForwardOutputs
 from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
@@ -618,7 +619,11 @@ class SpmdTrainer(Module):
             _init_state,
             in_shardings=(None, prebuilt_model_state_partition_spec),
             out_shardings=self._trainer_state_partition_specs,
-            donate_argnums=(0, 1),  # donate both prng_key and prebuilt_model_state
+            # Donate prebuilt_model_state.
+            # Do not donate PRNG key since it is only ~4 bytes and was causing
+            # a CI failure in some trainer tests where jax thought the key
+            # had already been deleted.
+            donate_argnums=1,
         )
         self._step_log("Initializing trainer state.")
         with self.mesh():
@@ -939,16 +944,16 @@ class SpmdTrainer(Module):
 
         def _forward(*, inputs: NestedTensor, model_params: NestedTensor) -> ForwardOutputs:
             params = train_cast(model_params)
-            params = self.model.apply_parameter_noise_recursively(param_noise_key, params)
+            params = self.model.apply_parameter_noise_recursively(inputs["param_noise_key"], params)
             model_output_collection = new_output_collection()
             with child_context(
                 "model",
                 module=self.model,
                 state=params,
-                prng_key=forward_key,
+                prng_key=inputs["forward_key"],
                 output_collection=model_output_collection,
             ):
-                loss, aux = self.model(input_batch=train_cast(inputs))
+                loss, aux = self.model(input_batch=train_cast(inputs["input_batch"]))
             return ForwardOutputs(loss=loss, aux=aux, output_collection=model_output_collection)
 
         # `grads` are computed for `model_parameters_grad`.
@@ -959,7 +964,15 @@ class SpmdTrainer(Module):
             state=state.learner,
             is_training=True,
             prng_key=learner_key,
-            inputs=dict(fn=_forward, opt_params=opt_params, inputs=input_batch),
+            inputs=dict(
+                fn=_forward,
+                opt_params=opt_params,
+                inputs=dict(
+                    input_batch=input_batch,
+                    forward_key=forward_key,
+                    param_noise_key=param_noise_key,
+                ),
+            ),
         )
         forward_outputs: ForwardOutputs = fwd_bwd_outputs.forward_outputs
         updated_model_params = fwd_bwd_outputs.backward_outputs.updated_params

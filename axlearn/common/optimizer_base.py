@@ -70,6 +70,14 @@ TransformPartitionSpecFn = Callable[[NestedParameterSpec], NestedOptStateSpec]
 
 
 class PartitionedGradientTransformation(NamedTuple):
+    """An optax-style optimizer with a function to partition the inputs across devices.
+
+    For new optimizers, using `UpdateTransformation` is preferred instead because it supports
+    more types of optimizers and allows better reuse of functionality across different optimizers.
+
+    Despite this, there are no plans to stop supporting this class.
+    """
+
     init: TransformInitFn
     update: TransformUpdateFn
     partition: TransformPartitionSpecFn

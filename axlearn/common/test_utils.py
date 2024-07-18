@@ -44,6 +44,7 @@ from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import opt_param_values
 from axlearn.common.param_init import FanAxes, Initializer, Shape
 from axlearn.common.trainer import SpmdTrainer
+from axlearn.common.update_transformation import Updates
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
@@ -486,6 +487,9 @@ def read_per_param_settings(
     and intercepts calls to `register_per_param_settings` to extract `description` and `settings`
     for each call.
 
+    Learners that require realistic input to their `update()` function may not work with this
+    function. E.g., expects specific state updates, gradient shapes, a named forward pass.
+
     Args:
         module: training config module.
         config_name: training config name.
@@ -573,7 +577,7 @@ def read_per_param_settings(
             is_training=True,
             prng_key=jax.random.PRNGKey(0),
             method="update",
-            inputs=dict(model_params=opt_params, gradients=zero_grads, state_updates={}),
+            inputs=[Updates(opt_params=opt_params, delta_updates=zero_grads, inplace_updates={})],
         )
 
     return all_param_settings

@@ -93,6 +93,31 @@ def new_test_module(name: str) -> TestModule:
 
 
 class InvocationContextTest(test_utils.TestCase):
+    def test_set_state_update(self):
+        for levels in range(4):
+            context = InvocationContext(
+                name="root",
+                parent=None,
+                module=new_test_module("test"),
+                is_training=True,
+                prng_key=None,
+                state={},
+                output_collection=new_output_collection(),
+            )
+            descendant = context
+            for level in range(levels):
+                name = f"mod{level}"
+                descendant.module._add_child(name, TestModule.default_config())
+                descendant = descendant.add_child(name)
+            descendant.set_state_update((1, 2, 3))
+            self.assertEqual(descendant.get_state_updates(), (1, 2, 3))
+
+            descendant_state_update = context.output_collection.state_updates
+            for level in range(levels):
+                name = f"mod{level}"
+                descendant_state_update = descendant_state_update[name]
+            self.assertEqual(descendant_state_update, (1, 2, 3), msg=f"levels={levels}")
+
     def test_context_output_collection(self):
         context = InvocationContext(
             name="root",

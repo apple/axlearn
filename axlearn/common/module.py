@@ -312,6 +312,19 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
 
         self.output_collection.module_outputs[name] = value
 
+    def set_state_update(self, value: Any):
+        """Sets the state update field of the output collection.
+
+        Useful when writing a "transparent module" that needs its state to have a specific
+        structure (e.g., a tuple) for backwards compatibility.
+        """
+        # E.g., optimizer state from a PartitionedGradientTransformation may be a tuple, so we
+        # have to assign it via the parent.
+        parent = self.parent
+        if parent is not None:
+            parent.output_collection.state_updates[self.name] = value
+        self.output_collection = self.output_collection._replace(state_updates=value)
+
     def get_summaries(self):
         return self.output_collection.summaries
 

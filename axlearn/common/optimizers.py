@@ -19,7 +19,12 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 # pylint: disable=too-many-lines
-"""Optimization modules."""
+"""Optimizers.
+
+For new optimizers, using `UpdateTransformation` is preferred instead.
+
+Despite this, there are no plans to stop supporting `PartitionedGradientTransformation`.
+"""
 import dataclasses
 import re
 from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple, Union
