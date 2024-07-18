@@ -302,8 +302,7 @@ class TPURunnerJob(TPUQRMJob):
         
         # Create labels for vm tier that can be used to group tpu metrics.
         # In QRM, vm tier can be one of guaranteed, spot, or, bestEffort.
-        # bestEffort is implemented to create spot instance. Hence,
-        # guaranteeded -> reserved and bestEffort|spot -> spot 
+        # The "reserved" label is used for guaranteed instances and "spot" for other instances (e.g. best-effort or spot instances).
         # BASTION_TIER env has presendence over the reserved_tpu.
         if reserved is None:
             reserved = gcp_settings("reserved_tpu", default=False, required=False)
