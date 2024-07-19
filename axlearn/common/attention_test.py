@@ -100,6 +100,7 @@ from axlearn.common.param_init import (
     FanAxes,
     WeightInitializer,
 )
+from axlearn.common.pipeline import BaseSchedule, GPipeSchedule, StreamSchedule
 from axlearn.common.test_utils import TestCase, assert_allclose, dummy_segments_positions
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import (
@@ -3737,35 +3738,51 @@ class StackedTransformerTest(BaseTransformerTest):
             remat_spec=build_remat_spec,
         )
 
-    def test_stack_vs_pipeline_of_stacks(self):
-        self._compare_layers(
-            StackedTransformerLayer,
-            PipelinedTransformerLayer.default_config().set(
-                stage=StackedTransformerLayer.default_config().set(layer=None)
-            ),
-        )
+    @parameterized.product(
+        stage_cls=[StackedTransformerLayer, RepeatedTransformerLayer],
+        schedule_cls=[GPipeSchedule, StreamSchedule],
+        remat_spec=[None, RematSpec(policy=jax_remat_policies.everything_saveable)],
+    )
+    def test_stack_vs_pipeline(
+        self,
+        stage_cls: Type[BaseTransformerLayer],
+        schedule_cls: Type[BaseSchedule],
+        remat_spec: Optional[RematSpec],
+    ):
+        pipelined_cfg: PipelinedTransformerLayer.Config = PipelinedTransformerLayer.default_config()
+        pipelined_cfg.stage = stage_cls.default_config().set(layer=None)
+        pipelined_cfg.pipeline.schedule = schedule_cls.default_config()
 
-    def test_stack_vs_pipeline_of_repeats(self):
-        self._compare_layers(
-            StackedTransformerLayer,
-            PipelinedTransformerLayer.default_config().set(
-                stage=RepeatedTransformerLayer.default_config().set(layer=None)
-            ),
-        )
+        # If using StreamSchedule, we expect `num_microbatches` to be divisible by `num_stages`.
+        if schedule_cls is StreamSchedule:
+            # num_microbatches = 6, num_stages = 3, microbatch_size = 2
+            batch_size, num_layers = 12, 6
+        else:
+            # num_microbatches = 5, num_stages = 3, microbatch_size = 2
+            batch_size, num_layers = 10, 6
 
-    def test_stack_vs_pipeline_remat_everything_saveable(self):
+        pipelined_cfg.num_microbatches = batch_size // 2
+        pipelined_cfg.num_stages = num_layers // 2
         self._compare_layers(
             StackedTransformerLayer,
-            PipelinedTransformerLayer,
-            remat_spec=RematSpec(policy=jax_remat_policies.everything_saveable),
+            pipelined_cfg,
+            remat_spec=remat_spec,
+            batch_size=batch_size,
+            num_layers=num_layers,
         )
 
     # pylint: disable-next=too-many-statements,too-many-branches
-    def _compare_layers(self, *stack_configs, dtype=jnp.float32, remat_spec=None):
+    def _compare_layers(
+        self,
+        *stack_configs,
+        dtype=jnp.float32,
+        remat_spec=None,
+        batch_size: int = 10,
+        num_layers: int = 6,
+    ):
         assert stack_configs[0] == StackedTransformerLayer, stack_configs[0]
         with utils.numeric_checks(False):
-            batch_size, tgt_len = 10, 5
-            num_layers, model_dim, num_heads = 6, 8, 4
+            tgt_len, model_dim, num_heads = 5, 8, 4
 
             target = jax.random.normal(
                 jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
@@ -3788,9 +3805,6 @@ class StackedTransformerTest(BaseTransformerTest):
                     remat_spec=remat_spec,
                 )
                 cls = cfg.stack.klass
-                if cls == PipelinedTransformerLayer:
-                    cfg.stack.num_microbatches = batch_size // 2
-                    cfg.stack.num_stages = num_layers // 2
                 layer: TestStackModel = cfg.instantiate(parent=None)
 
                 param_specs = layer.create_parameter_specs_recursively()

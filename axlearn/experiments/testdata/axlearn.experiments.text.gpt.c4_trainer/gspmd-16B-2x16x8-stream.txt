@@ -230,7 +230,7 @@ model.decoder.transformer.num_layers: 64
 model.decoder.transformer.num_microbatches: 16
 model.decoder.transformer.num_stages: 2
 model.decoder.transformer.pipeline.klass: 'axlearn.common.attention._TransformerPipeline'
-model.decoder.transformer.pipeline.schedule.klass: 'axlearn.common.pipeline.GPipeSchedule'
+model.decoder.transformer.pipeline.schedule.klass: 'axlearn.common.pipeline.StreamSchedule'
 model.decoder.transformer.stage.klass: 'axlearn.common.attention.StackedTransformerLayer'
 model.decoder.transformer.stage.layer: None
 model.decoder.vocab_size: 32768

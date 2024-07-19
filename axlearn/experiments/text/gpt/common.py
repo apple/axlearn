@@ -159,7 +159,7 @@ def mesh_shape_from_axes(
     seq: int = 1,
     model: int = 1,
 ) -> Sequence[int]:
-    """Builds a 5D logical mesh from the provided spec.
+    """Builds a 6D logical mesh from the provided spec.
 
     Args:
         pipeline: Pipeline-paralellism. Typically means partitioning model layers across this axis.

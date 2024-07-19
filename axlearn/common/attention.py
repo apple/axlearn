@@ -3803,6 +3803,8 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
         num_microbatches: Required[int] = REQUIRED
         # Config for each stage in the pipeline.
         stage: BaseLayer.Config = StackedTransformerLayer.default_config().set(layer=None)
+        # Config for the pipeline implementation, such as pipeline schedule.
+        pipeline: _TransformerPipeline.Config = _TransformerPipeline.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -3813,7 +3815,7 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
         stage_cfg = cfg.stage.set(
             input_dim=cfg.input_dim, layer=cfg.layer, num_layers=num_layers_per_stage
         )
-        pipeline_cfg = _TransformerPipeline.default_config().set(
+        pipeline_cfg = cfg.pipeline.set(
             layer=stage_cfg, num_layers=cfg.num_stages, num_microbatches=cfg.num_microbatches
         )
         self._add_child("pipeline", pipeline_cfg)
