@@ -299,10 +299,11 @@ class TPURunnerJob(TPUQRMJob):
         if tier is not None:
             reserved = str(tier) == "0"
             logging.info("Found tier=%s in env. Using reserved=%s", tier, reserved)
-        
+
         # Create labels for vm tier that can be used to group tpu metrics.
         # In QRM, vm tier can be one of guaranteed, spot, or, bestEffort.
-        # The "reserved" label is used for guaranteed instances and "spot" for other instances (e.g. best-effort or spot instances).
+        # The "reserved" label is used for guaranteed instances and
+        # "spot" for other instances (e.g. best-effort or spot instances).
         # BASTION_TIER env has presendence over the reserved_tpu.
         if reserved is None:
             reserved = gcp_settings("reserved_tpu", default=False, required=False)
