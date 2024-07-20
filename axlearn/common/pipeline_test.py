@@ -2,8 +2,8 @@
 
 """Pipeline layer tests."""
 
-# pylint: disable=no-self-use,duplicate-code
-from typing import Dict, Optional
+# pylint: disable=no-self-use,duplicate-code,protected-access
+from typing import Dict, Optional, Type, cast
 
 import jax.random
 from absl import logging
@@ -16,7 +16,12 @@ from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module, OutputCollection
 from axlearn.common.module import functional as F
 from axlearn.common.pipeline import (
+    BaseSchedule,
+    GPipeSchedule,
     Pipeline,
+    StreamSchedule,
+    _mask_invalid_gradients,
+    _select_input_or_previous_outputs,
     transpose_from_pipeline_stage_outputs,
     transpose_to_pipeline_stage_inputs,
 )
@@ -340,14 +345,21 @@ class PipelineTest(TestCase):
                 ],
             )
 
-    @parameterized.parameters(None, RematSpec(prevent_cse=False))
-    def test_pipeline_gradients(self, remat_spec):
+    @parameterized.product(
+        schedule=[
+            dict(cls=GPipeSchedule, batch_size=14),
+            # StreamSchedule requires num stages to divide num microbatches.
+            dict(cls=StreamSchedule, batch_size=16),
+        ],
+        remat_spec=[None, RematSpec(prevent_cse=False)],
+    )
+    def test_pipeline_gradients(self, schedule: Dict, remat_spec: Optional[RematSpec]):
         """Test gradients against a ref implementation."""
-
-        batch_size, microbatch_size, num_stages, input_dim = 14, 2, 4, 8
+        schedule_cls = schedule["cls"]
+        batch_size, microbatch_size, num_stages, input_dim = schedule["batch_size"], 2, 4, 8
         num_microbatches = batch_size // microbatch_size
 
-        class DummyPipelineWithNaNs(TestPipeline):
+        class DummyScheduleWithNaNs(schedule_cls):
             """Wraps carry input by filling bubbles with NaNs."""
 
             def _compute_carry_input(
@@ -365,13 +377,14 @@ class PipelineTest(TestCase):
                 return jax.tree_util.tree_map(inject_nans, x)
 
         layer: TestPipeline = (
-            DummyPipelineWithNaNs.default_config()
+            TestPipeline.default_config()
             .set(
                 name="test",
                 num_layers=num_stages,
                 num_microbatches=num_microbatches,
                 remat_spec=remat_spec,
                 layer=DummyMLP.default_config().set(input_dim=input_dim, hidden_dim=input_dim * 2),
+                schedule=DummyScheduleWithNaNs.default_config(),
                 vlog=3,
             )
             .instantiate(parent=None)
@@ -413,6 +426,143 @@ class PipelineTest(TestCase):
         jax.tree_util.tree_map(
             lambda x: self.assertFalse(jnp.isnan(x).any().item()), output_collection
         )
+
+    @parameterized.product(
+        schedule=[
+            # StreamSchedule requires num stages to divide num microbatches.
+            dict(cls=StreamSchedule, batch_size=16),
+        ],
+        remat_spec=[None, RematSpec(prevent_cse=False)],
+    )
+    def test_schedule_equivalence(self, schedule: Dict, remat_spec: Optional[RematSpec]):
+        """Tests equivalence with GPipeSchedule."""
+        schedule_cls = schedule["cls"]
+        batch_size, microbatch_size, num_layers, input_dim = schedule["batch_size"], 2, 4, 8
+        num_microbatches = batch_size // microbatch_size
+        ref_cfg: TestPipeline.Config = TestPipeline.default_config().set(
+            name="test",
+            num_layers=num_layers,
+            num_microbatches=num_microbatches,
+            remat_spec=remat_spec,
+            layer=DummyMLP.default_config().set(input_dim=input_dim, hidden_dim=input_dim * 2),
+        )
+        test_cfg = ref_cfg.clone(
+            schedule=cast(Type[BaseSchedule], schedule_cls).default_config(),
+        )
+
+        def compute_outputs(layer: TestPipeline, inputs):
+            params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(1))
+            forward_state = layer.init_forward_state(batch_size)
+            return F(
+                layer,
+                inputs=(inputs, forward_state),
+                state=params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(2),
+            )
+
+        ref_layer: TestPipeline = ref_cfg.instantiate(parent=None)
+        test_layer: TestPipeline = test_cfg.instantiate(parent=None)
+
+        inputs = jax.random.uniform(
+            jax.random.PRNGKey(2), [batch_size, input_dim], dtype=jnp.float32
+        )
+        ref_outputs = compute_outputs(ref_layer, inputs)
+        test_outputs = compute_outputs(test_layer, inputs)
+
+        self.assertNestedAllClose(ref_outputs, test_outputs)
+
+
+class GPipeScheduleTest(TestCase):
+    """Tests GPipeSchedule."""
+
+    def test_is_valid_stage(self):
+        schedule = (
+            GPipeSchedule.default_config()
+            .set(
+                num_stages=3,
+                num_microbatches=5,
+            )
+            .instantiate()
+        )
+        self.assertEqual(7, schedule.num_iterations)
+        expected = jnp.array(
+            [
+                [True, False, False],
+                [True, True, False],
+                [True, True, True],
+                [True, True, True],
+                [True, True, True],
+                [False, True, True],
+                [False, False, True],
+            ]
+        )
+        self.assertTrue(
+            jnp.all(
+                expected == jax.vmap(schedule._is_valid_stage)(jnp.arange(schedule.num_iterations))
+            )
+        )
+
+
+class StreamScheduleTest(TestCase):
+    """Tests StreamSchedule."""
+
+    def test_is_valid_stage(self):
+        # Note that num_stages must divide num_microbatches.
+        schedule = (
+            StreamSchedule.default_config()
+            .set(
+                num_stages=3,
+                num_microbatches=6,
+            )
+            .instantiate()
+        )
+        self.assertEqual(8, schedule.num_iterations)
+        expected = jnp.array(
+            [
+                [True, False, False],
+                [True, True, False],
+                [True, True, True],
+                [True, True, True],
+                [True, True, True],
+                [True, True, True],
+                [False, True, True],
+                [False, False, True],
+            ]
+        )
+        self.assertTrue(
+            jnp.all(
+                expected == jax.vmap(schedule._is_valid_stage)(jnp.arange(schedule.num_iterations))
+            )
+        )
+
+
+class UtilsTest(TestCase):
+    """Tests utilities."""
+
+    def test_select_input_or_previous_outputs(self):
+        shape = [3, 4]
+        x = jax.random.uniform(jax.random.PRNGKey(1), shape=shape)
+        y = jax.random.uniform(jax.random.PRNGKey(2), shape=shape)
+        z = _select_input_or_previous_outputs(x, y)
+        self.assertEqual(x.shape, y.shape)
+        self.assertEqual(y.shape, z.shape)
+        self.assertNestedAllClose(z[0], x[0])
+        self.assertNestedAllClose(z[1:], y[:-1])
+
+    def test_mask_invalid_gradients(self):
+        state = {"x": jnp.ones([2, 2]), "y": jnp.ones([2, 3])}
+        is_valid = jnp.array([True, False])
+
+        def fn(state):
+            state = _mask_invalid_gradients(state, is_valid=is_valid)
+            return jnp.sum(state["x"]) * 2 + jnp.sum(state["y"]) * 3
+
+        expected = {
+            "x": jnp.array([[2.0, 2.0], [0.0, 0.0]]),
+            "y": jnp.array([[3.0, 3.0, 3.0], [0.0, 0.0, 0.0]]),
+        }
+        self.assertNestedAllClose(expected, jax.grad(fn)(state))
 
 
 if __name__ == "__main__":

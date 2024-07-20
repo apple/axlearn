@@ -67,8 +67,9 @@ def mha_reference(
 
     logits_dtype = logits.dtype
     logits = logits.astype(jnp.float32)
+
     probs = jax.nn.softmax(logits, axis=-1).astype(logits_dtype)
-    return jnp.einsum("bnts,bsnh->btnh", probs, v)
+    return jnp.einsum("bnts,bsnh->btnh", probs, v).astype(v.dtype)
 
 
 # Accepts [query, key, value, attention_bias] tensors and returns the context Tensor.
@@ -76,7 +77,7 @@ MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor], Tensor]
 
 
 def flash_attention_implementation(
-    backend: Literal["cpu", "tpu", "gpu"],
+    backend: Literal["cpu", "tpu", "gpu", "xla"],
     *,
     causal: bool,
     softmax_scale: float,
@@ -146,8 +147,10 @@ def flash_attention_implementation(
 
         return jit_attn
 
-    elif backend == "cpu":
-        logging.warning("Flash attention CPU backend is for testing only.")
+    elif backend in ("cpu", "xla"):
+        if backend == "cpu":
+            logging.warning("Flash attention CPU backend is for testing only.")
+        logging.warning("Flash attention falling back using plain MHA implementation")
 
         # shard_map-decorated function needs to be jitted.
         @jax.jit
