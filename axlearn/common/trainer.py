@@ -603,6 +603,17 @@ class SpmdTrainer(Module):
             model=model_initialization_partition_specs,
         )
 
+        def merge_model_states(prebuilt_model_params, initialized_model_params):
+            if prebuilt_model_params is None:
+                return initialized_model_params
+            return jax.tree_util.tree_map(
+                lambda prebuilt, initialized: (
+                    prebuilt if isinstance(prebuilt, Tensor) else initialized
+                ),
+                prebuilt_model_params,
+                initialized_model_params,
+            )
+
         def _init_state(prng_key: Tensor):
             prng_key, init_key = jax.random.split(prng_key)
             model_params = self.model.initialize_parameters_recursively(
@@ -610,7 +621,15 @@ class SpmdTrainer(Module):
                 prebuilt=prebuilt_model_param_specs,
             )
             logging.info("initialized_model_state: %s", utils.shapes(model_params))
-            learner_params = self.learner.init(self._opt_params(model_params))
+            # Initialize learner with union(prebuilt + initialized).
+            learner_params = self.learner.init(
+                self._opt_params(
+                    merge_model_states(
+                        prebuilt_state.trainer_state.model,
+                        model_params,
+                    )
+                )
+            )
             model_params = jax.tree_util.tree_map(
                 lambda value: value if isinstance(value, Tensor) else None,
                 model_params,
@@ -629,16 +648,10 @@ class SpmdTrainer(Module):
         self._step_log("Initializing trainer state.")
         with self.mesh():
             initialized_trainer_state: TrainerState = init_computation(prng_key)
-        if prebuilt_state.trainer_state.model is None:
-            merged_model_state = initialized_trainer_state.model
-        else:
-            merged_model_state = jax.tree_util.tree_map(
-                lambda prebuilt_value, initialized_value: prebuilt_value
-                if isinstance(prebuilt_value, Tensor)
-                else initialized_value,
-                prebuilt_state.trainer_state.model,
-                initialized_trainer_state.model,
-            )
+        merged_model_state = merge_model_states(
+            prebuilt_state.trainer_state.model, initialized_trainer_state.model
+        )
+        self.vlog(1, "merged_model_state: %s", utils.shapes(merged_model_state))
         self._trainer_state = TrainerState(
             prng_key=initialized_trainer_state.prng_key,
             model=merged_model_state,

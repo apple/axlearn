@@ -380,7 +380,7 @@ class BaseLayer(Module):
         return specs
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> NestedTensor:
         params = {}
         param_specs = self._create_layer_parameter_specs()
@@ -389,7 +389,7 @@ class BaseLayer(Module):
             prng_key, child_key = jax.random.split(prng_key)
             value = get_or_none(prebuilt, name)
             if value is not None:
-                params[name] = value
+                params[name] = None
             else:
                 if spec.dtype is None:
                     spec.dtype = self.dtype()
@@ -413,10 +413,8 @@ class BaseLayer(Module):
             )
         return params
 
-    def _use_prebuilt_params(self, prebuilt: Optional[NestedTensor]) -> bool:
-        prebuilt_keys = set(
-            key for key, value in flatten_items(prebuilt) if isinstance(value, Tensor)
-        )
+    def _use_prebuilt_params(self, prebuilt: Optional[Nested[ParameterSpec]]) -> bool:
+        prebuilt_keys = set(key for key, value in flatten_items(prebuilt) if value is not None)
         if not prebuilt_keys:
             return False
         param_keys = set(key for key, _ in flatten_items(self.create_parameter_specs_recursively()))

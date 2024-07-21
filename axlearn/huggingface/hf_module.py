@@ -15,10 +15,11 @@ from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_flax_utils import FlaxPreTrainedModel
 
 from axlearn.common.adapter_flax import config_for_flax_module
+from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, Required, RequiredFieldMissingError, config_class
 from axlearn.common.module import Module, NestedTensor  # pylint: disable=unused-import
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Nested, Tensor
 
 HF_MODULE_KEY = "hf_module"
 
@@ -154,7 +155,7 @@ class HfModuleWrapper(BaseModel, ABC):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
             return prebuilt

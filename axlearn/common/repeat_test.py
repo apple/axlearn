@@ -18,7 +18,15 @@ from axlearn.common.module import Module, OutputCollection, child_context
 from axlearn.common.module import functional as F
 from axlearn.common.repeat import Repeat, _drop_by_regex
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import NestedTensor, PartitionSpec, Tensor, VDict, get_recursively, shapes
+from axlearn.common.utils import (
+    Nested,
+    NestedTensor,
+    PartitionSpec,
+    Tensor,
+    VDict,
+    get_recursively,
+    shapes,
+)
 
 
 class TestLayer(BaseLayer):
@@ -86,7 +94,7 @@ class TestRepeat(Repeat):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> NestedTensor:
         params = super().initialize_parameters_recursively(prng_key=prng_key, prebuilt=prebuilt)
         params["dummy"] = jnp.ones(1)
@@ -287,6 +295,7 @@ class RepeatTest(TestCase):
             layer_params_repeated_prebuilt = layer.initialize_parameters_recursively(
                 prng_key=jax.random.PRNGKey(1), prebuilt=prebuilt
             )
+            layer_params_repeated_prebuilt["repeat_layer"] = repeat_layer_prebuilt
             input_forward_state = layer.init_forward_state(batch_size)
             (carry, output_forward_state), output_collection = F(
                 layer,

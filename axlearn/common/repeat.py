@@ -58,6 +58,7 @@ from axlearn.common.base_layer import (
     BaseLayer,
     FactorizationSpec,
     NestedParameterSpec,
+    ParameterSpec,
     PartitionSpec,
 )
 from axlearn.common.config import (
@@ -69,6 +70,7 @@ from axlearn.common.config import (
 )
 from axlearn.common.module import Module, child_context, new_output_collection, scan_in_context
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     Tensor,
     VDict,
@@ -136,17 +138,19 @@ class Repeat(BaseLayer):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> NestedTensor:
-        def init(prng_key_i, prebuilt_i):
+        def init(prng_key_i):
             return VDict(
                 layer=self.layer.initialize_parameters_recursively(
-                    prng_key_i, prebuilt=get_or_none(prebuilt_i, "layer")
+                    # `prebuilt` must be consistent across all layers.
+                    prng_key_i,
+                    prebuilt=get_or_none(prebuilt, "layer"),
                 )
             )
 
         cfg = self.config
-        return jax.vmap(init)(split_prng_key(prng_key, cfg.num_layers).keys, prebuilt)
+        return jax.vmap(init)(split_prng_key(prng_key, cfg.num_layers).keys)
 
     class Output(NamedTuple):
         carry: NestedTensor

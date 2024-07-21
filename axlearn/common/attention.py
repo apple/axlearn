@@ -88,6 +88,7 @@ from axlearn.common.pipeline import Pipeline
 from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.repeat import Repeat
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     PartitionSpec,
     Tensor,
@@ -1052,7 +1053,7 @@ class FusedQKVLinear(BaseQKVLinear):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
             return prebuilt
@@ -3402,7 +3403,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             self._layers.append(self._add_child(f"layer{i}", layer_cfg))
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> NestedTensor:
         cfg = self.config  # type: StackedTransformerLayer.Config
         prng_key = split_prng_key(prng_key, cfg.num_layers)
@@ -3821,7 +3822,7 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
         self._add_child("pipeline", pipeline_cfg)
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> NestedTensor:
         cfg = self.config  # type: PipelinedTransformerLayer.Config
         # We pre-split all num_layers keys to ensure initialization parity with
