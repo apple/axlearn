@@ -16,11 +16,24 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
+from jax.experimental import mesh_utils
 
-from axlearn.common.attention import TransformerFeedForwardLayer
-from axlearn.common.mixture_of_experts import Top2Gating, TransformerFeedForwardMoE
+from axlearn.common.attention import (
+    RepeatedTransformerLayer,
+    StackedTransformerLayer,
+    TransformerFeedForwardLayer,
+    TransformerLayer,
+)
+from axlearn.common.layers import set_bias_recursively
+from axlearn.common.mixture_of_experts import (
+    Top2Gating,
+    TransformerFeedForwardMoE,
+    _convert_feedforward_to_moe_parameters,
+    convert_dense_to_moe_parameters,
+)
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import assert_allclose
+from axlearn.common.utils import get_recursively, set_recursively, shapes
 
 
 # pylint: disable=no-self-use,protected-access
@@ -337,6 +350,153 @@ class TransformerFeedForwardMoETest(parameterized.TestCase):
         for k, v in fans_o.items():
             assert k in fans2_o
             self.assertEqual(v, fans2_o[k])
+
+
+class ParamConversionTest(parameterized.TestCase):
+    @parameterized.product(
+        activation=("relu", ("linear", "nn.silu")),
+        num_experts=(1, 2),
+        bias=(False, True),
+    )
+    def test_feed_forward_to_moe_parameters(self, *, activation, num_experts: int, bias: bool):
+        input_dim, hidden_dim = 4, 16
+        cfg_dense = TransformerFeedForwardLayer.default_config().set(name="test")
+        cfg_dense.input_dim = input_dim
+        cfg_dense.hidden_dim = hidden_dim
+        cfg_dense.activation = activation
+        cfg_dense.linear1.bias = cfg_dense.linear2.bias = bias
+        layer_dense: TransformerFeedForwardLayer = cfg_dense.instantiate(parent=None)
+        state_dense = layer_dense.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(123)
+        )
+
+        cfg_moe = TransformerFeedForwardMoE.default_config().set(name="test")
+        cfg_moe.input_dim = input_dim
+        cfg_moe.hidden_dim = hidden_dim
+        cfg_moe.num_experts = num_experts
+        cfg_moe.activation = activation
+        cfg_moe.num_groups = 1
+        # A large capacity factor to prevent dropping tokens.
+        cfg_moe.gating.train_capacity_factor = 100.0
+        cfg_moe.gating.eval_capacity_factor = 100.0
+        layer_moe: TransformerFeedForwardMoE = cfg_moe.instantiate(parent=None)
+        state_moe = layer_moe.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        param_specs_moe = layer_moe.create_parameter_specs_recursively()
+
+        if bias:
+            with self.assertRaisesRegex(NotImplementedError, "bias"):
+                _convert_feedforward_to_moe_parameters(
+                    state_dense, num_experts=num_experts, moe_parameter_specs=param_specs_moe
+                )
+            return
+        state_moe_converted = _convert_feedforward_to_moe_parameters(
+            state_dense, num_experts=num_experts, moe_parameter_specs=param_specs_moe
+        )
+        state_moe_converted = jax.tree_util.tree_map(
+            lambda spec, param: spec if param is None else param,
+            param_specs_moe,
+            state_moe_converted,
+        )
+        self.assertEqual(shapes(state_moe), shapes(state_moe_converted))
+        for expert_i in range(num_experts):
+            # The dense weights are replicated to each expert.
+            if "linear1" in state_dense:
+                np.testing.assert_array_equal(
+                    state_dense["linear1"]["weight"], state_moe_converted["wi_weight"][expert_i]
+                )
+            else:
+                np.testing.assert_array_equal(
+                    state_dense["linear1_0"]["weight"], state_moe_converted["wi_0_weight"][expert_i]
+                )
+                np.testing.assert_array_equal(
+                    state_dense["linear1_1"]["weight"], state_moe_converted["wi_1_weight"][expert_i]
+                )
+            np.testing.assert_array_equal(
+                state_dense["linear2"]["weight"], state_moe_converted["wo_weight"][expert_i]
+            )
+
+    def test_dense_to_moe_parameters(self):
+        """Tests _convert_feedforward_to_moe_parameters."""
+        mesh_shape = (1, 1, 1)
+        devices = mesh_utils.create_device_mesh(mesh_shape)
+        mesh = jax.sharding.Mesh(devices, ("expert", "data", "model"))
+        with mesh:
+            num_layers, input_dim, hidden_dim, num_heads = 6, 4, 16, 2
+            cfg_dense = RepeatedTransformerLayer.default_config().set(
+                name="test",
+                input_dim=input_dim,
+                num_layers=num_layers,
+                layer=TransformerLayer.default_config(),
+            )
+            cfg_dense.layer.self_attention.attention.set(num_heads=num_heads)
+            cfg_ff_dense = cfg_dense.layer.feed_forward.set(
+                hidden_dim=hidden_dim, activation=("linear", "nn.silu")
+            )
+            set_bias_recursively(cfg_dense, bias=False)
+            layer_dense = cfg_dense.instantiate(parent=None)
+            state_dense = layer_dense.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(123)
+            )
+
+            cfg_ff_moe = TransformerFeedForwardMoE.default_config().set(
+                hidden_dim=hidden_dim,
+                num_experts=3,
+                num_groups=1,
+                activation=cfg_ff_dense.activation,
+            )
+            # A large capacity factor to prevent dropping tokens.
+            cfg_ff_moe.gating.train_capacity_factor = 100.0
+            cfg_ff_moe.gating.eval_capacity_factor = 100.0
+            cfg_moe = RepeatedTransformerLayer.default_config().set(
+                name="test",
+                input_dim=input_dim,
+                num_layers=num_layers // 2,
+                layer=StackedTransformerLayer.default_config().set(
+                    num_layers=2,
+                    layer=[cfg_dense.layer.clone(), cfg_dense.layer.clone(feed_forward=cfg_ff_moe)],
+                ),
+            )
+            set_bias_recursively(cfg_moe, bias=False)
+
+            layer_moe = cfg_moe.instantiate(parent=None)
+            state_moe = layer_moe.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(123)
+            )
+            param_specs_moe = layer_moe.create_parameter_specs_recursively()
+
+            state_moe_converted = convert_dense_to_moe_parameters(
+                state_dense, target_parameter_specs=param_specs_moe
+            )
+            print(shapes(state_moe))
+            print(shapes(state_moe_converted))
+            self.assertEqual(shapes(state_moe), shapes(state_moe_converted))
+
+            # Initialize `gate_weight` randomly.
+            gate_weight_path = ("repeat", "layer", "layer1", "feed_forward", "gate_weight")
+            gate_weight_spec = get_recursively(state_moe_converted, path=gate_weight_path)
+            gate_weight = jax.random.normal(
+                jax.random.PRNGKey(1), shape=gate_weight_spec.shape, dtype=gate_weight_spec.dtype
+            )
+            set_recursively(state_moe_converted, path=gate_weight_path, value=gate_weight)
+
+            # Feed the same inputs to `layer_dense` and `layer_moe`.
+            inputs = jax.random.normal(jax.random.PRNGKey(123), (2, 7, input_dim))
+            outputs_dense, _ = F(
+                module=layer_dense,
+                state=state_dense,
+                inputs=(inputs,),
+                prng_key=jax.random.PRNGKey(456),
+                is_training=True,
+            )
+            outputs_moe, _ = F(
+                module=layer_moe,
+                state=state_moe_converted,
+                inputs=(inputs,),
+                prng_key=jax.random.PRNGKey(456),
+                is_training=True,
+            )
+            # Expect the same outputs since all experts are identical to the dense one.
+            assert_allclose(outputs_dense.data, outputs_moe.data)
 
 
 if __name__ == "__main__":

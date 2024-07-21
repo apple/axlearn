@@ -13,12 +13,14 @@
 
 Reference: https://arxiv.org/abs/2405.15052.
 """
+import re
 from typing import Dict, NamedTuple, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
+from jax.experimental.pjit import pjit
 
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
@@ -37,7 +39,18 @@ from axlearn.common.layers import (
 )
 from axlearn.common.module import Module
 from axlearn.common.param_init import FanAxes
-from axlearn.common.utils import NestedTensor, PartitionSpec, Tensor, with_sharding_constraint
+from axlearn.common.utils import (
+    Nested,
+    NestedTensor,
+    PartitionSpec,
+    Tensor,
+    VDict,
+    flatten_items,
+    get_recursively,
+    set_recursively,
+    tree_paths,
+    with_sharding_constraint,
+)
 
 
 def _router_z_loss(logits: Tensor) -> Tensor:
@@ -603,3 +616,165 @@ class TransformerFeedForwardMoE(BaseLayer):
             x = jnp.einsum("oegcm,emh->oegch", x, self.parameters["wi_weight"])
             x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegch"])
             return get_activation_fn(cfg.activation)(x)
+
+
+def _convert_feedforward_to_moe_parameters(
+    source_parameters: Nested[Tensor],
+    *,
+    num_experts: int,
+    moe_parameter_specs: Nested[ParameterSpec],
+) -> Nested[Tensor]:
+    """Converts parameters of a TransformerFeedForwardLayer to those of a TransformerFeedForwardMoE.
+
+    Args:
+        source_parameters: The parameters of a TransformerFeedForwardLayer.
+        num_experts: The number of experts for the target TransformerFeedForwardMoE.
+        moe_parameter_specs: The parameter specs for the target TransformerFeedForwardMoE.
+
+    Returns:
+        Parameters of a TransformerFeedForwardMoE.
+
+    Raises:
+        NotImplementedError: if the source TransformerFeedForwardLayer includes bias in its linear
+            parameters or upon unexpected source parameter names.
+    """
+    moe_parameters = jax.tree_util.tree_map(lambda x: None, moe_parameter_specs)
+    for path, value in flatten_items(source_parameters):
+        m = re.fullmatch("linear([0-9_]+)/(weight|bias)", path)
+        if not m:
+            set_recursively(moe_parameters, path=path, value=value)
+            continue
+        if m.group(2) == "bias":
+            raise NotImplementedError("TransformerFeedForwardMoE does not support bias")
+        linear_name = m.group(1)
+        # linear_name can be "linear1", "linear2", "linear1_0", or "linear1_1" and should map to
+        # wi, wo, wi_0, wi_1, respectively.
+        m = re.fullmatch("([0-9]+)(|_[0-9]+)", linear_name)
+        if not m:
+            raise NotImplementedError(f"Unexpected {linear_name} in {path}")
+        moe_weight_prefix = "wi" if m.group(1) == "1" else "wo"
+        moe_weight_suffix = m.group(2)
+        # Shard the dispatch tensor by 'expert'.
+        dispatch = with_sharding_constraint(jnp.ones([num_experts], dtype=value.dtype), ("expert",))
+        moe_parameters[f"{moe_weight_prefix}{moe_weight_suffix}_weight"] = jnp.einsum(
+            "xy,e->exy", value, dispatch
+        )
+    return moe_parameters
+
+
+def convert_dense_to_moe_parameters(
+    source_parameters: Nested[Tensor],
+    *,
+    target_parameter_specs: Nested[ParameterSpec],
+) -> Nested[Tensor]:
+    """Converts parameters of a dense BaseTransformerLayer to parameters of a target layer.
+
+    Current limitations:
+    - The source and target must have the same total number of TransformerLayers.
+    - `source_parameters` must represent a `RepeatedTransformerLayer(TransformerLayer)` stack;
+    - `target_parameter_specs` must represent a `RepeatedTransformerLayer(StackedTransformerLayer)`
+      stack, where every layer in the `StackedTransformerLayer` must be TransformerLayer, containing
+      either a (dense) TransformerFeedForwardLayer or a TransformerFeedForwardMoE as its
+      `feed_forward` child.
+
+    For example, `target_parameter_specs` may have the following structure, representing
+    interleaving dense/MoE layers in a RepeatedTransformerLayer stack.
+    - repeat
+        - layer (StackedTransformerLayer)
+            - layer0 (TransformerLayer)
+                - self_attention
+                - feed_forward (TransformerFeedForwardLayer)
+            - layer1 (TransformerLayer)
+                - self_attention
+                - feed_forward (TransformerFeedForwardMoE)
+                    - wi_weight (or wi_0_weight and wi_1_weight if using .*GLU.)
+                    - wo_weight
+                    - norm
+                    - gate_weight
+
+    Args:
+        source_parameters: The dense Transformer parameters.
+        target_parameter_specs: The target layer parameter specs.
+
+    Returns:
+        The target layer parameters, where:
+        - The expert feed-forward weights are replicated from the corresponding dense feed-forward
+          weights.
+        - The `gate_weight` of TransformerFeedForwardMoE layers will be in the form of
+          a ParameterSpec instead of a Tensor, since the conversion does not generate
+          `gate_weight`.
+        - All other parameters will be copied from the corresponding parameters of
+          `source_parameters`.
+    """
+
+    def convert_fn(source_parameters: Nested[Tensor]) -> Nested[Tensor]:
+        try:
+            stage_parameter_specs = get_recursively(target_parameter_specs, ("repeat", "layer"))
+        except KeyError as e:
+            raise NotImplementedError(
+                f"Expected RepeatedTransformerLayer, got {target_parameter_specs}"
+            ) from e
+        # The target layer is a RepeatedTransformerLayer.
+        target_parameters = {"repeat": VDict({"layer": {}})}
+        num_stages = jax.tree_util.tree_leaves(stage_parameter_specs)[0].shape[0]
+        # The target stage is expected to be a StackedTransformerLayer.
+        num_layers_per_stage = len(stage_parameter_specs)
+        for layer_i in range(num_layers_per_stage):
+            layer_name = f"layer{layer_i}"
+            try:
+                ff_layer_parameter_specs = get_recursively(
+                    stage_parameter_specs, (layer_name, "feed_forward")
+                )
+            except KeyError as e:
+                raise NotImplementedError(
+                    f"Expected Repeated(Stacked(TransformerLayer)), got {stage_parameter_specs}"
+                ) from e
+
+            num_experts = None
+            if "gate_weight" in ff_layer_parameter_specs:
+                # The target feed_forward layer is a TransformerFeedForwardMoE.
+                num_experts = ff_layer_parameter_specs["gate_weight"].shape[-1]
+            source_layer_parameters = source_parameters["repeat"]["layer"]
+
+            def convert_layer(
+                layer_index: Tensor,
+                source_layer_parameters=source_layer_parameters,
+                num_experts=num_experts,
+                moe_layer_parameter_specs=ff_layer_parameter_specs,
+            ) -> Nested[Tensor]:
+                """Converts source_layer_parameters[layer_index] to params of a target layer."""
+                layer_parameters = jax.tree_util.tree_map(
+                    lambda w: w[layer_index], source_layer_parameters
+                )
+                if not num_experts:
+                    return layer_parameters
+
+                layer_parameters["feed_forward"] = _convert_feedforward_to_moe_parameters(
+                    layer_parameters["feed_forward"],
+                    num_experts=num_experts,
+                    moe_parameter_specs=moe_layer_parameter_specs,
+                )
+                return layer_parameters
+
+            source_layer_indices = [s * num_layers_per_stage + layer_i for s in range(num_stages)]
+            target_parameters["repeat"]["layer"][layer_name] = jax.vmap(convert_layer)(
+                jnp.asarray(source_layer_indices, dtype=jnp.int32)
+            )
+        return target_parameters
+
+    def compute_out_sharding(path: str, parameter_spec: ParameterSpec) -> Optional[PartitionSpec]:
+        if path.endswith("/gate_weight"):
+            # `convert_fn` will not generate gate_weight
+            return None
+        return parameter_spec.mesh_axes
+
+    out_shardings = jax.tree_util.tree_map(
+        compute_out_sharding, tree_paths(target_parameter_specs), target_parameter_specs
+    )
+    target_parameters = pjit(convert_fn, out_shardings=out_shardings)(source_parameters)
+    target_parameters = jax.tree_util.tree_map(
+        lambda spec, param: spec if param is None else param,
+        target_parameter_specs,
+        target_parameters,
+    )
+    return target_parameters
