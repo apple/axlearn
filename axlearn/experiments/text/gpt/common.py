@@ -351,7 +351,7 @@ def mup_simple_adam_update_transformation(scale_factor: float) -> InstantiableCo
     )
 
 
-def learner_config(
+def adamw_decoupled_learner_config(
     *,
     peak_lr: float,
     max_step: int,
@@ -386,6 +386,53 @@ def learner_config(
                 adam_update_transformation=adam_update_transformation,
             ),
         ]
+    )
+    return learner.Learner.default_config().set(optimizer=optimizer_cfg)
+
+
+def adastar_learner_config(
+    *,
+    peak_lr: float,
+    max_step: int,
+    lr_warmup_steps: int = 2000,
+    alpha: float = 0.005,
+    weight_decay: float = 3.16e-4,
+    b1: float = 0.95,
+    b2: float = 0.995,
+    adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
+) -> learner.Learner.Config:
+    """Build learner using the AdaStar optimizer and a cosine lr schedule with linear warmup."""
+    update_schedule = config_for_function(schedule.cosine_with_linear_warmup).set(
+        peak_lr=1.0,
+        max_step=max_step,
+        warmup_steps=lr_warmup_steps,
+        begin_value=0.0,
+        # Decay to this fraction of the peak_lr.
+        alpha=alpha,
+    )
+    optimizer_cfg = config_for_function(optimizers.skip_and_clip_by_global_norm).set(
+        inner=config_for_function(optimizers.adastar_optimizer).set(
+            learning_rate=peak_lr,
+            # adafactor does not apply smoothing on gradients (but on raw updates).
+            gradient_ema_decay=None,
+            gradient_ema_debias=None,
+            gradient_square_ema_decay=b2,
+            gradient_square_ema_debias=True,
+            eps=0,
+            # adafactor eps is applied on the square.
+            eps_square=1e-30,
+            # Clipping is applied on raw updates by per-param norm (not global norm).
+            raw_update_clipping_threshold=1.0,
+            # Smoothing is applied on raw updates.
+            update_ema_decay=b1,
+            # ... but without debiasing (!).
+            update_ema_debias=False,
+            weight_decay=weight_decay,
+            update_schedule=update_schedule,
+            adam_update_transformation=adam_update_transformation,
+        ),
+        drop_norm=100,
+        max_norm=1,
     )
     return learner.Learner.default_config().set(optimizer=optimizer_cfg)
 

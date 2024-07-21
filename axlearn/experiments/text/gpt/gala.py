@@ -27,10 +27,10 @@ from axlearn.common.layers import RMSNorm
 from axlearn.experiments.text.gpt.common import (
     STEP_DTYPE,
     SourceBuilder,
+    adamw_decoupled_learner_config,
     evaler_config_dict,
     flash_attention_config,
     get_trainer_config_fn,
-    learner_config,
     make_config_name,
     mesh_shape_from_axes,
 )
@@ -158,7 +158,7 @@ def get_trainer_kwargs(
     # If a model is smaller than the base model, do not scale.
     linear_layer_lr_multiplier = min(_BASE_MODEL_HIDDEN_DIM / model_kwargs["hidden_dim"], 1.0)
     trainer_kwargs["model_cfg"] = model_config(flash_attention=flash_attention, **model_kwargs)
-    trainer_kwargs["learner_cfg"] = learner_config(
+    trainer_kwargs["learner_cfg"] = adamw_decoupled_learner_config(
         max_step=trainer_kwargs["max_step"],
         # Enable mup-simple.
         adam_update_transformation=mup_simple_adam_update_transformation(

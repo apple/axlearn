@@ -33,10 +33,10 @@ from axlearn.common.trainer import SpmdTrainer
 from axlearn.experiments.text.gpt.common import (
     STEP_DTYPE,
     SourceBuilder,
+    adamw_decoupled_learner_config,
     evaler_config_dict,
     flash_attention_config,
     get_trainer_config_fn,
-    learner_config,
     make_config_name,
     mesh_shape_from_axes,
 )
@@ -210,7 +210,7 @@ def get_trainer_kwargs(
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
-    trainer_kwargs["learner_cfg"] = learner_config(
+    trainer_kwargs["learner_cfg"] = adamw_decoupled_learner_config(
         max_step=trainer_kwargs["max_step"],
         **trainer_kwargs.pop("learner_kwargs"),
     )
