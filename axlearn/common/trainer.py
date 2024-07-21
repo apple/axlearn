@@ -618,7 +618,7 @@ class SpmdTrainer(Module):
             _init_state,
             in_shardings=(None, prebuilt_model_state_partition_spec),
             out_shardings=self._trainer_state_partition_specs,
-            donate_argnums=(0, 1),  # donate both prng_key and prebuilt_model_state
+            donate_argnums=(1,),  # donate prebuilt_model_state to reduce memory usage.
         )
         self._step_log("Initializing trainer state.")
         with self.mesh():
