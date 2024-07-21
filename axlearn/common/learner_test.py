@@ -1,24 +1,29 @@
 # Copyright © 2023 Apple Inc.
-
 """Tests learner."""
+import copy
 import re
-from typing import Optional
+from numbers import Number
+from typing import Any, Dict, Optional, Union, cast
 
+import chex
 import jax.nn
 import numpy as np
 import optax
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
+import axlearn.common.update_transformation_test
 from axlearn.common import schedule
 from axlearn.common.base_layer import FactorizationSpec, ParameterSpec
-from axlearn.common.config import config_for_function
+from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 from axlearn.common.learner import (
     CompositeLearner,
-    ForwardOutputs,
     Learner,
     UpdateType,
+    _apply_updates,
     _prune_empty,
+    _split_gradients,
+    _value_and_grad,
     should_update_with_optimizers,
 )
 from axlearn.common.module import OutputCollection
@@ -35,7 +40,21 @@ from axlearn.common.optimizers import (
     sgd_optimizer,
 )
 from axlearn.common.test_utils import TestCase
-from axlearn.common.utils import PartitionSpec, VDict, flatten_items, match_regex_rules, tree_paths
+from axlearn.common.update_transformation import (
+    ForwardOutputs,
+    ForwardPass,
+    Updates,
+    UpdateTransformation,
+)
+from axlearn.common.utils import (
+    Nested,
+    PartitionSpec,
+    Tensor,
+    VDict,
+    flatten_items,
+    match_regex_rules,
+    tree_paths,
+)
 
 
 class LearnerTest(TestCase):
@@ -170,11 +189,12 @@ class LearnerTest(TestCase):
         )
 
         if method == "update":
-            inputs = dict(
-                gradients=grads,
-                model_params=params,
-                state_updates=dict(c=params["c"].value + 1),
+            updates = Updates(
+                delta_updates=grads,
+                opt_params=params,
+                inplace_updates=dict(c=params["c"].value + 1),
             )
+            inputs = dict(updates=updates)
         elif method == "forward_and_backward":
             inputs = dict(fn=loss_fn, inputs={}, opt_params=params)
         else:
@@ -199,7 +219,8 @@ class LearnerTest(TestCase):
             dict(v=expected_new_v, c=1.0),
             atol=1e-6,
         )
-        summaries = output_collection.summaries
+        # Optimizer summaries are now logged under `/learner/optimizer/` instead of `/learner/`.
+        summaries = output_collection.summaries["optimizer"]
         self.assertNestedAllClose(
             {
                 "learning_rate": learning_rate_fn(step),
@@ -343,11 +364,13 @@ class LearnerTest(TestCase):
             is_training=True,
             prng_key=jax.random.PRNGKey(123),
             state=state,
-            inputs=dict(
-                gradients=grads,
-                model_params=params,
-                state_updates=dict(c=params["c"].value + 1),
-            ),
+            inputs=[
+                Updates(
+                    delta_updates=grads,
+                    opt_params=params,
+                    inplace_updates=dict(c=params["c"].value + 1),
+                )
+            ],
         )
         v_value = params["v"].value
         if should_update_with_optimizers(update_types["v"]):
@@ -378,7 +401,7 @@ class LearnerTest(TestCase):
                 "schedule_step": 0,
                 "schedule_scale": -1.0 * learning_rate_fn(step),
             },
-            summaries,
+            summaries["optimizer"],
         )
         state_updates = output_collection.state_updates
         self.assertNestedAllClose(
@@ -464,11 +487,13 @@ class LearnerTest(TestCase):
             is_training=True,
             prng_key=jax.random.PRNGKey(123),
             state=state,
-            inputs=dict(
-                gradients=grads,
-                model_params=params,
-                state_updates={},
-            ),
+            inputs=[
+                Updates(
+                    delta_updates=grads,
+                    opt_params=params,
+                    inplace_updates={},
+                )
+            ],
         )
         v_value = params["v"].value
         if should_update_with_optimizers(update_types["v"]):
@@ -522,26 +547,158 @@ class LearnerTest(TestCase):
             is_training=True,
             prng_key=jax.random.PRNGKey(123),
             state=state,
-            inputs=dict(
-                gradients=grads,
-                model_params=params,
-                state_updates=dict(moving_mean=params["moving_mean"].value + 1),
-            ),
+            inputs=[
+                Updates(
+                    delta_updates=grads,
+                    opt_params=params,
+                    inplace_updates=dict(moving_mean=params["moving_mean"].value + 1),
+                )
+            ],
         )
         self.assertNestedAllClose(
             {
-                "learning_rate": 1.0,
-                "lr_schedule_step": 0,
-                "gradient_norm": jnp.sqrt(jnp.sum(2 * expected_grad**2)),
+                "optimizer/learning_rate": 1.0,
+                "optimizer/lr_schedule_step": 0,
+                "optimizer/gradient_norm": jnp.sqrt(jnp.sum(2 * expected_grad**2)),
                 "param_rms/weight": jnp.sqrt((0 + 4 + 4 + 9) / 4),
                 "param_rms/moving_mean": 0.5,
                 "grad_rms/weight": jnp.sqrt(jnp.mean(expected_grad**2)),
                 "grad_rms/moving_mean": jnp.sqrt(jnp.mean(expected_grad**2)),
-                "schedule_step": 0,
-                "schedule_scale": -1.0,
+                "optimizer/schedule_step": 0,
+                "optimizer/schedule_scale": -1.0,
             },
             output_collection.summaries,
         )
+
+    def test_inplace_updates_supersede_delta_updates(self):
+        """Tests that inplace updates take precedence over delta updates."""
+
+        class IdentityTransformation(UpdateTransformation):
+            def transform_update(self, updates: Updates) -> Updates:
+                return updates
+
+        cfg = Learner.default_config().set(
+            name="tmp", optimizer=IdentityTransformation.default_config()
+        )
+        learner = cfg.instantiate(parent=None)
+        param_updates = learner.update(
+            Updates(
+                opt_params=dict(
+                    a=OptParam(value=jnp.array(5), factorization_spec=None, weight_decay_scale=None)
+                ),
+                delta_updates=dict(a=jnp.array(7)),
+                inplace_updates=dict(a=jnp.array(3)),
+            )
+        )
+        self.assertEqual(param_updates, dict(a=jnp.array(3)))
+
+
+class HelperTest(TestCase):
+    """Test helper functions."""
+
+    def test__apply_updates(self):
+        result = _apply_updates(
+            dict(
+                a=jnp.array(1),
+                c=dict(g=jnp.array(6), h=jnp.array(7)),
+                d=optax.MaskedNode(),
+                e=jnp.array(4),
+            ),
+            updates=dict(
+                b=tuple(jnp.arange(5)),
+                c=dict(h=jnp.array(8)),
+                d=jnp.array(3),
+                e=optax.MaskedNode(),
+                f=jnp.array(5),
+            ),
+        )
+        self.assertEqual(
+            result,
+            dict(
+                a=jnp.array(1),
+                b=tuple(jnp.arange(5)),
+                c=dict(g=jnp.array(6), h=jnp.array(8)),
+                d=optax.MaskedNode(),
+                e=jnp.array(4),
+                f=jnp.array(5),
+            ),
+        )
+
+    @staticmethod
+    def _forward(
+        *,
+        model_params: Nested[Tensor],
+        inputs: Nested[Tensor],
+    ) -> ForwardOutputs:
+        loss = inputs * model_params["a"] + model_params["b"]["c"] * model_params["b"]["d"]
+        output_collection = new_output_collection()
+        output_collection.state_updates["test"] = model_params
+        return ForwardOutputs(loss=loss, aux=11, output_collection=output_collection)
+
+    def test__split_gradients(self):
+        new_forward, split_args_fn = _split_gradients(
+            self._forward, should_compute_gradients=dict(a=True, b=dict(c=True, d=False))
+        )
+        params = dict(a=3, b=dict(c=5, d=7))
+        split_args = split_args_fn(params)
+        self.assertEqual(
+            split_args, (dict(a=3, b=dict(c=5, d=None)), dict(a=None, b=dict(c=None, d=7)))
+        )
+
+        forward_outputs = new_forward(model_params=split_args[0], inputs=(split_args[1], 53))
+        self.assertEqual(forward_outputs.loss, 53 * 3 + 5 * 7)
+        self.assertEqual(forward_outputs.aux, 11)
+        self.assertEqual(forward_outputs.output_collection.state_updates["test"], params)
+
+    def test__value_and_grad(self):
+        params = dict(a=3.0, b=dict(c=5.0, d=7.0))
+        opt_params = jax.tree_util.tree_map(
+            lambda p: OptParam(value=p, factorization_spec=None, weight_decay_scale=None), params
+        )
+        updates = _value_and_grad(
+            self._forward,
+            opt_params=opt_params,
+            inputs=53.0,
+            should_compute_gradients=dict(a=True, b=dict(c=True, d=False)),
+        )
+
+        new_forward, split_args_fn = _split_gradients(
+            self._forward, should_compute_gradients=dict(a=True, b=dict(c=True, d=False))
+        )
+        params = dict(a=3.0, b=dict(c=5.0, d=7.0))
+        delta_update = dict(a=53.0, b=dict(c=7.0, d=None))
+        model_params_grad, model_params_nograd = split_args_fn(params)
+        forward_outputs = self._forward(model_params=params, inputs=53)
+        expected = Updates(
+            opt_params=opt_params,
+            delta_updates=delta_update,
+            inplace_updates=dict(test=params),
+            forward_pass=dict(
+                default=ForwardPass(
+                    forward_fn=new_forward,
+                    model_params=model_params_grad,
+                    inputs=(model_params_nograd, 53.0),
+                    outputs=forward_outputs,
+                )
+            ),
+        )
+        updates, expected = jax.tree_util.tree_map(
+            lambda x: jnp.asarray(x) if isinstance(x, Number) else x, (updates, expected)
+        )
+        self.assertEqual(
+            updates.forward_pass["default"].forward_fn(
+                model_params=model_params_grad, inputs=(model_params_nograd, 53.0)
+            ),
+            expected.forward_pass["default"].forward_fn(
+                model_params=model_params_grad, inputs=(model_params_nograd, 53.0)
+            ),
+        )
+        object.__setattr__(
+            expected.forward_pass["default"],
+            "forward_fn",
+            updates.forward_pass["default"].forward_fn,
+        )
+        self.assertEqual(updates, expected)
 
 
 class CompositeLearnerTest(TestCase):
@@ -718,19 +875,20 @@ class CompositeLearnerTest(TestCase):
         grads = jax.tree_map(lambda p: jnp.ones_like(p.value), params)
 
         if method == "update":
-            inputs = dict(
-                gradients=grads,
-                model_params=params,
-                state_updates=dict(
-                    encoder=dict(mean=jnp.array([1.0, 2.0])),
-                    decoder=dict(scalar=params["decoder"]["scalar"].value + 2.7),
-                ),
-            )
-            # Deep copy tree structure; shallow copy leaves.
-            encoder_inputs = jax.tree_util.tree_map(lambda x: x, inputs)
-            del encoder_inputs["state_updates"]["decoder"]
-            decoder_inputs = jax.tree_util.tree_map(lambda x: x, inputs)
-            del decoder_inputs["state_updates"]["encoder"]
+            inputs = [
+                Updates(
+                    delta_updates=grads,
+                    opt_params=params,
+                    inplace_updates=dict(
+                        encoder=dict(mean=jnp.array([1.0, 2.0])),
+                        decoder=dict(scalar=params["decoder"]["scalar"].value + 2.7),
+                    ),
+                )
+            ]
+            encoder_inputs = copy.deepcopy(inputs)
+            del encoder_inputs[0].inplace_updates["decoder"]
+            decoder_inputs = copy.deepcopy(inputs)
+            del decoder_inputs[0].inplace_updates["encoder"]
         elif method == "forward_and_backward":
             inputs = dict(fn=loss_fn, inputs={}, opt_params=params)
             encoder_inputs = inputs
@@ -932,6 +1090,140 @@ class CompositeLearnerTest(TestCase):
         with self.assertRaises(ValueError):
             # Sublearner ema is not None.
             cfg.instantiate(parent=None)
+
+    # pylint: disable=no-self-argument
+    def test_learner_masking(test_self):
+        """In-depth test of the masking of `Learner` and `CompositeLearner`.
+
+         The behavior must exactly match the following.
+         1. Mask the leaves of `updates.delta_updates`  with `None` where
+            `should_update_with_optimizers()` is `False`.
+         2. Mask the leaves of `updates.opt_params` and `updates.inplace_updates`, and also
+            the leaves of the arguments to `init()` and `create_state_partition_specs`
+            with `optax.MaskedNode()` for leaves that are not assigned to the current sub-learner.
+            But only do this if the leaf is not already `None`.
+        3. For each leaf that is `None` or `optax.MaskedNode()` in `updates.opt_params`, mask out
+           the corresponding leaf in `updates.delta_updates` with the same value.
+        4. The optimizer must not change the tree structure.
+        5. No implicit masking by key deletion.
+
+        The reason this is required is backwards compatibility with existing state trees and the
+        pre-existing `CompositeLearner` implementation.
+
+        """
+        updates = axlearn.common.update_transformation_test.mock_updates()
+
+        param_keys = updates.opt_params.keys()
+        state_keys = updates.inplace_updates.keys()
+
+        class ExtraCheckingLearner(Learner):
+            """A sub-learner that does extra explicit checking that masking was done according
+            to the above requirements.
+            """
+
+            @config_class
+            class Config(Learner.Config):
+                # Rules to use for checking that the masking is correct.
+                # Maps name of rule -> dictionary of how nodes should be masked under that rule.
+                # E.g., dict(rule_1=dict(layer_1=dict(weight_1=optax.MaskedNode))).
+                rules: Required[Dict[str, Dict[str, Union[optax.MaskedNode, None]]]] = REQUIRED
+
+            def init(self, model_params: Nested[OptParam]) -> Nested[Tensor]:
+                model_params = cast(dict, model_params)
+                test_self.assertEqual(model_params.keys(), param_keys)
+                self._check_masking(model_params, rule="2")
+                return super().init(model_params)
+
+            def create_state_partition_specs(
+                self, model_param_specs: Nested[ParameterSpec]
+            ) -> Nested[PartitionSpec]:
+                model_param_specs = cast(dict, model_param_specs)
+                test_self.assertEqual(model_param_specs.keys(), param_keys)
+                self._check_masking(model_param_specs, rule="2")
+                return super().create_state_partition_specs(model_param_specs)
+
+            def update(self, updates: Updates) -> Nested[Tensor]:
+                test_self.assertSequenceEqual(updates.opt_params.keys(), param_keys)
+                test_self.assertSequenceEqual(updates.delta_updates.keys(), param_keys)
+                test_self.assertSequenceEqual(updates.inplace_updates.keys(), state_keys)
+
+                self._check_masking(updates.opt_params, rule="2")
+                self._check_masking(updates.delta_updates, rule="updates.delta_updates")
+                self._check_masking(updates.inplace_updates, rule="2")
+
+                result = super().update(updates)
+
+                chex.assert_trees_all_equal_structs(result, updates.opt_params)
+                self._check_masking(result, rule="2")
+                return result
+
+            def _check_masking(self, tree: Nested[Any], rule: str):
+                """Check that `tree` is masked correctly.
+
+                Args:
+                    tree: The tree to check.
+                    rule: The rule from `cfg.masking_rules` to check agains.
+                """
+                cfg = self.config
+                tree: dict
+
+                rule_dict: Dict[str, Union[optax.MaskedNode, None]] = cfg.rules[rule]
+
+                expected = {k: rule_dict[k] for k in tree if k in rule_dict}
+                # Compute actual masked entries.
+                masked = [optax.MaskedNode(), None]
+                masked = masked + [VDict(bias=m) for m in masked]
+                actual = {k: v for k, v in tree.items() if v in masked}
+
+                test_self.assertEqual(actual, expected)
+
+        sublearner_cfg = ExtraCheckingLearner.default_config().set(
+            optimizer=config_for_function(sgd_optimizer).set(
+                learning_rate=0.01,
+                decouple_weight_decay=True,
+            ),
+            update_rules=[("state", UpdateType.STATE_UPDATES)],
+        )
+        learner1_params = ["weight", "state"]
+        learner2_params = ["vdict/bias", "more_state", "do_not_update"]
+        rules = [(name, "l1") for name in learner1_params]
+        rules += [(name, "l2") for name in learner2_params]
+        learner2_params.remove("vdict/bias")
+
+        # Rule 2 corresponds to rule (2) in the method docstring.
+        learner1_rule2 = {k: optax.MaskedNode() for k in learner2_params}
+        # We only track the topmost key in the checks in this test.
+        learner1_rule2["vdict"] = VDict(bias=optax.MaskedNode())
+
+        # do_not_update was already masked with optax.MaskedNode() from the very start and will
+        # remain masked that way.
+        learner2_rule2 = {k: optax.MaskedNode() for k in learner1_params + ["do_not_update"]}
+
+        # Rule "updates.delta_updates" corresponds ot rule (1) and (3).
+        composite_cfg = CompositeLearner.default_config().set(
+            name="tmp",
+            learners=dict(
+                l1=sublearner_cfg.clone(
+                    rules={
+                        "2": learner1_rule2,
+                        "updates.delta_updates": dict(state=None) | learner1_rule2,
+                    }
+                ),
+                l2=sublearner_cfg.clone(
+                    rules={
+                        "2": learner2_rule2,
+                        "updates.delta_updates": dict(state=None) | learner2_rule2,
+                    }
+                ),
+            ),
+            rules=rules,
+        )
+
+        learner: CompositeLearner = composite_cfg.instantiate(parent=None)
+        learner.create_state_partition_specs(updates.param_specs())
+        state = learner.init(updates.opt_params)
+
+        F(learner, method="update", prng_key=None, state=state, inputs=[updates], is_training=True)
 
 
 if __name__ == "__main__":

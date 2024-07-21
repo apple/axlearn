@@ -6,16 +6,17 @@
 - Applying updates on non-differentiable params such as batch norm stats;
 - Maintaining Polyak averages of model params (if enabled).
 """
+from __future__ import annotations
 
 import dataclasses
 import enum
-from typing import Callable, Mapping, Optional, Protocol, Sequence, Tuple
+from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, cast
 
 import jax
 import optax
 from jax import numpy as jnp
 
-from axlearn.common.base_layer import NestedParameterSpec
+from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
     InstantiableConfig,
@@ -23,17 +24,23 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
-from axlearn.common.module import Module, OutputCollection, child_context, new_output_collection
-from axlearn.common.optimizer_base import (
-    NestedOptParam,
-    OptParam,
-    PartitionedGradientTransformation,
-)
+from axlearn.common.learner_base import LearnerModule
+from axlearn.common.module import Module, child_context, new_output_collection
+from axlearn.common.optimizer_base import OptParam, PartitionedGradientTransformation
 from axlearn.common.optimizers import param_ema
+from axlearn.common.update_transformation import (
+    BackwardOutputs,
+    ForwardBackwardOutputs,
+    ForwardFn,
+    ForwardOutputs,
+    ForwardPass,
+    Updates,
+    UpdateTransformation,
+    WrappedPartitionedGradientTransformation,
+    mask_tree,
+)
 from axlearn.common.utils import (
     Nested,
-    NestedPartitionSpec,
-    NestedTensor,
     Tensor,
     flatten_items,
     match_regex_rules,
@@ -78,7 +85,7 @@ def should_apply_state_updates(update_type: UpdateType) -> bool:
     return update_type in (UpdateType.STATE_UPDATES, UpdateType.ALL_UPDATES)
 
 
-def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
+def _prune_empty(in_tree: Nested[Tensor]) -> Nested[Tensor]:
     """Returns a shallow copy of the input tree with empty subtrees pruned.
 
     If a tree would be made empty by removal of its subtrees, it will also be pruned.
@@ -94,65 +101,14 @@ def _prune_empty(in_tree: NestedTensor) -> NestedTensor:
     return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
 
 
-@dataclasses.dataclass
-class ForwardOutputs:
-    loss: Tensor
-    aux: NestedTensor
-    output_collection: OutputCollection
-
-
-@dataclasses.dataclass
-class BackwardOutputs:
-    updated_params: NestedTensor
-
-
-@dataclasses.dataclass
-class ForwardBackwardOutputs:
-    forward_outputs: ForwardOutputs
-    backward_outputs: BackwardOutputs
-
-
-class ForwardFn(Protocol):
-    """Represents the model forward function."""
-
-    def __call__(self, *, inputs: NestedTensor, model_params: NestedTensor) -> ForwardOutputs:
-        """The forward function of a module.
-
-        Args:
-            inputs: The inputs for the forward function.
-            model_params: The model params.
-
-        Returns:
-            A ForwardOutputs value.
-        """
-        raise NotImplementedError(self)
-
-
-class BaseLearner(Module):
+class BaseLearner(LearnerModule):
     """The base class of a learner."""
 
-    def init(self, model_params: NestedOptParam) -> NestedTensor:
-        """Initializes learner state."""
-        raise NotImplementedError(type(self))
-
-    def create_state_partition_specs(
-        self, model_param_specs: NestedParameterSpec
-    ) -> NestedPartitionSpec:
-        """Creates learner state partition_specs."""
-        raise NotImplementedError(type(self))
-
-    def update(
-        self, *, model_params: NestedOptParam, gradients: NestedTensor, state_updates: NestedTensor
-    ) -> NestedTensor:
-        """Computes `model_params` updates with `gradients` and `state_updates`.
+    def update(self, *, updates: Updates) -> Nested[Tensor]:
+        """Computes `model_params` updates from `update`.
 
         Args:
-            model_params: A nested structure with OptParams as leaf nodes.
-            gradients: Gradients on model_params. Must have the same structure as `model_params`
-                except that the leaf values will be None for parameters not to be updated by
-                optimizers.
-            state_updates: The updated values for non-learnable parameters in `model_params`.
-                A potentially trimmed tree of `model_params`.
+            updates: The updates to potentially transform and then apply.
 
         Returns:
             The updated model parameters. The learner state updates will be placed in the output
@@ -161,7 +117,7 @@ class BaseLearner(Module):
         raise NotImplementedError(type(self))
 
     def forward_and_backward(
-        self, *, fn: ForwardFn, inputs: NestedTensor, opt_params: NestedOptParam
+        self, *, fn: ForwardFn, inputs: Nested[Tensor], opt_params: Nested[OptParam]
     ) -> ForwardBackwardOutputs:
         """Computes updates to the parameters `opt_params` of loss function `fn`.
 
@@ -175,10 +131,12 @@ class BaseLearner(Module):
         """
         raise NotImplementedError(type(self))
 
-    def should_update_with_optimizers(self, model_params: NestedOptParam) -> dict:
-        """Returns whether each parameter should be updated with the optimizers.
+    def should_update_with_optimizers(self, model_params: Nested[OptParam]) -> Nested[bool]:
+        """Returns whether each parameter should be updated with the optimizers (delta updates).
 
         This can be used to skip gradient computation in the backward pass.
+
+        Does not affect whether inplace updates happen.
 
         Summaries, state updates, and other changes to OutputCollection may be ignored.
 
@@ -224,32 +182,31 @@ class Learner(BaseLearner):
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        self.optimizer: PartitionedGradientTransformation = cfg.optimizer.instantiate()
-        if not isinstance(self.optimizer, PartitionedGradientTransformation):
-            raise ValueError(
-                f"optimizer must be a PartitionedGradientTransformation: {cfg.optimizer}"
+        optimizer = cfg.optimizer
+        if not isinstance(optimizer, LearnerModule.Config):
+            optimizer = WrappedPartitionedGradientTransformation.default_config().set(
+                transformation=optimizer
             )
+        # Using self.optimizer: UpdateTransformation doesn't seem to work here.
+        self.optimizer = cast(UpdateTransformation, self._add_child("optimizer", optimizer))
         if cfg.ema.decay is not None:
             self.ema: PartitionedGradientTransformation = cfg.ema.instantiate()
 
-    def create_state_partition_specs(
-        self, model_param_specs: NestedParameterSpec
-    ) -> NestedPartitionSpec:
+    def create_state_partition_specs(self, model_param_specs: Nested[ParameterSpec]) -> Any:
         optimizer_model_param_specs = self._get_optimizer_model_params(model_param_specs)
-        partition_state = dict(optimizer=self.optimizer.partition(optimizer_model_param_specs))
+        partition_state = dict(
+            optimizer=self.optimizer.create_state_partition_specs(optimizer_model_param_specs)
+        )
         if self.config.ema.decay is not None:
             partition_state["ema"] = self.ema.partition(model_param_specs)
         return partition_state
 
-    def _get_optimizer_model_params(self, model_params: NestedOptParam) -> NestedOptParam:
+    def _get_optimizer_model_params(self, model_params: Nested[OptParam]) -> Nested[OptParam]:
         should_update_params = self.should_update_with_optimizers(model_params)
-        return jax.tree_util.tree_map(
-            lambda should_update, param: param if should_update else None,
-            should_update_params,
-            model_params,
-        )
+        # Use mask_value=None for consistency with old behavior. This may change in the future.
+        return mask_tree(model_params, keep=should_update_params, mask_value=None)
 
-    def init(self, model_params: NestedOptParam) -> NestedTensor:
+    def init(self, model_params: Nested[OptParam]) -> Nested[Tensor]:
         update_types = self._update_types(model_params)
         register_per_param_settings(
             update_types, description="learner_update_type", path=self.path()
@@ -270,7 +227,7 @@ class Learner(BaseLearner):
             tree_paths(tree),
         )
 
-    def should_update_with_optimizers(self, model_params: NestedOptParam) -> dict:
+    def should_update_with_optimizers(self, model_params: Nested[OptParam]) -> dict:
         """Returns whether each parameter should be updated with the optimizers.
 
         Args:
@@ -283,53 +240,39 @@ class Learner(BaseLearner):
             should_update_with_optimizers, self._update_types(model_params)
         )
 
-    def update(
-        self,
-        *,
-        model_params: Nested[OptParam],
-        gradients: Nested[Tensor],
-        state_updates: Nested[Tensor],
-    ) -> Nested[Tensor]:
-        """Computes `model_params` updates with `gradients` and `state_updates`.
+    def update(self, updates: Updates) -> Nested[Tensor]:
+        """Computes `model_params` updates from `update`.
 
         Args:
-            model_params: A nested structure with OptParams as leaf nodes.
-            gradients: Gradients on model_params. Must have the same structure as `model_params`
-                except that the leaf values will be None for parameters not to be updated by
-                optimizers.
-            state_updates: The updated values for non-learnable parameters in `model_params`.
-                A potentially trimmed tree of `model_params`.
+            updates: The updates to potentially transform and then apply.
 
         Returns:
             The updated model parameters. The learner state updates will be placed in the output
             collection's 'state_update' section.
         """
-        optimizer_model_params = self._get_optimizer_model_params(model_params)
-        optimizer_parameter_updates, optimizer_state = self.optimizer.update(
-            gradients,
-            state=self.state["optimizer"],
-            params=optimizer_model_params,
+        new_updates = dataclasses.replace(
+            updates, opt_params=self._get_optimizer_model_params(updates.opt_params)
         )
-        self.add_state_update("optimizer", optimizer_state)
+        new_updates = self.optimizer(new_updates)
         return self._compute_updated_params(
-            model_params,
-            gradients=gradients,
-            optimizer_parameter_updates=optimizer_parameter_updates,
-            state_updates=state_updates,
+            opt_params=updates.opt_params,  # Use updates from prior to masking
+            gradients=updates.delta_updates,  # We want the original non-transformed gradients here.
+            optimizer_parameter_updates=new_updates.delta_updates,
+            state_updates=new_updates.inplace_updates,
         )
 
     def _compute_updated_params(
         self,
-        model_params: Nested[OptParam],
+        opt_params: Nested[OptParam],
         *,
         gradients: Nested[Tensor],
         optimizer_parameter_updates: Nested[Tensor],
         state_updates: Nested[Tensor],
-    ) -> NestedTensor:
+    ) -> Nested[Tensor]:
         cfg = self.config
         if cfg.enable_per_variable_summaries:
             param_rms = jax.tree_util.tree_map(
-                lambda p: optax.safe_root_mean_squares(p.value, min_rms=1e-3), model_params
+                lambda p: optax.safe_root_mean_squares(p.value, min_rms=1e-3), opt_params
             )
             for p, p_n in flatten_items(param_rms):
                 self.add_summary(f"param_rms/{p}", p_n)
@@ -344,13 +287,13 @@ class Learner(BaseLearner):
             lambda should_update_with_optimizers, param, update: (
                 update if should_update_with_optimizers else jnp.zeros_like(param.value)
             ),
-            self.should_update_with_optimizers(model_params),
-            model_params,
+            self.should_update_with_optimizers(opt_params),
+            opt_params,
             optimizer_parameter_updates,
         )
 
         updated_model_params = optax.apply_updates(
-            jax.tree_util.tree_map(lambda op: op.value, model_params), parameter_updates
+            jax.tree_util.tree_map(lambda op: op.value, opt_params), parameter_updates
         )
         state_updates = _prune_empty(state_updates)
         apply_state_updates = jax.tree_util.tree_map(
@@ -360,10 +303,8 @@ class Learner(BaseLearner):
         for path, should_apply in flatten_items(apply_state_updates):
             if not should_apply:
                 self.vlog(1, "Skipping state update on %s", path)
-        filtered_state_updates = jax.tree_util.tree_map(
-            lambda should_apply, update: update if should_apply else {},
-            apply_state_updates,
-            state_updates,
+        filtered_state_updates = mask_tree(
+            state_updates, keep=apply_state_updates, mask_value=optax.MaskedNode()
         )
         _apply_updates(updated_model_params, filtered_state_updates)
         if cfg.ema.decay is not None:
@@ -372,7 +313,7 @@ class Learner(BaseLearner):
                 state=self.state["ema"],
                 params=jax.tree_util.tree_map(
                     lambda opt_param, value: dataclasses.replace(opt_param, value=value),
-                    model_params,
+                    opt_params,
                     updated_model_params,
                 ),
             )
@@ -380,30 +321,28 @@ class Learner(BaseLearner):
         return updated_model_params
 
     def forward_and_backward(
-        self, *, fn: ForwardFn, inputs: NestedTensor, opt_params: NestedOptParam
+        self, *, fn: ForwardFn, inputs: Nested[Tensor], opt_params: Nested[OptParam]
     ) -> ForwardBackwardOutputs:
         should_compute_gradients = self.should_update_with_optimizers(opt_params)
-        model_params = jax.tree_util.tree_map(lambda opt_param: opt_param.value, opt_params)
-        forward_outputs, gradients = _value_and_grad(
+        updates = _value_and_grad(
             fn,
-            model_params=model_params,
+            opt_params=opt_params,
             inputs=inputs,
             should_compute_gradients=should_compute_gradients,
         )
-        updated_params = self.update(
-            model_params=opt_params,
-            gradients=gradients,
-            state_updates=forward_outputs.output_collection.state_updates,
-        )
+        forward_outputs = updates.forward_pass.get("default").outputs  # type: ignore
+        updated_params = self.update(updates)
         return ForwardBackwardOutputs(
             forward_outputs=forward_outputs,
             backward_outputs=BackwardOutputs(updated_params=updated_params),
         )
 
 
-def _apply_updates(base: NestedTensor, updates: NestedTensor) -> NestedTensor:
+def _apply_updates(base: Nested[Tensor], updates: Nested[Tensor]) -> Nested[Tensor]:
     """Applies updates from `updates` to `base` in-place, keeping `updates` unchanged.
     Note that keys omitted from `updates` will be untouched in `base`.
+
+    If either `base` or `updates is an `optax.MaskedNode()`, the update is not applied.
 
     Args:
         base: the state to be updated in-place.
@@ -412,6 +351,8 @@ def _apply_updates(base: NestedTensor, updates: NestedTensor) -> NestedTensor:
     Returns:
         The updated state.
     """
+    if base == optax.MaskedNode() or updates == optax.MaskedNode():
+        return base
     if isinstance(updates, Tensor):
         assert isinstance(base, Tensor), base
         return updates
@@ -421,29 +362,6 @@ def _apply_updates(base: NestedTensor, updates: NestedTensor) -> NestedTensor:
         else:
             base[k] = _apply_updates(base[k], v)
     return base
-
-
-def _mask_tree(tree: dict, *, keep: dict) -> dict:
-    """Mask out tree leaves that are not transformed by the optimizer.
-
-    Args:
-        tree: A nested structure with ParameterSpec, OptParams or Tensor as leaf nodes.
-        keep: A tree of the same structure as tree, with boolean as leaf nodes. If
-                the leaf is True, the original value of tree leaf is kept, otherwise replaced
-                with optax.MaskNode().
-
-    Returns:
-        A masked tree the same structure as tree, the leaf is masked as MaskNode() if
-         the corresponding keep leaf is False.
-
-    """
-    # For sub-learner optimizer state, only the subset of parameters
-    # that belongs to the optimizer is kept and the rest is masked as optax.MaskNode().
-    return jax.tree_util.tree_map(
-        lambda should_keep, leaf: leaf if should_keep else optax.MaskedNode(),
-        keep,
-        tree,
-    )
 
 
 class CompositeLearner(BaseLearner):
@@ -496,9 +414,10 @@ class CompositeLearner(BaseLearner):
             # Create a global model ema.
             self.ema: PartitionedGradientTransformation = cfg.ema.instantiate()
 
-    def _learner_tree(self, params: NestedOptParam) -> dict:
+    def _learner_tree(self, params: Nested[Any]) -> Nested[str]:
         """Returns a tree of the same structure as params where each leaf is the name of the
-        sublearner to apply."""
+        sublearner to apply.
+        """
         cfg = self.config
         learner_name_tree = jax.tree_util.tree_map(
             lambda path: match_regex_rules(
@@ -515,9 +434,7 @@ class CompositeLearner(BaseLearner):
             raise ValueError("Composite learner rules do not update all model params.")
         return learner_name_tree
 
-    def create_state_partition_specs(
-        self, model_param_specs: NestedParameterSpec
-    ) -> NestedPartitionSpec:
+    def create_state_partition_specs(self, model_param_specs: Nested[ParameterSpec]) -> Any:
         cfg = self.config
         learner_tree = self._learner_tree(params=model_param_specs)
         learner_state = {}
@@ -528,7 +445,9 @@ class CompositeLearner(BaseLearner):
                 learner_tree,
             )
             # Mask model specs.
-            sub_learner_specs = _mask_tree(tree=model_param_specs, keep=should_apply)
+            sub_learner_specs = mask_tree(
+                tree=model_param_specs, keep=should_apply, mask_value=optax.MaskedNode()
+            )
             # Call sub learner partition.
             sub_learner_partition = getattr(self, name).create_state_partition_specs(
                 model_param_specs=sub_learner_specs
@@ -540,7 +459,7 @@ class CompositeLearner(BaseLearner):
             learner_state["ema"] = self.ema.partition(model_param_specs)
         return learner_state
 
-    def init(self, model_params: NestedOptParam) -> NestedTensor:
+    def init(self, model_params: Nested[OptParam]) -> Nested[Tensor]:
         cfg = self.config
         learner_tree = self._learner_tree(params=model_params)
         register_per_param_settings(learner_tree, description="learner_rule", path=self.path())
@@ -552,7 +471,9 @@ class CompositeLearner(BaseLearner):
                 learner_tree,
             )
             # Mask model params.
-            sub_learner_model_params = _mask_tree(tree=model_params, keep=should_apply)
+            sub_learner_model_params = mask_tree(
+                tree=model_params, keep=should_apply, mask_value=optax.MaskedNode()
+            )
             # Call sub learner initialization.
             sub_learner_state = getattr(self, name).init(model_params=sub_learner_model_params)
             # Sub-learner's state.
@@ -561,61 +482,45 @@ class CompositeLearner(BaseLearner):
             learner_state["ema"] = self.ema.init(model_params)
         return learner_state
 
-    def update(
-        self, *, model_params: NestedOptParam, gradients: NestedTensor, state_updates: NestedTensor
-    ) -> NestedTensor:
-        """Computes `model_params` updates with `gradients` and `state_updates`.
-
-        Sub learners apply gradients update and state_updates to model_params.
-        Ema is handled in the global learner.
+    def update(self, updates: Updates) -> Nested[Tensor]:
+        """Computes `model_params` updates from `update`.
 
         Args:
-            model_params: A nested structure with OptParams as leaf nodes.
-            gradients: Gradients on model_params. Must have the same structure as `model_params`
-                except that the leaf values will be None for parameters not to be updated by
-                optimizers.
-            state_updates: The updated values for non-learnable parameters in `model_params`.
-                A potentially trimmed tree of `model_params`.
+            updates: The updates to potentially transform and then apply.
 
         Returns:
             The updated model parameters. The learner state updates will be placed in the output
             collection's 'state_update' section.
         """
         cfg = self.config
-        learner_tree = self._learner_tree(params=model_params)
-        state_updates = _prune_empty(state_updates)
-        state_updates_tree = self._learner_tree(params=state_updates)
 
-        updated_model_params = jax.tree_util.tree_map(
-            lambda p: jnp.zeros_like(p.value), model_params
-        )
+        updated_model_params = jax.tree_util.tree_map(jnp.zeros_like, updates.param_values())
 
         for name in cfg.learners.keys():
-            # Whether each parameter should apply the sub learner.
-            should_apply = jax.tree_util.tree_map(
-                lambda learner_name, n=name: learner_name == n,
-                learner_tree,
-            )
-            # Mask model params.
-            sub_learner_model_params = _mask_tree(tree=model_params, keep=should_apply)
-            # Mask gradients.
-            sub_learner_gradients = _mask_tree(tree=gradients, keep=should_apply)
-            # Split state_updates.
-            # Set updates that do not belong to current sublearner as {}.
-            sub_learner_state_updates = jax.tree_util.tree_map(
-                lambda learner_name, s, n=name: s if learner_name == n else {},
-                state_updates_tree,
-                state_updates,
-            )
+            # Whether each parameter/state should apply the sub learner.
+            def should_apply(tree: Nested[Any]) -> Nested[bool]:
+                return jax.tree_util.tree_map(
+                    # pylint: disable-next=cell-var-from-loop
+                    lambda learner_name, n=name: learner_name == n,
+                    self._learner_tree(tree),
+                )
 
-            sub_learner_updated_model_params = getattr(self, name).update(
-                model_params=sub_learner_model_params,
-                gradients=sub_learner_gradients,
-                state_updates=sub_learner_state_updates,
+            # See the docstring of `learner_test.CompositeLearnerTest.test_learner_masking`
+            # for a more detailed explanation of the masking behavior we are mimicking here
+            # for backwards compatibility.
+            sub_learner_updates = updates.mask(should_apply, fields=("inplace_updates",))
+            sub_learner_updates = sub_learner_updates.mask(
+                # pylint: disable-next=cell-var-from-loop
+                lambda _: should_apply(updates.opt_params),
+                fields=(
+                    "opt_params",
+                    "delta_updates",
+                ),
             )
+            sub_learner_updated_model_params = getattr(self, name).update(sub_learner_updates)
             updated_model_params = jax.tree_util.tree_map(
                 lambda apply, new_v, old_v: new_v if apply else old_v,
-                should_apply,
+                should_apply(updates.param_values()),
                 sub_learner_updated_model_params,
                 updated_model_params,
             )
@@ -625,7 +530,7 @@ class CompositeLearner(BaseLearner):
                 state=self.state["ema"],
                 params=jax.tree_util.tree_map(
                     lambda opt_param, value: dataclasses.replace(opt_param, value=value),
-                    model_params,
+                    updates.opt_params,
                     updated_model_params,
                 ),
             )
@@ -633,30 +538,26 @@ class CompositeLearner(BaseLearner):
         return updated_model_params
 
     def forward_and_backward(
-        self, *, fn: ForwardFn, inputs: NestedTensor, opt_params: NestedOptParam
+        self, *, fn: ForwardFn, inputs: Nested[Tensor], opt_params: Nested[OptParam]
     ) -> ForwardBackwardOutputs:
         with child_context(
             "should_compute_gradients", module=self, output_collection=new_output_collection()
         ):
             should_compute_gradients = self.should_update_with_optimizers(opt_params)
-        model_params = jax.tree_util.tree_map(lambda opt_param: opt_param.value, opt_params)
-        forward_outputs, gradients = _value_and_grad(
+        updates = _value_and_grad(
             fn,
-            model_params=model_params,
+            opt_params=opt_params,
             inputs=inputs,
             should_compute_gradients=should_compute_gradients,
         )
-        updated_params = self.update(
-            model_params=opt_params,
-            gradients=gradients,
-            state_updates=forward_outputs.output_collection.state_updates,
-        )
+        forward_outputs = updates.forward_pass.get("default").outputs  # type: ignore
+        updated_params = self.update(updates)
         return ForwardBackwardOutputs(
             forward_outputs=forward_outputs,
             backward_outputs=BackwardOutputs(updated_params=updated_params),
         )
 
-    def should_update_with_optimizers(self, model_params: NestedOptParam) -> dict:
+    def should_update_with_optimizers(self, model_params: Nested[OptParam]) -> dict:
         """Returns whether each parameter should be updated with the optimizers.
 
         Args:
@@ -688,9 +589,18 @@ class CompositeLearner(BaseLearner):
 
 def _split_gradients(
     fun: ForwardFn, *, should_compute_gradients: Nested[bool]
-) -> Tuple[Callable, Callable]:
-    """Return a function that is the same as `fun` but the first argument is split into two
-    arguments `(grad,no_grad)` according to whether `(should compute_gradients)` is True.
+) -> Tuple[ForwardFn, Callable]:
+    """Return a function that is the same as `fun` but where the call signature is now
+
+     `fun(model_params=model_params_grad, inputs=(model_paramgs_nograd, inputs))`
+
+     instead of `fun(model_params=model_params, inputs=inputs)`.
+
+     The split of `model_params` into `model_params_grad, model_params_nograd` is
+     according to whether `(should compute_gradients)` is True.
+
+     Values that are ommitted are replaced with `None` for compatibility with old behavior.
+     This may change in the future
 
     Args:
         fun: The function to transform.
@@ -699,25 +609,22 @@ def _split_gradients(
 
     Returns:
         A two-tuple of:
-        * The transformed version of `fun`.
+        * The transformed version of `fun`, which is still a `ForwardFn`.
         * A function to split the parameters into `(grad, no_grad)`.
     """
 
-    def filtered_forward(
-        model_parameters_grad: Nested[Tensor],
-        model_parameters_no_grad: Nested[Tensor],
-        /,
-        inputs: Nested[Tensor],
-    ) -> ForwardOutputs:
+    def filtered_forward(model_params: Nested[Tensor], *, inputs: Any) -> ForwardOutputs:
+        model_params_grad = model_params
+        model_params_nograd, inputs = inputs
         model_params = jax.tree_util.tree_map(
             lambda compute_grad, pg, png: pg if compute_grad else png,
             should_compute_gradients,
-            model_parameters_grad,
-            model_parameters_no_grad,
+            model_params_grad,
+            model_params_nograd,
         )
         return fun(model_params=model_params, inputs=inputs)
 
-    def split_params_fn(model_params: Nested[Tensor]):
+    def split_params_fn(model_params: Nested) -> Tuple[Nested, Nested]:
         dummy_value = None
         model_parameters_grad = jax.tree_util.tree_map(
             lambda compute_gradients, v: v if compute_gradients else dummy_value,
@@ -734,33 +641,69 @@ def _split_gradients(
     return filtered_forward, split_params_fn
 
 
+def _as_loss_fn(fun: ForwardFn) -> Callable:
+    """Convert a `ForwardFn` to a function with the same signature execpt that it outputs
+    `loss, forward_pass`.
+
+    This wrapping makes it compatible with `jax.grad()`.
+
+    Args:
+        fun: The function to wrap.
+
+    Returns:
+        The wrapped function.
+    """
+
+    def forward(model_params: Nested[Tensor], *, inputs: Any) -> Tuple[Tensor, ForwardPass]:
+        outputs = fun(model_params=model_params, inputs=inputs)  # type: ignore
+        return outputs.loss, ForwardPass(
+            # We don't use `forward` here since it is not technically a `ForwardFn`.
+            forward_fn=fun,
+            model_params=model_params,
+            inputs=inputs,
+            outputs=outputs,
+        )
+
+    return forward
+
+
 def _value_and_grad(
     fun: ForwardFn,
     *,
-    model_params: Nested[Tensor],
+    opt_params: Nested[OptParam],
     inputs: Nested[Tensor],
-    should_compute_gradients: Nested[bool],
-) -> Tuple[ForwardOutputs, Nested[Tensor]]:
+    should_compute_gradients: Optional[Nested[bool]] = None,
+) -> Updates:
     """Computes the value and grad of `fun`.
 
     Args:
         fun: The function to compute gradients for.
-        model_params: The model parameters.
+        opt_params: The model parameters.
         inputs: The inputs to `fun`.
         should_compute_gradients: The model parameters to compute gradients for.
-                                  Has the same tree structure as `model_params`..
+                                  Has the same tree structure as `model_params`.
+                                  If None, all parameters have their gradients computed.
 
     Returns:
-        The outputs of `fun` and the gradients.
+        The gradient `Updates` for `fun`. The returned `updates`  include a "default" key for
+        `updates.forward_pass`. State updates are taken from the outputs of `fun`.
     """
+    split_params_fn = lambda params: [params, {}]
+    if should_compute_gradients is not None:
+        fun, split_params_fn = _split_gradients(
+            fun, should_compute_gradients=should_compute_gradients
+        )
 
-    fun, split_params_fn = _split_gradients(fun, should_compute_gradients=should_compute_gradients)
+    loss_fun = _as_loss_fn(fun)
 
-    def forward(*args):
-        outputs = fun(*args)
-        return outputs.loss, (outputs.aux, outputs.output_collection)
-
-    split_params = split_params_fn(model_params)
-    result, grads = jax.value_and_grad(forward, has_aux=True)(*split_params, inputs)
-    loss, (aux, output_collection) = result
-    return ForwardOutputs(loss=loss, aux=aux, output_collection=output_collection), grads
+    split_params = split_params_fn(opt_params)
+    model_params_grad, model_params_nograd = jax.tree_util.tree_map(lambda p: p.value, split_params)
+    (_, forward_pass), grads = jax.value_and_grad(loss_fun, has_aux=True)(
+        model_params_grad, inputs=(model_params_nograd, inputs)
+    )
+    return Updates(
+        opt_params=opt_params,
+        delta_updates=grads,
+        inplace_updates=forward_pass.outputs.output_collection.state_updates,
+        forward_pass=dict(default=forward_pass),
+    )
