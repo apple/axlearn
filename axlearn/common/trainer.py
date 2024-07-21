@@ -549,8 +549,9 @@ class SpmdTrainer(Module):
         If `prebuilt_state` contains the complete trainer state, sets it as `self._trainer_state`.
 
         Otherwise `prebuilt_state` is expected to contain a subset of the model parameters and
-        none of the learner state. Initializes model parameters by copying from `prebuilt_state`
-        if available, otherwise with `prng_key`.
+        none of the learner state. Specifically, each leaf node of `prebuilt_state.model` is either
+        a Tensor (a prebuilt param) or a ParameterSpec (a param to be initialized). Initializes
+        model parameters by copying from `prebuilt_state` if available, otherwise with `prng_key`.
 
         Args:
             prebuilt_state: None or a TrainerStateBuilder.State constructed by
@@ -587,6 +588,8 @@ class SpmdTrainer(Module):
             if not key.startswith("model/"):
                 raise NotImplementedError(f"Partial initialization is not supported for: {key}")
 
+        # A tree where a leaf is a ParameterSpec for a prebuilt param, None otherwise.
+        # This is used for `initialize_parameters_recursively` inside `_init_state`.
         prebuilt_model_param_specs = jax.tree_util.tree_map(
             lambda value, spec: spec if isinstance(value, Tensor) else None,
             prebuilt_state.trainer_state.model,
@@ -599,11 +602,15 @@ class SpmdTrainer(Module):
             prebuilt_state.trainer_state.model,
             self._trainer_state_partition_specs.model,
         )
+        # The output sharding for `_init_state`.
         out_shardings = self._trainer_state_partition_specs._replace(
             model=model_initialization_partition_specs,
         )
 
-        def merge_model_states(prebuilt_model_params, initialized_model_params):
+        def merge_model_states(
+            prebuilt_model_params: NestedTensor, initialized_model_params: NestedTensor
+        ) -> NestedTensor:
+            """Merges prebuilt and initialized params to a single tree."""
             if prebuilt_model_params is None:
                 return initialized_model_params
             return jax.tree_util.tree_map(
@@ -614,31 +621,20 @@ class SpmdTrainer(Module):
                 initialized_model_params,
             )
 
-        def _init_state(prng_key: Tensor):
+        def _init_state(prng_key: Tensor) -> TrainerState:
             prng_key, init_key = jax.random.split(prng_key)
             model_params = self.model.initialize_parameters_recursively(
                 init_key,
                 prebuilt=prebuilt_model_param_specs,
             )
             logging.info("initialized_model_state: %s", utils.shapes(model_params))
-            # Initialize learner with union(prebuilt + initialized).
             learner_params = self.learner.init(
                 self._opt_params(
-                    merge_model_states(
-                        prebuilt_state.trainer_state.model,
-                        model_params,
-                    )
+                    # Initialize learner with union(prebuilt + initialized).
+                    merge_model_states(prebuilt_state.trainer_state.model, model_params)
                 )
             )
-            model_params = jax.tree_util.tree_map(
-                lambda value: value if isinstance(value, Tensor) else None,
-                model_params,
-            )
-            return TrainerState(
-                prng_key=prng_key,
-                model=model_params,
-                learner=learner_params,
-            )
+            return TrainerState(prng_key=prng_key, model=model_params, learner=learner_params)
 
         init_computation = pjit(
             _init_state,
@@ -648,6 +644,7 @@ class SpmdTrainer(Module):
         self._step_log("Initializing trainer state.")
         with self.mesh():
             initialized_trainer_state: TrainerState = init_computation(prng_key)
+        # Merge prebuilt and initialized model params.
         merged_model_state = merge_model_states(
             prebuilt_state.trainer_state.model, initialized_trainer_state.model
         )

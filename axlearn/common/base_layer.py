@@ -389,6 +389,8 @@ class BaseLayer(Module):
             prng_key, child_key = jax.random.split(prng_key)
             value = get_or_none(prebuilt, name)
             if value is not None:
+                # Note that we cannot set `params[name]` to `value`, since `value` is an instance
+                # of ParameterSpec and not a JAX type.
                 params[name] = None
             else:
                 if spec.dtype is None:
