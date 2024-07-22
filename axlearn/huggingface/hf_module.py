@@ -158,7 +158,7 @@ class HfModuleWrapper(BaseModel, ABC):
         self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
-            return prebuilt
+            return jax.tree_util.tree_map(lambda _: None, prebuilt)
         params = super().initialize_parameters_recursively(prng_key, prebuilt=prebuilt)
         cfg = self.config
         if self._local_pretrained_model_path is not None:

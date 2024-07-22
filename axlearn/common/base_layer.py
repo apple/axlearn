@@ -382,6 +382,23 @@ class BaseLayer(Module):
     def initialize_parameters_recursively(
         self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> NestedTensor:
+        """Initializes parameters with given ParameterSpecs for the prebuilt params.
+
+        Note that the returned tree contains Tensors for initialized parameters and None for the
+        prebuilt parameters. This ensures that the return value contain only JAX types and
+        therefore can be wrapped inside JAX function transformations.
+
+        Use `test_utils.initialize_parameters_with_prebuilt` in testing to get a merged tree of
+        prebuilt and initialized parameters.
+
+        Args:
+            prng_key: The random key.
+            prebuilt: A Nested tree whose leaf nodes are ParameterSpecs if the parameters are
+                prebuilt, None if the parameters should be initialized.
+
+        Returns:
+            A Nested Tree with Tensors (if initialized) and None (if prebuilt) as leaf nodes.
+        """
         params = {}
         param_specs = self._create_layer_parameter_specs()
         for name, spec in param_specs.items():

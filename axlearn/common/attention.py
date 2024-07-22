@@ -1056,7 +1056,7 @@ class FusedQKVLinear(BaseQKVLinear):
         self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
-            return prebuilt
+            return jax.tree_util.tree_map(lambda _: None, prebuilt)
 
         def init(prng_key_i):
             return VDict(qkv_proj=self.qkv_proj.initialize_parameters_recursively(prng_key_i))

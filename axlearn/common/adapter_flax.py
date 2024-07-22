@@ -77,7 +77,7 @@ class FlaxLayer(BaseLayer):
         self, prng_key: utils.Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
     ) -> Nested[Tensor]:
         if self._use_prebuilt_params(prebuilt):
-            return prebuilt
+            return jax.tree_util.tree_map(lambda _: None, prebuilt)
         args, kwargs = self._dummy_inputs
         return self._module.init(prng_key, *args, **kwargs)
 

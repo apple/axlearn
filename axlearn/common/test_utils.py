@@ -23,7 +23,7 @@ from absl.testing import parameterized
 from jax import numpy as jnp
 
 from axlearn.common import optimizers, schedule, utils_spmd
-from axlearn.common.base_layer import BaseLayer
+from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import (
@@ -57,6 +57,7 @@ from axlearn.common.utils import (
     prune_tree,
     push_data_dir,
     set_data_dir,
+    shapes,
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
@@ -839,3 +840,48 @@ def bind_layer(
             state = instance.initialize_parameters_recursively(prng_key=init_key)
         current_context().state = state
         yield instance
+
+
+def initialize_parameters_with_prebuilt(
+    layer: BaseLayer, *, prng_key: Tensor, prebuilt: Nested[Union[Tensor, ParameterSpec]]
+) -> Nested[Tensor]:
+    """Initializes parameters with given prebuilt parameters.
+
+    This is different from `BaseLayer.initialize_parameters_recursively` in two ways:
+    - `prebuilt` contains Tensors for prebuilt parameters, ParameterSpec otherwise;
+    - This function merges `prebuilt` into the returned tree.
+
+    Args:
+        layer: The `layer` for which to initialize parameters.
+        prng_key: The random key.
+        prebuilt: A Nested tree whose leaf nodes are Tensors if the parameters are prebuilt,
+            ParameterSpecs if the parameters should be initialized.
+
+    Returns:
+        A Nested Tree with Tensors as leaf nodes. The Tensors will come from `prebuilt` if
+        provided, otherwise initialized via `initialize_parameters_recursively`.
+    """
+    if prebuilt is None:
+        return layer.initialize_parameters_recursively(prng_key)
+    # A tree where a leaf is a ParameterSpec for a prebuilt param, None otherwise.
+    # This is used for `initialize_parameters_recursively`.
+    prebuilt_param_specs = jax.tree_util.tree_map(
+        lambda value: ParameterSpec(
+            shape=value.shape,
+            dtype=value.dtype,
+            mesh_axes=value.sharding,
+        )
+        if isinstance(value, Tensor)
+        else None,
+        prebuilt,
+    )
+    logging.debug("prebuilt_param_specs: %s", shapes(prebuilt_param_specs))
+    initialized = layer.initialize_parameters_recursively(prng_key, prebuilt=prebuilt_param_specs)
+    # Merge `prebuilt` and `initialized`.
+    logging.info("prebuilt params: %s", shapes(prebuilt))
+    logging.info("initialized params: %s", shapes(initialized))
+    return jax.tree_util.tree_map(
+        lambda prebuilt, initialized: (prebuilt if isinstance(prebuilt, Tensor) else initialized),
+        prebuilt,
+        initialized,
+    )
