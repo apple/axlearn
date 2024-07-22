@@ -587,47 +587,63 @@ class SpmdTrainer(Module):
             if not key.startswith("model/"):
                 raise NotImplementedError(f"Partial initialization is not supported for: {key}")
 
-        prebuilt_model_state_partition_spec = jax.tree_util.tree_map(
-            lambda value: value.sharding if isinstance(value, Tensor) else None,
+        prebuilt_model_param_specs = jax.tree_util.tree_map(
+            lambda value, spec: spec if isinstance(value, Tensor) else None,
             prebuilt_state.trainer_state.model,
+            self._trainer_state_specs.model,
         )
-        prebuilt_model_state = jax.tree_util.tree_map(
-            lambda value: value if isinstance(value, Tensor) else None,
+        logging.info("prebuilt_model_state: %s", utils.shapes(prebuilt_model_param_specs))
+        # Partition specs for parameters that are *not* prebuilt and therefore to be initialized.
+        model_initialization_partition_specs = jax.tree_util.tree_map(
+            lambda value, spec: None if isinstance(value, Tensor) else spec,
             prebuilt_state.trainer_state.model,
+            self._trainer_state_partition_specs.model,
+        )
+        out_shardings = self._trainer_state_partition_specs._replace(
+            model=model_initialization_partition_specs,
         )
 
-        def _init_state(prng_key: Tensor, prebuilt_model_state: NestedTensor):
+        def _init_state(prng_key: Tensor):
             prng_key, init_key = jax.random.split(prng_key)
-            logging.info("prebuilt_model_state: %s", utils.shapes(prebuilt_model_state))
             model_params = self.model.initialize_parameters_recursively(
                 init_key,
-                prebuilt=prebuilt_model_state,
+                prebuilt=prebuilt_model_param_specs,
             )
-            self.vlog(
-                1, "tree_structure(model_params)=%s", jax.tree_util.tree_structure(model_params)
-            )
+            logging.info("initialized_model_state: %s", utils.shapes(model_params))
             learner_params = self.learner.init(self._opt_params(model_params))
+            model_params = jax.tree_util.tree_map(
+                lambda value: value if isinstance(value, Tensor) else None,
+                model_params,
+            )
             return TrainerState(
                 prng_key=prng_key,
                 model=model_params,
                 learner=learner_params,
             )
 
-        logging.info("prebuilt_model_state_partition_spec: %s", prebuilt_model_state_partition_spec)
-        logging.info("trainer_state_partition_specs: %s", self._trainer_state_partition_specs)
         init_computation = pjit(
             _init_state,
-            in_shardings=(None, prebuilt_model_state_partition_spec),
-            out_shardings=self._trainer_state_partition_specs,
-            # Donate prebuilt_model_state.
-            # Do not donate PRNG key since it is only ~4 bytes and was causing
-            # a CI failure in some trainer tests where jax thought the key
-            # had already been deleted.
-            donate_argnums=1,
+            in_shardings=(None,),
+            out_shardings=out_shardings,
         )
         self._step_log("Initializing trainer state.")
         with self.mesh():
-            self._trainer_state = init_computation(prng_key, prebuilt_model_state)
+            initialized_trainer_state: TrainerState = init_computation(prng_key)
+        if prebuilt_state.trainer_state.model is None:
+            merged_model_state = initialized_trainer_state.model
+        else:
+            merged_model_state = jax.tree_util.tree_map(
+                lambda prebuilt_value, initialized_value: prebuilt_value
+                if isinstance(prebuilt_value, Tensor)
+                else initialized_value,
+                prebuilt_state.trainer_state.model,
+                initialized_trainer_state.model,
+            )
+        self._trainer_state = TrainerState(
+            prng_key=initialized_trainer_state.prng_key,
+            model=merged_model_state,
+            learner=initialized_trainer_state.learner,
+        )
 
     def _log_trainer_state_stats(self):
         total_num_params = count_model_params(self._trainer_state.model)
