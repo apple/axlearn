@@ -401,9 +401,11 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
         super()._execute()
         num_workers = infer_tpu_workers(infer_tpu_type(cfg.instance_type))
         worker_log = f'gsutil cat "{cfg.output_dir}/output/*-0/run.log"'
+        latest_log = f'gsutil ls -l "{cfg.output_dir}/output/*-0/run.log" | sort -k 2 | tail'
         print(
             "\nNote that the job may take a few minutes to start. "
             f"Once started, view TPU log outputs with:\n{worker_log}\n"
+            f"\nFind the latest log output file with:\n{latest_log}\n\n"
             f"Replace `*-0` with `*-{{idx}}` where idx is between [0, {num_workers})."
         )
 
