@@ -24,6 +24,10 @@ class JobMetadata:
     creation_time: datetime.datetime
     resources: Dict[ResourceType, int]
     priority: int = 5  # 1 - highest, 5 - lowest
+    # ID of the job, which can be used externally for tracking purposes.
+    # It is not used by the bastion directly.
+    # TODO(haijing-fu): make it as a required field.
+    job_id: Optional[str] = None
 
 
 @dataclasses.dataclass

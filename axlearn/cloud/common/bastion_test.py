@@ -7,6 +7,7 @@
 import contextlib
 import copy
 import itertools
+import json
 import os
 import subprocess
 import tempfile
@@ -286,6 +287,50 @@ class TestJobSpec(parameterized.TestCase):
                 self.assertEqual(deserialized_jobspec.__dict__[key], test_spec.__dict__[key])
 
     @parameterized.parameters(
+        [
+            {"env_vars": None},
+        ],
+    )
+    def test_serialization_job_spec_without_id(self, env_vars):
+        test_spec = new_jobspec(
+            name="test_job",
+            command="test command",
+            env_vars=env_vars,
+            metadata=JobMetadata(
+                user_id="test_id",
+                project_id="test_project",
+                # Make sure str timestamp isn't truncated even when some numbers are 0.
+                creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
+                resources={"test": 8},
+                priority=1,
+            ),
+        )
+        with tempfile.NamedTemporaryFile("w+b") as f:
+            # Write a job spec without id field in the file and deserialize it
+            with open(f.name, "w", encoding="utf-8") as fd:
+                data = {
+                    "version": 1,
+                    "name": "test_job",
+                    "command": "test command",
+                    "cleanup_command": None,
+                    "env_vars": None,
+                    "metadata": {
+                        "user_id": "test_id",
+                        "project_id": "test_project",
+                        "creation_time": "1900-01-01 00:00:00.000000",
+                        "resources": {"test": 8},
+                        "priority": 1,
+                    },
+                }
+                json.dump(data, fd, default=str)
+                fd.flush()
+            deserialized_jobspec = deserialize_jobspec(f=f.name)
+            for key in test_spec.__dataclass_fields__:
+                if key != "id":
+                    self.assertIn(key, deserialized_jobspec.__dict__)
+                    self.assertEqual(deserialized_jobspec.__dict__[key], test_spec.__dict__[key])
+
+    @parameterized.parameters(
         # Test with Nones in place of Optional.
         dict(
             x=JobSpec(
@@ -299,6 +344,7 @@ class TestJobSpec(parameterized.TestCase):
                     project_id="project",
                     creation_time=datetime.now(),
                     resources={},
+                    job_id="test-id",
                 ),
             ),
             expected=None,
@@ -316,6 +362,7 @@ class TestJobSpec(parameterized.TestCase):
                     project_id="project",
                     creation_time=datetime.now(),
                     resources=dict(resource1=123),
+                    job_id="test-id",
                 ),
             ),
             expected=None,
@@ -333,6 +380,7 @@ class TestJobSpec(parameterized.TestCase):
                     project_id="project",
                     creation_time=datetime.now(),
                     resources=dict(resource1=123),
+                    job_id="test-id",
                 ),
             ),
             expected=ValidationError("jobspec.name=123 to be a string"),
@@ -350,6 +398,7 @@ class TestJobSpec(parameterized.TestCase):
                     project_id="project",
                     creation_time=datetime.now(),
                     resources=dict(resource1=123),
+                    job_id="test-id",
                 ),
             ),
             expected=ValidationError("jobspec.name=None to be a string"),
@@ -367,6 +416,7 @@ class TestJobSpec(parameterized.TestCase):
                     project_id="project",
                     creation_time=datetime.now(),
                     resources=dict(resource1=123),
+                    job_id="test-id",
                 ),
             ),
             expected=ValidationError("metadata.user_id=123 to be a string"),
@@ -384,6 +434,7 @@ class TestJobSpec(parameterized.TestCase):
                     project_id="project",
                     creation_time=datetime.now(),
                     resources=dict(resource1=123),
+                    job_id="test-id",
                 ),
             ),
             expected=ValidationError("metadata.user_id=None to be a string"),
@@ -401,6 +452,7 @@ class TestJobSpec(parameterized.TestCase):
                     project_id="project",
                     creation_time=datetime.now(),
                     resources=dict(resource1=123),
+                    job_id="test-id",
                 ),
             ),
             expected=ValidationError("string keys and values"),
@@ -418,6 +470,7 @@ class TestJobSpec(parameterized.TestCase):
                     project_id="project",
                     creation_time=datetime.now(),
                     resources=dict(resource1=123),
+                    job_id="test-id",
                 ),
             ),
             expected=ValidationError("string keys and values"),
@@ -435,6 +488,7 @@ class TestJobSpec(parameterized.TestCase):
                     project_id="project",
                     creation_time=datetime.now(),
                     resources={123: 123},
+                    job_id="test-id",
                 ),
             ),
             expected=ValidationError("string keys and int values"),

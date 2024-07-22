@@ -65,6 +65,7 @@ from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.common.types import ResourceMap
 from axlearn.cloud.common.utils import (
     configure_logging,
+    generate_job_id,
     generate_job_name,
     infer_cli_name,
     parse_action,
@@ -319,14 +320,20 @@ class BaseBastionManagedJob(Job):
         logging.info("Starting run for job name %s", cfg.name)
         logging.info("Command: %s", cfg.command)
         with tempfile.NamedTemporaryFile("w") as f:
+            job_id = generate_job_id()
             metadata = JobMetadata(
                 user_id=cfg.user_id,
                 project_id=cfg.project_id or "none",
                 creation_time=datetime.now(timezone.utc),
                 resources=maybe_instantiate(cfg.resources),
                 priority=cfg.priority,
+                job_id=job_id,
             )
-            serialize_jobspec(new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata), f)
+
+            serialize_jobspec(
+                new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata),
+                f,
+            )
             self._bastion_dir.submit_job(cfg.name, job_spec_file=f.name)
         gcp_api = "gke" if "gke" in cfg.bastion_name else "qrm"
         print(
