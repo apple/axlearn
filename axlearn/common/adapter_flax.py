@@ -74,7 +74,7 @@ class FlaxLayer(BaseLayer):
         return cfg.create_dummy_input_fn(**cfg.create_dummy_input_kwargs)
 
     def initialize_parameters_recursively(
-        self, prng_key: utils.Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
+        self, prng_key: utils.Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> Nested[Tensor]:
         if self._use_prebuilt_params(prebuilt):
             return jax.tree_util.tree_map(lambda _: None, prebuilt)

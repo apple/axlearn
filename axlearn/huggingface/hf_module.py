@@ -155,7 +155,7 @@ class HfModuleWrapper(BaseModel, ABC):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
             return jax.tree_util.tree_map(lambda _: None, prebuilt)

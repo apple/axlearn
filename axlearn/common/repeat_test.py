@@ -94,7 +94,7 @@ class TestRepeat(Repeat):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         params = super().initialize_parameters_recursively(prng_key=prng_key, prebuilt=prebuilt)
         params["dummy"] = jnp.ones(1)

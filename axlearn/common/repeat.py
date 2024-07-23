@@ -138,7 +138,7 @@ class Repeat(BaseLayer):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         def init(prng_key_i):
             return VDict(

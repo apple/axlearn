@@ -195,7 +195,7 @@ class DummyModel(BaseModel):
         return dict(sorted(specs.items()))  # type: ignore
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]]
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]]
     ) -> NestedTensor:
         params = super().initialize_parameters_recursively(prng_key, prebuilt=prebuilt)
         if self.config.init_dummy_state:
@@ -939,7 +939,10 @@ class CompatibilityTest(test_utils.TestCase):
                 kind: Required[Literal["chex", "struct"]] = REQUIRED
 
             def initialize_parameters_recursively(
-                self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
+                self,
+                prng_key: Tensor,
+                *,
+                prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None,
             ) -> NestedTensor:
                 del prng_key
                 del prebuilt
@@ -1025,7 +1028,7 @@ class NanInitModel(BaseModel):
     """A model that initializes its parameter to NaN."""
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         # Ensure we trigger a checkify error.
         return dict(

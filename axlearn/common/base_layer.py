@@ -380,7 +380,7 @@ class BaseLayer(Module):
         return specs
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[Nested[ParameterSpec]] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         """Initializes parameters with given ParameterSpecs for the prebuilt params.
 
@@ -393,8 +393,9 @@ class BaseLayer(Module):
 
         Args:
             prng_key: The random key.
-            prebuilt: A Nested tree whose leaf nodes are ParameterSpecs if the parameters are
-                prebuilt, None if the parameters should be initialized.
+            prebuilt: A Nested tree with the same structure as the layer parameters, whose leaf
+                nodes are ParameterSpecs if the parameters are prebuilt, None if the parameters
+                should be initialized.
 
         Returns:
             A Nested Tree with Tensors (if initialized) and None (if prebuilt) as leaf nodes.
@@ -432,7 +433,7 @@ class BaseLayer(Module):
             )
         return params
 
-    def _use_prebuilt_params(self, prebuilt: Optional[Nested[ParameterSpec]]) -> bool:
+    def _use_prebuilt_params(self, prebuilt: Optional[Nested[Optional[ParameterSpec]]]) -> bool:
         prebuilt_keys = set(key for key, value in flatten_items(prebuilt) if value is not None)
         if not prebuilt_keys:
             return False

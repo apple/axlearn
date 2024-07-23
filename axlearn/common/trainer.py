@@ -55,6 +55,7 @@ from axlearn.common.update_transformation import ForwardOutputs
 from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
+    Nested,
     NestedPartitionSpec,
     NestedTensor,
     PartitionSpec,
@@ -597,6 +598,10 @@ class SpmdTrainer(Module):
         )
         logging.info("prebuilt_model_state: %s", utils.shapes(prebuilt_model_param_specs))
         # Partition specs for parameters that are *not* prebuilt and therefore to be initialized.
+        #
+        # While `prebuilt_state.trainer_state.model` also contain ParameterSpec's, we use
+        # `self._trainer_state_partition_specs.model` to ensure that the partition spec matches
+        # the model's partition config (rather than coming from `init_state_builder`).
         model_initialization_partition_specs = jax.tree_util.tree_map(
             lambda value, spec: None if isinstance(value, Tensor) else spec,
             prebuilt_state.trainer_state.model,
@@ -608,8 +613,9 @@ class SpmdTrainer(Module):
         )
 
         def merge_model_states(
-            prebuilt_model_params: NestedTensor, initialized_model_params: NestedTensor
-        ) -> NestedTensor:
+            prebuilt_model_params: Nested[Union[Tensor, ParameterSpec]],
+            initialized_model_params: Nested[Optional[NestedTensor]],
+        ) -> Nested[Tensor]:
             """Merges prebuilt and initialized params to a single tree."""
             if prebuilt_model_params is None:
                 return initialized_model_params
@@ -627,7 +633,7 @@ class SpmdTrainer(Module):
                 init_key,
                 prebuilt=prebuilt_model_param_specs,
             )
-            logging.info("initialized_model_state: %s", utils.shapes(model_params))
+            self.vlog(1, "initialized_model_state: %s", utils.shapes(model_params))
             learner_params = self.learner.init(
                 self._opt_params(
                     # Initialize learner with union(prebuilt + initialized).

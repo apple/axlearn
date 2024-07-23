@@ -713,7 +713,7 @@ class Pipeline(BaseLayer):
         self,
         prng_key: Union[Tensor, VDict],
         *,
-        prebuilt: Optional[Nested[ParameterSpec]] = None,
+        prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None,
     ) -> NestedTensor:
         def init(prng_key_i):
             return VDict(
