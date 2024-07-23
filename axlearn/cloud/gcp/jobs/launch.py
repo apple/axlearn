@@ -62,7 +62,7 @@ from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import new_jobspec, serialize_jobspec
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_user_projects
 from axlearn.cloud.common.scheduler import JobMetadata
-from axlearn.cloud.common.types import ResourceMap, JobSpec
+from axlearn.cloud.common.types import JobSpec, ResourceMap
 from axlearn.cloud.common.utils import (
     configure_logging,
     generate_job_id,
