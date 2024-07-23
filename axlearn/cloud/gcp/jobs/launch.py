@@ -497,7 +497,6 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
         print(
             "\nView running pods with:\nkubectl get pods\n"
             "\nNote that the job may take a few minutes to start."
-            f"\nDEBUGG job id: {job_id}"
         )
         return job_id
 
