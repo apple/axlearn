@@ -151,15 +151,17 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
         with mock_get_vm_node:
             # Test with defaults.
             job = self._mock_config().instantiate()
-            job._execute()
+            job_id = job._execute()
+            self.assertIsNotNone(job_id)
 
             # Test with bundler.
             mock_bundler = mock.MagicMock()
             cfg = self._mock_config()
             cfg.runner.bundler = config_for_function(lambda: mock_bundler)
             job = cfg.instantiate()
-            job._execute()
+            job_id = job._execute()
             self.assertTrue(mock_bundler.bundle.called)
+            self.assertIsNotNone(job_id)
 
             # Test with invalid project id.
             project_id = "test_project"
@@ -625,9 +627,10 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
 
         with ctx, patch_kube_config, patch_execute as mock_execute:
             job: BastionManagedGKEJob = cfg.instantiate()
-            job._execute()
+            job_id = job._execute()
 
             if isinstance(expected, Exception):
                 mock_execute.assert_not_called()
             else:
                 mock_execute.assert_called_once()
+                self.assertIsNotNone(job_id)

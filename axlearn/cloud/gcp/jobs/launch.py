@@ -297,7 +297,7 @@ class BaseBastionManagedJob(Job):
             print(fn(jobs), file=output_file)
         return jobs
 
-    def _execute(self):
+    def _execute(self) -> str:
         """Submits the command to bastion."""
         cfg: BaseBastionManagedJob.Config = self.config
 
@@ -319,8 +319,8 @@ class BaseBastionManagedJob(Job):
 
         logging.info("Starting run for job name %s", cfg.name)
         logging.info("Command: %s", cfg.command)
+        job_id = generate_job_id()
         with tempfile.NamedTemporaryFile("w") as f:
-            job_id = generate_job_id()
             metadata = JobMetadata(
                 user_id=cfg.user_id,
                 project_id=cfg.project_id or "none",
@@ -350,6 +350,7 @@ class BaseBastionManagedJob(Job):
             f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
             f"{cfg.project_id or ''}"
         )
+        return job_id
 
 
 # TODO(markblee): Add a BastionManagedCPUJob.
@@ -384,7 +385,7 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
         )
         return cfg
 
-    def _execute(self):
+    def _execute(self) -> str:
         """Submits the command to bastion.
 
         In addition to logic defined in `BaseBastionManagedJob._execute()`, also emits the output
@@ -405,7 +406,7 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
             cfg.name if cfg.num_replicas == 1 else f"{cfg.name}-{cfg.num_replicas}"
         )
 
-        super()._execute()
+        job_id = super()._execute()
         num_workers = infer_tpu_workers(infer_tpu_type(cfg.instance_type))
         worker_log = f'gsutil cat "{cfg.output_dir}/output/*-0/run.log"'
         print(
@@ -413,6 +414,7 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
             f"Once started, view TPU log outputs with:\n{worker_log}\n"
             f"Replace `*-0` with `*-{{idx}}` where idx is between [0, {num_workers})."
         )
+        return job_id
 
 
 class BastionManagedGKEJob(BaseBastionManagedJob):
@@ -472,7 +474,7 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
         # Ensure that the user has installed GKE plugin.
         load_kube_config(project=cfg.project, zone=cfg.zone, cluster=cfg.cluster)
 
-    def _execute(self):
+    def _execute(self) -> str:
         """Submits the command to bastion."""
         cfg: BastionManagedGKEJob.Config = self.config
         try:
@@ -491,11 +493,13 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
                 "Replace `--worker=0` with `--worker={idx}` "
                 f"where idx is between [0, {num_workers})."
             )
-        super()._execute()
+        job_id = super()._execute()
         print(
             "\nView running pods with:\nkubectl get pods\n"
             "\nNote that the job may take a few minutes to start."
+            f"\nDEBUGG job id: {job_id}"
         )
+        return job_id
 
 
 # Launchers specified here will be tried (in the given order) when launching a given instance type.
