@@ -580,6 +580,26 @@ def config_class(cls: Type[T], **kwargs) -> Type[T]:
     if not issubclass(cls, ConfigBase):
         raise InvalidConfigClassError(f"A config class must be a subclass of ConfigBase: {cls}")
 
+    # We check that all attributes are properly type annotated. The danger of not doing this check
+    # is that the default values of any child class attributes without type annotations will be
+    # silently ignored, which could cause completely unexpected behaviors.
+    annotations = cls.__dict__.get("__annotations__", {})
+    for key, val in cls.__dict__.items():
+        if key.startswith("__") or key in annotations:
+            continue
+        if inspect.isfunction(val) and any(
+            f"{base_cls.__qualname__}.{key}" == val.__qualname__ for base_cls in inspect.getmro(cls)
+        ):
+            # When the value is a function, we need to check if the key is part of the config or if
+            # method belongs to the class. To do so, we check if this function is defined within
+            # this class or any of its parent classes. A method defined in a class should have the
+            # joint of the class's qualname and the key as its qualname.
+            continue
+        raise NonConfigFieldError(
+            f"Non-config attribute is not supported: {cls.__qualname__}.{key}. "
+            "Please make sure all config attributes are annotated with typehints."
+        )
+
     attr_cls = attr.define(maybe_cls=cls, **_config_class_kwargs(), **kwargs)
     # Pytype seems to infer attr_cls as a callable.
     return _wrap_config_attr_cls(attr_cls)  # pytype: disable=wrong-arg-types
