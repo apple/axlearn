@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Unittests for config.py."""
+
 # pylint: disable=too-many-public-methods
 import collections
 import copy
@@ -13,13 +14,10 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import attr
 import attrs
 import numpy as np
-import tensorflow_datasets as tfds
 import wrapt
 from absl.testing import absltest, parameterized
-from jax import numpy as jnp
 
 from axlearn.common import config
-from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import (
     REQUIRED,
     ConfigBase,
@@ -129,7 +127,7 @@ class ConfigTest(parameterized.TestCase):
     def test_config_inheritance(self):
         @config_class
         class BaseLayerConfig(ConfigBase):
-            dtype: jnp.dtype = jnp.float32
+            dtype: np.dtype = np.float32
 
         @config_class
         class LayerNormConfig(BaseLayerConfig):
@@ -138,7 +136,7 @@ class ConfigTest(parameterized.TestCase):
         cfg: LayerNormConfig = LayerNormConfig(dim=16)  # pylint: disable=unexpected-keyword-arg
         self.assertIsInstance(cfg, BaseLayerConfig)
         self.assertEqual(16, cfg.dim)
-        self.assertEqual(jnp.float32, cfg.dtype)
+        self.assertEqual(np.float32, cfg.dtype)
 
     def test_config_inheritance_field_redefinition(self):
         @config_class
@@ -430,7 +428,10 @@ class ConfigTest(parameterized.TestCase):
         self.assertEqual(param_shapes(layer1), param_shapes(layer2))
 
     def test_instantiable_config_from_function_signature(self):
-        cfg = config.config_for_function(tfds.load)
+        def load(name: str, *, split: Optional[str] = None, download: bool = True):
+            del name, split, download
+
+        cfg = config.config_for_function(load)
         self.assertIsInstance(cfg, config.InstantiableConfig)
         self.assertContainsSubset({"fn", "name", "split", "download"}, cfg.keys())
         self.assertIsInstance(cfg.name, config.RequiredFieldValue)
@@ -726,7 +727,15 @@ class ConfigTest(parameterized.TestCase):
         self.assertEqual("test", cfg.instantiate().x)
 
     def test_maybe_set_config(self):
-        cfg = BaseLayer.default_config()
+        @config_class
+        class ModuleConfig(ConfigBase):
+            vlog: Optional[int] = None
+
+        @config_class
+        class BaseLayerConfig(ModuleConfig):
+            dtype: np.dtype = np.float16
+
+        cfg = BaseLayerConfig()
 
         # Set the value if the key exists.
         self.assertIsNone(cfg.vlog)
@@ -740,9 +749,9 @@ class ConfigTest(parameterized.TestCase):
         self.assertFalse(hasattr(cfg, not_exist_key))
 
         # Set multiple keys.
-        maybe_set_config(cfg, vlog=2, dtype=jnp.float32, not_exist_field=4)
+        maybe_set_config(cfg, vlog=2, dtype=np.float32, not_exist_field=4)
         self.assertEqual(cfg.vlog, 2)
-        self.assertEqual(cfg.dtype, jnp.float32)
+        self.assertEqual(cfg.dtype, np.float32)
         self.assertFalse(hasattr(cfg, not_exist_key))
 
 
