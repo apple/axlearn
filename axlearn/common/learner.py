@@ -6,14 +6,13 @@
 - Applying updates on non-differentiable params such as batch norm stats;
 - Maintaining Polyak averages of model params (if enabled).
 """
-
 import dataclasses
 import enum
-import logging
 from typing import Callable, Dict, Mapping, NamedTuple, Optional, Protocol, Sequence, Tuple
 
 import jax
 import optax
+from absl import logging
 from jax import numpy as jnp
 
 from axlearn.common.base_layer import NestedParameterSpec
@@ -487,9 +486,10 @@ class AccumulatedLearner(Learner):
 
         # The number of microbatches to accumulate per optimizer step.
         microbatches: Required[int] = REQUIRED
-        # tuple of key-value pairs specifying custom aggregation and normalization
-        # for a specific metric
+        # Tuple of key-value pairs specifying custom aggregation and normalization
+        # for a specific metric.
         metrics_accumulation_key_ops: Sequence[Dict[str, Optional[MetricsAccumulationOp]]] = []
+        # Data type used for microbatch gradient buffer and accumulation.
         gradient_dtype: Optional[jnp.dtype] = jnp.bfloat16
 
     def forward_and_backward(
@@ -508,6 +508,11 @@ class AccumulatedLearner(Learner):
         """
         should_compute_gradients = self.should_update_with_optimizers(opt_params)
         model_params = jax.tree_util.tree_map(lambda opt_param: opt_param.value, opt_params)
+
+        # create evenly sized accumulation microbatches, keep sequence dimension as it is.
+        inputs = jax.tree_map(
+            lambda x: x.reshape(self.config.microbatches, -1, *x.shape[1:]), inputs
+        )
 
         # create buffer for metrics
         input0 = jax.tree_map(lambda x: x[0], inputs)
@@ -540,9 +545,6 @@ class AccumulatedLearner(Learner):
         def normalize_metrics_with_rule(pytree_path, x):
             strategy = get_strategy_for_metric(pytree_path)
             return strategy.normalize(x)
-
-        # create evenly sized accumulation microbatches, keep sequence dimension as it is.
-        inputs = jax.tree_map(lambda x: x.reshape(self.config.microbatches,  -1, *x.shape[1:]), inputs)
 
         def _copy_zero(model_tree):
             return jax.tree_map(
