@@ -11,11 +11,11 @@ See c4_trainer.py for how they are used.
 """
 
 import math
-import numpy as np
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import tensorflow as tf
 from jax.sharding import PartitionSpec
 
@@ -271,8 +271,8 @@ def model_config(
     )
 
     device_platform = np.asarray(jax.devices())[0].platform
-    # neuron uses Zero 3
-    fsdp_axis_names = ("expert", "fsdp", "seq") if device_platform != 'neuron' else ("data", "expert", "fsdp", "seq") 
+    # Trainium will have FSDP support soon, for now use Zero 3.
+    fsdp_axis_names = ("expert", "fsdp", "seq") if device_platform != "neuron" else ("data")
 
     cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.

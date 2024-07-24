@@ -83,7 +83,6 @@ TOTAL_TOKENS = {
     },
 }
 
-TRN_MODEL_AXIS_SIZE=8
 
 def get_trainer_kwargs(
     model_size: str,
@@ -167,9 +166,9 @@ def get_trainer_kwargs(
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
-                (   
+                (
                     "neuron-(trn1.32xlarge|trn1n.32xlarge)-(32|64|256|512|1024|2048)",
-                    mesh_shape_from_axes(data=-1, model=TRN_MODEL_AXIS_SIZE),
+                    mesh_shape_from_axes(data=-1, model=8),
                 ),
             ),
         )
