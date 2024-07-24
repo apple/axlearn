@@ -32,7 +32,12 @@ from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
 from axlearn.common import param_init
-from axlearn.common.base_layer import BaseLayer, FactorizationSpec, NestedParameterSpec
+from axlearn.common.base_layer import (
+    BaseLayer,
+    FactorizationSpec,
+    NestedParameterSpec,
+    ParameterSpec,
+)
 from axlearn.common.config import REQUIRED, Configurable, InstantiableConfig, Required, config_class
 from axlearn.common.module import Module, NestedTensor, Tensor, child_context, new_output_collection
 from axlearn.common.utils import (
@@ -708,17 +713,17 @@ class Pipeline(BaseLayer):
         self,
         prng_key: Union[Tensor, VDict],
         *,
-        prebuilt: Optional[NestedTensor] = None,
+        prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None,
     ) -> NestedTensor:
-        def init(prng_key_i, prebuilt_i):
+        def init(prng_key_i):
             return VDict(
                 layer=self.layer.initialize_parameters_recursively(
-                    prng_key_i, prebuilt=get_or_none(prebuilt_i, "layer")
+                    prng_key_i, prebuilt=get_or_none(prebuilt, "layer")
                 )
             )
 
         cfg: Pipeline.Config = self.config
-        return jax.vmap(init)(split_prng_key(prng_key, cfg.num_layers).keys, prebuilt)
+        return jax.vmap(init)(split_prng_key(prng_key, cfg.num_layers).keys)
 
     class Output(NamedTuple):
         carry: NestedTensor

@@ -27,6 +27,7 @@ from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
 from axlearn.common.repeat import Repeat
 from axlearn.common.test_utils import (
+    Nested,
     ParamInitSpec,
     TestCase,
     TestWithTemporaryCWD,
@@ -805,7 +806,10 @@ class ReadParamInitSpecsRecursivelyTest(TestCase):
     def test_delegates(self):
         class TestLayer(Linear):
             def initialize_parameters_recursively(
-                self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+                self,
+                prng_key: Tensor,
+                *,
+                prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None,
             ) -> NestedTensor:
                 params = super().initialize_parameters_recursively(prng_key, prebuilt=prebuilt)
                 params["dummy"] = {"test": 1}

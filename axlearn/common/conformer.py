@@ -41,7 +41,7 @@ from axlearn.common.layers import (
 )
 from axlearn.common.module import Module
 from axlearn.common.repeat import Repeat
-from axlearn.common.utils import NestedTensor, Tensor, get_or_none
+from axlearn.common.utils import Tensor
 
 
 class LConvLayer(BaseLayer):
@@ -346,18 +346,6 @@ class RepeatedConformerLayer(BaseLayer):
             num_layers=cfg.num_layers,
         )
         self._add_child("repeat", repeat_cfg)
-
-    def initialize_parameters_recursively(
-        self,
-        prng_key: Tensor,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
-    ) -> NestedTensor:
-        return dict(
-            repeat=self.repeat.initialize_parameters_recursively(
-                prng_key, prebuilt=get_or_none(prebuilt, "repeat")
-            )
-        )
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Tensor:
         return self.repeat(inputs=inputs, paddings=paddings)

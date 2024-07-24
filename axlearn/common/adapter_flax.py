@@ -14,7 +14,7 @@ from flax.linen import Partitioned
 from axlearn.common import utils
 from axlearn.common.base_layer import BaseLayer, NestedParameterSpec, ParameterSpec
 from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.module import Module, NestedTensor
+from axlearn.common.module import Module, Nested, Tensor
 
 
 class FlaxLayer(BaseLayer):
@@ -74,10 +74,10 @@ class FlaxLayer(BaseLayer):
         return cfg.create_dummy_input_fn(**cfg.create_dummy_input_kwargs)
 
     def initialize_parameters_recursively(
-        self, prng_key: utils.Tensor, *, prebuilt: Optional[NestedTensor] = None
-    ) -> NestedTensor:
+        self, prng_key: utils.Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
+    ) -> Nested[Tensor]:
         if self._use_prebuilt_params(prebuilt):
-            return prebuilt
+            return jax.tree_util.tree_map(lambda _: None, prebuilt)
         args, kwargs = self._dummy_inputs
         return self._module.init(prng_key, *args, **kwargs)
 
@@ -112,7 +112,7 @@ class FlaxLayer(BaseLayer):
 
 def config_for_flax_module(
     create_module_fn: Callable[[], FlaxModule],
-    create_dummy_input_fn: Callable[[], NestedTensor],
+    create_dummy_input_fn: Callable[[], Nested[Tensor]],
     **kwargs,
 ):
     return FlaxLayer.default_config().set(

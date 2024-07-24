@@ -16,6 +16,7 @@
 
 import contextlib
 import copy
+import itertools
 
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
@@ -112,6 +113,14 @@ from axlearn.common.utils import (
     flatten_items,
     shapes,
 )
+
+
+def all_subsets(given_set):
+    "Generate all subsets of a list `given_set`."
+    s = list(given_set)
+    return list(
+        itertools.chain.from_iterable(itertools.combinations(s, r) for r in range(len(s) + 1))
+    )
 
 
 def _random_mask(prng_key, tgt_len, src_len):
@@ -4198,6 +4207,68 @@ class StackedTransformerTest(BaseTransformerTest):
             self.assertNestedAllClose(data, out.data)
             self.assertIsNone(out.self_attention_probs)
             self.assertIsNotNone(out.self_attention_kv_state)
+
+    @parameterized.parameters(
+        ([],),
+        (["self_attention"],),
+        (["feed_forward"],),
+        (["self_attention", "feed_forward"],),
+    )
+    def test_initialize_parameters_recursively(self, prebuilt_layers: List[str]):
+        """Tests initialize_parameters_recursively with various prebuilt layers."""
+        input_dim = 4
+        num_heads = 2
+        num_layers = 3
+
+        cfg = self._stack_config(
+            RepeatedTransformerLayer,
+            num_layers=num_layers,
+            model_dim=input_dim,
+            num_heads=num_heads,
+            dtype=jnp.float32,
+            remat_spec=None,
+            output_self_attention_kv_state=True,
+        )
+        cfg.stack.layer.remat_spec = build_remat_spec(
+            cfg.stack, self_attention=True, feed_forward=True
+        )
+        layer = cfg.instantiate(parent=None)
+        param_specs = layer.create_parameter_specs_recursively()
+        initialized_from_scratch = layer.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(123)
+        )
+        jax.tree_util.tree_map_with_path(
+            lambda path, spec, param: self.assertEqual(param.shape, spec.shape, path),
+            param_specs,
+            initialized_from_scratch,
+        )
+
+        def has_prebuilt_layers(path):
+            for prebuilt_layer in prebuilt_layers:
+                for part in path:
+                    if prebuilt_layer == part.key:
+                        return True
+            return False
+
+        # ParameterSpec for a prebuilt param, None otherwise.
+        prebuilt_specs = jax.tree_util.tree_map_with_path(
+            lambda path, spec: spec if has_prebuilt_layers(path) else None, param_specs
+        )
+        if prebuilt_layers:
+            self.assertNotEmpty(jax.tree_util.tree_leaves(prebuilt_specs))
+        initialized_state = layer.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(123), prebuilt=prebuilt_specs
+        )
+
+        def validate_initialized(path, spec, initialized, prebuilt):
+            if prebuilt is None:
+                self.assertEqual(spec.shape, initialized.shape, path)
+            else:
+                self.assertIsNone(initialized)
+
+        jax.tree_util.tree_map_with_path(
+            validate_initialized, param_specs, initialized_state, prebuilt_specs
+        )
 
 
 class ConfigHelperTest(TestCase):

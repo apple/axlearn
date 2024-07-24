@@ -46,7 +46,7 @@ from axlearn.common.param_init import (
     constant_initializer,
 )
 from axlearn.common.schedule import as_schedule_fn
-from axlearn.common.utils import NestedTensor, Tensor
+from axlearn.common.utils import Nested, NestedTensor, Tensor
 
 _einsum_dims = "abcdefwxyz"
 
@@ -325,7 +325,7 @@ class RandomVectorQuantizer(BaseQuantizer):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         params = super().initialize_parameters_recursively(prng_key=prng_key, prebuilt=prebuilt)
         # In RandomVectorQuantizer, we freeze codebook throughout training. So we can

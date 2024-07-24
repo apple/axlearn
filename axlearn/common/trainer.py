@@ -55,6 +55,7 @@ from axlearn.common.update_transformation import ForwardOutputs
 from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
+    Nested,
     NestedPartitionSpec,
     NestedTensor,
     PartitionSpec,
@@ -548,9 +549,11 @@ class SpmdTrainer(Module):
 
         If `prebuilt_state` contains the complete trainer state, sets it as `self._trainer_state`.
 
-        Otherwise `prebuilt_state` is expected to contain a subset of the model parameters and
-        none of the learner state. Initializes model parameters by copying from `prebuilt_state`
-        if available, otherwise with `prng_key`.
+        Otherwise initializes model parameters by copying from `prebuilt_state` if available,
+        otherwise with `prng_key`. `prebuilt_state` is expected to contain a subset of the model
+        parameters and none of the learner state. Specifically, `prebuilt_state.trainer_state.model`
+        should have the same structure as the model params and each leaf node is either a Tensor
+        (a prebuilt param) or a ParameterSpec (a param to be initialized).
 
         Args:
             prebuilt_state: None or a TrainerStateBuilder.State constructed by
@@ -587,47 +590,77 @@ class SpmdTrainer(Module):
             if not key.startswith("model/"):
                 raise NotImplementedError(f"Partial initialization is not supported for: {key}")
 
-        prebuilt_model_state_partition_spec = jax.tree_util.tree_map(
-            lambda value: value.sharding if isinstance(value, Tensor) else None,
+        # A tree where a leaf is a ParameterSpec for a prebuilt param, None otherwise.
+        # This is used for `initialize_parameters_recursively` inside `_init_state`.
+        prebuilt_model_param_specs = jax.tree_util.tree_map(
+            lambda value, spec: spec if isinstance(value, Tensor) else None,
             prebuilt_state.trainer_state.model,
+            self._trainer_state_specs.model,
         )
-        prebuilt_model_state = jax.tree_util.tree_map(
-            lambda value: value if isinstance(value, Tensor) else None,
+        self.vlog(1, "prebuilt_model_state: %s", utils.shapes(prebuilt_model_param_specs))
+        # Partition specs for parameters that are *not* prebuilt and therefore to be initialized.
+        #
+        # While `prebuilt_state.trainer_state.model` also contain ParameterSpec's, we use
+        # `self._trainer_state_partition_specs.model` to ensure that the partition spec matches
+        # the model's partition config (rather than coming from `init_state_builder`).
+        model_initialization_partition_specs = jax.tree_util.tree_map(
+            lambda value, spec: None if isinstance(value, Tensor) else spec,
             prebuilt_state.trainer_state.model,
+            self._trainer_state_partition_specs.model,
+        )
+        # The output sharding for `_init_state`.
+        out_shardings = self._trainer_state_partition_specs._replace(
+            model=model_initialization_partition_specs,
         )
 
-        def _init_state(prng_key: Tensor, prebuilt_model_state: NestedTensor):
+        def merge_model_states(
+            prebuilt_model_params: Nested[Union[Tensor, ParameterSpec]],
+            initialized_model_params: Nested[Optional[NestedTensor]],
+        ) -> Nested[Tensor]:
+            """Merges prebuilt and initialized params to a single tree."""
+            if prebuilt_model_params is None:
+                return initialized_model_params
+            return jax.tree_util.tree_map(
+                lambda prebuilt, initialized: (
+                    prebuilt if isinstance(prebuilt, Tensor) else initialized
+                ),
+                prebuilt_model_params,
+                initialized_model_params,
+            )
+
+        def _init_state(prng_key: Tensor) -> TrainerState:
             prng_key, init_key = jax.random.split(prng_key)
-            logging.info("prebuilt_model_state: %s", utils.shapes(prebuilt_model_state))
             model_params = self.model.initialize_parameters_recursively(
                 init_key,
-                prebuilt=prebuilt_model_state,
+                prebuilt=prebuilt_model_param_specs,
             )
-            self.vlog(
-                1, "tree_structure(model_params)=%s", jax.tree_util.tree_structure(model_params)
+            self.vlog(1, "initialized_model_state: %s", utils.shapes(model_params))
+            learner_params = self.learner.init(
+                self._opt_params(
+                    # Initialize learner with union(prebuilt + initialized).
+                    merge_model_states(prebuilt_state.trainer_state.model, model_params)
+                )
             )
-            learner_params = self.learner.init(self._opt_params(model_params))
-            return TrainerState(
-                prng_key=prng_key,
-                model=model_params,
-                learner=learner_params,
-            )
+            return TrainerState(prng_key=prng_key, model=model_params, learner=learner_params)
 
-        logging.info("prebuilt_model_state_partition_spec: %s", prebuilt_model_state_partition_spec)
-        logging.info("trainer_state_partition_specs: %s", self._trainer_state_partition_specs)
         init_computation = pjit(
             _init_state,
-            in_shardings=(None, prebuilt_model_state_partition_spec),
-            out_shardings=self._trainer_state_partition_specs,
-            # Donate prebuilt_model_state.
-            # Do not donate PRNG key since it is only ~4 bytes and was causing
-            # a CI failure in some trainer tests where jax thought the key
-            # had already been deleted.
-            donate_argnums=1,
+            in_shardings=(None,),
+            out_shardings=out_shardings,
         )
         self._step_log("Initializing trainer state.")
         with self.mesh():
-            self._trainer_state = init_computation(prng_key, prebuilt_model_state)
+            initialized_trainer_state: TrainerState = init_computation(prng_key)
+        # Merge prebuilt and initialized model params.
+        merged_model_state = merge_model_states(
+            prebuilt_state.trainer_state.model, initialized_trainer_state.model
+        )
+        self.vlog(1, "merged_model_state: %s", utils.shapes(merged_model_state))
+        self._trainer_state = TrainerState(
+            prng_key=initialized_trainer_state.prng_key,
+            model=merged_model_state,
+            learner=initialized_trainer_state.learner,
+        )
 
     def _log_trainer_state_stats(self):
         total_num_params = count_model_params(self._trainer_state.model)

@@ -380,8 +380,26 @@ class BaseLayer(Module):
         return specs
 
     def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
+        """Initializes parameters with given ParameterSpecs for the prebuilt params.
+
+        Note that the returned tree contains Tensors for initialized parameters and None for the
+        prebuilt parameters. This ensures that the return value contain only JAX types and
+        therefore can be wrapped inside JAX function transformations.
+
+        Use `test_utils.initialize_parameters_with_prebuilt` in testing to get a merged tree of
+        prebuilt and initialized parameters.
+
+        Args:
+            prng_key: The random key.
+            prebuilt: A Nested tree with the same structure as the layer parameters, whose leaf
+                nodes are ParameterSpecs if the parameters are prebuilt, None if the parameters
+                should be initialized.
+
+        Returns:
+            A Nested Tree with Tensors (if initialized) and None (if prebuilt) as leaf nodes.
+        """
         params = {}
         param_specs = self._create_layer_parameter_specs()
         for name, spec in param_specs.items():
@@ -389,7 +407,9 @@ class BaseLayer(Module):
             prng_key, child_key = jax.random.split(prng_key)
             value = get_or_none(prebuilt, name)
             if value is not None:
-                params[name] = value
+                # Note that we cannot set `params[name]` to `value`, since `value` is an instance
+                # of ParameterSpec and not a JAX type.
+                params[name] = None
             else:
                 if spec.dtype is None:
                     spec.dtype = self.dtype()
@@ -413,10 +433,8 @@ class BaseLayer(Module):
             )
         return params
 
-    def _use_prebuilt_params(self, prebuilt: Optional[NestedTensor]) -> bool:
-        prebuilt_keys = set(
-            key for key, value in flatten_items(prebuilt) if isinstance(value, Tensor)
-        )
+    def _use_prebuilt_params(self, prebuilt: Optional[Nested[Optional[ParameterSpec]]]) -> bool:
+        prebuilt_keys = set(key for key, value in flatten_items(prebuilt) if value is not None)
         if not prebuilt_keys:
             return False
         param_keys = set(key for key, _ in flatten_items(self.create_parameter_specs_recursively()))

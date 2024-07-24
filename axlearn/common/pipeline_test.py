@@ -285,6 +285,7 @@ class PipelineTest(TestCase):
             layer_params = layer.initialize_parameters_recursively(
                 prng_key=jax.random.PRNGKey(1), prebuilt=prebuilt
             )
+            layer_params["layer"] = prebuilt["layer"]
             logging.info("layer params=%s", layer_params)
 
             input_forward_state = layer.init_forward_state(batch_size)
