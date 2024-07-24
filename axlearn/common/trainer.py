@@ -549,10 +549,11 @@ class SpmdTrainer(Module):
 
         If `prebuilt_state` contains the complete trainer state, sets it as `self._trainer_state`.
 
-        Otherwise `prebuilt_state` is expected to contain a subset of the model parameters and
-        none of the learner state. Specifically, each leaf node of `prebuilt_state.model` is either
-        a Tensor (a prebuilt param) or a ParameterSpec (a param to be initialized). Initializes
-        model parameters by copying from `prebuilt_state` if available, otherwise with `prng_key`.
+        Otherwise initializes model parameters by copying from `prebuilt_state` if available,
+        otherwise with `prng_key`. `prebuilt_state` is expected to contain a subset of the model
+        parameters and none of the learner state. Specifically, `prebuilt_state.trainer_state.model`
+        should have the same structure as the model params and each leaf node is either a Tensor
+        (a prebuilt param) or a ParameterSpec (a param to be initialized).
 
         Args:
             prebuilt_state: None or a TrainerStateBuilder.State constructed by
@@ -596,7 +597,7 @@ class SpmdTrainer(Module):
             prebuilt_state.trainer_state.model,
             self._trainer_state_specs.model,
         )
-        logging.info("prebuilt_model_state: %s", utils.shapes(prebuilt_model_param_specs))
+        self.vlog(1, "prebuilt_model_state: %s", utils.shapes(prebuilt_model_param_specs))
         # Partition specs for parameters that are *not* prebuilt and therefore to be initialized.
         #
         # While `prebuilt_state.trainer_state.model` also contain ParameterSpec's, we use
