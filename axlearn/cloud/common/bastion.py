@@ -261,7 +261,7 @@ def is_valid_job_name(name: str) -> bool:
 
     We use a permissive regex to avoid making assumptions about the underlying compute environment.
     """
-    return bool(name) and ("/" not in name) and (name not in (".", ".."))
+    return bool(name) and ("/" not in name) and (name not in (".", "..")) and ("\n" not in name)
 
 
 def _download_jobspec(job_name: str, *, remote_dir: str, local_dir: str = _JOB_DIR) -> JobSpec:
