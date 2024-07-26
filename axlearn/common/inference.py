@@ -11,6 +11,7 @@ On compatible trainer checkpoints for `InferenceRunner`:
     only a subset of the model state, or a checkpoint with different scope names, use a suitable
     state builder.
 """
+
 from dataclasses import dataclass
 from functools import partial
 from typing import (
@@ -47,6 +48,7 @@ from axlearn.common.utils import (
     PartitionSpec,
     Tensor,
     TensorSpec,
+    prune_tree,
 )
 
 
@@ -62,7 +64,7 @@ class MethodRunner:
         input_batch_partition_spec: DataPartitionType,
         jit_run_on_batch: Callable[
             [Tensor, NestedTensor],
-            Tuple[Tensor, NestedTensor, NestedTensor],
+            Tuple[Tensor, NestedTensor, NestedTensor, NestedTensor],
         ],
     ):
         """Initializes MethodRunner object.
@@ -72,7 +74,7 @@ class MethodRunner:
             mesh: mesh to be used during method running, same as the one used for pjit.
             input_batch_partition_spec: partition spec for input batches.
             jit_run_on_batch: callable which takes prng key, input batch and outputs
-                updated prng key, outputs and summaries.
+                updated prng key, outputs, summaries, and module outputs.
         """
         self._prng_key = prng_key
         self._mesh = mesh
@@ -89,6 +91,8 @@ class MethodRunner:
         input_batch: NestedTensor
         # Summaries.
         summaries: NestedTensor
+        # Module outputs.
+        module_outputs: NestedTensor
 
     def __call__(self, input_batch: NestedTensor) -> Output:
         """Computes outputs and summaries for the given input.
@@ -128,6 +132,7 @@ class MethodRunner:
                 self._prng_key,
                 global_output_batch,
                 summaries,
+                module_outputs,
             ) = self._jit_run_on_batch(
                 self._prng_key,
                 global_input_batch,
@@ -136,6 +141,7 @@ class MethodRunner:
                 output_batch=global_output_batch,
                 input_batch=global_input_batch,
                 summaries=summaries,
+                module_outputs=module_outputs,
             )
 
 
@@ -300,6 +306,7 @@ class InferenceRunner(Module):
         *,
         method: str,
         prng_key: Optional[Tensor] = None,
+        drop_module_outputs: Callable[[str], bool] = lambda _: True,
         **kwargs,
     ) -> MethodRunner:
         """Creates MethodRunner for the specified method and arguments.
@@ -310,6 +317,10 @@ class InferenceRunner(Module):
                 returned value are NestedTensors containing Tensors with a leading dimension of
                 `batch_size` and will be partitioned with input_batch_partition_spec.
             prng_key: the random key used for inference. Use restored key if None.
+            drop_module_outputs: A callable that takes a path and outputs a decision of whether to
+                drop the module output at the given path, where True means we drop. By default, the
+                callable always returns True, meaning all module outputs are dropped.
+                Warning: Returned module outputs are fully replicated.
             kwargs: Keyword arguments to pass to the method.
 
         Returns:
@@ -335,6 +346,7 @@ class InferenceRunner(Module):
                     model_params,
                     input_batch,
                     method=method,
+                    drop_module_outputs=drop_module_outputs,
                     **kwargs,
                 )
 
@@ -350,6 +362,7 @@ class InferenceRunner(Module):
                     self._inference_runner_state_partition_specs.prng_key,
                     data_partition_spec,  # Output batch.
                     None,  # Summaries.
+                    None,  # Module outputs.
                 ),
             )
             self.vlog(1, "jit complete for %s", method)
@@ -377,14 +390,16 @@ class InferenceRunner(Module):
         model_params: NestedTensor,
         input_batch: Dict[str, Any],
         *,
-        method,
+        method: str,
+        drop_module_outputs: Callable[[str], bool] = lambda _: True,
         **kwargs,
-    ) -> Tuple[Tensor, NestedTensor, NestedTensor]:
+    ) -> Tuple[Tensor, NestedTensor, NestedTensor, NestedTensor]:
         """Implements inference for a single input batch."""
         new_prng_key, iter_key = jax.random.split(prng_key)
 
         # Shard and (possibly) dispatch the input batch.
         input_batch = utils.dispatch_input_batch(input_batch)
+
         output_batch, output_collection = F(
             self.model,
             prng_key=iter_key,
@@ -392,11 +407,21 @@ class InferenceRunner(Module):
             inputs={"input_batch": self._inference_cast(input_batch), **kwargs},
             is_training=False,
             method=method,
+            # Do not drop module_outputs so they can be returned.
+            drop_output_collections=(),
         )
+
+        # Prune module outputs
+        module_outputs = prune_tree(
+            output_collection.module_outputs,
+            should_prune=lambda path, _: drop_module_outputs(path),
+        )
+
         return (
             new_prng_key,
             output_batch,
             output_collection.summaries,
+            module_outputs,
         )
 
     def mesh(self):
