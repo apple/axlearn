@@ -6,8 +6,9 @@
 
 """Audio frontends for feature extraction."""
 
+import functools
 from functools import partial
-from typing import Callable, Dict, Optional, Sequence, Union
+from typing import Callable, Dict, Optional, Protocol, Sequence, Union
 
 import jax.numpy as jnp
 
@@ -27,10 +28,19 @@ from axlearn.common.config import (
     InstantiableConfig,
     Required,
     config_class,
+    config_for_function,
     maybe_instantiate,
+    maybe_set_config,
 )
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor
+
+
+class StageFn(Protocol):
+    """A frontend "stage" is a callable that takes a Tensor and emits a Tensor."""
+
+    def __call__(self, x: Tensor, **kwargs) -> Tensor:
+        pass
 
 
 def normalize_by_mean_std(
@@ -82,6 +92,40 @@ class BaseFrontend(BaseLayer):
         self._hop_size = int(hop_size)
 
 
+def _log_mel_spectrogram(
+    *, num_filters: int, sample_rate: int, fft_size: int, mel_floor: float
+) -> StageFn:
+    """Returns a StageFn that computes Log Mel spectrogram."""
+
+    # Mel filterbank, used to convert magnitude spectrogram to mel spectrogram. Only needs to be
+    # constructed once.
+    filterbank = linear_to_mel_weight_matrix(
+        num_filters=num_filters,
+        num_spectrogram_bins=fft_size // 2 + 1,
+        sample_rate=sample_rate,
+        lower_edge_hertz=125.0,
+        upper_edge_hertz=7600.0,
+    )
+
+    def fn(fft: Tensor, *, dtype: jnp.dtype) -> Tensor:
+        # [batch_size, num_frames, fft_size] -> [batch_size, num_frames, fft_size // 2 + 1].
+        spectrogram = magnitude_spectrogram(fft, dtype=dtype)
+        # Convert to log-mel. [batch, num_frames, num_filters].
+        return linear_to_log_mel_spectrogram(
+            spectrogram,
+            weight_matrix=filterbank,
+            mel_floor=mel_floor,
+        )
+
+    return fn
+
+
+def _pre_emphasis(coeff: float) -> StageFn:
+    """Returns a StageFn that applies pre-emphasis."""
+    # Native python float is fp64, explicitly cast it to fp32.
+    return functools.partial(pre_emphasis, coeff=jnp.array(coeff, dtype=jnp.float32))
+
+
 class LogMelFrontend(BaseFrontend):
     """Computes Log Mel spectrogram features.
 
@@ -96,15 +140,24 @@ class LogMelFrontend(BaseFrontend):
         # Number of output channels. Should always be 1.
         output_dim: int = 1
         # Optional output transformation. See `normalize_by_mean_std` for an example.
-        output_transformation: Optional[InstantiableConfig[Callable[[Tensor], Tensor]]] = None
+        output_transformation: Optional[InstantiableConfig[StageFn]] = None
         # Floor of melfilter bank energy to prevent log(0).
         # Recommend to set to 1e-6 or smaller to capture
         # low-energy signals.
+        # TODO(markblee): Deprecate this in favor of setting `mel_floor` on `spectrogram`.
         mel_floor: Required[float] = REQUIRED
+        # Pre-emphasis filter. If None, skips pre-emphasis.
+        pre_emphasis: Optional[InstantiableConfig[StageFn]] = config_for_function(
+            _pre_emphasis
+        ).set(coeff=0.97)
+        # Computes fft size from frame size.
+        fft_size: Callable[[int], int] = next_power_of_2
         # Optional customized FFT implementation. Use `jnp.fft.fft` if None.
         # This can be used to support a sharded implementation of FFT.
         # See `sharded_fft` for an example.
-        fft: Optional[InstantiableConfig[Callable[[Tensor], Tensor]]] = None
+        fft: Optional[InstantiableConfig[StageFn]] = None
+        # Constructs mel spectogram from FFT outputs.
+        spectrogram: InstantiableConfig[StageFn] = config_for_function(_log_mel_spectrogram)
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -113,26 +166,29 @@ class LogMelFrontend(BaseFrontend):
             raise ValueError(
                 "output_dim should always be 1. Did you mean to configure num_filters instead?"
             )
-
         self._output_transformation = None
         if cfg.output_transformation is not None:
             self._output_transformation = maybe_instantiate(cfg.output_transformation)
 
-        # Mel filterbank, used to convert magnitude spectrogram to mel spectrogram. Only needs to be
-        # constructed once.
-        fft_size = next_power_of_2(self._frame_size)
-        self._filterbank = linear_to_mel_weight_matrix(
-            num_filters=cfg.num_filters,
-            num_spectrogram_bins=fft_size // 2 + 1,
-            sample_rate=cfg.sample_rate,
-            lower_edge_hertz=125.0,
-            upper_edge_hertz=7600.0,
-        )
-        self._mel_floor = cfg.mel_floor
+        self._pre_emphasis = None
+        if cfg.pre_emphasis is not None:
+            self._frame_size += 1
+            self._pre_emphasis = cfg.pre_emphasis.instantiate()
+
+        fft_size = cfg.fft_size(self._frame_size)
         if cfg.fft is not None:
-            self._fft = maybe_instantiate(cfg.fft.set(n=fft_size))
+            self._fft = cfg.fft.set(n=fft_size).instantiate()
         else:
             self._fft = partial(jnp.fft.fft, n=fft_size)
+
+        spectrogram = maybe_set_config(
+            cfg.spectrogram,
+            fft_size=fft_size,
+            num_filters=cfg.num_filters,
+            sample_rate=cfg.sample_rate,
+            mel_floor=cfg.mel_floor,
+        )
+        self._spectrogram = spectrogram.instantiate()
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
         """Computes log-mel spectrogram features.
@@ -147,28 +203,21 @@ class LogMelFrontend(BaseFrontend):
             - paddings: A 0/1 Tensor of shape [batch, num_frames].
         """
         # TODO(markblee): Make these configurable as needed.
-        # Framer. Add 1 to frame size for pre-emphasis.
-        frames = sliding_window(inputs, window_size=self._frame_size + 1, stride=self._hop_size)
-        # Pre-emphasis filter.
-        # Native python float is fp64, explicitly cast it to fp32.
-        frames = pre_emphasis(frames, coeff=jnp.array(0.97, dtype=jnp.float32))
+        # Framer.
+        frames = sliding_window(inputs, window_size=self._frame_size, stride=self._hop_size)
+        if self._pre_emphasis is not None:
+            frames = self._pre_emphasis(frames)
         # Windowing. Defaults to a Hann window.
         # [batch_size, num_frames, frame_size].
         frames = windowing(frames, window_type=WindowType.HANN)
-        # FFT.
-        # [batch_size, num_frames, fft_size] -> [batch_size, num_frames, fft_size // 2 + 1].
-        spectrogram = magnitude_spectrogram(self._fft(frames), dtype=frames.dtype)
-        # Convert to log-mel. [batch, num_frames, num_filters].
-        outputs = linear_to_log_mel_spectrogram(
-            spectrogram,
-            weight_matrix=self._filterbank,
-            mel_floor=self._mel_floor,
-        )
+        # FFT and construct spectrogram.
+        # [batch_size, num_frames, fft_size] -> [batch, num_frames, num_filters].
+        outputs = self._spectrogram(self._fft(frames), dtype=frames.dtype)
         if self._output_transformation is not None:
             outputs = self._output_transformation(outputs)
         # To identify padding frames, apply the framer to the input padding.
         # Consider a frame padded if it contains at least one padding sample.
-        paddings = sliding_window(paddings, window_size=self._frame_size + 1, stride=self._hop_size)
+        paddings = sliding_window(paddings, window_size=self._frame_size, stride=self._hop_size)
         paddings = jnp.max(paddings, axis=-1, keepdims=True)
         outputs = outputs * (1 - paddings)
         return dict(outputs=outputs[..., None], paddings=jnp.squeeze(paddings, axis=-1))
@@ -191,7 +240,7 @@ class LogMelFrontend(BaseFrontend):
             raise ValueError(f"We expect len(input_shape) = 2, but got {len(input_shape)}.")
         batch_size, seq_len = input_shape
         if seq_len is not None:
-            num_frames = max(seq_len - (self._frame_size + 1), 0) // self._hop_size + 1
+            num_frames = max(seq_len - self._frame_size, 0) // self._hop_size + 1
         else:
             num_frames = None
         return [batch_size, num_frames, cfg.num_filters, cfg.output_dim]
