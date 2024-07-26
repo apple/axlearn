@@ -3399,6 +3399,22 @@ class NonUniformStack(StackedTransformerLayer):
         )
 
 
+class TestStackedTransformerLayerWithKVState(NonUniformStack):
+    """A class with a simple override of _update_layer_kwargs for unit testing."""
+
+    def _update_layer_kwargs(
+        self,
+        layer_kwargs: Dict[str, Any],
+        *,
+        all_layer_outputs: List[BaseTransformerLayer.Output],
+    ):
+        layer_index = len(all_layer_outputs)
+        if layer_index == 1:
+            layer_kwargs["self_attention_kv_state"] = all_layer_outputs[-1].self_attention_kv_state
+        elif layer_index == 2:
+            layer_kwargs["self_attention_kv_state"] = None
+
+
 class StackedTransformerTest(BaseTransformerTest):
     """Tests StackedTransformerLayer."""
 
@@ -3722,6 +3738,53 @@ class StackedTransformerTest(BaseTransformerTest):
         assert_allclose(decoder_output, forward_outputs.data)
         assert_allclose(decoder_self_attention_probs, forward_outputs.self_attention_probs)
         assert_allclose(decoder_cross_attention_probs, forward_outputs.cross_attention_probs)
+
+    def test_update_layer_kwargs(self):
+        batch_size = 2
+        seq_len = 6
+        num_heads = 2
+        input_dim = 4
+        per_head_dim = input_dim // num_heads
+        hidden_dim = 8
+        num_layers = 3
+
+        # Create a StackedTransformerLayer by specifying a sequence of non-uniform layer configs.
+        cfg = TestStackedTransformerLayerWithKVState.default_config().set(name="test")
+        cfg.input_dim = input_dim
+        cfg.num_layers = num_layers
+        cfg.layer = []
+        for i in range(num_layers):
+            transformer_cfg = TransformerLayer.default_config()
+            transformer_cfg.self_attention.attention.num_heads = num_heads
+            transformer_cfg.feed_forward.hidden_dim = hidden_dim
+
+            if i == 1:
+                transformer_cfg.self_attention.attention.input_linear = QLinear.default_config()
+
+            cfg.layer.append(transformer_cfg)
+
+        layer: StackedTransformerLayer = cfg.instantiate(parent=None)
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim))
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        outputs, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(data=inputs, return_aux={"self_attention_kv_state"}),
+        )
+        self.assertEqual(
+            BaseTransformerLayer.Output(
+                data=(batch_size, seq_len, input_dim),
+                self_attention_probs=None,
+                self_attention_kv_state=KVState(
+                    k_proj=(batch_size, seq_len, num_heads, per_head_dim),
+                    v_proj=(batch_size, seq_len, num_heads, per_head_dim),
+                ),
+                cross_attention_probs=None,
+            ),
+            shapes(outputs),
+        )
 
     def test_stack_vs_repeat(self):
         self._compare_layers(StackedTransformerLayer, RepeatedTransformerLayer)

@@ -2006,11 +2006,11 @@ class GroupedQueryAttention(MultiheadAttention):
 
     def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
         """Repeats key or value heads dim to match the query."""
-        num_head_repeats = self.config.num_heads // key_or_value.shape[2]
+        num_head_repeats = self.config.num_heads // key_or_value.shape[-2]
         if num_head_repeats == 1:
             return key_or_value
         # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
-        return jnp.repeat(key_or_value, num_head_repeats, axis=2)
+        return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
 
     def _compute_attention(
         self,
@@ -3443,6 +3443,9 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         all_layer_outputs = []
         all_layer_states = []
         for i, layer in enumerate(self._layers):
+            # Prepare inputs to the current layer.
+            self._update_layer_kwargs(layer_kwargs, all_layer_outputs=all_layer_outputs)
+
             if mode == ForwardMode.FORWARD:
                 layer_states, layer_outputs = None, layer(data, **layer_kwargs)
             elif mode == ForwardMode.INIT_STATES:
@@ -3464,14 +3467,25 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             all_layer_outputs.append(layer_outputs)
             all_layer_states.append(layer_states)
             data = layer_outputs.data
-            # Prepare inputs to the next layer.
-            self._update_layer_kwargs(layer_kwargs, outputs=layer_outputs)
 
         return all_layer_states, self._aggregate_layer_outputs(all_layer_outputs)
 
     def _update_layer_kwargs(
-        self, layer_kwargs: Dict[str, Any], *, outputs: BaseTransformerLayer.Output
+        self,
+        layer_kwargs: Dict[str, Any],
+        *,
+        all_layer_outputs: List[BaseTransformerLayer.Output],
     ):
+        """Updates `layer_kwargs` using other args.
+
+        This method is called before we invoke each layer in `self._layers`.
+        The updated `layer_kwargs` will be passed to the layer invocation.
+
+        Args:
+            layer_kwargs: a dictionary of arguments that can be used by individual layers.
+            all_layer_outputs: a list of BaseTransformerLayer.Output that is appended with
+                the output of each constituent layer in the stack.
+        """
         pass  # Do nothing by default.
 
     def _aggregate_layer_outputs(
