@@ -181,6 +181,17 @@ def _node_pool_body(
                 # https://cloud.google.com/kubernetes-engine/docs/how-to/node-auto-upgrades#disable
                 "autoUpgrade": False,
             },
+            "maxPodsConstraint": {
+                # Default max pods per node is 110,
+                # but a lower value is necessary for large scale clusters,
+                # to reduce the chance of exhausting the IP Space and thus failing provisioning.
+                # A TPU worker corresponds to a pod on a distinct K8s node, and a TPU slice
+                # corresponds to a K8s node pool.
+                # 15 pods per K8s node will work for small and large cluster sizes,
+                # since a K8s node only has 1 pod (for TPU worker) + some kube-system pods.
+                # TODO(ethanli): make it configurable.
+                "maxPodsPerNode": 15,
+            },
             "queuedProvisioning": {
                 "enabled": False,  # Not QRM specific.
             },
