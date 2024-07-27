@@ -147,6 +147,7 @@ class TestDownloadJobBatch(parameterized.TestCase):
         dict(name="test/dir", valid=False),
         dict(name="..test", valid=True),  # This is a valid file name.
         dict(name="test.job..", valid=True),  # This is a valid file name.
+        dict(name="test\n", valid=False),  # newline causes bastion to crash
     )
     def test_is_valid_job_name(self, name, valid):
         self.assertEqual(valid, is_valid_job_name(name))
