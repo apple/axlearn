@@ -2,6 +2,7 @@
 
 """Cloud build utilities"""
 import enum
+from typing import Optional
 
 from absl import logging
 from google.cloud.devtools import cloudbuild_v1
@@ -53,6 +54,7 @@ class CloudBuildStatus(enum.Enum):
             cls.TIMEOUT,
             cls.CANCELLED,
             cls.EXPIRED,
+            cls.STATUS_UNKNOWN,
         }
 
     @classmethod
@@ -60,7 +62,7 @@ class CloudBuildStatus(enum.Enum):
         return build_status in {cls.PENDING, cls.QUEUED, cls.WORKING}
 
 
-def get_cloud_build_status(project_id: str, image_name: str) -> CloudBuildStatus:
+def get_cloud_build_status(project_id: str, image_name: str) -> Optional[CloudBuildStatus]:
     """Get the status of the latest build filter on the image_name.
 
     Returns:

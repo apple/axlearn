@@ -423,6 +423,7 @@ class GKERunnerJob(GCPJob):
                                 logging.info("Cloudbuild for %s is finished.", cfg.name)
                             elif CloudBuildStatus.is_pending(status):
                                 logging.info("Job %s is waiting for cloud building.", cfg.name)
+                                time.sleep(cfg.status_interval_seconds)
                                 continue
                             elif CloudBuildStatus.is_failed(status):
                                 logging.error(
@@ -431,14 +432,16 @@ class GKERunnerJob(GCPJob):
                                 return
                         else:
                             logging.error(
-                                "Cloud build does not exist. Stop starting the job %s.",
+                                "Cloud build does not exist yet.%s.",
                                 cfg.name,
                             )
-                            return
+                            time.sleep(cfg.status_interval_seconds)
+                            continue
                     except Exception as e:  # pylint: disable=broad-except
                         logging.warning(
                             "Failed to get the build status, will retry. Exception: %s", e
                         )
+                        time.sleep(cfg.status_interval_seconds)
                         continue
 
                 # Provision node pools for the job to run.
