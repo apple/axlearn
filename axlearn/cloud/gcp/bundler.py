@@ -189,6 +189,7 @@ options:
             "submit",
             "--project",
             gcp_settings("project"),
+            "--async",
             "--config",
             cloudbuild_yaml_file,
             context,
