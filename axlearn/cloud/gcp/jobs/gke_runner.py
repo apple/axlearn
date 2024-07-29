@@ -430,6 +430,9 @@ class GKERunnerJob(GCPJob):
                                     "Cloud building failed. Stop starting the job %s.", cfg.name
                                 )
                                 return
+                            else:
+                                logging.error("Unknown build status %s", status)
+                                return
                         else:
                             logging.error(
                                 "Cloud build does not exist yet.%s.",
