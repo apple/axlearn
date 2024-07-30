@@ -120,11 +120,11 @@ class CloudBuildBundler(BaseDockerBundler):
     TYPE = "cloudbuild"
 
     @config_class
-    class Config(Bundler.Config):
-        """Configures BaseDockerBundler."""
+    class Config(BaseDockerBundler.Config):
+        """Configures CloudBuildBundler."""
 
         # Build image asynchronously.
-        is_async: bool = True
+        is_async: Optional[bool] = True
 
     @classmethod
     def from_spec(
