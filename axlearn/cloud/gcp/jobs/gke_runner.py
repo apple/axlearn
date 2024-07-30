@@ -414,36 +414,32 @@ class GKERunnerJob(GCPJob):
                 if not running_from_vm():
                     self._inner.bundler.bundle(cfg.name)
                 bundler = self._inner.bundler
+                # TODO(liang-he): Consolidate CloudBuild wait method to the `cloud_build` module.
                 if bundler.TYPE == CloudBuildBundler.TYPE:
                     try:
                         image_name = bundler.id(cfg.name)
                         build_status = get_cloud_build_status(cfg.project, image_name)
-                        if build_status:
-                            if CloudBuildStatus.is_success(build_status):
-                                logging.info("Cloudbuild for %s is finished.", cfg.name)
-                            elif CloudBuildStatus.is_pending(build_status):
-                                logging.info("Job %s is waiting for cloud building.", cfg.name)
-                                time.sleep(cfg.status_interval_seconds)
-                                continue
-                            elif CloudBuildStatus.is_failed(build_status):
-                                logging.error(
-                                    "Cloud building failed. Stop starting the job %s.", cfg.name
-                                )
-                                return
-                            else:
-                                logging.error("Unknown build status %s", build_status)
-                                return
-                        else:
+                        if not build_status:
                             logging.error(
-                                "Cloud build does not exist yet.%s.",
+                                "CloudBuild does not exist yet.%s.",
                                 cfg.name,
                             )
                             time.sleep(cfg.status_interval_seconds)
                             continue
+                        elif CloudBuildStatus.is_pending(build_status):
+                            logging.info("Job %s is waiting for CloudBuild.", cfg.name)
+                            time.sleep(cfg.status_interval_seconds)
+                            continue
+                        elif CloudBuildStatus.is_success(build_status):
+                            logging.info("CloudBuild for %s is finished.", cfg.name)
+                        elif CloudBuildStatus.is_failed(build_status):
+                            logging.error("CloudBuild failed. Stop starting the job %s.", cfg.name)
+                            return
+                        else:
+                            logging.error("Unknown build status %s.", build_status)
+                            return
                     except Exception as e:  # pylint: disable=broad-except
-                        logging.warning(
-                            "Failed to get the build status, will retry. Exception: %s", e
-                        )
+                        logging.warning("Failed to get the CloudBuild status, will retry: %s", e)
                         time.sleep(cfg.status_interval_seconds)
                         continue
 

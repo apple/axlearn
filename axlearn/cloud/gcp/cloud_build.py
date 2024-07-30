@@ -1,18 +1,20 @@
 # Copyright © 2024 Apple Inc.
 
-"""Cloud build utilities"""
+"""CloudBuild utilities"""
 import enum
 from typing import Optional
 
 from absl import logging
 from google.cloud.devtools import cloudbuild_v1
+from google.cloud.devtools.cloudbuild_v1.types import Build
 
 
 class CloudBuildStatus(enum.Enum):
-    """Cloud Build Status.
+    """CloudBuild Status.
 
     See also:
     https://cloud.google.com/python/docs/reference/cloudbuild/latest/google.cloud.devtools.cloudbuild_v1.types.Build.Status
+
     Attributes:
         STATUS_UNKNOWN (0): Status of the build is unknown.
         QUEUED (1): Build or step is queued; work has not yet begun.
@@ -39,15 +41,15 @@ class CloudBuildStatus(enum.Enum):
     PENDING = 10
 
     @classmethod
-    def from_build_status(cls, build_status):
+    def from_build_status(cls, build_status) -> Build.Status:
         return cls(build_status)
 
     @classmethod
-    def is_success(cls, build_status):
+    def is_success(cls, build_status) -> bool:
         return build_status == cls.SUCCESS
 
     @classmethod
-    def is_failed(cls, build_status):
+    def is_failed(cls, build_status) -> bool:
         return build_status in {
             cls.FAILURE,
             cls.INTERNAL_ERROR,
@@ -58,7 +60,7 @@ class CloudBuildStatus(enum.Enum):
         }
 
     @classmethod
-    def is_pending(cls, build_status):
+    def is_pending(cls, build_status) -> bool:
         return build_status in {cls.PENDING, cls.QUEUED, cls.WORKING}
 
 
@@ -66,11 +68,11 @@ def get_cloud_build_status(project_id: str, image_name: str) -> Optional[CloudBu
     """Get the status of the latest build filter on the image_name.
 
     Returns:
-        Cloud build status for the latest build if exist.
+        CloudBuild status for the latest build if exist.
         None if no build found for the image name.
 
     Raises:
-        Error: If fails to get the latest build status of a given image in a GCP project.
+        Exception: If fails to get the latest build status of a given image in a GCP project.
     """
     try:
         client = cloudbuild_v1.CloudBuildClient()

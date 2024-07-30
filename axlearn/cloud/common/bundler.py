@@ -281,7 +281,7 @@ class BaseDockerBundler(Bundler):
         cache_from: Optional[Sequence[str]] = None
         # Skip the build + push step (e.g., using a pre-built image).
         skip_bundle: bool = False
-        # Build image asynchronously (for cloud build only)
+        # Build image asynchronously.
         is_async: bool = True
 
     def __init__(self, cfg: Config):
