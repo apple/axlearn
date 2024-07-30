@@ -281,7 +281,7 @@ class BaseDockerBundler(Bundler):
         cache_from: Optional[Sequence[str]] = None
         # Skip the build + push step (e.g., using a pre-built image).
         skip_bundle: bool = False
-        # Build image asynchorously (for cloud build only)
+        # Build image asynchronously (for cloud build only)
         is_async: bool = True
 
     def __init__(self, cfg: Config):
@@ -359,8 +359,8 @@ class BaseDockerBundler(Bundler):
         if running_from_source() and (status := get_git_status()):
             if cfg.allow_dirty:
                 logging.warning("Bundling with local changes:\n%s", status)
-            # else:
-            #     raise RuntimeError("Please commit your changes or gitignore them.")
+            else:
+                raise RuntimeError("Please commit your changes or gitignore them.")
 
         # If path is relative, assume it is relative to CWD.
         dockerfile = pathlib.Path(cfg.dockerfile).expanduser()
