@@ -153,6 +153,8 @@ class UtilsTest(TestWithTemporaryCWD):
             "--bundler_spec=cache_from=cache1,cache2",
         ]
         all_flags = [f"--bundler_type={bundler_klass.TYPE}"] + spec_flags
+        if bundler_klass.TYPE == "cloudbuild":
+            all_flags.append("--bundler_spec=is_async=True")
         actual = _docker_bundler_to_flags(cfg, fv=fv)
         self.assertSameElements(all_flags, actual)
 
