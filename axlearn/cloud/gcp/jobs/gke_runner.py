@@ -419,19 +419,19 @@ class GKERunnerJob(GCPJob):
                         image_name = bundler.id(cfg.name)
                         build_status = get_cloud_build_status(cfg.project, image_name)
                         if build_status:
-                            if CloudBuildStatus.is_success(status):
+                            if CloudBuildStatus.is_success(build_status):
                                 logging.info("Cloudbuild for %s is finished.", cfg.name)
-                            elif CloudBuildStatus.is_pending(status):
+                            elif CloudBuildStatus.is_pending(build_status):
                                 logging.info("Job %s is waiting for cloud building.", cfg.name)
                                 time.sleep(cfg.status_interval_seconds)
                                 continue
-                            elif CloudBuildStatus.is_failed(status):
+                            elif CloudBuildStatus.is_failed(build_status):
                                 logging.error(
                                     "Cloud building failed. Stop starting the job %s.", cfg.name
                                 )
                                 return
                             else:
-                                logging.error("Unknown build status %s", status)
+                                logging.error("Unknown build status %s", build_status)
                                 return
                         else:
                             logging.error(

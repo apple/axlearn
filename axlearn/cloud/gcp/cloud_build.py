@@ -40,7 +40,7 @@ class CloudBuildStatus(enum.Enum):
 
     @classmethod
     def from_build_status(cls, build_status):
-        return cls(build_status).value
+        return cls(build_status)
 
     @classmethod
     def is_success(cls, build_status):
