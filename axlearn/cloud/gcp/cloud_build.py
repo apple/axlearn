@@ -41,27 +41,24 @@ class CloudBuildStatus(enum.Enum):
     PENDING = 10
 
     @classmethod
-    def from_build_status(cls, build_status) -> Build.Status:
+    def from_build_status(cls, build_status: Build.Status) -> "CloudBuildStatus":
         return cls(build_status)
 
-    @classmethod
-    def is_success(cls, build_status) -> bool:
-        return build_status == cls.SUCCESS
+    def is_success(self) -> bool:
+        return self == CloudBuildStatus.SUCCESS
 
-    @classmethod
-    def is_failed(cls, build_status) -> bool:
-        return build_status in {
-            cls.FAILURE,
-            cls.INTERNAL_ERROR,
-            cls.TIMEOUT,
-            cls.CANCELLED,
-            cls.EXPIRED,
-            cls.STATUS_UNKNOWN,
+    def is_failed(self) -> bool:
+        return self in {
+            CloudBuildStatus.FAILURE,
+            CloudBuildStatus.INTERNAL_ERROR,
+            CloudBuildStatus.TIMEOUT,
+            CloudBuildStatus.CANCELLED,
+            CloudBuildStatus.EXPIRED,
+            CloudBuildStatus.STATUS_UNKNOWN,
         }
 
-    @classmethod
-    def is_pending(cls, build_status) -> bool:
-        return build_status in {cls.PENDING, cls.QUEUED, cls.WORKING}
+    def is_pending(self) -> bool:
+        return self in {CloudBuildStatus.PENDING, CloudBuildStatus.QUEUED, CloudBuildStatus.WORKING}
 
 
 def get_cloud_build_status(project_id: str, image_name: str) -> Optional[CloudBuildStatus]:

@@ -281,8 +281,6 @@ class BaseDockerBundler(Bundler):
         cache_from: Optional[Sequence[str]] = None
         # Skip the build + push step (e.g., using a pre-built image).
         skip_bundle: bool = False
-        # Build image asynchronously.
-        is_async: bool = True
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -402,7 +400,6 @@ class BaseDockerBundler(Bundler):
                 args=build_args,
                 context=str(temp_root),
                 labels=labels,
-                is_async=cfg.is_async,
             )
         return bundle_path
 
@@ -426,7 +423,6 @@ class BaseDockerBundler(Bundler):
         args: Dict[str, str],
         context: str,
         labels: Dict[str, str],
-        is_async: bool,
     ) -> str:
         """Builds and pushes the docker image.
 
@@ -436,7 +432,6 @@ class BaseDockerBundler(Bundler):
             args: Docker build args, e.g. as supplied via `--bundler_spec`.
             context: The full path to the temporary build context.
             labels: Docker labels.
-            is_async: Asynchronously build image.
 
         Returns:
             The full image tag of the built image. Will be returned from `bundle` as the bundle ID.
@@ -459,7 +454,6 @@ class DockerBundler(BaseDockerBundler):
         args: Dict[str, str],
         context: str,
         labels: Dict[str, str],
-        is_async: bool,
     ) -> str:
         cfg: DockerBundler.Config = self.config
         return docker_push(

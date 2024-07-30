@@ -39,7 +39,7 @@ from axlearn.cloud.common.utils import (
     parse_kv_flags,
 )
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
-from axlearn.cloud.gcp.cloud_build import CloudBuildStatus, get_cloud_build_status
+from axlearn.cloud.gcp.cloud_build import get_cloud_build_status
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
@@ -426,13 +426,13 @@ class GKERunnerJob(GCPJob):
                             )
                             time.sleep(cfg.status_interval_seconds)
                             continue
-                        elif CloudBuildStatus.is_pending(build_status):
+                        elif build_status.is_pending():
                             logging.info("Job %s is waiting for CloudBuild.", cfg.name)
                             time.sleep(cfg.status_interval_seconds)
                             continue
-                        elif CloudBuildStatus.is_success(build_status):
+                        elif build_status.is_success():
                             logging.info("CloudBuild for %s is finished.", cfg.name)
-                        elif CloudBuildStatus.is_failed(build_status):
+                        elif build_status.is_failed():
                             logging.error("CloudBuild failed. Stop starting the job %s.", cfg.name)
                             return
                         else:
