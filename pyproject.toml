@@ -124,6 +124,16 @@ gpu = [
 open_api = [
     "openai==1.35.1",
 ]
+# MMAU benchmark.
+mmau = [
+    "openai==1.35.14",
+    "anthropic==0.31.2",
+    "nbformat==5.10.4",
+    "plotly==5.22.0",
+    "nbconvert==7.16.4",
+    "google-cloud-aiplatform==1.50.0",
+    "transformers==4.42.4",
+]
 
 [tool.flit.module]
 # This defines the import name. https://flit.pypa.io/en/stable/pyproject_toml.html#module-section
