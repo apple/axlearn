@@ -137,6 +137,7 @@ class CloudBuildBundler(BaseDockerBundler):
         args: Dict[str, str],
         context: str,
         labels: Dict[str, str],
+        is_async: bool,
     ):
         cfg: CloudBuildBundler.Config = self.config
         logging.info("CloudBuild build args: %s", args)
@@ -189,11 +190,12 @@ options:
             "submit",
             "--project",
             gcp_settings("project"),
-            "--async",
             "--config",
             cloudbuild_yaml_file,
             context,
         ]
+        if is_async:
+            cmd.append("--async")
         logging.info("Running %s", cmd)
         print(subprocess.run(cmd, check=True))
         return image
