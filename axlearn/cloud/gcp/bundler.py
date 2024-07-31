@@ -124,7 +124,7 @@ class CloudBuildBundler(BaseDockerBundler):
         """Configures CloudBuildBundler."""
 
         # Build image asynchronously.
-        is_async: Optional[bool] = True
+        is_async: bool = True
 
     @classmethod
     def from_spec(
