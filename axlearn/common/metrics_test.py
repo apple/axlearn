@@ -50,6 +50,32 @@ class TestMetricAccumulator(test_utils.TestCase):
         expected = jax.tree_util.tree_leaves(expected)
         chex.assert_trees_all_close(result, expected)
 
+    def test_flatten_unflatten_metric_accumulator(self):
+        acc = metrics.MetricAccumulator.default_config().instantiate()
+        summaries = [
+            dict(
+                image=summary.ImageSummary(jnp.ones((3, 4, 5))),
+                loss=metrics.WeightedScalar(2, 5),
+            ),
+            dict(
+                image=summary.ImageSummary(10 * jnp.ones((3, 4, 5))),
+                loss=metrics.WeightedScalar(5, 10),
+            ),
+            dict(
+                image=summary.ImageSummary(7 * jnp.ones((3, 4, 5))),
+                loss=metrics.WeightedScalar(100, 0),
+            ),
+        ]
+        summaries_copy = jax.tree_util.tree_map(lambda x: x, summaries)
+        for s in summaries_copy:
+            acc.update(s)
+
+        flat, tree = jax.tree_util.tree_flatten(acc)
+        unflattened = jax.tree_util.tree_unflatten(tree, flat)
+        expected = jax.tree_util.tree_leaves(acc.summaries())
+        result = jax.tree_util.tree_leaves(unflattened.summaries())
+        chex.assert_trees_all_close(result, expected)
+
 
 if __name__ == "__main__":
     absltest.main()

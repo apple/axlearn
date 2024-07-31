@@ -19,10 +19,12 @@ from jax import numpy as jnp
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     InstantiableConfig,
     Required,
     config_class,
     config_for_function,
+    maybe_instantiate,
 )
 from axlearn.common.learner_base import LearnerModule
 from axlearn.common.module import Module, child_context, new_output_collection
@@ -48,6 +50,9 @@ from axlearn.common.utils import (
     register_per_param_settings,
     tree_paths,
 )
+
+# A `ForwardFnTransformation` transforms one forward function to another.
+ForwardFnTransformation = Callable[[ForwardFn], ForwardFn]
 
 
 class UpdateType(enum.Enum):
@@ -178,6 +183,12 @@ class Learner(BaseLearner):
         # Whether to add per variable gradient and norm summaries. Enable it will make
         # the training slower since the summary is computed for every step.
         enable_per_variable_summaries: bool = False
+        # Optional decorator for the ForwardFn. An example use would be to enable gradient
+        # accumulation by using `with_minibatch_steps` decorator defined below. E.g.
+        # learner.forward_fn_transformation = config.config_for_function(with_minibatch_steps).set(
+        #     steps=gradient_accumulation_steps,
+        #     metric_accumulator=MetricAccumulator.default_config())
+        forward_fn_transformation: Optional[ConfigOr[ForwardFnTransformation]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -191,6 +202,10 @@ class Learner(BaseLearner):
         self.optimizer = cast(UpdateTransformation, self._add_child("optimizer", optimizer))
         if cfg.ema.decay is not None:
             self.ema: PartitionedGradientTransformation = cfg.ema.instantiate()
+        if cfg.forward_fn_transformation is not None:
+            self._forward_fn_transformation = maybe_instantiate(cfg.forward_fn_transformation)
+        else:
+            self._forward_fn_transformation = lambda fn: fn
 
     def create_state_partition_specs(self, model_param_specs: Nested[ParameterSpec]) -> Any:
         optimizer_model_param_specs = self._get_optimizer_model_params(model_param_specs)
@@ -325,7 +340,7 @@ class Learner(BaseLearner):
     ) -> ForwardBackwardOutputs:
         should_compute_gradients = self.should_update_with_optimizers(opt_params)
         updates = _value_and_grad(
-            fn,
+            self._forward_fn_transformation(fn),
             opt_params=opt_params,
             inputs=inputs,
             should_compute_gradients=should_compute_gradients,

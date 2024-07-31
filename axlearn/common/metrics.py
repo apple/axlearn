@@ -2,9 +2,10 @@
 
 """Metrics."""
 import typing
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import jax
+import jax.numpy as jnp
 from absl import logging
 
 from axlearn.common.config import Configurable
@@ -29,10 +30,9 @@ class WeightedScalar(WeightedScalarValue, Summable):
 
     def __add__(self, other: "WeightedScalar") -> "WeightedScalar":
         weight = self.weight + other.weight
-        if weight > 0:
-            mean = (self.mean * self.weight + other.mean * other.weight) / weight
-        else:
-            mean = 0.0
+        mean = jnp.where(
+            weight > 0, (self.mean * self.weight + other.mean * other.weight) / weight, 0.0
+        )
         return WeightedScalar(mean, weight)
 
     def accumulate(self, other: Summary) -> Summary:
@@ -75,3 +75,30 @@ class MetricAccumulator(Configurable):
     def _tree_map(*args, **kwargs):
         is_leaf = lambda x: isinstance(x, Summary)
         return jax.tree_util.tree_map(*args, **kwargs, is_leaf=is_leaf)
+
+
+def _metric_accumulator_flatten(v: MetricAccumulator) -> Tuple[Tuple, Tuple]:
+    """Specifies a flattening recipe for `MetricAccumulator`."""
+    summaries = v.summaries()
+    sorted_items = sorted(summaries.items(), key=lambda x: x[0])
+    if not sorted_items:
+        return ((), ())
+    summaries_keys, summaries_values = zip(*sorted_items)
+    return (summaries_values, summaries_keys)
+
+
+def _metric_accumulator_unflatten(
+    summaries_keys: Tuple, summaries_values: Tuple
+) -> MetricAccumulator:
+    """Specifies an unflattening recipe for `MetricAccumulator`."""
+    accumulator = MetricAccumulator.default_config().instantiate()
+    summaries = dict(zip(summaries_keys, summaries_values))
+    accumulator.update(summaries)
+    return accumulator
+
+
+jax.tree_util.register_pytree_node(
+    MetricAccumulator,
+    _metric_accumulator_flatten,
+    _metric_accumulator_unflatten,
+)
