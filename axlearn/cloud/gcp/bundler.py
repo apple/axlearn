@@ -60,7 +60,7 @@ from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import canonicalize_to_list
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.utils import common_flags
-from axlearn.common.config import maybe_set_config
+from axlearn.common.config import config_class, maybe_set_config
 
 FLAGS = flags.FLAGS
 
@@ -118,6 +118,13 @@ class CloudBuildBundler(BaseDockerBundler):
     """A bundler that uses CloudBuild."""
 
     TYPE = "cloudbuild"
+
+    @config_class
+    class Config(BaseDockerBundler.Config):
+        """Configures CloudBuildBundler."""
+
+        # Build image asynchronously.
+        is_async: bool = True
 
     @classmethod
     def from_spec(
@@ -193,6 +200,8 @@ options:
             cloudbuild_yaml_file,
             context,
         ]
+        if cfg.is_async:
+            cmd.append("--async")
         logging.info("Running %s", cmd)
         print(subprocess.run(cmd, check=True))
         return image

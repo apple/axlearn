@@ -38,7 +38,8 @@ from axlearn.cloud.common.utils import (
     parse_action,
     parse_kv_flags,
 )
-from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
+from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
+from axlearn.cloud.gcp.cloud_build import get_cloud_build_status
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
@@ -412,6 +413,35 @@ class GKERunnerJob(GCPJob):
                 # If running from bastion VM, bundling should have happened on the user's machine.
                 if not running_from_vm():
                     self._inner.bundler.bundle(cfg.name)
+                bundler = self._inner.bundler
+                # TODO(liang-he): Consolidate CloudBuild wait method to the `cloud_build` module.
+                if bundler.TYPE == CloudBuildBundler.TYPE:
+                    try:
+                        image_name = bundler.id(cfg.name)
+                        build_status = get_cloud_build_status(cfg.project, image_name)
+                        if not build_status:
+                            logging.error(
+                                "CloudBuild does not exist yet.%s.",
+                                cfg.name,
+                            )
+                            time.sleep(cfg.status_interval_seconds)
+                            continue
+                        elif build_status.is_pending():
+                            logging.info("Job %s is waiting for CloudBuild.", cfg.name)
+                            time.sleep(cfg.status_interval_seconds)
+                            continue
+                        elif build_status.is_success():
+                            logging.info("CloudBuild for %s is finished.", cfg.name)
+                        elif build_status.is_failed():
+                            logging.error("CloudBuild failed. Stop starting the job %s.", cfg.name)
+                            return
+                        else:
+                            logging.error("Unknown build status %s.", build_status)
+                            return
+                    except Exception as e:  # pylint: disable=broad-except
+                        logging.warning("Failed to get the CloudBuild status, will retry: %s", e)
+                        time.sleep(cfg.status_interval_seconds)
+                        continue
 
                 # Provision node pools for the job to run.
                 if self._pre_provisioner is not None:
