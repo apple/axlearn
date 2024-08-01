@@ -610,13 +610,14 @@ def every_n_steps_and_last_policy(
 
 
 class Checkpointer(Module):
-    """A base class for checkpointer.
+    """A parent class for checkpointer.
 
-    Contains shared functionalities for a checkpointer. There are currently 2 implementations
+    Contains shared functionalities for a checkpointer. There are currently 2 child classes
     of this class:
         StateStorageCheckpointer: native AXLearn checkpointing utilities
         OrbaxCheckpointer: Orbax checkpointing
     """
+    self._checkpointer = None
 
     @config_class
     class Config(Module.Config):
@@ -627,25 +628,42 @@ class Checkpointer(Module):
         # If > 0, keeps at least one checkpoint every N steps.
         keep_every_n_steps: Optional[int] = None
         # Interval between garbage collection runs.
-        gc_loop_interval_seconds: float = 60
+        gc_loop_interval_seconds: Optional[float] = 60
         # A config that instantiates to a CheckpointPolicy.
-        save_policy: InstantiableConfig = config_for_function(every_n_steps_policy)
+        save_policy: Optional[InstantiableConfig] = config_for_function(every_n_steps_policy)
         # A config that instantiates to a StateStorage.
-        storage: StateStorage.Config = TensorStoreStateStorage.default_config()
+        storage: Optional[StateStorage.Config] = TensorStoreStateStorage.default_config()
         # A config that instantiates an optional SummaryWriter, and is used to log checkpoints.
         summary_writer: Optional[SummaryWriter.Config] = None
+        # A boolean to indicate whether to use Orbax for saving future checkpoints
+        use_orbax: Optional[bool] = False
 
-    def save():
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        if self.cfg.use_orbax:
+            self._checkpointer = OrbaxCheckpointer()
+        else:
+            self._checkpointer = StateStorageCheckpointer()
+
+
+    def save(
+        self, *, step: int, state: NestedTensor, evaler_summaries: Optional[Dict[str, Any]] = None
+    ):
         """Saves checkpoint."""
-        raise NotImplementedError
+        self._checkpointer.save()
 
-    def restore():
-        """Restore checkpoint."""
-        raise NotImplementedError
+    def restore(
+        self,
+        *,
+        step: Optional[int] = None,
+        state: Union[NestedTensor, NestedTensorSpec],
+    ) -> Tuple[Optional[int], NestedTensor]:
+        """Restores checkpoint."""
+        self._checkpointer.restore()
 
-    def stop():
+    def stop(self):
         """Gracefully stops checkpointing, including waiting for async writes to finish."""
-        raise NotImplementedError
+        self._checkpointer.stop()
 
 
 class OrbaxCheckpointer(Checkpointer):
