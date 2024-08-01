@@ -641,10 +641,8 @@ class Checkpointer(Module):
         super().__init__(cfg, parent=parent)
         if cfg.use_orbax:
             self._checkpointer = OrbaxCheckpointer(cfg)
-            logging.info("Created orbax checkpointer")
         else:
             self._checkpointer = StateStorageCheckpointer(cfg)
-            logging.info("Created StateStorage checkpointer")
 
     def __enter__(self):
         self._checkpointer.enter()
@@ -655,6 +653,7 @@ class Checkpointer(Module):
         exc: Optional[BaseException],
         traceback: Optional[TracebackType],
     ) -> Optional[bool]:
+        """Gracefully stops checkpointing, including waiting for async writes to finish."""
         self._checkpointer.exit(exc_type, exc, traceback)
 
     def save(
@@ -674,7 +673,7 @@ class Checkpointer(Module):
 
     def stop(self):
         """Gracefully stops checkpointing, including waiting for async writes to finish."""
-        self._checkpointer.stop()
+        self._checkpointer.exit()
 
 
 class OrbaxCheckpointer(Checkpointer):
@@ -752,8 +751,8 @@ class OrbaxCheckpointer(Checkpointer):
 class StateStorageCheckpointer(Checkpointer):
     """A checkpointer that supports various StateStorage implementations."""
 
-    def __init__(self, cfg: Checkpointer.Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Checkpointer.Config):
+        self._config = cfg
         self._storage: StateStorage = cfg.storage.instantiate()
         self._gc_stopping = None
         self._gc_thread = None
@@ -783,7 +782,9 @@ class StateStorageCheckpointer(Checkpointer):
         if self._gc_thread is None and jax.process_index() == 0:
             self._gc_stopping = threading.Event()
             self._gc_thread = threading.Thread(
+                # TODO (maggiejz): temporarily changed this line because self.path() doesn't work
                 name=f"{self.path()}.gc_loop",
+                # name="statestoragecheckpointer.gc_loop",
                 target=self._gc_loop,
                 kwargs=dict(context_stack=clone_context_stack()),
             )
@@ -800,7 +801,7 @@ class StateStorageCheckpointer(Checkpointer):
             logging.info("gc_thread finished")
 
     def _gc_loop(self, *, context_stack: List[InvocationContext]):
-        cfg = self.config
+        cfg = self._config
         install_context_stack(context_stack)
         while True:
             if self._gc_stopping.wait(timeout=cfg.gc_loop_interval_seconds):
@@ -809,7 +810,7 @@ class StateStorageCheckpointer(Checkpointer):
         logging.info("GC loop done")
 
     def ckpt_dir(self, step: int) -> str:
-        cfg = self.config
+        cfg = self._config
         return os.path.join(cfg.dir, f"step_{step:08d}")
 
     def save(
@@ -842,7 +843,7 @@ class StateStorageCheckpointer(Checkpointer):
         gc'ing the previous (committed) checkpoint. However, if the commit for the current
         checkpoint is pre-empted, this can cause both checkpoints to be corrupted.
         """
-        cfg: Checkpointer.Config = self.config
+        cfg: Checkpointer.Config = self._config
         remaining_dirs, gc_dirs = [], []
 
         # Gather all candidate checkpoint dirs, as well as all committed checkpoint dirs.
@@ -937,7 +938,7 @@ class StateStorageCheckpointer(Checkpointer):
             If no complete checkpoint is found, returns None as restored_step and the input `state`
             as restored_checkpoint_state.
         """
-        cfg = self.config
+        cfg = self._config
         if step is not None:
             # For a specified step, we try to load it.
             ckpt_dir = self.ckpt_dir(step)
