@@ -637,12 +637,15 @@ class Checkpointer(Module):
         # A boolean to indicate whether to use Orbax for saving future checkpoints
         use_orbax: Optional[bool] = False
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+    def __init__(
+        self, cfg: Config, *, parent: Optional[Module], create_checkpointer: Optional[bool] = True
+    ):
         super().__init__(cfg, parent=parent)
-        if cfg.use_orbax:
-            self._checkpointer = OrbaxCheckpointer(cfg)
-        else:
-            self._checkpointer = StateStorageCheckpointer(cfg)
+        if create_checkpointer:
+            if cfg.use_orbax:
+                self._checkpointer = OrbaxCheckpointer(cfg)
+            else:
+                self._checkpointer = StateStorageCheckpointer(cfg)
 
     def __enter__(self):
         self._checkpointer.enter()
@@ -680,6 +683,7 @@ class OrbaxCheckpointer(Checkpointer):
     """An implementation of Checkpointer using Orbax checkpoint."""
 
     def __init__(self, cfg: Checkpointer.Config):
+        super().__init__(cfg, parent = None, create_checkpointer = False)
         self._within_context = False
         self._checkpoint_manager = CheckpointManager(
             directory = cfg.dir,
@@ -752,7 +756,7 @@ class StateStorageCheckpointer(Checkpointer):
     """A checkpointer that supports various StateStorage implementations."""
 
     def __init__(self, cfg: Checkpointer.Config):
-        self._config = cfg
+        super().__init__(cfg, parent = None, create_checkpointer = False)
         self._storage: StateStorage = cfg.storage.instantiate()
         self._gc_stopping = None
         self._gc_thread = None
