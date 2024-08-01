@@ -608,7 +608,13 @@ def every_n_steps_and_last_policy(
 
 
 class Checkpointer(Module):
-    """A checkpointer that supports various StateStorage implementations."""
+    """A base class for checkpointer.
+
+    Contains shared functionalities for a checkpointer. There are currently 2 implementations
+    of this class:
+        StateStorageCheckpointer: native AXLearn checkpointing utilities
+        OrbaxCheckpointer: Orbax checkpointing
+    """
 
     @config_class
     class Config(Module.Config):
@@ -626,6 +632,22 @@ class Checkpointer(Module):
         storage: StateStorage.Config = TensorStoreStateStorage.default_config()
         # A config that instantiates an optional SummaryWriter, and is used to log checkpoints.
         summary_writer: Optional[SummaryWriter.Config] = None
+
+    def save():
+        """Saves checkpoint."""
+        raise NotImplementedError
+
+    def restore():
+        """Restore checkpoint."""
+        raise NotImplementedError
+
+    def stop():
+        """Gracefully stops checkpointing, including waiting for async writes to finish."""
+        raise NotImplementedError
+
+
+class StateStorageCheckpointer(Checkpointer):
+    """A checkpointer that supports various StateStorage implementations."""
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
