@@ -170,11 +170,6 @@ class LogMelFrontend(BaseFrontend):
         if cfg.output_transformation is not None:
             self._output_transformation = maybe_instantiate(cfg.output_transformation)
 
-        self._pre_emphasis = None
-        if cfg.pre_emphasis is not None:
-            self._frame_size += 1
-            self._pre_emphasis = cfg.pre_emphasis.instantiate()
-
         fft_size = cfg.fft_size(self._frame_size)
         if cfg.fft is not None:
             self._fft = cfg.fft.set(n=fft_size).instantiate()
@@ -189,6 +184,11 @@ class LogMelFrontend(BaseFrontend):
             mel_floor=cfg.mel_floor,
         )
         self._spectrogram = spectrogram.instantiate()
+
+        self._pre_emphasis = None
+        if cfg.pre_emphasis is not None:
+            self._frame_size += 1
+            self._pre_emphasis = cfg.pre_emphasis.instantiate()
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
         """Computes log-mel spectrogram features.
