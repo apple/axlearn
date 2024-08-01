@@ -198,45 +198,99 @@ class FrozenConfigError(RuntimeError):
     pass
 
 
+# A registry of custom config fields.
+_config_field_validators = {}
+
+
+def register_validator(*, match_fn: Callable[[Any], bool], validate_fn: Callable[[Any], None]):
+    """Registers a custom config field validator.
+
+    Args:
+        match_fn: A function that returns True if the value should be validated by `validate_fn`.
+        validate_fn: A function that raises `InvalidConfigValueError` if a value is not a valid
+            config field value.
+    """
+    _config_field_validators[match_fn] = validate_fn
+
+
 def validate_config_field_name(name: str) -> None:
+    """Raises `InvalidConfigNameError` if `name` is an invalid config name."""
     if not re.fullmatch("^[a-z][a-z0-9_]*$", name):
         raise InvalidConfigNameError(f'Invalid config field name "{name}"')
 
 
+# Validate basic types.
+register_validator(
+    match_fn=lambda v: (
+        v is None
+        or isinstance(
+            v,
+            (
+                RequiredFieldValue,
+                type,
+                types.FunctionType,
+                types.BuiltinFunctionType,
+                types.MethodType,
+                types.BuiltinMethodType,
+                int,
+                float,
+                str,
+                enum.Enum,
+                np.dtype,
+            ),
+        )
+    ),
+    validate_fn=lambda _: None,
+)
+# Validate container types.
+register_validator(
+    match_fn=lambda v: isinstance(v, (list, tuple)),
+    validate_fn=lambda v: (validate_config_field_value(x) for x in v),
+)
+register_validator(
+    match_fn=lambda v: isinstance(v, dict),
+    validate_fn=lambda v: (validate_config_field_value(x) for _, x in v.items()),
+)
+# Validate dataclass instances. Note that dataclass classes are handled by the basic type validator.
+register_validator(
+    match_fn=lambda v: not isinstance(v, type) and dataclasses.is_dataclass(v),
+    validate_fn=lambda v: validate_config_field_value(dataclasses.asdict(v)),
+)
+# Validate attrs instances. Note that attrs classes are handled by the basic type validator.
+register_validator(
+    match_fn=is_attrs,
+    validate_fn=lambda v: validate_config_field_value(attr.asdict(v, recurse=False)),
+)
+# Validate HF instances. Note that HF classes are handled by the basic type validator.
+register_validator(
+    match_fn=lambda v: not isinstance(v, type) and hasattr(v, "from_pretrained"),
+    validate_fn=lambda v: validate_config_field_value(v.to_dict()),
+)
+
+
 def validate_config_field_value(value: Any) -> None:
-    if isinstance(value, (list, tuple)):
-        for x in value:
-            validate_config_field_value(x)
-    elif isinstance(value, dict):
-        for _, v in value.items():
-            validate_config_field_value(v)
-    elif value is None or isinstance(
-        value,
-        (
-            RequiredFieldValue,
-            type,
-            types.FunctionType,
-            types.BuiltinFunctionType,
-            types.MethodType,
-            types.BuiltinMethodType,
-            int,
-            float,
-            str,
-            enum.Enum,
-            np.dtype,
-        ),
-    ):
-        pass
-    elif dataclasses.is_dataclass(value):
-        validate_config_field_value(dataclasses.asdict(value))
-    elif is_attrs(value):
-        validate_config_field_value(attr.asdict(value, recurse=False))
-    # Branch condition for Hugging Face transformers config object.
-    elif hasattr(value, "from_pretrained"):
-        validate_config_field_value(value.to_dict())
-    else:
+    """Validates a config field value.
+
+    Validation is handled by validators registered via `register_validator`. `match_fn`s will be
+    invoked in order of registration, and all matched `validate_fn`s will be invoked.
+
+    Args:
+        value: The value to be validated.
+
+    Raises:
+        InvalidConfigValueError: If no validator matched the given value.
+    """
+    matched = False
+    for match_fn, validate_fn in _config_field_validators.items():
+        if match_fn(value):
+            matched = True
+            validate_fn(value)
+
+    # No validators matched.
+    if not matched:
         raise InvalidConfigValueError(
-            f'Invalid config value type {type(value)} for value "{value}"'
+            f'Invalid config value type {type(value)} for value "{value}". '
+            f"Consider registering a custom validator with `{register_validator.__name__}`."
         )
 
 
