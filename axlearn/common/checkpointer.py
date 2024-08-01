@@ -617,7 +617,6 @@ class Checkpointer(Module):
         StateStorageCheckpointer: native AXLearn checkpointing utilities
         OrbaxCheckpointer: Orbax checkpointing
     """
-    self._checkpointer = None
 
     @config_class
     class Config(Module.Config):
@@ -641,25 +640,28 @@ class Checkpointer(Module):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         if self.cfg.use_orbax:
-            self._checkpointer = OrbaxCheckpointer()
+            self._checkpointer = OrbaxCheckpointer(cfg)
+            logging.info("Created orbax checkpointer")
         else:
-            self._checkpointer = StateStorageCheckpointer()
+            self._checkpointer = StateStorageCheckpointer(cfg, *, parent)
+            logging.info("Created StateStorage checkpointer")
 
 
     def save(
         self, *, step: int, state: NestedTensor, evaler_summaries: Optional[Dict[str, Any]] = None
     ):
         """Saves checkpoint."""
-        self._checkpointer.save()
+        self._checkpointer.save(*, step, state, evaler_summaries)
+        logging.info("[CHECKPOINTER] Saving checkpoint")
 
     def restore(
         self,
         *,
         step: Optional[int] = None,
         state: Union[NestedTensor, NestedTensorSpec],
-    ) -> Tuple[Optional[int], NestedTensor]:
+    ):
         """Restores checkpoint."""
-        self._checkpointer.restore()
+        self._checkpointer.restore(*, step, state)
 
     def stop(self):
         """Gracefully stops checkpointing, including waiting for async writes to finish."""
@@ -669,11 +671,60 @@ class Checkpointer(Module):
 class OrbaxCheckpointer(Checkpointer):
     """An implementation of Checkpointer using Orbax checkpoint."""
 
-    def save():
+    def __init__(self, cfg: Config):
+        self._checkpoint_manager = CheckpointManager(
+            directory = cfg.dir,
+            options=CheckpointManagerOptions(
+                create=True,
+                save_interval_steps=cfg.save_policy.n,
+                max_to_keep=cfg.keep_last_n,
+                enable_async_checkpointing=True
+            )
+        )
 
-    def restore():
+    def save(
+        self, *, step: int, state: NestedTensor, evaler_summaries: Optional[Dict[str, Any]] = None
+    ):
+        self._checkpoint_manager.save(
+            step, args=ocp.args.StandardSave(item=state)
+        )
+        logging.info("[ORBAX CHECKPOINTER] Saved checkpoints")
 
-    def stop():
+    def restore(
+        self,
+        *,
+        step: Optional[int] = None,
+        state: Union[NestedTensor, NestedTensorSpec],
+    ) -> Tuple[Optional[int], NestedTensor]:
+        try:
+            transformed_state = jax.tree.map(transform_tensorspec, state)
+            restored_state = self._checkpoint_manager.restore(
+                step=self._checkpoint_manager.latest_step(),
+                args=ocp.args.StandardRestore(transformed_state)
+            )
+            step = self._checkpoint_manager.latest_step()
+            logging.info("Restored Orbax checkpoints at step %s", step)
+        except Exception as e:
+            logging.info(f"Encountered the following error when restoring Orbax checkpoint at step {step}: {e}")
+            step = None
+            restored_state = state
+        return step, restored_state
+
+    def stop(self):
+        self._checkpoint_manager.wait_until_finished()
+
+    def transform_tensorspec(element):
+        # eg: {'weight': TensorSpec(shape=[32, 8], dtype=<class 'jax.numpy.float32'>, mesh_axes=PartitionSpec(None, 'model'))}
+        if isinstance(element, TensorSpec):
+            # change it into orbax compatible format
+            new_element = jax.ShapeDtypeStruct(
+                shape = element.shape,
+                dtype = element.dtype,
+                sharding = element.sharding
+            )
+        else:
+            print("Not TensorSpec")
+        return new_element
 
 class StateStorageCheckpointer(Checkpointer):
     """A checkpointer that supports various StateStorage implementations."""
