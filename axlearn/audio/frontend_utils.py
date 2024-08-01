@@ -126,6 +126,19 @@ def magnitude_spectrogram(ffts: Tensor, *, dtype: jnp.dtype) -> Tensor:
     return out.astype(dtype)
 
 
+def linear_to_log_spectrogram(x: Tensor) -> Tensor:
+    """Converts linear scale spectrograms to log-mel spectrograms.
+
+    Args:
+        x: Magnitude or power spectrogram of shape `[..., num_frames, num_spectrogram_bins]`.
+
+    Returns:
+        A log spectrogram of shape `[..., num_frames, num_filters]`.
+    """
+    # Linear to log spectrogram.
+    return jnp.log(jnp.maximum(x, jnp.finfo(x.dtype).tiny))
+
+
 def linear_to_log_mel_spectrogram(
     x: Tensor, *, weight_matrix: ArrayLike, mel_floor: float = 1.0
 ) -> Tensor:
@@ -143,7 +156,7 @@ def linear_to_log_mel_spectrogram(
     # Linear to mel spectrogram.
     x = jnp.maximum(mel_floor, x @ weight_matrix).astype(x.dtype)
     # Mel to log-mel spectrogram.
-    return jnp.log(jnp.maximum(x, jnp.finfo(x.dtype).tiny))
+    return linear_to_log_spectrogram(x)
 
 
 def linear_to_mel_weight_matrix(
