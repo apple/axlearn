@@ -27,6 +27,8 @@ import tensorflow as tf
 from absl import logging
 from jax.experimental import maps, multihost_utils
 from jax.experimental.array_serialization import serialization as array_serialization
+from orbax.checkpoint.checkpoint_manager import CheckpointManager, CheckpointManagerOptions
+import orbax.checkpoint as ocp
 
 from axlearn.common import utils
 from axlearn.common.array_serialization import BoundedAsyncCheckpointManager
@@ -645,6 +647,15 @@ class Checkpointer(Module):
         """Gracefully stops checkpointing, including waiting for async writes to finish."""
         raise NotImplementedError
 
+
+class OrbaxCheckpointer(Checkpointer):
+    """An implementation of Checkpointer using Orbax checkpoint."""
+
+    def save():
+
+    def restore():
+
+    def stop():
 
 class StateStorageCheckpointer(Checkpointer):
     """A checkpointer that supports various StateStorage implementations."""
