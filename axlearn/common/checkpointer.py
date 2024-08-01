@@ -639,20 +639,29 @@ class Checkpointer(Module):
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
-        if self.cfg.use_orbax:
+        if cfg.use_orbax:
             self._checkpointer = OrbaxCheckpointer(cfg)
             logging.info("Created orbax checkpointer")
         else:
-            self._checkpointer = StateStorageCheckpointer(cfg, *, parent)
+            self._checkpointer = StateStorageCheckpointer(cfg)
             logging.info("Created StateStorage checkpointer")
 
+    def __enter__(self):
+        self._checkpointer.enter()
+
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> Optional[bool]:
+        self._checkpointer.exit(exc_type, exc, traceback)
 
     def save(
         self, *, step: int, state: NestedTensor, evaler_summaries: Optional[Dict[str, Any]] = None
     ):
         """Saves checkpoint."""
-        self._checkpointer.save(*, step, state, evaler_summaries)
-        logging.info("[CHECKPOINTER] Saving checkpoint")
+        self._checkpointer.save(step=step, state=state, evaler_summaries=evaler_summaries)
 
     def restore(
         self,
@@ -661,7 +670,7 @@ class Checkpointer(Module):
         state: Union[NestedTensor, NestedTensorSpec],
     ):
         """Restores checkpoint."""
-        self._checkpointer.restore(*, step, state)
+        return self._checkpointer.restore(step=step, state=state)
 
     def stop(self):
         """Gracefully stops checkpointing, including waiting for async writes to finish."""
@@ -671,7 +680,8 @@ class Checkpointer(Module):
 class OrbaxCheckpointer(Checkpointer):
     """An implementation of Checkpointer using Orbax checkpoint."""
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Checkpointer.Config):
+        self._within_context = False
         self._checkpoint_manager = CheckpointManager(
             directory = cfg.dir,
             options=CheckpointManagerOptions(
@@ -682,13 +692,26 @@ class OrbaxCheckpointer(Checkpointer):
             )
         )
 
+    def enter(self):
+        if self._within_context:
+            raise ValueError("Already in a context.")
+        self._within_context = True
+
+    def exit(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> Optional[bool]:
+        self.stop()
+        self._within_context = False
+
     def save(
         self, *, step: int, state: NestedTensor, evaler_summaries: Optional[Dict[str, Any]] = None
     ):
         self._checkpoint_manager.save(
             step, args=ocp.args.StandardSave(item=state)
         )
-        logging.info("[ORBAX CHECKPOINTER] Saved checkpoints")
 
     def restore(
         self,
@@ -697,7 +720,7 @@ class OrbaxCheckpointer(Checkpointer):
         state: Union[NestedTensor, NestedTensorSpec],
     ) -> Tuple[Optional[int], NestedTensor]:
         try:
-            transformed_state = jax.tree.map(transform_tensorspec, state)
+            transformed_state = jax.tree.map(self.transform_tensorspec, state)
             restored_state = self._checkpoint_manager.restore(
                 step=self._checkpoint_manager.latest_step(),
                 args=ocp.args.StandardRestore(transformed_state)
@@ -713,7 +736,7 @@ class OrbaxCheckpointer(Checkpointer):
     def stop(self):
         self._checkpoint_manager.wait_until_finished()
 
-    def transform_tensorspec(element):
+    def transform_tensorspec(self, element):
         # eg: {'weight': TensorSpec(shape=[32, 8], dtype=<class 'jax.numpy.float32'>, mesh_axes=PartitionSpec(None, 'model'))}
         if isinstance(element, TensorSpec):
             # change it into orbax compatible format
@@ -729,7 +752,7 @@ class OrbaxCheckpointer(Checkpointer):
 class StateStorageCheckpointer(Checkpointer):
     """A checkpointer that supports various StateStorage implementations."""
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+    def __init__(self, cfg: Checkpointer.Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         self._storage: StateStorage = cfg.storage.instantiate()
         self._gc_stopping = None
@@ -740,13 +763,13 @@ class StateStorageCheckpointer(Checkpointer):
             cfg.summary_writer.dir = cfg.summary_writer.dir or cfg.dir
             self._add_child("summary_writer", cfg.summary_writer)
 
-    def __enter__(self):
+    def enter(self):
         if self._within_context:
             raise ValueError("Already in a context.")
         self._within_context = True
         self.start_gc_thread()
 
-    def __exit__(
+    def exit(
         self,
         exc_type: Optional[Type[BaseException]],
         exc: Optional[BaseException],
