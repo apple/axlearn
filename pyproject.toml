@@ -60,6 +60,7 @@ dev = [
     "einops",
     "evaluate",
     "isort",  # formatting
+    "orbax-checkpoint",
     "pre-commit",  # local pre commit hooks
     "pycocotools",  # COCO evaluation tools
     "pylint==2.17.7",
