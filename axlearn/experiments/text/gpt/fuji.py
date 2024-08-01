@@ -136,7 +136,7 @@ def get_trainer_kwargs(
             eval_batch_size=32,
             max_step=3000,
             eval_every_n_steps=1500,
-            save_every_n_steps=500,
+            save_every_n_steps=100,
             mesh_shape=mesh_shape_from_axes(data=-1),
         )
     elif model_size == "7B":

@@ -580,6 +580,7 @@ def get_trainer_config_fn(
     keep_every_n_steps: int = 50_000,
     save_every_n_steps: Optional[int] = None,
     init_state_builder: Optional[state_builder.Builder.Config] = None,
+    use_orbax: Optional[bool] = True,
 ) -> TrainerConfigFn:
     """Builds a TrainerConfigFn according to the model and input specs.
 
@@ -637,6 +638,7 @@ def get_trainer_config_fn(
         )
         cfg.checkpointer.keep_every_n_steps = min(max_step, keep_every_n_steps)
         cfg.checkpointer.keep_last_n = 3
+        cfg.checkpointer.use_orbax = use_orbax
         cfg.summary_writer.write_every_n_steps = min(eval_every_n_steps, 100)
         if len(mesh_axis_names) != len(mesh_shape):
             raise ValueError(
