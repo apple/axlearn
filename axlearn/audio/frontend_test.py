@@ -74,9 +74,10 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             dict(frame_size_ms=32, hop_size_ms=10),
             dict(frame_size_ms=31.9375, hop_size_ms=10),
         ],
+        pre_emphasis=[True, False],
     )
     @pytest.mark.fp64
-    def test_against_ref(self, frame_size_ms, hop_size_ms):
+    def test_against_ref(self, frame_size_ms, hop_size_ms, pre_emphasis):
         sample_rate, batch_size, max_seconds = 16_000, 4, 13
         num_filters = 80
 
@@ -100,6 +101,7 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             lower_edge_hertz=125.0,
             upper_edge_hertz=7600.0,
             mel_floor=1.0,
+            pre_emphasis=pre_emphasis,
         )
 
         # Compute test outputs.
@@ -110,6 +112,8 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             hop_size_ms=hop_size_ms,
             mel_floor=1.0,
         )
+        if not pre_emphasis:
+            cfg.pre_emphasis = None
         layer: LogMelFrontend = cfg.set(name="test").instantiate(parent=None)
         test_outputs = self._jit_forward(layer, inputs, paddings)
 
@@ -340,6 +344,7 @@ def _ref_frontend(
     lower_edge_hertz: float,
     upper_edge_hertz: float,
     mel_floor: float,
+    pre_emphasis: bool,
 ):
     """Lingvo ASR frontend.
 
@@ -348,13 +353,16 @@ def _ref_frontend(
     """
     frame_size = int(round(_ms_to_samples(frame_size_ms, sample_rate=sample_rate)))
     frame_step = int(round(_ms_to_samples(hop_size_ms, sample_rate=sample_rate)))
-
+    fft_size = int(max(512.0, math.pow(2, math.ceil(math.log(frame_size, 2)))))
     inputs, output_paddings = _ref_framer(
-        inputs=inputs, paddings=paddings, frame_size=frame_size + 1, frame_step=frame_step
+        inputs=inputs,
+        paddings=paddings,
+        frame_size=frame_size + int(pre_emphasis),
+        frame_step=frame_step,
     )
-    inputs = _ref_pre_emphasis(inputs=inputs, coeff=coeff)
+    if pre_emphasis:
+        inputs = _ref_pre_emphasis(inputs=inputs, coeff=coeff)
     inputs = tf.signal.hann_window(frame_size, dtype=inputs.dtype) * inputs
-    fft_size = int(max(512.0, math.pow(2, math.ceil(math.log(frame_size + 1, 2)))))
     outputs = _ref_log_mel_spectrogram(
         inputs=inputs,
         fft_size=fft_size,
