@@ -37,6 +37,7 @@ to create the child context explicitly.
 import contextlib
 import copy
 import dataclasses
+import functools
 import hashlib
 import inspect
 import os.path
@@ -50,11 +51,18 @@ import numpy as np
 from absl import logging
 from typing_extensions import Protocol
 
-from axlearn.common import traceback_util
+from axlearn.common import struct, traceback_util
 from axlearn.common.config import REQUIRED, Configurable, Required, RequiredFieldValue, config_class
 from axlearn.common.summary import Summary
 from axlearn.common.traceback_util import annotate_stack, no_stack_summary
-from axlearn.common.utils import Nested, NestedTensor, Tensor, partial_with_fn_metadata, prune_tree
+from axlearn.common.utils import (
+    Nested,
+    NestedTensor,
+    Tensor,
+    partial_with_fn_metadata,
+    prune_tree,
+    raise_for_cycles,
+)
 
 
 def _generate_seed_from_name(name: str) -> np.int64:
@@ -178,7 +186,7 @@ class Summable(Protocol):
 
 
 # TODO(markblee): Link to docs on invocation contexts.
-@dataclass
+@functools.partial(struct.dataclass, frozen=False)
 class InvocationContext:  # pylint: disable=too-many-instance-attributes
     """The invocation context for `Module.__call__()`.
 
@@ -193,13 +201,13 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
         output_collection: See `OutputCollection`.
     """
 
-    name: str
-    parent: Optional["InvocationContext"]
-    module: Optional["Module"]
-    state: NestedTensor
-    is_training: bool
-    prng_key: Optional[Tensor]
-    output_collection: OutputCollection
+    name: str = struct.field(pytree_node=False)
+    parent: Optional["InvocationContext"] = struct.field(pytree_node=True)
+    module: Optional["Module"] = struct.field(pytree_node=False)
+    state: NestedTensor = struct.field(pytree_node=True)
+    is_training: bool = struct.field(pytree_node=False)
+    prng_key: Optional[Tensor] = struct.field(pytree_node=True)
+    output_collection: OutputCollection = struct.field(pytree_node=True)
 
     def path(self):
         if self.parent is None:
@@ -334,6 +342,24 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
     def get_module_outputs(self):
         return self.output_collection.module_outputs
 
+    def functional(self, method_fn: Callable) -> "_Functional":
+        """Transforms `method_fn` (with this context) into a pure functional Callable.
+
+        The returned Callable will have the same behavior as `method_fn`, except that it runs
+        inside this context instead of the current context and returns
+        an OutputCollection in addition to the method output instead of mutating the context it
+        runs it.
+
+        This context and the arguments to `method_fn` are not modified by the call.
+
+        Args:
+            method_fn: The function to call.
+
+        Returns:
+            The callable described above.
+        """
+        return _Functional(method_fn=method_fn, context=self, require_parent=False)
+
 
 @dataclass
 class ContextStack(threading.local):
@@ -389,10 +415,10 @@ def current_context() -> Optional[InvocationContext]:
 
 
 @contextlib.contextmanager
-def set_current_context(context: InvocationContext):
+def set_current_context(context: InvocationContext, *, require_parent: bool = True):
     if _global_context_stack.stack:
         cur_context = _global_context_stack.stack[-1]
-        if context.parent is not cur_context:
+        if context.parent is not cur_context and require_parent:
             raise ValueError(
                 f"context ({context.path()})'s parent "
                 f"must match the current context ({cur_context.path()}). "
@@ -800,6 +826,53 @@ class Module(Configurable):
         return nullary
 
 
+@functools.partial(struct.dataclass, frozen=False)
+class _Functional:
+    """A pure functional call to `method_fn`."""
+
+    # The function to call.
+    method_fn: Callable = struct.field(pytree_node=False)
+    # The context to call method_fn in.
+    # This will be copied to prevent method_fn from mutating the original.
+    context: InvocationContext = struct.field(pytree_node=True)
+    # Whether to require that context.parent is current_context().
+    require_parent: bool = struct.field(pytree_node=False)
+
+    def __call__(self, *args, **kwargs) -> Tuple[Any, OutputCollection]:
+        """Invokes method_fn in a pure functional fashion.
+
+        The invocation will not depend on external inputs or have any side effects. The results only
+        depend on the given inputs. All outputs are reflected in the return value.
+
+        Args:
+            *args: Positional arguments to method_fn.
+            **kwargs: Keyword arguments to method_fn.
+
+        Returns:
+            (method_outputs, output_collection), where
+            - method_outputs are the return value of the method.
+            - output_collection is an OutputCollection containing summaries and state updates.
+
+        Raises:
+            ValueError: If there are circular references in args, kwargs, or context.
+        """
+        call = getattr(self.method_fn, "__qualname__", None) or getattr(self.method_fn, "__name__")
+        logging.vlog(1, "functional: %s.%s %s(*%s, **%s)", call, self.method_fn, args, kwargs)
+
+        # Copy to prevent method_fn from mutating the original.
+        # Some badly behaved tests call F() with an InvocationContext.state that contains
+        # circular references.
+        # This results in a cryptic error that doesn't make the root cause obvious.
+        # So we raise a clearer error explicitly.
+        raise_for_cycles(dict(context=self.context, args=args, kwargs=kwargs))
+        context, args, kwargs = jax.tree_util.tree_map(lambda x: x, (self.context, args, kwargs))
+
+        with set_current_context(context, require_parent=self.require_parent):
+            # pylint: disable-next=not-an-iterable,not-a-mapping,not-callable
+            method_outputs = self.method_fn(*args, **kwargs)
+        return method_outputs, context.output_collection
+
+
 def functional(
     module: Module,
     prng_key: Optional[Tensor],
@@ -832,6 +905,9 @@ def functional(
         (method_outputs, output_collection), where
         - method_outputs are the return value of the method.
         - output_collection is an OutputCollection containing summaries and state updates.
+
+    Raises:
+        ValueError: If there are circular references in args, kwargs, or context.
     """
     context = InvocationContext(
         name="root",
@@ -843,19 +919,20 @@ def functional(
         prng_key=prng_key,
     )
 
+    args = []
+    kwargs = {}
+    if isinstance(inputs, dict):
+        kwargs = inputs
+    else:
+        args = inputs
     method_fn = getattr(module, method)
-    logging.vlog(1, "functional: %s.%s %s(%s)", module, method, method_fn, inputs)
-    with set_current_context(context):
-        if isinstance(inputs, dict):
-            input_args, input_kwargs = [], inputs
-        else:
-            input_args, input_kwargs = inputs, {}
-        method_outputs = method_fn(*input_args, **input_kwargs)
+
+    fn = _Functional(context=context, method_fn=method_fn, require_parent=True)
+    method_outputs, output_collection = fn(*args, **kwargs)
 
     for output_collection_type in drop_output_collections:
-        getattr(context.output_collection, output_collection_type).clear()
-
-    return method_outputs, context.output_collection
+        getattr(output_collection, output_collection_type).clear()
+    return method_outputs, output_collection
 
 
 def scan_in_context(

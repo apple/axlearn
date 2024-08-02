@@ -39,6 +39,7 @@ import jax
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
+from jax._src.tree_util import KeyEntry, KeyPath
 from jax.experimental import maps, mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
 from jax.tree_util import register_pytree_node_class
@@ -1357,3 +1358,85 @@ def thread_stack_traces() -> Sequence[Sequence[str]]:
             lines.append(f">>> {line.rstrip()}")
         grouped_lines.append(lines)
     return grouped_lines
+
+
+def pytree_children(node: Any) -> Sequence[Tuple[KeyEntry, Any]]:
+    """Generate the (key, value) pairs for the immediate children of a pytree `node`.
+
+    The returned children match those returned by
+    `jax.tree_util.default_registry.flatten_one_level()`.
+
+    Reference: jax._src.tree_util.generate_key_paths()
+
+    Example:
+        ```
+        assert pytree_children(dict(a=[1,2])) == [(DictKey('a'), [1,2])]
+        ```
+    """
+    # pylint: disable-next=protected-access
+    registry_with_keypaths = jax._src.tree_util._registry_with_keypaths
+
+    key_handler = registry_with_keypaths.get(type(node))
+    if key_handler:
+        key_children, _ = key_handler.flatten_with_keys(node)
+        return key_children
+
+    flat = jax.tree_util.default_registry.flatten_one_level(node)
+    if flat is None:
+        return []
+
+    if isinstance(node, tuple) and hasattr(node, "_fields") and flat[1] == type(node):
+        # Handle namedtuple as a special case, based on heuristic.
+        return [(jax.tree_util.GetAttrKey(s), getattr(node, s)) for s in node._fields]
+    return [(jax.tree_util.FlattenedIndexKey(i), c) for i, c in enumerate(flat[0])]
+
+
+def find_cycles(tree: Nested) -> dict[str, KeyPath]:
+    """Find a cycle in pytree `tree` if one exists.
+
+    This function finds a descendant which has reference equality with one of its own
+    ancestors, if one exists.
+
+    Args:
+        tree: The tree to find cycles in.
+
+    Returns:
+        If no cycle is found, an empty dict.
+        If a cycle is found a dict with keys:
+        * descendant: The KeyPath to the descendant.
+        * ancestor: The KeyPath to the ancestor.
+    """
+
+    def _find_cycles(tree: Nested, *, key_path: KeyPath, seen: list[int]) -> dict[str, KeyPath]:
+        # DFS and check if path to root contains repeats.
+        # This is quadratic time in the depth of the tree but could be made linear
+        # time with a small amount of additional implementation complexity.
+        uid = id(tree)
+        if uid in seen:
+            result = dict(descendant=key_path[:], ancestor=key_path[: seen.index(uid)])
+            return result
+        seen.append(uid)
+        items = pytree_children(tree)
+        for key, child in items:
+            key_path.append(key)
+            result = _find_cycles(child, key_path=key_path, seen=seen)
+            key_path.pop()
+            if result:
+                return result
+        seen.pop()
+        return {}
+
+    return _find_cycles(tree, key_path=[], seen=[])
+
+
+def raise_for_cycles(tree: Any):
+    """Raise an informative error message if `tree` contains cycles."""
+
+    cycles = find_cycles(tree)
+    if cycles:
+        raise ValueError(
+            "Circular reference in args, kwargs, or context.\n"
+            "Descendant refers to ancestor.\n"
+            f"Descendant KeyPath: {cycles['descendant']}.\n"
+            f"Ancestor KeyPath: {cycles['ancestor']}."
+        )
