@@ -804,7 +804,7 @@ class StateStorageCheckpointer(Checkpointer):
             logging.info("gc_thread finished")
 
     def _gc_loop(self, *, context_stack: List[InvocationContext]):
-        cfg = self._config
+        cfg = self.config
         install_context_stack(context_stack)
         while True:
             if self._gc_stopping.wait(timeout=cfg.gc_loop_interval_seconds):
@@ -813,7 +813,7 @@ class StateStorageCheckpointer(Checkpointer):
         logging.info("GC loop done")
 
     def ckpt_dir(self, step: int) -> str:
-        cfg = self._config
+        cfg = self.config
         return os.path.join(cfg.dir, f"step_{step:08d}")
 
     def save(
@@ -846,7 +846,7 @@ class StateStorageCheckpointer(Checkpointer):
         gc'ing the previous (committed) checkpoint. However, if the commit for the current
         checkpoint is pre-empted, this can cause both checkpoints to be corrupted.
         """
-        cfg: Checkpointer.Config = self._config
+        cfg: Checkpointer.Config = self.config
         remaining_dirs, gc_dirs = [], []
 
         # Gather all candidate checkpoint dirs, as well as all committed checkpoint dirs.
@@ -941,7 +941,7 @@ class StateStorageCheckpointer(Checkpointer):
             If no complete checkpoint is found, returns None as restored_step and the input `state`
             as restored_checkpoint_state.
         """
-        cfg = self._config
+        cfg = self.config
         if step is not None:
             # For a specified step, we try to load it.
             ckpt_dir = self.ckpt_dir(step)
