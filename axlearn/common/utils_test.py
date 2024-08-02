@@ -57,6 +57,7 @@ from axlearn.common.utils import (
     create_device_mesh,
     dispatch_input_batch,
     expand_vdicts,
+    find_cycles,
     flatten_items,
     get_data_dir,
     get_recursively,
@@ -64,6 +65,7 @@ from axlearn.common.utils import (
     input_partition_spec,
     match_regex_rules,
     prune_tree,
+    pytree_children,
     runtime_checks,
     set_data_dir,
     set_recursively,
@@ -250,6 +252,68 @@ class TreeUtilsTest(TestCase):
                 }
             ),
         )
+
+    def test_pytree_children(self):
+        # DictKey
+        original_tree = dict(a=3, b=2, c=dict(d=1))
+        tree = original_tree
+        self.assertSequenceEqual(
+            pytree_children(tree), [(jax.tree_util.DictKey(k), v) for k, v in original_tree.items()]
+        )
+
+        # SequenceKey
+        tree = tuple(tree.values())
+        self.assertSequenceEqual(
+            pytree_children(tree),
+            [(jax.tree_util.SequenceKey(k), v) for k, v in enumerate(original_tree.values())],
+        )
+
+        # GetAttrKey with NamedTuple
+        class TestNamedTuple(NamedTuple):
+            a: int
+            b: int
+            c: dict
+
+        tree = TestNamedTuple(**original_tree)
+        self.assertSequenceEqual(
+            pytree_children(tree),
+            [(jax.tree_util.GetAttrKey(k), v) for k, v in original_tree.items()],
+        )
+
+        # FlattenedIndexKey
+        @dataclasses.dataclass
+        class TestUnstructured:
+            a: int
+            b: int
+            c: dict
+
+        jax.tree_util.register_pytree_node(
+            TestUnstructured,
+            flatten_func=lambda x: ((x.a, x.b, x.c), None),
+            unflatten_func=lambda x, _: TestUnstructured(*x),
+        )
+        tree = TestUnstructured(**original_tree)
+        self.assertSequenceEqual(
+            pytree_children(tree),
+            [(jax.tree_util.FlattenedIndexKey(k), v) for k, v in enumerate(original_tree.values())],
+        )
+
+        # No children
+        self.assertSequenceEqual(pytree_children([]), [])
+
+        # No children
+        self.assertSequenceEqual(pytree_children(3), [])
+
+    def test_find_cycles(self):
+        x = {}
+        y = dict(a=x, b=x, c=x)
+        self.assertFalse(find_cycles(y))
+
+        y = dict(a=dict(b={}), c=dict(d={}))
+        y["c"]["d"]["e"] = y["c"]
+        ancestor = [jax.tree_util.DictKey("c")]
+        descendant = ancestor + [jax.tree_util.DictKey("d"), jax.tree_util.DictKey("e")]
+        self.assertEqual(find_cycles(y), dict(ancestor=ancestor, descendant=descendant))
 
     def assertNumpyArrayEqual(self, a, b):
         self.assertIsInstance(a, np.ndarray)

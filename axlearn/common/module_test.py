@@ -2,6 +2,7 @@
 
 """Tests for module.py."""
 # pylint: disable=protected-access
+# type: ignore[attribute-error]
 import contextlib
 import threading
 from typing import List, Optional, Union
@@ -14,6 +15,7 @@ from jax import numpy as jnp
 
 from axlearn.common import summary, test_utils
 from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.layers import Linear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import (
     InvocationContext,
@@ -165,6 +167,24 @@ class InvocationContextTest(test_utils.TestCase):
             with set_current_context(context2):
                 pass
 
+    def test_nested_context(self):
+        """Test calling `set_current_context(..., require_parent=False)."""
+        module1 = new_test_module("test1")
+        module2 = new_test_module("test2")
+        context1 = InvocationContext(
+            name="context1",
+            parent=None,  # root context
+            module=module1,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state={"x": 1},
+            output_collection=new_output_collection(),
+        )
+        context2 = context1.add_child("context2", module=module2, state={"x": 2})
+        context2.parent = None
+        with set_current_context(context2, require_parent=False) as ctx:
+            self.assertEqual(ctx.parent, None)
+
     def test_context_stack_mutlithread(self):
         module1 = new_test_module("root")
         module1._add_child("child1", TestModule.default_config())
@@ -262,6 +282,41 @@ class InvocationContextTest(test_utils.TestCase):
             if should_raise:
                 stack.enter_context(self.assertRaises(ValueError))
             ctx.add_summary("summary", value)
+
+    def test_functional(self):
+        """Tests the `Functional` class and `InvocationContext.functional()`."""
+        with test_utils.bind_layer(Linear.default_config().set(input_dim=5, output_dim=5)) as layer:
+
+            def fn(x: Tensor, y: Tensor) -> Tensor:
+                current_context().add_state_update("my_state", y)
+                return layer(x)
+
+            args = [jnp.ones(5)]
+            kwargs = dict(y=jnp.zeros(3))
+            new_fn = current_context().functional(fn)
+            old_ctx = current_context()
+            result, output_collection = new_fn(*args, **kwargs)
+            self.assertIs(current_context(), old_ctx)
+            self.assertNestedEqual(current_context().output_collection, new_output_collection())
+            # The below line would cause an output conflict error if we had called fn() instead of
+            # new_fn() on the line above. But it doesn't since new_fn() restores the context to its
+            # original state after the call.
+            result2 = fn(*args, **kwargs)
+            self.assertNestedEqual(result, result2)
+            self.assertNestedEqual(output_collection, current_context().output_collection)
+
+    def test_functional_with_method_call(self):
+        """Demonstrates usage of `InvocationContext.functional()` with a module method instead of an
+        anonymous function.
+        """
+        with test_utils.bind_layer(Linear.default_config().set(input_dim=5, output_dim=5)) as layer:
+            args = [jnp.ones(5)]
+            new_fn = current_context().functional(layer.forward)
+            old_ctx = current_context()
+            result, _ = new_fn(*args)
+            self.assertIs(current_context(), old_ctx)
+            result2 = layer.forward(*args)
+            self.assertNestedEqual(result, result2)
 
 
 class NestedModule(Module):
