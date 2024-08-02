@@ -610,7 +610,7 @@ def every_n_steps_and_last_policy(
 
 
 class Checkpointer(Module):
-    """A parent class for checkpointer.
+    """A base class for checkpointer.
 
     Contains shared functionalities for a checkpointer. There are currently 2 child classes
     of this class:
@@ -734,6 +734,7 @@ class OrbaxCheckpointer(Checkpointer):
             logging.info(f"Encountered the following error when restoring Orbax checkpoint at step {step}: {e}")
             step = None
             restored_state = state
+        # TODO (maggiejz): also try to restore from StateStorageCheckpoint format
         return step, restored_state
 
     def stop(self):
@@ -786,9 +787,7 @@ class StateStorageCheckpointer(Checkpointer):
         if self._gc_thread is None and jax.process_index() == 0:
             self._gc_stopping = threading.Event()
             self._gc_thread = threading.Thread(
-                # TODO (maggiejz): temporarily changed this line because self.path() doesn't work
                 name=f"{self.path()}.gc_loop",
-                # name="statestoragecheckpointer.gc_loop",
                 target=self._gc_loop,
                 kwargs=dict(context_stack=clone_context_stack()),
             )
