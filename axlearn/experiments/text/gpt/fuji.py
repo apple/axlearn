@@ -81,7 +81,7 @@ TOTAL_TOKENS = {
     Version.V1: {
         "test": 1 * (1024**4),  # 1T tokens
         "7B": 1 * (1024**4),  # 1T tokens
-        "70B": 1.4 * (1024**4),  # 1.4T tokens
+        "70B": int(1.4 * (1024**4)),  # 1.4T tokens
     },
     Version.V2: {
         "test": 2 * (1024**4),  # 2T tokens
