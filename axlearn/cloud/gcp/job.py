@@ -371,6 +371,7 @@ class TPUGKEJob(GKEJob):
 
         accelerator: AcceleratorConfig = AcceleratorConfig()
         reservation: Optional[str] = None
+        enable_ondemand: Optional[bool] = None
         enable_tpu_ici_resiliency: Optional[bool] = None
         location_hint: Optional[str] = None
 
@@ -385,6 +386,13 @@ class TPUGKEJob(GKEJob):
             None,
             "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
             "not all TPU types support this flag.",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "enable_ondemand",
+            None,
+            "Allow the job to run using on-demand quota when no reservation is provided. "
+            "Without this flag a job can only land on spot quota.",
             **common_kwargs,
         )
 
@@ -508,8 +516,9 @@ class TPUGKEJob(GKEJob):
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         else:
-            logging.info("Found tier=%s in env. Using spot quota", tier)
-            selector.update({"cloud.google.com/gke-spot": "true"})
+            if not cfg.enable_ondemand:
+                logging.info("Found tier=%s in env. Using spot quota", tier)
+                selector.update({"cloud.google.com/gke-spot": "true"})
             tolerations.append(
                 {
                     "key": "cloud.google.com/gke-spot",
