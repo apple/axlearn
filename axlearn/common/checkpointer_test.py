@@ -672,6 +672,9 @@ class CheckpointerTest(test_utils.TestCase):
             def __repr__(self):
                 return f"VDict({super().__repr__()})"
 
+            def tree_flatten_with_keys(self):
+                raise NotImplementedError
+
             def tree_flatten(self):
                 # Convert dict_values and_keys to lists to avoid holding reference to the VDict.
                 return (list(self.values()), list(self.keys()))
@@ -830,7 +833,7 @@ SWITCHABLE_VDICT_IMPL: Optional[Type[VDict]] = None
 # Subclass VDict so that VDict-specific code works the same with this class.
 # The pytree flattening logic is defined explicitly for this subclass
 # and is not inherited.
-@jax.tree_util.register_pytree_node_class
+@jax.tree_util.register_pytree_with_keys_class
 class SwitchableVDict(VDict):
     """A VDict that can switch its implementation between different implementations.
 
@@ -840,8 +843,16 @@ class SwitchableVDict(VDict):
     def __repr__(self):
         return SWITCHABLE_VDICT_IMPL.__repr__(self)
 
-    def tree_flatten(self):
-        return SWITCHABLE_VDICT_IMPL.tree_flatten(self)
+    def tree_flatten_with_keys(self):
+        try:
+            return SWITCHABLE_VDICT_IMPL.tree_flatten_with_keys(self)
+        except NotImplementedError:
+            # tree_paths() no longer generates named keys for pytrees that don't register
+            # their child keys, so we simulate the child keys from the old implementation
+            # of tree_paths().
+            values, keys = SWITCHABLE_VDICT_IMPL.tree_flatten(self)
+            key_value = [(jax.tree_util.DictKey(k), v) for k, v in zip(keys, values)]
+            return key_value, keys
 
     @classmethod
     def tree_unflatten(cls, keys, values):
