@@ -38,7 +38,7 @@ from axlearn.common.attention import (
     build_remat_spec,
     set_double_shard_weights_config,
 )
-from axlearn.common.checkpointer import every_n_steps_policy
+from axlearn.common.checkpointer import every_n_steps_and_last_policy
 from axlearn.common.config import (
     ConfigOr,
     FunctionConfigBase,
@@ -301,7 +301,7 @@ def model_config(
         decoder=decoder_cfg,
         param_init=model_param_init,
         batch_axis_names=batch_axis_names,
-        seq_axis_names="seq",
+        seq_axis_names=("seq",),
     )
     cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.
@@ -310,7 +310,7 @@ def model_config(
         batch_axis_names=batch_axis_names,
         fsdp_axis_names=("expert", "fsdp", "seq"),
         tp_axis_names="model",
-        seq_axis_names=("seq",),
+        seq_axis_names="seq",
     )
     cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
     set_bias_recursively(cfg, False)
@@ -398,7 +398,7 @@ def adastar_learner_config(
     alpha: float = 0.005,
     weight_decay: float = 3.16e-4,
     b1: float = 0.95,
-    b2: float = 0.995,
+    b2: float = 0.95,
     adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
 ) -> learner.Learner.Config:
     """Build learner using the AdaStar optimizer and a cosine lr schedule with linear warmup."""
@@ -679,12 +679,14 @@ def get_trainer_config_fn(
             )
             cfg.evalers[name] = evaler_cfg
         # Summaries and checkpoints.
-        cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(
-            n=save_every_n_steps or min(eval_every_n_steps, 5_000)
+        cfg.checkpointer.save_policy = config_for_function(every_n_steps_and_last_policy).set(
+            n=save_every_n_steps or min(eval_every_n_steps, 5_000),
+            max_step=max_step,
         )
         cfg.checkpointer.keep_every_n_steps = min(max_step, keep_every_n_steps)
         cfg.checkpointer.keep_last_n = 3
         cfg.summary_writer.write_every_n_steps = min(eval_every_n_steps, 100)
+        cfg.summary_writer.max_queue = 1000
         if len(mesh_axis_names) != len(mesh_shape):
             raise ValueError(
                 f"Number of mesh axis names ({mesh_axis_names}) "

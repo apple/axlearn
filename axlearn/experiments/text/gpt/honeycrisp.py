@@ -8,7 +8,6 @@
 Architecture names follow apple varieties: Fuji, Gala, Honeycrisp, etc.
 """
 
-import copy
 import itertools
 from typing import Any, Dict, Optional, Union
 
@@ -16,7 +15,7 @@ from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
-    FusedQKVLinear,
+    FusedGroupedQKVLinear,
     RoFormerQKVLinear,
     ScaleKey,
     ScaleQuery,
@@ -53,89 +52,21 @@ MAX_SEQUENCE_LENGTH = 4096
 _BASE_MODEL_HIDDEN_DIM = 768
 
 
-def common_kwargs() -> Dict[str, Any]:
+def common_trainer_kwargs() -> Dict[str, Any]:
     """Returns kwargs that are common to all configs."""
     return {
-        "sentencepiece_model_name": "spm_nonormalization_49k_20240211.model",
-        "vocab_size": 48 * 1024,
-        "trainer_kwargs": {
-            "model_kwargs": {
-                "use_flash_attention_impl": True,
-                "layer_remat_spec": RematSpec(
-                    prevent_cse=False, policy=jax_remat_policies.dots_saveable
-                ),
-                "z_loss_scale": 1e-6,
-            },
-            "learner_kwargs": {
-                "peak_lr": 1e-2,
-                "lr_alpha": 1 / 200.0,
-                "weight_decay": 3.16e-4,
-            },
-            "save_every_n_steps": 1000,
-            "mesh_shape": mesh_shape_from_axes(data=-1),
+        "model_kwargs": {
+            "z_loss_scale": 1e-6,
         },
+        "learner_kwargs": {
+            "peak_lr": 1e-2,
+            "alpha": 1 / 200.0,
+            "weight_decay": 3.16e-4,
+        },
+        "save_every_n_steps": 5000,
+        "keep_every_n_steps": 5000,
+        "mesh_shape": mesh_shape_from_axes(data=-1),
     }
-
-
-def create_config_kwargs() -> Dict[str, Any]:
-    config_kwargs_map = {
-        "test": {
-            "model_size": "test",
-            "max_step": 200,
-            "lr_warmup_steps": 20,
-            "trainer_kwargs": {
-                "model_kwargs": {
-                    "use_flash_attention_impl": False,
-                },
-            },
-        },
-        "85M": {
-            "model_size": "85M",
-            # ~630B tokens.
-            "max_step": 600_000,
-            "trainer_kwargs": {
-                "train_batch_size": 256,
-            },
-        },
-        "3B": {
-            "model_size": "3B",
-            # 6T tokens.
-            "max_step": 750_000,
-            "trainer_kwargs": {
-                "model_kwargs": {
-                    "ff_dim": 8064,
-                },
-                "train_batch_size": 2048,
-                "mesh_shape": mesh_shape_from_axes(data=-1, fsdp=8),
-                "mesh_rules": (
-                    ("tpu-v5p-(1024|2048)", mesh_shape_from_axes(data=-1)),
-                    (
-                        "tpu-v5litepod-256",
-                        mesh_shape_from_axes(data=-1, fsdp=32),
-                    ),
-                ),
-                "save_every_n_steps": 5000,
-            },
-        },
-    }
-    config_kwargs = {}
-    for cfg_base_name, override_kwargs in config_kwargs_map.items():
-        config_kwargs[cfg_base_name] = copy.deepcopy(common_kwargs())
-        # Update the non-trainer_kwargs
-        config_kwargs[cfg_base_name].update(
-            {k: v for k, v in override_kwargs.items() if k != "trainer_kwargs"}
-        )
-        # Update the non-model_kwargs in the trainer_kwargs
-        config_kwargs[cfg_base_name]["trainer_kwargs"].update(
-            {k: v for k, v in override_kwargs["trainer_kwargs"].items() if k != "model_kwargs"}
-        )
-
-        # Update the model_kwargs
-        if "model_kwargs" in override_kwargs["trainer_kwargs"]:
-            config_kwargs[cfg_base_name]["trainer_kwargs"]["model_kwargs"].update(
-                dict(override_kwargs["trainer_kwargs"]["model_kwargs"].items())
-            )
-    return config_kwargs
 
 
 def get_trainer_kwargs(
@@ -155,6 +86,7 @@ def get_trainer_kwargs(
                 hidden_dim=8,
                 ffn_dim=scaled_hidden_dim(scale=8 / 3, round_up_to_multiples_of=16),
                 num_heads=4,
+                num_kv_heads=2,
                 vocab_size=32,
             ),
             learner_kwargs=dict(),
@@ -169,93 +101,77 @@ def get_trainer_kwargs(
                 num_layers=12,
                 hidden_dim=_BASE_MODEL_HIDDEN_DIM,
                 num_heads=12,
+                num_kv_heads=2,
             ),
-            learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
+            learner_kwargs=dict(lr_warmup_steps=5_000),
             train_batch_size=1 * 1024 * 1024 // max_sequence_length,  # 1M tokens.
-            max_step=400_000,  # 400B tokens // 1M tokens/step.
+            max_step=600_000,  # 600B tokens // 1M tokens/step.
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
                 # tpu-v5e. step time: 0.18s (data=-1, fsdp=8).
                 ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1)),
             ),
         )
-    elif model_size == "302M":
+    elif model_size == "3B":
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=24,
-                hidden_dim=64 * 16,
-                num_heads=16,
+                num_layers=26,
+                hidden_dim=128 * 24,
+                ffn_dim=8064,
+                num_heads=24,
+                num_kv_heads=8,
             ),
-            learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
-            train_batch_size=1 * 1024 * 1024 // max_sequence_length,  # 1M tokens.
-            max_step=400_000,  # 400B tokens // 1M tokens/step.
-            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            learner_kwargs=dict(lr_warmup_steps=5_000),
+            train_batch_size=8 * 1024 * 1024 // max_sequence_length,  # 8M tokens.
+            max_step=750_000,  # 6T tokens // 8M tokens/step.
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
+                ("tpu-v4-256", mesh_shape_from_axes(fsdp=-1)),
                 # tpu-v5e. step time: TBD.
-                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1)),
-            ),
-        )
-    elif model_size == "1B":
-        trainer_kwargs = dict(
-            model_kwargs=dict(
-                num_layers=24,
-                hidden_dim=64 * 32,
-                num_heads=32,
-            ),
-            learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
-            train_batch_size=1 * 1024 * 1024 // max_sequence_length,  # 1M tokens.
-            max_step=300_000,  # 300B tokens // 1M tokens/step.
-            mesh_shape=mesh_shape_from_axes(fsdp=-1),
-            mesh_rules=(
-                # tpu-v5e. step time: 0.87s (data=-1, fsdp=8).
-                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=8)),
-            ),
-        )
-    elif model_size == "7B":
-        trainer_kwargs = dict(
-            model_kwargs=dict(
-                num_layers=32,
-                hidden_dim=128 * 32,
-                num_heads=32,
-            ),
-            learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
-            train_batch_size=4 * 1024 * 1024 // max_sequence_length,  # 4M tokens.
-            max_step=250_000,  # 1T tokens // 4M tokens/step.
-            mesh_shape=mesh_shape_from_axes(fsdp=-1),
-            mesh_rules=(
-                # tpu-v4. step time: 3.03s.
-                ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
-                ("tpu-v5p-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
-                # tpu-v5e. step time: TBD.
-                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=32)),
-                # H100/A100 80G. Maximum per-node batch size = 64, hence need >= 32 nodes.
+                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=256)),
+                # H100/A100 80G.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(64|128|256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
+                # A100 40G.
+                ("gpu-p4d.24xlarge-256", mesh_shape_from_axes(data=-1, fsdp=8)),
+                # tpu-v5p. step time: TBD.
+                ("tpu-v5p-(1024|2048)", mesh_shape_from_axes(data=-1)),
             ),
         )
     # pylint: enable=use-dict-literal
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
 
-    model_kwargs: Dict[str, Any] = trainer_kwargs.pop("model_kwargs")
+    merged_trainer_kwargs = common_trainer_kwargs()
+    merged_trainer_kwargs.update(
+        {k: v for k, v in trainer_kwargs.items() if k not in ("model_kwargs", "learner_kwargs")}
+    )
+
+    # Update the model_kwargs
+    model_kwargs: Dict[str, Any] = merged_trainer_kwargs.pop("model_kwargs")
+    model_kwargs.update(trainer_kwargs.get("model_kwargs", {}))
     model_kwargs.setdefault("vocab_size", vocab_size)
 
+    learner_kwargs: Dict[str, Any] = merged_trainer_kwargs.pop("learner_kwargs")
+    learner_kwargs.update(trainer_kwargs.get("learner_kwargs", {}))
+
+    merged_trainer_kwargs["model_cfg"] = model_config(
+        flash_attention=flash_attention, **model_kwargs
+    )
     # If a model is smaller than the base model, do not scale.
     linear_layer_lr_multiplier = min(_BASE_MODEL_HIDDEN_DIM / model_kwargs["hidden_dim"], 1.0)
-    trainer_kwargs["model_cfg"] = model_config(flash_attention=flash_attention, **model_kwargs)
-    trainer_kwargs["learner_cfg"] = adastar_learner_config(
-        peak_lr=0.01,
-        max_step=trainer_kwargs["max_step"],
+    merged_trainer_kwargs["learner_cfg"] = adastar_learner_config(
+        max_step=merged_trainer_kwargs["max_step"],
         # Enable mup-simple.
         adam_update_transformation=mup_simple_adam_update_transformation(
             linear_layer_lr_multiplier,
         ),
-        **trainer_kwargs.pop("learner_kwargs"),
+        **learner_kwargs,
     )
 
-    return trainer_kwargs
+    return merged_trainer_kwargs
 
 
 def model_config(
@@ -263,10 +179,12 @@ def model_config(
     num_layers: int,
     hidden_dim: int,
     num_heads: int,
+    num_kv_heads: int,
     vocab_size: int,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
     flash_attention: bool = False,
+    **kwargs,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -274,6 +192,7 @@ def model_config(
         num_layers: The number of Transformer Layers.
         hidden_dim: The Transformer layer input/output dim.
         num_heads: The number of attention heads.
+        num_kv_heads: The number of attention KV heads.
         vocab_size: The vocabulary size.
         dropout_rate: The dropout rate applied throughout the model.
             Defaults to 0.0 (i.e. no dropout).
@@ -290,9 +209,14 @@ def model_config(
     attention_mask = None
     # RoPE embeddings: https://arxiv.org/abs/2104.09864.
     attention_qkv_linear = RoFormerQKVLinear.default_config().set(
-        input_linear=FusedQKVLinear.default_config().set(cache_dtype=STEP_DTYPE),
+        input_linear=FusedGroupedQKVLinear.default_config().set(
+            cache_dtype=STEP_DTYPE,
+            num_kv_heads=num_kv_heads,
+        ),
         rotary_value=False,
+        cache_dtype=STEP_DTYPE,
     )
+    attention_qkv_linear.rope_pos_emb_layer.theta = 5e5
 
     transformer_layer_cfg = TransformerLayer.default_config()
     if flash_attention:
@@ -308,12 +232,17 @@ def model_config(
     emb_cfg = TransformerTextEmbeddings.default_config().set(
         pos_emb=None,
     )
+    emb_cfg.token_emb.param_partition_spec = (("expert", "fsdp", "seq"), "model")
 
     transformer_layer_cfg.self_attention.attention.set(
         # Use q/k-norm in keeping with:
         # <https://arxiv.org/abs/2309.14322>
         query_scale=ScaleQuery.default_config().set(norm=norm_cfg.clone()),
         key_scale=ScaleKey.default_config().set(norm=norm_cfg.clone()),
+    )
+    transformer_layer_cfg.feed_forward.set(
+        add_dead_neuron_summary=True,
+        add_value_rms_norm_summary=["linear2_outputs"],
     )
 
     cfg = common_model_config(
@@ -331,6 +260,10 @@ def model_config(
         attention_mask=attention_mask,
         attention_qkv_linear=attention_qkv_linear,
         layer_cfg=transformer_layer_cfg,
+        **kwargs,
+    )
+    cfg.decoder.transformer.layer.remat_spec = RematSpec(
+        prevent_cse=False, policy=jax_remat_policies.dots_saveable
     )
     return cfg
 
@@ -345,19 +278,13 @@ def trainer_configs(
         train_input_source: A callable (vocab_size, max_sequence_length) -> input source config.
         eval_input_soruces: A callable (vocab_size, max_sequence_length) -> eval input sources.
     """
-    arch = "gala"
+    arch = "honeycrisp"
     config_map = {}
 
     vocab_size = VOCAB_SIZE
 
     # For each model size create a flash/noflash version.
-    for (
-        model_size,
-        enable_flash,
-    ) in itertools.product(
-        MODEL_SIZES,
-        {True, False},
-    ):
+    for model_size, enable_flash in itertools.product(MODEL_SIZES, {True, False}):
         seq_len = MAX_SEQUENCE_LENGTH
         suffix = "flash" if enable_flash else ""
         config_name = make_config_name(arch=arch, model_size=model_size, version=suffix)
