@@ -183,14 +183,19 @@ def tree_paths(
         # Although (e.g.) DictKey does have its own __str__ implementation, calling
         # str(DictKey('a')) produces "['a']" instead of just "a".
         if isinstance(key_entry, jax.tree_util.DictKey):
-            return str(key_entry.key)
-        if isinstance(key_entry, jax.tree_util.GetAttrKey):
-            return key_entry.name
-        if isinstance(key_entry, jax.tree_util.SequenceKey):
-            return str(key_entry.idx)
-        if isinstance(key_entry, jax.tree_util.FlattenedIndexKey):
-            return str(key_entry.key)
-        raise RuntimeError(f"Unknown key entry type {type(key_entry)}: {key_entry}.")
+            key = key_entry.key
+        elif isinstance(key_entry, jax.tree_util.GetAttrKey):
+            key = key_entry.name
+        elif isinstance(key_entry, jax.tree_util.SequenceKey):
+            key = key_entry.idx
+        elif isinstance(key_entry, jax.tree_util.FlattenedIndexKey):
+            key = key_entry.key
+        else:
+            raise RuntimeError(f"Unknown key entry type {type(key_entry)}: {key_entry}.")
+
+        # Use f-string instead of calling str() because it matches the behavior of the previous
+        # implementation and differs from str() for (e.g.) enums.
+        return f"{key}"
 
     return jax.tree_util.tree_map_with_path(
         lambda kp, _: separator.join(key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
