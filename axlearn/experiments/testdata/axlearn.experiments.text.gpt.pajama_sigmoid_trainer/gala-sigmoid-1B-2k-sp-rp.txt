@@ -14,6 +14,7 @@ checkpointer.storage.klass: 'axlearn.common.checkpointer.TensorStoreStateStorage
 checkpointer.storage.timeout_secs: 3600
 evalers['openwebtext_2'].eval_dtype: 'jax.numpy.bfloat16'
 evalers['openwebtext_2'].eval_policy.fn: 'axlearn.common.evaler.every_n_steps_policy'
+evalers['openwebtext_2'].eval_policy.max_step: 300000
 evalers['openwebtext_2'].eval_policy.min_step: 1
 evalers['openwebtext_2'].eval_policy.n: 5000
 evalers['openwebtext_2'].input.batcher.fn: 'axlearn.common.input_tf_data.batch'

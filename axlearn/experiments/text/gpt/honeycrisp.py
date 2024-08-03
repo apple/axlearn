@@ -16,6 +16,7 @@ from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
     FusedGroupedQKVLinear,
+    GroupedQueryAttention,
     RoFormerQKVLinear,
     ScaleKey,
     ScaleQuery,
@@ -65,6 +66,7 @@ def common_trainer_kwargs() -> Dict[str, Any]:
         },
         "save_every_n_steps": 5000,
         "keep_every_n_steps": 5000,
+        "eval_every_n_steps": 25_000,
         "mesh_shape": mesh_shape_from_axes(data=-1),
     }
 
@@ -100,16 +102,24 @@ def get_trainer_kwargs(
             model_kwargs=dict(
                 num_layers=12,
                 hidden_dim=_BASE_MODEL_HIDDEN_DIM,
+                ffn_dim=scaled_hidden_dim(scale=3.0, round_up_to_multiples_of=32),
                 num_heads=12,
-                num_kv_heads=2,
+                num_kv_heads=6,
             ),
             learner_kwargs=dict(lr_warmup_steps=5_000),
             train_batch_size=1 * 1024 * 1024 // max_sequence_length,  # 1M tokens.
             max_step=600_000,  # 600B tokens // 1M tokens/step.
-            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            save_every_n_steps=1000,
+            mesh_shape=mesh_shape_from_axes(data=-1),
             mesh_rules=(
-                # tpu-v5e. step time: 0.18s (data=-1, fsdp=8).
-                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1)),
+                ("tpu-v4-(32|64)", mesh_shape_from_axes(data=-1)),
+                ("tpu-v5litepod-32", mesh_shape_from_axes(data=-1)),
+                ("tpu-v5p-(16|32)", mesh_shape_from_axes(data=-1)),
+                (
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(8|16|32|64)",
+                    mesh_shape_from_axes(data=-1),
+                ),
+                ("gpu-p4d.24xlarge-(16|32|64|128)", mesh_shape_from_axes(data=-1, fsdp=8)),
             ),
         )
     elif model_size == "3B":
@@ -217,23 +227,13 @@ def model_config(
         cache_dtype=STEP_DTYPE,
     )
     attention_qkv_linear.rope_pos_emb_layer.theta = 5e5
+    norm_cfg = RMSNorm.default_config().set(eps=1e-5, forward_dtype=None)
 
     transformer_layer_cfg = TransformerLayer.default_config()
     if flash_attention:
         transformer_layer_cfg.self_attention.attention = flash_attention_config()
-
-    # SwiGLU from https://arxiv.org/abs/2002.05202.
-    activation_fn = ("nn.silu", "linear")
-
-    if ffn_dim is None:
-        ffn_dim = scaled_hidden_dim(scale=8 / 3, round_up_to_multiples_of=256)
-
-    norm_cfg = RMSNorm.default_config().set(eps=1e-5, forward_dtype=None)
-    emb_cfg = TransformerTextEmbeddings.default_config().set(
-        pos_emb=None,
-    )
-    emb_cfg.token_emb.param_partition_spec = (("expert", "fsdp", "seq"), "model")
-
+    else:
+        transformer_layer_cfg.self_attention.attention = GroupedQueryAttention.default_config()
     transformer_layer_cfg.self_attention.attention.set(
         # Use q/k-norm in keeping with:
         # <https://arxiv.org/abs/2309.14322>
@@ -245,12 +245,16 @@ def model_config(
         add_value_rms_norm_summary=["linear2_outputs"],
     )
 
+    emb_cfg = TransformerTextEmbeddings.default_config().set(pos_emb=None)
+    emb_cfg.token_emb.param_partition_spec = (("expert", "fsdp", "seq"), "model")
+
     cfg = common_model_config(
         num_layers=num_layers,
         hidden_dim=hidden_dim,
         num_heads=num_heads,
         vocab_size=vocab_size,
-        activation_fn=activation_fn,
+        # SwiGLU from https://arxiv.org/abs/2002.05202.
+        activation_fn=("nn.silu", "linear"),
         ffn_dim=ffn_dim,
         normalization=norm_cfg,
         dropout_rate=dropout_rate,
@@ -262,9 +266,10 @@ def model_config(
         layer_cfg=transformer_layer_cfg,
         **kwargs,
     )
-    cfg.decoder.transformer.layer.remat_spec = RematSpec(
-        prevent_cse=False, policy=jax_remat_policies.dots_saveable
-    )
+    if flash_attention:
+        cfg.decoder.transformer.layer.remat_spec = RematSpec(
+            prevent_cse=False, policy=jax_remat_policies.dots_saveable
+        )
     return cfg
 
 

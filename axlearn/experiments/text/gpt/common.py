@@ -31,7 +31,6 @@ from axlearn.common import (
 from axlearn.common.attention import (
     AttentionLogitBiasLayer,
     BaseQKVLinear,
-    FusedQKVLinear,
     MultiheadAttention,
     RepeatedTransformerLayer,
     TransformerLayer,
@@ -224,8 +223,8 @@ def model_config(
     stack_cfg: causal_lm.TransformerStackConfig = RepeatedTransformerLayer.default_config(),
     emb_cfg: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config(),
     layer_cfg: TransformerLayer.Config = TransformerLayer.default_config(),
-    attention_cfg: MultiheadAttention.Config = MultiheadAttention.default_config(),
-    attention_qkv_linear: Optional[BaseQKVLinear.Config] = FusedQKVLinear.default_config(),
+    attention_cfg: Optional[MultiheadAttention.Config] = None,
+    attention_qkv_linear: Optional[BaseQKVLinear.Config] = None,
     attention_mask: Optional[AttentionLogitBiasLayer.Config] = None,
     z_loss_scale: float = 0.0,
     ffn_structure: str = "prenorm",
@@ -675,7 +674,10 @@ def get_trainer_config_fn(
         for name, evaler_cfg in evalers.items():
             evaler_cfg.input.batcher.set(global_batch_size=eval_batch_size or train_batch_size)
             evaler_cfg.set(
-                eval_policy=config_for_function(eval_every_n_steps_policy).set(n=eval_every_n_steps)
+                eval_policy=config_for_function(eval_every_n_steps_policy).set(
+                    n=eval_every_n_steps,
+                    max_step=max_step,
+                )
             )
             cfg.evalers[name] = evaler_cfg
         # Summaries and checkpoints.
