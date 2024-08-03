@@ -429,8 +429,8 @@ class TreeUtilsTest(TestCase):
         v_dict = VDict(x=x)
         self.assertEqual(3, sys.getrefcount(x))
         self.assertEqual(2, sys.getrefcount(v_dict))
-        values, keys = v_dict.tree_flatten()
-        # tree_flatten should not increase ref count on `v_dict`.
+        values, keys = v_dict.tree_flatten_with_keys()
+        # tree_flatten_with_keys should not increase ref count on `v_dict`.
         self.assertEqual(2, sys.getrefcount(v_dict))
         # `keys` should not increase ref count on `x`. Only `values` should.
         self.assertEqual(4, sys.getrefcount(x))
