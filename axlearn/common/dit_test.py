@@ -316,7 +316,8 @@ class TestAdaptiveLayerNormModulation(parameterized.TestCase):
 class TestDiTFFN(parameterized.TestCase):
     """Tests DiTFFN."""
 
-    def test_dit_ffn(self):
+    @parameterized.parameters(["prenorm", "postnorm", "hybridnorm"])
+    def test_dit_ffn(self, structure: str):
         batch_size = 2
         seq_len = 12
         dim = 32
@@ -324,21 +325,16 @@ class TestDiTFFN(parameterized.TestCase):
         shift = np.random.random(size=(batch_size, dim))
         scale = np.random.random(size=(batch_size, dim))
         gate = np.random.random(size=(batch_size, dim))
-        ref_model = RefDiTMLP(hidden_size=dim)
-        ref_output = ref_model.forward(
-            torch.as_tensor(inputs).float(),
-            torch.as_tensor(shift).float(),
-            torch.as_tensor(scale).float(),
-            torch.as_tensor(gate).float(),
-        )
 
         axlearn_model_cfg = DiTFeedForwardLayer.default_config().set(
             name="test",
             input_dim=dim,
+            structure=structure,
         )
         axlearn_model_cfg.norm.eps = 1e-6
         axlearn_model = axlearn_model_cfg.instantiate(parent=None)
 
+        ref_model = RefDiTMLP(hidden_size=dim)
         layer_params = parameters_from_torch_layer(ref_model, dst_layer=axlearn_model)
 
         layer_output, _ = F(
@@ -354,13 +350,21 @@ class TestDiTFFN(parameterized.TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
 
-        assert_allclose(layer_output, as_tensor(ref_output))
+        if structure == "prenorm":
+            ref_output = ref_model.forward(
+                torch.as_tensor(inputs).float(),
+                torch.as_tensor(shift).float(),
+                torch.as_tensor(scale).float(),
+                torch.as_tensor(gate).float(),
+            )
+            assert_allclose(layer_output, as_tensor(ref_output))
 
 
 class TestDiTAttn(parameterized.TestCase):
     """Tests DiTAttn."""
 
-    def test_dit_attn(self):
+    @parameterized.parameters(["prenorm", "postnorm", "hybridnorm"])
+    def test_dit_attn(self, structure: str):
         batch_size = 2
         seq_len = 12
         dim = 32
@@ -369,24 +373,19 @@ class TestDiTAttn(parameterized.TestCase):
         shift = np.random.random(size=(batch_size, dim))
         scale = np.random.random(size=(batch_size, dim))
         gate = np.random.random(size=(batch_size, dim))
-        ref_model = RefDiTAttn(hidden_size=dim, num_heads=num_heads)
-        ref_output = ref_model.forward(
-            torch.as_tensor(inputs).float(),
-            torch.as_tensor(shift).float(),
-            torch.as_tensor(scale).float(),
-            torch.as_tensor(gate).float(),
-        )
 
         axlearn_model_cfg = DiTAttentionLayer.default_config().set(
             name="test",
             source_dim=dim,
             target_dim=dim,
+            structure=structure,
         )
         axlearn_model_cfg.attention.num_heads = num_heads
         axlearn_model_cfg.norm.eps = 1e-6
 
         axlearn_model = axlearn_model_cfg.instantiate(parent=None)
 
+        ref_model = RefDiTAttn(hidden_size=dim, num_heads=num_heads)
         layer_params = parameters_from_torch_layer(ref_model, dst_layer=axlearn_model)
 
         layer_output, _ = F(
@@ -402,7 +401,14 @@ class TestDiTAttn(parameterized.TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
 
-        assert_allclose(layer_output, as_tensor(ref_output))
+        if structure == "prenorm":
+            ref_output = ref_model.forward(
+                torch.as_tensor(inputs).float(),
+                torch.as_tensor(shift).float(),
+                torch.as_tensor(scale).float(),
+                torch.as_tensor(gate).float(),
+            )
+            assert_allclose(layer_output, as_tensor(ref_output))
 
 
 class TestDiTBlock(parameterized.TestCase):
