@@ -113,10 +113,12 @@ def get_trainer_kwargs(
             mesh_shape=mesh_shape_from_axes(data=-1),
             mesh_rules=(
                 ("tpu-v4-(32|64)", mesh_shape_from_axes(data=-1)),
+                # Step time: 0.67s on tpu-v5litepod-32.
                 ("tpu-v5litepod-32", mesh_shape_from_axes(data=-1)),
                 ("tpu-v5p-(16|32)", mesh_shape_from_axes(data=-1)),
+                # Step time: 0.92s on H100 8x2.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(8|16|32|64)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(16|32|64)",
                     mesh_shape_from_axes(data=-1),
                 ),
                 ("gpu-p4d.24xlarge-(16|32|64|128)", mesh_shape_from_axes(data=-1, fsdp=8)),
