@@ -334,6 +334,7 @@ class BaseBastionManagedJob(Job):
                 jobspec,
                 f,
             )
+            logging.info("Submitting %s %s", cfg.name, f.name)
             self._bastion_dir.submit_job(cfg.name, job_spec_file=f.name)
         gcp_api = "gke" if "gke" in cfg.bastion_name else "qrm"
         print(

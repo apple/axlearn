@@ -1172,4 +1172,5 @@ class BastionDirectory(Configurable):
             logging.info("\n\nNote: Job is already running. To restart it, cancel the job first.\n")
         else:
             # Upload the job for bastion to pickup.
+            logging.info("\n\nUploading %s to %s.\n", job_spec_file, dst)
             tf_io.gfile.copy(job_spec_file, dst)
