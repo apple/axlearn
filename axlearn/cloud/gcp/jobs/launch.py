@@ -613,6 +613,7 @@ def main(_):
         job._delete()
     else:
         raise app.UsageError(f"Unsupported action {action}")
+    logging.info("%s done", cfg.klass)
 
 
 def _prelaunch_flags(fv: flags.FlagValues = FLAGS):
