@@ -61,7 +61,7 @@ FROM base AS bastion
 # TODO(markblee): Consider copying large directories separately, to cache more aggressively.
 # TODO(markblee): Is there a way to skip the "production" deps?
 COPY . /root/
-RUN pip install .[gcp,vertexai_tensorboard]
+RUN pip install .[core,gcp,vertexai_tensorboard]
 
 ################################################################################
 # Dataflow container spec.                                                     #
@@ -72,7 +72,7 @@ FROM base AS dataflow
 # Beam workers default to creating a new virtual environment on startup. Instead, we want them to
 # pickup the venv setup above. An alternative is to install into the global environment.
 ENV RUN_PYTHON_SDK_IN_DEFAULT_ENVIRONMENT=1
-RUN pip install .[gcp,dataflow]
+RUN pip install .[core,gcp,dataflow]
 COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
@@ -92,7 +92,7 @@ RUN apt-get install -y google-perftools
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
-RUN pip install .[tpu]
+RUN pip install .[core,tpu]
 COPY . .
 
 ################################################################################
@@ -105,7 +105,7 @@ RUN apt-get install -y google-perftools
 
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-RUN pip install .[gpu]
+RUN pip install .[core,gpu]
 COPY . .
 
 ################################################################################
