@@ -368,8 +368,16 @@ class DiTAttentionLayer(BaseLayer):
             ),
         )
 
-    # pylint: disable-next=redefined-builtin
-    def forward(self, *, input: Tensor, shift: Tensor, scale: Tensor, gate: Tensor) -> Tensor:
+    def forward(
+        self,
+        *,
+        # pylint: disable-next=redefined-builtin
+        input: Tensor,
+        shift: Tensor,
+        scale: Tensor,
+        gate: Tensor,
+        attention_logit_biases: Optional[Tensor] = None,
+    ) -> Tensor:
         """The forward function of DiTAttentionLayer.
 
         Args:
@@ -378,6 +386,7 @@ class DiTAttentionLayer(BaseLayer):
             scale: scaling the norm tensor with shape [batch_size, target_dim].
             gate: applying before the residual addition with shape
                 [batch_size, target_dim].
+            attention_logit_biases: An optional Tensor representing the self attention biases.
 
         Returns:
             A tensor with shape [batch_size, num_length, target_dim].
@@ -392,7 +401,7 @@ class DiTAttentionLayer(BaseLayer):
             x = input
 
         x = modulate(x=x, shift=shift, scale=scale)
-        x = self.attention(query=x, attention_logit_biases=None).data
+        x = self.attention(query=x, attention_logit_biases=attention_logit_biases).data
 
         if cfg.structure == "postnorm":
             x = self.norm(x)

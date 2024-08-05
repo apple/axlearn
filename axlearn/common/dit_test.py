@@ -18,6 +18,7 @@ from absl.testing import parameterized
 from timm.models.vision_transformer import Attention, Mlp, PatchEmbed
 from torch import nn
 
+from axlearn.common.attention import NEG_INF
 from axlearn.common.dit import (
     AdaptiveLayerNormModulation,
     DiTAttentionLayer,
@@ -395,6 +396,7 @@ class TestDiTAttn(parameterized.TestCase):
                 shift=jnp.asarray(shift),
                 scale=jnp.asarray(scale),
                 gate=jnp.asarray(gate),
+                attention_logit_biases=None,
             ),
             state=layer_params,
             is_training=False,
@@ -409,6 +411,70 @@ class TestDiTAttn(parameterized.TestCase):
                 torch.as_tensor(gate).float(),
             )
             assert_allclose(layer_output, as_tensor(ref_output))
+
+    def test_dit_attn_logit_biases(self):
+        batch_size = 2
+        seq_len = 3
+        dim = 32
+        num_heads = 2
+
+        prng_key = jax.random.PRNGKey(0)
+        inputs = jax.random.normal(prng_key, shape=(batch_size, seq_len, dim))
+        shift = jax.random.normal(prng_key, shape=(batch_size, dim))
+        scale = jax.random.normal(prng_key, shape=(batch_size, dim))
+        gate = jax.random.normal(prng_key, shape=(batch_size, dim))
+        valid_seq = jnp.asarray(
+            [
+                [1, 0, 0],
+                [1, 1, 0],
+            ],
+            dtype=jnp.bool,
+        )
+        valid_mask = valid_seq[:, :, None]
+        logit_biases = NEG_INF * (1 - jnp.einsum("bi,bj->bij", valid_seq, valid_seq))
+
+        layer_cfg = DiTAttentionLayer.default_config().set(
+            name="test",
+            source_dim=dim,
+            target_dim=dim,
+        )
+        layer_cfg.attention.num_heads = num_heads
+        layer_cfg.norm.eps = 1e-6
+        layer = layer_cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=prng_key)
+
+        layer_output, _ = F(
+            layer,
+            inputs=dict(
+                input=inputs,
+                shift=shift,
+                scale=scale,
+                gate=gate,
+                attention_logit_biases=logit_biases,
+            ),
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+        )
+
+        # Change inputs on non-valid seq.
+        inputs2 = jax.random.normal(jax.random.PRNGKey(1), shape=(batch_size, seq_len, dim))
+        modified_inputs = inputs * valid_mask + inputs2 * (1 - valid_mask)
+        layer_output2, _ = F(
+            layer,
+            inputs=dict(
+                input=modified_inputs,
+                shift=shift,
+                scale=scale,
+                gate=gate,
+                attention_logit_biases=logit_biases,
+            ),
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+        )
+        # Expect the output be the same for valid items because of logit_biases.
+        assert_allclose(layer_output * valid_mask, layer_output2 * valid_mask)
 
 
 class TestDiTBlock(parameterized.TestCase):
