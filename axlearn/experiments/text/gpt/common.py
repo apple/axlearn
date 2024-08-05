@@ -31,14 +31,13 @@ from axlearn.common import (
 from axlearn.common.attention import (
     AttentionLogitBiasLayer,
     BaseQKVLinear,
-    FusedQKVLinear,
     MultiheadAttention,
     RepeatedTransformerLayer,
     TransformerLayer,
     build_remat_spec,
     set_double_shard_weights_config,
 )
-from axlearn.common.checkpointer import every_n_steps_policy
+from axlearn.common.checkpointer import every_n_steps_and_last_policy
 from axlearn.common.config import (
     ConfigOr,
     FunctionConfigBase,
@@ -224,8 +223,8 @@ def model_config(
     stack_cfg: causal_lm.TransformerStackConfig = RepeatedTransformerLayer.default_config(),
     emb_cfg: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config(),
     layer_cfg: TransformerLayer.Config = TransformerLayer.default_config(),
-    attention_cfg: MultiheadAttention.Config = MultiheadAttention.default_config(),
-    attention_qkv_linear: Optional[BaseQKVLinear.Config] = FusedQKVLinear.default_config(),
+    attention_cfg: Optional[MultiheadAttention.Config] = None,
+    attention_qkv_linear: Optional[BaseQKVLinear.Config] = None,
     attention_mask: Optional[AttentionLogitBiasLayer.Config] = None,
     z_loss_scale: float = 0.0,
     ffn_structure: str = "prenorm",
@@ -301,7 +300,7 @@ def model_config(
         decoder=decoder_cfg,
         param_init=model_param_init,
         batch_axis_names=batch_axis_names,
-        seq_axis_names="seq",
+        seq_axis_names=("seq",),
     )
     cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.
@@ -310,7 +309,7 @@ def model_config(
         batch_axis_names=batch_axis_names,
         fsdp_axis_names=("expert", "fsdp", "seq"),
         tp_axis_names="model",
-        seq_axis_names=("seq",),
+        seq_axis_names="seq",
     )
     cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
     set_bias_recursively(cfg, False)
@@ -351,7 +350,7 @@ def mup_simple_adam_update_transformation(scale_factor: float) -> InstantiableCo
     )
 
 
-def learner_config(
+def adamw_decoupled_learner_config(
     *,
     peak_lr: float,
     max_step: int,
@@ -386,6 +385,53 @@ def learner_config(
                 adam_update_transformation=adam_update_transformation,
             ),
         ]
+    )
+    return learner.Learner.default_config().set(optimizer=optimizer_cfg)
+
+
+def adastar_learner_config(
+    *,
+    peak_lr: float,
+    max_step: int,
+    lr_warmup_steps: int = 2000,
+    alpha: float = 0.005,
+    weight_decay: float = 3.16e-4,
+    b1: float = 0.95,
+    b2: float = 0.95,
+    adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
+) -> learner.Learner.Config:
+    """Build learner using the AdaStar optimizer and a cosine lr schedule with linear warmup."""
+    update_schedule = config_for_function(schedule.cosine_with_linear_warmup).set(
+        peak_lr=1.0,
+        max_step=max_step,
+        warmup_steps=lr_warmup_steps,
+        begin_value=0.0,
+        # Decay to this fraction of the peak_lr.
+        alpha=alpha,
+    )
+    optimizer_cfg = config_for_function(optimizers.skip_and_clip_by_global_norm).set(
+        inner=config_for_function(optimizers.adastar_optimizer).set(
+            learning_rate=peak_lr,
+            # adafactor does not apply smoothing on gradients (but on raw updates).
+            gradient_ema_decay=None,
+            gradient_ema_debias=None,
+            gradient_square_ema_decay=b2,
+            gradient_square_ema_debias=True,
+            eps=0,
+            # adafactor eps is applied on the square.
+            eps_square=1e-30,
+            # Clipping is applied on raw updates by per-param norm (not global norm).
+            raw_update_clipping_threshold=1.0,
+            # Smoothing is applied on raw updates.
+            update_ema_decay=b1,
+            # ... but without debiasing (!).
+            update_ema_debias=False,
+            weight_decay=weight_decay,
+            update_schedule=update_schedule,
+            adam_update_transformation=adam_update_transformation,
+        ),
+        drop_norm=100,
+        max_norm=1,
     )
     return learner.Learner.default_config().set(optimizer=optimizer_cfg)
 
@@ -628,16 +674,21 @@ def get_trainer_config_fn(
         for name, evaler_cfg in evalers.items():
             evaler_cfg.input.batcher.set(global_batch_size=eval_batch_size or train_batch_size)
             evaler_cfg.set(
-                eval_policy=config_for_function(eval_every_n_steps_policy).set(n=eval_every_n_steps)
+                eval_policy=config_for_function(eval_every_n_steps_policy).set(
+                    n=eval_every_n_steps,
+                    max_step=max_step,
+                )
             )
             cfg.evalers[name] = evaler_cfg
         # Summaries and checkpoints.
-        cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(
-            n=save_every_n_steps or min(eval_every_n_steps, 5_000)
+        cfg.checkpointer.save_policy = config_for_function(every_n_steps_and_last_policy).set(
+            n=save_every_n_steps or min(eval_every_n_steps, 5_000),
+            max_step=max_step,
         )
         cfg.checkpointer.keep_every_n_steps = min(max_step, keep_every_n_steps)
         cfg.checkpointer.keep_last_n = 3
         cfg.summary_writer.write_every_n_steps = min(eval_every_n_steps, 100)
+        cfg.summary_writer.max_queue = 1000
         if len(mesh_axis_names) != len(mesh_shape):
             raise ValueError(
                 f"Number of mesh axis names ({mesh_axis_names}) "

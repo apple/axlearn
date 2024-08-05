@@ -45,7 +45,7 @@ from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
 from axlearn.common.utils import get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
-from axlearn.experiments.text.gpt import gala
+from axlearn.experiments.text.gpt import gala, honeycrisp
 from axlearn.experiments.text.gpt.common import (
     REPLACE_NEWLINES_WITH,
     mixture_train_input_source,
@@ -57,6 +57,7 @@ from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 # See bpe_{32k,128k}.json for the sentencepiece settings.
 _SENTENCEPIECE_MODEL_NAME = {
     32 * 1024: "bpe_32k_c4.model",
+    48 * 1024: "bpe_48k_honeycrisp.model",
 }
 
 
@@ -150,16 +151,19 @@ def _train_input_source_fn(
 def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
     config_map = {}
-    for dataset_name, train_data_mixture_components in DATASETS.items():
-        dataset_config_map = {}
-        dataset_train_input_source = _train_input_source_fn(
-            train_data_mixture_components=train_data_mixture_components
-        )
-        dataset_config_map.update(
-            gala.trainer_configs(dataset_train_input_source, _eval_input_sources)
-        )
+    for model_version in (gala, honeycrisp):
+        for dataset_name, train_data_mixture_components in DATASETS.items():
+            dataset_config_map = {}
+            dataset_train_input_source = _train_input_source_fn(
+                train_data_mixture_components=train_data_mixture_components
+            )
+            dataset_config_map.update(
+                getattr(model_version, "trainer_configs")(
+                    dataset_train_input_source, _eval_input_sources
+                )
+            )
 
-        # Include the dataset name in the config name.
-        dataset_config_map = {f"{k}-{dataset_name}": v for k, v in dataset_config_map.items()}
-        config_map.update(dataset_config_map)
+            # Include the dataset name in the config name.
+            dataset_config_map = {f"{k}-{dataset_name}": v for k, v in dataset_config_map.items()}
+            config_map.update(dataset_config_map)
     return config_map

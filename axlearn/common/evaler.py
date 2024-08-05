@@ -537,8 +537,13 @@ class EvalPolicy(Protocol):
         raise NotImplementedError(type(self))
 
 
-def every_n_steps_policy(n: int = 1, *, min_step: int = 1) -> EvalPolicy:
+def every_n_steps_policy(
+    n: int = 1, *, min_step: int = 1, max_step: Optional[int] = None
+) -> EvalPolicy:
     """Evals every n steps, but not before `min_step`."""
+
+    if max_step is not None and max_step < min_step:
+        raise ValueError(f"max_step {max_step} cannot be smaller than min_step {min_step}.")
 
     def fn(*, step: int, train_summaries: Dict[str, Any]) -> bool:
         del train_summaries
@@ -548,7 +553,8 @@ def every_n_steps_policy(n: int = 1, *, min_step: int = 1) -> EvalPolicy:
                 step,
                 min_step,
             )
-        return step >= min_step and step % n == 0
+            return False
+        return step % n == 0 or (max_step is not None and step >= max_step)
 
     return fn
 
