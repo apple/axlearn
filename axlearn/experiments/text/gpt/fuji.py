@@ -48,7 +48,7 @@ class Version(enum.Enum):
 
 # Mapping from Fuji versions to vocab sizes.
 VOCAB_SIZE = {
-    Version.V1: 32 * 1024,
+    Version.V1: 128 * 1024,
     Version.V2: 32 * 1024,
     Version.V3: 128 * 1024,
 }
@@ -56,16 +56,16 @@ VOCAB_SIZE = {
 
 # Mapping from Fuji versions to maximum sequence lengths.
 MAX_SEQUENCE_LENGTH = {
-    Version.V1: 2048,
+    Version.V1: 8192,
     Version.V2: 4096,
     Version.V3: 8192,
 }
 
-TRN_MODEL_AXIS_SIZE=8
-GRADIENT_ACCUMULATION_MICROBATCHES=8
+TRN_MODEL_AXIS_SIZE=64
+GRADIENT_ACCUMULATION_MICROBATCHES=1
 
 ROPE_THETA = {
-    Version.V1: 1e4,
+    Version.V1: 5e5,
     Version.V2: 1e4,
     Version.V3: 5e5,
 }
@@ -102,11 +102,11 @@ def get_trainer_kwargs(
     *,
     vocab_size: int,
     version: Version,
-    flash_attention: bool = False,
+    flash_attention: bool = True,
 ) -> Dict[str, Any]:
-
     """Construct default trainer kwargs given a model size."""
-    tokens_per_batch = 4 * (1024**2)  # 4M tokens.
+    # tokens_per_batch = 4 * (1024**2)  # 4M tokens.
+    tokens_per_batch = MAX_SEQUENCE_LENGTH[version] # one sequence per batch
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
@@ -148,11 +148,11 @@ def get_trainer_kwargs(
     elif model_size == "7B":
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=32,
-                hidden_dim=128 * 32,
+                num_layers=2,
+                hidden_dim=8192,
                 ffn_dim=scaled_hidden_dim(scale=4, round_up_to_multiples_of=16),
-                num_heads=32,
-                num_kv_heads=num_kv_heads,
+                num_heads=64,
+                num_kv_heads=None,
                 rope_theta=rope_theta,
                 flash_attention=flash_attention,
             ),
@@ -162,7 +162,7 @@ def get_trainer_kwargs(
             train_batch_size=int((jax.device_count()/TRN_MODEL_AXIS_SIZE)*GRADIENT_ACCUMULATION_MICROBATCHES),
             max_sequence_length=max_sequence_length,
             max_step=500_000,  # 2T tokens // 4M tokens/step.
-            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            mesh_shape=mesh_shape_from_axes(model=TRN_MODEL_AXIS_SIZE),
             mesh_rules=(
                 # Step time:
                 # v1 on tpu-v4-1024 (512 chips):            3.03s
@@ -186,8 +186,8 @@ def get_trainer_kwargs(
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
                 (   
-                    "neuron-(trn1.32xlarge|trn1n.32xlarge)-(32|64|256|512|1024|2048)",
-                    mesh_shape_from_axes(data=-1, model=TRN_MODEL_AXIS_SIZE),
+                    "trn2",
+                    mesh_shape_from_axes(model=TRN_MODEL_AXIS_SIZE),
                 ),
             ),
             eval_batch_size=int(jax.device_count()/TRN_MODEL_AXIS_SIZE),
@@ -246,7 +246,7 @@ def model_config(
     rope_theta: float,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
-    flash_attention: bool = False,
+    flash_attention: bool = True,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
