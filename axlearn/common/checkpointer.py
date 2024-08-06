@@ -1,14 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
-"""A simple checkpointer.
-
-Checkpointer uses jax.experimental.array_serialization as the storage layer and provides:
-(1) additional guards on top of the storage layers to verify that dtypes and shapes match those of
-    the model parameters.
-(2) checkpoint garbage collection.
-(3) global synchronization across processes to ensure that a checkpoint directory is visible only
-    after all processes have completed saving the checkpoint.
-"""
+"""Checkpointing utilities."""
 
 import dataclasses
 import difflib
@@ -71,32 +63,14 @@ class CheckpointValidationType(str, enum.Enum):
 
 
 def parse_step_from_dir(step_dir: str) -> int:
+    # TODO(markblee): use regex.
     return int(step_dir[-8:])
-
-
-def checkpoint_paths(base_dir: str) -> List[str]:
-    """Returns complete checkpoint paths under base dir."""
-    index_paths = tf.io.gfile.glob(os.path.join(base_dir, "step_*", "index"))  # type: ignore
-    return [os.path.dirname(path) for path in index_paths]
-
-
-def latest_checkpoint_path(base_dir: str) -> str:
-    """Returns the most recent (highest step count) complete checkpoint under base dir.
-
-    Args:
-        base_dir: Path to checkpoints dir.
-
-    Returns:
-        The path to the checkpoint directory under base_dir with the highest step count.
-        The checkpoint is guaranteed to be complete.
-    """
-    # Note: checkpoint_paths already filters incomplete checkpoints.
-    return sorted(checkpoint_paths(base_dir)).pop()
 
 
 def check_state_structure(
     ckpt_structure: List[Tuple[str, Any]],
     target_structure: List[Tuple[str, Any]],
+    *,
     validation: CheckpointValidationType = CheckpointValidationType.EXACT,
 ):
     # Maybe filter structure before comparison.
@@ -144,41 +118,6 @@ def check_state_structure(
             f"Unable to restore checkpoint ({validation}). A mismatch between the saved "
             "checkpoint tree dtypes or shapes and the current one has been detected:\n"
             f"{msg}"
-        )
-
-
-def _cleanup_checkpoint(ckpt_dir: str, *, sync: bool = True):
-    """Removes ckpt_dir if it exists.
-
-    If sync is True, we also create a barrier to sync all devices, since removes only happen on
-    process 0.
-    """
-    if jax.process_index() == 0:
-        # We always remove the index file as the first step -- otherwise, the partially-removed dir
-        # can still be considered a valid checkpoint if rmtree is interrupted.
-        index_path = os.path.join(ckpt_dir, "index")
-        if tf.io.gfile.exists(index_path):
-            tf.io.gfile.remove(index_path)
-        if tf.io.gfile.exists(ckpt_dir):
-            tf.io.gfile.rmtree(ckpt_dir)
-    if sync:
-        # Wait for cleanup to complete.
-        multihost_utils.sync_global_devices(f"{ckpt_dir}_cleanup")
-
-
-def _validate_checkpoint(ckpt_dir: str):
-    """Ensures a checkpoint is complete, i.e. `ckpt_dir/index` exists.
-
-    Args:
-        ckpt_dir: Directory of a checkpoint at a specific step.
-
-    Raises:
-        ValueError: If the checkpoint is not complete.
-    """
-    ckpt_index = os.path.join(ckpt_dir, "index")
-    if not tf.io.gfile.exists(ckpt_index):
-        raise ValueError(
-            f"Checkpoint {ckpt_dir} is incomplete -- expected {ckpt_index} to be present."
         )
 
 
@@ -300,7 +239,12 @@ def read_state_spec(ckpt_dir: str) -> NestedTensorSpec:
 
 
 class TensorStoreStateStorage(StateStorage):
-    """A StateStorage implementation using TensorStore."""
+    """A StateStorage implementation using TensorStore.
+
+    It uses `jax.experimental.array_serialization` and additionally provides:
+    (1) Additional guards to verify that dtypes and shapes match those of the model parameters.
+    (2) Memory-bounded checkpoint serialization for large-scale training.
+    """
 
     @config_class
     class Config(StateStorage.Config):
@@ -590,8 +534,8 @@ def every_n_steps_policy(n: int = 1, *, min_step: int = 1) -> CheckpointPolicy:
 def every_n_steps_and_last_policy(
     n: int = 1, *, min_step: int = 1, max_step: int
 ) -> CheckpointPolicy:
-    """Checkpoints every n steps, but not before `min_step`,
-    and at the last training iteration `max_step`.
+    """Checkpoints every n steps, but not before `min_step`, and at the last training iteration
+    `max_step`.
 
     Args:
         n: The checkpointing frequency. Checkpointing will be triggered every `n` steps
@@ -607,14 +551,137 @@ def every_n_steps_and_last_policy(
     return fn
 
 
-class Checkpointer(Module):
-    """A checkpointer that supports various StateStorage implementations."""
+class BaseCheckpointer(Module):
+    """A base checkpointer interface.
+
+    Checkpointers are required to implement `save`, `restore`, `stop`, and `checkpoint_paths`.
+
+    Subclasses may optionally also override `__enter__` and `__exit__` for setup or teardown logic
+    when checkpointers are used as context managers. Checkpointer contexts are typically entered
+    prior to the training loop and exited after the training loop has exited.
+    """
 
     @config_class
     class Config(Module.Config):
-        """Configures Checkpointer."""
+        """Configures BaseCheckpointer.
+
+        Attributes:
+            dir: The output directory.
+        """
 
         dir: Required[str] = REQUIRED  # The output directory.
+
+    @classmethod
+    def checkpoint_paths(cls, base_dir: str) -> List[str]:
+        """Returns complete checkpoint paths under base dir.
+
+        Args:
+            base_dir: Path to checkpoints dir.
+
+        Returns:
+            A list of committed checkpoint paths. Incomplete checkpoints are dropped.
+        """
+        raise NotImplementedError(cls)
+
+    @classmethod
+    def latest_checkpoint_path(cls, base_dir: str) -> str:
+        """Returns the most recent (highest step count) complete checkpoint under base dir.
+
+        Args:
+            base_dir: Path to checkpoints dir.
+
+        Returns:
+            The path to the checkpoint directory under base_dir with the highest step count.
+            The checkpoint is guaranteed to be complete.
+        """
+        # Note: checkpoint_paths should already filter incomplete checkpoints.
+        return sorted(cls.checkpoint_paths(base_dir)).pop()
+
+    def __enter__(self):
+        """Enters the checkpointer context manager.
+
+        This is useful for implementing any setup logic (such as starting a garbage collection
+        thread).
+
+        This is typically invoked prior to the training loop.
+        """
+        if self._within_context:
+            raise ValueError("Already in a context.")
+        self._within_context = True
+
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> Optional[bool]:
+        """Exits the checkpointer context manager.
+
+        Typically, teardown logic should be implemented in the `stop()` method instead, which is by
+        default invoked from `__exit__`.
+
+        This is typically invoked after the training loop has exited.
+        """
+        del exc_type, exc, traceback
+        self.stop()
+        # Note: returning None here lets the caller handle the exception, if any.
+        self._within_context = False
+
+    def save(
+        self, *, step: int, state: NestedTensor, evaler_summaries: Optional[Dict[str, Any]] = None
+    ):
+        """Saves `state` at the given `step`.
+
+        Args:
+            step: The training step corresponding to `state`.
+            state: The state to save.
+            evaler_summaries: Evaler summaries from the current `step`. Can be used to decide
+                whether to save or not (e.g., only checkpointing if a new best metric is achieved).
+        """
+        raise NotImplementedError(type(self))
+
+    def restore(
+        self,
+        *,
+        step: Optional[int] = None,
+        state: Union[NestedTensor, NestedTensorSpec],
+    ) -> Tuple[Optional[int], NestedTensor]:
+        """Restores from the checkpoint directory.
+
+        Args:
+            step: If None, restores from the latest complete checkpoint, otherwise from the
+                specified step.
+            state: Ensures that the restored state have the same structure, dtypes, and shapes as
+                `state`.
+
+        Returns:
+            (restored_step, restored_checkpoint_state).
+            If no complete checkpoint is found, returns None as restored_step and the input `state`
+            as restored_checkpoint_state.
+        """
+        raise NotImplementedError(type(self))
+
+    def stop(self):
+        """Stops the checkpointer. Waits for async writes, garbage collection, etc. to finish."""
+        raise NotImplementedError(type(self))
+
+
+class Checkpointer(BaseCheckpointer):
+    """A checkpointer that supports various StateStorage implementations.
+
+    Note that checkpoints are committed via an "index" file. A few utilities for interacting with
+    checkpoints committed in this way are provided as static methods on the class.
+
+    In addition to functionality provided by the StateStorage implementation, it provides:
+    (1) Global synchronization across processes to ensure that a checkpoint directory is visible
+        only after all processes have completed saving the checkpoint (via the "index" file).
+    (2) Checkpoint garbage collection.
+    """
+
+    @config_class
+    class Config(BaseCheckpointer.Config):
+        """Configures Checkpointer."""
+
         keep_last_n: int = 1  # Keeps this many past ckpts.
         # If > 0, keeps at least one checkpoint every N steps.
         keep_every_n_steps: Optional[int] = None
@@ -626,6 +693,33 @@ class Checkpointer(Module):
         storage: StateStorage.Config = TensorStoreStateStorage.default_config()
         # A config that instantiates an optional SummaryWriter, and is used to log checkpoints.
         summary_writer: Optional[SummaryWriter.Config] = None
+
+    @classmethod
+    def checkpoint_paths(cls, base_dir: str) -> List[str]:
+        """See `BaseCheckpointer.checkpointer_paths`."""
+        index_paths = tf.io.gfile.glob(os.path.join(base_dir, "step_*", "index"))  # type: ignore
+        return [os.path.dirname(path) for path in index_paths]
+
+    @classmethod
+    def cleanup_checkpoint(cls, ckpt_dir: str, *, sync: bool = True):
+        """Removes ckpt_dir if it exists.
+
+        Args:
+            ckpt_dir: Checkpoint directory (including step).
+            sync: If True, creates a barrier to sync all devices, since removes only happen on
+                process 0.
+        """
+        if jax.process_index() == 0:
+            # We always remove the index file as the first step -- otherwise, the partially-removed
+            # dir can still be considered a valid checkpoint if rmtree is interrupted.
+            index_path = os.path.join(ckpt_dir, "index")
+            if tf.io.gfile.exists(index_path):
+                tf.io.gfile.remove(index_path)
+            if tf.io.gfile.exists(ckpt_dir):
+                tf.io.gfile.rmtree(ckpt_dir)
+        if sync:
+            # Wait for cleanup to complete.
+            multihost_utils.sync_global_devices(f"{ckpt_dir}_cleanup")
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -639,22 +733,11 @@ class Checkpointer(Module):
             self._add_child("summary_writer", cfg.summary_writer)
 
     def __enter__(self):
-        if self._within_context:
-            raise ValueError("Already in a context.")
-        self._within_context = True
-        self.start_gc_thread()
+        super().__enter__()
+        self._start_gc_thread()
 
-    def __exit__(
-        self,
-        exc_type: Optional[Type[BaseException]],
-        exc: Optional[BaseException],
-        traceback: Optional[TracebackType],
-    ) -> Optional[bool]:
-        # Note: returning None here lets the caller handle the exception, if any.
-        self.stop()
-        self._within_context = False
-
-    def start_gc_thread(self):
+    def _start_gc_thread(self):
+        """Starts garbage collection (if not already started) in a separate thread."""
         if self._gc_thread is None and jax.process_index() == 0:
             self._gc_stopping = threading.Event()
             self._gc_thread = threading.Thread(
@@ -665,7 +748,7 @@ class Checkpointer(Module):
             self._gc_thread.start()
 
     def stop(self):
-        """Stops the checkpointer. Waits for async writes and garbage collection loop to finish."""
+        """See `BaseCheckpointer.stop` for details."""
         self.wait_until_finished()
         logging.info("Waiting for gc_thread to finish")
         if self._gc_thread is not None:
@@ -675,28 +758,34 @@ class Checkpointer(Module):
             logging.info("gc_thread finished")
 
     def _gc_loop(self, *, context_stack: List[InvocationContext]):
-        cfg = self.config
+        """Starts garbage collection loop. Will block the current thread."""
+        cfg: Checkpointer.Config = self.config
         install_context_stack(context_stack)
         while True:
             if self._gc_stopping.wait(timeout=cfg.gc_loop_interval_seconds):
                 break
-            self.run_garbage_collection()
+            self._run_garbage_collection()
         logging.info("GC loop done")
 
     def ckpt_dir(self, step: int) -> str:
-        cfg = self.config
+        """Obtains the checkpoint dir for the given step."""
+        cfg: Checkpointer.Config = self.config
         return os.path.join(cfg.dir, f"step_{step:08d}")
 
     def save(
         self, *, step: int, state: NestedTensor, evaler_summaries: Optional[Dict[str, Any]] = None
     ):
-        """Saves `state` at the given `step` according to the configured checkpoint policy."""
+        """See `BaseCheckpointer.save` for details.
+
+        In addition to behavior in `BaseCheckpointer`, saving only happens if the configured
+        checkpoint policy returns True for the given step and evaler summaries.
+        """
         if not self._save_policy(step=step, evaler_summaries=(evaler_summaries or {})):
             return
         if step < 0 or step >= 10**8:
             raise ValueError(f"Out-of-range: {step}")
         ckpt_dir = self.ckpt_dir(step)
-        _cleanup_checkpoint(ckpt_dir)
+        self.cleanup_checkpoint(ckpt_dir)
         self._storage.save_to_dir(
             step=step, state=state, ckpt_dir=ckpt_dir, on_commit_callback=write_index_file
         )
@@ -708,7 +797,7 @@ class Checkpointer(Module):
                 action=CheckpointerAction.SAVE,
             )
 
-    def run_garbage_collection(self):
+    def _run_garbage_collection(self):
         """Runs one round of garbage collection of past checkpoints.
 
         We keep as many dirs to satisfy `keep_last_n` and `keep_every_n_steps`, considering only
@@ -722,7 +811,7 @@ class Checkpointer(Module):
 
         # Gather all candidate checkpoint dirs, as well as all committed checkpoint dirs.
         dirs = sorted(tf.io.gfile.glob(os.path.join(cfg.dir, "step_*")), reverse=True)
-        committed_dirs = set(checkpoint_paths(cfg.dir))
+        committed_dirs = set(self.checkpoint_paths(cfg.dir))
 
         # Collect the recent non-committed checkpoints, since any of them could be in-progress.
         # (Note that keeping just the first one is not sufficient, e.g., if we restarted with a more
@@ -769,7 +858,7 @@ class Checkpointer(Module):
             logging.info("Removing %s", gc_dir)
             try:
                 # Don't need to sync here since gc only runs on process 0.
-                _cleanup_checkpoint(gc_dir, sync=False)
+                self.cleanup_checkpoint(gc_dir, sync=False)
             except Exception as e:  # pylint: disable=broad-except
                 logging.warning("Ignoring error in removing %s: %s.", gc_dir, e)
 
@@ -785,51 +874,28 @@ class Checkpointer(Module):
         """Waits for pending asynchronous saves to finish."""
         self._storage.wait_until_finished()
 
-    def _validate_and_restore(
-        self, *, step: int, state: NestedTensor, ckpt_dir: str
-    ) -> NestedTensor:
-        """Validates a checkpoint is not incomplete and then restores it."""
-        _validate_checkpoint(ckpt_dir)
-        return self._storage.restore_from_dir(step=step, state=state, ckpt_dir=ckpt_dir)
-
     def restore(
         self,
         *,
         step: Optional[int] = None,
         state: Union[NestedTensor, NestedTensorSpec],
     ) -> Tuple[Optional[int], NestedTensor]:
-        """Restores from the checkpoint directory.
+        """See `BaseCheckpointer.restore` docstring for details.
 
-        Args:
-            step: If None, restores from the latest complete checkpoint. Otherwise from the
-                specified step. A complete checkpoint is one with an "index" file, which is only
-                written after the entire checkpoint has been written.
-            state: Ensures that the restored state have the same structure, dtypes, and shapes as
-                `state`.
-
-        Returns:
-            (restored_step, restored_checkpoint_state).
-            If no complete checkpoint is found, returns None as restored_step and the input `state`
-            as restored_checkpoint_state.
+        A complete checkpoint is one with an "index" file, which is only written after the entire
+        checkpoint has been written.
         """
-        cfg = self.config
-        if step is not None:
-            # For a specified step, we try to load it.
-            ckpt_dir = self.ckpt_dir(step)
-            restored_state = self._validate_and_restore(step=step, state=state, ckpt_dir=ckpt_dir)
-            if "summary_writer" in self.children:
-                self.summary_writer.log_checkpoint(
-                    step=step,
-                    state=state,
-                    ckpt_dir=ckpt_dir,
-                    action=CheckpointerAction.RESTORE,
+        cfg: Checkpointer.Config = self.config
+
+        def validate_and_restore(*, step: int, ckpt_dir: str):
+            ckpt_index = os.path.join(ckpt_dir, "index")
+            if not tf.io.gfile.exists(ckpt_index):
+                raise ValueError(
+                    f"Checkpoint {ckpt_dir} is incomplete -- expected {ckpt_index} to be present."
                 )
-            return step, restored_state
-        try:
-            # Latest checkpoint path, if it exists, is guaranteed to be complete.
-            ckpt_dir = latest_checkpoint_path(cfg.dir)
-            step = parse_step_from_dir(ckpt_dir)
-            restored_state = self._validate_and_restore(step=step, state=state, ckpt_dir=ckpt_dir)
+            restored_state = self._storage.restore_from_dir(
+                step=step, state=state, ckpt_dir=ckpt_dir
+            )
             logging.info("Restored state from ckpt at step %s", step)
             if "summary_writer" in self.children:
                 self.summary_writer.log_checkpoint(
@@ -838,8 +904,21 @@ class Checkpointer(Module):
                     ckpt_dir=ckpt_dir,
                     action=CheckpointerAction.RESTORE,
                 )
+            return restored_state
+
+        if step is not None:
+            # For a specified step, we try to load it.
+            ckpt_dir = self.ckpt_dir(step)
+            return step, validate_and_restore(step=step, ckpt_dir=ckpt_dir)
+
+        try:
+            # Latest checkpoint path, if it exists, is guaranteed to be complete.
+            ckpt_dir = self.latest_checkpoint_path(cfg.dir)
+            step = parse_step_from_dir(ckpt_dir)
+            restored_state = validate_and_restore(step=step, ckpt_dir=ckpt_dir)
         except IndexError:
             # No checkpoint path exists. Return with input state.
             logging.info("Could not find any completed checkpoints under %s", cfg.dir)
             restored_state = state
+
         return step, restored_state

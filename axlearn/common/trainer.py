@@ -33,7 +33,7 @@ from jax.experimental.pjit import pjit
 from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
-from axlearn.common.checkpointer import Checkpointer
+from axlearn.common.checkpointer import BaseCheckpointer, Checkpointer
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -143,7 +143,7 @@ class SpmdTrainer(Module):
         # The learner config.
         learner: Required[Learner.Config] = REQUIRED
         # The checkpointer config.
-        checkpointer: Checkpointer.Config = Checkpointer.default_config()
+        checkpointer: BaseCheckpointer.Config = Checkpointer.default_config()
         # A dict of evaler names to configs, each name must be non-empty.
         evalers: Dict[str, SpmdEvaler.Config] = {}
 
@@ -447,9 +447,12 @@ class SpmdTrainer(Module):
             different types of values such as WeightedScalar, Tensor, or string, depending on
             the specific `metric_calculator` config of the evaler.
         """
-        with self._watchdog(), self.mesh(), jax.log_compiles(
-            self.vlog_is_on(1)
-        ), self._context_manager():
+        with (
+            self._watchdog(),
+            self.mesh(),
+            jax.log_compiles(self.vlog_is_on(1)),
+            self._context_manager(),
+        ):
             cfg = self.config
             # Check if need to force run evals at the last training step.
             force_run_eval_sets_at_max_step = self._should_force_run_evals(
