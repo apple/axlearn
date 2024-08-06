@@ -27,7 +27,6 @@ import tensorflow as tf
 from absl import logging
 from jax.experimental import maps, multihost_utils
 from jax.experimental.array_serialization import serialization as array_serialization
-from orbax.checkpoint.checkpoint_manager import CheckpointManager, CheckpointManagerOptions
 import orbax.checkpoint as ocp
 
 from axlearn.common import utils
@@ -685,9 +684,9 @@ class OrbaxCheckpointer(Checkpointer):
     def __init__(self, cfg: Checkpointer.Config):
         super().__init__(cfg, parent = None, create_checkpointer = False)
         self._within_context = False
-        self._checkpoint_manager = CheckpointManager(
+        self._checkpoint_manager = ocp.CheckpointManager(
             directory = cfg.dir,
-            options=CheckpointManagerOptions(
+            options=ocp.CheckpointManagerOptions(
                 create=True,
                 save_interval_steps=cfg.save_policy.n,
                 max_to_keep=cfg.keep_last_n,
@@ -725,11 +724,10 @@ class OrbaxCheckpointer(Checkpointer):
         try:
             state_in_dtype_struct = jax.tree.map(self.to_shape_dtype_struct, state)
             restored_state = self._checkpoint_manager.restore(
-                step=self._checkpoint_manager.latest_step(),
+                step=None, # setting step to None will automatically get the latest step
                 args=ocp.args.StandardRestore(state_in_dtype_struct)
             )
             step = self._checkpoint_manager.latest_step()
-            logging.info("Restored Orbax checkpoints at step %s", step)
         except Exception as e:
             logging.info(f"Encountered the following error when restoring Orbax checkpoint at step {step}: {e}")
             step = None
@@ -749,8 +747,6 @@ class OrbaxCheckpointer(Checkpointer):
                 dtype = element.dtype,
                 sharding = element.sharding
             )
-        else:
-            logging.info("Element is not TensorSpec.")
         return new_element
 
 class StateStorageCheckpointer(Checkpointer):
