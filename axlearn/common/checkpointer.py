@@ -23,11 +23,11 @@ from typing import Any, Dict, List, NamedTuple, Optional, Protocol, Tuple, Type,
 
 import jax
 import jax.numpy as jnp
+import orbax.checkpoint as ocp
 import tensorflow as tf
 from absl import logging
 from jax.experimental import maps, multihost_utils
 from jax.experimental.array_serialization import serialization as array_serialization
-import orbax.checkpoint as ocp
 
 from axlearn.common import utils
 from axlearn.common.array_serialization import BoundedAsyncCheckpointManager
@@ -682,16 +682,16 @@ class OrbaxCheckpointer(Checkpointer):
     """An implementation of Checkpointer using Orbax checkpoint."""
 
     def __init__(self, cfg: Checkpointer.Config):
-        super().__init__(cfg, parent = None, create_checkpointer = False)
+        super().__init__(cfg, parent=None, create_checkpointer=False)
         self._within_context = False
         self._checkpoint_manager = ocp.CheckpointManager(
-            directory = cfg.dir,
+            directory=cfg.dir,
             options=ocp.CheckpointManagerOptions(
                 create=True,
                 save_interval_steps=cfg.save_policy.n,
                 max_to_keep=cfg.keep_last_n,
-                enable_async_checkpointing=True
-            )
+                enable_async_checkpointing=True,
+            ),
         )
 
     def enter(self):
@@ -711,9 +711,7 @@ class OrbaxCheckpointer(Checkpointer):
     def save(
         self, *, step: int, state: NestedTensor, evaler_summaries: Optional[Dict[str, Any]] = None
     ):
-        self._checkpoint_manager.save(
-            step, args=ocp.args.StandardSave(item=state)
-        )
+        self._checkpoint_manager.save(step, args=ocp.args.StandardSave(item=state))
 
     def restore(
         self,
@@ -724,12 +722,14 @@ class OrbaxCheckpointer(Checkpointer):
         try:
             state_in_dtype_struct = jax.tree.map(self.to_shape_dtype_struct, state)
             restored_state = self._checkpoint_manager.restore(
-                step=None, # setting step to None will automatically get the latest step
-                args=ocp.args.StandardRestore(state_in_dtype_struct)
+                step=None,  # setting step to None will automatically get the latest step
+                args=ocp.args.StandardRestore(state_in_dtype_struct),
             )
             step = self._checkpoint_manager.latest_step()
         except Exception as e:
-            logging.info(f"Encountered the following error when restoring Orbax checkpoint at step {step}: {e}")
+            logging.info(
+                f"Encountered error when restoring Orbax checkpoint at step {step}: {e}"
+            )
             step = None
             restored_state = state
         # TODO (maggiejz): also try to restore from StateStorageCheckpoint format
@@ -739,21 +739,20 @@ class OrbaxCheckpointer(Checkpointer):
         self._checkpoint_manager.wait_until_finished()
 
     def to_shape_dtype_struct(self, element):
-        # eg: {'weight': TensorSpec(shape=[32, 8], dtype=<class 'jax.numpy.float32'>, mesh_axes=PartitionSpec(None, 'model'))}
+        """Convert elements of type TensorSpec to jax.ShapeDtypeStruct."""
         if isinstance(element, TensorSpec):
             # change it into orbax compatible format
             new_element = jax.ShapeDtypeStruct(
-                shape = element.shape,
-                dtype = element.dtype,
-                sharding = element.sharding
+                shape=element.shape, dtype=element.dtype, sharding=element.sharding
             )
         return new_element
+
 
 class StateStorageCheckpointer(Checkpointer):
     """A checkpointer that supports various StateStorage implementations."""
 
     def __init__(self, cfg: Checkpointer.Config):
-        super().__init__(cfg, parent = None, create_checkpointer = False)
+        super().__init__(cfg, parent=None, create_checkpointer=False)
         self._storage: StateStorage = cfg.storage.instantiate()
         self._gc_stopping = None
         self._gc_thread = None
