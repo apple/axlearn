@@ -220,7 +220,9 @@ class AdaptiveLayerNormModulation(BaseLayer):
 class DiTFeedForwardLayer(BaseLayer):
     """The DiT feed forward layer.
 
-    output = input + gate * mlp(norm(input) * (1 + scale) + shift),
+    prenorm: output = input + gate * mlp(norm(input) * (1 + scale) + shift)
+    postnorm: output = input + gate * norm(mlp(input * (1 + scale) + shift))
+    hybridnorm: output = input + gate * postnorm(mlp(prenorm(input) * (1 + scale) + shift))
         where mlp = linear2(act(linear1(x)).
     """
 
@@ -248,6 +250,7 @@ class DiTFeedForwardLayer(BaseLayer):
         activation: Union[str, Tuple[str, str]] = "nn.gelu"
         dropout1: InstantiableConfig = Dropout.default_config()
         dropout2: InstantiableConfig = Dropout.default_config()
+        structure: str = "prenorm"
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -256,7 +259,15 @@ class DiTFeedForwardLayer(BaseLayer):
             hidden_dim = cfg.hidden_dim
         else:
             hidden_dim = cfg.hidden_dim.set(input_dim=cfg.input_dim).instantiate()
-        self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
+
+        if cfg.structure in ["prenorm", "postnorm"]:
+            self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
+        elif cfg.structure == "hybridnorm":
+            self._add_child("prenorm", cfg.norm.clone(input_dim=cfg.input_dim))
+            self._add_child("postnorm", cfg.norm.clone(input_dim=cfg.input_dim))
+        else:
+            raise NotImplementedError(cfg.structure)
+
         self._add_child(
             "linear1",
             cfg.linear1.set(input_dim=cfg.input_dim, output_dim=hidden_dim),
@@ -285,7 +296,14 @@ class DiTFeedForwardLayer(BaseLayer):
         cfg = self.config
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
-        x = self.norm(input)
+
+        if cfg.structure == "prenorm":
+            x = self.norm(input)
+        elif cfg.structure == "hybridnorm":
+            x = self.prenorm(input)
+        elif cfg.structure == "postnorm":
+            x = input
+
         x = modulate(x=x, shift=shift, scale=scale)
         x = self.linear1(x)
         x = get_activation_fn(cfg.activation)(x)
@@ -293,6 +311,12 @@ class DiTFeedForwardLayer(BaseLayer):
         x = self.dropout1(x)
         x = self.linear2(x)
         x = self._remat_name(x, remat_pt2)
+
+        if cfg.structure == "postnorm":
+            x = self.norm(x)
+        elif cfg.structure == "hybridnorm":
+            x = self.postnorm(x)
+
         x = self.dropout2(x)
         x = x * jnp.expand_dims(gate, 1)
         x += input
@@ -302,7 +326,10 @@ class DiTFeedForwardLayer(BaseLayer):
 class DiTAttentionLayer(BaseLayer):
     """The DiT attention layer.
 
-    output = input + gate * multihead_atten(norm(input) * (1 + scale) + shift)
+    prenorm: output = input + gate * multihead_atten(norm(input) * (1 + scale) + shift)
+    postnorm: output = input + gate * norm(multihead_atten(input * (1 + scale) + shift))
+    hybridnorm: output = input + gate * postnorm(multihead_atten(
+        prenorm(input) * (1 + scale) + shift))
     """
 
     @config_class
@@ -313,6 +340,7 @@ class DiTAttentionLayer(BaseLayer):
         source_dim: Required[int] = REQUIRED  # Input source feature dim.
         norm: LayerNormStateless.Config = LayerNormStateless.default_config()
         attention: InstantiableConfig = MultiheadAttention.default_config()
+        structure: str = "prenorm"
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -321,7 +349,15 @@ class DiTAttentionLayer(BaseLayer):
             raise ValueError(
                 f"Target dim ({cfg.target_dim}) should match source dim ({cfg.source_dim}."
             )
-        self._add_child("norm", cfg.norm.set(input_dim=cfg.target_dim))
+
+        if cfg.structure in ["prenorm", "postnorm"]:
+            self._add_child("norm", cfg.norm.set(input_dim=cfg.target_dim))
+        elif cfg.structure == "hybridnorm":
+            self._add_child("prenorm", cfg.norm.clone(input_dim=cfg.target_dim))
+            self._add_child("postnorm", cfg.norm.clone(input_dim=cfg.target_dim))
+        else:
+            raise NotImplementedError(cfg.structure)
+
         self._add_child(
             "attention",
             cfg.attention.set(
@@ -332,8 +368,16 @@ class DiTAttentionLayer(BaseLayer):
             ),
         )
 
-    # pylint: disable-next=redefined-builtin
-    def forward(self, *, input: Tensor, shift: Tensor, scale: Tensor, gate: Tensor) -> Tensor:
+    def forward(
+        self,
+        *,
+        # pylint: disable-next=redefined-builtin
+        input: Tensor,
+        shift: Tensor,
+        scale: Tensor,
+        gate: Tensor,
+        attention_logit_biases: Optional[Tensor] = None,
+    ) -> Tensor:
         """The forward function of DiTAttentionLayer.
 
         Args:
@@ -342,13 +386,28 @@ class DiTAttentionLayer(BaseLayer):
             scale: scaling the norm tensor with shape [batch_size, target_dim].
             gate: applying before the residual addition with shape
                 [batch_size, target_dim].
+            attention_logit_biases: An optional Tensor representing the self attention biases.
 
         Returns:
             A tensor with shape [batch_size, num_length, target_dim].
         """
-        x = self.norm(input)
+        cfg = self.config
+
+        if cfg.structure == "prenorm":
+            x = self.norm(input)
+        elif cfg.structure == "hybridnorm":
+            x = self.prenorm(input)
+        elif cfg.structure == "postnorm":
+            x = input
+
         x = modulate(x=x, shift=shift, scale=scale)
-        x = self.attention(query=x, attention_logit_biases=None).data
+        x = self.attention(query=x, attention_logit_biases=attention_logit_biases).data
+
+        if cfg.structure == "postnorm":
+            x = self.norm(x)
+        elif cfg.structure == "hybridnorm":
+            x = self.postnorm(x)
+
         output = input + x * jnp.expand_dims(gate, 1)
         return output
 

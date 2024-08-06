@@ -412,7 +412,7 @@ class BastionManagedTPUJob(BaseBastionManagedJob):
         print(
             "\nNote that the job may take a few minutes to start. "
             f"Once started, view TPU log outputs with:\n{worker_log}\n"
-            f"Replace `*-0` with `*-{{idx}}` where idx is between [0, {num_workers})."
+            f"Replace `*-0` with `*-{{idx}}` where idx is between [0, {num_workers}).\n"
         )
         return job_spec
 
@@ -489,9 +489,9 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
             # TODO(markblee): add the logs command.
             worker_log = f"{infer_cli_name()} gcp logs --name={cfg.name} --worker=0"
             print(
-                f"Once started, view TPU log outputs with:\n{worker_log}\n"
+                f"\nOnce started, view TPU log outputs with:\n{worker_log}\n"
                 "Replace `--worker=0` with `--worker={idx}` "
-                f"where idx is between [0, {num_workers})."
+                f"where idx is between [0, {num_workers}).\n"
             )
         job_spec = super()._execute()
         print(

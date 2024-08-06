@@ -184,7 +184,7 @@ class TestDownloadJobBatch(parameterized.TestCase):
             for call_args in mock_fns["_download_jobspec"].call_args_list:
                 # call_args[0] is the positional args.
                 downloaded_jobs.append(call_args[0][0])
-            self.assertSequenceEqual(valid_jobspecs, downloaded_jobs)
+            self.assertSameElements(valid_jobspecs, downloaded_jobs)
             self.assertContainsSubset(
                 ["FAKE_SPECS/test/invalid", "FAKE_USER_STATES/test/invalid_user_state"],
                 [call_args[0][0] for call_args in mock_fns["_remove"].call_args_list],

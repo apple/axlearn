@@ -59,6 +59,8 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
     base_cfg_map = pajama_trainer.named_trainer_configs()
     for base_cfg_name, cfg in base_cfg_map.items():
         model_size = base_cfg_name.split("-")[1]
+        if "gala" not in base_cfg_name:
+            continue
         if model_size not in MODEL_SIZES:
             continue
         if "flash" in base_cfg_name:

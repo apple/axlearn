@@ -39,11 +39,11 @@ import jax
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
+from jax._src.tree_util import KeyEntry, KeyPath
 from jax.experimental import maps, mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
-from jax.tree_util import register_pytree_node_class
 
-from axlearn.common import serialization, struct
+from axlearn.common import serialization
 from axlearn.common.config import is_named_tuple
 
 # New code should use Nested[XX] instead of NestedXX.
@@ -179,41 +179,27 @@ def tree_paths(
         tree_paths.
     """
 
-    if is_leaf is None:
-        is_leaf = lambda x: False
-
-    def visit(tree, prefix):
-        if is_leaf(tree):
-            return prefix
-        elif tree is None:
-            # None is considered part of the tree structure, not a tree leaf.
-            return tree
-        elif hasattr(tree, "items"):
-            return type(tree)(
-                (k, visit(v, _concat(prefix=prefix, suffix=k, separator=separator)))
-                for k, v in tree.items()
-            )
-        elif isinstance(tree, struct.PyTreeNode):
-            # dataclasses.asdict() cannot be used because it recursively converts children to dicts.
-            return type(tree)(
-                **visit(
-                    {field.name: getattr(tree, field.name) for field in dataclasses.fields(tree)},
-                    prefix,
-                )
-            )
-        elif is_named_tuple(tree):
-            return type(tree)(**visit(tree._asdict(), prefix))
-        elif isinstance(tree, (list, tuple)):
-            return type(tree)(
-                [
-                    visit(v, _concat(prefix=prefix, suffix=k, separator=separator))
-                    for k, v in enumerate(tree)
-                ]
-            )
+    def key_entry_to_str(key_entry: KeyEntry) -> str:
+        # Although (e.g.) DictKey does have its own __str__ implementation, calling
+        # str(DictKey('a')) produces "['a']" instead of just "a".
+        if isinstance(key_entry, jax.tree_util.DictKey):
+            key = key_entry.key
+        elif isinstance(key_entry, jax.tree_util.GetAttrKey):
+            key = key_entry.name
+        elif isinstance(key_entry, jax.tree_util.SequenceKey):
+            key = key_entry.idx
+        elif isinstance(key_entry, jax.tree_util.FlattenedIndexKey):
+            key = key_entry.key
         else:
-            return prefix
+            raise RuntimeError(f"Unknown key entry type {type(key_entry)}: {key_entry}.")
 
-    return visit(tree, "")
+        # Use f-string instead of calling str() because it matches the behavior of the previous
+        # implementation and differs from str() for (e.g.) enums.
+        return f"{key}"
+
+    return jax.tree_util.tree_map_with_path(
+        lambda kp, _: separator.join(key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
+    )
 
 
 @dataclasses.dataclass
@@ -237,14 +223,14 @@ def flatten_items(
     return list((pv.path, pv.value) for pv in flat_paths_and_values)
 
 
-@register_pytree_node_class
+@jax.tree_util.register_pytree_with_keys_class
 class VDict(dict):
     """A dict with Tensor leaf nodes whose values should be vectorized."""
 
     def __repr__(self):
         return f"VDict({super().__repr__()})"
 
-    def tree_flatten(self):
+    def tree_flatten_with_keys(self):
         # Convert dict_values and dict_keys to lists to avoid holding reference to the VDict.
         # We sort the keys so that tree_map works with VDicts that have different key orderings,
         # matching jax's behavior for dicts.
@@ -252,7 +238,10 @@ class VDict(dict):
         if not items:
             return ((), ())
         keys, values = zip(*items)
-        return (values, keys)
+        aux = keys
+        keys = [jax.tree_util.DictKey(k) for k in keys]
+        key_values = list(zip(keys, values))
+        return key_values, aux
 
     @classmethod
     def tree_unflatten(cls, keys, values):
@@ -1357,3 +1346,85 @@ def thread_stack_traces() -> Sequence[Sequence[str]]:
             lines.append(f">>> {line.rstrip()}")
         grouped_lines.append(lines)
     return grouped_lines
+
+
+def pytree_children(node: Any) -> Sequence[Tuple[KeyEntry, Any]]:
+    """Generate the (key, value) pairs for the immediate children of a pytree `node`.
+
+    The returned children match those returned by
+    `jax.tree_util.default_registry.flatten_one_level()`.
+
+    Reference: jax._src.tree_util.generate_key_paths()
+
+    Example:
+        ```
+        assert pytree_children(dict(a=[1,2])) == [(DictKey('a'), [1,2])]
+        ```
+    """
+    # pylint: disable-next=protected-access
+    registry_with_keypaths = jax._src.tree_util._registry_with_keypaths
+
+    key_handler = registry_with_keypaths.get(type(node))
+    if key_handler:
+        key_children, _ = key_handler.flatten_with_keys(node)
+        return key_children
+
+    flat = jax.tree_util.default_registry.flatten_one_level(node)
+    if flat is None:
+        return []
+
+    if isinstance(node, tuple) and hasattr(node, "_fields") and flat[1] == type(node):
+        # Handle namedtuple as a special case, based on heuristic.
+        return [(jax.tree_util.GetAttrKey(s), getattr(node, s)) for s in node._fields]
+    return [(jax.tree_util.FlattenedIndexKey(i), c) for i, c in enumerate(flat[0])]
+
+
+def find_cycles(tree: Nested) -> dict[str, KeyPath]:
+    """Find a cycle in pytree `tree` if one exists.
+
+    This function finds a descendant which has reference equality with one of its own
+    ancestors, if one exists.
+
+    Args:
+        tree: The tree to find cycles in.
+
+    Returns:
+        If no cycle is found, an empty dict.
+        If a cycle is found a dict with keys:
+        * descendant: The KeyPath to the descendant.
+        * ancestor: The KeyPath to the ancestor.
+    """
+
+    def _find_cycles(tree: Nested, *, key_path: KeyPath, seen: list[int]) -> dict[str, KeyPath]:
+        # DFS and check if path to root contains repeats.
+        # This is quadratic time in the depth of the tree but could be made linear
+        # time with a small amount of additional implementation complexity.
+        uid = id(tree)
+        if uid in seen:
+            result = dict(descendant=key_path[:], ancestor=key_path[: seen.index(uid)])
+            return result
+        seen.append(uid)
+        items = pytree_children(tree)
+        for key, child in items:
+            key_path.append(key)
+            result = _find_cycles(child, key_path=key_path, seen=seen)
+            key_path.pop()
+            if result:
+                return result
+        seen.pop()
+        return {}
+
+    return _find_cycles(tree, key_path=[], seen=[])
+
+
+def raise_for_cycles(tree: Any):
+    """Raise an informative error message if `tree` contains cycles."""
+
+    cycles = find_cycles(tree)
+    if cycles:
+        raise ValueError(
+            "Circular reference in args, kwargs, or context.\n"
+            "Descendant refers to ancestor.\n"
+            f"Descendant KeyPath: {cycles['descendant']}.\n"
+            f"Ancestor KeyPath: {cycles['ancestor']}."
+        )

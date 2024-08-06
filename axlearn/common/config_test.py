@@ -2,7 +2,7 @@
 
 """Unittests for config.py."""
 
-# pylint: disable=too-many-public-methods
+# pylint: disable=too-many-public-methods,protected-access
 import collections
 import copy
 import dataclasses
@@ -27,6 +27,7 @@ from axlearn.common.config import (
     RequiredFieldMissingError,
     config_class,
     maybe_set_config,
+    validate_config_field_value,
 )
 
 
@@ -668,7 +669,7 @@ class ConfigTest(parameterized.TestCase):
                 "config_dict": {"config_b": {"count": 5}},
                 "config_list": [{"count": 5}, {"count": 1}],
                 "config_type": "axlearn.common.config_test.ConfigTest",
-                "config_func": "axlearn.common.utils.similar_names",
+                "config_func": "axlearn.common.config.similar_names",
             },
         )
         self.assertCountEqual(
@@ -841,6 +842,67 @@ class ConfigTest(parameterized.TestCase):
         self.assertEqual(cfg.vlog, 2)
         self.assertEqual(cfg.dtype, np.float32)
         self.assertFalse(hasattr(cfg, not_exist_key))
+
+    def test_validate_hf(self):
+        class HFLike:
+            def from_pretrained(self, *args):
+                del args
+
+            def to_dict(self, *args):
+                del args
+
+        # Note that hasattr(HFLike, "from_pretrained") == True.
+        validate_config_field_value(HFLike)
+        validate_config_field_value(HFLike())
+
+    def test_register_validator(self):
+        # Test validating a custom type.
+        class MyCustomType:
+            value: int = 0
+
+        @config_class
+        class MyConfig(ConfigBase):
+            custom: Any = MyCustomType()
+
+        # Validate that custom type initially is not accepted.
+        with self.assertRaises(config.InvalidConfigValueError):
+            validate_config_field_value(MyCustomType())
+        with self.assertRaises(config.InvalidConfigValueError):
+            MyConfig()
+
+        def validate_fn(v):
+            if v.value <= 0:
+                raise config.InvalidConfigValueError()
+
+        # Register custom validator.
+        config.register_validator(
+            match_fn=lambda v: isinstance(v, MyCustomType), validate_fn=validate_fn
+        )
+
+        # Test that validate_fn is invoked.
+        with self.assertRaises(config.InvalidConfigValueError):
+            validate_config_field_value(MyCustomType())
+        with self.assertRaises(config.InvalidConfigValueError):
+            MyConfig()
+
+        # Test that validation succeeds.
+        MyCustomType.value = 1
+        validate_config_field_value(MyCustomType())
+        MyConfig()
+
+        def raise_fn(v):
+            del v
+            raise config.InvalidConfigValueError()
+
+        # Check that all matched validators are invoked.
+        config.register_validator(
+            match_fn=lambda v: isinstance(v, MyCustomType), validate_fn=raise_fn
+        )
+
+        with self.assertRaises(config.InvalidConfigValueError):
+            validate_config_field_value(MyCustomType())
+        with self.assertRaises(config.InvalidConfigValueError):
+            MyConfig()
 
 
 if __name__ == "__main__":
