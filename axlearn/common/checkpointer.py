@@ -723,10 +723,10 @@ class OrbaxCheckpointer(Checkpointer):
         state: Union[NestedTensor, NestedTensorSpec],
     ) -> Tuple[Optional[int], NestedTensor]:
         try:
-            transformed_state = jax.tree.map(self.transform_tensorspec, state)
+            state_in_dtype_struct = jax.tree.map(self.to_shape_dtype_struct, state)
             restored_state = self._checkpoint_manager.restore(
                 step=self._checkpoint_manager.latest_step(),
-                args=ocp.args.StandardRestore(transformed_state)
+                args=ocp.args.StandardRestore(state_in_dtype_struct)
             )
             step = self._checkpoint_manager.latest_step()
             logging.info("Restored Orbax checkpoints at step %s", step)
@@ -740,7 +740,7 @@ class OrbaxCheckpointer(Checkpointer):
     def stop(self):
         self._checkpoint_manager.wait_until_finished()
 
-    def transform_tensorspec(self, element):
+    def to_shape_dtype_struct(self, element):
         # eg: {'weight': TensorSpec(shape=[32, 8], dtype=<class 'jax.numpy.float32'>, mesh_axes=PartitionSpec(None, 'model'))}
         if isinstance(element, TensorSpec):
             # change it into orbax compatible format
@@ -750,7 +750,7 @@ class OrbaxCheckpointer(Checkpointer):
                 sharding = element.sharding
             )
         else:
-            print("Not TensorSpec")
+            logging.info("Element is not TensorSpec.")
         return new_element
 
 class StateStorageCheckpointer(Checkpointer):
