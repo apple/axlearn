@@ -37,6 +37,7 @@ from axlearn.common.attention import (
     build_remat_spec,
     set_double_shard_weights_config,
 )
+from axlearn.common.base_layer import RematSpec
 from axlearn.common.checkpointer import every_n_steps_and_last_policy
 from axlearn.common.config import (
     ConfigOr,
@@ -183,7 +184,10 @@ def mesh_shape_from_axes(
 
 
 def update_model_remat_config(
-    *, stack_cfg: causal_lm.TransformerStackConfig, layer_cfg: TransformerLayer.Config
+    *,
+    stack_cfg: causal_lm.TransformerStackConfig,
+    layer_cfg: TransformerLayer.Config,
+    remat_spec: Optional[RematSpec] = None,
 ):
     """Recomputes and sets the remat_spec based on provided layer_cfg.
 
@@ -192,6 +196,7 @@ def update_model_remat_config(
     Args:
         stack_cfg: The transformer stack config.
         layer_cfg: The transformer layer config.
+        remat_spec: The RematSpec to use.
 
     Raises:
         NotImplementedError: If `stack_cfg.klass` is not a RepeatedTransformerLayer.
@@ -201,13 +206,15 @@ def update_model_remat_config(
             f"Remat spec is not implemented for stack_cfg with klass={type(stack_cfg.klass)}"
         )
 
-    if layer_cfg.self_attention.attention.klass is not FlashAttention:
+    if remat_spec is not None:
+        model_remat_spec = remat_spec
+    elif layer_cfg.self_attention.attention.klass is not FlashAttention:
         # Enable remat to reduce memory usage for larger models.
-        remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg))
+        model_remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg))
     else:
         # Checkpointing both ffn and attention to give the best performance.
-        remat_spec = build_remat_spec(stack_cfg, feed_forward=True, self_attention=True)
-    layer_cfg.set(remat_spec=remat_spec)
+        model_remat_spec = build_remat_spec(stack_cfg, feed_forward=True, self_attention=True)
+    layer_cfg.set(remat_spec=model_remat_spec)
 
 
 def model_config(
@@ -230,6 +237,7 @@ def model_config(
     ffn_structure: str = "prenorm",
     atten_structure: str = "prenorm",
     atten_logit_cap: Optional[float] = None,
+    remat_spec: Optional[RematSpec] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -276,7 +284,7 @@ def model_config(
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
     if stack_cfg.klass is RepeatedTransformerLayer:
-        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
+        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg, remat_spec=remat_spec)
     # Stack.
     transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(
