@@ -1913,10 +1913,12 @@ class MovingAverage(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
+        shape: Sequence[int] = tuple()
         # The minimum weight for an update.
         min_weight: Required[float] = REQUIRED
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+        cfg = self.config
         return {
             "count": ParameterSpec(
                 shape=[],
@@ -1926,7 +1928,7 @@ class MovingAverage(BaseLayer):
                 weight_decay_scale=0,
             ),
             "value": ParameterSpec(
-                shape=[],
+                shape=cfg.shape,
                 dtype=jnp.float32,
                 mesh_axes=(None,),
                 initializer=constant_initializer(0.0),
@@ -1935,6 +1937,16 @@ class MovingAverage(BaseLayer):
         }
 
     def forward(self, x: Tensor) -> Tensor:
+        """Computes a moving average of `x`.
+
+        The moving average updates will be set in OutputCollection.state_updates.
+
+        Args:
+            x: A Tensor of shape cfg.shape.
+
+        Returns:
+            Returns the current moving average.
+        """
         cfg = self.config
         weight = jnp.maximum(cfg.min_weight, 1.0 / (1 + self.parameters["count"]))
         new_moving_average = (1 - weight) * self.parameters["value"] + weight * x

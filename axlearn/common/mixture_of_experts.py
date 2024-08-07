@@ -195,6 +195,17 @@ class AdaptiveLoadBalanceLoss(BaseLayer):
         }
 
     def forward(self, value: Tensor) -> Tensor:
+        """Adjusts and returns the loss scale based on a moving average of `value`.
+
+        The adjustments are set in OutputCollection.state_updates and won't take effect until
+        the state updates are applied.
+
+        Args:
+            value: The observed value (e.g., representing the MoE over-capacity ratio).
+
+        Returns:
+            The new loss scale, a scalar with a positive float value.
+        """
         cfg = self.config
         value = self.value_average(value)
         self.add_summary("value_average", value)
