@@ -2390,11 +2390,15 @@ class TransformerAttentionLayer(BaseLayer):
             return atten_state, atten_output
 
         if cfg.structure == "prenorm":
+            target = with_sharding_constraint(target, PartitionSpec('data','model',None))
             skip_input = target  # pre-norm: where normalization happens within the residual part.
             skip_input = self._remat_name(skip_input, 'residual_skip')
             norm_target = self.norm(target)
-            norm_target = self._remat_name(norm_target, 'attention_norm')
+            norm_target = with_sharding_constraint(norm_target, PartitionSpec('data',None,None))
+            norm_target = checkpoint_name(norm_target, name='before_thunk')
+            #norm_target = self._remat_name(norm_target, 'attention_norm')
             atten_state, atten_output = attention_thunk(norm_target)
+            atten_output = with_sharding_constraint(atten_output, PartitionSpec('data','model',None))
             data = skip_input + self.stochastic_depth(self.dropout(atten_output.data))
             data = self._remat_name(data, 'residual_add')
         elif cfg.structure == "postnorm":
@@ -2706,13 +2710,16 @@ class TransformerFeedForwardLayer(BaseLayer):
         remat_pt2 = "linear2"
         inputs = self._remat_name(inputs, 'residual_input')
         if cfg.structure == "prenorm":
+            x = with_sharding_constraint(inputs, PartitionSpec('data','model',None))
             x = self.norm(inputs)
             x = self._remat_name(x, 'mlp_norm')
+            x = with_sharding_constraint(x, PartitionSpec('data',None,None))
             x = self._linear1_activation(x)
             x = self._remat_name(x, remat_pt1)
             x = self.dropout1(x)
             x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
+            x = with_sharding_constraint(x, PartitionSpec('data','model',None))
             x = self.dropout2(x)
             x = self.stochastic_depth(x)
             if cfg.residual_weight != 1:
@@ -3804,11 +3811,10 @@ def build_remat_spec(
             # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
             # or Repeated Conformers) we can enable common subexpression elimination optimizations.
             policy=config_for_function(jax.checkpoint_policies.save_any_names_but_these).set(
-                names_not_to_save=(["all_gather","before_attention", "input_to_qkv"] +
+                names_not_to_save=(["all_gather","before_attention", "before_thunk", "input_to_qkv"] +
                     [f"{attention_name}.{el}"
                     for el in ['input_qkv_ag', 'o_proj']] +
-                    [f"{ffn_name}.{el}" for el in ["mlp_norm", "linear2"]] + 
-                    [f"RMSNorm.{el}" for el in ["output", "output_ag"]]
+                    [f"{ffn_name}.{el}" for el in ["mlp_norm", "linear2"]]
                 )
             ),
         )

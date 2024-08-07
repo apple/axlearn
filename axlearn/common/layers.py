@@ -324,31 +324,18 @@ class RMSNorm(BaseNormalizationLayer):
         }
     
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
-        x = with_sharding_constraint(x, PartitionSpec('data', 'model', None))
         del paddings  # paddings do not affect LayerNorm results
         cfg = self.config
         x_dtype = x.dtype
         if cfg.forward_dtype is not None:
             x = x.astype(cfg.forward_dtype)
+        x = with_sharding_constraint(x, PartitionSpec('data','model', None))
         moment2 = (x * x).mean(axis=-1, keepdims=True)
-        moment2 = self._remat_name(moment2, 'moment2')
-        sqrt = jax.lax.rsqrt(moment2 + cfg.eps)
-        sqrt = self._remat_name(sqrt, 'sqrt')
-        x = x * sqrt
-        x = self._remat_name(x, 'sqrt_mul')
+        x = x * jax.lax.rsqrt(moment2 + cfg.eps)
         x = x.astype(x_dtype)
-        x = with_sharding_constraint(x, PartitionSpec('data', 'model', None))
+        x = with_sharding_constraint(x, PartitionSpec('data','model', None))
         x = x * self.parameters["scale"]
-        x = with_sharding_constraint(x, PartitionSpec('data', 'model', None))
-        x = self._remat_name(x, 'output')
-        # Wrap the all-gather collective with jax.remat
-        @jax.remat
-        def all_gather(x):
-            return checkpoint_name(with_sharding_constraint(x, PartitionSpec('data', None, None)), name="all_gather")
-        
-        x = all_gather(x)
-       # x = checkpoint_name(with_sharding_constraint(x, PartitionSpec('data', None, None)), name="all_gather")
-        x = self._remat_name(x, "output_ag")
+        x = with_sharding_constraint(x, PartitionSpec('data','model', None))
         return x
 
 

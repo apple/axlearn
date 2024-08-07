@@ -14,13 +14,13 @@ mkdir -p "$TEST_ARTIFACTS_PATH"
 
 NEURON_DUMP_PATH=${TEST_ARTIFACTS_PATH}/neuron_dump
 HLO_DUMP_PATH=${TEST_ARTIFACTS_PATH}/hlo_dump
-export XLA_FLAGS="--xla_dump_hlo_as_text --xla_dump_hlo_as_proto --xla_dump_to=${HLO_DUMP_PATH} --xla_dump_hlo_pass_re='.*'"
+export XLA_FLAGS="--xla_dump_hlo_as_text --xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot --xla_dump_hlo_as_proto --xla_dump_to=${HLO_DUMP_PATH} --xla_dump_hlo_pass_re='.*'"
 
 vnc_size=2
 
 # Neuron compiler flags
 export NEURON_CC_FLAGS="--framework=XLA"
-export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --target=trn2 --internal-compiler-debug-mode=penguin"
+export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --target=trn2 --distribution-strategy=llm-training --internal-compiler-debug-mode=penguin"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-num-neuroncores-per-sengine=${vnc_size} --internal-hlo2tensorizer-options='--verify-hlo --fuse-dot-logistic=false'"
 export NEURON_RT_VIRTUAL_CORE_SIZE=${vnc_size}
 export NEURON_RT_RESET_CORES=1
@@ -34,7 +34,7 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --no-internal-hlo-remat"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --enable-mixed-precision-accumulation"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} -O1"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
-export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --disable-internal-dge"
+#export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --disable-internal-dge"
 
 # Neuron PJRT flags
 export NEURON_WHILE_LOOP_UNROLL=1
