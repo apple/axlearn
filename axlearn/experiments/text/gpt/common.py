@@ -33,6 +33,7 @@ from axlearn.common.attention import (
     FusedQKVLinear,
     MultiheadAttention,
     RepeatedTransformerLayer,
+    StackedTransformerLayer,
     TransformerLayer,
     build_remat_spec,
     set_double_shard_weights_config,
@@ -233,7 +234,7 @@ def model_config(
         layer_cfg.self_attention.attention.input_linear = attention_qkv_linear
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
-    if stack_cfg.klass is RepeatedTransformerLayer:
+    if stack_cfg.klass is RepeatedTransformerLayer or stack_cfg.klass is StackedTransformerLayer:
         if layer_cfg.self_attention.attention.klass is not FlashAttention:
             # Enable remat to reduce memory usage for larger models.
             layer_cfg.remat_spec = build_remat_spec(stack_cfg)
@@ -268,7 +269,7 @@ def model_config(
         batch_axis_names=batch_axis_names,
         seq_axis_names="seq",
     )
-    cfg.dtype = jnp.float32
+    cfg.dtype = jnp.bfloat16
     # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(
         cfg.decoder.transformer.layer,

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
+sudo dpkg -i /home/ptoulme/compiler_5th/aws-neuronx-runtime-lib-2.x.x.x-b0ad3b9d9.deb
+sudo dpkg -i /home/ptoulme/compiler_5th/aws-neuronx-collectives-2.x.x.x-99c2ee88a.deb
+
+PY_VENV_PATH="/home/ptoulme/axlearn_venv/bin/activate"
+source ${PY_VENV_PATH}
 
 cd /axlearn
 
-ARTIFACTS_PATH="/artifacts"
+ARTIFACTS_PATH="/home/ptoulme/artifacts"
 TIMESTAMP=$(date +"%y%m%d%H%M%S")
 TEST_ARTIFACTS_PATH="${ARTIFACTS_PATH}/${TIMESTAMP}"
 mkdir -p "$TEST_ARTIFACTS_PATH"
@@ -20,7 +25,7 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-num-neuroncores-per-sengin
 export NEURON_RT_VIRTUAL_CORE_SIZE=${vnc_size}
 export NEURON_RT_RESET_CORES=1
 export NEURON_RT_LOG_LEVEL="WARNING"
-
+#--internal-compiler-debug-mode=all
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --target=trn2"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --model-type transformer"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --no-internal-hlo-remat"
@@ -34,7 +39,7 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --disable-internal-dge"
 # Neuron PJRT flags
 export NEURON_WHILE_LOOP_UNROLL=1
 export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1
-export NEURON_TRANSFORMER_SHARDING=1
+#export NEURON_TRANSFORMER_SHARDING=1
 
 # Neuron runtime flags
 export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1

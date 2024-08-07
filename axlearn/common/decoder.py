@@ -507,6 +507,7 @@ class Decoder(DecodingMixin, BaseLayer):
 
         if "output_norm" in self.children:
             x = self.output_norm(x)
+            x = self._remat_name(x, 'output_norm')
             self._add_tensor_stats("norm_outputs", x)
         x = self.output_dropout(x)
         if "lm_head" in self.children:

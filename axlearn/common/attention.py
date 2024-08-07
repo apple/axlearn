@@ -46,6 +46,7 @@ import math
 from enum import Enum, unique
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
+from jax.ad_checkpoint import checkpoint_name
 import jax
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
@@ -1062,6 +1063,7 @@ class FusedQKVLinear(BaseQKVLinear):
                 # N.B. this branch (with just the query inputs) is required in
                 # order to get the best step time on TPU for self-attention.
                 inputs = query  # [batch, target_length, target_dim].
+                inputs = checkpoint_name(inputs, 'input_to_qkv')
                 proj = self.qkv_proj.einsum_maybe_quantized(
                     "btd,pdnh->pbtnh", activation=inputs, kernel=params["weight"]
                 )
@@ -1312,6 +1314,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
         time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         cfg = self.config
+        query = self._remat_name(query, "input_qkv_ag")
         # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
         query, key, value = self.i_proj(query, key=key, value=value)
         if time_step is None:
@@ -1667,6 +1670,7 @@ class MultiheadAttention(BaseLayer):
             ValueError: If `mode` is unsupported.
         """
         cfg = self.config
+        query = self._remat_name(query, "input_qkv_ag")
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
@@ -2387,9 +2391,12 @@ class TransformerAttentionLayer(BaseLayer):
 
         if cfg.structure == "prenorm":
             skip_input = target  # pre-norm: where normalization happens within the residual part.
+            skip_input = self._remat_name(skip_input, 'residual_skip')
             norm_target = self.norm(target)
+            norm_target = self._remat_name(norm_target, 'attention_norm')
             atten_state, atten_output = attention_thunk(norm_target)
             data = skip_input + self.stochastic_depth(self.dropout(atten_output.data))
+            data = self._remat_name(data, 'residual_add')
         elif cfg.structure == "postnorm":
             # This is the structure used by the original Transformer, BERT, and RoBERTa.
             atten_state, atten_output = attention_thunk(target)
@@ -2697,8 +2704,10 @@ class TransformerFeedForwardLayer(BaseLayer):
 
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
+        inputs = self._remat_name(inputs, 'residual_input')
         if cfg.structure == "prenorm":
             x = self.norm(inputs)
+            x = self._remat_name(x, 'mlp_norm')
             x = self._linear1_activation(x)
             x = self._remat_name(x, remat_pt1)
             x = self.dropout1(x)
@@ -2709,6 +2718,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
             x += inputs
+            x=self._remat_name(x, 'mlp_residual')
         elif cfg.structure == "postnorm":
             x = self._linear1_activation(inputs)
             x = self._remat_name(x, remat_pt1)
@@ -3041,6 +3051,7 @@ class ParallelTransformerLayer(BaseTransformerLayer):
         """
         inputs = data
         data = self.norm(data)
+        data = checkpoint_name(data, 'before_attention')
         self_atten_outputs = self.self_attention(
             query=data,
             key=data,
@@ -3782,14 +3793,32 @@ def build_remat_spec(
     # TODO(markblee): Switch to using isinstance everywhere.
     if stack_cfg.klass is PipelinedTransformerLayer:
         return None
-
+    print(f'Stack_cfg {stack_cfg}')
+    if jax.default_backend() == 'neuron':
+        fused_qkv_name = stack_cfg.layer.self_attention.attention.input_linear.klass.__name__
+        ffn_name = stack_cfg.layer.feed_forward.klass.__name__
+        attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
+        print(stack_cfg.layer.self_attention.attention)
+        return RematSpec(
+            prevent_cse=stack_cfg.klass is StackedTransformerLayer,
+            # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
+            # or Repeated Conformers) we can enable common subexpression elimination optimizations.
+            policy=config_for_function(jax.checkpoint_policies.save_any_names_but_these).set(
+                names_not_to_save=(["before_attention", "input_to_qkv"] +
+                    [f"{attention_name}.{el}"
+                    for el in ['input_qkv_ag', 'o_proj']] +
+                    [f"{ffn_name}.{el}" for el in ["mlp_norm", "linear2"]] + 
+                    [f"RMSNorm.{el}" for el in ["output"]]
+                )
+            ),
+        )
     checkpoints = []
     if self_attention:
         attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
         checkpoints.extend(
             [f"{attention_name}.{el}" for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]]
         )
-    if feed_forward and hasattr(stack_cfg.layer, "feed_forward"):
+    if False and feed_forward and hasattr(stack_cfg.layer, "feed_forward"):
         ffn_name = stack_cfg.layer.feed_forward.klass.__name__
         checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
 
