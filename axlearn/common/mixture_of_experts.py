@@ -34,11 +34,12 @@ from axlearn.common.layers import (
     BaseNormalizationLayer,
     Dropout,
     LayerNorm,
+    MovingAverage,
     StochasticDepth,
     get_activation_fn,
 )
 from axlearn.common.module import Module
-from axlearn.common.param_init import FanAxes
+from axlearn.common.param_init import FanAxes, constant_initializer
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
@@ -162,6 +163,53 @@ def _cap_logits(logits: Tensor, gating_logit_cap: float) -> Tensor:
     return logits
 
 
+class AdaptiveLoadBalanceLoss(BaseLayer):
+    """A layer to adjust the aux loss weight based on the overcapacity ratio.
+
+    It maintains a moving average of the overcapacity ratios seen during training and adjusts
+    the scale if the average overcapacity ratio falls outside the target range.
+    """
+
+    @config_class
+    class Config(BaseLayer.Config):
+        moving_average: MovingAverage.Config = MovingAverage.default_config()
+        max_value: Required[float] = REQUIRED
+        min_value: float = 1e-3
+        # When adjusting the aux loss scale, increase or decrease by a factor of e^log_step.
+        log_step: float = 0.01
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg: AdaptiveLoadBalanceLoss.Config = self.config
+        self._add_child("value_average", cfg.moving_average)
+
+    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+        return {
+            "log_scale": ParameterSpec(
+                shape=[],
+                dtype=jnp.float32,
+                mesh_axes=(None,),
+                initializer=constant_initializer(0.0),
+                weight_decay_scale=0,
+            ),
+        }
+
+    def forward(self, value: Tensor) -> Tensor:
+        cfg = self.config
+        value = self.value_average(value)
+        self.add_summary("value_average", value)
+        # Increase log_scale if x > max_value;
+        # Decrease log_scale if x < min_value;
+        # Otherwise keep log_scale unchanged.
+        inc = jnp.greater(value, cfg.max_value).astype(jnp.float32)
+        dec = jnp.less(value, cfg.min_value).astype(jnp.float32)
+        new_log_scale = self.parameters["log_scale"] + (inc - dec) * cfg.log_step
+        self.add_state_update("log_scale", new_log_scale)
+        scale = jnp.exp(new_log_scale)
+        self.add_summary("scale", scale)
+        return scale
+
+
 class BaseGating(BaseLayer):
     """An abstract class to define the common interface of gating layers.
 
@@ -237,6 +285,15 @@ class Top2Gating(BaseGating):
         # Number of examples per minibatch/group per expert. Each example is typically a vector
         # of size input_dim, representing embedded token or an element of Transformer layer output.
         expert_capacity: Optional[int] = None
+
+        # If not None, adjust the aux loss according to recent over-capacity ratios.
+        adaptive_load_balance_loss: Optional[AdaptiveLoadBalanceLoss.Config] = None
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg: Top2Gating.Config = self.config
+        if cfg.adaptive_load_balance_loss is not None:
+            self._add_child("adaptive_load_balance_loss", cfg.adaptive_load_balance_loss)
 
     # pylint: disable-next=too-many-statements
     def forward(self, logits: Tensor) -> NestedTensor:
@@ -360,13 +417,21 @@ class Top2Gating(BaseGating):
         router_z_loss = _router_z_loss(logits)
 
         # Adding auxiliary losses and gating statistics to job summary.
-        self.add_summary("load_balance_loss", aux_loss)
         self.add_summary("router_z_loss", router_z_loss)
         self.add_summary("dispatch_0", dispatch_0)
         self.add_summary("dispatch_1", dispatch_1)
         self.add_summary("dispatch_2", dispatch_2)
         self.add_summary("over_capacity_1", over_capacity_1)
         self.add_summary("over_capacity_2", over_capacity_2)
+
+        if cfg.adaptive_load_balance_loss is None:
+            self.add_summary("load_balance_loss", aux_loss)
+        else:
+            self.add_summary("load_balance_loss_original", aux_loss)
+            aux_loss *= self.adaptive_load_balance_loss(
+                jnp.maximum(over_capacity_1, over_capacity_2)
+            )
+            self.add_summary("load_balance_loss", aux_loss)
 
         return self.Output(
             combine_tensor=combine_tensor,
