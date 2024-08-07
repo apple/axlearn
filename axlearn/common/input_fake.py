@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Fake input modules."""
+
 import json
 from typing import Any, Dict, Iterable, Optional, Sequence, Tuple, Union
 
@@ -225,7 +226,6 @@ class EmptyInput(FakeTextInput):
         """Configures EmptyInput."""
 
         is_training: Required[bool] = REQUIRED
-        global_batch_size: Required[int] = 512
 
 
 def fake_source(

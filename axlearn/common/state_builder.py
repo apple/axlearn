@@ -437,7 +437,9 @@ class BaseConverterFromPretrainedModel(Converter):
 
         with set_data_dir(cfg.source_data_dir or get_data_dir()):
             trainer_cfg = cfg_fn()
-            logging.info("Initialize model and learner states for: %s", trainer_cfg.name)
+            logging.info(
+                "Initialize model and learner states for the pretrained model: %s", trainer_cfg.name
+            )
             trainer_cfg.dir = mkdtemp()
             trainer_cfg.mesh_axis_names = (
                 cfg.mesh_axis_names or trainer_cfg.mesh_axis_names or ("data", "model")
