@@ -24,7 +24,7 @@ from absl import logging
 from jax import nn
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
-
+from jax.ad_checkpoint import checkpoint_name
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterNoise, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
@@ -322,7 +322,7 @@ class RMSNorm(BaseNormalizationLayer):
         return {
             "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
         }
-
+    
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
         x = with_sharding_constraint(x, PartitionSpec('data', 'model', None))
         del paddings  # paddings do not affect LayerNorm results
@@ -337,9 +337,18 @@ class RMSNorm(BaseNormalizationLayer):
         x = x * sqrt
         x = self._remat_name(x, 'sqrt_mul')
         x = x.astype(x_dtype)
+        x = with_sharding_constraint(x, PartitionSpec('data', 'model', None))
         x = x * self.parameters["scale"]
+        x = with_sharding_constraint(x, PartitionSpec('data', 'model', None))
         x = self._remat_name(x, 'output')
-        x = with_sharding_constraint(x, PartitionSpec('data', None, None))
+        # Wrap the all-gather collective with jax.remat
+        @jax.remat
+        def all_gather(x):
+            return checkpoint_name(with_sharding_constraint(x, PartitionSpec('data', None, None)), name="all_gather")
+        
+        x = all_gather(x)
+       # x = checkpoint_name(with_sharding_constraint(x, PartitionSpec('data', None, None)), name="all_gather")
+        x = self._remat_name(x, "output_ag")
         return x
 
 

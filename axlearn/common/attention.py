@@ -1063,7 +1063,7 @@ class FusedQKVLinear(BaseQKVLinear):
                 # N.B. this branch (with just the query inputs) is required in
                 # order to get the best step time on TPU for self-attention.
                 inputs = query  # [batch, target_length, target_dim].
-                inputs = checkpoint_name(inputs, 'input_to_qkv')
+                inputs = checkpoint_name(inputs, name='input_to_qkv')
                 proj = self.qkv_proj.einsum_maybe_quantized(
                     "btd,pdnh->pbtnh", activation=inputs, kernel=params["weight"]
                 )
@@ -3051,7 +3051,7 @@ class ParallelTransformerLayer(BaseTransformerLayer):
         """
         inputs = data
         data = self.norm(data)
-        data = checkpoint_name(data, 'before_attention')
+        data = checkpoint_name(data, name='before_attention')
         self_atten_outputs = self.self_attention(
             query=data,
             key=data,
@@ -3804,11 +3804,11 @@ def build_remat_spec(
             # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
             # or Repeated Conformers) we can enable common subexpression elimination optimizations.
             policy=config_for_function(jax.checkpoint_policies.save_any_names_but_these).set(
-                names_not_to_save=(["before_attention", "input_to_qkv"] +
+                names_not_to_save=(["all_gather","before_attention", "input_to_qkv"] +
                     [f"{attention_name}.{el}"
                     for el in ['input_qkv_ag', 'o_proj']] +
                     [f"{ffn_name}.{el}" for el in ["mlp_norm", "linear2"]] + 
-                    [f"RMSNorm.{el}" for el in ["output"]]
+                    [f"RMSNorm.{el}" for el in ["output", "output_ag"]]
                 )
             ),
         )

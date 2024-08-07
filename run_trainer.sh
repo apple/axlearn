@@ -20,7 +20,7 @@ vnc_size=2
 
 # Neuron compiler flags
 export NEURON_CC_FLAGS="--framework=XLA"
-export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --target=trn2"
+export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --target=trn2 --internal-compiler-debug-mode=penguin"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-num-neuroncores-per-sengine=${vnc_size} --internal-hlo2tensorizer-options='--verify-hlo --fuse-dot-logistic=false'"
 export NEURON_RT_VIRTUAL_CORE_SIZE=${vnc_size}
 export NEURON_RT_RESET_CORES=1
