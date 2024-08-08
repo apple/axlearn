@@ -215,7 +215,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         job_id="test-id1",
                     ),
                 ),
-                state=BastionJobState(status=JobStatus.ACTIVE),
+                state=BastionJobState(status=JobStatus.ACTIVE, metadata={"tier": 1}),
                 command_proc=None,
                 cleanup_proc=None,
             ),
@@ -231,7 +231,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         job_id="test-id2",
                     ),
                 ),
-                state=BastionJobState(status=JobStatus.ACTIVE),
+                state=BastionJobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
                 command_proc=None,
                 cleanup_proc=None,
             ),
@@ -251,6 +251,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                         "RESOURCES",
                         "PRIORITY",
                         "JOB_ID",
+                        "TIER",
                     ],
                     rows=[
                         [
@@ -261,6 +262,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                             "{'v4': 8}",
                             "5",
                             "test-id0",
+                            "None",
                         ],
                         [
                             "test_job1",
@@ -270,6 +272,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                             "{'v4': 8, 'v5': 16}",
                             "5",
                             "test-id1",
+                            "1",
                         ],
                         [
                             "test_job2",
@@ -279,6 +282,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
                             "{'v4': 16}",
                             "5",
                             "test-id2",
+                            "0",
                         ],
                     ],
                 ),

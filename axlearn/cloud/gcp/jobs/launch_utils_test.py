@@ -140,7 +140,7 @@ class TestListUtils(parameterized.TestCase):
                     job_id="test-id",
                 ),
             ),
-            state=JobState(status=JobStatus.ACTIVE),
+            state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
             command_proc=None,
             cleanup_proc=None,
         )
@@ -161,6 +161,7 @@ class TestListUtils(parameterized.TestCase):
                     "RESOURCES",
                     "PRIORITY",
                     "JOB_ID",
+                    "TIER",
                 ],
                 rows=[
                     [
@@ -171,6 +172,7 @@ class TestListUtils(parameterized.TestCase):
                         "{'v4': 8}",
                         "5",
                         "test-id",
+                        "0",
                     ]
                     for p in range(2)
                     for u in range(2)
