@@ -148,7 +148,7 @@ def get_trainer_kwargs(
                 ),
                 # A100 40G.
                 ("gpu-p4d.24xlarge-256", mesh_shape_from_axes(data=-1, fsdp=8)),
-                # tpu-v5p. step time: 1.5s on v5p-1024, 0.46s on v5p-4096.
+                # tpu-v5p. step time: 1.5s on v5p-1024, 0.8s on v5p-2048, 0.46s on v5p-4096.
                 ("tpu-v5p-(1024|2048|4096)", mesh_shape_from_axes(data=-1)),
             ),
         )
