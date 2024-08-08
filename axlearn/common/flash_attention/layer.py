@@ -9,7 +9,7 @@ from jax.experimental.maps import thread_resources
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 
-from axlearn.common.attention import GroupedQueryAttention
+from axlearn.common.attention import ForwardMode, GroupedQueryAttention
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import ConfigBase, config_class
 from axlearn.common.flash_attention.utils import (
@@ -94,8 +94,13 @@ class FlashAttention(GroupedQueryAttention):
         }
         return cfg
 
-    def _causal_mask(self, seq_len: int) -> Optional[Tensor]:
-        return None  # No need for mask because flash attention supports the causal mode natively.
+    def _causal_mask(
+        self, *, mode: ForwardMode, seq_len: int, time_step: Optional[Tensor] = None
+    ) -> Optional[Tensor]:
+        if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
+            # No need for mask because flash attention supports the causal mode natively.
+            return None
+        return super()._causal_mask(mode=mode, seq_len=seq_len, time_step=time_step)
 
     def _compute_attention(
         self,

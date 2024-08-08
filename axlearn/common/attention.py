@@ -1732,21 +1732,14 @@ class MultiheadAttention(BaseLayer):
             # [batch, 1, target_length, source_length].
             attention_logit_biases = attention_logit_biases[:, None, :, :]
         if cfg.causal:
-            if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
-                causal_mask = self._causal_mask(seq_len=q_proj.shape[1])
-            elif mode == ForwardMode.EXTEND_STEP:
-                # [batch], representing query time_step.
+            if mode == ForwardMode.EXTEND_STEP:
+                seq_len = k_proj.shape[1]
                 time_step = cached_states["i_proj"]["time_step"]
-                kv_len = k_proj.shape[1]
-                indexes = jnp.arange(kv_len)
-                # [batch, 1, 1, kv_len].
-                # causal_mask[b, :, :, kv_pos] = 0 if kv_pos <= time_step[b] else NEG_INF.
-                causal_mask = (
-                    jax.lax.lt(time_step[:, None, None, None], indexes[None, None, None, :])
-                    * NEG_INF
-                )
             else:
-                raise ValueError(f"Unrecognized mode {mode}.")
+                seq_len = q_proj.shape[1]
+                time_step = None
+            causal_mask = self._causal_mask(mode=mode, seq_len=seq_len, time_step=time_step)
+
             if causal_mask is not None:
                 attention_logit_biases = apply_attention_logit_biases(
                     causal_mask.astype(q_proj.dtype),
@@ -1773,14 +1766,29 @@ class MultiheadAttention(BaseLayer):
         )
         return dict(i_proj=i_proj_state), output
 
-    def _causal_mask(self, seq_len: int) -> Optional[Tensor]:
-        """Returns a causal mask that can be broadcasted to [batch, num_heads, seq_len, seq_len].
+    def _causal_mask(
+        self, *, mode: ForwardMode, seq_len: int, time_step: Optional[Tensor] = None
+    ) -> Optional[Tensor]:
+        """Returns a causal mask.
 
         ... or None if the implementation of _compute_attention supports the causal mode natively.
 
-        Only used for (ForwardMode.FORWARD, ForwardMode.INIT_STATES).
+        For (ForwardMode.FORWARD, ForwardMode.INIT_STATES), the mask can be broadcast to
+        [batch, num_heads, seq_len, seq_len].
+
+        For ForwardMode.EXTEND_STEP, the mask can be broadcast to [batch, num_heads, 1, seq_len].
         """
-        return make_causal_mask(seq_len)[None, None, :, :]
+        if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
+            return make_causal_mask(seq_len)[None, None, :, :]
+        elif mode == ForwardMode.EXTEND_STEP:
+            indexes = jnp.arange(seq_len)
+            # [batch, 1, 1, kv_len].
+            # causal_mask[b, :, :, kv_pos] = 0 if kv_pos <= time_step[b] else NEG_INF.
+            return (
+                jax.lax.lt(time_step[:, None, None, None], indexes[None, None, None, :]) * NEG_INF
+            )
+        else:
+            raise ValueError(f"Unrecognized mode {mode}.")
 
     def _compute_attention(
         self,
