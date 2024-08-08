@@ -474,7 +474,6 @@ class TPUGKEJob(GKEJob):
         annotations, selector, volumes, tolerations = {}, {}, [], []
 
         if cfg.gcsfuse_mount:
-            # GCS Fuse does not work with hostNetwork True.
             # Mount a GCS bucket as a volume.
             annotations.update(
                 {
