@@ -565,7 +565,6 @@ class TPUGKEJob(GKEJob):
         )
 
         pod_spec = dict(
-            # NOTE: Don't set hostNetwork or dnsPolicy for compat with Workload Identity.
             terminationGracePeriodSeconds=60,
             # Fail if any pod fails, and allow retries to happen at JobSet level.
             restartPolicy="Never",
@@ -580,6 +579,7 @@ class TPUGKEJob(GKEJob):
             volumes=volumes,
         )
 
+        # hostNetwork True and dnsPolicy do not work with Workload Identity and GCS Fuse.
         if not cfg.gcsfuse_mount:
             pod_spec["hostNetwork"] = True
             pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
