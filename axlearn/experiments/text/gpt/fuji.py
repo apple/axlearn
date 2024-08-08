@@ -190,7 +190,7 @@ def get_trainer_kwargs(
                 rope_theta=rope_theta,
                 flash_attention=flash_attention,
                 remat_spec=RematSpec(
-                    prevent_cse=True,
+                    prevent_cse=False,
                     policy=None,
                 ),
             ),
