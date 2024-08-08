@@ -50,6 +50,7 @@ from axlearn.common.layers import (
     LayerNormStateless,
     Linear,
     MaxPool2D,
+    MovingAverage,
     MultiLinear,
     RedirectToSharedModule,
     RMSNorm,
@@ -1928,6 +1929,50 @@ class LayerTest(TestCase, tf.test.TestCase):
             temporal_idx = pos % temporal_embeddings.shape[0]
             expected_embed = spatial_embeddings[spatial_idx] + temporal_embeddings[temporal_idx]
             assert_allclose(output, expected_embed)
+
+    def test_moving_average(self):
+        cfg = MovingAverage.default_config().set(name="moving_avg", min_weight=0.1)
+        layer: MovingAverage = cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        self.assertEqual(dict(count=[], value=[]), shapes(layer_params))
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [10])
+
+        for i in range(inputs.shape[0]):
+            self.assertEqual(layer_params["count"], i)
+            outputs, output_collection = F(
+                layer,
+                inputs=dict(x=inputs[i]),
+                is_training=True,
+                state=layer_params,
+                prng_key=prng_key,
+            )
+            # When count < 1 / min_weight, the moving average is simply the average.
+            self.assertAlmostEqual(outputs, jnp.mean(inputs[: i + 1]))
+            # Update layer_params with state_updates.
+            param_updates = output_collection.state_updates
+            self.assertEqual(shapes(layer_params), shapes(param_updates))
+            layer_params = copy.deepcopy(param_updates)
+
+        converge_to = 3.14
+        for _ in range(100):
+            outputs, output_collection = F(
+                layer,
+                inputs=dict(x=converge_to),
+                is_training=True,
+                state=layer_params,
+                prng_key=prng_key,
+            )
+            layer_params = copy.deepcopy(output_collection.state_updates)
+
+        self.assertAlmostEqual(outputs, layer_params["value"])
+        self.assertAllClose(outputs, converge_to, atol=0.01, rtol=0.01)
 
 
 class EmbedTest(parameterized.TestCase):
