@@ -23,14 +23,14 @@ from axlearn.open_api.registry import ClientRegistry, MetricRegistry
 FLAGS = flags.FLAGS
 
 
-def evaluate_from_file(fv: FlagValues):
-    """Evaluates and computes for responses from open api clients given a file path.
+def initialize_evaluator(fv: FlagValues) -> Evaluator:
+    """Initializes an Evaluator from flag values.
 
     Args:
         fv: The flag values of evaluator.py.
 
     Returns:
-        None. The results are written directly to a file and logged.
+        An instance of Evaluator.
 
     Raises:
         ValueError: Client class must not be empty.
@@ -84,6 +84,19 @@ def evaluate_from_file(fv: FlagValues):
         )
         .instantiate()
     )
+    return evaluator
+
+
+def evaluate_from_file(fv: FlagValues):
+    """Evaluates and computes for responses from open api clients given a file path.
+
+    Args:
+        fv: The flag values of evaluator.py.
+
+    Returns:
+        None. The results are written directly to a file and logged.
+    """
+    evaluator = initialize_evaluator(fv=fv)
 
     metric_fn = MetricRegistry.load_metric(metric_name=fv.metric_name)
     if metric_fn is None:
