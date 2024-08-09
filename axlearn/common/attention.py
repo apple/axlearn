@@ -3013,6 +3013,9 @@ class TransformerLayer(BaseTransformerLayer):
             cross_attention_probs = None
         data = self.feed_forward(data)
         self.vlog(3, "transformer.output=%s", data.sum())
+        # TODO(markblee): Support module outputs in decoding.
+        if mode == ForwardMode.FORWARD:
+            self.add_module_output("output", data)
         return dict(self_attention=self_atten_state), BaseTransformerLayer.Output(
             data=data,
             self_attention_probs=self_atten_outputs.probs,
