@@ -125,7 +125,7 @@ class LConvLayer(BaseLayer):
         # We need to clear padded positions in 'x' before feeding into `conv` to ensure padding
         # doesn't affect results.
         x = self.conv(x * jnp.expand_dims(1 - paddings, axis=-1))
-        x = self.conv_norm(x)
+        x = self.conv_norm(x, paddings=paddings)
         x = get_activation_fn(cfg.conv_activation)(x)
         x = self.linear2(x)
         x = self.dropout(x)
