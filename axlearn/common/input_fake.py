@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Fake input modules."""
+
 import json
 from typing import Any, Dict, Iterable, Optional, Sequence, Tuple, Union
 
@@ -215,6 +216,16 @@ class FakeExtractiveQuestionAnsweringInput(FakeTextInput):
                 token_type_ids=token_type_ids,
             )
         )
+
+
+class EmptyInput(FakeTextInput):
+    """An Empty input to be used as placeholder."""
+
+    @config_class
+    class Config(Module.Config):
+        """Configures EmptyInput."""
+
+        is_training: Required[bool] = REQUIRED
 
 
 def fake_source(
