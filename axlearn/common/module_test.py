@@ -4,6 +4,7 @@
 # pylint: disable=protected-access
 # type: ignore[attribute-error]
 import contextlib
+import functools
 import threading
 from typing import List, Optional, Union
 
@@ -29,8 +30,11 @@ from axlearn.common.module import (
 )
 from axlearn.common.module import functional as F
 from axlearn.common.module import (
+    get_state,
+    get_state_or_update,
     install_context_stack,
     new_output_collection,
+    no_side_effects,
     scan_in_context,
     set_current_context,
 )
@@ -728,6 +732,119 @@ class ModuleTest(TestWithTemporaryCWD):
                 method="get_shared_module",
                 inputs=dict(shared_module_name="outer_shared"),
             )
+
+    def test_no_side_effects(self):
+        class MyModule(Module):
+            """Module for testing `no_side_effects` decorator."""
+
+            @no_side_effects
+            def has_outputs(self) -> bool:
+                return "asdf" in get_state(
+                    self, state=current_context().get_module_outputs(), default={}
+                )
+
+            def _get_info(self, x: Tensor, *, y: Tensor):
+                z = 1
+                if self.has_outputs():
+                    z = get_state(self, state=current_context().get_module_outputs())["asdf"]
+                return 3 * x + y * z
+
+            @no_side_effects
+            def get_info(self, x: Tensor, *, y: Tensor):
+                return self._get_info(x, y=y)
+
+            def get_info_without_decorator(self, x: Tensor, *, y: Tensor):
+                return self._get_info(x, y=y)
+
+            @no_side_effects
+            def does_not_need_context(self):
+                return 5
+
+            @no_side_effects
+            def actually_has_side_effects(self):
+                self.add_output()
+
+            def add_output(self):
+                self.add_module_output("asdf", 5)
+
+            @no_side_effects
+            def set_state_update(self):
+                current_context().set_state_update(0)
+
+            @functools.partial(no_side_effects, raise_for_side_effects="never")
+            def has_silently_reverted_side_effects(self):
+                self.add_output()
+                return 5
+
+        class Parent(Module):
+            def __init__(self, cfg: Module.Config, *, parent: Optional["Module"]):
+                super().__init__(cfg, parent=parent)
+                self._add_child("child", MyModule.default_config())
+
+        with test_utils.bind_module(Parent.default_config(), state={}) as parent:
+            mod = parent.child
+            self.assertEqual(mod.has_outputs(), False)
+            # Check that repeated calling works.
+            # This would cause an output conflict error if we didn't use functional().
+            self.assertEqual(mod.get_info(2, y=5), 11)
+            self.assertEqual(mod.get_info(2, y=7), 13)
+            mod.get_info_without_decorator(2, y=5)
+            with self.assertRaises(OutputConflictError):
+                mod.get_info_without_decorator(2, y=7)
+
+        with test_utils.bind_module(parent, state={}):
+            # Test that calling a side-effecting function fails.
+            with self.assertRaisesRegex(ValueError, "has side effects"):
+                mod.actually_has_side_effects()
+            # Check that side effects from the side-effecting function were prevented.
+            self.assertEqual(mod.get_info(2, y=5), 11)
+            self.assertEqual(current_context().output_collection, new_output_collection())
+            # Check @no_side_effects methods work even if there were side effects prior to the
+            # no_side_effects() call.
+            mod.add_output()
+            self.assertEqual(mod.get_info(2, y=5), 31)
+
+        with test_utils.bind_module(parent, state={}):
+            # Check that replacing a leaf in the OutputCollection without changing the
+            # tree structure results in the change to the leaf not affecting the original
+            # context.
+            current_context().set_state_update(1)
+            mod.set_state_update()  # Tries to set it to 0, but silently fails.
+            self.assertEqual(current_context().get_state_updates(), 1)
+
+        with test_utils.bind_module(parent, state={}):
+            # Check that raise_for_side_effects = "never" works.
+            self.assertEqual(mod.has_silently_reverted_side_effects(), 5)
+            self.assertFalse(mod.has_outputs())
+
+        # Test calling without a context works.
+        self.assertEqual(mod.does_not_need_context(), 5)
+        with self.assertRaises(AttributeError):
+            # Fails since we are not in an InvocationContext anymore.
+            mod.get_info_without_decorator(2, y=5)
+
+    def test_get_state_and_or_update(self):
+        """Tests `get_state()` and `get_state_or_update()`."""
+        module1 = new_test_module("root")
+        module1._add_child("child1", TestModule.default_config())
+        module1._add_child("child2", TestModule.default_config())
+        state = {"child1": {"x": 1}, "child2": {"x": 2}}
+        state_update = {"child1": {"x": 3}, "child2": {"x": 4}}
+        with test_utils.bind_module(module1, state=state):
+            self.assertEqual(get_state(module1.child1)["x"], 1)
+            self.assertEqual(get_state(module1.child2)["x"], 2)
+            self.assertEqual(get_state_or_update(module1.child1, "x"), 1)
+            self.assertEqual(get_state_or_update(module1.child2, "x"), 2)
+            current_context().set_state_update(state_update)
+            self.assertEqual(get_state(module1.child1)["x"], 1)
+            self.assertEqual(get_state(module1.child2)["x"], 2)
+            self.assertEqual(get_state_or_update(module1.child1, "x"), 3)
+            self.assertEqual(get_state_or_update(module1.child2, "x"), 4)
+
+            with self.assertRaises(KeyError):
+                get_state(module1.child1)["asdf"]  # pylint: disable=expression-not-assigned
+            with self.assertRaises(KeyError):
+                get_state_or_update(module1.child1, "asdf")
 
 
 class ScanInContextTest(TestWithTemporaryCWD):

@@ -44,8 +44,10 @@ def pop_string_tensors(batch: NestedTensor) -> Tuple[NestedTensor, NestedTensor]
 
         return subtree.dtype != tf.string
 
-    batch_without_str_tensors = utils.prune_tree(batch, prune_tf_str_tensor_leaves)
-    str_tensors = utils.prune_tree(batch, prune_non_tf_str_tensor_leaves)
+    batch_without_str_tensors = utils.prune_tree(
+        batch, prune_tf_str_tensor_leaves, prune_root=False
+    )
+    str_tensors = utils.prune_tree(batch, prune_non_tf_str_tensor_leaves, prune_root=False)
     return batch_without_str_tensors, str_tensors
 
 

@@ -8,6 +8,8 @@ import sys
 from collections import OrderedDict
 from typing import Any, Iterable, NamedTuple, Optional, Sequence, Type, Union
 
+import chex
+
 # pylint: disable=no-self-use
 import jax
 import jaxlib
@@ -65,9 +67,11 @@ from axlearn.common.utils import (
     infer_mesh_shape,
     input_partition_spec,
     match_regex_rules,
+    prune_empty,
     prune_tree,
     pytree_children,
     runtime_checks,
+    same_pruned_structure,
     set_data_dir,
     set_recursively,
     split_prng_key,
@@ -306,10 +310,8 @@ class TreeUtilsTest(TestCase):
         )
 
         # No children
-        self.assertSequenceEqual(pytree_children([]), [])
-
-        # No children
-        self.assertSequenceEqual(pytree_children(3), [])
+        for val in None, 3, [], {}, (), set(), "", "asdf", True, False, object():
+            self.assertSequenceEqual(pytree_children(val), [], msg=val)
 
     def test_find_cycles(self):
         x = {}
@@ -1330,6 +1332,94 @@ class PruneTreeTest(TestCase):
             {"a": {"b": {"d": "test"}, "c": {"b": None}}},
             prune_tree(in_tree, lambda _, v: isinstance(v, int)),
         )
+
+    @parameterized.product(tree=[{}, [], None, 3, dict(a=object()), object()])
+    def test_root(self, tree: Any):
+        """Tests that root can be pruned."""
+        self.assertIs(prune_tree(tree, should_prune=lambda path, v: True), None, msg=tree)
+
+    def test_prune_empty(self):
+        """Test empty tree pruning with custom pytree nodes."""
+
+        # Dict-like node. (Uses DictKey).
+        # Use chex assert to automatically check type is correct.
+        # E.g., self.assertEqual(VDict(), dict()) passes but we don't want it to.
+        chex.assert_trees_all_equal(prune_empty(VDict(a=[], b=3)), VDict(b=3))
+
+        # Non-dict-like nodes. (Does not use DictKey.)
+        @struct.dataclass
+        class MyNodeDataclass:
+            a: Optional[int]
+            b: Optional[int] = None
+
+        class MyNodeTuple(NamedTuple):
+            a: int
+            b: Optional[int] = None
+
+        for cls in MyNodeTuple, MyNodeDataclass:
+            msg = str(cls)
+            # pytype: disable=wrong-arg-types
+            self.assertEqual(prune_empty(cls(a=cls(a=None))), None, msg=msg)
+            self.assertEqual(prune_empty(cls(a=[])), None, msg=msg)
+            self.assertEqual(prune_empty(cls(a=None)), None, msg=msg)
+            self.assertEqual(prune_empty(cls(a=[], b=3)), cls(a=None, b=3), msg=msg)
+            # pytype: enable=wrong-arg-types
+
+    def test_fill_value(self):
+        """Tests the `fill_value` argument of `prune_empty()` and `prune_tree()`."""
+        fill_value = object()
+        self.assertEqual(prune_empty(dict(a=None, b=2), fill_value=fill_value), dict(b=2))
+        self.assertEqual(prune_empty(dict(a=fill_value), fill_value=fill_value), dict(a=fill_value))
+        self.assertEqual(
+            prune_empty(Combo(head=3, tail=None), fill_value=fill_value),
+            Combo(head=3, tail=fill_value),
+        )
+
+        # Test behavior difference between prune_empty and prune_tree when fill_value makes tree
+        # non-empty during pruning.
+        should_prune_empty = lambda _, x: len(jax.tree_util.tree_leaves(x)) == 0
+
+        # The prune_tree case is the same as prune_empty because pruned subtrees with a DictKey key
+        # are always removed from teh parent regardless of fill_value.
+        self.assertEqual(prune_empty(dict(a=[]), fill_value=fill_value), fill_value)
+        self.assertEqual(
+            prune_tree(dict(a=[]), fill_value=fill_value, should_prune=should_prune_empty),
+            fill_value,
+        )
+        # The prune_tree case is different from prune_empty because we don't (can't) remove keys
+        # from named tuples, so the fill_value stays in the tree and makes the should_prune
+        # call on the parent return false.
+        self.assertEqual(
+            prune_empty(Combo(head=None, tail=None), fill_value=fill_value), fill_value
+        )
+        self.assertEqual(
+            prune_tree(
+                Combo(head=None, tail=None), fill_value=fill_value, should_prune=should_prune_empty
+            ),
+            Combo(head=fill_value, tail=fill_value),
+        )
+
+    def test_prune_root(self):
+        """Tests the `prune_root` argument of `prune_tree()`."""
+        self.assertEqual(
+            prune_tree(dict(a=3, b=4), should_prune=lambda _, v: v != 3, prune_root=True), None
+        )
+        self.assertEqual(
+            prune_tree(dict(a=3, b=4), should_prune=lambda _, v: v != 3, prune_root=False),
+            dict(a=3),
+        )
+
+    @parameterized.parameters(
+        [(), VDict(), True],
+        [dict(a=3), dict(a=4, b=dict(c=None)), True],
+        [dict(a=3), dict(a=4, b=dict(c=[])), True],
+        [VDict(a=3), VDict(a=4, b=VDict(c=None)), True],
+        [dict(a=3), dict(b=3), False],
+        [VDict(a=3), VDict(b=3), False],
+        [VDict(a=3), dict(a=3), False],
+    )
+    def test_same_pruned_structure(self, tree_1: Any, tree_2: Any, expected: bool):
+        self.assertEqual(same_pruned_structure(tree_1, tree_2), expected)
 
 
 @dataclasses.dataclass(frozen=True)
