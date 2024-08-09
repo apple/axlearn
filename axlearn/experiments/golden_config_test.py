@@ -12,6 +12,7 @@ from axlearn.experiments.vision import resnet
 _CONFIGS = [
     *test_utils.named_parameters(resnet.imagenet_trainer),
     *test_utils.named_parameters(gpt.c4_trainer),
+    *test_utils.named_parameters(gpt.deterministic_trainer),
     *test_utils.named_parameters(gpt.pajama_trainer),
     *test_utils.named_parameters(gpt.pajama_sigmoid_trainer),
 ]

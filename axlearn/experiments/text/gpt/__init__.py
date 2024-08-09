@@ -2,4 +2,9 @@
 
 """AXLearn GPT experiments."""
 
-from axlearn.experiments.text.gpt import c4_trainer, pajama_sigmoid_trainer, pajama_trainer
+from axlearn.experiments.text.gpt import (
+    c4_trainer,
+    deterministic_trainer,
+    pajama_sigmoid_trainer,
+    pajama_trainer,
+)
