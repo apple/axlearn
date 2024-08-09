@@ -183,7 +183,10 @@ def mesh_shape_from_axes(
 
 
 def update_model_remat_config(
-    *, stack_cfg: causal_lm.TransformerStackConfig, layer_cfg: TransformerLayer.Config
+    *,
+    stack_cfg: causal_lm.TransformerStackConfig,
+    layer_cfg: TransformerLayer.Config,
+    offload: bool = False,
 ):
     """Recomputes and sets the remat_spec based on provided layer_cfg.
 
@@ -203,10 +206,12 @@ def update_model_remat_config(
 
     if layer_cfg.self_attention.attention.klass is not FlashAttention:
         # Enable remat to reduce memory usage for larger models.
-        remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg))
+        remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg), offload=offload)
     else:
         # Checkpointing both ffn and attention to give the best performance.
-        remat_spec = build_remat_spec(stack_cfg, feed_forward=True, self_attention=True)
+        remat_spec = build_remat_spec(
+            stack_cfg, feed_forward=True, self_attention=True, offload=offload
+        )
     layer_cfg.set(remat_spec=remat_spec)
 
 
@@ -230,6 +235,7 @@ def model_config(
     ffn_structure: str = "prenorm",
     atten_structure: str = "prenorm",
     atten_logit_cap: Optional[float] = None,
+    remat_offload: bool = False,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -258,6 +264,7 @@ def model_config(
             Options: [prenorm, postnorm, hybridnorm].
         atten_logit_cap: Cap the absolute values of logits by tanh.
             Enabled by setting a positive value.
+        remat_offload: Offload remat checkpoints to host instead of TPU memory.
 
     Returns:
         A causal LM config.
@@ -276,7 +283,7 @@ def model_config(
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
     if stack_cfg.klass is RepeatedTransformerLayer:
-        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
+        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg, offload=remat_offload)
     # Stack.
     transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(

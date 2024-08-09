@@ -3874,6 +3874,7 @@ def build_remat_spec(
     ],
     self_attention: bool = True,
     feed_forward: bool = False,
+    offload: bool = False,
 ) -> Optional[RematSpec]:
     """Configures how the Transformer or Conformer stack will save the linearization points.
 
@@ -3891,6 +3892,7 @@ def build_remat_spec(
         stack_cfg: A transformer config.
         self_attention: Checkpoint self attention layer activations if true.
         feed_forward: Checkpoint feed-forward layer activations if true.
+        offload: Offload the checkpoints to host memory instead of TPU memory.
 
     Returns:
         None (if no rematerialization is needed) or a RematSpec.
@@ -3905,17 +3907,27 @@ def build_remat_spec(
         checkpoints.extend(
             [f"{attention_name}.{el}" for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]]
         )
+
     if feed_forward and hasattr(stack_cfg.layer, "feed_forward"):
         ffn_name = stack_cfg.layer.feed_forward.klass.__name__
         checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
+
+    policy = config_for_function(jax_remat_policies.save_only_these_names).set(
+        names_which_can_be_saved=checkpoints
+    )
+    if offload:
+        policy = config_for_function(jax_remat_policies.save_and_offload_only_these_names).set(
+            names_which_can_be_saved=[],
+            names_which_can_be_offloaded=checkpoints,
+            offload_src="device",
+            offload_dst="pinned_host",
+        )
 
     return RematSpec(
         prevent_cse=stack_cfg.klass is StackedTransformerLayer,
         # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
         # or Repeated Conformers) we can enable common subexpression elimination optimizations.
-        policy=config_for_function(jax_remat_policies.save_only_these_names).set(
-            names_which_can_be_saved=checkpoints
-        ),
+        policy=policy,
     )
 
 
