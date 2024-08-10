@@ -1898,3 +1898,58 @@ class SeparableSpaceTimePositionalEmbedding(BaseLayer):
         """
         emb = self.embeddings()
         return emb[positions]
+
+
+class MovingAverage(BaseLayer):
+    """A layer to maintain an exponential moving average stats.
+
+    Given each value `x`, updates `moving_average` as:
+        moving_average = x * weight + moving_average * (1 - weight)
+        count = count + 1
+
+    where `weight` is determined by:
+        weight = max(cfg.min_weight, 1 / (count + 1))
+    """
+
+    @config_class
+    class Config(BaseLayer.Config):
+        shape: Sequence[int] = tuple()
+        # The minimum weight for an update.
+        min_weight: Required[float] = REQUIRED
+
+    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+        cfg = self.config
+        return {
+            "count": ParameterSpec(
+                shape=[],
+                dtype=jnp.int32,
+                mesh_axes=(None,),
+                initializer=constant_initializer(0),
+                weight_decay_scale=0,
+            ),
+            "value": ParameterSpec(
+                shape=cfg.shape,
+                dtype=jnp.float32,
+                mesh_axes=(None,),
+                initializer=constant_initializer(0.0),
+                weight_decay_scale=0,
+            ),
+        }
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Computes a moving average of `x`.
+
+        The moving average updates will be set in OutputCollection.state_updates.
+
+        Args:
+            x: A Tensor of shape cfg.shape.
+
+        Returns:
+            Returns the current moving average.
+        """
+        cfg = self.config
+        weight = jnp.maximum(cfg.min_weight, 1.0 / (1 + self.parameters["count"]))
+        new_moving_average = (1 - weight) * self.parameters["value"] + weight * x
+        self.add_state_update("value", new_moving_average)
+        self.add_state_update("count", 1 + self.parameters["count"])
+        return new_moving_average
