@@ -9,7 +9,7 @@ from axlearn.common.input_tf_data import tfds_dataset
 from axlearn.experiments.text.common import vocab
 from axlearn.experiments.text.gpt import honeycrisp
 from axlearn.experiments.text.gpt.common import REPLACE_NEWLINES_WITH, tfds_input
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
+from axlearn.experiments.trainer_config_utils import TrainerConfigFn, with_overrides
 
 _SENTENCEPIECE_MODEL_NAME = {
     48 * 1024: "bpe_48k_honeycrisp.model",
@@ -72,13 +72,11 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
     config_map = {}
     for training_dataset_name, dataset_info in _TRAINING_DATASETS.items():
-        for model_name, fn in honeycrisp.trainer_configs(
+        for model_name, trainer_config_fn in honeycrisp.trainer_configs(
             _train_input_source_fn(**dataset_info), _eval_input_sources
         ).items():
-            cfg = fn()
-
-            def trainer_config_fn(cfg=cfg) -> InstantiableConfig:
-                return cfg.clone(save_input_iterator=True)
-
-            config_map[f"{model_name}-{training_dataset_name}"] = trainer_config_fn
+            config_map[f"{model_name}-{training_dataset_name}"] = with_overrides(
+                trainer_config_fn,
+                save_input_iterator=True,
+            )
     return config_map
