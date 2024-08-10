@@ -71,8 +71,8 @@ def _train_input_source_fn(
 def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
     config_map = {}
-    for name, dataset_info in _TRAINING_DATASETS.items():
-        for k, fn in honeycrisp.trainer_configs(
+    for training_dataset_name, dataset_info in _TRAINING_DATASETS.items():
+        for model_name, fn in honeycrisp.trainer_configs(
             _train_input_source_fn(**dataset_info), _eval_input_sources
         ).items():
             cfg = fn()
@@ -80,5 +80,5 @@ def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
             def trainer_config_fn(cfg=cfg) -> InstantiableConfig:
                 return cfg.clone(save_input_iterator=True)
 
-            config_map[f"deterministic-{name}-{k}"] = trainer_config_fn
+            config_map[f"{model_name}-{training_dataset_name}"] = trainer_config_fn
     return config_map
