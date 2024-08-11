@@ -3136,12 +3136,13 @@ class TransformerTest(BaseTransformerTest):
         for mask in (None, null_mask, rand_mask):
             if mask is not None:
                 mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
-            layer_outputs, _ = F(
+            layer_outputs, output_collection = F(
                 layer,
                 inputs=dict(data=jnp.asarray(target), self_attention_logit_biases=mask),
                 state=layer_params,
                 is_training=True,
                 prng_key=jax.random.PRNGKey(0),
+                drop_output_collections=(),
             )
             if layer_outputs.self_attention_probs is not None:
                 self.assertEqual(
@@ -3155,6 +3156,7 @@ class TransformerTest(BaseTransformerTest):
                 output_attentions=False,
             )
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
+            self.assertNestedEqual(layer_outputs.data, output_collection.module_outputs["output"])
 
     def test_against_roberta_layer(self):
         model_dim = 16
