@@ -45,7 +45,19 @@ import enum
 import functools
 import math
 from enum import Enum, unique
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+)
 
 import jax
 from jax import numpy as jnp
@@ -3874,7 +3886,7 @@ def build_remat_spec(
     ],
     self_attention: bool = True,
     feed_forward: bool = False,
-    offload: bool = False,
+    offload_dst: Optional[Literal["pinned_host"]] = None,
 ) -> Optional[RematSpec]:
     """Configures how the Transformer or Conformer stack will save the linearization points.
 
@@ -3892,7 +3904,7 @@ def build_remat_spec(
         stack_cfg: A transformer config.
         self_attention: Checkpoint self attention layer activations if true.
         feed_forward: Checkpoint feed-forward layer activations if true.
-        offload: Offload the checkpoints to host memory instead of TPU memory.
+        offload_dst: Destination of remat checkptoing offloading.
 
     Returns:
         None (if no rematerialization is needed) or a RematSpec.
@@ -3915,12 +3927,12 @@ def build_remat_spec(
     policy = config_for_function(jax_remat_policies.save_only_these_names).set(
         names_which_can_be_saved=checkpoints
     )
-    if offload:
+    if offload_dst:
         policy = config_for_function(jax_remat_policies.save_and_offload_only_these_names).set(
             names_which_can_be_saved=[],
             names_which_can_be_offloaded=checkpoints,
             offload_src="device",
-            offload_dst="pinned_host",
+            offload_dst=offload_dst,
         )
 
     return RematSpec(

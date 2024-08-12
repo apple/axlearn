@@ -13,7 +13,7 @@ The fuji models are set up to imitate LLaMA models:
 import enum
 import functools
 import itertools
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Literal, Optional, Union
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
@@ -188,7 +188,7 @@ def get_trainer_kwargs(
                 num_kv_heads=None if version == Version.V1 else 8,
                 rope_theta=rope_theta,
                 flash_attention=flash_attention,
-                remat_offload=True,
+                remat_offload_dst="pinned_host",
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -231,7 +231,7 @@ def model_config(
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
     flash_attention: bool = False,
     stack_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
-    remat_offload: bool = False,
+    remat_offload_dst: Optional[Literal["pinned_host"]] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -249,7 +249,7 @@ def model_config(
         flash_attention: Whether to enable flash attention.
         stack_cfg: The transformer stack config.
             If None, defaults to a RepeatedTransformerLayer.
-        remat_offload: Offload remat checkpoints to host instead of TPU memory.
+        remat_offload_dst: Destination of remat checkptoing offloading.
 
     Returns:
         A causal LM config.
@@ -286,7 +286,7 @@ def model_config(
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
         attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
-        remat_offload=remat_offload,
+        remat_offload_dst=remat_offload_dst,
     )
     return cfg
 
