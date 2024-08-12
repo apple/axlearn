@@ -81,48 +81,51 @@ def _eval_input_sources(
     }
 
 
+_SHUFFLE_BUFFER_SIZE = 8192
+
+
 DATASETS = {
     "sp-rp": [
         DataMixtureComponent(
             name="rpg/common_crawl:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.726,
         ),
         DataMixtureComponent(
             name="slimpajama/c4:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.081,
         ),
         DataMixtureComponent(
             name="slimpajama/github:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.049,
         ),
         DataMixtureComponent(
             name="slimpajama/book:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.021,
         ),
         DataMixtureComponent(
             name="slimpajama/arxiv:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.023,
         ),
         DataMixtureComponent(
             name="slimpajama/wikipedia:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.05,
         ),
         DataMixtureComponent(
             name="slimpajama/stackexchange:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.05,
         ),
     ]
@@ -143,6 +146,8 @@ def _train_input_source_fn(
         )
         if get_data_dir() == "FAKE":
             source_cfg.preprocessor.shuffle_buffer_size = 0
+        else:
+            source_cfg.preprocessor.shuffle_buffer_size = _SHUFFLE_BUFFER_SIZE
         return source_cfg
 
     return fn
