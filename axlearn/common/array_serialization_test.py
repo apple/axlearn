@@ -6,6 +6,7 @@
 import asyncio
 import contextlib
 import functools
+import math
 from typing import List, Optional
 from unittest import mock
 
@@ -315,6 +316,12 @@ class SerializerTest(parameterized.TestCase):
             max_concurrent_gb=1,
             expect_max_concurrent_gb=1,
         ),
+        # Test non-addressable shards (which are represented by negative numbers).
+        dict(
+            arrays=[[1, 1, -1, -1], [1]],
+            max_concurrent_gb=1,
+            expect_max_concurrent_gb=2,
+        ),
     )
     def test_serialize(
         self, arrays: List[List[int]], max_concurrent_gb: int, expect_max_concurrent_gb: int
@@ -324,8 +331,9 @@ class SerializerTest(parameterized.TestCase):
                 addressable_shards=[
                     mock.Mock(replica_id=0, **{"data.nbytes": int(shard * 10**9)})
                     for shard in array
+                    if shard >= 0
                 ],
-                nbytes=int(sum(array) * 10**9),
+                nbytes=int(sum(math.fabs(shard) for shard in array) * 10**9),
             )
             for array in arrays
         ]

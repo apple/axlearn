@@ -24,6 +24,10 @@ from jax.experimental.array_serialization import serialization
 from axlearn.common.utils import Tensor
 
 
+def _local_size(array: Tensor) -> int:
+    return sum(shard.data.nbytes for shard in array.addressable_shards)
+
+
 def _proxy(fut: asyncio.Future) -> asyncio.Future:
     """Returns a proxy that can be used to await (but does not cancel) `fut`."""
     loop = asyncio.get_event_loop()
@@ -134,7 +138,11 @@ async def async_serialize(
             # Memory usage seems to be proportional to the array size rather than shard sizes.
             # TODO(markblee): Investigate why this is the case.
             _acquire_and_write(
-                t, limiter=limiter, shard=shard, nbytes=array.nbytes, release_tasks=release_tasks
+                t,
+                limiter=limiter,
+                shard=shard,
+                nbytes=_local_size(array),
+                release_tasks=release_tasks,
             )
             for shard in local_shards
         )
@@ -165,7 +173,7 @@ class BoundedAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         logging.info("Waiting for previous serialization to finish.")
         self.wait_until_finished()
 
-        max_shard_bytes = max((0, *(array.nbytes for array in arrays)))
+        max_shard_bytes = max((0, *(_local_size(array) for array in arrays)))
         max_concurrent_bytes = self._max_concurrent_bytes
         if max_shard_bytes > max_concurrent_bytes:
             logging.warning(
