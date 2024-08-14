@@ -3907,8 +3907,6 @@ def build_remat_spec(
         offload_dst: Destination of remat checkptoing offloading. Relevant Maxtext example:
           https://github.com/google/maxtext/blob/ebd39aa64d670fa13a313b6f776e01ad9e450321/MaxText/layers/models.py#L230.
 
-
-
     Returns:
         None (if no rematerialization is needed) or a RematSpec.
     """
