@@ -45,7 +45,19 @@ import enum
 import functools
 import math
 from enum import Enum, unique
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+)
 
 import jax
 from jax import numpy as jnp
@@ -3885,6 +3897,7 @@ def build_remat_spec(
     ],
     self_attention: bool = True,
     feed_forward: bool = False,
+    offload_dst: Optional[Literal["pinned_host"]] = None,
 ) -> Optional[RematSpec]:
     """Configures how the Transformer or Conformer stack will save the linearization points.
 
@@ -3902,6 +3915,8 @@ def build_remat_spec(
         stack_cfg: A transformer config.
         self_attention: Checkpoint self attention layer activations if true.
         feed_forward: Checkpoint feed-forward layer activations if true.
+        offload_dst: Destination of remat checkptoing offloading. Relevant Maxtext example:
+          https://github.com/google/maxtext/blob/ebd39aa64d670fa13a313b6f776e01ad9e450321/MaxText/layers/models.py#L230.
 
     Returns:
         None (if no rematerialization is needed) or a RematSpec.
@@ -3916,17 +3931,27 @@ def build_remat_spec(
         checkpoints.extend(
             [f"{attention_name}.{el}" for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]]
         )
+
     if feed_forward and hasattr(stack_cfg.layer, "feed_forward"):
         ffn_name = stack_cfg.layer.feed_forward.klass.__name__
         checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
+
+    policy = config_for_function(jax_remat_policies.save_only_these_names).set(
+        names_which_can_be_saved=checkpoints
+    )
+    if offload_dst:
+        policy = config_for_function(jax_remat_policies.save_and_offload_only_these_names).set(
+            names_which_can_be_saved=[],
+            names_which_can_be_offloaded=checkpoints,
+            offload_src="device",
+            offload_dst=offload_dst,
+        )
 
     return RematSpec(
         prevent_cse=stack_cfg.klass is StackedTransformerLayer,
         # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
         # or Repeated Conformers) we can enable common subexpression elimination optimizations.
-        policy=config_for_function(jax_remat_policies.save_only_these_names).set(
-            names_which_can_be_saved=checkpoints
-        ),
+        policy=policy,
     )
 
 
