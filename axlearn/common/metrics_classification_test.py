@@ -287,7 +287,6 @@ class TestMetrics(TestWithTemporaryCWD):
         assert_allclose(fps[valid_sample_idx], ref_fps)
         assert_allclose(tps[valid_sample_idx], ref_tps)
         assert_allclose(thresholds[valid_sample_idx], ref_thresholds)
-        assert_allclose(thresholds[-1], ref_thresholds[-1])
 
     @parameterized.parameters(
         {

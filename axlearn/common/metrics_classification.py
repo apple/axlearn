@@ -141,9 +141,8 @@ def binary_clf_curve(
         A dict with keys "fps", "tps", and "thresholds".
             Each is a scalar Tensor with values of shape [num_samples].
             fps, tps have values in [0, inf) and thresholds have values in (-inf, inf).
-            The order is based on descending order of thresholds. Because samples of weight 0 are
-            ignored during calculation, returned thresholds only contain valid thresholds that are
-            used for tps and fps calculation.
+            The order is based on descending order of thresholds for unmasked examples. The
+            jax.numpy.finfo(jnp.float32).max value in thresholds should be ignored.
             Element i in fps/tps are the tps/fps of predictions with score >= thresholds[i].
     """
     # Sort scores and corresponding truth unmasked values descending.
@@ -177,9 +176,6 @@ def binary_clf_curve(
     fps = jnp.where(y_pred_diff, fps, jnp.iinfo(jnp.int32).max)
     fps = jax.lax.cummin(fps, reverse=True)
 
-    # Masked entries at the end of thresholds are set to jnp.finfo(jnp.float32).max.
-    # Reset them to the rightmost unmasked threshold value.
-    thresholds = jnp.where(weight, thresholds, thresholds[jnp.argsort(weight)[-1]])
     return dict(fps=fps, tps=tps, thresholds=thresholds)
 
 
