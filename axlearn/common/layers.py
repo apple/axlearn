@@ -185,7 +185,9 @@ class DropToken(BaseLayer):
         if not self.is_training or num_chosen_tokens == num_tokens:
             return x
         patch_id = jnp.tile(jnp.arange(0, num_tokens), (batch_size, 1))
-        sampled_id = jax.random.shuffle(self.prng_key, patch_id, axis=1)[:, :num_chosen_tokens]
+        sampled_id = jax.random.permutation(self.prng_key, patch_id, axis=1, independent=True)[
+            :, :num_chosen_tokens
+        ]
         sampled_id_one_hot = jax.nn.one_hot(sampled_id, num_tokens)
         sampled_patch = jnp.einsum("bnd,bkn->bkd", tokens, sampled_id_one_hot)
         if cfg.num_cls_tokens > 0:

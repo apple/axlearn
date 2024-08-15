@@ -29,7 +29,7 @@ from typing import Dict, NamedTuple, Optional, Sequence, Tuple, Union
 import jax
 import jax.ad_checkpoint
 from jax import numpy as jnp
-from jax.experimental.maps import thread_resources
+from jax._src.mesh import thread_resources
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 

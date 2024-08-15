@@ -645,10 +645,11 @@ def dummy_segments_positions(
     # Generate dummy segment IDs of shape [batch, seq_len].
     segment_starts = jnp.pad(jnp.arange(seq_len - 1) < num_segments - 1, [[1, 0]])
     segment_starts = jnp.tile(segment_starts, [batch, 1])
-    segment_starts = jax.random.shuffle(
+    segment_starts = jax.random.permutation(
         jax.random.PRNGKey(401),
         segment_starts,
         axis=-1,
+        independent=True,
     )
     segment_ids = 1 + jnp.cumsum(segment_starts, axis=-1)
 

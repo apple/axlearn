@@ -7,7 +7,7 @@ from typing import Callable, Dict, Optional, Tuple, Union
 
 from absl import logging
 from jax import numpy as jnp
-from jax.experimental.maps import thread_resources
+from jax._src.mesh import thread_resources
 from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import (
