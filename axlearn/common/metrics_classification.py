@@ -141,18 +141,23 @@ def binary_clf_curve(
         A dict with keys "fps", "tps", and "thresholds".
             Each is a scalar Tensor with values of shape [num_samples].
             fps, tps have values in [0, inf) and thresholds have values in (-inf, inf).
-            The order is based on descending order of thresholds.
+            The order is based on descending order of thresholds. Because samples of weight 0 are
+            ignored during calculation, returned thresholds only contain valid thresholds that are
+            used for tps and fps calculation.
             Element i in fps/tps are the tps/fps of predictions with score >= thresholds[i].
     """
-    # Sort scores and corresponding truth values descending.
-    desc_y_pred_indices = jnp.argsort(y_score)[::-1]
+    # Sort scores and corresponding truth unmasked values descending.
+    if weight is not None:
+        desc_y_pred_indices = jnp.argsort(y_score * (weight != 0))[::-1]
+    else:
+        desc_y_pred_indices = jnp.argsort(y_score)[::-1]
     thresholds = y_score[desc_y_pred_indices]
     y_true = y_true[desc_y_pred_indices]
     if weight is not None:
         weight = weight[desc_y_pred_indices]
         thresholds = jnp.where(weight.astype(bool), thresholds, jnp.finfo(jnp.float32).max)
     else:
-        weight = 1.0
+        weight = jnp.ones_like(thresholds)
 
     tps = jnp.cumsum(y_true * weight)
     fps = jnp.cumsum((1 - y_true) * weight)
@@ -172,6 +177,9 @@ def binary_clf_curve(
     fps = jnp.where(y_pred_diff, fps, jnp.iinfo(jnp.int32).max)
     fps = jax.lax.cummin(fps, reverse=True)
 
+    # Masked entries at the end of thresholds are set to jnp.finfo(jnp.float32).max.
+    # Reset them to the rightmost unmasked threshold value.
+    thresholds = jnp.where(weight, thresholds, thresholds[jnp.argsort(weight)[-1]])
     return dict(fps=fps, tps=tps, thresholds=thresholds)
 
 
@@ -217,9 +225,10 @@ def precision_recall_curve(
     fps, tps, thresholds = output["fps"], output["tps"], output["thresholds"]
 
     ps = tps + fps
-    precision = tps / jnp.maximum(ps, 1)
+    # Scale by ps which contains weight.
+    precision = jnp.where(ps != 0, tps / ps, 0)
     # Recall will be 0, if total number of tps is 0. This is different from sklearn.
-    recall = tps / jnp.maximum(tps[-1], 1)
+    recall = jnp.where(tps[-1] != 0, tps / tps[-1], 0)
 
     # Reverse the outputs so recall is decreasing.
     sl = slice(None, None, -1)
