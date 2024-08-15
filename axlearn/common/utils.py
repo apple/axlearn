@@ -432,7 +432,7 @@ def as_numpy_array(x: Any):
 
 
 def with_sharding_constraint(x, shardings):
-    mesh = thread_resources.env.physical_mesh  # type: ignore
+    mesh = thread_resources.env.physical_mesh
     if mesh.empty or mesh.size == 1:
         return x
     return jax.lax.with_sharding_constraint(x, shardings)
