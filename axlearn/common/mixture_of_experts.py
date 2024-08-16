@@ -38,6 +38,7 @@ from axlearn.common.layers import (
     StochasticDepth,
     get_activation_fn,
 )
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
 from axlearn.common.param_init import FanAxes, constant_initializer
 from axlearn.common.utils import (
@@ -428,12 +429,13 @@ class Top2Gating(BaseGating):
         router_z_loss = _router_z_loss(logits)
 
         # Adding auxiliary losses and gating statistics to job summary.
-        self.add_summary("router_z_loss", router_z_loss)
-        self.add_summary("dispatch_0", dispatch_0)
-        self.add_summary("dispatch_1", dispatch_1)
-        self.add_summary("dispatch_2", dispatch_2)
-        self.add_summary("over_capacity_1", over_capacity_1)
-        self.add_summary("over_capacity_2", over_capacity_2)
+        self.add_summary("load_balance_loss", WeightedScalar(aux_loss, 1))
+        self.add_summary("router_z_loss", WeightedScalar(router_z_loss, 1))
+        self.add_summary("dispatch_0", WeightedScalar(dispatch_0, 1))
+        self.add_summary("dispatch_1", WeightedScalar(dispatch_1, 1))
+        self.add_summary("dispatch_2", WeightedScalar(dispatch_2, 1))
+        self.add_summary("over_capacity_1", WeightedScalar(over_capacity_1, 1))
+        self.add_summary("over_capacity_2", WeightedScalar(over_capacity_2, 1))
 
         if cfg.adaptive_load_balance_loss is None:
             self.add_summary("load_balance_loss", aux_loss)
@@ -731,7 +733,9 @@ def _convert_feedforward_to_moe_parameters(
         moe_weight_prefix = "wi" if m.group(1) == "1" else "wo"
         moe_weight_suffix = m.group(2)
         # Shard the dispatch tensor by 'expert'.
-        dispatch = with_sharding_constraint(jnp.ones([num_experts], dtype=value.dtype), ("expert",))
+        dispatch = with_sharding_constraint(
+            jnp.ones([num_experts], dtype=value.dtype), PartitionSpec("expert")
+        )
         moe_parameters[f"{moe_weight_prefix}{moe_weight_suffix}_weight"] = jnp.einsum(
             "xy,e->exy", value, dispatch
         )

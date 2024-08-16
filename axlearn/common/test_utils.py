@@ -447,8 +447,12 @@ def read_param_init_specs_recursively(
 
     # pylint: disable-next=unused-argument
     def patched_init(self, name, *, prng_key, parameter_spec):
-        # pylint: disable-next=protected-access
-        fan_axes = self._compute_fan_axes(name, parameter_spec)
+        fan_axes = (
+            parameter_spec.fan_axes
+            if parameter_spec.fan_axes is not None
+            # pylint: disable-next=protected-access
+            else self._compute_fan_axes(name, parameter_spec)
+        )
         all_param_init_specs.append(
             ParamInitSpec(
                 shape=parameter_spec.shape,
