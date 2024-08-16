@@ -15,6 +15,7 @@ from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
 from axlearn.common import causal_lm, utils
 from axlearn.common.attention import (
     CausalAttentionLogitBiasLayer,
+    FullAttentionLogitBiasLayer,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
     TransformerFeedForwardLayer,
@@ -243,6 +244,116 @@ class ModelMetricsTest(TestCase):
             self.assertAlmostEqual(loss, ref_outputs["loss"])
             self.assertTrue(jnp.allclose(aux["per_label_loss"], ref_outputs["per_token_loss"]))
 
+    @parameterized.parameters(True, False)
+    def test_forward_with_attention_mask(self, use_pos_emb):
+        batch_size, seq_len, vocab_size = 3, 10, 10
+
+        decoder_cfg = causal_lm.gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=2,
+            hidden_dim=10,
+            num_heads=2,
+            vocab_size=vocab_size,
+            activation_function="nn.gelu",
+            max_position_embeddings=seq_len,
+            layer_norm_epsilon=0.1,
+            dropout_rate=0.0,
+        )
+        decoder_cfg.attention_mask = FullAttentionLogitBiasLayer.default_config()
+        if not use_pos_emb:
+            decoder_cfg.emb.pos_emb = None
+
+        model_cfg = causal_lm.Model.default_config().set(decoder=decoder_cfg, name="metrics_test")
+        model = model_cfg.instantiate(parent=None)
+
+        prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
+        model_params = model.initialize_parameters_recursively(init_key)
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
+        )
+        target_labels = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        segment_ids = jnp.array(
+            [
+                [1, 1, 1, 1, 1, 1, 1, 1, 1, 2],
+                [1, 2, 2, 2, 2, 2, 3, 3, 3, 3],
+                [1, 1, 1, 1, 2, 3, 3, 4, 5, 5],
+            ]
+        )
+        # Create example_ids for the packed sequences in a batch.
+        example_ids = jnp.array(
+            [
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                [2, 3, 3, 3, 3, 3, 4, 4, 4, 4],
+                [5, 5, 5, 5, 6, 7, 7, 8, 9, 9],
+            ]
+        )
+        positions = jnp.array(
+            [
+                [0, 1, 2, 3, 4, 5, 6, 7, 8, 0],
+                [0, 0, 1, 2, 3, 4, 0, 1, 2, 3],
+                [0, 1, 2, 3, 0, 0, 1, 0, 0, 1],
+            ]
+        )
+        # [batch_size, seq_len, num_examples].
+        row_dispatch = jax.nn.one_hot(
+            example_ids, len(jnp.unique(example_ids)), dtype=input_ids.dtype
+        )
+        # [batch_size, seq_len, seq_len].
+        col_dispatch = jax.nn.one_hot(positions, seq_len, dtype=input_ids.dtype)
+        # row_dispatch[i, j, row] == 1 and col_dispatch[i, j, col] == 1
+        # means packed[i, j] is put at unpacked[row, col].
+        unpacked_input_ids = jnp.einsum("bsn,bst,bs->nt", row_dispatch, col_dispatch, input_ids)
+        unpacked_target_labels = jnp.einsum(
+            "bsn,bst,bs->nt", row_dispatch, col_dispatch, target_labels
+        )
+        # Positions should be provided too.
+        inputs = dict(
+            input_ids=input_ids,
+            target_labels=target_labels,
+            input_segment_ids=segment_ids,
+            positions=positions,
+        )
+
+        # segment_ids will be computed according to trailing padding tokens if not provided.
+        unpacked_inputs = dict(
+            input_ids=unpacked_input_ids,
+            target_labels=unpacked_target_labels,
+        )
+        if use_pos_emb:
+            unpacked_segment_ids = jnp.einsum(
+                "bsn,bst,bs->nt", row_dispatch, col_dispatch, segment_ids
+            )
+            unpacked_positions = jnp.einsum("bsn,bst,bs->nt", row_dispatch, col_dispatch, positions)
+
+            # We need to provide positions to make pos_emb output match.
+            unpacked_inputs.update(
+                dict(input_segment_ids=unpacked_segment_ids, positions=unpacked_positions)
+            )
+        ctx = InvocationContext(
+            name="root",
+            parent=None,
+            module=model,
+            # Use the same set of parameters.
+            state=model_params,
+            output_collection=new_output_collection(),
+            is_training=True,
+            prng_key=prng_key,
+        )
+        with set_current_context(ctx):
+            loss, aux = model.forward(input_batch=inputs, return_aux=True)
+        with set_current_context(ctx.replace(output_collection=new_output_collection())):
+            unpacked_loss, unpacked_aux = model.forward(
+                input_batch=unpacked_inputs, return_aux=True
+            )
+        self.assertAlmostEqual(loss, unpacked_loss)
+        unpacked_per_label_loss = jnp.einsum(
+            "bsn,bst,bs->nt", row_dispatch, col_dispatch, aux["per_label_loss"]
+        )
+        assert_allclose(unpacked_aux["per_label_loss"], unpacked_per_label_loss)
+
     @pytest.mark.skipif(
         jax.device_count() != 4 or jax.process_count() != 1,
         reason="Incorrect device & process count for mesh.",
@@ -274,6 +385,8 @@ class ModelMetricsTest(TestCase):
             "input_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "target_labels": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "token_type_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "input_segment_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "positions": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "prefix": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "target_num_bytes": jnp.ones((batch_size,), dtype=jnp.int32),
             "extra_variable": jnp.ones((batch_size,), dtype=jnp.int32),
@@ -298,10 +411,10 @@ class ModelMetricsTest(TestCase):
             # Get stable-hlo representation.
             hlo_text = fn.lower(input_batch).compiler_ir(dialect="hlo").as_hlo_text()
 
-            # Five (out of six) tensors were sharded.
-            self.assertEqual(hlo_text.count('custom_call_target="Sharding"'), 5)
+            # Seven (out of eight) tensors were sharded.
+            self.assertEqual(hlo_text.count('custom_call_target="Sharding"'), 7)
             # For the [batch, seq_len] tensors.
-            self.assertEqual(hlo_text.count("sharding={devices=[2,2]<=[4]}"), 4)
+            self.assertEqual(hlo_text.count("sharding={devices=[2,2]<=[4]}"), 6)
             # For the [batch,] tensor.
             self.assertEqual(
                 hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 1

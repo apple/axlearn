@@ -16,7 +16,9 @@ from transformers import GPT2Config, GPT2LMHeadModel
 
 from axlearn.common import decoding, utils
 from axlearn.common.attention import (
+    AttentionLogitBiasLayer,
     BaseStackedTransformerLayer,
+    FullAttentionLogitBiasLayer,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
     TransformerAttentionLayer,
@@ -275,6 +277,7 @@ def _gpt2_decoder_config_from_hf(
     vocab_size: Optional[int] = None,
     layer_norm_epsilon: Optional[float] = None,
     dropout_rate: Optional[float] = None,
+    attention_mask: Optional[AttentionLogitBiasLayer.Config] = None,
 ) -> Decoder.Config:
     cfg = gpt_decoder_config(
         stack_cfg=StackedTransformerLayer.default_config(),
@@ -287,6 +290,7 @@ def _gpt2_decoder_config_from_hf(
         layer_norm_epsilon=layer_norm_epsilon,
         dropout_rate=dropout_rate,
     )
+    cfg.attention_mask = attention_mask
     cfg.pad_token_id = hf_cfg.pad_token_id
     return cfg
 
@@ -294,8 +298,7 @@ def _gpt2_decoder_config_from_hf(
 class TestAgainstHF(TestCase):
     """Tests EncoderDecoder layer against HF."""
 
-    def setUp(self):
-        super().setUp()
+    def setup(self, use_attention_mask: bool = False):
         self.hf_encoder_cfg = BertConfig(
             vocab_size=24,
             hidden_size=16,
@@ -338,11 +341,16 @@ class TestAgainstHF(TestCase):
             layer_norm_epsilon=self.hf_encoder_cfg.layer_norm_eps,
             dropout_rate=self.hf_encoder_cfg.hidden_dropout_prob,
         )
+        if use_attention_mask:
+            attention_mask = FullAttentionLogitBiasLayer.default_config()
+        else:
+            attention_mask = None
         test_decoder = _gpt2_decoder_config_from_hf(
             self.hf_decoder_cfg,
             vocab_size=self.hf_decoder_cfg.vocab_size,
             layer_norm_epsilon=self.hf_decoder_cfg.layer_norm_epsilon,
             dropout_rate=self.hf_decoder_cfg.embd_pdrop,
+            attention_mask=attention_mask,
         )
         set_decoder_cross_attention_config(test_decoder, self.hf_decoder_cfg.n_head)
         self.test_encoder_decoder = (
@@ -378,7 +386,8 @@ class TestAgainstHF(TestCase):
         if (source_padding_type == "segment_ids") != (target_padding_type == "segment_ids"):
             # segment_ids on source/target should be provided together.
             return
-
+        # When segment_ids is provided, attention_mask is required.
+        self.setup(use_attention_mask=source_padding_type == "segment_ids")
         batch_size = 3
         vocab_size = self.hf_encoder_cfg.vocab_size
         source_len = self.hf_encoder_cfg.max_position_embeddings
