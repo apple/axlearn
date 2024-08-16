@@ -104,6 +104,10 @@ class Model(BaseModel):
                     Used as decoder input ids. Values should be in the range [0, vocab_size].
                 target_num_bytes: an optional int Tensor of shape [batch_size].
                     Used to provide the number of UTF-8 bytes represented by the target_labels.
+                input_segment_ids: an optional int Tensor of shape [batch_size, seq_len] with
+                    unique positive values for different input sequences.
+                positions: An optional int Tensor of shape [batch_size, target_len] with
+                    non-negative values representing token position indices.
             return_aux: boolean to determine whether logits and decoder hidden states are returned.
 
         Returns:
@@ -260,6 +264,11 @@ class Model(BaseModel):
                     Used as decoder input ids. Values should be in the range [0, vocab_size].
                 token_type_ids: an optional int Tensor of shape [batch_size, seq_len].
                     Values should be in the range [0, type_vocab_size].
+                input_segment_ids: an optional int Tensor of shape [batch_size, seq_len] with
+                    unique positive values for different input sequences.
+                positions: an optional int Tensor of shape [batch_size, seq_len] with non-negative
+                    values representing token position indices.
+
         Returns:
             A dict containing:
                 logits: a float Tensor of shape [batch_size, seq_len, vocab_size]
@@ -272,6 +281,8 @@ class Model(BaseModel):
         decoder_output = self.decoder(
             input_ids=input_ids,
             token_type_ids=token_type_ids,
+            input_segment_ids=input_batch.get("input_segment_ids"),
+            positions=input_batch.get("positions"),
         )
         return decoder_output
 
@@ -328,7 +339,14 @@ class Model(BaseModel):
 
         cfg = self.config
         for k, v in input_batch.items():
-            if k in ["input_ids", "target_labels", "token_type_ids", "prefix"]:
+            if k in [
+                "input_ids",
+                "target_labels",
+                "token_type_ids",
+                "prefix",
+                "input_segment_ids",
+                "positions",
+            ]:
                 assert v.ndim == 2
                 input_batch[k] = with_sharding_constraint(
                     v, PartitionSpec(cfg.batch_axis_names, cfg.seq_axis_names)
