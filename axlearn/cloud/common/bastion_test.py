@@ -6,6 +6,7 @@
 # pytype: disable=wrong-arg-types
 import contextlib
 import copy
+import io
 import itertools
 import json
 import os
@@ -19,6 +20,7 @@ from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common import bastion
 from axlearn.cloud.common.bastion import (
+    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
     _JOB_DIR,
     _LOG_DIR,
     Bastion,
@@ -895,7 +897,10 @@ class BastionTest(parameterized.TestCase):
             # Command should be started on the first update.
             self.assertIsNotNone(updated_job.command_proc)
             # Scheduling metadata should be set.
-            self.assertEqual({"BASTION_TIER": 1}, updated_job.command_proc.popen.env)
+            self.assertEqual(1, updated_job.command_proc.popen.env["BASTION_TIER"])
+            # Valid serialized jobspec should be passed.
+            jobspec = updated_job.command_proc.popen.env[_BASTION_SERIALIZED_JOBSPEC_ENV_VAR]
+            self.assertEqual(job.spec, deserialize_jobspec(io.StringIO(jobspec)))
 
             # Log should be downloaded if it exists.
             download_call = mock.call(

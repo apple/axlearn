@@ -50,6 +50,7 @@ import collections
 import dataclasses
 import enum
 import functools
+import io
 import json
 import os
 import shlex
@@ -93,6 +94,7 @@ from axlearn.common.utils import Nested
 _LATEST_BASTION_VERSION = 1  # Determines job schema (see JobSpec).
 _LOG_DIR = "/var/tmp/logs"  # Use /var/tmp/ since /tmp/ is cleared every 10 days.
 _JOB_DIR = "/var/tmp/jobs"
+_BASTION_SERIALIZED_JOBSPEC_ENV_VAR = "_BASTION_SERIALIZED_JOBSPEC"
 
 FLAGS = flags.FLAGS
 
@@ -841,10 +843,14 @@ class Bastion(Configurable):
                     f"ACTIVE: start process command: {job.spec.command} "
                     f"with metadata: {job.state.metadata}",
                 )
+            env_vars = {f"BASTION_{k.upper()}": v for k, v in job.state.metadata.items()}
+            serialized_jobspec = io.StringIO()
+            serialize_jobspec(job.spec, serialized_jobspec)
+            env_vars |= {_BASTION_SERIALIZED_JOBSPEC_ENV_VAR: serialized_jobspec.getvalue()}
             _start_command(
                 job,
                 remote_log_dir=self._log_dir,
-                env_vars={f"BASTION_{k.upper()}": v for k, v in job.state.metadata.items()},
+                env_vars=env_vars,
             )
             assert job.command_proc is not None
 
