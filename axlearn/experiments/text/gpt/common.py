@@ -211,7 +211,10 @@ def update_model_remat_config(
     else:
         # Checkpointing both ffn and attention to give the best performance.
         remat_spec = build_remat_spec(
-            stack_cfg, feed_forward=True, self_attention=True, offload_dst=offload_dst
+            stack_cfg.clone(layer=layer_cfg),
+            feed_forward=True,
+            self_attention=True,
+            offload_dst=offload_dst,
         )
     layer_cfg.set(remat_spec=remat_spec)
 
@@ -236,7 +239,6 @@ def model_config(
     ffn_structure: str = "prenorm",
     atten_structure: str = "prenorm",
     atten_logit_cap: Optional[float] = None,
-    remat_offload_dst: Optional[Literal["pinned_host"]] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -265,7 +267,6 @@ def model_config(
             Options: [prenorm, postnorm, hybridnorm].
         atten_logit_cap: Cap the absolute values of logits by tanh.
             Enabled by setting a positive value.
-        remat_offload_dst: Destination of remat checkptoing offloading.
 
     Returns:
         A causal LM config.
@@ -284,9 +285,7 @@ def model_config(
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
     if stack_cfg.klass is RepeatedTransformerLayer:
-        update_model_remat_config(
-            stack_cfg=stack_cfg, layer_cfg=layer_cfg, offload_dst=remat_offload_dst
-        )
+        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
     # Stack.
     transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(

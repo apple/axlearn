@@ -13,7 +13,7 @@ The fuji models are set up to imitate LLaMA models:
 import enum
 import functools
 import itertools
-from typing import Any, Callable, Dict, Literal, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
@@ -41,7 +41,7 @@ from axlearn.experiments.text.gpt.common import (
     mesh_shape_from_axes,
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
-from axlearn.experiments.text.gpt.common import scaled_hidden_dim
+from axlearn.experiments.text.gpt.common import scaled_hidden_dim, update_model_remat_config
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 MODEL_SIZES = ("test", "7B", "70B")
@@ -165,7 +165,8 @@ def get_trainer_kwargs(
                 # tpu-v4-(1024|2048).
                 ("tpu-v4-.*", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e.
-                ("tpu-v5litepod-.*", mesh_shape_from_axes(data=-1, fsdp=16)),
+                # v2 on tpu-v5litepod-256x4: 1.87s (46% MFU), HBM usage: 11GB/chip.
+                ("tpu-v5litepod-.*", mesh_shape_from_axes(data=-1, fsdp=256)),
                 # tpu-v5p.
                 ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
                 # H100/A100 80G.
@@ -188,7 +189,6 @@ def get_trainer_kwargs(
                 num_kv_heads=None if version == Version.V1 else 8,
                 rope_theta=rope_theta,
                 flash_attention=flash_attention,
-                remat_offload_dst="pinned_host",
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -196,10 +196,11 @@ def get_trainer_kwargs(
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
-                # TPU V5e maximum per device batch is 1. So need 4 x v5e-256.
-                # tpu-v5e-512. step time: 14.0817s (61.11% MFU).
-                # tpu-v5e-1024. step time: 14.3736s (59.87% MFU).
-                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=256)),
+                # TPU V5e maximum per device batch is 1.
+                # with all activation offloading, HBM usage: 14GB/chip.
+                # TODO(kelvin-zou): Fix the env issue for internal use cases.
+                # tpu-v5e-256-4. step time: 14.3736s (59.87% MFU).
+                ("tpu-v5litepod-.*", mesh_shape_from_axes(data=-1, fsdp=256)),
                 # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
                 # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
                 (
@@ -233,7 +234,6 @@ def model_config(
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
     flash_attention: bool = False,
     stack_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
-    remat_offload_dst: Optional[Literal["pinned_host"]] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -251,7 +251,6 @@ def model_config(
         flash_attention: Whether to enable flash attention.
         stack_cfg: The transformer stack config.
             If None, defaults to a RepeatedTransformerLayer.
-        remat_offload_dst: Destination of remat checkptoing offloading.
 
     Returns:
         A causal LM config.
@@ -288,7 +287,6 @@ def model_config(
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
         attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
-        remat_offload_dst=remat_offload_dst,
     )
     return cfg
 
@@ -402,5 +400,25 @@ def trainer_configs(
             config_map[f"{config_name}-grad-accum-single-host"] = functools.partial(
                 make_grad_accum_config, make_single_host_config_func, 4
             )
+
+        if model_size == "70B":
+
+            def make_config_with_act_offload(base_config_name: str) -> SpmdTrainer.Config:
+                """Make configs for the v5e/v6e tpu with low HBM."""
+                # pytype: disable=annotation-type-mismatch
+                cfg: SpmdTrainer.Config = config_map[base_config_name]().clone()
+                # pytype: enable=annotation-type-mismatch
+                update_model_remat_config(
+                    stack_cfg=cfg.model.decoder.transformer,
+                    layer_cfg=cfg.model.decoder.transformer.layer,
+                    offload_dst="pinned_host",
+                )
+                return cfg
+
+            make_litepod_config_func = functools.partial(make_config_with_act_offload, config_name)
+
+            # We add -litepod to the config name for v5e/v6e and other HW with low HBM.
+            # Due to limited HBM, we offload some activations to host mem.
+            config_map[f"{config_name}-litepod"] = make_litepod_config_func
 
     return config_map
