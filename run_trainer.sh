@@ -26,7 +26,7 @@ export NEURON_RT_RESET_CORES=1
 export NEURON_RT_LOG_LEVEL="WARNING"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --target=trn2"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --model-type transformer"
-export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --no-internal-hlo-remat --internal-hlo2tensorizer-options='--recursive-layer-det'"
+export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --no-internal-hlo-remat"
 
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --enable-mixed-precision-accumulation"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} -O1"
