@@ -11,7 +11,9 @@ import queue
 import re
 import tempfile
 import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable, List, Optional, Sequence, Type
 from unittest import mock
 
@@ -32,12 +34,12 @@ from axlearn.common.checkpointer import (
     CheckpointValidationType,
     EvalMetric,
     TensorStoreStateStorage,
+    _async_save_tf_savables,
     check_state_structure,
     every_n_steps_and_last_policy,
     every_n_steps_policy,
     read_state_spec,
     restore_tf_savables,
-    save_tf_savables,
 )
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.summary_writer import SummaryWriter
@@ -795,6 +797,7 @@ def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> List[str]
 
 class TfIteratorTest(test_utils.TestCase):
     def test_restored_iterator_resumes(self):
+        executor = ThreadPoolExecutor(1)
         num_examples = 30
         tempdir = tempfile.mkdtemp()
         lines = [str(id) for id in range(num_examples)]
@@ -813,9 +816,15 @@ class TfIteratorTest(test_utils.TestCase):
                 # Save and restore the iterator.
                 ckpt_path = os.path.join(tempdir, "ckpt")
                 prev_it = it
-                save_tf_savables({"it": it}, dir=ckpt_path)
+                # Manually increase the delay of executor to test `it` mutation after
+                # call to _async_save_tf_savables doesn't affect saving.
+                blocker = executor.submit(lambda: time.sleep(2))
+                f = _async_save_tf_savables({"it": it}, executor=executor, dir=ckpt_path)
+                next(it)  # modify it in place
                 it = iter(ds)  # reset `it`.
                 self.assertIsNot(it, prev_it)
+                blocker.result()
+                f.result()  # wait for async save
                 restore_tf_savables({"it": it}, dir=ckpt_path)
             line = next(it).numpy()
             seen.append(int(line))

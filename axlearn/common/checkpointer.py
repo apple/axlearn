@@ -7,6 +7,7 @@ import difflib
 import enum
 import json
 import os.path
+import tempfile
 import threading
 import time
 from concurrent import futures
@@ -121,15 +122,39 @@ def check_state_structure(
         )
 
 
-# pylint: disable-next=redefined-builtin
-def save_tf_savables(value_map: Dict[str, Any], *, dir: str):
-    """Saves TF savables from `value_map` into `dir`."""
+def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str):
+    """Upload a directory (non-recursively) from a temporary dir to dst_dir.
+
+    Temporary dir will be deleted after the upload is complete.
+    """
+    src_dir = src_dir_handle.name
+    if not tf.io.gfile.exists(dst_dir):
+        tf.io.gfile.makedirs(dst_dir)
+    for item in tf.io.gfile.listdir(src_dir):
+        src_file = tf.io.gfile.join(src_dir, item)
+        dst_file = tf.io.gfile.join(dst_dir, item)
+        assert not tf.io.gfile.isdir(src_file)
+        tf.io.gfile.copy(src_file, dst_file, overwrite=True)
+    src_dir_handle.cleanup()
+
+
+# pylint: disable=redefined-builtin
+def _async_save_tf_savables(
+    value_map: Dict[str, Any], *, executor: futures.ThreadPoolExecutor, dir: str
+) -> futures.Future:
+    """Asynchronously saves TF savables from `value_map` into `dir`.
+
+    When this call returns, `value_map` can be safely mutated, but saving to `dir` will not
+    complete unless the returned future is set.
+    """
+    # pylint: disable-next=consider-using-with
+    f = tempfile.TemporaryDirectory()
     for path, value in value_map.items():
         tf_checkpoint = tf.train.Checkpoint(value)
-        tf_checkpoint.write(os.path.join(dir, path))
+        tf_checkpoint.write(os.path.join(f.name, path))
+    return executor.submit(_upload_dir, f, dst_dir=dir)
 
 
-# pylint: disable-next=redefined-builtin
 def restore_tf_savables(value_map: Dict[str, Any], *, dir: str):
     """Restores TF savables from `dir` into `value_map` in-place."""
     for path, value in value_map.items():
@@ -137,6 +162,7 @@ def restore_tf_savables(value_map: Dict[str, Any], *, dir: str):
         tf_checkpoint.read(os.path.join(dir, path))
 
 
+# pylint: enable=redefined-builtin
 class StateStorageCommitCallback(Protocol):
     """StateStorage commit callback protocol."""
 
@@ -272,6 +298,7 @@ class TensorStoreStateStorage(StateStorage):
             self._manager = array_serialization.GlobalAsyncCheckpointManager(
                 timeout_secs=cfg.timeout_secs
             )
+        self._executor = futures.ThreadPoolExecutor()
 
     @dataclasses.dataclass
     class CheckpointSpec:  # pylint: disable=too-many-instance-attributes
@@ -350,15 +377,19 @@ class TensorStoreStateStorage(StateStorage):
                     list(set(os.path.dirname(path) for path in spec.storage_paths))
                 )
                 logging.info("Creating directories: %s", storage_dirs)
-                with futures.ThreadPoolExecutor() as executor:
-                    executor.map(tf.io.gfile.makedirs, storage_dirs)  # pytype: disable=module-attr
+                list(self._executor.map(tf.io.gfile.makedirs, storage_dirs))
                 logging.info("All directories created")
         # Wait for directory and index creation.
         multihost_utils.sync_global_devices(ckpt_dir)
         # Each worker writes its tf checkpoints under a different path.
-        save_tf_savables(spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"))
+        save_tf_future = _async_save_tf_savables(
+            spec.tf_ckpt_map,
+            executor=self._executor,
+            dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"),
+        )
 
         def commit():
+            save_tf_future.result()
             on_commit_callback(ckpt_dir=ckpt_dir, index=spec.index)
             logging.info(
                 "Serialization of %s completed in %s seconds.",
