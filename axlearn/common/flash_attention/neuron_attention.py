@@ -16,7 +16,6 @@ def flash_attention(query, key, value, causal, softmax_scale):
   return out
   
 def _mha_forward(query, key, value, causal, softmax_scale):
-  logging.error("[thangakr] _mha_forward called")
   # Get the batch size, sequence lengths, number of heads, and hidden dimension
   batch_size, q_seq_len, num_heads, d_model = query.shape
   _, kv_seq_len, _, _ = key.shape
@@ -43,7 +42,6 @@ def _mha_forward(query, key, value, causal, softmax_scale):
   return attn_output, (lse, attn_output, q, k, v)
 
 def _mha_backward(causal, softmax_scale, res, d_attn_output):
-  logging.error("[thangakr] _mha_backward called")
   lse, o, q, k, v = res
   batch_size, num_heads, d_model, seq_len = q.shape
   _, kv_seq_len, _, _ = k.shape

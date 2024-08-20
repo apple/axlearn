@@ -62,7 +62,7 @@ MAX_SEQUENCE_LENGTH = {
 }
 
 TRN_MODEL_AXIS_SIZE=64
-GRADIENT_ACCUMULATION_MICROBATCHES=1
+GRADIENT_ACCUMULATION_MICROBATCHES=4
 
 ROPE_THETA = {
     Version.V1: 5e5,
@@ -90,12 +90,6 @@ TOTAL_TOKENS = {
     },
 }
 
-# Adjust Neuron compiler flags for gradient accumulation
-if jax.default_backend() == 'neuron':
-    if GRADIENT_ACCUMULATION_MICROBATCHES > 1:
-        os.environ["NEURON_CC_FLAGS"] += " --internal-hlo2tensorizer-options='--verify-hlo --num-concat-graphs=" + str(GRADIENT_ACCUMULATION_MICROBATCHES) + '\''
-    else:
-        os.environ["NEURON_CC_FLAGS"] += " --internal-hlo2tensorizer-options='--verify-hlo'"
 
 def get_trainer_kwargs(
     model_size: str,
@@ -148,8 +142,8 @@ def get_trainer_kwargs(
     elif model_size == "7B":
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=2,
-                hidden_dim=8192,
+                num_layers=10,
+                hidden_dim=2048,
                 ffn_dim=scaled_hidden_dim(scale=4, round_up_to_multiples_of=16),
                 num_heads=64,
                 num_kv_heads=None,
@@ -162,7 +156,7 @@ def get_trainer_kwargs(
             train_batch_size=int((jax.device_count()/TRN_MODEL_AXIS_SIZE)*GRADIENT_ACCUMULATION_MICROBATCHES),
             max_sequence_length=max_sequence_length,
             max_step=500_000,  # 2T tokens // 4M tokens/step.
-            mesh_shape=mesh_shape_from_axes(model=TRN_MODEL_AXIS_SIZE),
+            mesh_shape=mesh_shape_from_axes(data=-1, model=TRN_MODEL_AXIS_SIZE),
             mesh_rules=(
                 # Step time:
                 # v1 on tpu-v4-1024 (512 chips):            3.03s
@@ -187,7 +181,7 @@ def get_trainer_kwargs(
                 ),
                 (   
                     "trn2",
-                    mesh_shape_from_axes(model=TRN_MODEL_AXIS_SIZE),
+                    mesh_shape_from_axes(data=-1, model=TRN_MODEL_AXIS_SIZE),
                 ),
             ),
             eval_batch_size=int(jax.device_count()/TRN_MODEL_AXIS_SIZE),
