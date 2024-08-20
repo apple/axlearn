@@ -143,7 +143,7 @@ def get_trainer_kwargs(
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=10,
-                hidden_dim=2048,
+                hidden_dim=8192,
                 ffn_dim=scaled_hidden_dim(scale=4, round_up_to_multiples_of=16),
                 num_heads=64,
                 num_kv_heads=None,

@@ -2392,15 +2392,12 @@ class TransformerAttentionLayer(BaseLayer):
         if cfg.structure == "prenorm":
             target = with_sharding_constraint(target, PartitionSpec('data','model',None))
             skip_input = target  # pre-norm: where normalization happens within the residual part.
-            skip_input = self._remat_name(skip_input, 'residual_skip')
             norm_target = self.norm(target)
             norm_target = with_sharding_constraint(norm_target, PartitionSpec('data',None,None))
             norm_target = checkpoint_name(norm_target, name='before_thunk')
-            #norm_target = self._remat_name(norm_target, 'attention_norm')
             atten_state, atten_output = attention_thunk(norm_target)
             atten_output = with_sharding_constraint(atten_output, PartitionSpec('data','model',None))
             data = skip_input + self.stochastic_depth(self.dropout(atten_output.data))
-            data = self._remat_name(data, 'residual_add')
         elif cfg.structure == "postnorm":
             # This is the structure used by the original Transformer, BERT, and RoBERTa.
             atten_state, atten_output = attention_thunk(target)
@@ -2708,7 +2705,6 @@ class TransformerFeedForwardLayer(BaseLayer):
 
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
-        inputs = self._remat_name(inputs, 'residual_input')
         if cfg.structure == "prenorm":
             x = with_sharding_constraint(inputs, PartitionSpec('data','model',None))
             x = self.norm(inputs)
@@ -2725,7 +2721,6 @@ class TransformerFeedForwardLayer(BaseLayer):
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
             x += inputs
-            x=self._remat_name(x, 'mlp_residual')
         elif cfg.structure == "postnorm":
             x = self._linear1_activation(inputs)
             x = self._remat_name(x, remat_pt1)
@@ -3800,7 +3795,6 @@ def build_remat_spec(
     # TODO(markblee): Switch to using isinstance everywhere.
     if stack_cfg.klass is PipelinedTransformerLayer:
         return None
-    print(f'Stack_cfg {stack_cfg}')
     if jax.default_backend() == 'neuron':
         fused_qkv_name = stack_cfg.layer.self_attention.attention.input_linear.klass.__name__
         ffn_name = stack_cfg.layer.feed_forward.klass.__name__
