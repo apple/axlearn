@@ -282,7 +282,7 @@ class Model(BaseModel):
             input_ids=input_ids,
             token_type_ids=token_type_ids,
             input_segment_ids=input_batch.get("input_segment_ids"),
-            positions=input_batch.get("positions"),
+            positions=input_batch.get("positions", input_batch.get("input_positions")),
         )
         return decoder_output
 
