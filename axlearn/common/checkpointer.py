@@ -128,8 +128,7 @@ def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str):
     Temporary dir will be deleted after the upload is complete.
     """
     src_dir = src_dir_handle.name
-    if not tf.io.gfile.exists(dst_dir):
-        tf.io.gfile.makedirs(dst_dir)
+    tf.io.gfile.makedirs(dst_dir)
     for item in tf.io.gfile.listdir(src_dir):
         src_file = tf.io.gfile.join(src_dir, item)
         dst_file = tf.io.gfile.join(dst_dir, item)
