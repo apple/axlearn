@@ -679,6 +679,98 @@ class TestDecoder(TestCase):
             decoder = decoder_cfg.instantiate(parent=None)
             chex.assert_trees_all_close(decoder(5 * jnp.ones(3)), dict(logits=17 * 5 * jnp.ones(3)))
 
+    def test_token_scores_match_between_decoded_and_prefix(self):
+        """Test that token scores match between sample_decode passes.
+
+        This reuses the generated tokens from the first pass as the prefix for the second pass.
+        This test is intented to detect if the scores from prefill_states do not match up with
+        the scores from sample_decode for the same tokens.
+        """
+
+        # No need to test multiple batches
+        batch_size = 1
+        # Long enough target length to get enough token scores to compare.
+        target_length = 32
+        # Prefix length long enough to check that we reconstruct the prefix for the second pass
+        # from the output sequence of the first pass.
+        prefix_1_length = 4
+
+        # Arbitrary other parameters
+        vocab_size = 64
+        bos_id = eos_id = 1
+        num_layers, num_heads = 3, 4
+        hidden_dim, _ = 12, 10
+
+        cfg = gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=num_layers,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+            max_position_embeddings=target_length,
+        )
+
+        decoder: Decoder = cfg.set(name="test", eos_token_id=eos_id).instantiate(parent=None)
+        decoder_state = decoder.initialize_parameters_recursively(jax.random.PRNGKey(42))
+
+        # Fill prefix with non-padding, non-BOS/EOS tokens.
+        prefix_1 = jax.random.randint(
+            jax.random.PRNGKey(42),
+            shape=[batch_size, target_length],
+            minval=bos_id + 1,
+            maxval=vocab_size,
+        )
+        # Set BOS as first token.
+        prefix_1 = prefix_1.at[:, 0].set(bos_id)
+        # Set tokens to be generated to padding value.
+        prefix_1 = prefix_1.at[:, prefix_1_length:].set(cfg.pad_token_id)
+
+        # Run a first decoding pass to generate the new tokens
+        outputs_1, _ = functional(
+            decoder,
+            inputs=dict(
+                prefix=prefix_1,
+                max_sequence_length=target_length,
+                num_decodes=1,
+                # Don't stop decoding until target length is reached
+                stop_decoding_condition=lambda **_: False,
+            ),
+            state=decoder_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(42),
+            method="sample_decode",
+        )
+
+        # Run second decoding pass, this time using the previously generated tokens as the prefix.
+        prefix_2 = jnp.roll(outputs_1.sequences[:, 0, :], shift=1)
+        prefix_2 = prefix_2.at[:, 0].set(bos_id)
+        # Check that we got the original prefix correctly from the output sequences.
+        self.assertTrue(jnp.all(prefix_1[:, :prefix_1_length] == prefix_2[:, :prefix_1_length]))
+
+        outputs_2, _ = functional(
+            decoder,
+            inputs=dict(
+                prefix=prefix_2,
+                max_sequence_length=target_length,
+                num_decodes=1,
+                # Don't stop decoding until target length is reached
+                stop_decoding_condition=lambda **_: False,
+            ),
+            state=decoder_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(42),
+            method="sample_decode",
+        )
+        # Check that the token scores from the first and second pass match. Especially the
+        # scores for the tokens that were decoded in the first pass, but part of the prefix in
+        # the second pass are of interest.
+        # Note: Do not check the scores for the last generated token, since that cannot be provided
+        # by the prefix and is thus regenerated on the second pass.
+        self.assertNestedAllClose(
+            outputs_1.token_scores[:, :, :-1],
+            outputs_2.token_scores[:, :, :-1],
+        )
+
 
 class UtilsTest(TestCase):
     @parameterized.parameters(

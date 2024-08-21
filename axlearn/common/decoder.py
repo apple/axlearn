@@ -270,6 +270,7 @@ class DecodingMixin(Module):
 
         Args:
             prefix: The prefix to use for prompting. Of shape [batch, max_prefix_length].
+                The prefix for each example in the batch should begin with the [BOS] token.
             max_sequence_length: The maximum sequence length of tokens to generate.
             num_decodes: The number of decoded sequences to return.
                 These are the number of hypotheses per batch example.
@@ -303,11 +304,11 @@ class DecodingMixin(Module):
             cross_attention_logit_biases=cross_attention_logit_biases,
         )
         init_scores = _scores_from_logits(init_outputs["logits"], logits_modifier=logits_modifier)
-        # Extract scores corresponding to prefix tokens.
+        # Extract scores corresponding to prefix tokens. Since each sequence in input_ids starts
+        # with the [BOS] token, shift them so they line up with the scores of the output tokens.
+        score_indices = jnp.roll(input_ids[:, :, None], shift=-1)
         # [batch_size, seq_len, vocab_size] --> [batch_size, seq_len].
-        init_scores = jnp.squeeze(
-            jnp.take_along_axis(init_scores, input_ids[:, :, None], axis=-1), axis=-1
-        )
+        init_scores = jnp.squeeze(jnp.take_along_axis(init_scores, score_indices, axis=-1), axis=-1)
         return sample_decode(
             inputs=input_ids,
             time_step=time_step,
