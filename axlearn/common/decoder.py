@@ -212,7 +212,8 @@ class DecodingMixin(Module):
 
         Args:
             prefix: The prefix to use for prompting. A Tensor of shape [batch, max_prefix_length].
-                The prefix for each example in the batch should begin with the [BOS] token.
+                The prefix for each example in the batch should begin with a prompt token (e.g.
+                BOS).
             max_sequence_length: The maximum sequence length of tokens to generate.
             num_decodes: The number of decoded sequences to return. These are the number of
                 hypotheses per batch example.
@@ -270,7 +271,8 @@ class DecodingMixin(Module):
 
         Args:
             prefix: The prefix to use for prompting. Of shape [batch, max_prefix_length].
-                The prefix for each example in the batch should begin with the [BOS] token.
+                The prefix for each example in the batch should begin with a prompt token (e.g.
+                BOS).
             max_sequence_length: The maximum sequence length of tokens to generate.
             num_decodes: The number of decoded sequences to return.
                 These are the number of hypotheses per batch example.
