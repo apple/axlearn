@@ -683,7 +683,7 @@ class TestDecoder(TestCase):
         """Test that token scores match between sample_decode passes.
 
         This reuses the generated tokens from the first pass as the prefix for the second pass.
-        This test is intented to detect if the scores from prefill_states do not match up with
+        This test is intended to detect if the scores from prefill_states do not match up with
         the scores from sample_decode for the same tokens.
         """
 
