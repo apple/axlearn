@@ -106,7 +106,7 @@ class Model(BaseModel):
                     Used to provide the number of UTF-8 bytes represented by the target_labels.
                 input_segment_ids: an optional int Tensor of shape [batch_size, seq_len] with
                     unique positive values for different input sequences.
-                positions: An optional int Tensor of shape [batch_size, target_len] with
+                input_positions: An optional int Tensor of shape [batch_size, target_len] with
                     non-negative values representing token position indices.
             return_aux: boolean to determine whether logits and decoder hidden states are returned.
 
@@ -266,8 +266,8 @@ class Model(BaseModel):
                     Values should be in the range [0, type_vocab_size].
                 input_segment_ids: an optional int Tensor of shape [batch_size, seq_len] with
                     unique positive values for different input sequences.
-                positions: an optional int Tensor of shape [batch_size, seq_len] with non-negative
-                    values representing token position indices.
+                input_positions: an optional int Tensor of shape [batch_size, seq_len] with
+                    non-negative values representing token position indices.
 
         Returns:
             A dict containing:
@@ -282,7 +282,7 @@ class Model(BaseModel):
             input_ids=input_ids,
             token_type_ids=token_type_ids,
             input_segment_ids=input_batch.get("input_segment_ids"),
-            positions=input_batch.get("positions"),
+            positions=input_batch.get("input_positions"),
         )
         return decoder_output
 
@@ -345,7 +345,7 @@ class Model(BaseModel):
                 "token_type_ids",
                 "prefix",
                 "input_segment_ids",
-                "positions",
+                "input_positions",
             ]:
                 assert v.ndim == 2
                 input_batch[k] = with_sharding_constraint(
