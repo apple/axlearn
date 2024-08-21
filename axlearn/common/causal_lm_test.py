@@ -290,7 +290,7 @@ class ModelMetricsTest(TestCase):
                 [5, 5, 5, 5, 6, 7, 7, 8, 9, 9],
             ]
         )
-        positions = jnp.array(
+        input_positions = jnp.array(
             [
                 [0, 1, 2, 3, 4, 5, 6, 7, 8, 0],
                 [0, 0, 1, 2, 3, 4, 0, 1, 2, 3],
@@ -302,19 +302,19 @@ class ModelMetricsTest(TestCase):
             example_ids, len(jnp.unique(example_ids)), dtype=input_ids.dtype
         )
         # [batch_size, seq_len, seq_len].
-        col_dispatch = jax.nn.one_hot(positions, seq_len, dtype=input_ids.dtype)
+        col_dispatch = jax.nn.one_hot(input_positions, seq_len, dtype=input_ids.dtype)
         # row_dispatch[i, j, row] == 1 and col_dispatch[i, j, col] == 1
         # means packed[i, j] is put at unpacked[row, col].
         unpacked_input_ids = jnp.einsum("bsn,bst,bs->nt", row_dispatch, col_dispatch, input_ids)
         unpacked_target_labels = jnp.einsum(
             "bsn,bst,bs->nt", row_dispatch, col_dispatch, target_labels
         )
-        # Positions should be provided too.
+        # input_positions should be provided too.
         inputs = dict(
             input_ids=input_ids,
             target_labels=target_labels,
             input_segment_ids=segment_ids,
-            positions=positions,
+            input_positions=input_positions,
         )
 
         # segment_ids will be computed according to trailing padding tokens if not provided.
@@ -326,11 +326,13 @@ class ModelMetricsTest(TestCase):
             unpacked_segment_ids = jnp.einsum(
                 "bsn,bst,bs->nt", row_dispatch, col_dispatch, segment_ids
             )
-            unpacked_positions = jnp.einsum("bsn,bst,bs->nt", row_dispatch, col_dispatch, positions)
+            unpacked_positions = jnp.einsum(
+                "bsn,bst,bs->nt", row_dispatch, col_dispatch, input_positions
+            )
 
             # We need to provide positions to make pos_emb output match.
             unpacked_inputs.update(
-                dict(input_segment_ids=unpacked_segment_ids, positions=unpacked_positions)
+                dict(input_segment_ids=unpacked_segment_ids, input_positions=unpacked_positions)
             )
         ctx = InvocationContext(
             name="root",
@@ -386,7 +388,7 @@ class ModelMetricsTest(TestCase):
             "target_labels": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "token_type_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "input_segment_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
-            "positions": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "input_positions": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "prefix": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "target_num_bytes": jnp.ones((batch_size,), dtype=jnp.int32),
             "extra_variable": jnp.ones((batch_size,), dtype=jnp.int32),
