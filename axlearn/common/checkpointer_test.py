@@ -722,6 +722,22 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                 storage._manager, array_serialization.GlobalAsyncCheckpointManager
             )
 
+    def test_stop(self):
+        storage = TensorStoreStateStorage.default_config().instantiate()
+        worker_result = None
+
+        def worker():
+            nonlocal worker_result
+            time.sleep(1)
+            worker_result = True
+
+        storage._executor.submit(worker)
+        storage.stop()
+        self.assertTrue(worker_result, "storage.stop() should wait for executor to finish.")
+
+        with self.assertRaisesRegex(RuntimeError, "cannot schedule new futures after shutdown"):
+            storage._executor.submit(worker)
+
     @parameterized.parameters(jnp.float32, jnp.bfloat16, jnp.int32, jnp.int16)
     def test_save_and_restore_from_dir(self, restore_floats_as: jnp.dtype):
         mesh_shape = (1, 1)

@@ -201,6 +201,10 @@ class StateStorage(Configurable):
     ) -> NestedTensor:
         raise NotImplementedError(type(self))
 
+    def stop(self):
+        """Stops and disposes resources."""
+        raise NotImplementedError(type(self))
+
 
 def write_index_file(*, ckpt_dir: str, index: Any):
     """An on_commit_callback that writes an index file to ckpt_dir."""
@@ -448,6 +452,9 @@ class TensorStoreStateStorage(StateStorage):
         )
         multihost_utils.sync_global_devices(ckpt_dir)
         return restored_state
+
+    def stop(self):
+        self._executor.shutdown(wait=True)
 
 
 class CheckpointPolicy(Protocol):
@@ -780,6 +787,7 @@ class Checkpointer(BaseCheckpointer):
     def stop(self):
         """See `BaseCheckpointer.stop` for details."""
         self.wait_until_finished()
+        self._storage.stop()
         logging.info("Waiting for gc_thread to finish")
         if self._gc_thread is not None:
             self._gc_stopping.set()
