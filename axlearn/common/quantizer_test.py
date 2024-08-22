@@ -212,7 +212,6 @@ class RandomVectorQuantizerTest(TestCase):
             ),
             shapes(layer_params),
         )
-        # pylint: disable-next=protected-access
         with prng_impl("threefry2x32"):
             proj_key = _create_prngkeyarray([3077990774, 2166202870])
             codebook_key = _create_prngkeyarray([791337683, 1373966058])

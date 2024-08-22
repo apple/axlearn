@@ -38,7 +38,19 @@ from axlearn.common.module import (
     install_context_stack,
 )
 from axlearn.common.summary_writer import CheckpointerAction, SummaryWriter
-from axlearn.common.utils import NestedTensor, NestedTensorSpec, Tensor, TensorSpec, set_recursively
+from axlearn.common.utils import (
+    Nested,
+    NestedTensor,
+    NestedTensorSpec,
+    Tensor,
+    TensorSpec,
+    set_recursively,
+)
+
+# Number of digits in the step directory.
+STEP_NUM_DIGITS = 8
+# Prefix for step directory.
+STEP_PREFIX = "step"
 
 
 class CheckpointValidationType(str, enum.Enum):
@@ -64,7 +76,7 @@ class CheckpointValidationType(str, enum.Enum):
 
 def parse_step_from_dir(step_dir: str) -> int:
     # TODO(markblee): use regex.
-    return int(step_dir[-8:])
+    return int(step_dir[-STEP_NUM_DIGITS:])
 
 
 def check_state_structure(
@@ -122,19 +134,23 @@ def check_state_structure(
 
 
 # pylint: disable-next=redefined-builtin
-def save_tf_savables(value_map: dict[str, Any], *, dir: str):
+def save_tf_savables(value_map: Nested[Any], *, dir: str):
     """Saves TF savables from `value_map` into `dir`."""
-    for path, value in value_map.items():
+
+    for path, value in utils.flatten_items(value_map):
         tf_checkpoint = tf.train.Checkpoint(value)
         tf_checkpoint.write(os.path.join(dir, path))
 
 
 # pylint: disable-next=redefined-builtin
-def restore_tf_savables(value_map: dict[str, Any], *, dir: str):
+def restore_tf_savables(value_map: Nested[Any], *, dir: str) -> Nested[Any]:
     """Restores TF savables from `dir` into `value_map` in-place."""
-    for path, value in value_map.items():
+
+    for path, value in utils.flatten_items(value_map):
         tf_checkpoint = tf.train.Checkpoint(value)
         tf_checkpoint.read(os.path.join(dir, path))
+
+    return value_map
 
 
 class StateStorageCommitCallback(Protocol):
@@ -185,7 +201,14 @@ def write_index_file(*, ckpt_dir: str, index: Any):
         f.write(json.dumps(index))
 
 
-def _parse_tensor_spec(spec_dict: dict[str, str]) -> TensorSpec:
+
+def read_index_file(ckpt_dir: str) -> Nested[Any]:
+    """Reads index files written with `write_index_file`."""
+    with tf.io.gfile.GFile(os.path.join(ckpt_dir, "index"), "r") as f:
+        return json.loads(f.read())
+
+
+def _parse_tensor_spec(spec_dict: Dict[str, str]) -> TensorSpec:
     # The shape string is of format `(dim...)`. [1:-1] removes the parentheses.
     shape = [int(x) for x in spec_dict["shape"][1:-1].split(",") if x]
     dtype_str = spec_dict["dtype"]
@@ -216,26 +239,29 @@ def read_state_spec(ckpt_dir: str) -> NestedTensorSpec:
 
     Args:
         ckpt_dir: The checkpoint directory corresponding to a specific step, e.g., the directory
-            returned by `latest_checkpoint_path(checkpointer.config.dir)`.
+            returned by `<BaseCheckpointer>.latest_checkpoint_path(checkpointer.config.dir)`, where
+            `<BaseCheckpointer>` is a subclass of `BaseCheckpointer`.
 
     Returns:
         A NestedTensorSpec representing the tensors stored under `ckpt_dir`. Each TensorSpec
         should have `shape` and `dtype` filled in, but will not contain `mesh_axes`. The returned
-        NestedTensorSpec can be passed as `state` to Checkpointer.restore().
+        NestedTensorSpec can be passed as `state` to `<BaseCheckpointer>.restore()`.
 
         If a checkpoint is too large to load onto a single host, the caller can further specify
         `mesh_axes` of the TensorSpecs to load the checkpoint across multiple processes.
     """
-    with tf.io.gfile.GFile(os.path.join(ckpt_dir, "index"), "r") as f:
-        restored_index_entries = json.loads(f.read())
-        state = {}
-        for path, value in restored_index_entries:
-            if isinstance(value, dict):
-                set_recursively(state, value=_parse_tensor_spec(value), path=path, separator="/")
-            else:
-                # Ignore step or tf.data.Iterator.
-                logging.vlog(1, "read_index_file ignores %s", path)
-        return state
+    state = {}
+    # Look for index file under `<base_dir>/<step_dir>` or `<base_dir>/<step_dir>/index/`.
+    # TODO(markblee): Move this fn into corresponding checkpointer class instead.
+    if tf.io.gfile.isdir(os.path.join(ckpt_dir, "index")):
+        ckpt_dir = os.path.join(ckpt_dir, "index")
+    for path, value in read_index_file(ckpt_dir):
+        if isinstance(value, dict):
+            set_recursively(state, value=_parse_tensor_spec(value), path=path, separator="/")
+        else:
+            # Ignore step or tf.data.Iterator.
+            logging.vlog(1, "read_state_spec ignores %s", path)
+    return state
 
 
 class TensorStoreStateStorage(StateStorage):
@@ -346,10 +372,10 @@ class TensorStoreStateStorage(StateStorage):
         spec = self._get_spec(step, state, ckpt_dir)
         if jax.process_index() == 0:
             if not ckpt_dir.startswith("gs://"):
-                storage_dirs = sorted(list({os.path.dirname(path) for path in spec.storage_paths}))
-                logging.info("Creating directories: %s", storage_dirs)
+                dirs = sorted(list(set(os.path.dirname(path) for path in spec.storage_paths)))
+                logging.info("Creating directories: %s", dirs)
                 with futures.ThreadPoolExecutor() as executor:
-                    executor.map(tf.io.gfile.makedirs, storage_dirs)  # pytype: disable=module-attr
+                    executor.map(tf.io.gfile.makedirs, dirs)  # pytype: disable=module-attr
                 logging.info("All directories created")
         # Wait for directory and index creation.
         multihost_utils.sync_global_devices(ckpt_dir)
@@ -384,10 +410,8 @@ class TensorStoreStateStorage(StateStorage):
     ) -> NestedTensor:
         spec = self._get_spec(step, state, ckpt_dir)
         logging.info("Restoring checkpoint from directory %s", ckpt_dir)
-        with tf.io.gfile.GFile(os.path.join(ckpt_dir, "index"), "r") as f:
-            restored_index_entries = json.loads(f.read())
         check_state_structure(
-            restored_index_entries, target_structure=spec.index, validation=validation
+            read_index_file(ckpt_dir), target_structure=spec.index, validation=validation
         )
         restore_tf_savables(
             spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}")
@@ -565,9 +589,13 @@ class BaseCheckpointer(Module):
 
         Attributes:
             dir: The output directory.
+            save_policy: A config that instantiates to a CheckpointPolicy.
         """
 
-        dir: Required[str] = REQUIRED  # The output directory.
+        dir: Required[str] = REQUIRED
+        save_policy: InstantiableConfig[CheckpointPolicy] = config_for_function(
+            every_n_steps_policy
+        )
 
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> list[str]:
@@ -594,6 +622,10 @@ class BaseCheckpointer(Module):
         """
         # Note: checkpoint_paths should already filter incomplete checkpoints.
         return sorted(cls.checkpoint_paths(base_dir)).pop()
+
+    def __init__(self, cfg: Module.Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        self._within_context = False
 
     def __enter__(self):
         """Enters the checkpointer context manager.
@@ -659,6 +691,10 @@ class BaseCheckpointer(Module):
         """
         raise NotImplementedError(type(self))
 
+    def wait_until_finished(self):
+        """Waits for pending asynchronous saves to finish."""
+        raise NotImplementedError(type(self))
+
     def stop(self):
         """Stops the checkpointer. Waits for async writes, garbage collection, etc. to finish."""
         raise NotImplementedError(type(self))
@@ -685,8 +721,6 @@ class Checkpointer(BaseCheckpointer):
         keep_every_n_steps: Optional[int] = None
         # Interval between garbage collection runs.
         gc_loop_interval_seconds: float = 60
-        # A config that instantiates to a CheckpointPolicy.
-        save_policy: InstantiableConfig = config_for_function(every_n_steps_policy)
         # A config that instantiates to a StateStorage.
         storage: StateStorage.Config = TensorStoreStateStorage.default_config()
         # A config that instantiates an optional SummaryWriter, and is used to log checkpoints.
@@ -695,7 +729,7 @@ class Checkpointer(BaseCheckpointer):
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> list[str]:
         """See `BaseCheckpointer.checkpointer_paths`."""
-        index_paths = tf.io.gfile.glob(os.path.join(base_dir, "step_*", "index"))  # type: ignore
+        index_paths = tf.io.gfile.glob(os.path.join(base_dir, f"{STEP_PREFIX}_*", "index"))
         return [os.path.dirname(path) for path in index_paths]
 
     @classmethod
@@ -721,10 +755,11 @@ class Checkpointer(BaseCheckpointer):
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
+        cfg: Checkpointer.Config = self.config
+
         self._storage: StateStorage = cfg.storage.instantiate()
         self._gc_stopping = None
         self._gc_thread = None
-        self._within_context = False
         self._save_policy: CheckpointPolicy = cfg.save_policy.instantiate()
         if cfg.summary_writer is not None:
             cfg.summary_writer.dir = cfg.summary_writer.dir or cfg.dir
@@ -768,7 +803,7 @@ class Checkpointer(BaseCheckpointer):
     def ckpt_dir(self, step: int) -> str:
         """Obtains the checkpoint dir for the given step."""
         cfg: Checkpointer.Config = self.config
-        return os.path.join(cfg.dir, f"step_{step:08d}")
+        return os.path.join(cfg.dir, f"{STEP_PREFIX}_{step:0{STEP_NUM_DIGITS}d}")
 
     def save(
         self, *, step: int, state: NestedTensor, evaler_summaries: Optional[dict[str, Any]] = None
@@ -808,7 +843,7 @@ class Checkpointer(BaseCheckpointer):
         remaining_dirs, gc_dirs = [], []
 
         # Gather all candidate checkpoint dirs, as well as all committed checkpoint dirs.
-        dirs = sorted(tf.io.gfile.glob(os.path.join(cfg.dir, "step_*")), reverse=True)
+        dirs = sorted(tf.io.gfile.glob(os.path.join(cfg.dir, f"{STEP_PREFIX}_*")), reverse=True)
         committed_dirs = set(self.checkpoint_paths(cfg.dir))
 
         # Collect the recent non-committed checkpoints, since any of them could be in-progress.
@@ -869,7 +904,7 @@ class Checkpointer(BaseCheckpointer):
         )
 
     def wait_until_finished(self):
-        """Waits for pending asynchronous saves to finish."""
+        """See `BaseCheckpointer.wait_until_finished` docstring for details."""
         self._storage.wait_until_finished()
 
     def restore(

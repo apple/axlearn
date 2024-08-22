@@ -19,13 +19,13 @@
 Reference:
 https://github.com/tensorflow/models/blob/master/official/legacy/image_classification/augment.py
 """
+
 # pylint: disable=too-many-lines
 import math
 from collections.abc import Sequence
 from typing import Any, Optional, Union
 
 import tensorflow as tf
-from keras import backend
 
 # This signifies the max integer that the controller RNN could predict for the
 # augmentation scheme.
@@ -179,7 +179,7 @@ def _keras_image_processing_transform(
     https://github.com/keras-team/keras/blob/v2.14.0/keras/layers/preprocessing/image_preprocessing.py#L720-L815
     since it was removed from the public API, with minor adaptation.
     """
-    with backend.name_scope(name or "transform"):
+    with tf.name_scope(name or "transform"):
         if output_shape is None:
             output_shape = tf.shape(images)[1:3]
             if not tf.executing_eagerly():

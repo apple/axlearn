@@ -91,12 +91,8 @@ def _segment_ids_from_causal_input_ids(input_ids: Tensor, *, pad_token_id: int) 
         A Tensor of shape [..., seq_len] with values in [0,1].
     """
     non_pad_indicator = (input_ids != pad_token_id).astype(input_ids.dtype)
-    non_pad_count = jnp.sum(
-        # Note: jax.lax.cummax doesn't support axis=-1.
-        jax.lax.cummax(non_pad_indicator, axis=input_ids.ndim - 1, reverse=True),
-        axis=-1,
-    )
-    return jnp.arange(input_ids.shape[-1]) < non_pad_count[:, None]
+    # Note: jax.lax.cummax doesn't support axis=-1.
+    return jax.lax.cummax(non_pad_indicator, axis=input_ids.ndim - 1, reverse=True)
 
 
 def _scores_from_logits(
@@ -627,27 +623,22 @@ class Decoder(DecodingMixin, BaseLayer):
         updated_inputs = cached_inputs * (1 - oh_indices) + input_ids * oh_indices
 
         # Compute self-attention-mask logit biases. [B, N, T, T].
-        if "attention_mask" in self.children:
-            self_attention_biases = self.compute_attention_logit_biases(
-                updated_inputs,
-                segment_ids=jnp.ones_like(updated_inputs),
-                positions=jnp.arange(target_len)[None, :],
-            )
-            # Select logit biases corresponding to time step. [B, N, 1, T].
-            # Note: if `time_step` exceeds `target_len`, e.g. in the case where one decode starts
-            # at a later index than another, clip the indices instead of producing NaNs.
-            # TODO(markblee): Update attention masks to support explicit positions, so we can
-            # skip this.
+        self_attention_biases = self.compute_attention_logit_biases(
+            updated_inputs,
+            segment_ids=jnp.ones_like(updated_inputs),
+            positions=jnp.arange(target_len)[None, :],
+        )
+        # Select logit biases corresponding to time step. [B, N, 1, T].
+        # Note: if `time_step` exceeds `target_len`, e.g. in the case where one decode starts at a
+        # later index than another, clip the indices instead of producing NaNs.
+        # TODO(markblee): Update attention masks to support explicit positions, so we can skip this.
+        if self_attention_biases is not None:
             self_attention_biases = jnp.take_along_axis(
                 self_attention_biases,
                 time_step[:, None, None, None],
                 axis=2,
                 mode="clip",
             )
-        else:
-            # When attention_mask is not configured, the MHA implementation should handle
-            # causal masking internally instead of relying on attention logit biases.
-            self_attention_biases = None
 
         updated_states, outputs = self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
@@ -694,17 +685,12 @@ class Decoder(DecodingMixin, BaseLayer):
             or None if cfg.attention_mask is None.
 
         Raises:
-            ValueError: If attention_mask is None but segment_ids is provided.
             ValueError: If segment_ids and positions are not both provided, or both omitted.
         """
         if "attention_mask" not in self.children:
-            if segment_ids is not None or positions is not None:
-                raise ValueError(
-                    "attention_mask must be set when segment_ids or positions is provided."
-                )
             return None
         if (segment_ids is None) != (positions is None):
-            raise ValueError("segment_ids and positions must be provided together.")
+            raise ValueError("segment_ids and positions must be provided together")
         cfg = self.config
         if segment_ids is None or positions is None:
             segment_ids = _segment_ids_from_causal_input_ids(
