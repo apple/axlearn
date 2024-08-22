@@ -393,17 +393,15 @@ class TestDecoder(TestCase):
                 )
                 * NEG_INF
             )
-        input_batch = dict(
-            input_ids=input_ids,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
-        )
-        if custom_attention_mask_cfg is not None:
-            input_batch["input_segment_ids"] = jnp.ones_like(input_ids)
-            input_batch["positions"] = jnp.arange(input_ids.shape[-1])[None, :]
         forward_outputs, _ = functional(
             layer,
-            inputs=input_batch,
+            inputs=dict(
+                input_ids=input_ids,
+                input_segment_ids=jnp.ones_like(input_ids),
+                positions=jnp.arange(input_ids.shape[-1])[None, :],
+                cross_attention_data=cross_attention_data,
+                cross_attention_logit_biases=cross_attention_logit_biases,
+            ),
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
