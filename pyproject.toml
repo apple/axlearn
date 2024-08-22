@@ -55,6 +55,7 @@ apple-silicon = [
 
 # Requirements for testing and development.
 dev = [
+    "axlearn[orbax]",  # checkpointer tests
     "black==23.1a1",  # formatting
     "einops",
     "evaluate",
@@ -133,6 +134,11 @@ mmau = [
     "nbconvert==7.16.4",
     "google-cloud-aiplatform==1.50.0",
     "transformers==4.44.1",
+]
+# Orbax checkpointing.
+orbax = [
+    "humanize==4.10.0",
+    "orbax-checkpoint==0.5.23",
 ]
 
 [tool.flit.module]
