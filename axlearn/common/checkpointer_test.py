@@ -29,7 +29,7 @@ from jax.experimental import mesh_utils
 from jax.experimental.array_serialization import serialization as array_serialization
 
 from axlearn.common import serialization, test_utils, utils
-from axlearn.common.array_serialization import BoundedAsyncCheckpointManager
+from axlearn.common.array_serialization import BoundedDataShardedAsyncCheckpointManager
 from axlearn.common.checkpointer import (
     BaseCheckpointer,
     BestMetricPolicy,
@@ -831,12 +831,14 @@ class CheckpointerTest(test_utils.TestCase):
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
-    @parameterized.parameters(None, 1)
-    def test_max_concurrent_gb(self, max_concurrent_gb: Optional[int]):
-        cfg = TensorStoreStateStorage.default_config().set(max_concurrent_gb=max_concurrent_gb)
+    @parameterized.product(max_concurrent_gb=[None, 1], max_data_shard_degree=[None, 1, -1])
+    def test_max_concurrent_gb(self, max_concurrent_gb: Optional[int], max_data_shard_degree: int):
+        cfg = TensorStoreStateStorage.default_config().set(
+            max_concurrent_gb=max_concurrent_gb, max_data_shard_degree=max_data_shard_degree
+        )
         storage = cfg.instantiate()
-        if max_concurrent_gb is not None:
-            self.assertIsInstance(storage._manager, BoundedAsyncCheckpointManager)
+        if max_concurrent_gb is not None or max_data_shard_degree:
+            self.assertIsInstance(storage._manager, BoundedDataShardedAsyncCheckpointManager)
         else:
             self.assertIsInstance(
                 storage._manager, array_serialization.GlobalAsyncCheckpointManager
