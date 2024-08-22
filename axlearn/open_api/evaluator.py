@@ -4,7 +4,7 @@
 import logging
 import os
 from datetime import timedelta
-from typing import Optional, Type
+from typing import Optional
 
 from absl import app, flags, logging
 from absl.flags import FlagValues
@@ -61,7 +61,7 @@ def initialize_evaluator(fv: FlagValues) -> Evaluator:
         if fv.model is None and fv.grader_model is None:
             raise ValueError("Either default model name or grader model name must be set.")
         # Initializes grader generator.
-        grader_client_cls: Optional[Type[BaseClient]] = ClientRegistry.load_client_cls(
+        grader_client_cls: Optional[type[BaseClient]] = ClientRegistry.load_client_cls(
             fv.grader_client_name
         )
         if grader_client_cls is None:

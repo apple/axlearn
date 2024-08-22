@@ -2,7 +2,7 @@
 
 """Input processing for ASR."""
 
-from typing import Dict, Optional
+from typing import Optional
 
 import seqio
 import tensorflow as tf
@@ -47,7 +47,7 @@ def speech_input(
         raise ValueError("Max length must be at least 1.")
 
     @seqio.map_over_dataset
-    def segments_to_paddings(example: Dict[str, tf.Tensor]):
+    def segments_to_paddings(example: dict[str, tf.Tensor]):
         inputs = example.pop(input_key)
         lengths = tf.shape(inputs)[-1]
         inputs = input_tf_data.trim_and_pad_tensor(inputs, max_len=max_len)

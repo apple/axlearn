@@ -2,7 +2,7 @@
 
 """Tests node_pool module."""
 from functools import partial
-from typing import Optional, Type
+from typing import Optional
 from unittest import mock
 
 from absl import flags
@@ -189,7 +189,7 @@ class NodePoolUtilsTest(parameterized.TestCase):
         dict(fire_and_forget=False, exception=None, expected=None),
     )
     def test_delete_node_pool_fire_and_forget(
-        self, fire_and_forget, exception, expected: Optional[Type[Exception]]
+        self, fire_and_forget, exception, expected: Optional[type[Exception]]
     ):
         with mock.patch.multiple(
             node_pool_utils.__name__,
@@ -253,7 +253,7 @@ class NodePoolUtilsTest(parameterized.TestCase):
         dict(fire_and_forget=False, exception=None, expected=None),
     )
     def test_create_node_pool_fire_and_forget(
-        self, fire_and_forget, exception, expected: Optional[Type[Exception]]
+        self, fire_and_forget, exception, expected: Optional[type[Exception]]
     ):
         with mock.patch.multiple(
             node_pool_utils.__name__,

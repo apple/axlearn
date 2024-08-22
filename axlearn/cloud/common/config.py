@@ -14,7 +14,8 @@ The config file should be named `.axlearn.config`, and can live in one of the fo
 
 import os
 import sys
-from typing import Any, Dict, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any, Optional
 
 import toml
 from absl import app, flags, logging
@@ -28,7 +29,7 @@ DEFAULT_CONFIG_FILE = "axlearn.default.config"
 
 def load_configs(
     namespace: Optional[str] = None, required: bool = False
-) -> Tuple[Optional[str], Dict]:
+) -> tuple[Optional[str], dict]:
     """Loads configs for the given namespace.
 
     The strategy is as follows:
@@ -76,7 +77,7 @@ def load_configs(
     return config_file, configs
 
 
-def write_configs_with_header(config_file: str, configs: Dict[str, Any]):
+def write_configs_with_header(config_file: str, configs: dict[str, Any]):
     """Writes configs to a file, with a prepended comment warning users not to modify it.
 
     Args:
@@ -90,7 +91,7 @@ def write_configs_with_header(config_file: str, configs: Dict[str, Any]):
         f.write(f"{header}\n{body}")
 
 
-def update_configs(namespace: str, namespace_configs: Dict[str, Any]):
+def update_configs(namespace: str, namespace_configs: dict[str, Any]):
     """Update configs for the given namespace.
 
     Args:
@@ -223,8 +224,8 @@ def _prompt_choice(choices: Sequence[str]) -> Optional[int]:
 
 
 def _get_projects(
-    project_configs: Dict[str, Any], *, labels: Optional[Sequence[str]] = None
-) -> Dict[str, Any]:
+    project_configs: dict[str, Any], *, labels: Optional[Sequence[str]] = None
+) -> dict[str, Any]:
     """Gets configured project configs, optionally filtering by labels.
 
     Args:
@@ -251,7 +252,7 @@ def _get_projects(
     return projects
 
 
-def _prompt_project(project_configs: Dict[str, Any]) -> Optional[str]:
+def _prompt_project(project_configs: dict[str, Any]) -> Optional[str]:
     """Prompts the user to select a project among the existing projects.
 
     Args:
@@ -275,7 +276,7 @@ def _prompt_project(project_configs: Dict[str, Any]) -> Optional[str]:
 
 
 def _get_or_prompt_project(
-    project_configs: Dict[str, Any], *, labels: Optional[Sequence[str]] = None
+    project_configs: dict[str, Any], *, labels: Optional[Sequence[str]] = None
 ) -> Optional[str]:
     """Gets the project with the provided label(s), or prompt for user to select one if ambiguous.
 

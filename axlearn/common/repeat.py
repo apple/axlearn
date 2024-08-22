@@ -49,7 +49,8 @@ In pseudo code:
       return carry, ys
 """
 import dataclasses
-from typing import Callable, NamedTuple, Optional, Sequence
+from collections.abc import Sequence
+from typing import Callable, NamedTuple, Optional
 
 import jax
 

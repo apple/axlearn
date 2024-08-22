@@ -12,8 +12,9 @@ import re
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from types import ModuleType
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Optional, Union
 
 import chex
 import jax
@@ -39,7 +40,7 @@ def named_parameters(
     *,
     match_by_name: Optional[str] = None,
     data_dir: str = "$DATA_DIR",
-) -> List[Tuple[str, ModuleType, str, TrainerConfigFn]]:
+) -> list[tuple[str, ModuleType, str, TrainerConfigFn]]:
     """Obtains the named parameters for golden config test.
 
     Args:
@@ -100,7 +101,7 @@ def per_param_setting_debug_string(
     *,
     kv_separator=": ",
     field_separator="\n",
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Given module and config, returns a dictionary of read_per_param_settings debug strings.
 
     If no register_per_param_settings is called, an assertion error is raised.
@@ -117,7 +118,7 @@ def per_param_setting_debug_string(
     def sep_line(name: str):
         return "=" * 20 + name + "=" * 20
 
-    def _settings_to_string(description: str, settings: Dict[str, NestedTree]) -> str:
+    def _settings_to_string(description: str, settings: dict[str, NestedTree]) -> str:
         lines = []
 
         for setting_key, setting_value in settings.items():
@@ -226,7 +227,7 @@ class BaseGoldenConfigTest(TestCase):
         config_name: str,
         trainer_config: TrainerConfigFn,
         test_type: GoldenTestType,
-    ) -> Tuple[Union[str, bytes], GoldenComparisonFn]:
+    ) -> tuple[Union[str, bytes], GoldenComparisonFn]:
         """Get the results from the golden test for comparison / serialization."""
         if test_type == GoldenTestType.CONFIG:
             cfg = trainer_config()
@@ -305,7 +306,7 @@ class BaseGoldenConfigTest(TestCase):
             logging.warning("No per param settings for %s were found.", setting_types)
         return debug_str
 
-    def _golden_run(self, trainer_config: TrainerConfigFn) -> Tuple[bytes, GoldenComparisonFn]:
+    def _golden_run(self, trainer_config: TrainerConfigFn) -> tuple[bytes, GoldenComparisonFn]:
         """Checks that the trainer state after running for a few steps matches a reference file.
 
         This test may fail if you generate the golden run file on one machine and then try
@@ -320,7 +321,7 @@ class BaseGoldenConfigTest(TestCase):
                 # Record summaries.
                 all_summaries = []
 
-                def add_summary(self, step: int, summary: Dict[str, Any]):
+                def add_summary(self, step: int, summary: dict[str, Any]):
                     del self
                     all_summaries.append((step, summary))
 

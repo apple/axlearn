@@ -16,7 +16,7 @@ import math
 import os
 import subprocess
 import sys
-from typing import Optional, Type, Union
+from typing import Optional, Union
 from unittest import mock
 
 import pytest
@@ -210,7 +210,7 @@ class TPUGKEJobTest(TestCase):
     @contextlib.contextmanager
     def _job_config(
         self,
-        bundler_cls: Type[Bundler],
+        bundler_cls: type[Bundler],
         reservation: Optional[str] = None,
         service_account: Optional[str] = None,
         enable_pre_provisioner: Optional[bool] = None,
@@ -396,7 +396,7 @@ class GPUGKEJobTest(TestCase):
     @contextlib.contextmanager
     def _job_config(
         self,
-        bundler_cls: Type[Bundler],
+        bundler_cls: type[Bundler],
         service_account: Optional[str] = None,
         queue: Optional[str] = None,
         num_replicas: Optional[int] = None,

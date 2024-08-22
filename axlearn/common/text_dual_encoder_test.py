@@ -2,7 +2,7 @@
 
 """Tests dual-encoder modules."""
 # pylint: disable=no-self-use
-from typing import Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -106,7 +106,7 @@ def sample_flops_loss_layer_config(
     )
 
 
-def random_int_array(*, shape: Tuple) -> Tensor:
+def random_int_array(*, shape: tuple) -> Tensor:
     return jax.random.randint(jax.random.PRNGKey(0), shape=shape, minval=1, maxval=VOCAB_SIZE)
 
 

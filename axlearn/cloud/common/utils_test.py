@@ -10,7 +10,8 @@ import signal
 import subprocess
 import tempfile
 import time
-from typing import Dict, Sequence, Union
+from collections.abc import Sequence
+from typing import Union
 from unittest import mock
 
 import psutil
@@ -72,7 +73,7 @@ class UtilsTest(TestWithTemporaryCWD):
         dict(kv_flags=["a=b=c"], delimiter="=", expected=dict(a="b=c")),
     )
     def test_parse_kv_flags(
-        self, kv_flags: Sequence[str], expected: Union[Dict, Exception], delimiter: str = ":"
+        self, kv_flags: Sequence[str], expected: Union[dict, Exception], delimiter: str = ":"
     ):
         if issubclass(type(expected), ValueError):
             with self.assertRaises(type(expected)):

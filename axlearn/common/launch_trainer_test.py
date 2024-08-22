@@ -2,7 +2,8 @@
 
 """Tests trainer launch utilities."""
 import copy
-from typing import Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 from unittest import mock
 
 from absl import flags

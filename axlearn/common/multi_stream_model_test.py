@@ -3,7 +3,6 @@
 """Tests multistream model."""
 # pylint: disable=no-self-use
 import copy
-from typing import Tuple
 
 import jax
 import numpy as np
@@ -34,7 +33,7 @@ class MockFusionNetwork(FusionNetwork):
     class Config(FusionNetwork.Config):
         count_fusion: int = 0
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         image_emb = input_batch["encoder"]["image_emb"]
         loss = jnp.mean(image_emb, axis=1)
         return loss, {"image_emb": image_emb, "count_fusion": self.config.count_fusion}

@@ -2,7 +2,7 @@
 
 """Vision param converters."""
 import copy
-from typing import Optional, Type, Union
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -240,7 +240,7 @@ def _parameters_from_clip_visual_encoder(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPVisionTransformer])
 def parameters_from_clip_vision_transformer(
-    src: hf_clip.CLIPVisionTransformer, dst: Optional[Union[BaseLayer, Type]] = None
+    src: hf_clip.CLIPVisionTransformer, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     # The HF CLIP cls_token shape is [dim].
@@ -257,7 +257,7 @@ def parameters_from_clip_vision_transformer(
                 src.encoder,
                 src.embeddings,
                 src.pre_layrnorm,
-                src.post_layernorm
+                src.post_layernorm,
                 # pre_layrnorm is not a typo.
             ),
             pooler={},
@@ -317,7 +317,7 @@ def _parameters_from_clip_feed_forward(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPEncoderLayer])
 def parameters_from_clip_layer(
-    src: hf_clip.CLIPEncoderLayer, dst: Optional[Union[BaseLayer, Type]] = None
+    src: hf_clip.CLIPEncoderLayer, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     return dict(
@@ -328,7 +328,7 @@ def parameters_from_clip_layer(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPTextEmbeddings])
 def parameters_from_clip_text_embedding(
-    src: hf_clip.CLIPTextEmbeddings, dst: Optional[Union[BaseLayer, Type]] = None
+    src: hf_clip.CLIPTextEmbeddings, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     if src.token_embedding.weight.shape[0] == 49408:
@@ -350,7 +350,7 @@ def parameters_from_clip_text_embedding(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPEncoder])
 def parameters_from_clip_encoder(
-    src_enc: hf_clip.CLIPEncoder, dst: Optional[Union[BaseLayer, Type]] = None
+    src_enc: hf_clip.CLIPEncoder, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     params = {}
@@ -361,7 +361,7 @@ def parameters_from_clip_encoder(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPTextTransformer])
 def parameters_from_clip_text_transformer(
-    src: hf_clip.CLIPTextTransformer, dst: Optional[Union[BaseLayer, Type]] = None
+    src: hf_clip.CLIPTextTransformer, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     return {
@@ -379,7 +379,7 @@ def parameters_from_clip_text_transformer(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPModel])
 def parameters_from_clip_model(
-    src: hf_clip.CLIPModel, dst: Optional[Union[BaseLayer, Type]] = None
+    src: hf_clip.CLIPModel, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     visual_encoder = torch_to_axlearn(src.vision_model)

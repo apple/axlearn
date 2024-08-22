@@ -7,7 +7,8 @@
 
 # pylint: disable=too-many-lines
 """Input generator based on tf.data."""
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Union
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, Callable, Optional, Union
 
 import jax
 import seqio
@@ -321,7 +322,7 @@ def tfrecord_dataset(
     glob_path: str,
     is_training: bool,
     shuffle_buffer_size: int,
-    features: Dict[str, tf.io.FixedLenFeature],
+    features: dict[str, tf.io.FixedLenFeature],
     compression_type: Optional[str] = None,
     read_parallelism: int = 1,
 ) -> BuildDatasetFn:
@@ -351,7 +352,7 @@ def tfrecord_dataset(
     if is_training != (shuffle_buffer_size > 0):
         raise ValueError("Shuffling should be enabled iff is_training is True")
 
-    def _decode_record(record: Dict[str, tf.Tensor]):
+    def _decode_record(record: dict[str, tf.Tensor]):
         """Decodes a record to a TensorFlow example."""
         return tf.io.parse_single_example(serialized=record, features=features)
 
@@ -494,7 +495,7 @@ def select_fields(fields: Sequence[str]) -> DatasetToDatasetFn:
 def remove_fields(fields: Sequence[str]) -> DatasetToDatasetFn:
     """Filter the dataset to remove the fields specified."""
 
-    def process_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         new_example = {}
         for k, v in example.items():
             if k not in fields:
@@ -513,7 +514,7 @@ def filter_examples(filter_fn: Callable) -> DatasetToDatasetFn:
     return fn
 
 
-def squeeze_fields(axis: Mapping[str, Optional[Union[int, Tuple[int, ...]]]]) -> DatasetToDatasetFn:
+def squeeze_fields(axis: Mapping[str, Optional[Union[int, tuple[int, ...]]]]) -> DatasetToDatasetFn:
     """Squeeze fields specified using the corresponding axis.
 
     Args:
@@ -524,7 +525,7 @@ def squeeze_fields(axis: Mapping[str, Optional[Union[int, Tuple[int, ...]]]]) ->
         A dataset where fields specified are squeezed.
     """
 
-    def example_fn(example: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def example_fn(example: dict[str, Tensor]) -> dict[str, Tensor]:
         for field, ax in axis.items():
             example[field] = tf.squeeze(example[field], axis=ax)
         return example
@@ -976,7 +977,7 @@ def extract_from_sequence(
         Function that extracts slice or index from in_key in input example.
     """
 
-    def fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         example[out_key] = example[in_key][idx]
         return example
 
@@ -984,7 +985,7 @@ def extract_from_sequence(
 
 
 def rekey(
-    key_map: Dict[str, str],
+    key_map: dict[str, str],
     default_value: Optional[Any] = "",
     retain_original_inputs: bool = False,
     separator: Optional[str] = None,
@@ -1021,7 +1022,7 @@ def rekey(
         except KeyError:
             return False
 
-    def fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         if not key_map:
             return example
         output = example if retain_original_inputs else {}
@@ -1062,7 +1063,7 @@ def shuffle(shuffle_buffer_size: int) -> DatasetToDatasetFn:
     return fn
 
 
-def unpack(key_map: Dict[str, Tuple[str, ...]]) -> DatasetToDatasetFn:
+def unpack(key_map: dict[str, tuple[str, ...]]) -> DatasetToDatasetFn:
     """Provides function to return flattened values according to key map.
 
     E.g. if the input is {key1: {key2: {key3: value}}} and
@@ -1076,7 +1077,7 @@ def unpack(key_map: Dict[str, Tuple[str, ...]]) -> DatasetToDatasetFn:
         Function that unpacks nested values in example according to key map.
     """
 
-    def fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         for new_key, old_path in key_map.items():
             value = example[old_path[0]]
             for step in old_path[1:]:
@@ -1087,7 +1088,7 @@ def unpack(key_map: Dict[str, Tuple[str, ...]]) -> DatasetToDatasetFn:
     return seqio.map_over_dataset(fn)
 
 
-def ragged_to_tensor(feature_shapes: Dict[str, Any], default_value: int = 0) -> DatasetToDatasetFn:
+def ragged_to_tensor(feature_shapes: dict[str, Any], default_value: int = 0) -> DatasetToDatasetFn:
     """Converts ragged tensors specified in `feature_shapes`
     to a rectangular tensor of the specified shape, padding with `default_value` as necessary.
 
@@ -1099,7 +1100,7 @@ def ragged_to_tensor(feature_shapes: Dict[str, Any], default_value: int = 0) -> 
         A dataset with full tensors padded with default_value.
     """
 
-    def fn(example: Dict[str, tf.Tensor]):
+    def fn(example: dict[str, tf.Tensor]):
         for k, v in example.items():
             if isinstance(v, tf.RaggedTensor) and k in feature_shapes:
                 example[k] = v.to_tensor(default_value=default_value, shape=feature_shapes[k])
@@ -1201,8 +1202,7 @@ class Input(Module):
 
     def __iter__(self) -> Iterable[NestedTensor]:
         it = iter(self.dataset())
-        for input_batch in self.batches(it):
-            yield input_batch
+        yield from self.batches(it)
 
     def dispatch_global_batch(
         self,
@@ -1248,7 +1248,7 @@ def disable_shuffle_recursively(cfg: Input.Config):
 
 
 def preserve_element_spec(
-    fn: DatasetToDatasetFn, key_map: Optional[Dict[str, str]] = None
+    fn: DatasetToDatasetFn, key_map: Optional[dict[str, str]] = None
 ) -> DatasetToDatasetFn:
     """Wraps a processor by ensuring that it does not change the dataset element_spec.
 
@@ -1281,7 +1281,7 @@ def preserve_element_spec(
     return process_dataset_fn
 
 
-def add_static_fields(key_map: Dict[str, Any]) -> DatasetToDatasetFn:
+def add_static_fields(key_map: dict[str, Any]) -> DatasetToDatasetFn:
     """Adds a predetermined set of key, value pairs to each example.
 
     Args:
@@ -1292,7 +1292,7 @@ def add_static_fields(key_map: Dict[str, Any]) -> DatasetToDatasetFn:
     """
 
     @seqio.map_over_dataset
-    def fn(example: Dict[str, Any]) -> Dict[str, Any]:
+    def fn(example: dict[str, Any]) -> dict[str, Any]:
         for key, value in key_map.items():
             example[key] = value
         return example
@@ -1334,7 +1334,7 @@ def pad_to_batch(batch_size: int, pad_value: int = 0) -> DatasetToDatasetFn:
         ]
         return tf.pad(v, paddings=tf.concat(paddings, 0), constant_values=pad_value)
 
-    def process_example_fn(example: Dict[str, tf.Tensor]):
+    def process_example_fn(example: dict[str, tf.Tensor]):
         return tf.nest.map_structure(pad_fn, example)
 
     return seqio.map_over_dataset(process_example_fn)
@@ -1388,7 +1388,7 @@ def pack_to_batch(batch_size: int, pad_value: int = 0) -> DatasetToDatasetFn:
             i=0,  # Index of accum to write to.
         )
 
-    def scan_fn(carry: Dict[str, Any], elem: Dict[str, tf.Tensor]):
+    def scan_fn(carry: dict[str, Any], elem: dict[str, tf.Tensor]):
         out = {}
         # Produce a new batch if any field cannot be packed any further.
         flush = tf.reduce_any(
@@ -1415,7 +1415,7 @@ def pack_to_batch(batch_size: int, pad_value: int = 0) -> DatasetToDatasetFn:
         return carry, out
 
     def define_shape(element_spec: Any, batch_size: int):
-        def fn(example: Dict[str, tf.Tensor]):
+        def fn(example: dict[str, tf.Tensor]):
             for k, t in example.items():
                 t.set_shape((batch_size, *element_spec[k].shape.as_list()[1:]))
             return example
@@ -1450,7 +1450,7 @@ def pack_to_batch(batch_size: int, pad_value: int = 0) -> DatasetToDatasetFn:
 def trim_to_batch(batch_size: int) -> DatasetToDatasetFn:
     """Trims the first (batch) dimension."""
 
-    def trim(example: Dict[str, tf.Tensor]):
+    def trim(example: dict[str, tf.Tensor]):
         for k, v in example.items():
             example[k] = v[:batch_size]
         return example

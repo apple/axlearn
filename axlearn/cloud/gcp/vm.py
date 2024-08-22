@@ -5,8 +5,9 @@
 import dataclasses
 import pathlib
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Optional
 
 from absl import logging
 from google.auth.credentials import Credentials
@@ -21,13 +22,9 @@ from axlearn.cloud.gcp.utils import infer_cli_name, validate_resource_name
 class VMCreationError(RuntimeError):
     """An error with VM creation."""
 
-    pass
-
 
 class VMDeletionError(RuntimeError):
     """An error with VM deletion."""
-
-    pass
 
 
 # pylint: disable-next=too-many-branches
@@ -38,7 +35,7 @@ def create_vm(
     disk_size: int,
     credentials: Credentials,
     bundler_type: str,
-    metadata: Optional[Dict[str, str]] = None,
+    metadata: Optional[dict[str, str]] = None,
 ):
     """Create VM.
 
@@ -109,7 +106,7 @@ def create_vm(
             time.sleep(10)
 
 
-def get_vm_node_status(node: Dict[str, Any]) -> str:
+def get_vm_node_status(node: dict[str, Any]) -> str:
     """Get the status from the given VM node info.
 
     Args:
@@ -185,10 +182,10 @@ class VmInfo:
     """Information associated with a VM instance."""
 
     name: str
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
 
 
-def list_vm_info(credentials: Credentials) -> List[VmInfo]:
+def list_vm_info(credentials: Credentials) -> list[VmInfo]:
     """List running VMs for the given project and zone.
 
     Args:
@@ -235,8 +232,8 @@ def _vm_config(
     disk_size: int,
     disk_image: str,
     bundler_type: str,
-    metadata: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    metadata: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
     """Produce VM config for <name>.
 
     Args:
@@ -252,7 +249,7 @@ def _vm_config(
     """
     dir_path = pathlib.Path(__file__).parent
     startup_script_path = dir_path / "scripts" / "start_vm.sh"
-    with open(startup_script_path, "r", encoding="utf8") as of:
+    with open(startup_script_path, encoding="utf8") as of:
         startup_script_contents = of.read()
     docker_repo = gcp_settings("docker_repo", required=False)
     metadata = {
@@ -330,7 +327,7 @@ def _vm_config(
     return config
 
 
-def get_vm_node(name: str, resource: discovery.Resource) -> Optional[Dict[str, Any]]:
+def get_vm_node(name: str, resource: discovery.Resource) -> Optional[dict[str, Any]]:
     """Gets information about a VM node.
 
     Args:
@@ -357,7 +354,7 @@ def get_vm_node(name: str, resource: discovery.Resource) -> Optional[Dict[str, A
     return node
 
 
-def list_disk_images(creds: Credentials) -> List[str]:
+def list_disk_images(creds: Credentials) -> list[str]:
     """Lists available disk images in the configured `image_project`.
 
     Args:
@@ -384,7 +381,7 @@ def list_disk_images(creds: Credentials) -> List[str]:
     return [f"projects/{image_project}/global/images/{name}" for name in image_names]
 
 
-def format_vm_info(vms: List[VmInfo], metadata: Optional[Sequence[str]] = None) -> str:
+def format_vm_info(vms: list[VmInfo], metadata: Optional[Sequence[str]] = None) -> str:
     """Formats vm information into a table.
 
     Args:

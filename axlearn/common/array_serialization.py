@@ -14,7 +14,7 @@ https://github.com/google/jax/blob/595a620804e810335a870e93975a78504b2e95e5/jax/
 
 import asyncio
 import functools
-from typing import Callable, Dict, List, Set
+from typing import Callable
 
 import jax
 from absl import logging
@@ -54,7 +54,7 @@ async def _acquire_and_write(
     limiter: serialization._LimitInFlightBytes,
     shard: Shard,
     nbytes: int,
-    release_tasks: Set,
+    release_tasks: set,
 ):
     """Initiates a write for the given shard.
 
@@ -73,17 +73,17 @@ async def _acquire_and_write(
     return write_future.commit
 
 
-def _local_shards(array: Tensor) -> List[Shard]:
+def _local_shards(array: Tensor) -> list[Shard]:
     """Returns addressable shards with replica_id=0."""
     return [shard for shard in array.addressable_shards if shard.replica_id == 0]
 
 
 async def async_serialize(
     array: Tensor,
-    tensorstore_spec: Dict,
+    tensorstore_spec: dict,
     *,
     limiter: serialization._LimitInFlightBytes,
-) -> List[asyncio.Future]:
+) -> list[asyncio.Future]:
     """Similar to `serialization.async_serialize`, but limiting peak host memory usage.
 
     Specifically, TensorStores are opened only for shards which correspond to the current host, and
@@ -155,8 +155,8 @@ class BoundedAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
     def serialize(
         self,
-        arrays: List[Tensor],
-        tensorstore_specs: List[Dict],
+        arrays: list[Tensor],
+        tensorstore_specs: list[dict],
         *,
         on_commit_callback: Callable[[], None],
     ):

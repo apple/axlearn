@@ -12,7 +12,6 @@ Reference: https://github.com/tensorflow/models/blob/master/official/vision/ops/
 """
 import itertools
 from dataclasses import dataclass
-from typing import Dict, Tuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -75,8 +74,8 @@ class AnchorLabeler:
         self.box_matcher = box_matcher_cfg.instantiate()
 
     def _get_matches(
-        self, *, per_level_anchor_boxes: Dict[str, Tensor], groundtruth_boxes: Tensor
-    ) -> Tuple[matchers.MatchResults, Tensor, Tensor]:
+        self, *, per_level_anchor_boxes: dict[str, Tensor], groundtruth_boxes: Tensor
+    ) -> tuple[matchers.MatchResults, Tensor, Tensor]:
         """Labels anchors with ground truth boxes.
 
         Matches anchor boxes with groundtruth boxes and returns match results along with
@@ -110,7 +109,7 @@ class AnchorLabeler:
         foreground_matches: Tensor,
         groundtruth_classes: Tensor,
         groundtruth_boxes: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Returns anchor matched groundtruth boxes and classes.
 
         Obtains matched groundtruth boxes and groundtruth classes based on match results
@@ -157,7 +156,7 @@ class AnchorLabeler:
     def __call__(
         self,
         *,
-        per_level_anchor_boxes: Dict[str, Tensor],
+        per_level_anchor_boxes: dict[str, Tensor],
         groundtruth_boxes: Tensor,
         groundtruth_classes: Tensor,
     ) -> AnchorLabels:
@@ -212,7 +211,7 @@ class AnchorGenerator:
         min_level: int = 3,
         max_level: int = 7,
         num_scales: int = 3,
-        aspect_ratios: Tuple[float, ...] = (0.5, 1.0, 2.0),
+        aspect_ratios: tuple[float, ...] = (0.5, 1.0, 2.0),
         anchor_size: float = 4.0,
     ):
         """Constructs multiscale Anchor Generator.
@@ -235,7 +234,7 @@ class AnchorGenerator:
         self.aspect_ratios = aspect_ratios
         self.anchor_size = anchor_size
 
-    def __call__(self, image_size: Tuple[int, int]) -> Dict[str, Tensor]:
+    def __call__(self, image_size: tuple[int, int]) -> dict[str, Tensor]:
         """Generates multiscale anchor boxes.
 
         Args:

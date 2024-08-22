@@ -23,7 +23,7 @@
 
 https://arxiv.org/abs/1810.04805
 """
-from typing import Dict, Optional
+from typing import Optional
 
 import jax.numpy as jnp
 
@@ -154,7 +154,7 @@ class BertLMHead(BaseClassificationHead):
             "transform", cfg.transform.set(input_dim=cfg.input_dim, output_dim=cfg.input_dim)
         )
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return dict(
             # Output layer weights are shared with encoder, but bias is a separate parameter.

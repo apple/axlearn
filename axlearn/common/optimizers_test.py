@@ -4,7 +4,8 @@
 # pylint: disable=no-self-use,too-many-lines
 import itertools
 import tempfile
-from typing import Any, NamedTuple, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any, NamedTuple, Optional
 
 import jax
 import numpy as np

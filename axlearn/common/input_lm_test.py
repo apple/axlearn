@@ -4,7 +4,7 @@
 # pylint: disable=no-self-use,too-many-lines
 import os
 import tempfile
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal, Optional
 
 import pytest
 import seqio
@@ -58,7 +58,7 @@ class BaseLmInputTest(test_utils.TestCase):
         )
 
     def _test_fake_text_lm_training_data(
-        self, *, vocab_cfg: InstantiableConfig, expected_batches: List[Dict[str, Any]]
+        self, *, vocab_cfg: InstantiableConfig, expected_batches: list[dict[str, Any]]
     ):
         batch_size, max_len = 3, 6
         cfg = input_tf_data.Input.default_config().set(
@@ -116,7 +116,7 @@ class BaseLmInputTest(test_utils.TestCase):
         )
 
     def _test_fake_text_lm_eval_data(
-        self, *, vocab_cfg: InstantiableConfig, expected_batches: List[Dict[str, Any]]
+        self, *, vocab_cfg: InstantiableConfig, expected_batches: list[dict[str, Any]]
     ):
         batch_size, max_len = 3, 12
 
@@ -514,7 +514,7 @@ class LmTrainingInputTest(BaseLmInputTest):
         self,
         input_data_type: InputDataType,
         max_len: int,
-        expected_inputs: Dict[str, List[List[int]]],
+        expected_inputs: dict[str, list[list[int]]],
         is_training: bool = True,
         source_key: str = "inputs_pretokenized",
         target_key: str = "targets_pretokenized",
@@ -778,7 +778,7 @@ class LmTrainingInputTest(BaseLmInputTest):
         def append_foo(tensor: tf.Tensor) -> tf.Tensor:
             return tf.constant(tf.strings.join([tensor, "foo"]), dtype=tf.string)
 
-        def tfds_custom_decoder() -> Dict[str, tfds.decode.Decoder]:
+        def tfds_custom_decoder() -> dict[str, tfds.decode.Decoder]:
             @tfds.decode.make_decoder()
             def replace_field_value(example: tf.Tensor, _: tfds.features.text_feature.Text):
                 return tf.py_function(append_foo, [example], tf.string)
@@ -808,7 +808,7 @@ class LmTrainingInputTest(BaseLmInputTest):
             )
             dataset_fn = input_tf_data.with_processor(source=source, processor=preprocessor)
             # The following will raise a ValueError if shape information is lost.
-            element: Dict[str, tf.Tensor] = next(iter(dataset_fn()))
+            element: dict[str, tf.Tensor] = next(iter(dataset_fn()))
             assert "input_ids" in element
 
 
@@ -1172,7 +1172,7 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
         is_training: bool,
         model_type: str,
         max_len: int,
-        expected_inputs: Dict[str, List[List[int]]],
+        expected_inputs: dict[str, list[list[int]]],
         source_key: str = "source",
         target_key: str = "target",
     ):
@@ -1614,8 +1614,8 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
         self,
         *,
         model_type: ModelType,
-        inputs: List[Dict[str, Any]],
-        expected: List[Dict[str, Any]],
+        inputs: list[dict[str, Any]],
+        expected: list[dict[str, Any]],
         max_target_len: int,
         max_source_len: Optional[int] = None,
         packing_mode: Literal["pack", "pad", "none"] = "pack",
@@ -1697,8 +1697,8 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
     def test_trim_and_pack_with_segments(
         self,
         *,
-        inputs: List[Dict[str, Any]],
-        expected: List[Dict[str, Any]],
+        inputs: list[dict[str, Any]],
+        expected: list[dict[str, Any]],
         max_target_len: int,
         max_source_len: Optional[int] = None,
     ):

@@ -2,7 +2,8 @@
 
 """Base Encoder-Decoder model interface."""
 
-from typing import Dict, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Optional
 
 from axlearn.common import decoding
 from axlearn.common.base_layer import BaseLayer
@@ -29,7 +30,7 @@ class BaseEncoderDecoderModel(BaseModel):
         self,
         input_batch: Nested[Tensor],
         return_aux: bool = False,
-    ) -> Tuple[Tensor, Nested[Tensor]]:
+    ) -> tuple[Tensor, Nested[Tensor]]:
         """Produces Encoder-Decoder loss and predictions (such as logits and decoder hidden states)
         in auxiliary outputs.
 
@@ -69,7 +70,7 @@ class BaseEncoderDecoderModel(BaseModel):
 
     def _metrics(
         self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
-    ) -> Tuple[Tensor, Nested[Tensor]]:
+    ) -> tuple[Tensor, Nested[Tensor]]:
         """Computes metrics from logits and target labels like loss and per token loss.
 
         Args:
@@ -93,7 +94,7 @@ class BaseEncoderDecoderModel(BaseModel):
 
     def beam_search_decode(
         self,
-        input_batch: Dict[str, Tensor],
+        input_batch: dict[str, Tensor],
         max_sequence_length: int,
         num_decodes: int,
         brevity_penalty: Optional[decoding.BrevityPenaltyFn] = None,
@@ -121,7 +122,7 @@ class BaseEncoderDecoderModel(BaseModel):
 
     def sample_decode(
         self,
-        input_batch: Dict[str, Tensor],
+        input_batch: dict[str, Tensor],
         max_sequence_length: int,
         num_decodes: int,
         logits_modifier: Optional[ConfigOr[LogitsToLogitsFn]] = None,

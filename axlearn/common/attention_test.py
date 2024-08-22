@@ -20,8 +20,9 @@ import itertools
 
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
 import math
+from collections.abc import Sequence
 from itertools import combinations
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
+from typing import Any, Callable, Optional, Union
 
 import jax
 import numpy as np
@@ -362,8 +363,8 @@ class CausalAttentionLogitBiasLayerTest(TestCase):
     )
     def test_causal_attention_mask_layer(
         self,
-        token_ids: List,
-        expected: List,
+        token_ids: list,
+        expected: list,
         segment_ids: Optional[Tensor] = None,
         positions: Optional[Tensor] = None,
         apply_padding_mask: Optional[bool] = False,
@@ -490,8 +491,8 @@ class FullAttentionLogitBiasLayerTest(TestCase):
     )
     def test_full_attention_mask_layer(
         self,
-        token_ids: List,
-        expected: List,
+        token_ids: list,
+        expected: list,
         segment_ids: Optional[Tensor] = None,
         positions: Optional[Tensor] = None,
     ):
@@ -871,7 +872,7 @@ def llama_apply_rotary_emb(
     xq: torch.Tensor,
     xk: torch.Tensor,
     freqs_cis: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """LLaMA apply rotary embeddings to input tensors using the given frequency tensor.
 
     Ref:
@@ -1228,7 +1229,7 @@ class QKVLinearTest(TestCase):
     @parameterized.parameters(
         attention.FusedQKVLinear, attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear
     )
-    def test_qkv_equality(self, test_cls: Type[attention.BaseQKVLinear]):
+    def test_qkv_equality(self, test_cls: type[attention.BaseQKVLinear]):
         """Tests that the QKVLinear variants are equivalent when num_kv_heads=num_heads."""
         with utils.numeric_checks(True):
             model_dim = 12
@@ -1324,7 +1325,7 @@ class QKVLinearTest(TestCase):
     )
     def test_num_kv_heads(
         self,
-        layer_cls: Type[attention.BaseQKVLinear],
+        layer_cls: type[attention.BaseQKVLinear],
         expected: Union[int, Exception],
         num_kv_heads: Optional[int] = None,
     ):
@@ -2238,7 +2239,7 @@ class MultiheadAttentionTest(TestCase):
         per_dim_scale: Optional[PerDimScale.Config],
         atten_logit_cap: float,
         num_kv_heads: int,
-        input_linear: Type[attention.BaseQKVLinear],
+        input_linear: type[attention.BaseQKVLinear],
         bias: bool,
     ):
         model_dim = 16
@@ -2422,7 +2423,7 @@ class MultiheadAttentionTest(TestCase):
         per_dim_scale: Optional[PerDimScale.Config],
         atten_logit_cap: float,
         num_kv_heads: int,
-        input_linear: Type[attention.BaseQKVLinear],
+        input_linear: type[attention.BaseQKVLinear],
         bias: bool,
     ):
         model_dim = 16
@@ -2853,7 +2854,7 @@ class TransformerFeedForwardLayerTest(TestCase):
         dict(rms_norm_summary=["final_outputs"], expected_raise_regex="add_value_rms_norm_summary"),
     )
     def test_add_value_rms_norm_summary(
-        self, rms_norm_summary: List[str], *, expected_raise_regex=None
+        self, rms_norm_summary: list[str], *, expected_raise_regex=None
     ):
         batch, seq_len, dim = 2, 3, 4
         cfg = TransformerFeedForwardLayer.default_config().set(
@@ -2893,7 +2894,7 @@ class TransformerFeedForwardLayerTest(TestCase):
         dict(activation_fn=("linear", "exact_gelu")),
         dict(activation_fn=("linear", "nn.silu")),
     )
-    def test_add_dead_neuron_summary(self, activation_fn: Union[str, List[str]]):
+    def test_add_dead_neuron_summary(self, activation_fn: Union[str, list[str]]):
         batch, seq_len, dim = 2, 3, 4
         cfg = TransformerFeedForwardLayer.default_config().set(
             name="ffn",
@@ -2916,12 +2917,12 @@ class TransformerFeedForwardLayerTest(TestCase):
         if isinstance(activation_fn, str):
             activation_fn = [activation_fn]
         self.assertSetEqual(
-            set(k for k in output_collection.summaries.keys() if k.startswith("dead_neurons/")),
-            set(
+            {k for k in output_collection.summaries.keys() if k.startswith("dead_neurons/")},
+            {
                 f"dead_neurons/{k}"
                 for k in activation_fn
                 if k in ("nn.relu", "quick_gelu", "exact_gelu", "nn.silu")
-            ),
+            },
         )
 
 
@@ -2985,7 +2986,7 @@ class BaseTransformerTest(TestCase):
         self,
         cfg: BaseTransformerLayer.Config,
         *,
-        input_kwargs: Optional[Dict[str, Any]] = None,
+        input_kwargs: Optional[dict[str, Any]] = None,
     ):
         """Tests that {init,prefill}_states + extend_step is equivalent to forward for `cfg`."""
         if input_kwargs is None:
@@ -3406,9 +3407,9 @@ class TestStackedTransformerLayerWithKVState(NonUniformStack):
 
     def _update_layer_kwargs(
         self,
-        layer_kwargs: Dict[str, Any],
+        layer_kwargs: dict[str, Any],
         *,
-        all_layer_outputs: List[BaseTransformerLayer.Output],
+        all_layer_outputs: list[BaseTransformerLayer.Output],
     ):
         layer_index = len(all_layer_outputs)
         if layer_index == 1:
@@ -3819,8 +3820,8 @@ class StackedTransformerTest(BaseTransformerTest):
     )
     def test_stack_vs_pipeline(
         self,
-        stage_cls: Type[BaseTransformerLayer],
-        schedule_cls: Type[BaseSchedule],
+        stage_cls: type[BaseTransformerLayer],
+        schedule_cls: type[BaseSchedule],
         remat_spec: Optional[RematSpec],
     ):
         pipelined_cfg: PipelinedTransformerLayer.Config = PipelinedTransformerLayer.default_config()
@@ -4279,7 +4280,7 @@ class StackedTransformerTest(BaseTransformerTest):
         (["feed_forward"],),
         (["self_attention", "feed_forward"],),
     )
-    def test_initialize_parameters_recursively(self, prebuilt_layers: List[str]):
+    def test_initialize_parameters_recursively(self, prebuilt_layers: list[str]):
         """Tests initialize_parameters_recursively with various prebuilt layers."""
         input_dim = 4
         num_heads = 2

@@ -3,7 +3,7 @@
 """Tests reading comprehension inputs."""
 import json
 import os
-from typing import Callable, Dict, List, Union
+from typing import Callable, Union
 
 import pytest
 from absl.testing import parameterized
@@ -49,7 +49,7 @@ def build_hf_roberta_tokenizer() -> RobertaTokenizer:
 
 
 def dummy_reading_comprehension_inputs_simple() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         dict(
@@ -67,7 +67,7 @@ def dummy_reading_comprehension_inputs_simple() -> (
 
 
 def dummy_reading_comprehension_inputs_simple_multiple_word_answer() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         dict(
@@ -85,7 +85,7 @@ def dummy_reading_comprehension_inputs_simple_multiple_word_answer() -> (
 
 
 def dummy_reading_comprehension_inputs_simple_answer_end() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         dict(
@@ -103,7 +103,7 @@ def dummy_reading_comprehension_inputs_simple_answer_end() -> (
 
 
 def dummy_reading_comprehension_inputs_multiple_answers() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         dict(
@@ -125,7 +125,7 @@ def dummy_reading_comprehension_inputs_multiple_answers() -> (
 
 
 def dummy_reading_comprehension_inputs_no_answer() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         dict(
@@ -138,7 +138,7 @@ def dummy_reading_comprehension_inputs_no_answer() -> (
 
 
 def dummy_reading_comprehension_inputs_multiple_squad() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         # Example taken from training set of SQuAD2.0 (row 2018).
@@ -180,7 +180,7 @@ def dummy_reading_comprehension_inputs_multiple_squad() -> (
 
 
 def dummy_reading_comprehension_inputs_long() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         # Example taken from Wikipedia.
@@ -236,7 +236,7 @@ def dummy_reading_comprehension_inputs_long() -> (
 
 
 def find_start_of_document_index(
-    tokenizer: TokenizerForReadingComprehension, input_ids: List[int]
+    tokenizer: TokenizerForReadingComprehension, input_ids: list[int]
 ) -> int:
     # Find the first sep token.
     index = 0
@@ -470,8 +470,8 @@ class InputReadingComprehensionTest(parameterized.TestCase):
     def test_convert_example_to_features_outputs(
         self,
         dataset_function: Callable,
-        expected_tokens: List[List[str]],
-        expected_token_type_ids: List[List[int]],
+        expected_tokens: list[list[str]],
+        expected_token_type_ids: list[list[int]],
         max_length: int,
         doc_stride: int,
     ):

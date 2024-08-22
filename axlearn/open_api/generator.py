@@ -7,7 +7,7 @@ import asyncio
 import logging
 import os
 from datetime import timedelta
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Optional
 
 from absl import app, flags, logging
 from absl.flags import FlagValues
@@ -39,7 +39,7 @@ def generator_config_from_flags(fv: FlagValues) -> Generator.Config:
     Raises:
         ValueError: Client class must not be empty.
     """
-    client_cls: Optional[Type[BaseClient]] = ClientRegistry.load_client_cls(fv.client_name)
+    client_cls: Optional[type[BaseClient]] = ClientRegistry.load_client_cls(fv.client_name)
     if client_cls is None:
         raise ValueError("Client class must not be empty.")
     decode_parameters, extra_body = parse_decode_parameters(fv.decode_parameters, model=fv.model)
@@ -59,8 +59,8 @@ def generator_config_from_flags(fv: FlagValues) -> Generator.Config:
 
 
 async def generate_from_requests(
-    *, gen_requests: List[Dict[str, Any]], fv: FlagValues
-) -> List[Dict[str, Any]]:
+    *, gen_requests: list[dict[str, Any]], fv: FlagValues
+) -> list[dict[str, Any]]:
     """Generates responses for open api clients given a file path.
 
     Args:

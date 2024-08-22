@@ -2,7 +2,6 @@
 
 """Tests Mamba Pallas kernels."""
 import functools
-from typing import Tuple
 
 import jax
 import jax.numpy as jnp
@@ -30,7 +29,7 @@ def _mamba_inputs(
     dtype: jnp.dtype,
     prng_key: Tensor,
     state_dim: int = 16,
-) -> Tuple[Tensor, MambaMixerLayer.SSMParameters]:
+) -> tuple[Tensor, MambaMixerLayer.SSMParameters]:
     """Computes random Mamba inputs.
 
     Args:

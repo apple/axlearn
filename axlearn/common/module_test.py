@@ -5,7 +5,7 @@
 # type: ignore[attribute-error]
 import contextlib
 import threading
-from typing import List, Optional, Union
+from typing import Optional, Union
 
 import chex
 import jax.random
@@ -423,7 +423,7 @@ class ModuleProvidingSharedChild(Module):
     def forward(self, x: Tensor) -> Tensor:
         return self.child1(x) + self.child2(x)
 
-    def get_descendant_shared_module(self, *, path: List[str], shared_module_name: str):
+    def get_descendant_shared_module(self, *, path: list[str], shared_module_name: str):
         # Note: this function assumes that inner nodes (non-leaves) of the module hierarchy are
         # `ModuleProvidingSharedChild`s.
         part, *path = path

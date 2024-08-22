@@ -7,9 +7,10 @@ import json
 import pathlib
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Optional, Union
 
 import cloud_tpu_client
 from absl import logging
@@ -29,22 +30,16 @@ from axlearn.cloud.gcp.utils import validate_resource_name
 class TPUCreationError(RuntimeError):
     """An error with TPU creation."""
 
-    pass
-
 
 class TPUQuotaLimitError(TPUCreationError):
     """An error with TPU creation related to quotas."""
-
-    pass
 
 
 class TPUDeletionError(RuntimeError):
     """An error with TPU deletion."""
 
-    pass
 
-
-def _read_error(e: errors.HttpError) -> Dict[str, Any]:
+def _read_error(e: errors.HttpError) -> dict[str, Any]:
     """Reads error details from HttpError."""
     data = json.loads(e.content.decode("utf-8"))
     if isinstance(data, list):
@@ -81,7 +76,7 @@ def create_legacy_tpu(
     *,
     tpu_type: str,
     bundler_type: str,
-    metadata: Optional[Dict[str, str]] = None,
+    metadata: Optional[dict[str, str]] = None,
     service_account: Optional[str] = None,
 ):
     """Create TPU (using legacy quota).
@@ -171,7 +166,7 @@ def create_legacy_tpu(
                 raise TPUCreationError("Failed to create TPU-VM") from e
 
 
-def get_tpu_node_status(name: str, *, node: Dict[str, Any]) -> Dict[str, Union[str, int]]:
+def get_tpu_node_status(name: str, *, node: dict[str, Any]) -> dict[str, Union[str, int]]:
     """Get the status from the given TPU node.
 
     For possible states, see:
@@ -224,7 +219,7 @@ def delete_legacy_tpu(name: str, resource_tpu: discovery.Resource, wait: bool = 
         time.sleep(10)
 
 
-def list_tpu(resource_tpu: discovery.Resource) -> List[str]:
+def list_tpu(resource_tpu: discovery.Resource) -> list[str]:
     """List running TPUs.
 
     Args:
@@ -290,8 +285,8 @@ def create_queued_tpu(
     tpu_type: str,
     bundler_type: str,
     num_slices: int = 1,
-    labels: Optional[Dict[str, str]] = None,
-    metadata: Optional[Dict[str, str]] = None,
+    labels: Optional[dict[str, str]] = None,
+    metadata: Optional[dict[str, str]] = None,
     service_account: Optional[str] = None,
     reserved: Optional[bool] = None,
 ):
@@ -404,7 +399,7 @@ def create_queued_tpu(
                 raise TPUCreationError(f"TPU appears to be stuck in unknown state {state}.")
 
 
-def get_queued_tpu_node_status(name: str, *, node: Dict[str, Any]) -> Dict[str, Union[str, int]]:
+def get_queued_tpu_node_status(name: str, *, node: dict[str, Any]) -> dict[str, Union[str, int]]:
     """Get the status from the given queued TPU node.
 
     For possible states, see:
@@ -441,10 +436,10 @@ class TpuInfo:
     name: str
     accelerator_type: str
     state: str
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
 
 
-def list_tpu_info(resource_tpu: discovery.Resource) -> List[TpuInfo]:
+def list_tpu_info(resource_tpu: discovery.Resource) -> list[TpuInfo]:
     """Collect info for running TPUs.
 
     Args:
@@ -476,7 +471,7 @@ class QueuedResourceInfo(TpuInfo):
     reserved: bool
 
 
-def list_queued_resource_info(resource_qrm: discovery.Resource) -> List[QueuedResourceInfo]:
+def list_queued_resource_info(resource_qrm: discovery.Resource) -> list[QueuedResourceInfo]:
     """Collect info for live queued resources.
 
     Args:
@@ -542,16 +537,16 @@ def _tpu_body(
     *,
     tpu_type: str,
     bundler_type: str,
-    labels: Optional[Dict[str, str]] = None,
-    metadata: Optional[Dict[str, str]] = None,
+    labels: Optional[dict[str, str]] = None,
+    metadata: Optional[dict[str, str]] = None,
     service_account: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Create configuration object for starting a TPU."""
 
     # TPU-VM configuration.
     dir_path = pathlib.Path(__file__).parent
     startup_script_path = dir_path / "scripts" / "start_tpu.sh"
-    with open(startup_script_path, "r", encoding="utf8") as of:
+    with open(startup_script_path, encoding="utf8") as of:
         startup_script_contents = of.read()
     docker_repo = gcp_settings("docker_repo", required=False)
 
@@ -605,8 +600,8 @@ def _tpu_body(
 
 
 def _qrm_body(
-    name: str, *, num_slices: int, tpu_body: Dict[str, Any], reserved: Optional[bool] = None
-) -> Dict[str, Any]:
+    name: str, *, num_slices: int, tpu_body: dict[str, Any], reserved: Optional[bool] = None
+) -> dict[str, Any]:
     """Create configuration object for starting a multislice TPU.
 
     Reference: https://cloud.google.com/tpu/docs/queued-resources
@@ -648,7 +643,7 @@ def _qrm_body(
     return body
 
 
-def get_tpu_node(name: str, resource_tpu: discovery.Resource) -> Optional[Dict[str, Any]]:
+def get_tpu_node(name: str, resource_tpu: discovery.Resource) -> Optional[dict[str, Any]]:
     """Gets information about a TPU node.
 
     Args:
@@ -669,7 +664,7 @@ def get_tpu_node(name: str, resource_tpu: discovery.Resource) -> Optional[Dict[s
         raise  # Re-raise.
 
 
-def get_queued_tpu_node(name: str, resource_qrm: discovery.Resource) -> Optional[Dict[str, Any]]:
+def get_queued_tpu_node(name: str, resource_qrm: discovery.Resource) -> Optional[dict[str, Any]]:
     """Gets information about a QueuedResource.
 
     Args:
@@ -764,7 +759,7 @@ def infer_tpu_resources(instance_type: str, num_replicas: int) -> ResourceMap[in
     return {infer_tpu_version(tpu_type): infer_tpu_cores(tpu_type) * num_replicas}
 
 
-def tpu_info_table(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = None) -> Table:
+def tpu_info_table(tpus: list[TpuInfo], metadata: Optional[Sequence[str]] = None) -> Table:
     """Produce a tabular view of the TPU infos provided.
 
     Args:
@@ -795,7 +790,7 @@ def tpu_info_table(tpus: List[TpuInfo], metadata: Optional[Sequence[str]] = None
 
 
 def queued_resource_info_table(
-    queued_resources: List[QueuedResourceInfo], metadata: Optional[Sequence[str]] = None
+    queued_resources: list[QueuedResourceInfo], metadata: Optional[Sequence[str]] = None
 ) -> Table:
     """Produce a tabular string view of the queued resource infos provided.
 

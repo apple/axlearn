@@ -5,11 +5,11 @@ Run on a Macbook:
         --dir_input=/path/to/dataset/imagenet2012/ \
         --dir_output=/path/to/dataset/imagenet2012_attack/
 """
+
 import json
 import os
 from glob import glob
 from io import BytesIO
-from typing import Dict
 
 import tensorflow as tf
 from absl import app, flags
@@ -26,13 +26,13 @@ flags.DEFINE_bool("single_file_for_debug", False, "whether to process single fil
 FLAGS = flags.FLAGS
 
 imagenet_classes = [""] * 1000
-with open("imagenet-simple.json", "rt", encoding="utf8") as f:
+with open("imagenet-simple.json", encoding="utf8") as f:
     imagenet_classes_dict = json.load(f)
     for c in range(1000):
         imagenet_classes[c] = imagenet_classes_dict[str(c)]
 
 
-def _decode_record_and_attack(record: Dict[str, tf.Tensor], verbose: bool = False):
+def _decode_record_and_attack(record: dict[str, tf.Tensor], verbose: bool = False):
     """Decodes a record to a TensorFlow example.
 
     We first use tf.io.decode_image(example['image']).numpy()

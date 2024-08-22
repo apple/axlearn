@@ -48,7 +48,7 @@ Examples (cloudbuild):
 
 import os
 import subprocess
-from typing import Dict, List, Optional
+from typing import Optional
 
 from absl import app, flags, logging
 
@@ -72,7 +72,7 @@ class GCSTarBundler(BaseTarBundler):
     TYPE = "gcs"
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> BaseTarBundler.Config:
+    def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> BaseTarBundler.Config:
         """Converts a spec to a bundler.
 
         Possible options:
@@ -98,7 +98,7 @@ class ArtifactRegistryBundler(DockerBundler):
     TYPE = "artifactregistry"
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> DockerBundler.Config:
+    def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> DockerBundler.Config:
         cfg = super().from_spec(spec, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
@@ -128,7 +128,7 @@ class CloudBuildBundler(BaseDockerBundler):
 
     @classmethod
     def from_spec(
-        cls, spec: List[str], *, fv: Optional[flags.FlagValues]
+        cls, spec: list[str], *, fv: Optional[flags.FlagValues]
     ) -> BaseDockerBundler.Config:
         cfg = super().from_spec(spec, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
@@ -141,9 +141,9 @@ class CloudBuildBundler(BaseDockerBundler):
         *,
         dockerfile: str,
         image: str,
-        args: Dict[str, str],
+        args: dict[str, str],
         context: str,
-        labels: Dict[str, str],
+        labels: dict[str, str],
     ):
         cfg: CloudBuildBundler.Config = self.config
         logging.info("CloudBuild build args: %s", args)

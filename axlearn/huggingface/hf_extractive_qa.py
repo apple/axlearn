@@ -8,7 +8,7 @@
 
 """AXLearn Wrapper for Hugging face Pretrained Models for Extractive Question Answering."""
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 import jax.numpy as jnp
 import optax
@@ -202,7 +202,7 @@ class _HfExtractiveQuestionAnsweringWrapper(HfModuleWrapper):
     https://github.com/huggingface/transformers/blob/02b176c4ce14340d26d42825523f406959c6c202/src/transformers/models/roberta/modeling_flax_roberta.py#L1309
     """
 
-    def _forward_kwargs(self, input_batch: Dict[str, Tensor]) -> Dict[str, Any]:
+    def _forward_kwargs(self, input_batch: dict[str, Tensor]) -> dict[str, Any]:
         """Returns a dictionary of kwargs for HF module's forward __call__."""
         return {**super()._forward_kwargs(input_batch), "output_hidden_states": True}
 
@@ -210,7 +210,7 @@ class _HfExtractiveQuestionAnsweringWrapper(HfModuleWrapper):
         self,
         input_batch: NestedTensor,
         **kwargs,
-    ) -> Tuple[Tensor, NestedTensor]:
+    ) -> tuple[Tensor, NestedTensor]:
         """Runs question answering prediction with targets to compute the loss.
         Currently, cross-entropy loss is use for
         start position and end position.
@@ -302,11 +302,11 @@ class HfBertForExtractiveQuestionAnsweringWrapper(_HfExtractiveQuestionAnswering
         cfg = super().default_config().set(hf_model_type=FlaxBertForQuestionAnswering)
         return cfg  # pylint: disable=duplicate-code
 
-    def _dummy_input_kwargs(self) -> Dict[str, Optional[Tensor]]:
+    def _dummy_input_kwargs(self) -> dict[str, Optional[Tensor]]:
         """Returns a dictionary of kwargs to pass to linen.Module.init."""
         return {**super()._dummy_input_kwargs(), "head_mask": None}
 
-    def _forward_kwargs(self, input_batch: Dict[str, Tensor]) -> Dict[str, Any]:
+    def _forward_kwargs(self, input_batch: dict[str, Tensor]) -> dict[str, Any]:
         """Returns a dictionary of kwargs for HF module's forward __call__."""
         return {**super()._forward_kwargs(input_batch), "head_mask": None}
 
@@ -320,11 +320,11 @@ class HfRobertaForExtractiveQuestionAnsweringWrapper(_HfExtractiveQuestionAnswer
         return cfg
 
     # pylint: disable=duplicate-code
-    def _dummy_input_kwargs(self) -> Dict[str, Optional[Tensor]]:
+    def _dummy_input_kwargs(self) -> dict[str, Optional[Tensor]]:
         """Returns a dictionary of kwargs to pass to linen.Module.init."""
         return {**super()._dummy_input_kwargs(), "head_mask": None}
 
-    def _forward_kwargs(self, input_batch: Dict[str, Tensor]) -> Dict[str, Any]:
+    def _forward_kwargs(self, input_batch: dict[str, Tensor]) -> dict[str, Any]:
         """Returns a dictionary of kwargs for HF module's forward __call__."""
         kwargs = super()._forward_kwargs(input_batch)
         input_ids: Tensor = input_batch["input_ids"]

@@ -11,7 +11,8 @@
 References:
 https://github.com/tensorflow/lingvo/blob/7dcd8e0b5704b19b3197674c856ac7a0ae3f965f/lingvo/core/rnn_cell.py
 """
-from typing import List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Optional
 
 import jax
 from absl import logging
@@ -52,7 +53,7 @@ class BaseRNNCell(BaseLayer):
         *,
         cached_states: Nested[Tensor],
         data: Tensor,
-    ) -> Tuple[Nested[Tensor], Tensor]:
+    ) -> tuple[Nested[Tensor], Tensor]:
         """Computes the outputs and state updates for one step.
 
         Args:
@@ -190,7 +191,7 @@ class LSTMCell(BaseRNNCell):
         *,
         cached_states: Nested[Tensor],
         data: Tensor,
-    ) -> Tuple[Nested[Tensor], Tensor]:
+    ) -> tuple[Nested[Tensor], Tensor]:
         cfg = self.config
         # [batch_size, input_dim + output_dim].
         inputs_and_m = jnp.concatenate([data, cached_states["m"]], axis=-1)
@@ -200,9 +201,9 @@ class LSTMCell(BaseRNNCell):
             input_proj = self.norm(input_proj)
         assert input_proj.shape == (data.shape[0], 4, self.hidden_dim)
         # The "input, forget, gate, output" gates, each of shape [batch, hidden_dim].
-        proj_i, proj_f, proj_g, proj_o = [
+        proj_i, proj_f, proj_g, proj_o = (
             gate.squeeze(axis=-2) for gate in jnp.split(input_proj, indices_or_sections=4, axis=-2)
-        ]
+        )
         # [batch, hidden_dim].
         old_c = cached_states["c"]
         new_c = jax.nn.sigmoid(proj_f) * old_c + jax.nn.sigmoid(proj_g) * jax.nn.tanh(proj_i)
@@ -284,7 +285,7 @@ class StackedRNNLayer(BaseRNNCell):
             )
         return state
 
-    def init_states(self, *, batch_size: int) -> List[Nested[Tensor]]:
+    def init_states(self, *, batch_size: int) -> list[Nested[Tensor]]:
         """Returns a list of initial step states from all layers."""
         states_list = [layer.init_states(batch_size=batch_size) for layer in self._layers]
         return states_list
@@ -292,9 +293,9 @@ class StackedRNNLayer(BaseRNNCell):
     def extend_step(
         self,
         *,
-        cached_states: List[Nested[Tensor]],
+        cached_states: list[Nested[Tensor]],
         data: Tensor,
-    ) -> Tuple[List[Nested[Tensor]], Tensor]:
+    ) -> tuple[list[Nested[Tensor]], Tensor]:
         """Computes the outputs and all layers state updates for one step.
 
         Args:
@@ -352,7 +353,7 @@ class _RNNRepeat(Repeat):
         *,
         cached_states: Nested[Tensor],
         data: Tensor,
-    ) -> Tuple[Nested[Tensor], Tensor]:
+    ) -> tuple[Nested[Tensor], Tensor]:
         """Computes the outputs and state updates for one step for all layers.
 
         Args:
@@ -429,7 +430,7 @@ class RepeatedRNNLayer(BaseRNNCell):
         *,
         cached_states: Nested[Tensor],
         data: Tensor,
-    ) -> Tuple[Nested[Tensor], Tensor]:
+    ) -> tuple[Nested[Tensor], Tensor]:
         return self.repeat.extend_step(cached_states=cached_states, data=data)
 
 
@@ -441,10 +442,8 @@ class IdentityCell(BaseRNNCell):
         cfg = self.config
         if cfg.output_dim and cfg.output_dim != cfg.input_dim:
             raise ValueError(
-                (
-                    "IdentityCell requires input_dim = output_dim, but got "
-                    f"input_dim = {cfg.input_dim}, output_dim = {cfg.output_dim}."
-                )
+                "IdentityCell requires input_dim = output_dim, but got "
+                f"input_dim = {cfg.input_dim}, output_dim = {cfg.output_dim}."
             )
 
     def init_states(self, *, batch_size: int) -> Nested[Tensor]:
@@ -456,7 +455,7 @@ class IdentityCell(BaseRNNCell):
         *,
         cached_states: Nested[Tensor],
         data: Tensor,
-    ) -> Tuple[Nested[Tensor], Tensor]:
+    ) -> tuple[Nested[Tensor], Tensor]:
         new_states = {}
         outputs = data
         return new_states, outputs

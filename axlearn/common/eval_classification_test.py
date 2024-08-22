@@ -2,7 +2,7 @@
 
 """Tests classification eval pipeline."""
 # pylint: disable=no-self-use
-from typing import Dict, Iterable
+from collections.abc import Iterable
 
 import jax
 import jax.numpy as jnp
@@ -44,7 +44,7 @@ def _compute_metrics(
     *,
     data_generator: Iterable,
     calculator_cfg: PrecisionRecallMetricCalculator.Config,
-) -> Dict:
+) -> dict:
     """Computes classification metrics on the entire provided evaluation set.
 
     Args:
@@ -219,7 +219,7 @@ class ClassificationMetricCalculatorTest(parameterized.TestCase):
         batch_size: int,
         precision_levels: float,
         recall_levels: float,
-        expected_metrics: Dict[str, float],
+        expected_metrics: dict[str, float],
     ):
         summaries = _compute_metrics(
             calculator_cfg=PrecisionRecallMetricCalculator.default_config().set(

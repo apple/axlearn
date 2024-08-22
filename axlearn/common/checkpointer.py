@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent import futures
 from types import TracebackType
-from typing import Any, Dict, List, NamedTuple, Optional, Protocol, Tuple, Type, Union
+from typing import Any, NamedTuple, Optional, Protocol, Union
 
 import jax
 import jax.numpy as jnp
@@ -68,8 +68,8 @@ def parse_step_from_dir(step_dir: str) -> int:
 
 
 def check_state_structure(
-    ckpt_structure: List[Tuple[str, Any]],
-    target_structure: List[Tuple[str, Any]],
+    ckpt_structure: list[tuple[str, Any]],
+    target_structure: list[tuple[str, Any]],
     *,
     validation: CheckpointValidationType = CheckpointValidationType.EXACT,
 ):
@@ -122,7 +122,7 @@ def check_state_structure(
 
 
 # pylint: disable-next=redefined-builtin
-def save_tf_savables(value_map: Dict[str, Any], *, dir: str):
+def save_tf_savables(value_map: dict[str, Any], *, dir: str):
     """Saves TF savables from `value_map` into `dir`."""
     for path, value in value_map.items():
         tf_checkpoint = tf.train.Checkpoint(value)
@@ -130,7 +130,7 @@ def save_tf_savables(value_map: Dict[str, Any], *, dir: str):
 
 
 # pylint: disable-next=redefined-builtin
-def restore_tf_savables(value_map: Dict[str, Any], *, dir: str):
+def restore_tf_savables(value_map: dict[str, Any], *, dir: str):
     """Restores TF savables from `dir` into `value_map` in-place."""
     for path, value in value_map.items():
         tf_checkpoint = tf.train.Checkpoint(value)
@@ -185,7 +185,7 @@ def write_index_file(*, ckpt_dir: str, index: Any):
         f.write(json.dumps(index))
 
 
-def _parse_tensor_spec(spec_dict: Dict[str, str]) -> TensorSpec:
+def _parse_tensor_spec(spec_dict: dict[str, str]) -> TensorSpec:
     # The shape string is of format `(dim...)`. [1:-1] removes the parentheses.
     shape = [int(x) for x in spec_dict["shape"][1:-1].split(",") if x]
     dtype_str = spec_dict["dtype"]
@@ -275,14 +275,14 @@ class TensorStoreStateStorage(StateStorage):
 
     @dataclasses.dataclass
     class CheckpointSpec:  # pylint: disable=too-many-instance-attributes
-        index: List[Tuple[str, Any]]
-        storage_paths: List[str]
-        tensorstore_specs: List[Dict]
-        shapes: List[Any]
-        dtypes: List[jnp.dtype]
-        shardings: List[jax.sharding.Sharding]
-        gda_values: List[Tensor]
-        tf_ckpt_map: Dict[str, Any]
+        index: list[tuple[str, Any]]
+        storage_paths: list[str]
+        tensorstore_specs: list[dict]
+        shapes: list[Any]
+        dtypes: list[jnp.dtype]
+        shardings: list[jax.sharding.Sharding]
+        gda_values: list[Tensor]
+        tf_ckpt_map: dict[str, Any]
 
     def _spec_from_path(self, ckpt_path: str):
         # TODO(markblee): Enable ocdbt driver.
@@ -346,9 +346,7 @@ class TensorStoreStateStorage(StateStorage):
         spec = self._get_spec(step, state, ckpt_dir)
         if jax.process_index() == 0:
             if not ckpt_dir.startswith("gs://"):
-                storage_dirs = sorted(
-                    list(set(os.path.dirname(path) for path in spec.storage_paths))
-                )
+                storage_dirs = sorted(list({os.path.dirname(path) for path in spec.storage_paths}))
                 logging.info("Creating directories: %s", storage_dirs)
                 with futures.ThreadPoolExecutor() as executor:
                     executor.map(tf.io.gfile.makedirs, storage_dirs)  # pytype: disable=module-attr
@@ -423,7 +421,7 @@ class TensorStoreStateStorage(StateStorage):
 class CheckpointPolicy(Protocol):
     """Decides whether checkpointer should save at the given step."""
 
-    def __call__(self, *, step: int, evaler_summaries: Dict[str, Any]) -> bool:
+    def __call__(self, *, step: int, evaler_summaries: dict[str, Any]) -> bool:
         """Implements the policy.
 
         Args:
@@ -473,7 +471,7 @@ class BestMetricPolicy(Configurable):
         super().__init__(cfg)
         self.best_metric: Optional[Tensor] = None
 
-    def __call__(self, *, step: int, evaler_summaries: Dict[str, Any]) -> bool:
+    def __call__(self, *, step: int, evaler_summaries: dict[str, Any]) -> bool:
         cfg = self.config
         evaler_name, metric_name = cfg.metric
 
@@ -524,7 +522,7 @@ class BestMetricPolicy(Configurable):
 def every_n_steps_policy(n: int = 1, *, min_step: int = 1) -> CheckpointPolicy:
     """Checkpoints every n steps, but not before `min_step`."""
 
-    def fn(*, step: int, evaler_summaries: Dict[str, Any]) -> bool:
+    def fn(*, step: int, evaler_summaries: dict[str, Any]) -> bool:
         del evaler_summaries
         return step >= min_step and step % n == 0
 
@@ -545,7 +543,7 @@ def every_n_steps_and_last_policy(
     """
     every_n_steps_fn = every_n_steps_policy(n=n, min_step=min_step)
 
-    def fn(*, step: int, evaler_summaries: Dict[str, Any]) -> bool:
+    def fn(*, step: int, evaler_summaries: dict[str, Any]) -> bool:
         return every_n_steps_fn(step=step, evaler_summaries=evaler_summaries) or step == max_step
 
     return fn
@@ -572,7 +570,7 @@ class BaseCheckpointer(Module):
         dir: Required[str] = REQUIRED  # The output directory.
 
     @classmethod
-    def checkpoint_paths(cls, base_dir: str) -> List[str]:
+    def checkpoint_paths(cls, base_dir: str) -> list[str]:
         """Returns complete checkpoint paths under base dir.
 
         Args:
@@ -611,7 +609,7 @@ class BaseCheckpointer(Module):
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
+        exc_type: Optional[type[BaseException]],
         exc: Optional[BaseException],
         traceback: Optional[TracebackType],
     ) -> Optional[bool]:
@@ -628,7 +626,7 @@ class BaseCheckpointer(Module):
         self._within_context = False
 
     def save(
-        self, *, step: int, state: NestedTensor, evaler_summaries: Optional[Dict[str, Any]] = None
+        self, *, step: int, state: NestedTensor, evaler_summaries: Optional[dict[str, Any]] = None
     ):
         """Saves `state` at the given `step`.
 
@@ -645,7 +643,7 @@ class BaseCheckpointer(Module):
         *,
         step: Optional[int] = None,
         state: Union[NestedTensor, NestedTensorSpec],
-    ) -> Tuple[Optional[int], NestedTensor]:
+    ) -> tuple[Optional[int], NestedTensor]:
         """Restores from the checkpoint directory.
 
         Args:
@@ -695,7 +693,7 @@ class Checkpointer(BaseCheckpointer):
         summary_writer: Optional[SummaryWriter.Config] = None
 
     @classmethod
-    def checkpoint_paths(cls, base_dir: str) -> List[str]:
+    def checkpoint_paths(cls, base_dir: str) -> list[str]:
         """See `BaseCheckpointer.checkpointer_paths`."""
         index_paths = tf.io.gfile.glob(os.path.join(base_dir, "step_*", "index"))  # type: ignore
         return [os.path.dirname(path) for path in index_paths]
@@ -757,7 +755,7 @@ class Checkpointer(BaseCheckpointer):
             self._gc_thread = None
             logging.info("gc_thread finished")
 
-    def _gc_loop(self, *, context_stack: List[InvocationContext]):
+    def _gc_loop(self, *, context_stack: list[InvocationContext]):
         """Starts garbage collection loop. Will block the current thread."""
         cfg: Checkpointer.Config = self.config
         install_context_stack(context_stack)
@@ -773,7 +771,7 @@ class Checkpointer(BaseCheckpointer):
         return os.path.join(cfg.dir, f"step_{step:08d}")
 
     def save(
-        self, *, step: int, state: NestedTensor, evaler_summaries: Optional[Dict[str, Any]] = None
+        self, *, step: int, state: NestedTensor, evaler_summaries: Optional[dict[str, Any]] = None
     ):
         """See `BaseCheckpointer.save` for details.
 
@@ -879,7 +877,7 @@ class Checkpointer(BaseCheckpointer):
         *,
         step: Optional[int] = None,
         state: Union[NestedTensor, NestedTensorSpec],
-    ) -> Tuple[Optional[int], NestedTensor]:
+    ) -> tuple[Optional[int], NestedTensor]:
         """See `BaseCheckpointer.restore` docstring for details.
 
         A complete checkpoint is one with an "index" file, which is only written after the entire

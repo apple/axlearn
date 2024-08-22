@@ -9,7 +9,7 @@ import copy
 import json
 import logging
 from enum import Enum
-from typing import Any, Dict, List, Type
+from typing import Any
 
 from axlearn.open_api.common import (
     BaseClient,
@@ -177,11 +177,11 @@ def _check_understand_str_match(pred: str, *, expected: str) -> bool:
 def _exec_and_check(
     gen_code: str,
     *,
-    problem: Dict[str, Any],
+    problem: dict[str, Any],
     problem_id: str,
     candidate_id: str,
     save_errors: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Executes generated code and checks whether it can pass all the tests of a problem.
 
     Args:
@@ -265,10 +265,10 @@ def _exec_and_check(
 
 def code_execution_metric_fn(
     *,
-    responses: List[Dict[str, Any]],
-    generators: Dict[EvalGeneratorType, Generator],
+    responses: list[dict[str, Any]],
+    generators: dict[EvalGeneratorType, Generator],
     debug: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Implements code contests metric following axlearn.open_api.common.MetricFn.
     This computes the correctness of the generated code, returns pass rate and
     average score of the generated code on all test cases per problem,
@@ -287,9 +287,9 @@ def code_execution_metric_fn(
     global_stats = {}
     errors = {}
     avg_scores = []
-    client_cls: Type[BaseClient] = generators[EvalGeneratorType.RESPONSE].config.client.klass
+    client_cls: type[BaseClient] = generators[EvalGeneratorType.RESPONSE].config.client.klass
     for resp_id, response in enumerate(responses):
-        candidates: List[str] = []
+        candidates: list[str] = []
         pid = response["id"]
         if "n_responses" in response:
             for resp in response["n_responses"]:
@@ -361,10 +361,10 @@ def code_execution_metric_fn(
 
 def understand_metric_fn(
     *,
-    responses: List[Dict[str, Any]],
-    generators: Dict[EvalGeneratorType, Generator],
+    responses: list[dict[str, Any]],
+    generators: dict[EvalGeneratorType, Generator],
     debug: bool = False,  # pylint: disable=unused-argument
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Implements code contests understanding metric following axlearn.open_api.common.MetricFn.
     Checks whether the understanding output from a coding question can match target string.
     No execution is needed.
@@ -380,7 +380,7 @@ def understand_metric_fn(
     correct = 0
     total_valid_ans = 0
     generator_cfg: Generator.Config = generators[EvalGeneratorType.RESPONSE].config
-    client_cls: Type[BaseClient] = generator_cfg.client.klass
+    client_cls: type[BaseClient] = generator_cfg.client.klass
     for response in responses:
         target_output = response.get("target_output", None)
         if target_output is None:
@@ -419,10 +419,10 @@ _solver_candidates = 5
 
 def plan_metric_fn(
     *,
-    responses: List[Dict[str, Any]],
-    generators: Dict[EvalGeneratorType, Generator],
+    responses: list[dict[str, Any]],
+    generators: dict[EvalGeneratorType, Generator],
     debug: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Implements code contests plan metric following axlearn.open_api.common.MetricFn.
     Based on the plan, generate the code, execute the code and measure the accuracy.
 
@@ -437,7 +437,7 @@ def plan_metric_fn(
     grader_generator = generators[EvalGeneratorType.GRADER]
     plan2code_requests = []
     generator_cfg: Generator.Config = generators[EvalGeneratorType.RESPONSE].config
-    client_cls: Type[BaseClient] = generator_cfg.client.klass
+    client_cls: type[BaseClient] = generator_cfg.client.klass
     for response in responses:
         plan = client_cls.parse_generation(response=json.loads(response["response"]))
         if len(plan) == 0:
@@ -506,12 +506,12 @@ Error Message: {error}\n
 
 
 def _gen_retry_request(
-    responses: List[Dict[str, Any]],
+    responses: list[dict[str, Any]],
     *,
     generator: Generator,
-    eval_results: Dict[str, Any],
+    eval_results: dict[str, Any],
     error_num: int = 1,
-) -> List[Any]:
+) -> list[Any]:
     """Generates retry requests for failed responses.
 
     Args:
@@ -586,10 +586,10 @@ def _gen_retry_request(
 
 def retry_metric_fn(
     *,
-    responses: List[Dict[str, Any]],
-    generators: Dict[EvalGeneratorType, Generator],
+    responses: list[dict[str, Any]],
+    generators: dict[EvalGeneratorType, Generator],
     debug: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Implements code contests retry metric following axlearn.open_api.common.MetricFn.
     Retry failed problems to test whether the model can run self-correction.
 

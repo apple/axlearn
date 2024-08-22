@@ -9,7 +9,7 @@ import shlex
 import signal
 import subprocess
 from enum import Enum
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Optional, Protocol
 
 from absl import app
 from absl.flags import argparse_flags
@@ -40,7 +40,7 @@ def absl_main(args: argparse_flags.argparse.Namespace, **kwargs) -> int:
         Return code.
     """
     # pylint: disable=consider-using-with
-    procs: List[subprocess.Popen] = []
+    procs: list[subprocess.Popen] = []
 
     def _sig_handler(sig: int, _):
         for proc in procs:
@@ -96,7 +96,7 @@ class CommandGroup:
         name: str,
         *,
         parent: Optional["CommandGroup"] = None,
-        argv: Optional[List[str]] = None,
+        argv: Optional[list[str]] = None,
         **kwargs,
     ):
         """Instantiates a Command Group.
@@ -235,7 +235,7 @@ class CommandGroup:
         return args
 
 
-def _drop_one(items: List[str], drop: str) -> List[str]:
+def _drop_one(items: list[str], drop: str) -> list[str]:
     """Returns a copy of `items`, dropping at most one instance of `drop`."""
     try:
         i = items.index(drop)
@@ -259,7 +259,7 @@ def _argname(arg: str) -> str:
     return arg.split("=")[0]
 
 
-def _flags(argv: List[str]):
+def _flags(argv: list[str]):
     """Returns flags prior to `--`."""
     args = []
     for arg in argv:
@@ -269,14 +269,14 @@ def _flags(argv: List[str]):
     return args
 
 
-def _insert_flags(argv: List[str], flags: List[str]) -> List[str]:
+def _insert_flags(argv: list[str], flags: list[str]) -> list[str]:
     """Insert a sequence of --flag=value into argv, ensuring they are inserted before `--`."""
     assert len(argv) > 0 and not argv[0].startswith("--"), "argv[0] should contain the program name"
     i = len(_flags(argv))
     return argv[0:i] + flags + argv[i:]
 
 
-def get_path(d: Dict[str, Any], k: str, default: Optional[Any] = None) -> Optional[Any]:
+def get_path(d: dict[str, Any], k: str, default: Optional[Any] = None) -> Optional[Any]:
     """Nested dict access with default."""
     parts = k.split(".")
     for part in parts[:-1]:
@@ -307,7 +307,7 @@ def register_root_command_group(fn: CommandGroupFn, name: Optional[str] = None):
     return fn
 
 
-def parse_flags(argv: List[str]) -> argparse_flags.argparse.Namespace:
+def parse_flags(argv: list[str]) -> argparse_flags.argparse.Namespace:
     root = CommandGroup(
         "root", argv=argv, description="AXLearn: An Extensible Deep Learning Library."
     )

@@ -1,4 +1,5 @@
 """Tests for debug_utils.py"""
+
 from typing import Callable
 
 import jax

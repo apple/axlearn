@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Feature tokenizers."""
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -44,7 +44,7 @@ class CLIPFeatureTokenizer(BaseLayer):
             self._add_child("output_norm", cfg.output_norm)
 
     # pylint:disable-next=arguments-renamed
-    def forward(self, inputs: Tensor) -> Tuple[Tensor, Dict[str, Tensor]]:
+    def forward(self, inputs: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         """The forward function for the CLIPTokenizer.
 
         Args:

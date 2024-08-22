@@ -5,7 +5,8 @@
 FlaxLayer allows users to use flax.linen modules in an AXLearn module hierarchy.
 See the FeedForward layer in adapter_flax_test.py for an example.
 """
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Any, Callable, Optional, Union
 
 import jax.random
 from flax.linen import Module as FlaxModule
@@ -26,11 +27,11 @@ class FlaxLayer(BaseLayer):
 
         # A function to return a linen.Module.
         create_module_fn: Required[Callable[[], FlaxModule]] = REQUIRED
-        create_module_kwargs: Dict[str, Any] = {}  # The kwargs for create_module_fn.
+        create_module_kwargs: dict[str, Any] = {}  # The kwargs for create_module_fn.
 
         # A function to return (args, kwargs) used for linen.Module.init.
-        create_dummy_input_fn: Required[Callable[[], Tuple[Sequence, Dict]]] = REQUIRED
-        create_dummy_input_kwargs: Dict[str, Any] = {}  # The kwargs for create_dummy_input_fn.
+        create_dummy_input_fn: Required[Callable[[], tuple[Sequence, dict]]] = REQUIRED
+        create_dummy_input_kwargs: dict[str, Any] = {}  # The kwargs for create_dummy_input_fn.
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -84,8 +85,8 @@ class FlaxLayer(BaseLayer):
     def forward(
         self,
         *args,
-        rngs: Optional[Dict[str, jax.random.PRNGKey]] = None,
-        mutable: Optional[Union[bool, str, List[str]]] = None,
+        rngs: Optional[dict[str, jax.random.PRNGKey]] = None,
+        mutable: Optional[Union[bool, str, list[str]]] = None,
         module_method: Optional[str] = None,
         **kwargs,
     ):

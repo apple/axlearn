@@ -10,7 +10,7 @@
 
 https://arxiv.org/abs/2006.06666
 """
-from typing import Dict, Optional, Union
+from typing import Optional, Union
 
 import jax
 from jax import numpy as jnp
@@ -207,7 +207,7 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
 
     def forward(
         self,
-        input_batch: Dict[str, Tensor],
+        input_batch: dict[str, Tensor],
         return_aux: bool = False,
     ) -> Tensor:
         """
@@ -234,7 +234,7 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
 
         # Decode caption.
         decoder_ids, decoder_labels = caption_tokens[:, :-1], caption_tokens[:, 1:]
-        predictions: Dict[str, Tensor] = self.textual(
+        predictions: dict[str, Tensor] = self.textual(
             decoder_ids, cross_attention_data=projected_visual_features
         )
         metrics = self._metrics(predictions["logits"], decoder_labels)
@@ -322,7 +322,7 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
         projected_visual_features = self.visual_projection(visual_features)
         return projected_visual_features
 
-    def _metrics(self, logits: Tensor, targets: Tensor) -> Dict[str, Tensor]:
+    def _metrics(self, logits: Tensor, targets: Tensor) -> dict[str, Tensor]:
         cfg = self.config
 
         live_targets = (targets != cfg.textual.pad_token_id).astype(jnp.float32)

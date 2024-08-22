@@ -42,7 +42,8 @@ Examples:
 
 import subprocess
 import sys
-from typing import Any, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any, Optional
 
 from absl import app, flags, logging
 

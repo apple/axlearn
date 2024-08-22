@@ -3,7 +3,7 @@
 """Pipeline layer tests."""
 
 # pylint: disable=no-self-use,duplicate-code,protected-access
-from typing import Dict, Optional, Type, cast
+from typing import Optional, cast
 
 import jax.random
 from absl import logging
@@ -53,7 +53,7 @@ class TransposeTest(absltest.TestCase):
 class TestLayer(BaseLayer):
     """A dummy testing layer."""
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         return dict(
             inc=ParameterSpec(
                 shape=[], mesh_axes=[], initializer=param_init.constant_initializer(1)
@@ -134,7 +134,7 @@ class DummyMLP(BaseLayer):
         input_dim: Required[int] = REQUIRED
         hidden_dim: Required[int] = REQUIRED
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg: DummyMLP.Config = self.config
         return dict(
             linear1=ParameterSpec(
@@ -354,7 +354,7 @@ class PipelineTest(TestCase):
         ],
         remat_spec=[None, RematSpec(prevent_cse=False)],
     )
-    def test_pipeline_gradients(self, schedule: Dict, remat_spec: Optional[RematSpec]):
+    def test_pipeline_gradients(self, schedule: dict, remat_spec: Optional[RematSpec]):
         """Test gradients against a ref implementation."""
         schedule_cls = schedule["cls"]
         batch_size, microbatch_size, num_stages, input_dim = schedule["batch_size"], 2, 4, 8
@@ -435,7 +435,7 @@ class PipelineTest(TestCase):
         ],
         remat_spec=[None, RematSpec(prevent_cse=False)],
     )
-    def test_schedule_equivalence(self, schedule: Dict, remat_spec: Optional[RematSpec]):
+    def test_schedule_equivalence(self, schedule: dict, remat_spec: Optional[RematSpec]):
         """Tests equivalence with GPipeSchedule."""
         schedule_cls = schedule["cls"]
         batch_size, microbatch_size, num_layers, input_dim = schedule["batch_size"], 2, 4, 8
@@ -448,7 +448,7 @@ class PipelineTest(TestCase):
             layer=DummyMLP.default_config().set(input_dim=input_dim, hidden_dim=input_dim * 2),
         )
         test_cfg = ref_cfg.clone(
-            schedule=cast(Type[BaseSchedule], schedule_cls).default_config(),
+            schedule=cast(type[BaseSchedule], schedule_cls).default_config(),
         )
 
         def compute_outputs(layer: TestPipeline, inputs):

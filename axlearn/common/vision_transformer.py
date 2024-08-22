@@ -19,7 +19,7 @@ References:
 # pylint: disable=duplicate-code
 import copy
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 import jax.nn
 import numpy as np
@@ -59,7 +59,7 @@ def sequence_to_space_with_scaling(
     *,
     num_cls_tokens: int,
     target_len: Optional[int] = None,
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """A method to convert a 1D sequence features to 2D space features with 2D scaling.
 
     Inspired from https://github.com/facebookresearch/deit/blob/main/main.py#L284-L302.
@@ -106,7 +106,7 @@ class ConvertToSequence(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures ConvertToSequence."""
 
-        patch_size: Tuple[int, int] = (16, 16)  # The 2-D patch size.
+        patch_size: tuple[int, int] = (16, 16)  # The 2-D patch size.
         input_dim: Required[int] = REQUIRED  # The input feature dim.
         output_dim: Required[int] = REQUIRED  # The output feature dim.
         conv: InstantiableConfig = Conv2D.default_config().set(
@@ -116,7 +116,7 @@ class ConvertToSequence(BaseLayer):
             param_partition_spec=(None, None, None, "model"),
         )
         # The stride for patching. This defaults to the patch size.
-        stride: Optional[Tuple[int, int]] = None
+        stride: Optional[tuple[int, int]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -323,7 +323,7 @@ class VisionTransformer(BaseLayer):
             return cfg.output_proj.output_dim
         return cfg.output_dim
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         param_specs = {}
         if cfg.num_cls_tokens:
@@ -356,7 +356,7 @@ class VisionTransformer(BaseLayer):
         if cfg.output_proj_norm:
             self._add_child("output_proj_norm", cfg.output_proj_norm)
 
-    def forward(self, image: Tensor, is_masked: Optional[Tensor] = None) -> Dict[str, Tensor]:
+    def forward(self, image: Tensor, is_masked: Optional[Tensor] = None) -> dict[str, Tensor]:
         """Compute prediction on an image.
 
         Args:
@@ -415,7 +415,7 @@ class VisionTransformer(BaseLayer):
         return outputs
 
     @property
-    def endpoints_dims(self) -> Dict[str, int]:
+    def endpoints_dims(self) -> dict[str, int]:
         """A dict of {str: hidden_dim} specifies dimension of intermediate and output features."""
         cfg = self.config
         patch_size = cfg.visual_embed.convert_to_sequence.patch_size[0]
@@ -477,9 +477,9 @@ def _set_model_config(
     model_dim: int,
     num_heads: int,
     feed_forward_dim: Optional[int] = None,
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
-    stride: Optional[Tuple[int, int]] = None,
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
+    stride: Optional[tuple[int, int]] = None,
     # One of ["cls_token", "cls_distill_token", "gap"].
     global_feature_extraction: str = "cls_token",
     dtype: jnp.dtype = jnp.float32,
@@ -557,9 +557,9 @@ def build_vit_model_config(**kwargs):
 
 def named_model_configs(
     *,
-    extra_settings: Optional[Dict[str, Any]] = None,
-    include_models: Optional[List[str]] = None,  # If set, only get models configs in the list.
-) -> Dict[str, InstantiableConfig]:
+    extra_settings: Optional[dict[str, Any]] = None,
+    include_models: Optional[list[str]] = None,  # If set, only get models configs in the list.
+) -> dict[str, InstantiableConfig]:
     # Avoid modifying `_NAMED_VIT_MODELS` in place.
     models = copy.deepcopy(_NAMED_VIT_MODELS)
     # Large ViT models with RepeatedTransformerLayer.

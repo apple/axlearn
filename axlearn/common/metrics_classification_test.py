@@ -3,7 +3,6 @@
 """Tests classification metrics."""
 # pylint: disable=no-self-use
 import logging
-from typing import Tuple
 
 import evaluate
 import jax
@@ -397,7 +396,7 @@ class TestMetrics(TestWithTemporaryCWD):
 
     def get_random_input_binary_classification(
         self, num_samples: int
-    ) -> Tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor]:
         pred = jax.random.uniform(jax.random.PRNGKey(123), [num_samples], minval=0, maxval=1)
         label = jax.random.randint(jax.random.PRNGKey(321), [num_samples], 0, 2)
         sample_weight = jax.random.uniform(

@@ -8,7 +8,8 @@
 
 """Attention layers for ViT variant vision transformers."""
 import math
-from typing import Dict, NamedTuple, Optional, Sequence, Set, Tuple
+from collections.abc import Sequence
+from typing import NamedTuple, Optional
 
 import jax.nn
 from jax import numpy as jnp
@@ -79,8 +80,8 @@ def add_decomposed_rel_pos_emb(
     q: Tensor,
     rel_pos_emb_h: Tensor,
     rel_pos_emb_w: Tensor,
-    q_size: Tuple[int, int],
-    k_size: Tuple[int, int],
+    q_size: tuple[int, int],
+    k_size: tuple[int, int],
 ) -> Tensor:
     """Calculate decomposed Relative Positional Embeddings from :paper:`mvitv2`.
 
@@ -129,7 +130,7 @@ class WindowedAttention(MultiheadAttention):
         # Initialize the positional embedding as constant zero.
         use_pos_zero_init: bool = True
         # Input resolution for calculating the relative positional parameter size.
-        input_size: Tuple[int, int] = (64, 64)
+        input_size: tuple[int, int] = (64, 64)
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = 50.0
 
@@ -142,7 +143,7 @@ class WindowedAttention(MultiheadAttention):
                 f"key_dim ({cfg.key_dim}) == value_dim ({cfg.value_dim})"
             )
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = super()._create_layer_parameter_specs()
         if cfg.use_rel_pos_emb:
@@ -166,7 +167,7 @@ class WindowedAttention(MultiheadAttention):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
-        return_aux: Optional[Set[str]] = None,
+        return_aux: Optional[set[str]] = None,
     ) -> MultiheadAttention.Output:
         """Computes self-windowed attention for the given query and attention logit biases.
 
@@ -254,7 +255,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
         target: Tensor,
         source: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
-        return_aux: Optional[Set[str]] = None,
+        return_aux: Optional[set[str]] = None,
     ) -> TransformerAttentionLayer.Output:
         """Computes attention with target as query and source as key and value.
 
@@ -313,7 +314,7 @@ class StackedWindowedTransformerLayer(BaseStackedTransformerLayer):
         window_size: int = 14
         # Input resolution for calculating the relative positional parameter size.
         # [image_size // patch_size, image_size // patch_size].
-        input_size: Tuple[int, int] = (64, 64)
+        input_size: tuple[int, int] = (64, 64)
         # Indexes for blocks using window attention.
         window_block_indexes: Sequence[int] = (
             list(range(0, 2)) + list(range(3, 5)) + list(range(6, 8)) + list(range(9, 11))
@@ -384,5 +385,5 @@ class StackedWindowedTransformerLayer(BaseStackedTransformerLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, MultiheadAttention.Output]:
+    ) -> tuple[NestedTensor, MultiheadAttention.Output]:
         raise NotImplementedError(type(self))

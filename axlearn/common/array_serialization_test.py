@@ -6,7 +6,7 @@
 import asyncio
 import contextlib
 import functools
-from typing import List, Optional
+from typing import Optional
 from unittest import mock
 
 import jax.numpy as jnp
@@ -90,8 +90,8 @@ class SerializerTest(parameterized.TestCase):
     def test_async_serialize(
         self,
         process_index: int,
-        shards: List,
-        expect_opened: List[int],
+        shards: list,
+        expect_opened: list[int],
     ):
         """Tests async_serialize.
 
@@ -202,11 +202,11 @@ class SerializerTest(parameterized.TestCase):
     )
     def test_acquire_and_write(
         self,
-        shards: List[int],
+        shards: list[int],
         max_concurrent_bytes: int,
         expect_max_concurrent_bytes: int,
-        commits: Optional[List[RuntimeError]] = None,
-        copies: Optional[List[RuntimeError]] = None,
+        commits: Optional[list[RuntimeError]] = None,
+        copies: Optional[list[RuntimeError]] = None,
         expect_error: Optional[RuntimeError] = None,
     ):
         """Tests TensorStore write.
@@ -263,7 +263,7 @@ class SerializerTest(parameterized.TestCase):
 
         mock_ts = MockTs()
 
-        async def acquire_and_write(*, shards: List[Shard]):
+        async def acquire_and_write(*, shards: list[Shard]):
             limiter = _LimitAndRecordBytes(max_concurrent_bytes + 1)
             release_tasks = set()
             commit_futures = await asyncio.gather(
@@ -317,7 +317,7 @@ class SerializerTest(parameterized.TestCase):
         ),
     )
     def test_serialize(
-        self, arrays: List[List[int]], max_concurrent_gb: int, expect_max_concurrent_gb: int
+        self, arrays: list[list[int]], max_concurrent_gb: int, expect_max_concurrent_gb: int
     ):
         arrays = [
             mock.Mock(

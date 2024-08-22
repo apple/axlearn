@@ -9,7 +9,7 @@
 Reference:
 https://github.com/tensorflow/models/blob/5a0305c41304e8136e2056c589ab490a807dffa0/official/vision/dataloaders/retinanet_input.py
 """
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Literal, Optional
 
 import numpy as np
 import tensorflow as tf
@@ -24,7 +24,7 @@ from axlearn.vision.mask_generator import MaskingGenerator
 
 def random_horizontal_flip(
     image: tf.Tensor, boxes: tf.Tensor, seed: Optional[int] = None
-) -> Tuple[tf.Tensor, tf.Tensor]:
+) -> tuple[tf.Tensor, tf.Tensor]:
     """Randomly flips the image and boxes horizontally with a probability of 50%.
 
     Args:
@@ -70,13 +70,13 @@ def random_horizontal_flip(
 def resize_and_crop_image(
     image: tf.Tensor,
     *,
-    desired_size: Tuple[int, int],
-    padded_size: List[int],
+    desired_size: tuple[int, int],
+    padded_size: list[int],
     aug_scale_min: float = 1.0,
     aug_scale_max: float = 1.0,
     seed: int = 1,
     method: Literal = tf.image.ResizeMethod.BILINEAR,
-) -> Tuple[tf.Tensor, tf.Tensor]:
+) -> tuple[tf.Tensor, tf.Tensor]:
     """Resizes the input image to output size (RetinaNet style).
 
     Resize and pad images given the desired output size of the image and
@@ -167,9 +167,9 @@ def resize_and_crop_image(
 
 # pylint: disable=unused-argument, unused-variable, too-many-function-args
 def _parse_train_data(
-    data: Dict[str, Any],
+    data: dict[str, Any],
     *,
-    output_size: Tuple[int, int],
+    output_size: tuple[int, int],
     output_stride: int,
     aug_scale_min: float,
     aug_scale_max: float,
@@ -242,9 +242,9 @@ def _parse_train_data(
 
 
 def _parse_eval_data(
-    data: Dict[str, Any],
+    data: dict[str, Any],
     *,
-    output_size: Tuple[int, int],
+    output_size: tuple[int, int],
     output_stride: int,
     max_num_instances: int = 100,
     **kwargs,
@@ -307,7 +307,7 @@ def _parse_eval_data(
 
 
 def _parser(
-    example: Dict[str, Any],
+    example: dict[str, Any],
     *,
     is_training: bool,
     **kwargs,
@@ -321,7 +321,7 @@ def _parser(
 
 def _process_example(
     is_training: bool,
-    image_size: Tuple[int, int],
+    image_size: tuple[int, int],
     output_stride: int,
     max_num_instances: int,
     aug_scale_min: float,
@@ -396,7 +396,7 @@ def _process_example(
                 source_id: A str [batch] tensor indicating the source id of the images.
     """
 
-    def example_fn(example: Dict[str, Tensor]) -> NestedTensor:
+    def example_fn(example: dict[str, Tensor]) -> NestedTensor:
         decoded_example = {
             "image": example["image"],
             "source_id": utils_detection.process_source_id(
@@ -448,7 +448,7 @@ class DetectionInput(input_tf_data.Input):
     class Config(input_tf_data.Input.Config):
         """Configures DetectionInput."""
 
-        image_size: Tuple[int, int] = (640, 640)  # The image size.
+        image_size: tuple[int, int] = (640, 640)  # The image size.
 
     @classmethod
     def default_config(cls):

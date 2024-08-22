@@ -9,9 +9,10 @@ import pathlib
 import re
 import tempfile
 from collections import OrderedDict, defaultdict
+from collections.abc import Iterator, Sequence
 from functools import partial
 from tempfile import mkdtemp
-from typing import Any, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple, TypeVar, Union
+from typing import Any, Optional, Protocol, TypeVar, Union
 from unittest.mock import patch
 
 import jax
@@ -160,7 +161,7 @@ class TestCase(parameterized.TestCase):
         parameters_from_ref_layer: ParameterConversionFn,
         require_same_num_params: bool = True,
         require_same_tree_structure: bool = True,
-    ) -> Tuple[Any, Any]:
+    ) -> tuple[Any, Any]:
         layer_params = test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
         total_num_layer_params = 0
         for name, param in flatten_items(layer_params):
@@ -248,7 +249,7 @@ class TestCase(parameterized.TestCase):
 class TrainerConfigTestCase(TestCase):
     """Base class for testing trainer configs."""
 
-    def _test_with_trainer_config(self, trainer_config, mesh_size: Optional[Dict[str, int]] = None):
+    def _test_with_trainer_config(self, trainer_config, mesh_size: Optional[dict[str, int]] = None):
         with jax.checking_leaks(), set_data_dir("FAKE"):
             if mesh_size is None:
                 mesh_size = {}
@@ -313,7 +314,7 @@ class DummyForwardModel(BaseModel):
     ``predict`` returns input_batch["aux"].
     """
 
-    def forward(self, input_batch: NestedTensor, **kwargs) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor, **kwargs) -> tuple[Tensor, NestedTensor]:
         del kwargs
         return jnp.zeros([], dtype=jnp.float32), input_batch.get("aux", {})
 
@@ -373,7 +374,7 @@ class ThirdPartyInitializer(Initializer):
 
 
 # For new code, use Nested[ParamInitSpec].
-NestedParamInitSpec = Optional[Union[ParamInitSpec, Dict[str, Any]]]
+NestedParamInitSpec = Optional[Union[ParamInitSpec, dict[str, Any]]]
 
 
 def _cast_ordered_dict(params: NestedTensor):
@@ -383,7 +384,7 @@ def _cast_ordered_dict(params: NestedTensor):
 
 
 def _complete_param_init_spec_tree(
-    params: NestedTensor, param_init_specs: List[ParamInitSpec], delegates: Dict[str, ParamInitSpec]
+    params: NestedTensor, param_init_specs: list[ParamInitSpec], delegates: dict[str, ParamInitSpec]
 ):
     """Completes the param_init_specs by replacing certain param paths with proxy Initializers.
 
@@ -430,7 +431,7 @@ def _complete_param_init_spec_tree(
 
 
 def read_param_init_specs_recursively(
-    layer: BaseLayer, *, delegates: Optional[Dict[str, ParamInitSpec]] = None
+    layer: BaseLayer, *, delegates: Optional[dict[str, ParamInitSpec]] = None
 ) -> NestedParamInitSpec:
     """Given a layer, returns all nested parameter initialization specs.
 
@@ -485,7 +486,7 @@ def read_param_init_specs_recursively(
 
 def read_per_param_settings(
     module: Any, config_name: str, trainer_config: Optional[TrainerConfigFn] = None
-) -> Dict[str, Dict[str, NestedTensor]]:
+) -> dict[str, dict[str, NestedTensor]]:
     """Extracts per-param settings for the given trainer config.
 
     Given a trainer config specified by `module` and `config_name`, initializes the trainer
@@ -617,7 +618,7 @@ def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
 # TODO(markblee): Update to take prng_key explicitly.
 def dummy_segments_positions(
     batch: int, seq_len: int, *, num_segments: int
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """Builds dummy segment IDs and corresponding positions.
 
     Example:
@@ -870,13 +871,15 @@ def initialize_parameters_with_prebuilt(
     # A tree where a leaf is a ParameterSpec for a prebuilt param, None otherwise.
     # This is used for `initialize_parameters_recursively`.
     prebuilt_param_specs = jax.tree_util.tree_map(
-        lambda value: ParameterSpec(
-            shape=value.shape,
-            dtype=value.dtype,
-            mesh_axes=value.sharding,
-        )
-        if isinstance(value, Tensor)
-        else None,
+        lambda value: (
+            ParameterSpec(
+                shape=value.shape,
+                dtype=value.dtype,
+                mesh_axes=value.sharding,
+            )
+            if isinstance(value, Tensor)
+            else None
+        ),
         prebuilt,
     )
     logging.debug("prebuilt_param_specs: %s", shapes(prebuilt_param_specs))

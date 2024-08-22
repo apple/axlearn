@@ -11,7 +11,7 @@
 Ref: https://github.com/facebookresearch/DiT
 """
 
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -253,7 +253,7 @@ class DiTFeedForwardLayer(BaseLayer):
         norm: InstantiableConfig = (
             LayerNormStateless.default_config()
         )  # The normalization layer config.
-        activation: Union[str, Tuple[str, str]] = "nn.gelu"
+        activation: Union[str, tuple[str, str]] = "nn.gelu"
         dropout1: InstantiableConfig = Dropout.default_config()
         dropout2: InstantiableConfig = Dropout.default_config()
         structure: str = "prenorm"

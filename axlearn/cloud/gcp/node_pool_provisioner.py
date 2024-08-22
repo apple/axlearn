@@ -110,7 +110,7 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             # TODO(ethanli): remove this hack once jobset-controller-manager
             #  supports disabling node-selector injections
             job_key = hashlib.sha1(
-                f"{job_cfg.namespace}/{job_cfg.name}-job-{i}".encode("utf-8")
+                f"{job_cfg.namespace}/{job_cfg.name}-job-{i}".encode()
             ).hexdigest()
             additional_labels = {"job-key": job_key}
             additional_labels_list.append(additional_labels)

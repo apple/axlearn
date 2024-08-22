@@ -15,7 +15,8 @@ import copy
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Sequence, Type
+from collections.abc import Sequence
+from typing import Any, Optional
 
 import dateutil
 import dateutil.parser
@@ -57,7 +58,7 @@ def _date_match(val: str, gt: str) -> bool:
     return date_val == date_gt
 
 
-def _extract_arguments(tool_call: Dict) -> Dict:
+def _extract_arguments(tool_call: dict) -> dict:
     """Extracts arguments from tool call."""
     args = tool_call["arguments"]
     return json.loads(args) if isinstance(args, str) else args
@@ -66,7 +67,7 @@ def _extract_arguments(tool_call: Dict) -> Dict:
 def _match_argument(
     *,
     arg_name: str,
-    arg_rule: Dict,
+    arg_rule: dict,
     pred_arg: Any,
     target_arg: Optional[Any],
 ) -> bool:
@@ -109,9 +110,9 @@ def _match_argument(
 
 def _match_tool_call_with_rules(
     *,
-    pred_tool_call: Dict,
-    match_rule: Dict,
-    target_tool_call: Dict,
+    pred_tool_call: dict,
+    match_rule: dict,
+    target_tool_call: dict,
 ) -> bool:
     """Matches a tool call against a target tool call or a match rule. It works as follows:
     - Check the function name
@@ -173,9 +174,9 @@ def _match_tool_call_with_rules(
 
 def _compare_tool_calls(
     *,
-    pred_tool_calls: Sequence[Dict[str, Any]],
-    target_tool_calls: List[Dict[str, Any]],
-    match_rules: Optional[List[Dict[str, Any]]] = None,
+    pred_tool_calls: Sequence[dict[str, Any]],
+    target_tool_calls: list[dict[str, Any]],
+    match_rules: Optional[list[dict[str, Any]]] = None,
 ) -> bool:
     """Compares the predicted tool calls with the target, potentially with matching rules.
 
@@ -233,10 +234,10 @@ def _compare_tool_calls(
 
 def metric_fn(
     *,
-    responses: List[Dict[str, Any]],
-    generators: Dict[EvalGeneratorType, Generator],
+    responses: list[dict[str, Any]],
+    generators: dict[EvalGeneratorType, Generator],
     debug: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Implements the tool use execution accuracy metric following axlearn.open_api.common.MetricFn.
 
     Args:
@@ -254,7 +255,7 @@ def metric_fn(
             "number_of_errors": 0,
         }
 
-    def get_tool_calls_from_message(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def get_tool_calls_from_message(message: dict[str, Any]) -> list[dict[str, Any]]:
         """Extracts tool call arguments in message."""
 
         if "tool_calls" not in message:
@@ -270,7 +271,7 @@ def metric_fn(
     number_of_parsing_errors = 0
     number_of_generation_errors = 0
     generator_cfg: Generator.Config = generators[EvalGeneratorType.RESPONSE].config
-    client_cls: Type[BaseClient] = generator_cfg.client.klass
+    client_cls: type[BaseClient] = generator_cfg.client.klass
     for response in responses:
         matched = False
         target_message = response.get("target_message", None)

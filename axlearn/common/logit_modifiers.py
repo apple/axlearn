@@ -15,7 +15,7 @@ values of `p`.
 
 Reference: <https://github.com/google-research/t5x/blob/79998013/t5x/binary_search.py>
 """
-from typing import Callable, Tuple
+from typing import Callable
 
 import jax
 from jax import numpy as jnp
@@ -183,7 +183,7 @@ def _monotonic_int32_to_float32_bit_mask(x: Tensor) -> Tensor:
 
 
 def _int32_binary_search(
-    batched_shape: Tuple[int], *, predicate: Callable[[Tensor], Tensor]
+    batched_shape: tuple[int], *, predicate: Callable[[Tensor], Tensor]
 ) -> Tensor:
     """Binary search to find the largest finite int32 value for which the predicate is False.
 
@@ -217,7 +217,7 @@ def _int32_binary_search(
 
 
 def _float32_binary_search(
-    batched_shape: Tuple[int], *, predicate: Callable[[Tensor], Tensor]
+    batched_shape: tuple[int], *, predicate: Callable[[Tensor], Tensor]
 ) -> Tensor:
     """Binary search to find the largest finite float32 value for which predicate is False.
 

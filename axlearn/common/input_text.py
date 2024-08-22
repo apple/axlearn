@@ -15,7 +15,8 @@ See: https://www.tensorflow.org/datasets/community_catalog/huggingface
 """
 import functools
 import random
-from typing import Callable, Dict, List, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import Callable, Optional, Union
 
 import nltk
 import numpy as np
@@ -39,7 +40,7 @@ TOKEN_TYPE_IDS = "token_type_ids"
 TARGET_LABELS = "target_labels"
 
 
-def perplexity(targets: Sequence[str], scores: Sequence[int]) -> Dict[str, seqio.metrics.Scalar]:
+def perplexity(targets: Sequence[str], scores: Sequence[int]) -> dict[str, seqio.metrics.Scalar]:
     """Computes perplexity metric.
 
     Reference: https://github.com/google/seqio#score-metrics
@@ -101,7 +102,7 @@ def strip_accents(
 
     assert normalization_form in ("NFD", "NFKD")
 
-    def example_fn(example: Dict[str, str]) -> Dict[str, str]:
+    def example_fn(example: dict[str, str]) -> dict[str, str]:
         for field in fields:
             normalized_utf8 = tf_text.normalize_utf8(
                 example[field], normalization_form=normalization_form
@@ -178,8 +179,8 @@ def add_token_type_ids(
         input_key = [input_key]
 
     def example_fn(
-        example: Dict[str, Union[tf.Tensor, tf.RaggedTensor]]
-    ) -> Dict[str, Union[tf.Tensor, tf.RaggedTensor]]:
+        example: dict[str, Union[tf.Tensor, tf.RaggedTensor]]
+    ) -> dict[str, Union[tf.Tensor, tf.RaggedTensor]]:
         token_type_ids = []
         for i, key in enumerate(input_key):
             t = example[key]
@@ -301,7 +302,7 @@ def pack_strings(
     return padded_packed_strings
 
 
-def unpack_strings(strings_byte_array: Tensor) -> List[str]:
+def unpack_strings(strings_byte_array: Tensor) -> list[str]:
     """Python logic to extract strings from a utf-8 byte array upcast to int32
         and padded with STRINGS_BYTE_ARRAY_PAD_VALUE.
 
@@ -366,7 +367,7 @@ def roberta_normalize(
     if isinstance(input_key, str):
         input_key = [input_key]
 
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         for key in input_key:
             text = example[key]
             if not cased:
@@ -382,7 +383,7 @@ def bert_normalize_mapper(
     cased: bool = True,
     input_key: Union[str, Sequence[str]] = "text",
     reduce_axis: Optional[int] = None,
-) -> Callable[[Dict[str, Union[str, tf.Tensor]]], Dict[str, tf.Tensor]]:
+) -> Callable[[dict[str, Union[str, tf.Tensor]]], dict[str, tf.Tensor]]:
     """Constructs a mapper for `bert_normalize`.
 
     This is kept as a separate function so we can use it in non-tf-dataset mappers,
@@ -401,7 +402,7 @@ def bert_normalize_mapper(
     if isinstance(input_key, str):
         input_key = [input_key]
 
-    def process_example_fn(example: Dict[str, Union[str, tf.Tensor]]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, Union[str, tf.Tensor]]) -> dict[str, tf.Tensor]:
         for key in input_key:
             text = example[key]  # Note: TF uses utf-8 encoding by default.
             # Replace 0x0, 0xFFFD, and non-spacing marks, following original BERT implementation.
@@ -409,7 +410,7 @@ def bert_normalize_mapper(
             # https://github.com/google-research/bert/blob/eedf5716ce1268e56f0a50264a88cafad334ac61/tokenization.py#L291
             # https://github.com/google-research/bert/blob/eedf5716ce1268e56f0a50264a88cafad334ac61/tokenization.py#L226
             # pylint: disable-next=anomalous-backslash-in-string
-            text = tf.strings.regex_replace(text, "[\\0\\x{FFFD}\p{Mn}]+", "")
+            text = tf.strings.regex_replace(text, "[\\0\\x{FFFD}\\p{Mn}]+", "")
             tokens = basic_tokenizer.tokenize(text)
             if reduce_axis is None:
                 tokens = tokens.flat_values
@@ -455,7 +456,7 @@ def bert_normalize(
 def split_sentences(
     input_key: str = "text",
     max_sentences_per_example: Optional[int] = None,
-    passthrough_keys: Optional[List[str]] = None,
+    passthrough_keys: Optional[list[str]] = None,
 ) -> input_tf_data.DatasetToDatasetFn:
     """Splits the input documents into sentences, and appends an empty sentence at document
     boundaries.
@@ -486,7 +487,7 @@ def split_sentences(
         # Return a np.array so tf doesn't flatten into one string.
         return np.array(sentences), len(sentences)
 
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         sentences, shape = tf.py_function(
             sentence_tokenize, [example[input_key]], (tf.string, tf.int32)
         )
@@ -515,7 +516,7 @@ def random_chunking(max_len: int, input_key: str = INPUT_IDS) -> input_tf_data.D
         `input_key` mapping to the randomly-selected chunk of token IDs.
     """
 
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         input_ids = example[input_key]
         size = tf.size(input_ids)
         max_offset = tf.maximum(0, size - max_len)
@@ -541,7 +542,7 @@ def join_string_features(
         features and separator and adds to the example as example[key].
     """
 
-    def example_fn(example: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def example_fn(example: dict[str, Tensor]) -> dict[str, Tensor]:
         example[key] = tf.strings.join(
             [example[feature] for feature in features], separator=separator
         )

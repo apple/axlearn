@@ -3,7 +3,7 @@
 import copy
 import re
 from numbers import Number
-from typing import Any, Dict, Optional, Union, cast
+from typing import Any, Optional, Union, cast
 
 import chex
 import jax.nn
@@ -1087,8 +1087,8 @@ class CompositeLearnerTest(TestCase):
         )
         # Test state_updates match with init state tree structure.
         self.assertEqual(
-            set(key for key, _ in flatten_items(output_collection.state_updates)),
-            set(key for key, _ in flatten_items(state)),
+            {key for key, _ in flatten_items(output_collection.state_updates)},
+            {key for key, _ in flatten_items(state)},
         )
         # Test summary.
         expected_summaries = dict(
@@ -1240,7 +1240,7 @@ class CompositeLearnerTest(TestCase):
                 # Rules to use for checking that the masking is correct.
                 # Maps name of rule -> dictionary of how nodes should be masked under that rule.
                 # E.g., dict(rule_1=dict(layer_1=dict(weight_1=optax.MaskedNode))).
-                rules: Required[Dict[str, Dict[str, Union[optax.MaskedNode, None]]]] = REQUIRED
+                rules: Required[dict[str, dict[str, Union[optax.MaskedNode, None]]]] = REQUIRED
 
             def init(self, model_params: Nested[OptParam]) -> Nested[Tensor]:
                 model_params = cast(dict, model_params)
@@ -1281,7 +1281,7 @@ class CompositeLearnerTest(TestCase):
                 cfg = self.config
                 tree: dict
 
-                rule_dict: Dict[str, Union[optax.MaskedNode, None]] = cfg.rules[rule]
+                rule_dict: dict[str, Union[optax.MaskedNode, None]] = cfg.rules[rule]
 
                 expected = {k: rule_dict[k] for k in tree if k in rule_dict}
                 # Compute actual masked entries.

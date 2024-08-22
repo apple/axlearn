@@ -10,7 +10,8 @@ Terminology:
 
 import dataclasses
 import datetime
-from typing import Dict, Optional, Sequence, Tuple, TypeVar
+from collections.abc import Sequence
+from typing import Optional, TypeVar
 
 ResourceType = str
 
@@ -22,7 +23,7 @@ class JobMetadata:
     user_id: str
     project_id: str
     creation_time: datetime.datetime
-    resources: Dict[ResourceType, int]
+    resources: dict[ResourceType, int]
     priority: int = 5  # 1 - highest, 5 - lowest
     # ID of the job, which can be used externally for tracking purposes.
     # It is not used by the bastion directly.
@@ -44,7 +45,7 @@ class JobSpec:
     cleanup_command: Optional[str]
     # Environment variables. Will be merged into os.environ and applied for both
     # command and cleanup_command.
-    env_vars: Optional[Dict[str, str]]
+    env_vars: Optional[dict[str, str]]
     # Metadata related to a bastion job.
     metadata: JobMetadata
 
@@ -55,14 +56,14 @@ class JobSpec:
 # Use ResourceMap[float] when specifying quotas and ResourceMap[int] when specifying
 # limit/demand/usage.
 _T = TypeVar("_T", int, float)
-ResourceMap = Dict[ResourceType, _T]
+ResourceMap = dict[ResourceType, _T]
 
 # Mapping from project ids to resource quota/limit/usage of the project.
-ProjectResourceMap = Dict[str, ResourceMap]
+ProjectResourceMap = dict[str, ResourceMap]
 
 # A sequence of (job_id, job_metadata) pairs. The higher priority jobs are listed before the
 # lower priority ones.
-JobQueue = Sequence[Tuple[str, JobMetadata]]
+JobQueue = Sequence[tuple[str, JobMetadata]]
 
 # A mapping from project ids to its job queue.
-ProjectJobs = Dict[str, JobQueue]
+ProjectJobs = dict[str, JobQueue]

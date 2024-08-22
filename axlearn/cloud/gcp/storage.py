@@ -6,7 +6,7 @@ import json
 import os
 import random
 import time
-from typing import Any, Callable, List
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from absl import flags, logging
@@ -29,7 +29,7 @@ def get_gs_client() -> storage.Client:
     return _GS_CLIENT
 
 
-def list_blobs(url: str) -> List[str]:
+def list_blobs(url: str) -> list[str]:
     """List files on GS with <url> prefix.
 
     Args:

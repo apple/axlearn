@@ -12,7 +12,7 @@ The Gala models are set up for baselines for various papers:
 
 """
 import itertools
-from typing import Any, Dict, Optional, Union
+from typing import Any, Optional, Union
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
@@ -54,7 +54,7 @@ _BASE_MODEL_HIDDEN_DIM = 768
 
 def get_trainer_kwargs(
     model_size: str, *, vocab_size: int, max_sequence_length: int, flash_attention: bool = False
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     # dict() is more readable here.
     # pylint: disable=use-dict-literal
@@ -152,7 +152,7 @@ def get_trainer_kwargs(
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
 
-    model_kwargs: Dict[str, Any] = trainer_kwargs.pop("model_kwargs")
+    model_kwargs: dict[str, Any] = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
 
     # If a model is smaller than the base model, do not scale.
@@ -250,7 +250,7 @@ def model_config(
 def trainer_configs(
     train_input_source: SourceBuilder,
     eval_input_sources: SourceBuilder,
-) -> Dict[str, TrainerConfigFn]:
+) -> dict[str, TrainerConfigFn]:
     """Returns a mapping from config_name to TrainerConfigFn's.
 
     Args:

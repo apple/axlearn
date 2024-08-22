@@ -3,7 +3,7 @@
 """Tests DeBERTa implementation."""
 # pylint: disable=no-self-use
 from types import SimpleNamespace
-from typing import Optional, Type
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -189,7 +189,7 @@ def build_cfg(
     num_directional_buckets: Optional[int] = None,
     position_biased_input: bool = True,  # When false, position embeddings are not used.
     num_classes: int = 2,  # Only used for sequence classification.
-    stack_cls: Optional[Type[BaseStackedTransformerLayer]] = None,
+    stack_cls: Optional[type[BaseStackedTransformerLayer]] = None,
 ):
     """Build ref and test flat-configs."""
     attention_type = [DisentangledAttentionType.C2P, DisentangledAttentionType.P2C]

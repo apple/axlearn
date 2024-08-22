@@ -3,7 +3,8 @@
 """Utilities for testing GCP tooling."""
 
 import contextlib
-from typing import Any, Dict, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import Any, Optional, Union
 from unittest import mock
 
 from absl import flags
@@ -12,7 +13,7 @@ from axlearn.cloud.gcp import config
 
 
 @contextlib.contextmanager
-def mock_gcp_settings(module_name: Union[str, Sequence[str]], settings: Dict[str, str]):
+def mock_gcp_settings(module_name: Union[str, Sequence[str]], settings: dict[str, str]):
     def gcp_settings(
         key: str,
         *,

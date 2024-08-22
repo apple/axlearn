@@ -4,7 +4,7 @@
 
 import copy
 import tempfile
-from typing import Sequence
+from collections.abc import Sequence
 
 import toml
 from absl.testing import parameterized

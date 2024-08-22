@@ -5,7 +5,8 @@
 import os
 import pathlib
 import subprocess
-from typing import Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 from absl import logging
 
@@ -18,9 +19,9 @@ def build(
     dockerfile: str,
     image: str,
     context: str,
-    args: Optional[Dict[str, str]] = None,
+    args: Optional[dict[str, str]] = None,
     target: Optional[str] = None,
-    labels: Optional[Dict[str, str]] = None,
+    labels: Optional[dict[str, str]] = None,
     platform: Optional[str] = None,
     cache_from: Optional[Sequence[str]] = None,
 ) -> str:

@@ -1,7 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 """FlashAttention layers."""
-from typing import Dict, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -63,9 +64,9 @@ class FlashAttention(GroupedQueryAttention):
         # N - number of attention (query) heads,
         # H - per-head dimension.
         # How to partition flash attention computation, keyed by dims.
-        mha_dim_to_partition_spec: Dict[str, Optional[PartitionSpec]] = {}
+        mha_dim_to_partition_spec: dict[str, Optional[PartitionSpec]] = {}
         # How to partition output values, keyed by dims.
-        output_dim_to_partition_spec: Dict[str, Optional[PartitionSpec]] = {}
+        output_dim_to_partition_spec: dict[str, Optional[PartitionSpec]] = {}
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -109,7 +110,7 @@ class FlashAttention(GroupedQueryAttention):
         k_proj: Tensor,
         v_proj: Tensor,
         attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         cfg = self.config
 
         # Repeats key/value heads dim if necessary.
@@ -213,7 +214,7 @@ class FlashAttention(GroupedQueryAttention):
 
 def default_mha_dim_to_partition_spec(
     mesh_axis_names: Sequence[str],
-) -> Dict[str, Optional[PartitionSpec]]:
+) -> dict[str, Optional[PartitionSpec]]:
     """Builds a default FlashAttention mapping from tensor dims to partition specs for the MHA impl.
 
     Maps attention heads over the default tensor-parallel axis name if present, and
@@ -236,7 +237,7 @@ def default_mha_dim_to_partition_spec(
 
 def default_output_dim_to_partition_spec(
     mesh_axis_names: Sequence[str],
-) -> Dict[str, Optional[PartitionSpec]]:
+) -> dict[str, Optional[PartitionSpec]]:
     """Builds a default mapping from tensor dims to partition specs for the FlashAttention outputs.
 
     Maps attention heads over the default tensor-parallel axis name if present,

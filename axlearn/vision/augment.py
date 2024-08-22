@@ -21,7 +21,8 @@ https://github.com/tensorflow/models/blob/master/official/legacy/image_classific
 """
 # pylint: disable=too-many-lines
 import math
-from typing import Any, List, Optional, Sequence, Text, Tuple, Union
+from collections.abc import Sequence
+from typing import Any, Optional, Union
 
 import tensorflow as tf
 from keras import backend
@@ -732,13 +733,13 @@ def level_to_arg(cutout_const: float, translate_const: float):
 
 
 def parse_policy_info(
-    name: Text,
+    name: str,
     prob: float,
     level: float,
-    replace_value: List[int],
+    replace_value: list[int],
     cutout_const: float,
     translate_const: float,
-) -> Tuple[Any, float, Any]:
+) -> tuple[Any, float, Any]:
     """Return the function that corresponds to `name` and update `level` param."""
     func = NAME_TO_FUNC[name]
     args = level_to_arg(cutout_const, translate_const)[name](level)
@@ -887,10 +888,10 @@ class MixupAndCutmix:
         elif not self.mixup_alpha and self.cutmix_alpha:
             self.switch_prob = 1
 
-    def __call__(self, images: tf.Tensor, labels: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
+    def __call__(self, images: tf.Tensor, labels: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         return self.distort(images, labels)
 
-    def distort(self, images: tf.Tensor, labels: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
+    def distort(self, images: tf.Tensor, labels: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         """Applies Mixup and/or Cutmix to batch of images and transforms labels.
 
         Args:
@@ -923,7 +924,7 @@ class MixupAndCutmix:
 
     def _cutmix(
         self, images: tf.Tensor, labels: tf.Tensor
-    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """Applies cutmix."""
         lam = MixupAndCutmix._sample_from_beta(
             self.cutmix_alpha, self.cutmix_alpha, tf.shape(labels)
@@ -974,7 +975,7 @@ class MixupAndCutmix:
 
     def _mixup(
         self, images: tf.Tensor, labels: tf.Tensor
-    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """Applies mixup."""
         lam = MixupAndCutmix._sample_from_beta(self.mixup_alpha, self.mixup_alpha, tf.shape(labels))
         if images.shape.rank == 4:
@@ -998,7 +999,7 @@ class MixupAndCutmix:
 
     def _update_labels(
         self, images: tf.Tensor, labels: tf.Tensor, lam: tf.Tensor
-    ) -> Tuple[tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor]:
         labels_1 = self._smooth_labels(labels)
         labels_2 = tf.reverse(labels_1, [0])
 

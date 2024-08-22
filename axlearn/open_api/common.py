@@ -9,9 +9,10 @@ import logging
 import os
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple, Type
+from typing import Any, Optional, Protocol
 
 import requests
 from absl import flags
@@ -55,13 +56,9 @@ _openai_decode_parameters = [
 class ClientRateLimitError(ValueError):
     """Exception for client rate limit request."""
 
-    pass
-
 
 class ValidationError(ValueError):
     """Validation failure (e.g. input request format)."""
-
-    pass
 
 
 class BaseClient(Configurable):
@@ -77,7 +74,7 @@ class BaseClient(Configurable):
         # Seconds for timeout requests.
         timeout: int = 120
         # A dict of extra body for requests.
-        extra_body: Optional[Dict[str, Any]] = None
+        extra_body: Optional[dict[str, Any]] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -93,7 +90,7 @@ class BaseClient(Configurable):
         raise NotImplementedError(type(self))
 
     @classmethod
-    def parse_generation(cls, response: Dict[str, Any]) -> Sequence[ChatCompletionMessage]:
+    def parse_generation(cls, response: dict[str, Any]) -> Sequence[ChatCompletionMessage]:
         """Parses generation from response.
 
         Args:
@@ -107,7 +104,7 @@ class BaseClient(Configurable):
     async def async_generate(
         self,
         *,
-        request: Dict[str, Any],
+        request: dict[str, Any],
         **kwargs,
     ) -> str:
         """Generates response asynchronously from the client.
@@ -148,7 +145,7 @@ class Generator(Configurable):
         allow_non_rate_limit_error: bool = True
         # A dict of decoding parameters.
         # By default, max_tokens is 1024 and temperature is 0.0 for greedy decoding.
-        decode_parameters: Dict[str, Any] = _default_decode_parameters
+        decode_parameters: dict[str, Any] = _default_decode_parameters
         # Client for API endpoint.
         client: Required[BaseClient.Config] = REQUIRED
 
@@ -163,9 +160,9 @@ class Generator(Configurable):
         self,
         client: BaseClient,
         *,
-        request: Dict[str, Any],
+        request: dict[str, Any],
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Processes individual request asynchronously using the configured client.
 
         Args:
@@ -220,9 +217,9 @@ class Generator(Configurable):
 
     async def async_generate_from_requests(
         self,
-        gen_requests: Sequence[Dict[str, Any]],
+        gen_requests: Sequence[dict[str, Any]],
         **kwargs,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Generates from OpenAI style requests.
 
         Args:
@@ -251,7 +248,7 @@ class Generator(Configurable):
                 **kwargs,
             )
             tasks.append(task)
-        responses: List[Dict[str, Any]] = []
+        responses: list[dict[str, Any]] = []
         for task_ in tqdm.as_completed(tasks, total=len(tasks), desc="Generating Response"):
             responses.append(await task_)
 
@@ -374,7 +371,7 @@ def parse_decode_parameters(
     decode_parameters_str: Optional[str] = None,
     *,
     model: Optional[str] = None,
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Parses all decode parameters into API supported parameters and request body.
 
 
@@ -410,9 +407,9 @@ def parse_decode_parameters(
 
 
 def repeat_requests(
-    gen_requests: List[Dict[str, Any]],
+    gen_requests: list[dict[str, Any]],
     num_repeats: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Duplicates repuests to generate multiple samples.
 
     Args:
@@ -422,7 +419,7 @@ def repeat_requests(
     Returns:
         A list of OpenAI style requests expanded with num_repeats copies.
     """
-    new_requests: List[Dict[str, Any]] = []
+    new_requests: list[dict[str, Any]] = []
     id_key = "id" if "id" in gen_requests[0] else "deliverable_id"
     for request in gen_requests:
         for i in range(num_repeats):
@@ -435,8 +432,8 @@ def repeat_requests(
 
 
 def flatten_responses(
-    responses: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    responses: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Flattens responses from repeated requests.
 
     Args:
@@ -445,7 +442,7 @@ def flatten_responses(
     Returns:
         A flatten list of OpenAI style requests with responses and candidates.
     """
-    new_responses: List[Dict[str, Any]] = []
+    new_responses: list[dict[str, Any]] = []
     candidate_pool = defaultdict(list)
     id_key = "id" if "id" in responses[0] else "deliverable_id"
     for resp in responses:
@@ -463,7 +460,7 @@ def load_requests(
     file_path: str,
     *,
     max_instances: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Loads JSON prompt objects from a file.
 
     Args:
@@ -474,14 +471,14 @@ def load_requests(
         A list of dictionaries, where each dictionary represents a prompt object
             loaded from the file.
     """
-    gen_requests: List[Dict[str, Any]] = _load_jsonl_file(file_path=file_path)
+    gen_requests: list[dict[str, Any]] = _load_jsonl_file(file_path=file_path)
     if max_instances is not None:
         gen_requests = gen_requests[:max_instances]
     logging.info("Loaded %d prompts.", len(gen_requests))
     return gen_requests
 
 
-def write_responses(responses: Sequence[Dict[str, Any]], *, file_path: str):
+def write_responses(responses: Sequence[dict[str, Any]], *, file_path: str):
     """Writes responses to a JSONL file.
 
     Args:
@@ -498,8 +495,8 @@ def write_responses(responses: Sequence[Dict[str, Any]], *, file_path: str):
 
 
 def parse_responses(
-    client: Type[BaseClient], responses: List[Dict[str, Any]]
-) -> List[Dict[str, Any]]:
+    client: type[BaseClient], responses: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Parses responses from a generator.
 
     Args:
@@ -509,7 +506,7 @@ def parse_responses(
     Returns:
         A list of parsed generations.
     """
-    parsed_responses: List[Dict[str, Any]] = []
+    parsed_responses: list[dict[str, Any]] = []
     for response in responses:
         response = copy.deepcopy(response)
         try:
@@ -545,10 +542,10 @@ class MetricFn(Protocol):
     def __call__(
         self,
         *,
-        responses: List[Dict[str, Any]],
-        generators: Dict[EvalGeneratorType, Generator],
+        responses: list[dict[str, Any]],
+        generators: dict[EvalGeneratorType, Generator],
         debug: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Implements a protocol to compute metrics from responses.
 
         Args:
@@ -569,7 +566,7 @@ class Evaluator(Configurable):
         """Configures Evaluator."""
 
         # A dict of generators including RESPONSE, GRADER type.
-        generators: Required[Dict[EvalGeneratorType, Generator.Config]] = REQUIRED
+        generators: Required[dict[EvalGeneratorType, Generator.Config]] = REQUIRED
         # True to add debug information in metrics.
         debug: bool = False
 
@@ -589,7 +586,7 @@ class Evaluator(Configurable):
         input_file: str,
         output_file: str,
         metric_fn: MetricFn,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Evaluates from generated response from an input file
             and writes out metrics to an output file.
 
@@ -630,7 +627,7 @@ class Evaluator(Configurable):
         flags.DEFINE_string("metric_name", None, "The name of metric.", **common_kwargs)
 
 
-def _write_metrics(metrics: Dict[str, Any], *, file_path: str):
+def _write_metrics(metrics: dict[str, Any], *, file_path: str):
     """Writes to a json file with computed metrics.
 
     Args:
@@ -643,7 +640,7 @@ def _write_metrics(metrics: Dict[str, Any], *, file_path: str):
         json.dump(metrics, file, indent=2)
 
 
-def _load_jsonl_file(file_path: str) -> List[Dict[str, Any]]:
+def _load_jsonl_file(file_path: str) -> list[dict[str, Any]]:
     """Loads a file with each line in json line.
 
     Args:
@@ -654,7 +651,7 @@ def _load_jsonl_file(file_path: str) -> List[Dict[str, Any]]:
     """
     logging.info("Loading file [%s]", file_path)
     responses = []
-    with open(file_path, "r", encoding="utf-8") as file:
+    with open(file_path, encoding="utf-8") as file:
         for line in file.readlines():
             response = json.loads(line)
             responses.append(response)

@@ -13,7 +13,8 @@ Adapted from: https://github.com/google-research/t5x/blob/main/t5x/decoding_test
 # pylint: disable=no-self-use,too-many-lines,protected-access
 import logging
 import os
-from typing import Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -129,7 +130,7 @@ class DecodeTest(parameterized.TestCase):
 
         def tokens_to_scores(
             token_indices: Tensor, state_cache: NestedTensor
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             cur_iter = state_cache["cur_iter"]
             # grab edge potentials for the current timestep
             cur_edge_potentials = jnp.take_along_axis(
@@ -387,7 +388,7 @@ class DecodeTest(parameterized.TestCase):
 
         def tokens_to_scores(
             token_indices: Tensor, state_cache: NestedTensor
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             cur_iter = state_cache["cur_iter"]
             # grab edge potentials for the current timestep
             cur_edge_potentials = jnp.take_along_axis(
@@ -858,7 +859,7 @@ class DecodeTest(parameterized.TestCase):
         # Create a dummy mapping from prefix -> logits.
         dummy_emb = jax.random.uniform(jax.random.PRNGKey(123), [decode_length, vocab_size]) * -1
 
-        def tokens_to_scores(tokens: Tensor, cache: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+        def tokens_to_scores(tokens: Tensor, cache: NestedTensor) -> tuple[Tensor, NestedTensor]:
             # [batch, vocab]
             logits = jnp.einsum("ij,jk->ik", tokens + 1, dummy_emb)
             logits = logits.at[:, 0].set(NEG_INF)  # Don't emit padding.
@@ -1151,7 +1152,7 @@ class DecodeTest(parameterized.TestCase):
 
         def tokens_to_scores(
             token_indices: Tensor, state_cache: NestedTensor
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             # Emit cur_iter + 1 unless decode index == cur_iter, in which case emit EOS.
             cur_iter = state_cache["cur_iter"]
             prompt_length = state_cache["prompt_length"]
@@ -1308,7 +1309,7 @@ class DecodeTest(parameterized.TestCase):
 
         def tokens_to_scores(
             token_indices: Tensor, state_cache: NestedTensor
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             cur_iter = state_cache["cur_iter"]
             prompt_length = state_cache["prompt_length"]
 
@@ -1485,7 +1486,7 @@ class DecodeTest(parameterized.TestCase):
 
         def tokens_to_scores(
             token_indices: Tensor, state_cache: NestedTensor  # pylint: disable=unused-argument
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             # [batch_size * num_decodes, 1].
             cur_iter = state_cache["cur_iter"]
             prompt_length = state_cache["prompt_length"]

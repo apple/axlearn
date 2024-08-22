@@ -60,7 +60,8 @@ import linecache
 import sys
 import traceback
 import types
-from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Type
+from collections.abc import Iterator
+from typing import Any, Callable, Optional
 
 import jax._src.traceback_util
 from absl import logging
@@ -284,7 +285,7 @@ def _is_annotation_frame(frame: types.FrameType) -> bool:
     return frame.f_code is code
 
 
-def _walk_annotated_tb(tb: types.TracebackType) -> Iterator[Tuple[types.FrameType, Dict[str, Any]]]:
+def _walk_annotated_tb(tb: types.TracebackType) -> Iterator[tuple[types.FrameType, dict[str, Any]]]:
     """Similar to `traceback.walk_tb`, except that annotation frames are elided
     and the iterator returns a tuple of (frame, aux) instead of (frame, lineno).
 
@@ -325,7 +326,7 @@ def _walk_annotated_tb(tb: types.TracebackType) -> Iterator[Tuple[types.FrameTyp
 # We have the `type` argument shadow the builtin name because that is what Python's excepthook does.
 def _excepthook(
     # pylint: disable=redefined-builtin,redefined-outer-name
-    type: Type[BaseException],
+    type: type[BaseException],
     value: BaseException,
     traceback: types.TracebackType,
     old_excepthook: Optional[Callable] = sys.excepthook,

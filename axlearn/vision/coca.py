@@ -6,7 +6,7 @@
 Ref: https://arxiv.org/pdf/2205.01917.pdf
 """
 
-from typing import Dict, Optional, Tuple, Union
+from typing import Optional, Union
 
 import jax.numpy as jnp
 
@@ -188,7 +188,7 @@ class CoCaTextStreamEncoder(StreamEncoder):
         *,
         time_step: Tensor,
         input_ids: Tensor,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         states, encoder_output = self.text_encoder.prefill_states(
             time_step=time_step,
             input_ids=input_ids,
@@ -201,7 +201,7 @@ class CoCaTextStreamEncoder(StreamEncoder):
         *,
         cached_states: NestedTensor,
         input_ids: Tensor,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         updated_state, encoder_output = self.text_encoder.extend_step(
             cached_states=cached_states,
             input_ids=input_ids,
@@ -357,8 +357,8 @@ def set_coca_vision_encoder_config(
     num_heads: int,
     contrastive_output_dim: int,  # The projection dim for the shared image-text space.
     feed_forward_dim: Union[int, FunctionConfigBase] = scaled_hidden_dim(scale=4),
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
     dropout_rate: float = 0.1,
     contrastive_pooler_config: BasePoolingLayer.Config = AttentionPooling.default_config(),
     caption_pooler_config: BasePoolingLayer.Config = AttentionPooling.default_config(),
@@ -549,7 +549,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         lm_head_cfg.norm.set(input_dim=cfg.dim)
         self._add_child("lm_head", lm_head_cfg)
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         """Forward function of CoCa captioning task.
 
         Args:
@@ -674,7 +674,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         input_features: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         cfg = self.config
         transformer_state, transformer_data = self.transformer.prefill_states(
             time_step=time_step,
@@ -698,7 +698,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         input_features: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         cfg = self.config
         if not cfg.use_cross_attention:
             cross_attention_data = None
@@ -887,7 +887,7 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
         input_ids: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         """See `DecodingMixin.prefill_states`."""
         textual_encoder_state, textual_encoder_output = self._stream_encoder[
             "textual_encoder"
@@ -919,7 +919,7 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
         input_ids: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         """See `DecodingMixin.extend_step`."""
         # This structure is shared with Decoder, but is necessary to repeat in extend_step.
         time_step = cached_states["time_step"]
@@ -1021,9 +1021,9 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
 def set_coca_config(
     *,
     contrastive_output_dim,
-    text_encoder_cfg: Dict,
-    vision_encoder_cfg: Dict,
-    captioning_cfg: Dict,
+    text_encoder_cfg: dict,
+    vision_encoder_cfg: dict,
+    captioning_cfg: dict,
     pad_token_id: Optional[int] = None,
     eos_token_id: Optional[int] = None,
 ):

@@ -2,7 +2,7 @@
 
 """An inference pipeline consists of an input, a runner, and an output writer."""
 import time
-from typing import Optional, Tuple
+from typing import Optional
 
 import jax
 import numpy as np
@@ -20,7 +20,7 @@ from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.utils import NestedTensor, Tensor
 
 
-def pop_string_tensors(batch: NestedTensor) -> Tuple[NestedTensor, NestedTensor]:
+def pop_string_tensors(batch: NestedTensor) -> tuple[NestedTensor, NestedTensor]:
     """Remove string tensors from a batch, returning (batch w/o string tensors, string tensors).
 
     Args:

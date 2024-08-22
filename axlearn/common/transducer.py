@@ -34,7 +34,6 @@ where
 * log_prob_y = log_prob_vocab[:T + 1, :U, y], where y = A/B, for u = 0/1, respectively.
 """
 
-from typing import Dict, Tuple
 
 import jax
 from chex import dataclass
@@ -194,7 +193,7 @@ class Transducer(BaseLayer):
         lm_data: Tensor,
         lm_paddings: Tensor,
         target_labels: Tensor,
-    ) -> Tuple[Tensor, Dict[str, Tensor]]:
+    ) -> tuple[Tensor, dict[str, Tensor]]:
         """Computes the transducer loss (for training and evaluation).
 
         Args:
@@ -248,7 +247,7 @@ class Transducer(BaseLayer):
             # Yet another possibility is to use a chunk-wise loop to reduce number of iterations
             # in the map loop. We may consider this if this loop turns out to be the bottleneck
             # of transducer training.
-            def map_fn(am_t: Seq) -> Tuple[Tensor, Tensor]:
+            def map_fn(am_t: Seq) -> tuple[Tensor, Tensor]:
                 # [1, ...].
                 am_t = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, 0), am_t)
                 # [1, lm_max_len, ...].
@@ -540,8 +539,8 @@ def _log_prob_alignments_fwd(log_prob_blank: Tensor, log_prob_y: Tensor):
 
 
 def _log_prob_alignments_bwd(
-    res: Tuple[Tensor, Tensor, Tensor], g: Tensor
-) -> Tuple[Tensor, Tensor]:
+    res: tuple[Tensor, Tensor, Tensor], g: Tensor
+) -> tuple[Tensor, Tensor]:
     """The backward part of custom_vjp of log_prob_alignments.
 
     Args:
@@ -575,7 +574,7 @@ log_prob_alignments.defvjp(_log_prob_alignments_fwd, _log_prob_alignments_bwd)
 
 def apply_paddings(
     log_prob_blank: Tensor, log_prob_y: Tensor, am_paddings: Tensor, lm_paddings: Tensor
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """Applies paddings to log_prob_{blank, y}.
 
     Since sequences in a batch may have different lengths, we pad them to fixed sizes, e.g.,

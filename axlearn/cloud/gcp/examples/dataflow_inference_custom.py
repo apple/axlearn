@@ -50,7 +50,8 @@ $ axlearn gcp dataflow start \
 
 import copy
 import logging
-from typing import Any, Dict, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 # pylint: disable=import-error
 import apache_beam as beam  # pytype: disable=import-error
@@ -72,7 +73,7 @@ from axlearn.common.utils import NestedTensor
 # pylint: enable=import-error
 
 
-class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
+class CustomModelHandler(ModelHandler[dict, PredictionResult, Any]):
     """Defines how to load a custom checkpoint and run inference.
 
     The RunInference transform natively supports TF, PyTorch, HF pre-trained models.
@@ -84,11 +85,11 @@ class CustomModelHandler(ModelHandler[Dict, PredictionResult, Any]):
     """
 
     # pylint: disable-next=super-init-not-called
-    def __init__(self, flag_dict: Dict):
+    def __init__(self, flag_dict: dict):
         # Store absl FLAGS in a flag dictionary to avoid pickling issues
         self._flag_dict = flag_dict
 
-    def _flag_values_from_dict(self, flag_values: Dict) -> flags.FlagValues:
+    def _flag_values_from_dict(self, flag_values: dict) -> flags.FlagValues:
         # Avoid mutating global FLAGS.
         fv = copy.deepcopy(flags.FLAGS)
         for k, v in flag_values.items():

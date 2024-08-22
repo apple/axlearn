@@ -6,7 +6,8 @@ Reference: https://arxiv.org/abs/1911.09070
 """
 import contextlib
 import enum
-from typing import Dict, Iterable, Optional
+from collections.abc import Iterable
+from typing import Optional
 
 import numpy as np
 
@@ -142,7 +143,7 @@ class PredictionHead(BaseLayer):
                 ),
             )
 
-    def forward(self, inputs: Dict[int, Tensor]) -> Dict[int, Tensor]:
+    def forward(self, inputs: dict[int, Tensor]) -> dict[int, Tensor]:
         """Computes class scores or class features (if cfg.head_conv is None).
 
         Args:
@@ -236,7 +237,7 @@ class BoxClassHead(BaseLayer):
             ),
         )
 
-    def forward(self, inputs: Dict[int, Tensor]) -> Dict[str, Dict[int, Tensor]]:
+    def forward(self, inputs: dict[int, Tensor]) -> dict[str, dict[int, Tensor]]:
         """Computes class scores and box regression scores.
 
         Args:

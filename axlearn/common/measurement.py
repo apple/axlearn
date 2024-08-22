@@ -4,7 +4,7 @@
 
 import enum
 import importlib
-from typing import Dict, Optional, Type, TypeVar
+from typing import Optional, TypeVar
 
 from absl import flags, logging
 
@@ -48,7 +48,7 @@ class Recorder(Configurable):
         raise NotImplementedError(type(self))
 
 
-_recorders: Dict[str, Type] = {}
+_recorders: dict[str, type] = {}
 _T = TypeVar("_T")
 
 

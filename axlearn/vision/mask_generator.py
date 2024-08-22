@@ -12,7 +12,7 @@ Code reference: https://github.com/microsoft/unilm/blob/master/beit2/masking_gen
 """
 import math
 import random
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 
@@ -30,7 +30,7 @@ class MaskingGenerator:
     def __init__(
         self,
         *,
-        input_size: Tuple[int, int],
+        input_size: tuple[int, int],
         num_masking_patches: int,
         num_attempts: int = 10,
         min_mask_patches: int = 16,
@@ -83,7 +83,7 @@ class MaskingGenerator:
         )
         return repr_str
 
-    def get_shape(self) -> Tuple[int, ...]:
+    def get_shape(self) -> tuple[int, ...]:
         return self.height, self.width
 
     def _mask(self, mask, max_mask_patches) -> int:

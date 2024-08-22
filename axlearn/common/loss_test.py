@@ -18,7 +18,8 @@
 # pylint: disable=too-many-lines
 import math
 import re
-from typing import Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 import chex
 import jax

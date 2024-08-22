@@ -7,7 +7,6 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """RoI generator e.g. as seen in RCNN."""
-from typing import Dict
 
 import jax
 import jax.numpy as jnp
@@ -53,11 +52,11 @@ class RoIGenerator(BaseLayer):
 
     def forward(
         self,
-        raw_boxes: Dict[int, Tensor],
-        raw_scores: Dict[int, Tensor],
-        anchor_boxes: Dict[str, Tensor],
+        raw_boxes: dict[int, Tensor],
+        raw_scores: dict[int, Tensor],
+        anchor_boxes: dict[str, Tensor],
         image_shape: Tensor,
-    ) -> Dict[str, Tensor]:
+    ) -> dict[str, Tensor]:
         """Generates final proposals.
 
         Args:

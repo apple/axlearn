@@ -27,7 +27,7 @@ https://github.com/google/flax/blob/ce98f350c22599b31cce1b787f5ed2d5510f0706/exa
 https://github.com/google-research/vision_transformer/blob/ac6e056f9da686895f9f0f6ac026d3b5a464e59e/vit_jax/input_pipeline.py#L195-L241
 https://github.com/tensorflow/models/blob/5a0305c41304e8136e2056c589ab490a807dffa0/official/legacy/image_classification/augment.py
 """
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 import numpy as np
 import tensorflow as tf
@@ -60,8 +60,8 @@ def filter_invalid_images(ds: tf.data.Dataset) -> tf.data.Dataset:
 def whiten(
     image: np.ndarray,
     *,
-    mean_rgb: Optional[List[float]] = None,
-    stddev_rgb: Optional[List[float]] = None,
+    mean_rgb: Optional[list[float]] = None,
+    stddev_rgb: Optional[list[float]] = None,
 ) -> tf.Tensor:
     image = tf.cast(tf.convert_to_tensor(image), tf.float32)
     image -= tf.constant(mean_rgb or MEAN_RGB, shape=[1, 1, 3], dtype=image.dtype)
@@ -72,8 +72,8 @@ def whiten(
 def de_whiten(
     image: np.ndarray,
     *,
-    mean_rgb: Optional[List[float]] = None,
-    stddev_rgb: Optional[List[float]] = None,
+    mean_rgb: Optional[list[float]] = None,
+    stddev_rgb: Optional[list[float]] = None,
 ) -> tf.Tensor:
     """De-whitens given whitened image.
 
@@ -94,8 +94,8 @@ def de_whiten(
 
 def random_crop(
     image: tf.Tensor,
-    aspect_ratio_range: Tuple[float, float] = (0.75, 1.33),
-    area_range: Tuple[float, float] = (0.08, 1.0),
+    aspect_ratio_range: tuple[float, float] = (0.75, 1.33),
+    area_range: tuple[float, float] = (0.08, 1.0),
     max_attempts: int = 100,
 ):
     """Generates a randomly cropped image.
@@ -173,7 +173,7 @@ def randaugment(
     magnitude: float = 10.0,
     cutout_const: float = 40.0,
     translate_const: float = 100.0,
-    exclude_ops: Optional[List[str]] = None,
+    exclude_ops: Optional[list[str]] = None,
 ):
     """Applies RandAugment from https://arxiv.org/abs/1909.13719.
 
@@ -255,12 +255,12 @@ def crop_augment_whiten(
     image: Tensor,
     *,
     is_training: bool,
-    image_size: Tuple[int, int],
-    eval_resize: Optional[Tuple[int, int]] = None,
+    image_size: tuple[int, int],
+    eval_resize: Optional[tuple[int, int]] = None,
     augment_name: Optional[str] = None,
     randaug_num_layers: int = 2,
     randaug_magnitude: int = 10,
-    randaug_exclude_ops: Optional[List[str]] = None,
+    randaug_exclude_ops: Optional[list[str]] = None,
     erasing_probability: Optional[float] = None,
     use_whitening: bool = True,
 ):
@@ -311,20 +311,20 @@ def crop_augment_whiten(
 
 def _process_example(
     is_training: bool,
-    image_size: Tuple[int, int],
-    eval_resize: Optional[Tuple[int, int]] = None,
+    image_size: tuple[int, int],
+    eval_resize: Optional[tuple[int, int]] = None,
     num_parallel_calls: Optional[int] = None,
     augment_name: Optional[str] = None,
     randaug_num_layers: int = 2,
     randaug_magnitude: int = 10,
-    randaug_exclude_ops: Optional[List[str]] = None,
+    randaug_exclude_ops: Optional[list[str]] = None,
     erasing_probability: Optional[float] = None,
     use_whitening: bool = True,
     mask_window_size: Optional[int] = None,
     num_masking_patches: Optional[int] = None,
     input_key: str = "image",
 ):
-    def example_fn(example: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def example_fn(example: dict[str, Tensor]) -> dict[str, Tensor]:
         image = example[input_key]
         image = crop_augment_whiten(
             image,
@@ -410,7 +410,7 @@ def fake_image_dataset(
 ) -> input_tf_data.BuildDatasetFn:
     del is_training
 
-    def example_fn(_) -> Dict[str, Tensor]:
+    def example_fn(_) -> dict[str, Tensor]:
         rng = np.random.RandomState(0)
         image = rng.randint(
             low=0,

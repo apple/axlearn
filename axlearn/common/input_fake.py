@@ -2,7 +2,8 @@
 
 """Fake input modules."""
 import json
-from typing import Any, Dict, Iterable, Optional, Sequence, Tuple, Union
+from collections.abc import Iterable, Sequence
+from typing import Any, Optional, Union
 
 import jax
 import numpy as np
@@ -219,9 +220,9 @@ class FakeExtractiveQuestionAnsweringInput(FakeTextInput):
 
 def fake_source(
     is_training: bool,
-    examples: Sequence[Dict[str, tf.Tensor]],
+    examples: Sequence[dict[str, tf.Tensor]],
     repeat: int = 1,
-    spec: Optional[Dict[str, tf.TypeSpec]] = None,
+    spec: Optional[dict[str, tf.TypeSpec]] = None,
     shuffle_buffer_size: Optional[int] = None,
 ) -> BuildDatasetFn:
     if len(examples) == 0:
@@ -229,8 +230,7 @@ def fake_source(
 
     def data_gen():
         for _ in range(repeat):
-            for e in examples:
-                yield e
+            yield from examples
 
     def fn() -> tf.data.Dataset:
         ds = tf.data.Dataset.from_generator(
@@ -270,7 +270,7 @@ def fake_text_source(
     )
 
 
-def fake_serialized_json_source(examples: Sequence[Dict[str, Any]]) -> BuildDatasetFn:
+def fake_serialized_json_source(examples: Sequence[dict[str, Any]]) -> BuildDatasetFn:
     """Returns a BuildDatasetFn that returns a dataset of jsonlines of examples.
 
     Args:
@@ -316,13 +316,13 @@ def fake_text2text_source(
 
 def fake_glue_source(
     *,
-    input_key: Union[str, Tuple[str, str]],
+    input_key: Union[str, tuple[str, str]],
     label_key: str,
     is_training: bool,
     label_value: Union[int, Sequence[int]] = 0,
     num_examples: Optional[int] = None,
     shuffle_buffer_size: Optional[int] = None,
-    spec: Optional[Dict[str, tf.TypeSpec]] = None,
+    spec: Optional[dict[str, tf.TypeSpec]] = None,
 ) -> BuildDatasetFn:
     if isinstance(input_key, str):
         input_key = [input_key]

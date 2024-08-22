@@ -8,7 +8,7 @@
 
 """Classification metrics."""
 
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -60,7 +60,7 @@ def precision_recall_f_score(
     beta: float = 1.0,
     eps: float = 1e-8,
     weight: Optional[Tensor] = None,
-) -> Dict[str, WeightedScalar]:
+) -> dict[str, WeightedScalar]:
     """Computes precision, recall, and F-beta score for binary classification.
 
     References:
@@ -120,7 +120,7 @@ def binary_clf_curve(
     y_score: Tensor,
     *,
     weight: Optional[Tensor] = None,
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """Calculate true and false positives per binary classification threshold.
 
     Please remember to assign padding samples weight 0 so that it will be ignored
@@ -181,7 +181,7 @@ def binary_clf_curve(
 
 def precision_recall_curve(
     y_true: Tensor, y_score: Tensor, *, weight: Optional[Tensor] = None
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """Compute precision-recall pairs for different probability thresholds.
 
     y_scores with weight 0 will be masked as inf and ignored during calculation.
@@ -235,7 +235,7 @@ def binary_classification_roc_auc_score(
     y_true: Tensor,
     y_score: Tensor,
     sample_weight: Optional[Tensor] = None,
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """Computes Area Under the Receiver Operating Characteristic Curve (ROC AUC) for binary
     classification model.
 
@@ -297,7 +297,7 @@ def roc_curve(
     y_true: Tensor,
     y_score: Tensor,
     sample_weight: Optional[Tensor] = None,
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """Computes Receiver Operating Characteristic (ROC).
 
     References:

@@ -13,7 +13,7 @@ References:
 https://arxiv.org/pdf/2111.02358.pdf
 https://github.com/microsoft/unilm/tree/master/vlmo
 """
-from typing import Dict, Optional, Set, Tuple
+from typing import Optional
 
 import numpy as np
 from jax import numpy as jnp
@@ -93,8 +93,8 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
-        return_aux: Optional[Set[str]] = None,
-    ) -> Tuple[Optional[NestedTensor], Tensor]:
+        return_aux: Optional[set[str]] = None,
+    ) -> tuple[Optional[NestedTensor], Tensor]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
         Args:
@@ -219,7 +219,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         data: Tensor,
         feed_forward_index: int = 0,
         **kwargs,
-    ) -> Tuple[NestedTensor, Output]:
+    ) -> tuple[NestedTensor, Output]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(self_attention=time_step),
@@ -236,7 +236,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         *,
         feed_forward_index: int = 0,
         **kwargs,
-    ) -> Tuple[NestedTensor, Output]:
+    ) -> tuple[NestedTensor, Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             cached_states=cached_states,
@@ -304,7 +304,7 @@ class MultiModalEncoder(BaseLayer):
         # pylint: enable=no-member
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         param_specs = {}
         if cfg.num_cls_tokens:
@@ -377,8 +377,8 @@ class MultiModalEncoder(BaseLayer):
         return x
 
     def forward(
-        self, inputs: Dict[int, Tensor], is_masked: Optional[Tensor] = None
-    ) -> Dict[int, Tensor]:
+        self, inputs: dict[int, Tensor], is_masked: Optional[Tensor] = None
+    ) -> dict[int, Tensor]:
         """Compute prediction on the multimodal inputs.
 
         Args:
@@ -435,9 +435,9 @@ def _set_model_config(
     text_vocab_size: int,
     max_text_len: int,
     feed_forward_dim: Optional[int] = None,
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
-    stride: Optional[Tuple[int, int]] = None,
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
+    stride: Optional[tuple[int, int]] = None,
     num_cls_tokens: int = 1,
     dtype: jnp.dtype = jnp.float32,
     dropout_rate: float = 0.0,

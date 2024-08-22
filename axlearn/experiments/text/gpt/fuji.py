@@ -13,7 +13,7 @@ The fuji models are set up to imitate LLaMA models:
 import enum
 import functools
 import itertools
-from typing import Any, Callable, Dict, Literal, Optional, Union
+from typing import Any, Callable, Literal, Optional, Union
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
@@ -102,7 +102,7 @@ def get_trainer_kwargs(
     vocab_size: int,
     version: Version,
     flash_attention: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 4 * (1024**2)  # 4M tokens.
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
@@ -295,7 +295,7 @@ def model_config(
 
 def trainer_configs(
     train_input_source: SourceBuilder, eval_input_sources: SourceBuilder
-) -> Dict[str, TrainerConfigFn]:
+) -> dict[str, TrainerConfigFn]:
     """Returns a mapping from config_name to TrainerConfigFn's.
 
     Args:

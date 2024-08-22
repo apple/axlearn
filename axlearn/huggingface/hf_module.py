@@ -4,8 +4,9 @@
 import json
 import os
 from abc import ABC
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Optional
 
 import jax.numpy as jnp
 import jax.random
@@ -91,7 +92,7 @@ class HfModuleWrapper(BaseModel, ABC):
 
         dtype: Required[jnp.dtype] = REQUIRED
         # Type of HF pretrained model.
-        hf_model_type: Required[Type[FlaxPreTrainedModel]] = REQUIRED
+        hf_model_type: Required[type[FlaxPreTrainedModel]] = REQUIRED
         # A local or remote path to the Hugging Face model directory.
         # Schemes must be supported by tf.io.
         pretrained_model_path: Optional[str] = None
@@ -177,7 +178,7 @@ class HfModuleWrapper(BaseModel, ABC):
             params[HF_MODULE_KEY] = hf_module_params
         return params
 
-    def _dummy_input_kwargs(self) -> Dict[str, Optional[Tensor]]:  # pylint: disable=no-self-use
+    def _dummy_input_kwargs(self) -> dict[str, Optional[Tensor]]:  # pylint: disable=no-self-use
         """Returns a dictionary of kwargs to pass to linen.Module.init."""
         return dict(
             # The first dim is batch size.
@@ -187,7 +188,7 @@ class HfModuleWrapper(BaseModel, ABC):
             position_ids=jnp.zeros([1, 8], dtype=jnp.int32),
         )
 
-    def create_dummy_input_fn(self) -> Callable[[], Tuple[Sequence, Dict]]:
+    def create_dummy_input_fn(self) -> Callable[[], tuple[Sequence, dict]]:
         """Returns a function that returns (args, kwargs) for linen.Module.init."""
 
         def create_dummy_input():
@@ -195,7 +196,7 @@ class HfModuleWrapper(BaseModel, ABC):
 
         return create_dummy_input
 
-    def _forward_kwargs(self, input_batch: Dict[str, Tensor]) -> Dict[str, Any]:
+    def _forward_kwargs(self, input_batch: dict[str, Tensor]) -> dict[str, Any]:
         """Returns a dictionary of kwargs for HF module's forward __call__.
 
         Args:
@@ -227,7 +228,7 @@ class HfModuleWrapper(BaseModel, ABC):
             rngs={"params": self.prng_key, "dropout": dropout_subkey},
         )
 
-    def predict(self, input_batch: Dict[str, Tensor]) -> NestedTensor:
+    def predict(self, input_batch: dict[str, Tensor]) -> NestedTensor:
         """Runs model prediction with the given inputs.
 
         Args:

@@ -2,7 +2,7 @@
 
 """Dual encoder text metrics."""
 # pylint: disable=pointless-string-statement, duplicate-code
-from typing import Dict, List, Optional
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -46,9 +46,11 @@ def dummy_data_generator(
             },
             RIGHT_ENCODER_NAME: {
                 POSITIVE_PADDINGS: text_positive_paddings[start:end],
-                NEGATIVE_PADDINGS: text_negative_paddings[start:end]
-                if text_negative_paddings is not None
-                else None,
+                NEGATIVE_PADDINGS: (
+                    text_negative_paddings[start:end]
+                    if text_negative_paddings is not None
+                    else None
+                ),
             },
             "predicted": {
                 LEFT_ENCODER_NAME: {
@@ -56,9 +58,11 @@ def dummy_data_generator(
                 },
                 RIGHT_ENCODER_NAME: {
                     POSITIVE_EMBEDDINGS: text_positive_embeddings[start:end],
-                    NEGATIVE_EMBEDDINGS: text_negative_embeddings[start:end]
-                    if text_negative_embeddings is not None
-                    else None,
+                    NEGATIVE_EMBEDDINGS: (
+                        text_negative_embeddings[start:end]
+                        if text_negative_embeddings is not None
+                        else None
+                    ),
                 },
             },
         }
@@ -67,9 +71,9 @@ def dummy_data_generator(
 def _compute_metrics(
     *,
     data_generator,
-    top_ks_for_accuracy: List[int],
-    top_ks_for_ndcg: Optional[List[int]] = None,
-) -> Dict:
+    top_ks_for_accuracy: list[int],
+    top_ks_for_ndcg: Optional[list[int]] = None,
+) -> dict:
     """Mock function that calls forward() function of TextDualEncoderMetricCalculator and
         calculates evaluation metrics.
 
