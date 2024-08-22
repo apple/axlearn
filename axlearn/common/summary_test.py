@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for summary.py"""
+
 import dataclasses
 import functools
 import os
@@ -21,12 +22,12 @@ from axlearn.common.config import config_for_function
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
-from axlearn.common.summary import CallbackSummary, ImageSummary
+from axlearn.common.summary import AudioSummary, CallbackSummary, ImageSummary
 from axlearn.common.summary_writer import SummaryWriter, WandBWriter
 from axlearn.common.test_utils import TestCase
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_test import DummyInput
-from axlearn.common.utils import flatten_items, tree_paths
+from axlearn.common.utils import Tensor, flatten_items, tree_paths
 
 
 class SummaryTest(TestCase):
@@ -79,15 +80,19 @@ class SummaryTest(TestCase):
         self.assertSequenceEqual(flatten_items(s), [("a/_value", img), ("b/_value", img)])
 
     def test_end_to_end(self):
-        """Tests that `ImageSummary` works with `SpmdTrainer` and `SpmdEvaler` in an end-to-end
-        fashion.
+        """Tests that `ImageSummary` and `AudioSummary` works with `SpmdTrainer` and
+        `SpmdEvaler` in an end-to-end fashion.
         """
         img = jnp.broadcast_to(jnp.array([0.0, 0.5, 1.0]), shape=(1, 1, 3))
         img = jnp.array([img, img])
+        audio1 = jax.random.uniform(jax.random.PRNGKey(124), [16000 * 5]) * 2.0 - 1.0
+        audio2 = jax.random.uniform(jax.random.PRNGKey(125), [8000 * 5, 3]) * 2.0 - 1.0
 
         class ImageSummaryModel(trainer_test.DummyModel):
             def forward(self, *args, **kwargs):
                 self.add_summary("img", ImageSummary(img))
+                self.add_summary("audio1", AudioSummary(audio1))
+                self.add_summary("audio2", AudioSummary(audio2, sample_rate=8000))
                 return super().forward(*args, **kwargs)
 
         cfg: SpmdTrainer.Config = SpmdTrainer.default_config().set(name="test_trainer")
@@ -155,6 +160,81 @@ class SummaryTest(TestCase):
                 self.assertEqual(logged_evaler_img.shape, info.shape())
                 # TB uses lossy compression.
                 self.assertNestedAllClose(logged_evaler_img / 255, info.img(), rtol=0.01, atol=0)
+
+            @dataclasses.dataclass
+            class ExpectedAudio:
+                """Information about expected logged audio summaries."""
+
+                path: str
+                count: int
+                key: str
+                sr: int
+                audio: Tensor
+
+                def shape(self):
+                    # The trainer / evaler makes `count` calls to forward().
+                    # Each call to forward logs a batch of audios.
+                    return [self.count] + list(self.audio.shape)
+
+                def audios(self):
+                    return jnp.broadcast_to(self.audio, self.shape())
+
+                def sample_rate(self):
+                    return jnp.broadcast_to(self.sr, (self.count,))
+
+            expected = [
+                ExpectedAudio(
+                    path=os.path.join(cfg.dir, "summaries", "eval_dummy"),
+                    count=4,
+                    key="audio1",
+                    audio=audio1[:, None],
+                    sr=16000,
+                ),
+                ExpectedAudio(
+                    path=os.path.join(cfg.dir, "summaries", "train_train"),
+                    count=8,
+                    key="model/audio1",
+                    audio=audio1[:, None],
+                    sr=16000,
+                ),
+                ExpectedAudio(
+                    path=os.path.join(cfg.dir, "summaries", "eval_dummy"),
+                    count=4,
+                    key="audio2",
+                    audio=audio2,
+                    sr=8000,
+                ),
+                ExpectedAudio(
+                    path=os.path.join(cfg.dir, "summaries", "train_train"),
+                    count=8,
+                    key="model/audio2",
+                    audio=audio2,
+                    sr=8000,
+                ),
+            ]
+
+            for info in expected:
+                ea = event_accumulator.EventAccumulator(info.path)
+                ea.Reload()
+
+                logged_evaler_audio = []
+                logged_evaler_sr = []
+                for event in ea.Tensors(info.key):
+                    results = tf.make_ndarray(event.tensor_proto)
+                    for encoded, _ in results:
+                        decoded, sr = tf.audio.decode_wav(encoded)
+                        logged_evaler_audio.append(decoded)
+                        logged_evaler_sr.append(sr)
+
+                logged_evaler_sr = np.stack(logged_evaler_sr)
+                self.assertNestedAllClose(logged_evaler_sr, info.sample_rate())
+
+                logged_evaler_audio = tf.stack(logged_evaler_audio, 0)
+                self.assertEqual(logged_evaler_audio.shape, info.shape())
+                # TB convert it int16 and convert it back.
+                self.assertNestedAllClose(
+                    logged_evaler_audio, info.audios(), rtol=0, atol=1 / 65536
+                )
 
     @pytest.mark.skipif(wandb is None, reason="wandb package not installed.")
     @pytest.mark.skipif("WANDB_API_KEY" not in os.environ, reason="wandb api key not found.")

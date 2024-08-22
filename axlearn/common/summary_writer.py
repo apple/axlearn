@@ -18,7 +18,7 @@ from tensorflow import summary as tf_summary
 
 from axlearn.common.config import REQUIRED, ConfigBase, Required, RequiredFieldValue, config_class
 from axlearn.common.module import Module
-from axlearn.common.summary import ImageSummary, Summary
+from axlearn.common.summary import AudioSummary, ImageSummary, Summary
 from axlearn.common.utils import NestedTensor, Tensor, tree_paths
 
 try:
@@ -229,6 +229,10 @@ class SummaryWriter(BaseWriter):
                     )
                 elif isinstance(value, ImageSummary):
                     tf_summary.image(path, raw_value, step=step, max_outputs=32)
+                elif isinstance(value, AudioSummary):
+                    tf_summary.audio(
+                        path, raw_value, value.sample_rate, step=step, max_outputs=1, encoding="wav"
+                    )
                 elif isinstance(raw_value, str):
                     tf_summary.text(path, raw_value, step=step)
                 elif isinstance(raw_value, numbers.Number) or raw_value.ndim == 0:
