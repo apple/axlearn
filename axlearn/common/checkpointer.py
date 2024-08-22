@@ -208,7 +208,7 @@ def read_index_file(ckpt_dir: str) -> Nested[Any]:
         return json.loads(f.read())
 
 
-def _parse_tensor_spec(spec_dict: Dict[str, str]) -> TensorSpec:
+def _parse_tensor_spec(spec_dict: dict[str, str]) -> TensorSpec:
     # The shape string is of format `(dim...)`. [1:-1] removes the parentheses.
     shape = [int(x) for x in spec_dict["shape"][1:-1].split(",") if x]
     dtype_str = spec_dict["dtype"]
