@@ -4,44 +4,60 @@
 # pylint: disable=protected-access
 
 import asyncio
-import contextlib
 import functools
-from typing import List, Optional
+import re
+import tempfile
+import time
+from collections import defaultdict
+from contextlib import contextmanager
+from typing import Any, List
 from unittest import mock
 
+import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
 from absl.testing import parameterized
-from jax import Shard
+from jax.experimental import mesh_utils
+from jax.sharding import PositionalSharding
 
 from axlearn.common import array_serialization
 from axlearn.common.array_serialization import (
-    BoundedAsyncCheckpointManager,
-    _acquire_and_write,
-    _proxy,
-    async_serialize,
+    BoundedDataShardedAsyncCheckpointManager,
+    _async_serialize,
+    _CommitFuture,
+    _get_shard_infos,
+    _num_replicas_per_shard,
+    _run_serializer,
+    _ShardInfo,
+    _slice_shard_and_copy_to_host,
+    _transfer_to_host,
+    futures,
     serialization,
 )
 
 
-class _LimitAndRecordBytes(serialization._LimitInFlightBytes):
-    """A thin wrapper that records peak concurrent bytes."""
-
-    def __init__(self, num_bytes):
-        super().__init__(num_bytes)
-        self._max_concurrent_bytes = 0
-        self._wait_calls = []
-
-    async def wait_for_bytes(self, requested_bytes):
-        self._wait_calls.append(requested_bytes)
-        await super().wait_for_bytes(requested_bytes)
-        self._max_concurrent_bytes += requested_bytes
-
-    async def release_bytes(self, requested_bytes):
-        await super().release_bytes(requested_bytes)
-        self._max_concurrent_bytes -= requested_bytes
-
-    def get_stats(self):
-        return self._max_concurrent_bytes, self._wait_calls
+@contextmanager
+def get_tensorstore_spec(arr: jax.Array):
+    """Create tensorstore for an array and saves to a temporary location."""
+    tempdir = tempfile.TemporaryDirectory()
+    tensorstore_spec = {
+        "driver": "n5",
+        "kvstore": {
+            "driver": "file",
+            "path": tempdir.name,
+        },
+        "metadata": {
+            "dataType": str(arr.dtype),
+            "dimensions": arr.shape,
+        },
+        "create": True,
+        "delete_existing": True,
+    }
+    try:
+        yield tensorstore_spec
+    finally:
+        tempdir.cleanup()
 
 
 class SerializerTest(parameterized.TestCase):
@@ -53,254 +69,118 @@ class SerializerTest(parameterized.TestCase):
         """
         with mock.patch("jax.process_count", return_value=2), self.assertRaises(Exception):
             asyncio.run(
-                async_serialize(jnp.array(1), {}, limiter=serialization._LimitInFlightBytes(1)),
+                _async_serialize(
+                    jnp.array(1), {}, futures.Future(), limiter=serialization._LimitInFlightBytes(1)
+                ),
                 debug=True,
             )
 
-    @parameterized.parameters(
-        # Test that both replica_id=0 shards are written.
-        dict(
-            process_index=0,
-            shards=[
-                dict(id=0, replica_id=0, nbytes=2),
-                dict(id=1, replica_id=0, nbytes=1),
-                dict(id=2, replica_id=1, nbytes=2),
-            ],
-            expect_opened=[0, 1],
-        ),
-        # Test that only replica_id=1 shard is written.
-        dict(
-            process_index=1,
-            shards=[
-                dict(id=0, replica_id=1, nbytes=2),
-                dict(id=1, replica_id=1, nbytes=1),
-                dict(id=2, replica_id=0, nbytes=2),
-            ],
-            expect_opened=[2],
-        ),
-        # Test a case with no shards.
-        dict(process_index=0, shards=[], expect_opened=[]),
-        # Test a case with no shards.
-        dict(
-            process_index=0,
-            shards=[dict(id=0, replica_id=1, nbytes=2)],
-            expect_opened=[],
-        ),
-    )
-    def test_async_serialize(
-        self,
-        process_index: int,
-        shards: List,
-        expect_opened: List[int],
-    ):
-        """Tests async_serialize.
+    def _create_partially_replicated_array(self, sharded: bool):
+        single_device_arr = jnp.arange(0, 1023 * 1024).reshape(1023, 1024)
+        if sharded:
+            if jax.device_count() != 8 or jax.process_count() != 1:
+                self.skipTest("Incorrect device count for mesh.")
+            devices = mesh_utils.create_device_mesh((8,))
+            sharding = PositionalSharding(devices)
+            arr = jax.device_put(single_device_arr, sharding.reshape(4, 2).replicate(0))
+            return arr
+        return single_device_arr
 
-        We should only write shards which belong to the current process.
-        """
-        mock_open_fut = mock.AsyncMock()
-        mock_open = mock.Mock(side_effect=mock_open_fut)
-        ts_spec = {"dummy_key": "dummy_value"}
-        shards = [
-            mock.MagicMock(
-                id=shard["id"],
-                replica_id=shard["replica_id"],
-                data=mock.Mock(nbytes=shard["nbytes"]),
-            )
-            for shard in shards
-        ]
-        array = mock.MagicMock(
-            dtype=jnp.bfloat16,
-            addressable_shards=shards,
-        )
+    @parameterized.parameters(False, True)
+    def test_async_serialize_d2h_sync(self, sharded):
+        arr = self._create_partially_replicated_array(sharded)
 
-        patch_ts = mock.patch.multiple(
-            f"{serialization.__name__}.ts",
-            open=mock_open,
-            Spec=mock.DEFAULT,
-        )
-        patch_process_id = mock.patch("jax.process_index", return_value=process_index)
-        patch_write = mock.patch(f"{array_serialization.__name__}._acquire_and_write")
+        ts_open_handle: Any = None
+        old_open = array_serialization.serialization.ts.open
 
-        with patch_process_id, patch_write as mock_write, patch_ts as mock_ts:
-            asyncio.run(async_serialize(array, ts_spec, limiter=mock.Mock()), debug=True)
+        async def ts_open_patch(*args, **kwargs):
+            nonlocal ts_open_handle
+            ts_open_handle = await old_open(*args, **kwargs)
+            return ts_open_handle
 
-            # Check that open with assume_metadata=False is only invoked for process 0.
-            self.assertEqual(
-                not mock_open.call_args_list[0][1].get("assume_metadata", False),
-                process_index == 0,
-            )
+        def jit_fn(arr):
+            return arr + 1
 
-            # Check that open with assume_metadata=True is called with the right spec.
-            self.assertTrue(
-                all(call_args[0] == (ts_spec,) for call_args in mock_ts["Spec"].call_args_list)
-            )
-            self.assertGreater(mock_open_fut.await_count, 0)
+        # Use AOT to reduce jit start time.
+        jit_fn = jax.jit(jit_fn, donate_argnums=0).lower(arr).compile()
 
-            # Check that open_and_write is only invoked for local shards.
-            if expect_opened:
-                # Make sure we opened all owned shards.
-                opened_shards = [call_args[1]["shard"] for call_args in mock_write.call_args_list]
-                self.assertCountEqual(expect_opened, [shard.id for shard in opened_shards])
-            else:
-                # If no local shards, open_and_write should not be invoked.
-                self.assertFalse(mock_write.called)
+        old_transfer = _transfer_to_host
 
-    def test_proxy_cancel(self):
-        """Tests that cancelling a proxy does not cancel the original future."""
+        # Delay execution by 1 second.
+        def transfer_to_host_patch(*args, **kwargs):
+            time.sleep(1)
+            return old_transfer(*args, **kwargs)
 
-        async def call():
-            fut = asyncio.Future()
-            proxy_coro = _proxy(fut)
-            proxy_coro.cancel()
-            self.assertFalse(fut.cancelled())
-
-        asyncio.run(call(), debug=True)
-
-    def test_proxy_await(self):
-        """Tests that awaiting a proxy awaits the original future."""
-
-        async def set_result(f):
-            await asyncio.sleep(0.1)
-            f.set_result(None)
-
-        async def call():
-            fut = asyncio.Future()
-            asyncio.create_task(set_result(fut))
-            await _proxy(fut)
-            self.assertTrue(fut.done())
-
-        asyncio.run(call(), debug=True)
-
-    @parameterized.parameters(
-        # Test a case where we process shards one-by-one.
-        dict(
-            shards=[1, 1, 1],
-            max_concurrent_bytes=1,
-            expect_max_concurrent_bytes=1,
-        ),
-        # Test a case where we process multiple shards at once.
-        dict(
-            shards=[1, 2, 1, 1, 1],
-            max_concurrent_bytes=3,
-            expect_max_concurrent_bytes=3,
-        ),
-        # Test a case where copy fails, which should surface immediately.
-        dict(
-            shards=[1, 1],
-            max_concurrent_bytes=1,
-            expect_max_concurrent_bytes=1,
-            copies=[None, RuntimeError("copy_fail")],
-            expect_error=RuntimeError("copy_fail"),
-        ),
-        # Test a case where commit fails, but we don't wait for it.
-        dict(
-            shards=[1],
-            max_concurrent_bytes=3,
-            expect_max_concurrent_bytes=1,
-            commits=[RuntimeError("commit_fail")],
-        ),
-    )
-    def test_acquire_and_write(
-        self,
-        shards: List[int],
-        max_concurrent_bytes: int,
-        expect_max_concurrent_bytes: int,
-        commits: Optional[List[RuntimeError]] = None,
-        copies: Optional[List[RuntimeError]] = None,
-        expect_error: Optional[RuntimeError] = None,
-    ):
-        """Tests TensorStore write.
-
-        Specifically, it should respect max_concurrent_bytes, and block on copies but not commits.
-        """
-        written = []
-        concurrent_bytes = 0
-        shards = [
-            mock.Mock(index=i, data=mock.Mock(nbytes=nbytes)) for i, nbytes in enumerate(shards)
-        ]
-        num_shards = len(shards)
-        commits = commits or [None] * num_shards
-        copies = copies or [None] * num_shards
-
-        async def mock_commit(i):
-            nonlocal concurrent_bytes
-            if commits[i] is not None:
-                raise commits[i]
-            await asyncio.sleep(0.1)
-            concurrent_bytes -= shards[i].data.nbytes
-
-        async def mock_copy(i):
-            nonlocal concurrent_bytes
-            concurrent_bytes += shards[i].data.nbytes
-            await asyncio.sleep(0)  # Yield to event loop.
-            if copies[i] is not None:
-                raise copies[i]
-
-        expected_commit_futures = [
-            mock.AsyncMock(wraps=functools.partial(mock_commit, i=i))() for i in range(num_shards)
-        ]
-
-        def mock_write(data, i):
-            written.append(data)
-            return mock.AsyncMock(
-                copy=mock.AsyncMock(wraps=functools.partial(mock_copy, i=i))(),
-                commit=expected_commit_futures[i],
-            )
-
-        mock_write_futs = [
-            mock.Mock(**{"write.side_effect": functools.partial(mock_write, i=i)})
-            for i in range(num_shards)
-        ]
-
-        def mock_ts_index(self, idx):
-            del self
-            return mock_write_futs[idx]
-
-        class MockTs(mock.AsyncMock):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self.__getitem__ = mock_ts_index
-
-        mock_ts = MockTs()
-
-        async def acquire_and_write(*, shards: List[Shard]):
-            limiter = _LimitAndRecordBytes(max_concurrent_bytes + 1)
-            release_tasks = set()
-            commit_futures = await asyncio.gather(
-                *(
-                    _acquire_and_write(
-                        mock_ts,
-                        limiter=limiter,
-                        shard=shard,
-                        nbytes=shard.data.nbytes,
-                        release_tasks=release_tasks,
-                    )
-                    for i, shard in enumerate(shards)
-                )
-            )
-            return commit_futures, limiter.get_stats()
-
-        if expect_error:
-            ctx = self.assertRaisesRegex(type(expect_error), str(expect_error))
-        else:
-            ctx = contextlib.nullcontext()
-
-        with (
-            ctx,
-            # Mock out _proxy since the commit futures aren't actually futures.
-            mock.patch(f"{array_serialization.__name__}._proxy", side_effect=lambda fut: fut),
+        d2h_future = array_serialization.futures.Future()
+        with mock.patch(
+            f"{array_serialization.__name__}.serialization.ts.open",
+            ts_open_patch,
+        ), get_tensorstore_spec(arr) as spec, mock.patch(
+            f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
         ):
-            commit_futures, (limiter_concurrent_bytes, _) = asyncio.run(
-                acquire_and_write(shards=shards), debug=True
+            # Either RuntimeError(Array has been deleted with shape) or
+            # ValueError(...Buffer has been deleted or donated...) may occur.
+            with pytest.raises((RuntimeError, ValueError), match=re.escape("delete")):
+                f = _CommitFuture(
+                    _run_serializer([arr], [spec], [d2h_future], max_concurrent_bytes=arr.nbytes)
+                )
+                # Throws Array deleted exception if not waiting for d2h_future.
+                jit_fn(arr)
+                f.result()
+
+        arr = self._create_partially_replicated_array(sharded)
+        arr_host = jax.device_get(arr)
+        d2h_future = array_serialization.futures.Future()
+        with mock.patch(
+            f"{array_serialization.__name__}.serialization.ts.open",
+            ts_open_patch,
+        ), get_tensorstore_spec(arr) as spec, mock.patch(
+            f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
+        ):
+            f = _CommitFuture(
+                _run_serializer([arr], [spec], [d2h_future], max_concurrent_bytes=arr.nbytes)
             )
-            # Check that max_concurrent_bytes is respected (as recorded by limiter).
-            self.assertBetween(limiter_concurrent_bytes, 1, expect_max_concurrent_bytes)
-            # Check that max_concurrent_bytes is respected (as recorded by actual copy/commit).
-            self.assertBetween(concurrent_bytes, 1, expect_max_concurrent_bytes)
-            # Check that all shards written once.
-            self.assertCountEqual([shard.data for shard in shards], written)
-            # Check that commit futures are tracked.
-            self.assertCountEqual(expected_commit_futures, commit_futures)
+            d2h_future.result()
+            # If D2H is finished, arr can be safely donated.
+            jit_fn(arr)
+            f.result()
+
+            # Verify serialization result is correct.
+            # pylint: disable-next=unsubscriptable-object
+            arr_data = ts_open_handle[:].read().result()
+            self.assertTrue(np.all(arr_data == arr_host))
+
+    @parameterized.parameters(False, True)
+    def test_async_serialize_exception_safety(self, sharded):
+        arr = self._create_partially_replicated_array(sharded)
+
+        async def ts_open_patch(*_, **__):
+            raise RuntimeError("Test")
+
+        d2h_future = array_serialization.futures.Future()
+        with mock.patch(
+            f"{array_serialization.__name__}.serialization.ts.open",
+            ts_open_patch,
+        ), get_tensorstore_spec(arr) as spec:
+            f = _CommitFuture(_run_serializer([arr], [spec], [d2h_future]))
+            d2h_future.result()
+            with pytest.raises(RuntimeError, match=re.escape("Test")):
+                f.result()
+
+        def transfer_to_host_patch(*_):
+            raise RuntimeError("Test")
+
+        d2h_future = array_serialization.futures.Future()
+        with mock.patch(
+            f"{array_serialization.__name__}._transfer_to_host",
+            transfer_to_host_patch,
+        ), get_tensorstore_spec(arr) as spec:
+            f = _CommitFuture(_run_serializer([arr], [spec], [d2h_future]))
+            # Exceptions will be raised in both the d2h future and the commit future.
+            with pytest.raises(RuntimeError, match=re.escape("Test")):
+                d2h_future.result()
+            with pytest.raises(RuntimeError, match=re.escape("Test")):
+                f.result()
 
     @parameterized.parameters(
         # Test that we can always fit the largest shard.
@@ -322,49 +202,152 @@ class SerializerTest(parameterized.TestCase):
         arrays = [
             mock.Mock(
                 addressable_shards=[
-                    mock.Mock(replica_id=0, **{"data.nbytes": int(shard * 10**9)})
+                    mock.Mock(
+                        replica_id=0, **{"data.nbytes": int(shard * 10**9), "data.shape": ()}
+                    )
                     for shard in array
                 ],
                 nbytes=int(sum(array) * 10**9),
+                dtype=jax.numpy.bfloat16,
             )
             for array in arrays
         ]
         tensorstore_specs = [{} for _ in range(len(arrays))]
         expect_max_concurrent_bytes = int(expect_max_concurrent_gb * 10**9)
 
-        manager = BoundedAsyncCheckpointManager(max_concurrent_gb=max_concurrent_gb)
+        concurrent_bytes = 0
+
+        class FakeTs:
+            def __getitem__(self, *_):
+                return self
+
+            async def write(self, data: jax.Array, **_):
+                await asyncio.sleep(0.1)
+                nonlocal concurrent_bytes
+                concurrent_bytes -= data.nbytes
+
+        async def open_patch(*_, **__):
+            return FakeTs()
+
+        async def _copy_to_host_patch(shard_infos: List[_ShardInfo], d2h_future: futures.Future):
+            nonlocal concurrent_bytes
+            for info in shard_infos:
+                concurrent_bytes += info.data.nbytes
+            # In-flight bytes should be lower than the expected max bytes
+            self.assertLessEqual(concurrent_bytes, expect_max_concurrent_bytes)
+            d2h_future.set_result(shard_infos)
+
+        manager = BoundedDataShardedAsyncCheckpointManager(max_concurrent_gb=max_concurrent_gb)
         with (
-            mock.patch(f"{array_serialization.__name__}.async_serialize") as mock_serialize,
-            mock.patch(f"{serialization.__name__}._LimitInFlightBytes") as mock_limiter,
-            mock.patch.multiple(
-                manager,
-                wait_until_finished=mock.DEFAULT,
-                _add_futures=mock.DEFAULT,
-                _start_async_commit=mock.DEFAULT,
-            ) as mocks,
+            mock.patch(
+                f"{array_serialization.__name__}._num_replicas_per_shard",
+                lambda *args: defaultdict(lambda: 1),
+            ),
+            mock.patch(f"{array_serialization.__name__}._slices_to_tuple", lambda *_: 1),
+            mock.patch(
+                f"{array_serialization.__name__}._slice_shard_and_copy_to_host", _copy_to_host_patch
+            ),
+            mock.patch(
+                f"{array_serialization.__name__}.serialization._get_metadata", lambda *_: {}
+            ),
+            mock.patch(f"{array_serialization.__name__}.serialization.ts.open", open_patch),
+            mock.patch(f"{array_serialization.__name__}.serialization.ts.Spec", mock.MagicMock()),
         ):
             manager.serialize(arrays, tensorstore_specs, on_commit_callback=lambda: None)
-
-            self.assertTrue(mocks["wait_until_finished"].called)
-
-            # Make sure async_serialize called for all arrays.
-            self.assertCountEqual(
-                list(zip(arrays, tensorstore_specs)),
-                [call_args[0] for call_args in mock_serialize.call_args_list],
-            )
-            # Make sure limiter constructed with the right limit.
-            self.assertIn(expect_max_concurrent_bytes + 1, mock_limiter.call_args[0])
+            manager.wait_until_finished()
 
     def test_max_concurrency(self):
         with self.assertRaisesRegex(ValueError, "strictly positive"):
-            BoundedAsyncCheckpointManager(max_concurrent_gb=0)
+            BoundedDataShardedAsyncCheckpointManager(max_concurrent_gb=0)
 
     def test_serialize_consecutive(self):
         """Tests that serialize waits for prior serialization to finish."""
-        manager = BoundedAsyncCheckpointManager(max_concurrent_gb=1)
+        manager = BoundedDataShardedAsyncCheckpointManager(max_concurrent_gb=1)
         mock_serialize = mock.patch(
-            f"{array_serialization.__name__}.async_serialize", return_value=mock.AsyncMock()
+            f"{array_serialization.__name__}._async_serialize", return_value=mock.AsyncMock()
         )
         with mock_serialize, mock.patch.object(manager, "wait_until_finished") as mock_wait:
             manager.serialize([], [], on_commit_callback=lambda *args: None)
             self.assertTrue(mock_wait.called)
+
+    def test_zero_copy_d2h(self):
+        @functools.partial(jax.jit, donate_argnums=0)
+        def _donate_argnum_fn(x):
+            return x + 1
+
+        x = jnp.arange(0, 10)
+        x_np = np.arange(0, 10)
+        x.copy_to_host_async()
+        x_zero_copy = np.array(x, copy=False)
+        y = _donate_argnum_fn(x)
+        y.copy_to_host_async()
+        # Test if x_zero_copy still lives after original x is donated.
+        self.assertTrue(np.all(x_zero_copy == x_np))
+
+    def _verify_shard_info(
+        self, single_device_arr: jax.Array, arr: jax.Array, max_data_shard_degree: int
+    ):
+        shard_infos = _get_shard_infos(arr, max_data_shard_degree=max_data_shard_degree)
+
+        # Write each shard to output and check if it's the same as the original
+        # single device array. If same, that means all shards should cover all
+        # indices of the original array.
+        out_array = np.empty_like(single_device_arr)
+        d2h_future = futures.Future()
+        asyncio.run(_slice_shard_and_copy_to_host(shard_infos, d2h_future))
+        for info in shard_infos:
+            out_array[info.index] = info.data
+        self.assertTrue(np.all(out_array == np.array(single_device_arr)))
+
+    @parameterized.parameters(1, -1)
+    @pytest.mark.skipif(
+        jax.device_count() != 8 or jax.process_count() != 1,
+        reason="Incorrect device count for mesh.",
+    )
+    def test_shard_info_partially_replicated(self, max_data_shard_degree):
+        single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
+        devices = mesh_utils.create_device_mesh((8,))
+        sharding = PositionalSharding(devices)
+
+        arr = jax.device_put(single_device_arr, sharding.reshape(4, 2).replicate(0))
+
+        replica_count = _num_replicas_per_shard(arr)
+        self.assertEqual(replica_count[((None, None, None), (0, 512, None))], 4)
+        self.assertEqual(replica_count[((None, None, None), (512, 1024, None))], 4)
+
+        self._verify_shard_info(single_device_arr, arr, max_data_shard_degree)
+
+    @parameterized.parameters(1, -1)
+    @pytest.mark.skipif(
+        jax.device_count() != 8 or jax.process_count() != 1,
+        reason="Incorrect device count for mesh.",
+    )
+    def test_shard_info_fully_sharded(self, max_data_shard_degree):
+        single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
+        devices = mesh_utils.create_device_mesh((8,))
+        sharding = PositionalSharding(devices)
+
+        arr = jax.device_put(single_device_arr, sharding.reshape(4, 2))
+
+        replica_count = _num_replicas_per_shard(arr)
+        self.assertEqual(replica_count[((0, 256, None), (0, 512, None))], 1)
+
+        self._verify_shard_info(single_device_arr, arr, max_data_shard_degree)
+
+    @parameterized.product(sz=[1, 11, 16, 21], max_data_shard_degree=[1, -1])
+    @pytest.mark.skipif(
+        jax.device_count() != 8 or jax.process_count() != 1,
+        reason="Incorrect device count for mesh.",
+    )
+    def test_shard_info_fully_replicated(self, sz: int, max_data_shard_degree: int):
+        single_device_arr = jnp.arange(0, sz)
+        devices = mesh_utils.create_device_mesh((8,))
+        sharding = PositionalSharding(devices)
+
+        arr = jax.device_put(single_device_arr, sharding.replicate(0))
+
+        replica_count = _num_replicas_per_shard(arr)
+        # Fully replicated on 8 devices.
+        self.assertEqual(replica_count[((None, None, None),)], 8)
+
+        self._verify_shard_info(single_device_arr, arr, max_data_shard_degree)

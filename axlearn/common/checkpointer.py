@@ -21,7 +21,7 @@ from jax.experimental import maps, multihost_utils
 from jax.experimental.array_serialization import serialization as array_serialization
 
 from axlearn.common import utils
-from axlearn.common.array_serialization import BoundedAsyncCheckpointManager
+from axlearn.common.array_serialization import BoundedDataShardedAsyncCheckpointManager
 from axlearn.common.config import (
     REQUIRED,
     Configurable,
@@ -268,7 +268,7 @@ class TensorStoreStateStorage(StateStorage):
 
     It uses `jax.experimental.array_serialization` and additionally provides:
     (1) Additional guards to verify that dtypes and shapes match those of the model parameters.
-    (2) Memory-bounded checkpoint serialization for large-scale training.
+    (2) Memory-bounded and data-sharded checkpoint serialization for large-scale training.
     """
 
     @config_class
@@ -277,21 +277,26 @@ class TensorStoreStateStorage(StateStorage):
 
         Attributes:
             timeout_secs: Barrier timeout in seconds.
+            max_data_shard_degree: Max sharding degree of model weights along data-parallel axis.
+                `None` and `1` means no sharding. `-1` means fully shard along data-parallel
+                replicas. `>1` means custom sharding degree (currently not implemented).
             max_concurrent_gb: Max concurrent shards (in GB) to write.
         """
 
         timeout_secs: float = 3600
+        max_data_shard_degree: Optional[int] = None
         max_concurrent_gb: Optional[int] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
-
-        # TODO(markblee): Consider making BoundedAsyncCheckpointManager the default once stable.
-        if cfg.max_concurrent_gb is not None:
-            self._manager = BoundedAsyncCheckpointManager(
+        # TODO(markblee): Consider making BoundedDataShardedAsyncCheckpointManager
+        # the default once stable.
+        if cfg.max_concurrent_gb is not None or cfg.max_data_shard_degree:
+            self._manager = BoundedDataShardedAsyncCheckpointManager(
                 max_concurrent_gb=cfg.max_concurrent_gb,
                 timeout_secs=cfg.timeout_secs,
+                max_data_shard_degree=cfg.max_data_shard_degree,
             )
         else:
             self._manager = array_serialization.GlobalAsyncCheckpointManager(
