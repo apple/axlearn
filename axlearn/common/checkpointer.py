@@ -7,6 +7,7 @@ import difflib
 import enum
 import json
 import os.path
+import tempfile
 import threading
 import time
 from concurrent import futures
@@ -133,13 +134,36 @@ def check_state_structure(
         )
 
 
-# pylint: disable-next=redefined-builtin
-def save_tf_savables(value_map: Nested[Any], *, dir: str):
-    """Saves TF savables from `value_map` into `dir`."""
+def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str):
+    """Upload a directory (non-recursively) from a temporary dir to dst_dir.
 
+    Temporary dir will be deleted after the upload is complete.
+    """
+    src_dir = src_dir_handle.name
+    tf.io.gfile.makedirs(dst_dir)
+    for item in tf.io.gfile.listdir(src_dir):
+        src_file = tf.io.gfile.join(src_dir, item)
+        dst_file = tf.io.gfile.join(dst_dir, item)
+        assert not tf.io.gfile.isdir(src_file)
+        tf.io.gfile.copy(src_file, dst_file, overwrite=True)
+    src_dir_handle.cleanup()
+
+
+# pylint: disable=redefined-builtin
+def async_save_tf_savables(
+    value_map: Nested[Any], *, executor: futures.ThreadPoolExecutor, dir: str
+) -> futures.Future:
+    """Asynchronously saves TF savables from `value_map` into `dir`.
+
+    When this call returns, `value_map` can be safely mutated, but saving to `dir` will not
+    complete unless the returned future is set.
+    """
+    # pylint: disable-next=consider-using-with
+    f = tempfile.TemporaryDirectory()
     for path, value in utils.flatten_items(value_map):
         tf_checkpoint = tf.train.Checkpoint(value)
-        tf_checkpoint.write(os.path.join(dir, path))
+        tf_checkpoint.write(os.path.join(f.name, path))
+    return executor.submit(_upload_dir, f, dst_dir=dir)
 
 
 # pylint: disable-next=redefined-builtin
@@ -153,6 +177,7 @@ def restore_tf_savables(value_map: Nested[Any], *, dir: str) -> Nested[Any]:
     return value_map
 
 
+# pylint: enable=redefined-builtin
 class StateStorageCommitCallback(Protocol):
     """StateStorage commit callback protocol."""
 
@@ -190,6 +215,10 @@ class StateStorage(Configurable):
         *,
         ckpt_dir: str,
     ) -> NestedTensor:
+        raise NotImplementedError(type(self))
+
+    def stop(self):
+        """Stops and disposes resources."""
         raise NotImplementedError(type(self))
 
 
@@ -297,6 +326,7 @@ class TensorStoreStateStorage(StateStorage):
             self._manager = array_serialization.GlobalAsyncCheckpointManager(
                 timeout_secs=cfg.timeout_secs
             )
+        self._executor = futures.ThreadPoolExecutor()
 
     @dataclasses.dataclass
     class CheckpointSpec:  # pylint: disable=too-many-instance-attributes
@@ -373,15 +403,19 @@ class TensorStoreStateStorage(StateStorage):
             if not ckpt_dir.startswith("gs://"):
                 dirs = sorted(list(set(os.path.dirname(path) for path in spec.storage_paths)))
                 logging.info("Creating directories: %s", dirs)
-                with futures.ThreadPoolExecutor() as executor:
-                    executor.map(tf.io.gfile.makedirs, dirs)  # pytype: disable=module-attr
+                list(self._executor.map(tf.io.gfile.makedirs, dirs))
                 logging.info("All directories created")
         # Wait for directory and index creation.
         multihost_utils.sync_global_devices(ckpt_dir)
         # Each worker writes its tf checkpoints under a different path.
-        save_tf_savables(spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"))
+        save_tf_future = async_save_tf_savables(
+            spec.tf_ckpt_map,
+            executor=self._executor,
+            dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"),
+        )
 
         def commit():
+            save_tf_future.result()
             on_commit_callback(ckpt_dir=ckpt_dir, index=spec.index)
             logging.info(
                 "Serialization of %s completed in %s seconds.",
@@ -439,6 +473,9 @@ class TensorStoreStateStorage(StateStorage):
         )
         multihost_utils.sync_global_devices(ckpt_dir)
         return restored_state
+
+    def stop(self):
+        self._executor.shutdown(wait=True)
 
 
 class CheckpointPolicy(Protocol):
@@ -782,6 +819,7 @@ class Checkpointer(BaseCheckpointer):
     def stop(self):
         """See `BaseCheckpointer.stop` for details."""
         self.wait_until_finished()
+        self._storage.stop()
         logging.info("Waiting for gc_thread to finish")
         if self._gc_thread is not None:
             self._gc_stopping.set()

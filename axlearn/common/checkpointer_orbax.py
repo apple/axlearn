@@ -23,9 +23,9 @@ from axlearn.common.checkpointer import (
     STEP_PREFIX,
     BaseCheckpointer,
     CheckpointValidationType,
+    async_save_tf_savables,
     check_state_structure,
     restore_tf_savables,
-    save_tf_savables,
 )
 from axlearn.common.config import config_class
 from axlearn.common.module import Module
@@ -61,11 +61,7 @@ class _TfIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
         futs = []
         with futures.ThreadPoolExecutor(max_workers=1) as executor:
             for value, info in zip(values, infos):
-                # Make sure the per-key directory is present as OCDBT doesn't create one.
-                info.path.mkdir(exist_ok=True)
-                futs.append(
-                    executor.submit(functools.partial(save_tf_savables, value, dir=info.path))
-                )
+                futs.append(async_save_tf_savables(value, executor=executor, dir=info.path))
         return futs
 
     async def deserialize(
