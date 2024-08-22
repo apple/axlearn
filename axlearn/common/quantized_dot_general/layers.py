@@ -80,8 +80,7 @@ class AQTDotGeneralType(Protocol):
         precision: PrecisionLike = None,
         preferred_element_type: Optional[DTypeLike] = None,
         context: aqt_dot_general.Context = aqt_dot_general.Context(key=None, train_step=None),
-    ) -> Tensor:
-        ...
+    ) -> Tensor: ...
 
 
 class QuantizedDotGeneral(BaseLayer):

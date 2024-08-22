@@ -47,9 +47,9 @@ def mock_openai_package():
     sys.modules["openai.types"] = mock_openai_types
     sys.modules["openai.types.chat"] = mock_openai_types_chat
     sys.modules["openai.types.chat.chat_completion_message"] = mock_chat_completion_message
-    sys.modules[
-        "openai.types.chat.chat_completion_message_tool_call"
-    ] = mock_chat_completion_message_tool_call
+    sys.modules["openai.types.chat.chat_completion_message_tool_call"] = (
+        mock_chat_completion_message_tool_call
+    )
     sys.modules["openai.types.completion"] = mock_openai_types_completion
 
 

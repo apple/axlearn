@@ -597,11 +597,15 @@ class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
     @parameterized.parameters(
         dict(
             normalizer=config_for_function(input_text.roberta_normalize).set(cased=False),
-            expected=[[["ah博推zz \thello!how  \n are you?"], ["i am good  <3", "what about you?!"]]],
+            expected=[
+                [["ah博推zz \thello!how  \n are you?"], ["i am good  <3", "what about you?!"]]
+            ],
         ),
         dict(
             normalizer=config_for_function(input_text.roberta_normalize).set(cased=True),
-            expected=[[["ah博推zz \tHeLLo!how  \n Are yoU?"], ["I am good  <3", "What about you?!"]]],
+            expected=[
+                [["ah博推zz \tHeLLo!how  \n Are yoU?"], ["I am good  <3", "What about you?!"]]
+            ],
         ),
         dict(
             normalizer=config_for_function(input_text.bert_normalize).set(

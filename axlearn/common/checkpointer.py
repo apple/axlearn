@@ -201,7 +201,6 @@ def write_index_file(*, ckpt_dir: str, index: Any):
         f.write(json.dumps(index))
 
 
-
 def read_index_file(ckpt_dir: str) -> Nested[Any]:
     """Reads index files written with `write_index_file`."""
     with tf.io.gfile.GFile(os.path.join(ckpt_dir, "index"), "r") as f:

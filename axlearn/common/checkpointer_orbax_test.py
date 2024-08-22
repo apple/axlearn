@@ -2,6 +2,7 @@
 
 See also checkpointer_test.py for common checkpointing tests.
 """
+
 # pylint: disable=protected-access
 
 import os

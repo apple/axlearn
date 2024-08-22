@@ -59,15 +59,13 @@ from axlearn.common.utils import (
 class BuildDatasetFn(Protocol):
     """A function to create a tf.data.Dataset instance."""
 
-    def __call__(self) -> tf.data.Dataset:
-        ...
+    def __call__(self) -> tf.data.Dataset: ...
 
 
 class DatasetToDatasetFn(Protocol):
     """A function to create a tf.data.Dataset instance from the given dataset."""
 
-    def __call__(self, ds: Optional[tf.data.Dataset], **kwargs) -> tf.data.Dataset:
-        ...
+    def __call__(self, ds: Optional[tf.data.Dataset], **kwargs) -> tf.data.Dataset: ...
 
 
 def tfds_read_config(

@@ -15,8 +15,7 @@ class TrainerConfigFn(Protocol):
 
     # Note: avoid using SpmdTrainer.Config so we don't need to introduce a dependency to trainer.
     # This also makes it possible to define custom trainers with the same protocol.
-    def __call__(self, data_dir: Optional[str] = None) -> InstantiableConfig:
-        ...
+    def __call__(self, data_dir: Optional[str] = None) -> InstantiableConfig: ...
 
 
 def with_overrides(trainer_config_fn: TrainerConfigFn, **kwargs) -> TrainerConfigFn:
