@@ -11,7 +11,6 @@ import re
 import tempfile
 import threading
 import unittest
-
 from collections.abc import Iterable, Sequence
 from typing import Optional, Type, cast
 from unittest import mock
