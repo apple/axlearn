@@ -106,7 +106,8 @@ vertexai_tensorboard = [
     # [1] https://bugs.launchpad.net/ubuntu/+source/distro-info/+bug/1991606
     # [2] https://github.com/pypa/setuptools/issues/3772
     "setuptools==65.7.0",
-    "google-cloud-aiplatform[tensorboard]",
+    # pin version to fix Tensorboard uploader TypeError: can only concatenate str (not "NoneType") to str
+    "google-cloud-aiplatform[tensorboard]==1.61.0",
     "tensorboard",
 ]
 # Dataflow dependencies.
