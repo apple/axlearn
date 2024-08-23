@@ -2,7 +2,7 @@
 
 """Metrics."""
 import typing
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -46,9 +46,9 @@ class MetricAccumulator(Configurable):
 
     def __init__(self, cfg: Configurable.Config):
         super().__init__(cfg)
-        self._summaries: Dict[str, Any] = {}
+        self._summaries: dict[str, Any] = {}
 
-    def update(self, model_outputs: Dict[str, Any]):
+    def update(self, model_outputs: dict[str, Any]):
         logging.debug(
             "MetricAccumulator.update: current=%s update=%s",
             self._summaries,
@@ -68,7 +68,7 @@ class MetricAccumulator(Configurable):
             )
         logging.debug("MetricAccumulator.update: merged=%s", self._summaries)
 
-    def summaries(self) -> Dict[str, Any]:
+    def summaries(self) -> dict[str, Any]:
         return self._summaries
 
     @staticmethod
@@ -77,7 +77,7 @@ class MetricAccumulator(Configurable):
         return jax.tree_util.tree_map(*args, **kwargs, is_leaf=is_leaf)
 
 
-def _metric_accumulator_flatten(v: MetricAccumulator) -> Tuple[Tuple, Tuple]:
+def _metric_accumulator_flatten(v: MetricAccumulator) -> tuple[tuple, tuple]:
     """Specifies a flattening recipe for `MetricAccumulator`."""
     summaries = v.summaries()
     sorted_items = sorted(summaries.items(), key=lambda x: x[0])
@@ -88,7 +88,7 @@ def _metric_accumulator_flatten(v: MetricAccumulator) -> Tuple[Tuple, Tuple]:
 
 
 def _metric_accumulator_unflatten(
-    summaries_keys: Tuple, summaries_values: Tuple
+    summaries_keys: tuple, summaries_values: tuple
 ) -> MetricAccumulator:
     """Specifies an unflattening recipe for `MetricAccumulator`."""
     accumulator = MetricAccumulator.default_config().instantiate()

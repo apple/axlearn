@@ -9,17 +9,17 @@ from multi choices.
 import json
 import logging
 import re
-from typing import Any, Dict, List, Type
+from typing import Any
 
 from axlearn.open_api.common import BaseClient, EvalGeneratorType, Generator
 
 
 def metric_fn(
     *,
-    responses: List[Dict[str, Any]],
-    generators: Dict[EvalGeneratorType, Generator],
+    responses: list[dict[str, Any]],
+    generators: dict[EvalGeneratorType, Generator],
     debug: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Implements the tool use plan accuracy metric following axlearn.open_api.common.MetricFn.
 
     Args:
@@ -33,7 +33,7 @@ def metric_fn(
     total_matches = 0
     if_error = 0
     generator_cfg: Generator.Config = generators[EvalGeneratorType.RESPONSE].config
-    client_cls: Type[BaseClient] = generator_cfg.client.klass
+    client_cls: type[BaseClient] = generator_cfg.client.klass
     for response in responses:
         matched = False
         target_plan_number = response.get("target_plan_number", None)

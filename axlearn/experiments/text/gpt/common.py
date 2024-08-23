@@ -11,7 +11,8 @@ See c4_trainer.py for how they are used.
 """
 
 import math
-from typing import Dict, List, Literal, Optional, Protocol, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Literal, Optional, Protocol, Union
 
 import jax.numpy as jnp
 import tensorflow as tf
@@ -179,7 +180,7 @@ def mesh_shape_from_axes(
     """
     assert MESH_AXIS_NAMES == ("pipeline", "data", "expert", "fsdp", "seq", "model")
     # We set the minimum size for a mesh axis to 1 as anything lower is degenerate, except -1.
-    return tuple((max(x, 1) if x != -1 else -1 for x in [pipeline, data, expert, fsdp, seq, model]))
+    return tuple(max(x, 1) if x != -1 else -1 for x in [pipeline, data, expert, fsdp, seq, model])
 
 
 def update_model_remat_config(
@@ -457,8 +458,8 @@ def mixture_train_input_source(
     *,
     is_training: bool,
     vocab_cfg: InstantiableConfig,
-    preprocessor: Union[InstantiableConfig, List[InstantiableConfig]],
-    data_mixture_components: Union[InstantiableConfig, List[DataMixtureComponent]],
+    preprocessor: Union[InstantiableConfig, list[InstantiableConfig]],
+    data_mixture_components: Union[InstantiableConfig, list[DataMixtureComponent]],
     max_sequence_length: int,
     replace_newlines_with: str = REPLACE_NEWLINES_WITH,
     fake_input_source_cfg: Optional[InstantiableConfig] = None,
@@ -535,11 +536,11 @@ def mixture_train_input_source(
 
 
 def evaler_config_dict(
-    input_source_configs: Dict[str, InstantiableConfig],
+    input_source_configs: dict[str, InstantiableConfig],
     *,
-    metric_calculators: Optional[Dict[str, BaseMetricCalculator.Config]] = None,
+    metric_calculators: Optional[dict[str, BaseMetricCalculator.Config]] = None,
     summary_writer: Optional[BaseWriter.Config] = None,
-) -> Dict[str, SpmdEvaler.Config]:
+) -> dict[str, SpmdEvaler.Config]:
     """Makes evaler configs from the given input sources.
 
     Args:
@@ -627,10 +628,10 @@ def get_trainer_config_fn(
     max_step: int,
     train_batch_size: int,
     train_input_source: InstantiableConfig[input_tf_data.BuildDatasetFn],
-    evalers: Dict[str, SpmdEvaler.Config],
+    evalers: dict[str, SpmdEvaler.Config],
     mesh_shape: Union[MeshShape, HybridMeshShape],
     mesh_axis_names: Sequence[str] = MESH_AXIS_NAMES,
-    mesh_rules: Optional[Sequence[Tuple[str, Optional[Union[MeshShape, HybridMeshShape]]]]] = None,
+    mesh_rules: Optional[Sequence[tuple[str, Optional[Union[MeshShape, HybridMeshShape]]]]] = None,
     eval_every_n_steps: int = 5000,
     eval_batch_size: Optional[int] = None,
     keep_every_n_steps: int = 50_000,

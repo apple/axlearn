@@ -5,8 +5,9 @@
 
 import enum
 import functools
+from collections.abc import Sequence
 from enum import Enum
-from typing import Any, Dict, Literal, Optional, Sequence
+from typing import Any, Literal, Optional
 
 import seqio
 import tensorflow as tf
@@ -114,7 +115,7 @@ def text_to_lm_training_input(
         )
         return tf.reshape(new_ids, shape=(-1, max_len))
 
-    def process_batched(inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def process_batched(inputs: dict[str, Any]) -> dict[str, Any]:
         """Chunks each jagged input window into a batch of equal-length training examples."""
         # A ragged tensor with dim 0 of size `window_size`.
         tokens = tokenize_example(
@@ -273,7 +274,7 @@ def text_to_lm_eval_input(
             output = tf.concat((output, t_slice), axis=0)
         return tf.reshape(output, shape=(-1, max_len))
 
-    def process_document(inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def process_document(inputs: dict[str, Any]) -> dict[str, Any]:
         """Tokenizes & pads each document yielding a strided slice over the result."""
         # Tokenize.
         tf_eos_id = tf.constant([vocab.eos_id], dtype=tf.int32)
@@ -367,7 +368,7 @@ def joint_truncation_for_seq2seq_lm_input(
     """
 
     @seqio.utils.map_over_dataset
-    def process_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         target_labels = example["target_labels"]
         prefix = example["prefix"]  # This should match the "prefix" key used in decoding.
         input_ids = example["input_ids"]
@@ -493,7 +494,7 @@ def make_autoregressive_inputs(
     passthrough_keys = passthrough_keys or []
 
     @seqio.utils.map_over_dataset
-    def prepare_encoder_decoder_inputs(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def prepare_encoder_decoder_inputs(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         source_ids = example["source_ids"]
         target_labels = example["target_labels"]
 
@@ -518,7 +519,7 @@ def make_autoregressive_inputs(
         return new_example
 
     @seqio.utils.map_over_dataset
-    def prepare_decoder_only_inputs(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def prepare_decoder_only_inputs(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         target_labels = example["target_labels"]
         # Casting in case prefix is empty and of float32.
         prefix = tf.cast(example["prefix"], target_labels.dtype)
@@ -562,7 +563,7 @@ def make_autoregressive_inputs(
 
 
 @seqio.map_over_dataset
-def map_targets_out_of_class(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+def map_targets_out_of_class(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
     """Maps 0-padding on "target_labels" to out-of-class labels.
     Note that seqio always pads with 0's, so we must do this after packing/padding.
     """
@@ -573,7 +574,7 @@ def map_targets_out_of_class(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tens
 
 
 def _trim_and_pack_with_segments(
-    feature_lengths: Dict[str, int]
+    feature_lengths: dict[str, int]
 ) -> input_tf_data.DatasetToDatasetFn:
     """Trim and pack inputs, injecting `*_segment_ids` and `*_positions`.
 
@@ -594,7 +595,7 @@ def _trim_and_pack_with_segments(
     proxy_id = 1
 
     @seqio.map_over_dataset
-    def remap_intermediate_zeros(example: Dict[str, tf.Tensor]):
+    def remap_intermediate_zeros(example: dict[str, tf.Tensor]):
         for key in feature_lengths:
             ids = example[key]
             remap_mask = ids == 0
@@ -604,7 +605,7 @@ def _trim_and_pack_with_segments(
         return example
 
     @seqio.map_over_dataset
-    def restore_intermediate_zeros(example: Dict[str, tf.Tensor]):
+    def restore_intermediate_zeros(example: dict[str, tf.Tensor]):
         for key in feature_lengths:
             # Remove unused keys.
             for suffix in ["segment_ids", "positions"]:
@@ -628,7 +629,7 @@ def _trim_and_pack_with_segments(
 
 
 def _trim_and_pad_with_segments(
-    feature_lengths: Dict[str, int]
+    feature_lengths: dict[str, int]
 ) -> input_tf_data.DatasetToDatasetFn:
     """Trim and pad inputs, injecting `*_segment_ids`, `*_positions`.
 
@@ -651,7 +652,7 @@ def _trim_and_pad_with_segments(
             feature_lengths_with_new_keys[new_key] = length
 
     @seqio.map_over_dataset
-    def add_segments_positions(example: Dict[str, tf.Tensor]):
+    def add_segments_positions(example: dict[str, tf.Tensor]):
         for key in feature_lengths:
             example[f"{key}_segment_ids"] = tf.ones_like(example[key])
             example[f"{key}_positions"] = tf.range(tf.shape(example[key])[-1])
@@ -931,7 +932,7 @@ def augment_text_from_inputs_targets_pretokenized(
         targets_pretokenized and prefix.
     """
 
-    def fn(inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def fn(inputs: dict[str, Any]) -> dict[str, Any]:
         inputs["inputs_pretokenized"] = tf.strings.regex_replace(
             prompt + inputs[source_key] + join_with, "\n", replace_newlines_with
         )
@@ -1079,7 +1080,7 @@ def lm_decoding_prefix_processor(
     vocab = vocab_cfg.instantiate()
 
     @seqio.map_over_dataset
-    def prepare_prefix(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def prepare_prefix(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         input_ids = example["input_ids"]
         target_labels = example["target_labels"]
 

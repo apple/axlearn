@@ -7,7 +7,7 @@ import copy
 import json
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any
 
 # isort: off
 from axlearn.open_api.common import BaseClient, ClientRateLimitError, ValidationError
@@ -39,7 +39,7 @@ class AnthropicClient(BaseClient):
     async def async_generate(
         self,
         *,
-        request: Dict[str, Any],
+        request: dict[str, Any],
         **kwargs,
     ) -> str:
         """Generates response asynchronously from the client.
@@ -101,7 +101,7 @@ class AnthropicClient(BaseClient):
         logging.warning("Reducing target length to %d, Retrying...", request_kwargs["max_tokens"])
 
     @classmethod
-    def parse_generation(cls, response: Dict[str, Any]) -> List[ChatCompletionMessage]:
+    def parse_generation(cls, response: dict[str, Any]) -> list[ChatCompletionMessage]:
         """Parses generation from response.
 
         Args:
@@ -130,8 +130,8 @@ class AnthropicClient(BaseClient):
             elif content["type"] == "text":
                 text = content["text"]
 
-        text_messages: List[ChatCompletionMessage] = []
-        tool_calls_messages: List[ChatCompletionMessage] = []
+        text_messages: list[ChatCompletionMessage] = []
+        tool_calls_messages: list[ChatCompletionMessage] = []
 
         if len(tool_calls) > 0:
             tool_calls_messages.append(
@@ -145,7 +145,7 @@ class AnthropicClient(BaseClient):
         return text_messages
 
 
-def _convert_openai_messages_to_anthropic(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _convert_openai_messages_to_anthropic(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Converts OpenAI style messages to Anthropic.
 
     Args:
@@ -158,7 +158,7 @@ def _convert_openai_messages_to_anthropic(messages: List[Dict[str, Any]]) -> Lis
         ValidationError: Unknown content type.
     """
 
-    def _contains_tool_results(message: Dict) -> bool:
+    def _contains_tool_results(message: dict) -> bool:
         if "content" in message and isinstance(message["content"], list):
             for c in message["content"]:
                 if c["type"] == "tool_result":
@@ -234,7 +234,7 @@ def _convert_openai_messages_to_anthropic(messages: List[Dict[str, Any]]) -> Lis
     return processed_messages
 
 
-def _convert_openai_tools_to_anthropic(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _convert_openai_tools_to_anthropic(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Converts OpenAI tools to Anthropic tools."""
     new_tools = []
     copied_tools = copy.deepcopy(tools)

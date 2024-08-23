@@ -44,20 +44,9 @@ On `attention_logit_biases`:
 import enum
 import functools
 import math
+from collections.abc import Sequence
 from enum import Enum, unique
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Literal,
-    NamedTuple,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-    Union,
-)
+from typing import Any, Callable, Literal, NamedTuple, Optional, Union
 
 import jax
 from jax import numpy as jnp
@@ -193,7 +182,7 @@ class BaseTransformerLayer(BaseLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-        return_aux: Optional[Set[str]] = None,
+        return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes transformer layer outputs given full-sequence inputs.
 
@@ -248,7 +237,7 @@ class BaseTransformerLayer(BaseLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, Output]:
+    ) -> tuple[NestedTensor, Output]:
         """Initializes cached states for incremental computation.
 
         TODO(markblee): Rename to init_states once we add support for decoding at non-zero time
@@ -284,7 +273,7 @@ class BaseTransformerLayer(BaseLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, Output]:
+    ) -> tuple[NestedTensor, Output]:
         """Computes incremental outputs.
 
         Args:
@@ -381,7 +370,7 @@ class LearnedPositionalEmbedding(BaseLayer):
 
     # pylint: enable=duplicate-code
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return dict(
             weight=ParameterSpec(
@@ -510,7 +499,7 @@ class BaseMultiheadLinear(DenseGeneralBaseLayer):
         cfg.param_partition_spec = (None, "model", None)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             weight=ParameterSpec(
@@ -751,7 +740,7 @@ class BaseQKVLinear(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-    ) -> Tuple[NestedTensor, Output]:
+    ) -> tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
         TODO(markblee): Rename to init_states once we add support for decoding at non-zero time
@@ -820,7 +809,7 @@ class BaseQKVLinear(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-    ) -> Tuple[NestedTensor, Output]:
+    ) -> tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
 
@@ -1256,7 +1245,7 @@ def apply_rotary_position_embeddings(
     value: Tensor,
     sinusoidal_pos: Tensor,
     rotary_value: bool,
-) -> Tuple[Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor]:
     """This is a jax implementation (a copy) of the RoPE apply_rotary_position_embeddings.
 
     Ref:
@@ -1388,7 +1377,7 @@ class PerDimScale(BaseLayer):
         cfg.param_init = ConstantInitializer.default_config().set(value=0.0)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return {
             "param": ParameterSpec(shape=(cfg.dim,), mesh_axes=(None,)),
@@ -1676,8 +1665,8 @@ class MultiheadAttention(BaseLayer):
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
-        return_aux: Optional[Set[str]] = None,
-    ) -> Tuple[Optional[NestedTensor], Output]:
+        return_aux: Optional[set[str]] = None,
+    ) -> tuple[Optional[NestedTensor], Output]:
         """Computes attention for the given query, key, value, and attention logit biases.
 
         If key and value are both None, computes self-attention using query.
@@ -1809,7 +1798,7 @@ class MultiheadAttention(BaseLayer):
         k_proj: Tensor,
         v_proj: Tensor,
         attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Computes attention context and probs.
 
         Args:
@@ -1839,7 +1828,7 @@ class MultiheadAttention(BaseLayer):
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
-        return_aux: Optional[Set[str]] = None,
+        return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes attention for the given query, key, value, and attention logit biases.
 
@@ -1916,8 +1905,8 @@ class MultiheadAttention(BaseLayer):
         query: Tensor,
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor],
-        return_aux: Optional[Set[str]] = None,
-    ) -> Tuple[NestedTensor, Output]:
+        return_aux: Optional[set[str]] = None,
+    ) -> tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
         TODO(markblee): Rename to init_states once we add support for decoding at non-zero time
@@ -1954,8 +1943,8 @@ class MultiheadAttention(BaseLayer):
         *,
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor],
-        return_aux: Optional[Set[str]] = None,
-    ) -> Tuple[NestedTensor, Output]:
+        return_aux: Optional[set[str]] = None,
+    ) -> tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
 
@@ -2039,7 +2028,7 @@ class GroupedQueryAttention(MultiheadAttention):
         k_proj: Tensor,
         v_proj: Tensor,
         attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
         k_proj = self._repeat_kv_heads(k_proj)
         v_proj = self._repeat_kv_heads(v_proj)
@@ -2070,7 +2059,7 @@ class SigmoidAttention(MultiheadAttention):
         k_proj: Tensor,
         v_proj: Tensor,
         attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Computes attention context and probs.
 
         Args:
@@ -2281,7 +2270,7 @@ class MultiheadAttentionXL(MultiheadAttention):
             ),
         )
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = super()._create_layer_parameter_specs()
         params["u_bias"] = params["v_bias"] = ParameterSpec(
@@ -2350,7 +2339,7 @@ class MultiheadAttentionXL(MultiheadAttention):
         cached_states: NestedTensor,
         query: Tensor,
         **kwargs,
-    ) -> Tuple[NestedTensor, MultiheadAttention.Output]:
+    ) -> tuple[NestedTensor, MultiheadAttention.Output]:
         raise NotImplementedError(type(self))
 
 
@@ -2430,8 +2419,8 @@ class TransformerAttentionLayer(BaseLayer):
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
-        return_aux: Optional[Set[str]] = None,
-    ) -> Tuple[Optional[NestedTensor], Output]:
+        return_aux: Optional[set[str]] = None,
+    ) -> tuple[Optional[NestedTensor], Output]:
         """Computes either self-attention or cross-attention for the given target and source.
 
         Args:
@@ -2465,7 +2454,7 @@ class TransformerAttentionLayer(BaseLayer):
             raise NotImplementedError(source)
         kv_kwargs["return_aux"] = return_aux
 
-        def attention_thunk(target: Tensor) -> Tuple[Optional[NestedTensor], Tensor]:
+        def attention_thunk(target: Tensor) -> tuple[Optional[NestedTensor], Tensor]:
             if mode == ForwardMode.FORWARD:
                 atten_state, atten_output = (
                     None,
@@ -2524,7 +2513,7 @@ class TransformerAttentionLayer(BaseLayer):
         target: Tensor,
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
-        return_aux: Optional[Set[str]] = None,
+        return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes attention with target as query and source as key and value.
 
@@ -2584,8 +2573,8 @@ class TransformerAttentionLayer(BaseLayer):
         target: Tensor,
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
-        return_aux: Optional[Set[str]] = None,
-    ) -> Tuple[NestedTensor, Output]:
+        return_aux: Optional[set[str]] = None,
+    ) -> tuple[NestedTensor, Output]:
         """Initializes cache for autoregressive cached decoding.
 
         TODO(markblee): Rename to init_states once we add support for decoding at non-zero time
@@ -2623,8 +2612,8 @@ class TransformerAttentionLayer(BaseLayer):
         *,
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
-        return_aux: Optional[Set[str]] = None,
-    ) -> Tuple[NestedTensor, Output]:
+        return_aux: Optional[set[str]] = None,
+    ) -> tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
 
@@ -2699,7 +2688,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         # See the implementation in _linear1_activation().
         # This supports the gated linear activations proposed by Shazeer in
         # https://arxiv.org/abs/2002.05202.
-        activation: Union[str, Tuple[str, str]] = "nn.relu"
+        activation: Union[str, tuple[str, str]] = "nn.relu"
 
         # The dropout layer config.
         dropout: InstantiableConfig = Dropout.default_config()
@@ -2953,8 +2942,8 @@ class TransformerLayer(BaseTransformerLayer):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
-        return_aux: Optional[Set[str]] = None,
-    ) -> Tuple[Optional[NestedTensor], BaseTransformerLayer.Output]:
+        return_aux: Optional[set[str]] = None,
+    ) -> tuple[Optional[NestedTensor], BaseTransformerLayer.Output]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
         Args:
@@ -3077,7 +3066,7 @@ class TransformerLayer(BaseTransformerLayer):
         time_step: Tensor,
         data: Tensor,
         **kwargs,
-    ) -> Tuple[NestedTensor, BaseTransformerLayer.Output]:
+    ) -> tuple[NestedTensor, BaseTransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(self_attention=time_step),
@@ -3090,7 +3079,7 @@ class TransformerLayer(BaseTransformerLayer):
         cached_states: NestedTensor,
         data: Tensor,
         **kwargs,
-    ) -> Tuple[NestedTensor, BaseTransformerLayer.Output]:
+    ) -> tuple[NestedTensor, BaseTransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             cached_states=cached_states,
@@ -3219,7 +3208,7 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         data: Tensor,
         cached_states: Optional[NestedTensor] = None,
         **kwargs,
-    ) -> Tuple[Optional[NestedTensor], Tensor]:
+    ) -> tuple[Optional[NestedTensor], Tensor]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
         Args:
@@ -3288,7 +3277,7 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         time_step: Tensor,
         data: Tensor,
         **kwargs,
-    ) -> Tuple[NestedTensor, BaseTransformerLayer.Output]:
+    ) -> tuple[NestedTensor, BaseTransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(layer=time_step),
@@ -3301,7 +3290,7 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         cached_states: NestedTensor,
         data: Tensor,
         **kwargs,
-    ) -> Tuple[NestedTensor, BaseTransformerLayer.Output]:
+    ) -> tuple[NestedTensor, BaseTransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             cached_states=cached_states,
@@ -3446,7 +3435,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         data: Tensor,
         cached_states: Optional[NestedTensor] = None,
         **layer_kwargs,
-    ) -> Tuple[List[Optional[NestedTensor]], TransformerLayer.Output]:
+    ) -> tuple[list[Optional[NestedTensor]], TransformerLayer.Output]:
         """Computes transformer stack outputs.
 
         Args:
@@ -3495,9 +3484,9 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
 
     def _update_layer_kwargs(
         self,
-        layer_kwargs: Dict[str, Any],
+        layer_kwargs: dict[str, Any],
         *,
-        all_layer_outputs: List[BaseTransformerLayer.Output],
+        all_layer_outputs: list[BaseTransformerLayer.Output],
     ):
         """Updates `layer_kwargs` using other args.
 
@@ -3548,7 +3537,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         time_step: Tensor,
         data: Tensor,
         **layer_kwargs,
-    ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
+    ) -> tuple[list[NestedTensor], TransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=time_step,
@@ -3558,10 +3547,10 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
 
     def extend_step(
         self,
-        cached_states: List[NestedTensor],
+        cached_states: list[NestedTensor],
         data: Tensor,
         **layer_kwargs,
-    ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
+    ) -> tuple[list[NestedTensor], TransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             cached_states=cached_states,
@@ -3593,7 +3582,7 @@ class _TransformerRepeat(Repeat):
         data: Tensor,
         cached_states: Optional[NestedTensor] = None,
         **layer_kwargs,
-    ) -> Tuple[Optional[NestedTensor], TransformerLayer.Output]:
+    ) -> tuple[Optional[NestedTensor], TransformerLayer.Output]:
         """Computes transformer stack outputs.
 
         Args:
@@ -3691,7 +3680,7 @@ class _TransformerRepeat(Repeat):
         time_step: Tensor,
         data: Tensor,
         **layer_kwargs,
-    ) -> Tuple[NestedTensor, TransformerLayer.Output]:
+    ) -> tuple[NestedTensor, TransformerLayer.Output]:
         cfg = self.config
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
@@ -3705,7 +3694,7 @@ class _TransformerRepeat(Repeat):
         cached_states: NestedTensor,
         data: Tensor,
         **layer_kwargs,
-    ) -> Tuple[NestedTensor, TransformerLayer.Output]:
+    ) -> tuple[NestedTensor, TransformerLayer.Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             data=data,
@@ -3764,7 +3753,7 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         time_step: Tensor,
         data: Tensor,
         **layer_kwargs,
-    ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
+    ) -> tuple[list[NestedTensor], TransformerLayer.Output]:
         repeat_cached_states, output = self.repeat.prefill_states(
             time_step=time_step, data=data, **layer_kwargs
         )
@@ -3775,7 +3764,7 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         cached_states: NestedTensor,
         data: Tensor,
         **layer_kwargs,
-    ) -> Tuple[List[NestedTensor], TransformerLayer.Output]:
+    ) -> tuple[list[NestedTensor], TransformerLayer.Output]:
         repeat_cached_states, output = self.repeat.extend_step(
             cached_states=cached_states["repeat"],
             data=data,
@@ -3794,7 +3783,7 @@ class _TransformerPipeline(Pipeline):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-        return_aux: Optional[Set[str]] = None,
+        return_aux: Optional[set[str]] = None,
     ) -> TransformerLayer.Output:
         carry_in = dict(data=data)
         return_aux = return_aux or set()
@@ -3878,7 +3867,7 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-        return_aux: Optional[Set[str]] = None,
+        return_aux: Optional[set[str]] = None,
     ) -> TransformerLayer.Output:
         return self.pipeline(
             data,
@@ -4018,7 +4007,7 @@ class FullAttentionLogitBiasLayer(AttentionLogitBiasLayer):
         return make_segment_mask(source_segments=segment_ids, target_segments=segment_ids)
 
 
-def alibi_get_slopes(num_heads: int) -> List:
+def alibi_get_slopes(num_heads: int) -> list:
     """Get the slopes for different attention heads defined in ALiBi paper.
 
     This is a direct copy from ALiBi codebase.
@@ -4033,7 +4022,7 @@ def alibi_get_slopes(num_heads: int) -> List:
         a slope for one attention head.
     """
 
-    def get_slopes_power_of_2(n: int) -> List:
+    def get_slopes_power_of_2(n: int) -> list:
         start = 2 ** (-(2 ** -(math.log2(n) - 3)))
         ratio = start
         return [start * ratio**i for i in range(n)]

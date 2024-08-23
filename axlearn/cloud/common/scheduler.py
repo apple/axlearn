@@ -12,7 +12,8 @@ import collections
 import dataclasses
 import datetime
 import queue
-from typing import Any, Dict, Mapping, NamedTuple, Optional, Sequence, Set, Tuple
+from collections.abc import Mapping, Sequence
+from typing import Any, NamedTuple, Optional
 
 from absl import logging
 
@@ -130,8 +131,8 @@ class JobVerdict:
         metadata: Metadata for each verdict. Defaults to an empty dict.
     """
 
-    over_limits: Optional[Set[ResourceType]] = None
-    metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    over_limits: Optional[set[ResourceType]] = None
+    metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def should_run(self):
         return not self.over_limits
@@ -158,7 +159,7 @@ class BaseScheduler(Configurable):
 
         project_limits: ProjectResourceMap[int]
         project_usages: ProjectResourceMap[int]
-        job_verdicts: Dict[str, Dict[str, JobVerdict]]
+        job_verdicts: dict[str, dict[str, JobVerdict]]
 
     def schedule(
         self,
@@ -204,7 +205,7 @@ def _normalize_quotas(
     return normalized_quotas
 
 
-def _job_verdict(demands: Dict[ResourceType, int], limits: ResourceMap[int]) -> JobVerdict:
+def _job_verdict(demands: dict[ResourceType, int], limits: ResourceMap[int]) -> JobVerdict:
     """Constructs a verdict for the job."""
     over_limits = set()
     for resource_type, demand in demands.items():
@@ -302,14 +303,14 @@ class TierScheduler(BaseScheduler):
         # Maps project_id -> resource_type -> usage.
         project_usages = collections.defaultdict(lambda: collections.defaultdict(int))
         # Maps project_id -> deque of (job_id, job_metadata).
-        project_jobs: Dict[str, collections.deque[Tuple[str, JobMetadata]]] = {
+        project_jobs: dict[str, collections.deque[tuple[str, JobMetadata]]] = {
             project_id: collections.deque(
                 _demote_unschedulable_jobs(sorted_jobs, limits=remaining_limits)
             )
             for project_id, sorted_jobs in project_jobs.items()
         }
 
-        def project_queue_item(project_id: str) -> Tuple[float, datetime.datetime, str]:
+        def project_queue_item(project_id: str) -> tuple[float, datetime.datetime, str]:
             """Constructs a queue entry for the given project."""
             assert len(project_jobs[project_id]) > 0
             usages = project_usages[project_id]
@@ -425,7 +426,7 @@ class JobScheduler(Configurable):
 
     def schedule(
         self,
-        jobs: Dict[str, JobMetadata],
+        jobs: dict[str, JobMetadata],
         *,
         dry_run: bool = False,
         verbosity: int = 0,

@@ -2,7 +2,7 @@
 
 """Tests repeat layer."""
 import itertools
-from typing import Dict, Optional
+from typing import Optional
 
 import jax.random
 from absl import logging
@@ -32,7 +32,7 @@ from axlearn.common.utils import (
 class TestLayer(BaseLayer):
     """A dummy layer."""
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         return dict(
             inc=ParameterSpec(
                 shape=[], mesh_axes=[], initializer=param_init.constant_initializer(1)

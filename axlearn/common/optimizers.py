@@ -27,7 +27,8 @@ Despite this, there are no plans to stop supporting `PartitionedGradientTransfor
 """
 import dataclasses
 import re
-from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Any, Callable, NamedTuple, Optional, Union
 
 import chex
 import jax
@@ -93,8 +94,8 @@ def named_chain(**kwargs):
         return {k: v.init(params) for k, v in kwargs.items()}
 
     def update_fn(
-        updates: NestedTensor, state: Dict[str, Any], params: NestedOptParam
-    ) -> Tuple[NestedTensor, optax.EmptyState]:
+        updates: NestedTensor, state: dict[str, Any], params: NestedOptParam
+    ) -> tuple[NestedTensor, optax.EmptyState]:
         new_state = {}
         for k, v in kwargs.items():
             updates, new_state[k] = v.update(updates, state[k], params)
@@ -109,7 +110,7 @@ def named_chain(**kwargs):
 def _no_op():
     def update_fn(
         updates: NestedTensor, state: optax.EmptyState, params: NestedOptParam
-    ) -> Tuple[NestedTensor, optax.EmptyState]:
+    ) -> tuple[NestedTensor, optax.EmptyState]:
         del params
         return updates, state
 
@@ -132,7 +133,7 @@ def with_partition_fn(
 
     def update_fn(
         updates: optax.Updates, state: optax.OptState, params: NestedOptParam
-    ) -> Tuple[optax.Updates, optax.OptState]:
+    ) -> tuple[optax.Updates, optax.OptState]:
         return base.update(updates, state, opt_param_values(params))
 
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
@@ -226,7 +227,7 @@ def scale_from_learning_rate(
 
 
 def per_param_scale_by_path(
-    *, scale_by_path: Sequence[Tuple[str, float]], description: str, default_scale: float = 1.0
+    *, scale_by_path: Sequence[tuple[str, float]], description: str, default_scale: float = 1.0
 ) -> Callable[[NestedOptParam], Any]:
     """Computes per-parameter scales with regex-based rules.
 
@@ -431,7 +432,7 @@ def scale_update_per_param(
 
     def update_fn(
         updates: NestedTensor, state: optax.EmptyState, params: NestedOptParam
-    ) -> Tuple[NestedTensor, optax.EmptyState]:
+    ) -> tuple[NestedTensor, optax.EmptyState]:
         if params is None:
             raise ValueError(optax.NO_PARAMS_MSG)  # pylint: disable=no-member
 
@@ -1126,7 +1127,7 @@ def clip_by_global_norm(
 class DropNormThresholdFn(typing_extensions.Protocol):
     """Protocol for drop norm threshold function."""
 
-    def __call__(self, *, count: Tensor, mean: Tensor, stddev: Tensor) -> Dict[str, Tensor]:
+    def __call__(self, *, count: Tensor, mean: Tensor, stddev: Tensor) -> dict[str, Tensor]:
         """Returns the drop_norm thresholds given the gradient norm stats.
 
         Args:
@@ -1141,10 +1142,10 @@ class DropNormThresholdFn(typing_extensions.Protocol):
         """
 
 
-def drop_norm_by_grad_norm_ema(multipliers: Tuple = (20, 40, 100)) -> DropNormThresholdFn:
+def drop_norm_by_grad_norm_ema(multipliers: tuple = (20, 40, 100)) -> DropNormThresholdFn:
     """Return drop norm thresholds which are multiples of grad norm ema."""
 
-    def fn(count: Tensor, mean: Tensor, stddev: Tensor) -> Dict[str, Tensor]:
+    def fn(count: Tensor, mean: Tensor, stddev: Tensor) -> dict[str, Tensor]:
         del count
         del stddev
         thresholds = {}
@@ -1159,11 +1160,11 @@ def drop_norm_by_grad_norm_ema(multipliers: Tuple = (20, 40, 100)) -> DropNormTh
 def drop_norm_by_grad_norm_stddev(
     *,
     min_count: int = 500,
-    multipliers: Tuple = (20, 40, 100),
+    multipliers: tuple = (20, 40, 100),
 ) -> DropNormThresholdFn:
     """Return drop norm thresholds based on grad norm stddev."""
 
-    def fn(count: Tensor, mean: Tensor, stddev: Tensor) -> Dict[str, Tensor]:
+    def fn(count: Tensor, mean: Tensor, stddev: Tensor) -> dict[str, Tensor]:
         # We do not drop norm for the first `min_count` data batches,
         # otherwise the threshold is `mean + stddev * k` for multiplier `k`.
         thresholds = {}
@@ -1186,7 +1187,7 @@ class SkipClipState(NamedTuple):
     ]  # The moving average of grad norm variance.
     inner_state: Any  # State of the inner PartitionedGradientTransformation.
     drop_stats: Optional[
-        Dict[str, Union[Tensor, TensorSpec]]
+        dict[str, Union[Tensor, TensorSpec]]
     ]  # A dict to keep the counts when the grad norm exceeds thresholds.
 
 
@@ -1288,7 +1289,7 @@ def skip_and_clip_by_global_norm(
             norm_ema: Tensor,
             norm_square_ema: Tensor,
             count: Tensor,
-        ) -> Tuple[Tensor, Tensor]:
+        ) -> tuple[Tensor, Tensor]:
             # bias correrction decay
             # Sec 7.1 https://arxiv.org/pdf/1804.04235.pdf
             decay = grad_norm_ema_decay
@@ -1304,8 +1305,8 @@ def skip_and_clip_by_global_norm(
             norm_ema: Optional[Tensor],
             norm_square_ema: Optional[Tensor],
             count: Optional[Tensor],
-            drop_stats: Optional[Dict[str, Tensor]],
-        ) -> Tuple[Tensor, Optional[Dict[str, Tensor]]]:
+            drop_stats: Optional[dict[str, Tensor]],
+        ) -> tuple[Tensor, Optional[dict[str, Tensor]]]:
             if isinstance(drop_norm, (float, int)):
                 return g_norm < drop_norm, None
             else:
@@ -1820,7 +1821,7 @@ def adastar_optimizer(
 
         def _moment(
             x: Tensor, *, acc: Optional[Tensor], decay: Optional[float], debias: bool
-        ) -> Tuple[Tensor, Optional[Tensor]]:
+        ) -> tuple[Tensor, Optional[Tensor]]:
             if decay is None:
                 return x, None
             value = acc = decay * acc + (1 - decay) * x
@@ -1830,7 +1831,7 @@ def adastar_optimizer(
 
         def _split_update_results(
             update_results: Nested[_AdastarUpdateResult],
-        ) -> Tuple[NestedTensor, Nested[_AdastarPerParamState]]:
+        ) -> tuple[NestedTensor, Nested[_AdastarPerParamState]]:
             """Splits a tree of _AdastarUpdateResult to (updates, state)."""
             updates = jax.tree_util.tree_map(
                 lambda ur: ur.updates,

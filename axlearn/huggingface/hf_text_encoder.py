@@ -3,7 +3,6 @@
 """HuggingFace text encoders."""
 import os
 from enum import Enum, unique
-from typing import Dict
 
 import torch
 from torch import nn
@@ -77,7 +76,7 @@ class MultiStreamTextEmbeddingModel(nn.Module):
 
     def __init__(
         self,
-        stream_encoders: Dict[str, TextEmbeddingEncoder],
+        stream_encoders: dict[str, TextEmbeddingEncoder],
     ):
         super().__init__()
         self.stream_encoders = stream_encoders
@@ -94,8 +93,8 @@ class MultiStreamTextEmbeddingModel(nn.Module):
             )
 
     def forward(
-        self, input_batch: Dict[str, Dict[str, torch.Tensor]]
-    ) -> Dict[str, Dict[str, torch.Tensor]]:
+        self, input_batch: dict[str, dict[str, torch.Tensor]]
+    ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward function.
 
         Args:
@@ -116,7 +115,7 @@ class MultiStreamTextEmbeddingModel(nn.Module):
         return encoder_outputs
 
     @classmethod
-    def from_pretrained(cls, output_dir: str, pooler: Dict[str, str]):
+    def from_pretrained(cls, output_dir: str, pooler: dict[str, str]):
         """Instantiate a pretrained pytorch model from a pre-trained model configuration."""
         stream_encoders = {}
         for encoder_name in os.listdir(output_dir):

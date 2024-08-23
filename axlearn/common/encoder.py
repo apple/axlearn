@@ -2,7 +2,7 @@
 
 """Encoder layers."""
 import math
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -177,7 +177,7 @@ class CausalEncoder(Encoder):
             time_step=jnp.zeros(batch_size, dtype=jnp.int32),
         )
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         param_specs = {}
         if cfg.num_cls_tokens > 0:
@@ -275,7 +275,7 @@ class CausalEncoder(Encoder):
         time_step: Tensor,
         input_ids: Tensor,
         token_type_ids: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         # Note: this follows `Decoder.prefill_states` closely. Refer to that method for details.
         # TODO(markblee): Possibly consolidate some of this with decoder.
         x = self.emb(input_ids, token_type_ids=token_type_ids, positions=None)
@@ -294,7 +294,7 @@ class CausalEncoder(Encoder):
         cached_states: NestedTensor,
         input_ids: Tensor,
         token_type_ids: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         cfg = self.config
         # Note: this follows `Decoder.extend_step` closely. Refer to that method for details.
         # TODO(markblee): Possibly consolidate some of this with decoder.
@@ -369,9 +369,9 @@ class EncoderModel(BaseModel):
 
     def forward(
         self,
-        input_batch: Dict[str, Tensor],
+        input_batch: dict[str, Tensor],
         return_aux: bool = False,
-    ) -> Tuple[Tensor, NestedTensor]:
+    ) -> tuple[Tensor, NestedTensor]:
         """Produces prediction scores from the input tokens and types.
 
         Args:
@@ -410,7 +410,7 @@ class EncoderModel(BaseModel):
                 )
         return loss, predictions if return_aux else {}
 
-    def predict(self, input_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def predict(self, input_batch: dict[str, Tensor]) -> dict[str, Tensor]:
         """Outputs predictions for the given inputs.
 
         Args:

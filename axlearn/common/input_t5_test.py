@@ -3,7 +3,6 @@
 """Tests T5 inputs."""
 import logging
 import os
-from typing import Dict, List, Tuple
 
 import pytest
 import seqio
@@ -64,7 +63,7 @@ def _interleave(vocab, source_ids, target_labels):
 
 
 class T5InputTest(parameterized.TestCase, tf.test.TestCase):
-    def _assert_oneof(self, actual: tf.Tensor, candidates: List[List[int]]):
+    def _assert_oneof(self, actual: tf.Tensor, candidates: list[list[int]]):
         for candidate in candidates:
             try:
                 self.assertAllEqual(actual, candidate)
@@ -115,7 +114,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         ),
     )
     def test_select_random_chunk(
-        self, chunk_size: int, examples: List[tf.Tensor], expected_one_of: List[List[tf.Tensor]]
+        self, chunk_size: int, examples: list[tf.Tensor], expected_one_of: list[list[tf.Tensor]]
     ):
         def _check(ds):
             ds = list(ds)
@@ -187,7 +186,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         ),
     )
     def test_reduce_concat_tokens(
-        self, batch_size: int, examples: List[tf.Tensor], expected: List[tf.Tensor], repeat: int = 1
+        self, batch_size: int, examples: list[tf.Tensor], expected: list[tf.Tensor], repeat: int = 1
     ):
         def _check(ds):
             ds = list(ds)
@@ -229,7 +228,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_random_spans_helper(
         self,
-        expected: Tuple[int, int],
+        expected: tuple[int, int],
         desired_source_length: int,
         noise_density: float,
         mean_noise_span_length: float,
@@ -271,7 +270,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         ),
     )
     def test_split_tokens(
-        self, examples: List[tf.Tensor], max_tokens_per_segment: int, expected: List[tf.Tensor]
+        self, examples: list[tf.Tensor], max_tokens_per_segment: int, expected: list[tf.Tensor]
     ):
         def _check(ds):
             ds = list(ds)
@@ -589,7 +588,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
     @pytest.mark.skipif(
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
-    def test_make_t5_autoregressive_inputs(self, examples: List[Dict[str, tf.Tensor]], **kwargs):
+    def test_make_t5_autoregressive_inputs(self, examples: list[dict[str, tf.Tensor]], **kwargs):
         tf.random.set_seed(1234)
         source = fake_source(
             is_training=False,
@@ -695,7 +694,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         ),
     )
     def test_map_prefix_to_value(
-        self, is_training: bool, example: Dict[str, tf.Tensor], expected: Dict[str, tf.Tensor]
+        self, is_training: bool, example: dict[str, tf.Tensor], expected: dict[str, tf.Tensor]
     ):
         source = fake_source(is_training=is_training, examples=[example])
         processor = map_prefix_to_value(is_training, value=0)

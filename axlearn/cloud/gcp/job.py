@@ -13,8 +13,9 @@ import pathlib
 import re
 import shlex
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence, Union
+from typing import Any, Optional, Union
 from urllib.parse import urlparse
 
 import kubernetes as k8s
@@ -316,7 +317,7 @@ class GKEJob(GCPJob):
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
         """
 
-        env_vars: Dict[str, str] = {}
+        env_vars: dict[str, str] = {}
         namespace: str = "default"
         gcsfuse_mount: Optional[GCSFuseMount] = None
         # This config is made Optional for backwards compatibility. Default is False.
@@ -764,7 +765,7 @@ class GPUGKEJob(GKEJob):
             {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
         ]
 
-        env_vars: Dict[str, str] = {}
+        env_vars: dict[str, str] = {}
         env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
 
@@ -1050,7 +1051,7 @@ class CPUJob(GCPJob):
         self._execute_remote_cmd(cfg.command)
 
 
-def _prepare_subprocess_kwargs(kwargs: Dict) -> Dict:
+def _prepare_subprocess_kwargs(kwargs: dict) -> dict:
     """Enable check=True and capture all outputs by default."""
     kwargs.setdefault("text", True)
     kwargs.setdefault("check", True)
@@ -1105,7 +1106,7 @@ def docker_command(
     image: str,
     detached_session: Optional[str] = None,
     env: Optional[Sequence[str]] = None,
-    volumes: Optional[Dict[str, str]] = None,
+    volumes: Optional[dict[str, str]] = None,
     extra_docker_flags: Optional[Sequence[str]] = None,
 ) -> str:
     """Wraps a command with docker run.

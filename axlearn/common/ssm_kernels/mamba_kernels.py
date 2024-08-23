@@ -8,7 +8,7 @@
 
 """Pallas kernels for use with Mamba models."""
 import functools
-from typing import NamedTuple, Tuple
+from typing import NamedTuple
 
 import jax
 from jax import numpy as jnp
@@ -366,7 +366,7 @@ def _loop_backward_pallas(
     d: Tensor,
     seq_tile_size: int,
     dim_tile_size: int,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Compute the Mamba backward pass using a Pallas kernel.
 
     Args:
@@ -400,7 +400,7 @@ def _loop_backward_pallas(
     state_dim = b.shape[2]
     x_dtype = x.dtype
     # All parameters except `a` need to be in float32 in order for Pallas not to complain.
-    dy, x, b, c, delta, d = [arg.astype(jnp.float32) for arg in [dy, x, b, c, delta, d]]
+    dy, x, b, c, delta, d = (arg.astype(jnp.float32) for arg in [dy, x, b, c, delta, d])
     batch_tile_size = 1
     x_spec, a_spec, b_spec, d_spec, carry_spec = _parameter_blockspecs(
         state_dim,
@@ -728,7 +728,7 @@ def _mamba_scan_fwd(
     d: Tensor,
     seq_tile_size: int,
     dim_tile_size: int,
-) -> Tuple[Tensor, Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]]:
+) -> tuple[Tensor, tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]]:
     """Forward function for `mamba_scan`."""
     y = _loop_forward_pallas(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
     return y, (x, a, b, c, delta, d)
@@ -737,9 +737,9 @@ def _mamba_scan_fwd(
 def _mamba_scan_bwd(
     seq_tile_size: int,
     dim_tile_size: int,
-    res: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor],
+    res: tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor],
     dy: Tensor,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Compute gradients with respect to `_mamba_scan_fwd`'s arguments."""
     x, a, b, c, delta, d = res  # The tensors we saved from the forward pass.
     dx, da, db, dc, ddelta, dd = _loop_backward_pallas(
@@ -801,11 +801,11 @@ def compute_mamba_scan(
     ), "`dim_tile_size` must be a positive multiple of 128."
     _, seqlen, inner = x.shape
 
-    x, b, c, delta = [
+    x, b, c, delta = (
         _pad_to_multiple(arg, divisor=seq_tile_size, axis=1) for arg in [x, b, c, delta]
-    ]
-    x, delta = [_pad_to_multiple(arg, divisor=dim_tile_size, axis=2) for arg in [x, delta]]
-    a, d = [_pad_to_multiple(arg, divisor=dim_tile_size, axis=1) for arg in [a, d]]
+    )
+    x, delta = (_pad_to_multiple(arg, divisor=dim_tile_size, axis=2) for arg in [x, delta])
+    a, d = (_pad_to_multiple(arg, divisor=dim_tile_size, axis=1) for arg in [a, d])
     y = _mamba_scan(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
     # Remove zero-padding if any.
     return y[:, :seqlen, :inner]

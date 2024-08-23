@@ -5,7 +5,7 @@
 import collections
 import json
 import re
-from typing import Any, Dict, List, Optional, Protocol, Tuple, Type
+from typing import Any, Optional, Protocol
 
 from absl import flags
 
@@ -18,7 +18,7 @@ from axlearn.cloud.gcp.tpu import TpuInfo, list_tpu_info, tpu_resource
 from axlearn.cloud.gcp.utils import get_credentials, list_k8s_jobsets
 
 
-def serialized_flags_for_job(fv: flags.FlagValues, job: Type[Job]) -> list[str]:
+def serialized_flags_for_job(fv: flags.FlagValues, job: type[Job]) -> list[str]:
     """Returns a list of serialized flags --flag=value used by the input job.
 
     Args:
@@ -43,7 +43,7 @@ def serialized_flags_for_job(fv: flags.FlagValues, job: Type[Job]) -> list[str]:
     return filtered
 
 
-def match_by_regex(match_regex: Dict[str, str], gcp_api: str):
+def match_by_regex(match_regex: dict[str, str], gcp_api: str):
     """Matches action and instance type by regex.
 
     For example:
@@ -68,11 +68,11 @@ def match_by_regex(match_regex: Dict[str, str], gcp_api: str):
 
 
 class JobsToTableFn(Protocol):
-    def __call__(self, jobs: Dict[str, BastionJob]) -> Table:
+    def __call__(self, jobs: dict[str, BastionJob]) -> Table:
         """Constructs a printable table for the input jobs."""
 
 
-def jobs_table(jobs: Dict[str, BastionJob]) -> Table:
+def jobs_table(jobs: dict[str, BastionJob]) -> Table:
     """Construct tabular jobs info.
 
     Args:
@@ -108,7 +108,7 @@ def jobs_table(jobs: Dict[str, BastionJob]) -> Table:
     )
 
 
-def _usage_table(usage_info: Dict[str, Dict[ResourceType, Tuple[float, int]]]) -> Table:
+def _usage_table(usage_info: dict[str, dict[ResourceType, tuple[float, int]]]) -> Table:
     """Construct tabular usage info.
 
     Args:
@@ -136,7 +136,7 @@ def _usage_table(usage_info: Dict[str, Dict[ResourceType, Tuple[float, int]]]) -
     return table
 
 
-def user_usage_table(jobs: Dict[str, BastionJob]) -> Table:
+def user_usage_table(jobs: dict[str, BastionJob]) -> Table:
     """Computes per-user usage for the given bastion jobs."""
     # Maps user_id -> resource_type -> (total_usage, count).
     usage_by_user = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
@@ -150,7 +150,7 @@ def user_usage_table(jobs: Dict[str, BastionJob]) -> Table:
     return _usage_table(usage_by_user)
 
 
-def project_usage_table(jobs: Dict[str, BastionJob]) -> Table:
+def project_usage_table(jobs: dict[str, BastionJob]) -> Table:
     """Computes per-user and per-project usage for the given bastion jobs."""
     # Maps project_id -> resource_type -> (total_usage, count).
     usage_by_project = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
@@ -170,7 +170,7 @@ def with_qrm_tpu_state(fn: JobsToTableFn) -> JobsToTableFn:
     Jobs for which no TPU state exists will be assigned "PENDING" state.
     """
 
-    def table_fn(jobs: Dict[str, BastionJob]) -> Table:
+    def table_fn(jobs: dict[str, BastionJob]) -> Table:
         table: Table = fn(jobs)
         tpu_state = _qrm_tpu_state_from_jobs(jobs)
         table.add_col("QRM_STATE", tpu_state["job_name_to_states"].values())
@@ -180,8 +180,8 @@ def with_qrm_tpu_state(fn: JobsToTableFn) -> JobsToTableFn:
 
 
 def _qrm_tpu_state_from_jobs(
-    jobs: Dict[str, BastionJob], tpu_infos: Optional[List[TpuInfo]] = None
-) -> Dict[str, Any]:
+    jobs: dict[str, BastionJob], tpu_infos: Optional[list[TpuInfo]] = None
+) -> dict[str, Any]:
     """Retrieves QRM TPU states for the given jobs."""
     if tpu_infos is None:
         tpu_infos = list_tpu_info(tpu_resource(get_credentials()))
@@ -223,7 +223,7 @@ def with_k8s_jobset_state(fn: JobsToTableFn, *, namespace: str) -> JobsToTableFn
     Jobs for which no Jobset state exists will be assigned "PENDING" state.
     """
 
-    def table_fn(jobs: Dict[str, BastionJob]) -> Table:
+    def table_fn(jobs: dict[str, BastionJob]) -> Table:
         table = fn(jobs)
         states = _k8s_jobset_state_from_jobs(jobs, namespace=namespace)
         table.add_col("GKE_STATE", states)
@@ -233,8 +233,8 @@ def with_k8s_jobset_state(fn: JobsToTableFn, *, namespace: str) -> JobsToTableFn
 
 
 def _k8s_jobset_state_from_jobs(
-    jobs: Dict[str, BastionJob], *, namespace: str, k8s_jobsets: Optional[Dict[str, list]] = None
-) -> List[str]:
+    jobs: dict[str, BastionJob], *, namespace: str, k8s_jobsets: Optional[dict[str, list]] = None
+) -> list[str]:
     """Retrieves k8s jobset states for the given jobs."""
     if k8s_jobsets is None:
         k8s_jobsets = list_k8s_jobsets(namespace=namespace)

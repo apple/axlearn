@@ -3,7 +3,7 @@
 version that enables gradient accumulation.
 """
 import functools
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional
 
 import jax
 import numpy as np
@@ -57,7 +57,7 @@ def _make_scan_minibatch_inputs(
     param_noise_key: Tensor,
     minibatch_size: int,
     minibatch_index: int,
-) -> Tuple[Nested[Tensor], Tensor, Tensor]:
+) -> tuple[Nested[Tensor], Tensor, Tensor]:
     """Creates minibatch inputs from inputs.
 
     This is a utility function that is only meant to be called from
@@ -151,13 +151,13 @@ def with_minibatch_steps(
         # the f_fwd function below.
         def original_func_positional_args(
             model_params: Nested[Tensor], inputs: Any
-        ) -> Tuple[Tensor, ForwardOutputs]:
+        ) -> tuple[Tensor, ForwardOutputs]:
             output = fn(model_params=model_params, inputs=inputs)
             return output.loss, output
 
         def fwd_helper(
             model_params: Nested[Tensor], inputs: Any, compute_grad: bool
-        ) -> Tuple[ForwardOutputs, Optional[Nested[Tensor]]]:
+        ) -> tuple[ForwardOutputs, Optional[Nested[Tensor]]]:
             """Helper function that scans a ForwardFn over minibatches.
 
             Args:
@@ -200,7 +200,7 @@ def with_minibatch_steps(
             )
 
             def scan_body(
-                carry: Tuple[Nested[Tensor], Nested[Tensor], Tensor, Tensor, MetricAccumulator],
+                carry: tuple[Nested[Tensor], Nested[Tensor], Tensor, Tensor, MetricAccumulator],
                 minibatch_index: int,
             ):
                 """Computes minibatch forward outputs and, optionally, gradients."""
@@ -274,7 +274,7 @@ def with_minibatch_steps(
             """Wrap original function to pass in key-word args."""
             return fn(model_params=model_params, inputs=inputs)
 
-        def func_fwd(model_params: Nested[Tensor], inputs: Any) -> Tuple[ForwardOutputs, Tuple]:
+        def func_fwd(model_params: Nested[Tensor], inputs: Any) -> tuple[ForwardOutputs, tuple]:
             """Defines forward pass for the custom vjp based gradient computation."""
             args_ = (model_params, inputs)
             forward_outputs, grads = fwd_helper(
@@ -285,7 +285,7 @@ def with_minibatch_steps(
             saved_fwd_state = grads, len(args_)
             return forward_outputs, saved_fwd_state
 
-        def func_bwd(saved_fwd_state, grad_from_later_in_network) -> Tuple[Nested[Tensor], None]:
+        def func_bwd(saved_fwd_state, grad_from_later_in_network) -> tuple[Nested[Tensor], None]:
             """Defines backward pass for the custom vjp based gradient computation."""
             grad_from_earlier, num_args = saved_fwd_state
             # Compute the backward pass gradient value.

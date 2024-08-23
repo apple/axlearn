@@ -45,7 +45,8 @@ import pathlib
 import shutil
 import tarfile
 import tempfile
-from typing import Dict, Iterable, List, Optional, Sequence, Type, TypeVar, Union
+from collections.abc import Iterable, Sequence
+from typing import Optional, TypeVar, Union
 from urllib.parse import urlparse
 
 import prefixed
@@ -204,7 +205,7 @@ class Bundler(Configurable):
         return temp_dir
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
+    def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler."""
         raise NotImplementedError(cls)
 
@@ -240,7 +241,7 @@ class Bundler(Configurable):
         raise NotImplementedError(type(self))
 
 
-_bundlers: Dict[str, Type[Bundler]] = {}
+_bundlers: dict[str, type[Bundler]] = {}
 T = TypeVar("T")
 
 
@@ -267,7 +268,7 @@ class BaseDockerBundler(Bundler):
         # Path to Dockerfile; either an absolute path, or a path relative to CWD.
         dockerfile: Required[str] = REQUIRED
         # Docker build args.
-        build_args: Dict[str, str] = {}
+        build_args: dict[str, str] = {}
         # Build target.
         target: Optional[str] = None
         # Build target platform.
@@ -302,7 +303,7 @@ class BaseDockerBundler(Bundler):
             )
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
+    def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler.
 
         Possible options:
@@ -420,9 +421,9 @@ class BaseDockerBundler(Bundler):
         *,
         dockerfile: str,
         image: str,
-        args: Dict[str, str],
+        args: dict[str, str],
         context: str,
-        labels: Dict[str, str],
+        labels: dict[str, str],
     ) -> str:
         """Builds and pushes the docker image.
 
@@ -451,9 +452,9 @@ class DockerBundler(BaseDockerBundler):
         *,
         dockerfile: str,
         image: str,
-        args: Dict[str, str],
+        args: dict[str, str],
         context: str,
-        labels: Dict[str, str],
+        labels: dict[str, str],
     ) -> str:
         cfg: DockerBundler.Config = self.config
         return docker_push(
@@ -490,7 +491,7 @@ class BaseTarBundler(Bundler):
         editable: bool = False
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> Config:
+    def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler.
 
         Possible options:
@@ -612,7 +613,7 @@ class BaseTarBundler(Bundler):
 def get_bundler_config(
     *,
     bundler_type: str,
-    spec: List[str],
+    spec: list[str],
     fv: Optional[flags.FlagValues] = None,
 ) -> Bundler.Config:
     """Constructs a bundler config from the given spec.

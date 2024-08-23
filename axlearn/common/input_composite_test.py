@@ -2,7 +2,6 @@
 
 """Tests composite inputs."""
 # pylint: disable=no-self-use
-from typing import List
 
 import tensorflow as tf
 from absl.testing import absltest, parameterized
@@ -17,7 +16,7 @@ from axlearn.common.utils import as_tensor
 
 def make_ds_fn(
     is_training: bool,
-    numbers: List[int],
+    numbers: list[int],
     out_signature="number",
 ) -> input_tf_data.BuildDatasetFn:
     del is_training
@@ -41,7 +40,7 @@ def make_ds_fn(
 class BatchTest(TestCase):
     def _input_config(
         self,
-        numbers: List[int],
+        numbers: list[int],
         *,
         batch_size=2,
         repeat=1,

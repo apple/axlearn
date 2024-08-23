@@ -2,7 +2,7 @@
 
 """Summary objects that can be logged."""
 
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Optional, Union
 
 import jax
 import numpy as np
@@ -100,8 +100,8 @@ class CallbackSummary(Summary):
     """
 
     fn: Callable = struct.field(pytree_node=False)
-    args: Tuple
-    kwargs: Dict[str, Any]
+    args: tuple
+    kwargs: dict[str, Any]
 
     def __init__(self, fn: Callable, *args, **kwargs):
         """Initializes the class.

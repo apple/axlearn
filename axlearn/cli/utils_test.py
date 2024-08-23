@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import tempfile
 from io import StringIO
-from typing import List, Tuple
 from unittest import mock
 
 import pytest
@@ -16,7 +15,7 @@ from absl.testing import parameterized
 from axlearn.cli.utils import CommandGroup, CommandType, _insert_flags, absl_main
 
 
-def _parse(argv: List[str]) -> argparse_flags.argparse.Namespace:
+def _parse(argv: list[str]) -> argparse_flags.argparse.Namespace:
     kwargs = dict(inherited_absl_flags=FlagValues())
     root = CommandGroup("root", argv=argv, **kwargs)
     root.add_flag("--root", undefok=True, action="store_true")
@@ -37,7 +36,7 @@ def _parse(argv: List[str]) -> argparse_flags.argparse.Namespace:
     return root.parse_known_args()
 
 
-def _run(args: argparse_flags.argparse.Namespace) -> Tuple[int, str, str]:
+def _run(args: argparse_flags.argparse.Namespace) -> tuple[int, str, str]:
     """Wraps absl_main by returning (returncode, stdout, stderr)."""
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         returncode = absl_main(args, stdout=stdout, stderr=stderr)
@@ -245,7 +244,7 @@ class TestUtils(parameterized.TestCase):
         (["--root_default=override"],),
         (["--root_default", "override"],),
     )
-    def test_invoke_default(self, flags: List[str]):
+    def test_invoke_default(self, flags: list[str]):
         # Test invoking with a flag for which a default already exists.
         args = _parse(
             [
@@ -351,7 +350,7 @@ class TestUtils(parameterized.TestCase):
             self.assertSequenceEqual(result, expected)
 
     @parameterized.parameters([dict(argv=[]), dict(argv=["--flag", "value"])])
-    def test_insert_flags_argv0(self, argv: List[str]):
+    def test_insert_flags_argv0(self, argv: list[str]):
         with self.assertRaises(AssertionError):
             _insert_flags(argv, ["--i", "100"])
 

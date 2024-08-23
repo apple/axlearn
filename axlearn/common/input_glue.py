@@ -18,7 +18,8 @@ https://www.tensorflow.org/datasets/catalog/glue
 """
 
 import functools
-from typing import Dict, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Optional, Union
 
 import seqio
 import tensorflow as tf
@@ -63,7 +64,7 @@ def preprocess_copa() -> input_tf_data.DatasetToDatasetFn:
         A DatasetToDatasetFn preprocessing the dataset for COPA.
     """
 
-    def process_example_fn(example: Dict[str, tf.Tensor]):
+    def process_example_fn(example: dict[str, tf.Tensor]):
         # Reference: Table 6 https://arxiv.org/pdf/1905.00537.pdf
         if example["question"] == "cause":
             question = "What's the CAUSE for this?"
@@ -113,7 +114,7 @@ def postprocess_copa():
         "target_labels" of shape [2].
     """
 
-    def reduce_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def reduce_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         target_label = example["target_labels"][0]
         # Sanity check that all "target_labels" match.
         for label in example["target_labels"][1:]:
@@ -165,7 +166,7 @@ def add_special_tokens_for_roberta(
     if isinstance(input_key, str):
         input_key = [input_key]
 
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         """Builds inputs from multiple sequences in the style of RoBERTa.
 
         Args:
@@ -214,7 +215,7 @@ def preprocess_record() -> DatasetToDatasetFn:
     ]
     """
 
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         split_examples = {}
         num_entities = tf.size(example["entities"])
 
@@ -263,7 +264,7 @@ def multi_sequence_truncation(max_len: int, input_key: Union[str, Sequence[str]]
     threshold = tf.constant(threshold)
 
     # TODO(xiang): explore better truncation strategy.
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         sizes = tf.convert_to_tensor([tf.size(example[key]) for key in input_key])
         thresholds = tf.ones_like(sizes) * threshold
         # The total number of tokens under thresholds.
@@ -298,7 +299,7 @@ def add_prefix_concat_sequence_pair(
     *,
     dataset_name: str,
     label_names: Sequence[str],
-    input_key: Union[str, Tuple[str, str]],
+    input_key: Union[str, tuple[str, str]],
     source_key: str = "source_text",
     target_key: str = "target_text",
 ) -> input_tf_data.DatasetToDatasetFn:
@@ -364,7 +365,7 @@ def add_prefix_concat_sequence_pair(
             }
     """
 
-    def _join_input_keys(example: Dict[str, Union[int, str]]) -> tf.Tensor:
+    def _join_input_keys(example: dict[str, Union[int, str]]) -> tf.Tensor:
         """Concatenate dataset name, fields in the `input_keys` and their corresponding values.
         Args:
             example: A dictionary to represent an input example.
@@ -384,7 +385,7 @@ def add_prefix_concat_sequence_pair(
         return tf.strings.join(strs_to_join, separator=" ")
 
     @seqio.map_over_dataset
-    def glue_fn(example: Dict[str, Union[int, str]]) -> Dict[str, Union[int, str, tf.Tensor]]:
+    def glue_fn(example: dict[str, Union[int, str]]) -> dict[str, Union[int, str, tf.Tensor]]:
         """Support general tasks in GLUE/SuperGLUE."""
         label_name = tf.cond(
             # When no label is provided (label == -1), use "<unk>".
@@ -403,7 +404,7 @@ def add_prefix_concat_sequence_pair(
         }
 
     @seqio.map_over_dataset
-    def stsb_fn(example: Dict[str, Union[int, str]]) -> Dict[str, Union[int, str]]:
+    def stsb_fn(example: dict[str, Union[int, str]]) -> dict[str, Union[int, str]]:
         """STSB preprocessor."""
         label_name = tf.as_string(tf.round(example["label"] * 5) / 5, precision=1)
         source_ids = _join_input_keys(example)
@@ -415,7 +416,7 @@ def add_prefix_concat_sequence_pair(
         }
 
     @seqio.map_over_dataset
-    def wsc_fn(example: Dict[str, Union[int, str]]) -> Dict[str, Union[int, str]]:
+    def wsc_fn(example: dict[str, Union[int, str]]) -> dict[str, Union[int, str]]:
         """WSC preprocessor.
 
         https://github.com/google-research/text-to-text-transfer-transformer/blob/main/t5/data/preprocessors.py#L859
@@ -554,7 +555,7 @@ def add_prefix_concat_sequence_pair(
 
             return example_clone
 
-        def _process_example_fn(example: Dict[str, Union[int, str]]) -> Dict[str, Union[int, str]]:
+        def _process_example_fn(example: dict[str, Union[int, str]]) -> dict[str, Union[int, str]]:
             passage = example["passage"]
             # https://github.com/google-research/text-to-text-transfer-transformer/blob/main/t5/data/preprocessors.py#L978-L981
             passage = tf.strings.regex_replace(passage, r"(\.|\?|\!|\"|\')\n@highlight\n", r"\1 ")
@@ -722,7 +723,7 @@ def make_glue_autoregressive_inputs(
     vocab = vocab_cfg.instantiate()
     # pylint: disable=no-value-for-parameter,unexpected-keyword-arg
 
-    def prepare_encoder_decoder_inputs(example: Dict[str, tf.Tensor]):
+    def prepare_encoder_decoder_inputs(example: dict[str, tf.Tensor]):
         prefix = example["prefix"]
 
         # Drop the EOS added by `input_lm.text2text_lm_input`.

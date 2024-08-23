@@ -9,7 +9,7 @@ On `paddings`:
     paddings only take 0 / 1 or False / True as values.
 """
 
-from typing import Dict, Optional
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -111,7 +111,7 @@ class AttentionPooling(BasePoolingLayer):
         targets = self.feed_forward(targets)
         return targets
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         # The "weight" suffix is needed to match the strings for initialization
         # in DefaultInitializer.

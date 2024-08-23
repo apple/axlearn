@@ -12,7 +12,7 @@ Adapted from optax factorized.py.
 """
 
 import dataclasses
-from typing import Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -30,7 +30,7 @@ from axlearn.common.utils import NestedPartitionSpec, PartitionSpec, Tensor
 def _factored_dims(
     factored: bool,
     factorization_spec: Optional[FactorizationSpec],
-) -> Optional[Tuple[int, int]]:
+) -> Optional[tuple[int, int]]:
     """Whether to use a factored second moment estimator.
 
     This function returns a tuple with the two axes to reduce over or None.

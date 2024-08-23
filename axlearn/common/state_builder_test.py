@@ -5,7 +5,7 @@
 # pylint: disable=no-self-use,too-many-lines
 import os
 from copy import deepcopy
-from typing import Any, List, Optional, Tuple, Type
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
@@ -143,7 +143,7 @@ class ConverterTest(TestCase):
             def target_state_type(self) -> Builder.StateType:
                 return Builder.StateType.TENSORS
 
-            def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+            def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
                 target.step += 1
                 return target, self.config.id
 
@@ -187,16 +187,16 @@ class GetBuilderTest(TestCase):
 
     # Parameterize the tests so we can run in parallel.
     @parameterized.parameters(_BUILDERS)
-    def test_get_builder(self, builder_cls: Type[Builder]):
+    def test_get_builder(self, builder_cls: type[Builder]):
         self._test_get_builder(builder_cls)
 
-    def _get_builder(self, builder_cls: Type[Builder], spec: str):
+    def _get_builder(self, builder_cls: type[Builder], spec: str):
         if builder_cls.SPEC_PREFIX == "hf_pretrained:":
             # HF builder requires source and target scopes.
             spec = spec + "::"
         return get_builder(spec=f"{builder_cls.SPEC_PREFIX}{spec}")
 
-    def _test_get_builder(self, builder_cls: Type[Builder]):
+    def _test_get_builder(self, builder_cls: type[Builder]):
         spec = "test_spec"
         default_cfg = builder_cls.default_config()
         builder = self._get_builder(builder_cls, spec)
@@ -305,7 +305,7 @@ class PosEmbeddingConverterTest(TestCase):
 
     def _mock_bert_trainer_config_and_state(
         self, max_len: int = 512, hidden_dim: int = 32
-    ) -> Tuple[SpmdTrainer.Config, Builder.State]:
+    ) -> tuple[SpmdTrainer.Config, Builder.State]:
         trainer_config = self._mock_bert_trainer_config(max_len=max_len, hidden_dim=hidden_dim)
         trainer = trainer_config.instantiate(parent=None)
         trainer.init(prng_key=jax.random.PRNGKey(0))
@@ -532,7 +532,7 @@ class DummyNestedModel(BaseModel):
             ),
         )
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         raise NotImplementedError(type(self))
 
 
@@ -555,7 +555,7 @@ class _FakeMultimodalImageInput(Module):
         """Configures _FakeMultimodalImageInput."""
 
         is_training: Required[bool] = REQUIRED
-        input_size: Required[List[int]] = REQUIRED
+        input_size: Required[list[int]] = REQUIRED
         batch_size: Required[int] = REQUIRED
 
     def __iter__(self):
@@ -650,7 +650,7 @@ class TestConv2DStateBuilders(TestCase):
 
     def _run_builder(
         self,
-        builder_cls: Type[BaseConv2DStateBuilder],
+        builder_cls: type[BaseConv2DStateBuilder],
         *,
         source_cfg,
         conv_path: str,
@@ -687,11 +687,11 @@ class TestConv2DStateBuilders(TestCase):
 
     def _dummy_model_config(
         self,
-        patch_size: Tuple[int, ...],
-        input_size: Tuple[int, ...],
+        patch_size: tuple[int, ...],
+        input_size: tuple[int, ...],
         output_dim: int,
         conv_path: str,
-        conv_cls: Type[BaseLayer],
+        conv_cls: type[BaseLayer],
     ):
         return DummyNestedModel.default_config().set(
             layer=conv_cls.default_config().set(
@@ -707,8 +707,8 @@ class TestConv2DStateBuilders(TestCase):
 
     def _mock_image_config(
         self,
-        patch_size: Tuple[int, ...],
-        input_size: Tuple[int, ...],
+        patch_size: tuple[int, ...],
+        input_size: tuple[int, ...],
         output_dim: int,
         conv_path: str,
         batch_size: int = 8,

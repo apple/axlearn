@@ -3,7 +3,7 @@
 """Tests retrieval evaluation pipeline."""
 # pylint: disable=no-self-use
 import tempfile
-from typing import Dict, List, Union
+from typing import Union
 
 import jax
 import jax.numpy as jnp
@@ -57,7 +57,7 @@ def _compute_metrics(
     *,
     data_generator,
     calculator_cfg,
-) -> Dict:
+) -> dict:
     """Computes zero-shot classification metrics.
 
     Args:
@@ -121,7 +121,7 @@ class CLIPRetrievalMetricCalculatorTest(TestCase, parameterized.TestCase):
         },
     )
     def test_clip_retrieval_metric_calculator(
-        self, top_k: Union[int, List[int]], expected_metrics: Dict[str, float]
+        self, top_k: Union[int, list[int]], expected_metrics: dict[str, float]
     ):
         text_embeddings = jnp.asarray(
             [

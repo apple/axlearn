@@ -26,7 +26,8 @@ import enum
 import os
 import sys
 import time
-from typing import Optional, Sequence, Type, cast
+from collections.abc import Sequence
+from typing import Optional, cast
 
 import kubernetes as k8s
 from absl import app, flags, logging
@@ -82,8 +83,8 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
 class GKERunnerJob(GCPJob):
     """Launches and monitors a GKE job via k8s JobSet API."""
 
-    inner: Type[GKEJob]
-    pre_provisioner: Type[NodePoolProvisioner]
+    inner: type[GKEJob]
+    pre_provisioner: type[NodePoolProvisioner]
 
     @config_class
     class Config(GCPJob.Config):

@@ -112,7 +112,8 @@ import shlex
 import subprocess
 import tempfile
 import time
-from typing import Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 from absl import app, flags, logging
 from tensorflow import io as tf_io

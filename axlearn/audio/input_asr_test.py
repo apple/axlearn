@@ -4,7 +4,8 @@
 # pylint: disable=protected-access
 
 import os
-from typing import Any, Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any, Optional
 
 import seqio
 import tensorflow as tf
@@ -106,7 +107,7 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
     def test_speech_input(
         self,
         max_len: int,
-        expected: Dict[str, Any],
+        expected: dict[str, Any],
         truncate: bool = False,
         input_key: str = "speech",
         scale: Optional[float] = None,
@@ -217,7 +218,7 @@ class TextInputTest(TestCase, tf.test.TestCase):
     )
     def test_text_input(
         self,
-        expected: Sequence[Dict[str, Any]],
+        expected: Sequence[dict[str, Any]],
         text: str,
         max_len: int,
         eos_id: int,
@@ -385,8 +386,8 @@ class SpeechTextInputTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_asr_input(
         self,
-        inputs: Sequence[Dict],
-        expected: Sequence[Dict],
+        inputs: Sequence[dict],
+        expected: Sequence[dict],
         max_speech_len: int,
         max_text_len: int,
         truncate: bool,
@@ -463,8 +464,8 @@ class FilterTest(parameterized.TestCase, tf.test.TestCase):
     def test_filter_by_length(
         self,
         *,
-        inputs: Sequence[Dict],
-        expected: Sequence[Dict],
+        inputs: Sequence[dict],
+        expected: Sequence[dict],
         **kwargs,
     ):
         source = input_fake.fake_source(

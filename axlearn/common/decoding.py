@@ -19,8 +19,10 @@ The key differences from the reference impl are:
        This is now handled by the common _gather_* functions through the use of NestedTensor.
     2) Cache offset (stacked states of scan-based layers) is supported through vectorized_tree_map.
 """
+from collections.abc import Sequence
+
 # pylint: disable=too-many-lines
-from typing import Callable, Literal, NamedTuple, Optional, Protocol, Sequence, Tuple, Union
+from typing import Callable, Literal, NamedTuple, Optional, Protocol, Union
 
 import jax
 import jax.numpy as jnp
@@ -432,7 +434,7 @@ def beam_search_decode(
     inputs: Tensor,
     time_step: Tensor,
     cache: NestedTensor,
-    tokens_to_scores: Callable[[Tensor, NestedTensor], Tuple[Tensor, NestedTensor]],
+    tokens_to_scores: Callable[[Tensor, NestedTensor], tuple[Tensor, NestedTensor]],
     eos_id: int,
     num_decodes: int,
     max_decode_len: Optional[int] = None,
@@ -908,7 +910,7 @@ def sample_decode(
     inputs: Tensor,
     time_step: Tensor,
     cache: NestedTensor,
-    tokens_to_scores: Callable[[Tensor, NestedTensor], Tuple[Tensor, NestedTensor]],
+    tokens_to_scores: Callable[[Tensor, NestedTensor], tuple[Tensor, NestedTensor]],
     stop_decoding_condition: StopDecodingCondition,
     num_decodes: int,
     prng_key: Tensor,

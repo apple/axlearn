@@ -93,7 +93,7 @@ class SpladePoolingTest(TestCase):
     def verify_splade_against_ref(self, inputs, splade_layer, paddings, splade_mode, model_args):
         # Process the paddings.
         if paddings is None:
-            torch_paddings = torch.ones((inputs.shape[:-1]))
+            torch_paddings = torch.ones(inputs.shape[:-1])
             axlearn_paddings = None
         else:
             torch_paddings = torch.from_numpy(paddings.astype(float))

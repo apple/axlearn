@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Detection metric calculators."""
-from typing import Dict, List, Optional, Union
+from typing import Optional, Union
 
 import jax
 import jax.random
@@ -84,7 +84,7 @@ class COCOMetricCalculator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         outputs = self._jit_predict(model_params, state["prng_key"], input_batch["image_data"])
         self._update_coco_metric(input_batch=input_batch, model_outputs=outputs["per_example"])
 
@@ -106,7 +106,7 @@ class COCOMetricCalculator(BaseMetricCalculator):
         model_params: NestedTensor,
         prng_key: Tensor,
         input_batch: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         predict_key, next_key = jax.random.split(prng_key)
         model_outputs, model_output_collection = self._call_model(
             method="predict",
@@ -124,8 +124,8 @@ class COCOMetricCalculator(BaseMetricCalculator):
         *,
         model_params: Optional[NestedTensor] = None,
         state: Optional[NestedTensor] = None,
-        all_forward_outputs: Optional[List[NestedTensor]] = None,
-    ) -> Dict[str, Union[WeightedScalar, np.ndarray]]:
+        all_forward_outputs: Optional[list[NestedTensor]] = None,
+    ) -> dict[str, Union[WeightedScalar, np.ndarray]]:
         # Compute COCO metrics after aggregating outputs for all eval steps.
         metrics = self._coco_metric.result()
 

@@ -9,7 +9,7 @@
 """Registers all available clients and uses lazy import via client name."""
 import importlib
 import logging
-from typing import Dict, List, Optional, Type
+from typing import Optional
 
 from axlearn.open_api.common import BaseClient, MetricFn
 
@@ -21,14 +21,14 @@ _OPEN_API_CLIENTS_MODULE_CLASS = {
 }
 
 # The dict of {client_name: class}.
-_OPEN_API_CLIENTS_CLASS: Dict[str, Type[BaseClient]] = {}
+_OPEN_API_CLIENTS_CLASS: dict[str, type[BaseClient]] = {}
 
 
 class ClientRegistry:
     """A registry of open api clients."""
 
     @staticmethod
-    def load_client_cls(client_name: str) -> Optional[Type[BaseClient]]:
+    def load_client_cls(client_name: str) -> Optional[type[BaseClient]]:
         """Loads an open api client."""
         if client_name in _OPEN_API_CLIENTS_CLASS:
             return _OPEN_API_CLIENTS_CLASS[client_name]
@@ -39,12 +39,12 @@ class ClientRegistry:
         return getattr(module, client_cls_name, None)
 
     @staticmethod
-    def get_supported_clients() -> List[str]:
+    def get_supported_clients() -> list[str]:
         """Gets supported clients."""
         return list(_OPEN_API_CLIENTS_MODULE_CLASS.keys()) + list(_OPEN_API_CLIENTS_CLASS.keys())
 
     @staticmethod
-    def register(client_name: str, client_cls: Type[BaseClient]):
+    def register(client_name: str, client_cls: type[BaseClient]):
         """Registers a new client.
 
         Args:
@@ -75,7 +75,7 @@ _METRIC_MODULE_FUNC = {
 }
 
 # The dict of {metric_name: func}.
-_METRIC_FUNC: Dict[str, MetricFn] = {}
+_METRIC_FUNC: dict[str, MetricFn] = {}
 
 
 class MetricRegistry:
@@ -93,7 +93,7 @@ class MetricRegistry:
         return getattr(module, metric_func_name, None)
 
     @staticmethod
-    def get_supported_metrics() -> List[str]:
+    def get_supported_metrics() -> list[str]:
         """Gets supported metrics."""
         return list(_METRIC_FUNC.keys()) + list(_METRIC_MODULE_FUNC.keys())
 

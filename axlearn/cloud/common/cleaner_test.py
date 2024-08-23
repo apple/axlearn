@@ -3,7 +3,7 @@
 """Tests for cleaner.py."""
 
 import datetime
-from typing import Dict, Sequence
+from collections.abc import Sequence
 
 from absl.testing import parameterized
 
@@ -26,7 +26,7 @@ class MockCleaner(Cleaner):
         # Sweep returns job names that are in `names`.
         names: Required[Sequence[str]] = REQUIRED
 
-    def sweep(self, jobs: Dict[str, JobSpec]) -> Sequence[str]:
+    def sweep(self, jobs: dict[str, JobSpec]) -> Sequence[str]:
         cfg = self.config
         return list(set(cfg.names).intersection(jobs.keys()))
 

@@ -27,7 +27,7 @@ https://github.com/google/praxis/blob/179774fb688aa8fe048307d2184c9f2b338e935f/p
 https://github.com/facebookresearch/fairseq/blob/d871f6169f8185837d1c11fb28da56abfd83841c/fairseq/modules/gumbel_vector_quantizer.py
 """
 from enum import Enum, unique
-from typing import Dict, NamedTuple, Optional, Tuple
+from typing import NamedTuple, Optional
 
 import jax.nn
 import jax.numpy as jnp
@@ -67,7 +67,7 @@ def compute_code_histogram(onehots: Tensor, paddings: Tensor) -> Tensor:
     return histogram
 
 
-def compute_code_pplx(onehots: Tensor, paddings: Tensor) -> Tuple[Tensor, Tensor]:
+def compute_code_pplx(onehots: Tensor, paddings: Tensor) -> tuple[Tensor, Tensor]:
     """Computes pplx and entropy of the quantized codes distribution."""
     histogram = compute_code_histogram(onehots, paddings)
     normalizer = jnp.sum(1 - paddings)
@@ -121,7 +121,7 @@ class BaseQuantizer(BaseLayer):
         cfg.param_init = REQUIRED
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             codebook=ParameterSpec(
@@ -464,9 +464,11 @@ class KmeansVectorQuantizer(BaseQuantizer):
         quantized_inputs = quantize_by_nearest_neighbor(
             inputs=inputs_by_group,
             codebook=self.parameters["codebook"],
-            metric=SimilarityMetric.DOT_PRODUCT
-            if cfg.normalize_codebook
-            else SimilarityMetric.L2_DISTANCE,
+            metric=(
+                SimilarityMetric.DOT_PRODUCT
+                if cfg.normalize_codebook
+                else SimilarityMetric.L2_DISTANCE
+            ),
         )
         if cfg.normalize_inputs:
             inputs_by_group = l2_normalize(inputs_by_group, axis=-1, eps=1e-12)
@@ -570,7 +572,7 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
         )
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         params = super()._create_layer_parameter_specs()
         params["step"] = ParameterSpec(
             shape=[],
@@ -583,7 +585,7 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
 
     def forward(
         self, inputs: Tensor, *, paddings: Tensor
-    ) -> Tuple[BaseQuantizer.Output, Dict[str, Tensor]]:
+    ) -> tuple[BaseQuantizer.Output, dict[str, Tensor]]:
         """Quantization using Gumbel softmax trick.
 
         The code is selected based on the largest index of inputs. Inputs Gradients is computed

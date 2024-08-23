@@ -6,7 +6,8 @@ import dataclasses
 import enum
 import sys
 from collections import OrderedDict
-from typing import Any, Iterable, NamedTuple, Optional, Sequence, Type, Union
+from collections.abc import Iterable, Sequence
+from typing import Any, NamedTuple, Optional, Union
 
 # pylint: disable=no-self-use
 import jax
@@ -131,7 +132,7 @@ class TreeUtilsTest(TestCase):
         class DataclassCombo(struct.PyTreeNode):
             scalar: int
             dataclass_combo: Any
-            none: Type[None]
+            none: type[None]
             nested_tensor: NestedTensor
 
         # Nested custom pytree.

@@ -5,7 +5,6 @@
 Some tests are intended to be run on TPU.
 """
 import itertools
-from typing import Tuple
 
 import jax
 import numpy as np
@@ -25,7 +24,7 @@ from axlearn.common.utils import (
 
 def is_supported(
     platform: str,
-    mesh_shape: Tuple[int, int],
+    mesh_shape: tuple[int, int],
     global_batch_size: int,
     data_partition: DataPartitionType,
 ):
@@ -54,7 +53,7 @@ class HostArrayTest(TestCase):
     def test_global_host_array_conversion(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         global_batch_size: int,
         data_partition: DataPartitionType,
     ):

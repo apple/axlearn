@@ -25,22 +25,11 @@ and/or layers.
 import copy
 import itertools
 import math
+from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    NamedTuple,
-    Optional,
-    OrderedDict,
-    Protocol,
-    Sequence,
-    Tuple,
-    Type,
-    Union,
-)
+from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 
 import numpy as np
 import torch
@@ -78,7 +67,7 @@ class TorchModule(torch.nn.Module):
 
         load(self)
 
-    def _local_load(self, state_dict: Dict[str, Any], prefix: str, strict: bool):
+    def _local_load(self, state_dict: dict[str, Any], prefix: str, strict: bool):
         """Load state for this local Module only.
 
         Args:
@@ -280,7 +269,7 @@ class TransformerFeedForwardLayer(TorchModule):
         self,
         input_dim: int,
         hidden_dim: int,
-        activation: Union[Callable, Tuple[Callable, Callable]] = gelu,
+        activation: Union[Callable, tuple[Callable, Callable]] = gelu,
         dropout: float = 0.1,
         structure: str = "prenorm",
         linear_biases: bool = True,
@@ -558,7 +547,7 @@ def softmax_with_biases(
     return probs
 
 
-def alibi_get_slopes(num_heads: int) -> List:
+def alibi_get_slopes(num_heads: int) -> list:
     """Get the slopes for different attention heads defined in ALiBi paper.
 
     This is a direct copy from ALiBi codebase.
@@ -572,7 +561,7 @@ def alibi_get_slopes(num_heads: int) -> List:
         a slope for one attention head.
     """
 
-    def get_slopes_power_of_2(n: int) -> List:
+    def get_slopes_power_of_2(n: int) -> list:
         start = 2 ** (-(2 ** -(math.log2(n) - 3)))
         ratio = start
         return [start * ratio**i for i in range(n)]
@@ -599,7 +588,7 @@ class MultiheadAttention(TorchModule):
         dropout: float = 0.1,
         output_dim: Optional[int] = None,
         hidden_dim: Optional[int] = None,
-        qkv_linear_cls: Type[_QKVLinearBase] = QKVLinear,
+        qkv_linear_cls: type[_QKVLinearBase] = QKVLinear,
         linear_biases: bool = True,
     ):
         super().__init__()
@@ -678,7 +667,7 @@ class MultiheadAttention(TorchModule):
         query: torch.Tensor,
         *,
         attention_logit_biases: torch.Tensor,
-    ) -> Tuple[CacheState, Output]:
+    ) -> tuple[CacheState, Output]:
         """For autoregressive decoding."""
         # Each has shape [B, query_len, N, H].
         q_proj, k_proj, v_proj = self.i_proj(query, key=query, value=query)
@@ -715,7 +704,7 @@ class TransformerAttentionLayer(TorchModule):
         dropout: float = 0.1,
         structure: str = "prenorm",
         norm: str = "layernorm",
-        qkv_linear_cls: Type[_QKVLinearBase] = QKVLinear,
+        qkv_linear_cls: type[_QKVLinearBase] = QKVLinear,
         linear_biases: bool = True,
     ):
         super().__init__()
@@ -785,7 +774,7 @@ class TransformerAttentionLayer(TorchModule):
         target: torch.Tensor,
         *,
         attention_logit_biases: torch.Tensor,
-    ) -> Tuple[CacheState, Output]:
+    ) -> tuple[CacheState, Output]:
         """For autoregressive decoding."""
         if self.structure == "prenorm":
             skip_input = target
@@ -896,7 +885,7 @@ class TransformerLayer(BaseTransformerLayer):
         self_attention_logit_biases: Optional[torch.Tensor] = None,
         cross_attention_data: Optional[torch.Tensor] = None,
         cross_attention_logit_biases: Optional[torch.Tensor] = None,
-    ) -> Tuple[BaseTransformerLayer.CacheState, BaseTransformerLayer.Output]:
+    ) -> tuple[BaseTransformerLayer.CacheState, BaseTransformerLayer.Output]:
         """For autoregressive decoding."""
         updated_self_attention_state, self_attention_outputs = self.self_attention.extend(
             cached_state=cached_state.self_attention,
@@ -975,7 +964,7 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         self_attention_logit_biases: Optional[torch.Tensor] = None,
         cross_attention_data: Optional[torch.Tensor] = None,
         cross_attention_logit_biases: Optional[torch.Tensor] = None,
-    ) -> Tuple[BaseTransformerLayer.CacheState, BaseTransformerLayer.Output]:
+    ) -> tuple[BaseTransformerLayer.CacheState, BaseTransformerLayer.Output]:
         """For autoregressive decoding."""
         cached_state, output = self.layer.extend(
             cached_state=cached_state,
@@ -1050,7 +1039,7 @@ class StackedTransformerLayer(TorchModule):
     @dataclass
     class CacheState:
         # Per-layer state.
-        transformer_layers: List[BaseTransformerLayer.CacheState]
+        transformer_layers: list[BaseTransformerLayer.CacheState]
 
     def init_state(self, *args: Any, **kwargs: Any) -> CacheState:
         """Cached state for autoregressive decoding."""
@@ -1068,7 +1057,7 @@ class StackedTransformerLayer(TorchModule):
         self_attention_logit_biases: Optional[torch.Tensor] = None,
         cross_attention_data: Optional[torch.Tensor] = None,
         cross_attention_logit_biases: Optional[torch.Tensor] = None,
-    ) -> Tuple[CacheState, BaseTransformerLayer.Output]:
+    ) -> tuple[CacheState, BaseTransformerLayer.Output]:
         """For autoregressive decoding."""
         all_layer_outputs = []
         for i in range(self._num_layers):
@@ -1117,8 +1106,8 @@ class ConvertToSequence(TorchModule):
         *,
         input_dim: int,
         output_dim: int,
-        patch_size: Tuple[int, int] = (16, 16),
-        stride: Optional[Tuple[int, int]] = None,
+        patch_size: tuple[int, int] = (16, 16),
+        stride: Optional[tuple[int, int]] = None,
         conv_bias: bool = True,
     ):
         super().__init__()
@@ -1339,7 +1328,7 @@ class ViTModel(TorchModule):
 
     def forward(
         self, image: torch.Tensor, label: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
         logits = self.predict(image)
         loss = None
         if label is not None:
@@ -1477,7 +1466,7 @@ class Decoder(TorchModule):
         cross_attention_data: Optional[torch.Tensor] = None,
         cross_attention_logit_biases: Optional[torch.Tensor] = None,
         positions: Optional[torch.Tensor] = None,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         if positions is None:
             positions = torch.arange(
                 input_ids.shape[-1], dtype=torch.int32, device=input_ids.device
@@ -1528,7 +1517,7 @@ class Decoder(TorchModule):
         input_ids: torch.Tensor,
         cross_attention_data: Optional[torch.Tensor] = None,
         cross_attention_logit_biases: Optional[torch.Tensor] = None,
-    ) -> Tuple[CacheState, Dict[str, torch.Tensor]]:
+    ) -> tuple[CacheState, dict[str, torch.Tensor]]:
         """For autoregressive decoding."""
         input_ids = input_ids.to(self.device)
         step = cached_state.step
@@ -1652,10 +1641,10 @@ class ViTModelBuilder:
         num_layers: int,
         model_dim: int,
         num_heads: int,
-        patch_size: Tuple[int, int] = (16, 16),
-        image_size: Tuple[int, int] = (224, 224),
+        patch_size: tuple[int, int] = (16, 16),
+        image_size: tuple[int, int] = (224, 224),
         feed_forward_dim: Optional[int] = None,
-        stride: Optional[Tuple[int, int]] = None,
+        stride: Optional[tuple[int, int]] = None,
         num_classes: int = 1000,
         global_feature_extraction: str = "cls_token",
         dropout_rate: float = 0.0,
@@ -1758,7 +1747,7 @@ class CausalLM(TorchModule):
         input_ids: torch.Tensor,
         token_type_ids: Optional[torch.Tensor] = None,
         target_labels: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Produce decoder-only loss and predictions including logits and decoder hidden states in
         auxiliary outputs.
 
@@ -1801,7 +1790,7 @@ class CausalLM(TorchModule):
 
     def _predict(
         self, input_ids: torch.Tensor, *, token_type_ids: Optional[torch.Tensor] = None
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         """Produce decoder logits and hidden states.
 
         Args:
@@ -1847,7 +1836,7 @@ class CausalLM(TorchModule):
         *,
         cached_state: CacheState,
         input_ids: torch.Tensor,
-    ) -> Tuple[CacheState, Dict[str, torch.Tensor]]:
+    ) -> tuple[CacheState, dict[str, torch.Tensor]]:
         """Extend decoding autoregressively.
 
         Args:
@@ -2229,10 +2218,10 @@ class CoCaImageStreamEncoder(TorchModule):
         pooler_num_heads: Optional[int] = None,
         caption_pooler_output_dim: Optional[int] = None,
         contrastive_pooler_cls: Union[
-            Type[AttentionPooling], Type[FirstNTokenPooling], Type[AveragePooling]
+            type[AttentionPooling], type[FirstNTokenPooling], type[AveragePooling]
         ] = AttentionPooling,
         caption_pooler_cls: Union[
-            Type[AttentionPooling], Type[FirstNTokenPooling], Type[AveragePooling]
+            type[AttentionPooling], type[FirstNTokenPooling], type[AveragePooling]
         ] = AttentionPooling,
         # NOTE: contrastive_pooler will always have only 1 output.
         caption_pooler_num_outputs: int = 256,
@@ -2305,7 +2294,7 @@ class CoCaImageStreamEncoder(TorchModule):
 
     @staticmethod
     def _build_pooler_layer(
-        pooler_cls: Union[Type[AttentionPooling], Type[FirstNTokenPooling], Type[AveragePooling]],
+        pooler_cls: Union[type[AttentionPooling], type[FirstNTokenPooling], type[AveragePooling]],
         input_dim: int,
         output_dim: int,
         num_outputs: int = 1,

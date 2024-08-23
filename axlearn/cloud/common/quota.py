@@ -3,8 +3,9 @@
 """Utilities to retrieve quotas."""
 import copy
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Dict, List, Protocol, Sequence
+from typing import Protocol
 
 import toml
 from tensorflow import io as tf_io
@@ -34,7 +35,7 @@ class UserQuotaInfo(QuotaInfo):
     """Per-user quota information for job scheduling."""
 
     # Maps project id -> sequence of user ids that are members.
-    project_membership: Dict[str, Sequence[str]]
+    project_membership: dict[str, Sequence[str]]
 
     def user_projects(self, user_id: str) -> Sequence[str]:
         """Return the lowercase project ids for the given user."""
@@ -86,7 +87,7 @@ def get_resource_limits(path: str) -> UserQuotaInfo:
         raise ValueError(f"Unsupported schema version {cfg['toml-schema']['version']}")
 
 
-def get_user_projects(path: str, user_id: str) -> List[str]:
+def get_user_projects(path: str, user_id: str) -> list[str]:
     """Attempts to read project membership for the given user.
 
     Args:

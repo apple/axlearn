@@ -5,7 +5,7 @@
 import dataclasses
 import math
 from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import jax.ad_checkpoint
 import jax.core
@@ -171,7 +171,7 @@ class TestRematParentLayer(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures TestRematParentLayer."""
 
-        child_names: List[str] = []
+        child_names: list[str] = []
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -523,7 +523,7 @@ class ComputeFanAxesTest(TestCase):
     class BaseFanLayer(BaseLayer):
         """A layer using default _compute_fan_axes."""
 
-        def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+        def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
             return {
                 "weight": ParameterSpec(
                     shape=(6, 4, 4, 8, 12),  # B, H, W, I, O
@@ -552,7 +552,7 @@ class ComputeFanAxesTest(TestCase):
     class ExplicitFanLayer(BaseFanLayer):
         """A layer with FanAxes specified explicitly in parameter spec."""
 
-        def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+        def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
             return {
                 "fan_axes_specified_weight": ParameterSpec(
                     shape=(6, 8, 12),  # B, H, W

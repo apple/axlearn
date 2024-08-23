@@ -10,7 +10,7 @@ import tempfile
 import time
 from collections import defaultdict
 from contextlib import contextmanager
-from typing import Any, List
+from typing import Any
 from unittest import mock
 
 import jax
@@ -197,7 +197,7 @@ class SerializerTest(parameterized.TestCase):
         ),
     )
     def test_serialize(
-        self, arrays: List[List[int]], max_concurrent_gb: int, expect_max_concurrent_gb: int
+        self, arrays: list[list[int]], max_concurrent_gb: int, expect_max_concurrent_gb: int
     ):
         arrays = [
             mock.Mock(
@@ -229,7 +229,7 @@ class SerializerTest(parameterized.TestCase):
         async def open_patch(*_, **__):
             return FakeTs()
 
-        async def _copy_to_host_patch(shard_infos: List[_ShardInfo], d2h_future: futures.Future):
+        async def _copy_to_host_patch(shard_infos: list[_ShardInfo], d2h_future: futures.Future):
             nonlocal concurrent_bytes
             for info in shard_infos:
                 concurrent_bytes += info.data.nbytes

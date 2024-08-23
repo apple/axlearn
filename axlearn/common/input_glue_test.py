@@ -3,7 +3,8 @@
 """Tests GLUE inputs."""
 # pylint: disable=no-self-use
 import os
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Any, Optional, Union
 
 import numpy as np
 import pytest
@@ -20,7 +21,7 @@ t5_sentence_piece_vocab_file = os.path.join(tokenizers_dir, "sentencepiece/t5-ba
 
 
 def _source_cfg(
-    examples: Sequence[Dict[str, tf.Tensor]], output_signature: Dict[str, tf.TensorShape]
+    examples: Sequence[dict[str, tf.Tensor]], output_signature: dict[str, tf.TensorShape]
 ) -> InstantiableConfig:
     def ds_fn(is_training: bool):
         return fake_source(is_training=is_training, examples=examples, spec=output_signature)
@@ -41,14 +42,14 @@ class InputGlueForRobertaTest(parameterized.TestCase, tf.test.TestCase):
         self,
         *,
         max_len: int,
-        input_key: Union[str, Tuple[str, str]],
+        input_key: Union[str, tuple[str, str]],
         vocab_cfg: InstantiableConfig = _vocab_cfg(),
         normalization: Optional[InstantiableConfig] = None,
         bos_token: Optional[str] = None,
     ):
         def noop_normalizer(
             # pylint: disable-next=unused-argument
-            input_key: Union[str, Tuple[str, str]]
+            input_key: Union[str, tuple[str, str]]
         ) -> input_tf_data.DatasetToDatasetFn:
             return lambda ds: ds
 
@@ -70,7 +71,7 @@ class InputGlueForRobertaTest(parameterized.TestCase, tf.test.TestCase):
     def _glue_input_config(
         self,
         is_training: bool,
-        input_key: Union[str, Tuple[str, str]],
+        input_key: Union[str, tuple[str, str]],
         max_len: int,
         batch_size: int,
         source_cfg: InstantiableConfig,
@@ -437,8 +438,8 @@ class TestUtils(parameterized.TestCase, tf.test.TestCase):
     def test_multiple_sequence_truncation(
         self,
         max_len: int,
-        examples: List[Dict[str, Sequence[int]]],
-        expected: List[Dict[str, Sequence[int]]],
+        examples: list[dict[str, Sequence[int]]],
+        expected: list[dict[str, Sequence[int]]],
     ):
         input_keys = tuple(expected[0].keys())
         mapper_fn = input_glue.multi_sequence_truncation(
@@ -526,8 +527,8 @@ class TestUtils(parameterized.TestCase, tf.test.TestCase):
     )
     def test_preprocess_record(
         self,
-        examples: List[Dict[str, Sequence[int]]],
-        expected: List[Dict[str, Sequence[int]]],
+        examples: list[dict[str, Sequence[int]]],
+        expected: list[dict[str, Sequence[int]]],
     ):
         mapper_fn = input_glue.preprocess_record()
         ds_fn = (
@@ -639,8 +640,8 @@ class InputGlueForT5Test(parameterized.TestCase, tf.test.TestCase):
     def test_add_prefix_concat_sequence_pair(
         self,
         *,
-        input_example: Dict[str, Any],
-        expected: Dict[str, Any],
+        input_example: dict[str, Any],
+        expected: dict[str, Any],
         label_names: Sequence[str],
         task_name: str,
     ):
@@ -734,8 +735,8 @@ class InputGlueForT5Test(parameterized.TestCase, tf.test.TestCase):
     def test_make_glue_autoregressive_inputs(
         self,
         *,
-        input_example: Dict[str, Any],
-        expected: Dict[str, Any],
+        input_example: dict[str, Any],
+        expected: dict[str, Any],
         max_source_len: int,
         max_target_len: int,
     ):

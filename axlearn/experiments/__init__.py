@@ -2,7 +2,6 @@
 
 """AXLearn experiments."""
 from importlib import import_module
-from typing import Dict
 
 from absl import logging
 
@@ -12,7 +11,7 @@ from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 def _load_trainer_configs(
     config_module: str, *, optional: bool = False
-) -> Dict[str, TrainerConfigFn]:
+) -> dict[str, TrainerConfigFn]:
     try:
         module = import_module(config_module)
         return module.named_trainer_configs()

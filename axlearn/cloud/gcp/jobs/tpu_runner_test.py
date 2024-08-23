@@ -5,7 +5,7 @@
 # pylint: disable=protected-access
 import contextlib
 import tempfile
-from typing import List, Optional
+from typing import Optional
 from unittest import mock
 
 from absl import app, flags
@@ -76,8 +76,8 @@ def mock_tpu_statuses(
     job: tpu_runner.TPURunnerJob,
     *,
     num_booted: int,
-    statuses: List[str],
-    returncodes: List[int],
+    statuses: list[str],
+    returncodes: list[int],
 ):
     num_vms = job._num_workers()
     # num_booted should contain number of VMs booted across all workers.

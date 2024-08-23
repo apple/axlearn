@@ -7,7 +7,7 @@ Note that these configs are mainly intended for performance testing.
 https://arxiv.org/abs/2105.04663
 """
 
-from typing import Any, Dict
+from typing import Any
 
 from axlearn.common.attention import PipelinedTransformerLayer
 from axlearn.common.base_model import BaseModel
@@ -61,7 +61,7 @@ def _model_config(schedule: BaseSchedule.Config) -> BaseModel.Config:
     )
 
 
-def _trainer_kwargs() -> Dict[str, Dict[str, Any]]:
+def _trainer_kwargs() -> dict[str, dict[str, Any]]:
     """Construct trainer kwargs for all configurations."""
     # pylint: disable=use-dict-literal
 
@@ -105,7 +105,7 @@ def _trainer_kwargs() -> Dict[str, Dict[str, Any]]:
 
 def trainer_configs(
     train_input_source: SourceBuilder, eval_input_sources: SourceBuilder
-) -> Dict[str, TrainerConfigFn]:
+) -> dict[str, TrainerConfigFn]:
     """Returns a mapping from config_name to TrainerConfigFn's.
 
     Args:

@@ -4,7 +4,8 @@
 # pylint: disable=protected-access
 
 import contextlib
-from typing import Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -123,7 +124,7 @@ class SpectrumAugmenterTest(TestCase):
 
     def _generate_masks(
         self,
-        inputs: Dict[str, Tensor],
+        inputs: dict[str, Tensor],
         *,
         max_freq_masks: int,
         max_freq_length: int,

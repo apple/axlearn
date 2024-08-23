@@ -2,7 +2,7 @@
 
 """Encoder-Decoder model."""
 
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Optional
 
 from jax import numpy as jnp
 
@@ -44,8 +44,8 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
 
     def predict(
         self,
-        input_batch: Dict[str, Tensor],
-    ) -> Dict[str, Tensor]:
+        input_batch: dict[str, Tensor],
+    ) -> dict[str, Tensor]:
         """Produces encoder-decoder logits and hidden states.
 
         Args:
@@ -85,8 +85,8 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
             ValueError: If source_segment_ids and target_segment_ids are not provided together.
         """
         self._validate_input_batch(input_batch, paths=["source/input_ids", "target/input_ids"])
-        source_batch: Dict[str, Tensor] = input_batch["source"]
-        target_batch: Dict[str, Tensor] = input_batch["target"]
+        source_batch: dict[str, Tensor] = input_batch["source"]
+        target_batch: dict[str, Tensor] = input_batch["target"]
         source_segment_ids: Optional[Tensor] = source_batch.get("input_segment_ids")
         target_segment_ids: Optional[Tensor] = target_batch.get("input_segment_ids")
 
@@ -128,7 +128,7 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
 
     def _metrics(
         self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
-    ) -> Tuple[Tensor, Nested[Tensor]]:
+    ) -> tuple[Tensor, Nested[Tensor]]:
         """Computes metrics from logits and target labels like loss and per token loss.
 
         Args:
@@ -169,7 +169,7 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
 
     def beam_search_decode(
         self,
-        input_batch: Dict[str, Tensor],
+        input_batch: dict[str, Tensor],
         max_sequence_length: int,
         num_decodes: int,
         brevity_penalty: Optional[Callable[[jnp.array, Tensor], jnp.array]] = None,
@@ -209,7 +209,7 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
 
     def sample_decode(
         self,
-        input_batch: Dict[str, Tensor],
+        input_batch: dict[str, Tensor],
         max_sequence_length: int,
         num_decodes: int,
         logits_modifier: Optional[ConfigOr[LogitsToLogitsFn]] = None,

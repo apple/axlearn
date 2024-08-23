@@ -13,7 +13,7 @@ Differences:
 https://github.com/google-research/t5x/blob/03dfc44be7f9a93d34c1d7fd6f896d1c364a7d4d/t5x/examples/t5/layers.py#L518-L519
 """
 import math
-from typing import Optional, Type, Union
+from typing import Optional, Union
 
 from jax import numpy as jnp
 
@@ -119,7 +119,7 @@ class T5RelativePositionalEmbedding(BaseLayer):
         bidirectional: Required[bool] = REQUIRED
 
     @classmethod
-    def default_config(cls: Type["T5RelativePositionalEmbedding"]) -> Config:
+    def default_config(cls: type["T5RelativePositionalEmbedding"]) -> Config:
         cfg = super().default_config()
         # https://github.com/google-research/t5x/blob/c6b9edfdba5dec272b82dbd2d75804324010dffd/t5x/examples/t5/network.py#L229-L236.
         cfg.param_init = DefaultInitializer.default_config().set(
@@ -251,7 +251,7 @@ class T5Encoder(Encoder):
         )
 
     @classmethod
-    def default_config(cls: Type["T5Encoder"]) -> Encoder.Config:
+    def default_config(cls: type["T5Encoder"]) -> Encoder.Config:
         cfg = super().default_config()  # type: T5Encoder.Config
         cfg.transformer = t5_transformer_stack_config()
         cfg.output = EncoderOutputLayer.default_config()
@@ -313,7 +313,7 @@ class T5Decoder(Decoder):
         )
 
     @classmethod
-    def default_config(cls: Type["T5Decoder"]) -> Decoder.Config:
+    def default_config(cls: type["T5Decoder"]) -> Decoder.Config:
         cfg = super().default_config()  # type: T5Decoder.Config
         cfg.transformer = t5_transformer_stack_config()
         # T5 uses RMSNorm instead of LayerNorm.
@@ -376,7 +376,7 @@ class T5EncoderDecoderModel(EncoderDecoderModel):
         shared_token_emb: Embedding.Config = Embedding.default_config()
 
     @classmethod
-    def default_config(cls: Type["T5EncoderDecoderModel"]) -> Config:
+    def default_config(cls: type["T5EncoderDecoderModel"]) -> Config:
         cfg = super().default_config()  # type: T5EncoderDecoderModel.Config
         cfg.encoder = T5Encoder.default_config()  # type: T5Encoder.Config
         cfg.decoder = T5Decoder.default_config()  # type: T5Decoder.Config

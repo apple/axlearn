@@ -14,8 +14,9 @@
 import copy
 import itertools
 import math
+from collections.abc import Sequence
 from functools import partial
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Optional, Union
 
 import jax.random
 import numpy as np
@@ -590,8 +591,8 @@ class LayerTest(TestCase, tf.test.TestCase):
     )
     def test_maxpool2d(
         self,
-        window: Tuple[int, int],
-        strides: Tuple[int, int],
+        window: tuple[int, int],
+        strides: tuple[int, int],
     ):
         input_dim = 4
         cfg = MaxPool2D.default_config().set(
@@ -699,9 +700,9 @@ class LayerTest(TestCase, tf.test.TestCase):
     )
     def test_conv2d(
         self,
-        window: Tuple[int, int],
-        strides: Tuple[int, int],
-        padding: Union[str, Tuple[int, int]],
+        window: tuple[int, int],
+        strides: tuple[int, int],
+        padding: Union[str, tuple[int, int]],
         num_input_dim_groups: int,
     ):
         input_dim, output_dim = 256, 128
@@ -805,7 +806,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         (5, 2, (1, 1)),
         (5, 2, (2, 2)),
     )
-    def test_conv_output_1d_padding(self, window: int, stride: int, padding_cfg: Tuple[int, int]):
+    def test_conv_output_1d_padding(self, window: int, stride: int, padding_cfg: tuple[int, int]):
         """Tests _compute_conv_output_1d_padding() with explicit padding cfg."""
         batch_size = 5
         seq_len = 5
@@ -840,9 +841,9 @@ class LayerTest(TestCase, tf.test.TestCase):
     )
     def test_conv2d_with_1d_padding(
         self,
-        window: Tuple[int, int],
-        strides: Tuple[int, int],
-        padding: Union[str, Tuple[int, int]],
+        window: tuple[int, int],
+        strides: tuple[int, int],
+        padding: Union[str, tuple[int, int]],
     ):
         """Tests that Conv2DWith1DPadding has consistent outputs under different padding lengths.
 
@@ -956,9 +957,9 @@ class LayerTest(TestCase, tf.test.TestCase):
     )
     def test_deconv2d(
         self,
-        window: Tuple[int, int],
-        strides: Tuple[int, int],
-        padding: Union[str, Tuple[int, int]],
+        window: tuple[int, int],
+        strides: tuple[int, int],
+        padding: Union[str, tuple[int, int]],
     ):
         input_dim, output_dim = 4, 8
         if isinstance(padding, tuple):
@@ -1006,7 +1007,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         )
 
         # Compute ref outputs.
-        if isinstance(padding, Tuple):
+        if isinstance(padding, tuple):
             ref_padding = padding[0]
         elif isinstance(padding, str):
             ref_padding = padding.lower()
@@ -1098,9 +1099,9 @@ class LayerTest(TestCase, tf.test.TestCase):
     )
     def test_conv3d(
         self,
-        window: Tuple[int, int],
-        strides: Tuple[int, int],
-        padding: Union[str, Tuple[int, int]],
+        window: tuple[int, int],
+        strides: tuple[int, int],
+        padding: Union[str, tuple[int, int]],
         num_input_dim_groups: int,
     ):
         input_dim, output_dim = 4, 8
@@ -1193,7 +1194,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         self,
         window: int,
         strides: int,
-        padding: Union[str, Tuple[int, int]],
+        padding: Union[str, tuple[int, int]],
         dilation: Optional[int] = None,
     ):
         input_dim, output_dim = 4, 6
@@ -1267,7 +1268,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         self,
         window: int,
         strides: int,
-        padding: Tuple[int, int],
+        padding: tuple[int, int],
         dilation: Optional[int],
     ):
         input_dim, output_dim = 4, 6
@@ -1331,7 +1332,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         self,
         window: int,
         strides: int,
-        padding: Union[str, Tuple[int, int]],
+        padding: Union[str, tuple[int, int]],
     ):
         input_dim = 4
         cfg = DepthwiseConv1D.default_config().set(
@@ -1866,7 +1867,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         },
     )
     def test_separable_space_time_positional_embedding(
-        self, positions: Optional[Union[List[int], List[List[int]]]]
+        self, positions: Optional[Union[list[int], list[list[int]]]]
     ):
         dim = 4
         video_size = (64, 64, 4)
@@ -2010,7 +2011,7 @@ class EmbedTest(parameterized.TestCase):
 class BiasLayer(BaseLayer):
     """A test layer with bias."""
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         return dict(bias=ParameterSpec(shape=[], mesh_axes=None))
 
     def forward(self, x: Tensor) -> Tensor:
@@ -2029,7 +2030,7 @@ class ParentLayer(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
-        children: Dict[str, BaseLayer.Config] = {}
+        children: dict[str, BaseLayer.Config] = {}
         shared_modules: Sequence[str] = []
 
     def __init__(self, cfg: BaseLayer.Config, *, parent: Optional[Module]):
@@ -2080,7 +2081,7 @@ class RedirectToSharedModuleTest(TestCase):
             )
 
             @partial(jax.jit, static_argnames=("path", "child_method"))
-            def jit_forward(inputs: Tensor, *, path: Tuple[str], child_method: str = "forward"):
+            def jit_forward(inputs: Tensor, *, path: tuple[str], child_method: str = "forward"):
                 outputs, _ = F(
                     layer,
                     state=state,

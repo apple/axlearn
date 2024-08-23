@@ -1,7 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 """Classification evaluation pipeline."""
-from typing import Dict, NamedTuple, Optional, Sequence
+from collections.abc import Sequence
+from typing import NamedTuple, Optional
 
 import jax
 from jax import numpy as jnp
@@ -46,7 +47,7 @@ class PrecisionRecallMetricCalculator(GlobalMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Calls predict method of the model and returns the state, PredictionOutputs.
 
         Args:
@@ -70,7 +71,7 @@ class PrecisionRecallMetricCalculator(GlobalMetricCalculator):
             output=self.Output(input_batch[self.config.label_field], y_scores),
         )
 
-    def _calculate_metrics(self, outputs: Output) -> Dict[str, Tensor]:
+    def _calculate_metrics(self, outputs: Output) -> dict[str, Tensor]:
         """Calculates metrics from concatenated_outputs of the whole evaluation set.
 
            If no threshold can satisfy the target level, the precision / recall will be -1

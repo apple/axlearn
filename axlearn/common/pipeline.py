@@ -25,7 +25,7 @@ A pipeline layer consists a stack of N identical sub layers, where
 
 import dataclasses
 import functools
-from typing import Callable, NamedTuple, Optional, Protocol, Tuple, Union
+from typing import Callable, NamedTuple, Optional, Protocol, Union
 
 import jax.ad_checkpoint
 from jax import numpy as jnp
@@ -294,7 +294,7 @@ class GPipeSchedule(BaseSchedule):
         )
         def scan_fn(
             carry_in: Nested[Tensor],
-            xs_t: Tuple[Nested[Tensor], Nested[Tensor]],
+            xs_t: tuple[Nested[Tensor], Nested[Tensor]],
         ):
             """Processes timestep `t` in the pipeline (in parallel across pipeline stages).
 
@@ -521,7 +521,7 @@ class StreamSchedule(BaseSchedule):
         )
         def scan_fn(
             carry_in: Nested[Tensor],
-            xs_t: Tuple[Nested[Tensor], Nested[Tensor]],
+            xs_t: tuple[Nested[Tensor], Nested[Tensor]],
         ):
             """Processes timestep `t` in the pipeline (in parallel across pipeline stages).
 

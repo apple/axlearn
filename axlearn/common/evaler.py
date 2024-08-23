@@ -7,19 +7,8 @@ import os.path
 import re
 import time
 from collections import defaultdict
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Mapping,
-    NamedTuple,
-    Optional,
-    Protocol,
-    Sequence,
-    Tuple,
-    Union,
-)
+from collections.abc import Mapping, Sequence
+from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 
 import jax
 from absl import logging
@@ -126,7 +115,7 @@ class BaseMetricCalculator(Module):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Handles an input batch.
 
         Will be called repeatedly during an evaluation step, once per evaluation input batch.
@@ -155,8 +144,8 @@ class BaseMetricCalculator(Module):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-        all_forward_outputs: List[NestedTensor],
-    ) -> Dict[str, WeightedScalar]:
+        all_forward_outputs: list[NestedTensor],
+    ) -> dict[str, WeightedScalar]:
         """Computes summaries.
 
         Will be called at the end of an evaluation step.
@@ -217,7 +206,7 @@ class BaseMetricCalculator(Module):
         model_params: NestedTensor,
         input_batch: NestedTensor,
         **kwargs,
-    ) -> Tuple[NestedTensor, OutputCollection]:
+    ) -> tuple[NestedTensor, OutputCollection]:
         """Computes self._model.method(input_batch).
 
         Should be called inside pjit().
@@ -278,7 +267,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         # Model method to call.
         model_method: str = "forward"
         # kwargs passed to model_method along with input batch.
-        model_method_kwargs: Dict[str, Any] = {}
+        model_method_kwargs: dict[str, Any] = {}
         # The metric accumulator.
         metric_accumulator: InstantiableConfig = MetricAccumulator.default_config()
 
@@ -307,7 +296,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         outputs = self._jit_forward(model_params, state["prng_key"], input_batch)
         self._process_summaries(outputs["replicated"]["summaries"])
         return dict(
@@ -319,7 +308,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         model_params: NestedTensor,
         prng_key: Tensor,
         input_batch: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Calls `self._model` and returns summaries."""
         cfg = self.config
         next_key, forward_prng = jax.random.split(prng_key)
@@ -344,7 +333,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         del model_outputs
         return {}
 
-    def _process_summaries(self, summaries: Dict[str, Any]):
+    def _process_summaries(self, summaries: dict[str, Any]):
         self._metric_accumulator.update(summaries)
 
     def get_summaries(
@@ -352,8 +341,8 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-        all_forward_outputs: List[NestedTensor],
-    ) -> Dict[str, WeightedScalar]:
+        all_forward_outputs: list[NestedTensor],
+    ) -> dict[str, WeightedScalar]:
         return self._metric_accumulator.summaries()
 
 
@@ -469,7 +458,7 @@ class CompositeMetricCalculator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         composite_outputs = dict(output={}, state={})
 
         for name, calculator in self._calculators.items():
@@ -500,9 +489,9 @@ class CompositeMetricCalculator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-        all_forward_outputs: List[NestedTensor],
-    ) -> Dict[str, WeightedScalar]:
-        all_forward_outputs_grouped_by_name: Dict[str, List[NestedTensor]] = defaultdict(list)
+        all_forward_outputs: list[NestedTensor],
+    ) -> dict[str, WeightedScalar]:
+        all_forward_outputs_grouped_by_name: dict[str, list[NestedTensor]] = defaultdict(list)
         for d in all_forward_outputs:
             for name in self._calculators:
                 all_forward_outputs_grouped_by_name[name].append(d[name])
@@ -523,7 +512,7 @@ class CompositeMetricCalculator(BaseMetricCalculator):
 class EvalPolicy(Protocol):
     """Decides whether evaler should run eval at the given step."""
 
-    def __call__(self, *, step: int, train_summaries: Dict[str, Any]) -> bool:
+    def __call__(self, *, step: int, train_summaries: dict[str, Any]) -> bool:
         """Implements the policy.
 
         Args:
@@ -545,7 +534,7 @@ def every_n_steps_policy(
     if max_step is not None and max_step < min_step:
         raise ValueError(f"max_step {max_step} cannot be smaller than min_step {min_step}.")
 
-    def fn(*, step: int, train_summaries: Dict[str, Any]) -> bool:
+    def fn(*, step: int, train_summaries: dict[str, Any]) -> bool:
         del train_summaries
         if step < min_step:
             logging.info(
@@ -624,7 +613,7 @@ class SpmdEvaler(Module):
         return_aux: bool = False,
         train_summaries: Optional[NestedTensor] = None,
         force_run: bool = False,
-    ) -> Tuple[Tensor, Optional[Dict[str, Any]], Optional[List[NestedTensor]]]:
+    ) -> tuple[Tensor, Optional[dict[str, Any]], Optional[list[NestedTensor]]]:
         """Runs eval for the given step.
 
         Args:
@@ -791,7 +780,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Calls predict method of the model and returns input_batch and per-batch model outputs.
 
         Will be called repeatedly during an evaluation step, once per evaluation input batch.
@@ -824,7 +813,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         model_params: NestedTensor,
         prng_key: Tensor,
         input_batch: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Core function that calls model's predict() method for each batch and will be pjit-ed."""
         predict_key, next_key = jax.random.split(prng_key)
         cfg = self.config
@@ -841,7 +830,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
             per_example=model_outputs,
         )
 
-    def _calculate_metrics(self, outputs: PredictionOutputs) -> Dict[str, Tensor]:
+    def _calculate_metrics(self, outputs: PredictionOutputs) -> dict[str, Tensor]:
         """Calculates metrics from ``concatenated_outputs`` of the whole evaluation set.
 
         Args:
@@ -858,8 +847,8 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         self,
         model_params: NestedTensor,
         prng_key: Tensor,
-        outputs: List[PredictionOutputs],
-    ) -> Dict[str, NestedTensor]:
+        outputs: list[PredictionOutputs],
+    ) -> dict[str, NestedTensor]:
         """Computes metrics and returns them in "replicated"."""
         del model_params, prng_key
 
@@ -870,11 +859,13 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         # other dimensions of the stacked output are positive. Otherwise, that concatenated leaf
         # node will be set as None.
         concatenated_outputs = jax.tree_util.tree_map(
-            lambda xs: with_sharding_constraint(
-                jnp.reshape(xs, (-1, *xs.shape[2:])), input_partition_spec()
-            )
-            if all(dim > 0 for dim in xs.shape[2:])
-            else None,
+            lambda xs: (
+                with_sharding_constraint(
+                    jnp.reshape(xs, (-1, *xs.shape[2:])), input_partition_spec()
+                )
+                if all(dim > 0 for dim in xs.shape[2:])
+                else None
+            ),
             stacked_outputs,
         )
 
@@ -888,8 +879,8 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-        all_forward_outputs: List[PredictionOutputs],
-    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
+        all_forward_outputs: list[PredictionOutputs],
+    ) -> dict[str, Union[WeightedScalar, Tensor]]:
         if self._use_jit_for_metric_calculation:
             metrics = self._jit_compute_metrics(
                 model_params,

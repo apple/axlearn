@@ -11,7 +11,7 @@ RefA: original LoRA paper https://arxiv.org/abs/2106.09685
 RefB: generalized LoRA https://arxiv.org/pdf/2110.04366
 RefC: Pytorch implementation https://github.com/microsoft/lora
 """
-from typing import Dict, Optional
+from typing import Optional
 
 import jax.numpy as jnp
 
@@ -159,7 +159,7 @@ class LoraDownFusedLinear(BaseLayer):
         cfg.param_partition_spec = (None, None, "model")
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             weight=ParameterSpec(
@@ -204,7 +204,7 @@ class LoraUpFusedLinear(BaseLayer):
         cfg.param_partition_spec = (None, None, "model", None)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             weight=ParameterSpec(
@@ -330,7 +330,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
 
         # Whether to use LoRA for query, key, value projections.
         # Keys of enable_lora must be query, key, value.
-        enable_lora: Required[Dict[str, bool]] = REQUIRED
+        enable_lora: Required[dict[str, bool]] = REQUIRED
         num_heads: Required[int] = REQUIRED
 
     @classmethod
@@ -354,7 +354,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
         super()._is_valid_config()
         # Check whether enable_lora is valid if exists.
         cfg = self.config
-        if set(cfg.enable_lora.keys()) != set(["query", "key", "value"]):
+        if set(cfg.enable_lora.keys()) != {"query", "key", "value"}:
             raise ValueError(
                 f"Keys of enable_lora must be query, key, value, saw: {cfg.enable_lora}."
             )

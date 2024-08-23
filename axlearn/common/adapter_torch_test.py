@@ -3,7 +3,8 @@
 """Tests PyTorch adapter layers."""
 # pylint: disable=too-many-lines
 import itertools
-from typing import Optional, OrderedDict, Tuple, Type, Union, cast
+from collections import OrderedDict
+from typing import Optional, Union, cast
 
 import jax
 import numpy as np
@@ -187,7 +188,7 @@ class AttentionModulesTest(TestCase):
     def test_transformer_feed_forward_layer(
         self,
         structure: str,
-        activation: Union[str, Tuple[str, str]],
+        activation: Union[str, tuple[str, str]],
         linear_biases: bool,
         norm: str,
     ):
@@ -1567,7 +1568,7 @@ class AttentionPoolingTest(TestCase):
 
 class CoCaImageStreamEncoderTest(TestCase):
     @staticmethod
-    def _get_axlearn_pooler_cls(pooler_name: str) -> Type:
+    def _get_axlearn_pooler_cls(pooler_name: str) -> type:
         if pooler_name == "attention":
             return AxlearnAttentionPooling
         elif pooler_name == "average":
@@ -1578,7 +1579,7 @@ class CoCaImageStreamEncoderTest(TestCase):
             raise ValueError(f"unknown {pooler_name=}")
 
     @staticmethod
-    def _get_pytorch_pooler_cls(pooler_name: str) -> Type:
+    def _get_pytorch_pooler_cls(pooler_name: str) -> type:
         if pooler_name == "attention":
             return AttentionPooling
         elif pooler_name == "average":

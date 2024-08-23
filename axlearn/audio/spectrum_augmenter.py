@@ -10,7 +10,7 @@
 
 """Spectrum augmentation utilities."""
 
-from typing import Dict, Optional
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -144,7 +144,7 @@ class SpectrumAugmenter(BaseLayer):
         self._add_child("freq_mask_sampler", cfg.freq_mask_sampler)
         self._add_child("time_mask_sampler", cfg.time_mask_sampler)
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
+    def forward(self, inputs: Tensor, *, paddings: Tensor) -> dict[str, Tensor]:
         """Applies SpecAugment to inputs.
 
         Args:

@@ -14,7 +14,7 @@
 Reference: https://arxiv.org/abs/2405.15052.
 """
 import re
-from typing import Dict, NamedTuple, Optional, Tuple, Union
+from typing import NamedTuple, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -184,7 +184,7 @@ class AdaptiveLoadBalanceLoss(BaseLayer):
         cfg: AdaptiveLoadBalanceLoss.Config = self.config
         self._add_child("value_average", cfg.moving_average)
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         return {
             "log_scale": ParameterSpec(
                 shape=[],
@@ -318,9 +318,9 @@ class Top2Gating(BaseGating):
 
         expert_capacity = _compute_expert_capacity(
             expert_capacity=cfg.expert_capacity,
-            capacity_factor=cfg.train_capacity_factor
-            if self.is_training
-            else cfg.eval_capacity_factor,
+            capacity_factor=(
+                cfg.train_capacity_factor if self.is_training else cfg.eval_capacity_factor
+            ),
             group_size=logits.shape[-2],
             num_experts=cfg.num_experts,
         )
@@ -474,7 +474,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         # https://github.com/tensorflow/mesh/blob/fbf7b1e547e8b8cb134e81e1cd350c312c0b5a16/mesh_tensorflow/transformer/moe.py#L294-L336
         outer_batch: int = 1
         norm: BaseNormalizationLayer.Config = LayerNorm.default_config()
-        activation: Union[str, Tuple[str, str]] = "nn.relu"
+        activation: Union[str, tuple[str, str]] = "nn.relu"
         dropout: InstantiableConfig = Dropout.default_config()
         stochastic_depth: InstantiableConfig = StochasticDepth.default_config()
         # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm", "nonorm".
@@ -509,7 +509,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         # C - experts capacity dim
         # H - hidden dim
         # S - sequence dim
-        dim_to_mesh_axis_map: Dict[str, Optional[PartitionSpec]] = {}
+        dim_to_mesh_axis_map: dict[str, Optional[PartitionSpec]] = {}
 
     @classmethod
     def default_config(cls) -> Config:
@@ -527,7 +527,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         }
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         if isinstance(cfg.hidden_dim, int):
             hidden_dim = cfg.hidden_dim

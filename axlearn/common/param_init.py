@@ -2,8 +2,9 @@
 
 """Modules for configurable parameter initialization."""
 import re
+from collections.abc import Sequence
 from enum import Enum
-from typing import Any, Dict, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, NamedTuple, Optional, Union
 
 import jax
 from absl import logging
@@ -36,21 +37,21 @@ class FanAxes(NamedTuple):
         NONE = None
 
     # Input axis or sequence of axes of the fan "input" dimension.
-    in_axis: Union[Tuple[int, ...], int]
+    in_axis: Union[tuple[int, ...], int]
     # Output axis or sequence of axes of the fan "output" dimension.
-    out_axis: Union[Tuple[int, ...], int]
+    out_axis: Union[tuple[int, ...], int]
     # Batch axis or sequence of axes that should be ignored when computing fan.
-    batch_axis: Union[Tuple[int, ...], int] = ()
+    batch_axis: Union[tuple[int, ...], int] = ()
 
     def canonicalize(self) -> "FanAxes":
         """Returns a FanAxes equivalent to this one where all fields are tuples."""
 
-        def canonicalize(maybe_tuple: Union[None, int, Sequence[Union[int]]]) -> Tuple[int, ...]:
+        def canonicalize(maybe_tuple: Union[None, int, Sequence[Union[int]]]) -> tuple[int, ...]:
             if maybe_tuple is None:
                 return tuple()
             if isinstance(maybe_tuple, int):
                 return (maybe_tuple,)
-            if isinstance(maybe_tuple, Tuple):
+            if isinstance(maybe_tuple, tuple):
                 return tuple(sorted(maybe_tuple))
             raise TypeError(f"Invalid type {type(maybe_tuple)} for data {maybe_tuple}.")
 
@@ -379,7 +380,7 @@ class DefaultInitializer(Initializer):
         # Each entry is a (regexp, config) pair. The first match (the insertion order) "wins".
         # Note that `DefaultInitializer.__init__` populates the dict with some default values,
         # which will be consulted after user-specified entries.
-        init_by_param_name: Dict[str, InstantiableConfig] = {}
+        init_by_param_name: dict[str, InstantiableConfig] = {}
 
     def __init__(self, cfg: Config):
         """Default initializers for common param names if not specified by the user."""

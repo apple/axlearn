@@ -26,8 +26,9 @@ import contextlib
 import enum
 import math
 import re
+from collections.abc import Iterator
 from copy import deepcopy
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Optional
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
@@ -275,7 +276,7 @@ class MobileNets(BaseModel):
         scale_stem: bool = True
         # Nested list (stages and blocks per stage) of MobileBlockType
         # and config args to instantiate the block class.
-        block_defs: List[List[Tuple[MobileBlockType, Dict[str, Any]]]] = None
+        block_defs: list[list[tuple[MobileBlockType, dict[str, Any]]]] = None
         # Width multiplier to scale the number of features.
         feat_multiplier: float = 1.0
         # Minimum factor for rounding down the number of features.
@@ -292,7 +293,7 @@ class MobileNets(BaseModel):
         endpoints_mode: EndpointsMode = EndpointsMode.DEFAULT
 
         # If specified return only a subset of the intermediate representations.
-        endpoints_names: Optional[Set[str]] = None
+        endpoints_names: Optional[set[str]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         @contextlib.contextmanager
@@ -432,11 +433,11 @@ class MobileNets(BaseModel):
     def _update_block_args(
         self,
         *,
-        block_args: Dict[str, Any],
-        global_block_args: Dict[str, Any],
+        block_args: dict[str, Any],
+        global_block_args: dict[str, Any],
         block_type: MobileBlockType,
         drop_path_multiplier: float,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Updates the block args by verifying/changing values and adding configs.
 
         Args:
@@ -474,13 +475,13 @@ class MobileNets(BaseModel):
                 )
         return block_args
 
-    def _filter_endpoints(self, *, endpoints_names: Set[str]):
+    def _filter_endpoints(self, *, endpoints_names: set[str]):
         self._endpoints_dims = {k: self._endpoints_dims[k] for k in endpoints_names}
         self._block_to_endpoint_name = {
             k: v for (k, v) in self._block_to_endpoint_name.items() if v in endpoints_names
         }
 
-    def forward(self, input_batch: Tensor) -> Dict[str, Tensor]:
+    def forward(self, input_batch: Tensor) -> dict[str, Tensor]:
         """Compute prediction on an input batch.
 
         Args:
@@ -511,12 +512,12 @@ class MobileNets(BaseModel):
         return endpoints
 
     @property
-    def endpoints_dims(self) -> Dict[str, int]:
+    def endpoints_dims(self) -> dict[str, int]:
         """A dict of {endpoint: dim} specifies dimension of intermediate representations."""
         return self._endpoints_dims
 
 
-def _decode_block_str(block_str: str) -> Tuple[MobileBlockType, Dict[str, Any], int]:
+def _decode_block_str(block_str: str) -> tuple[MobileBlockType, dict[str, Any], int]:
     """Decode block definition string.
     E.g. ib_r3_k5_s2_e3_c40_se0.25_nre
 
@@ -616,11 +617,11 @@ def _decode_block_str(block_str: str) -> Tuple[MobileBlockType, Dict[str, Any], 
 
 
 def _decode_arch_def(
-    arch_def: List[List[str]],
+    arch_def: list[list[str]],
     depth_multiplier: float = 1.0,
     depth_trunc: str = "ceil",
     fix_first_last: bool = False,
-) -> List[List[Tuple[MobileBlockType, Dict[str, Any]]]]:
+) -> list[list[tuple[MobileBlockType, dict[str, Any]]]]:
     """Decodes model architecture definition into corresponding block types and block arguments.
 
     Args:
@@ -647,7 +648,7 @@ def _decode_arch_def(
     return arch_args
 
 
-def _arch_mobilenet_v3(variant: str) -> Dict[str, Any]:
+def _arch_mobilenet_v3(variant: str) -> dict[str, Any]:
     """Defines different MobileNetV3 model architectures.
 
     Reference:
@@ -753,11 +754,11 @@ def _arch_mobilenet_v3(variant: str) -> Dict[str, Any]:
 
 
 def _scale_stage_depth(
-    stage_defs: List[Tuple[MobileBlockType, Dict]],
-    repeats: List[int],
+    stage_defs: list[tuple[MobileBlockType, dict]],
+    repeats: list[int],
     depth_multiplier: float = 1.0,
     depth_trunc: str = "ceil",
-) -> List[Tuple[MobileBlockType, Dict]]:
+) -> list[tuple[MobileBlockType, dict]]:
     """Per-stage depth scaling.
 
     Scales the block repeats in each stage.
@@ -790,7 +791,7 @@ def _scale_stage_depth(
     # The first block makes less sense to repeat in most of the arch definitions.
     repeats_scaled = []
     for repeat in repeats[::-1]:
-        repeat_scaled = max(1, round((repeat / num_repeat * num_repeat_scaled)))
+        repeat_scaled = max(1, round(repeat / num_repeat * num_repeat_scaled))
         repeats_scaled.append(repeat_scaled)
         num_repeat -= repeat
         num_repeat_scaled -= repeat_scaled
@@ -803,7 +804,7 @@ def _scale_stage_depth(
     return defs_scaled
 
 
-def _arch_efficientnet(variant: str, version: str = "V1", **kwargs) -> Dict[str, Any]:
+def _arch_efficientnet(variant: str, version: str = "V1", **kwargs) -> dict[str, Any]:
     """Defines EfficientNet model architectures (both V1 and V2).
 
     References:
@@ -949,7 +950,7 @@ def named_model_configs(
     variant: str,
     *,
     efficientnet_version: Optional[str] = "V1",
-    extra_settings: Optional[Dict[str, Any]] = None,
+    extra_settings: Optional[dict[str, Any]] = None,
 ) -> InstantiableConfig:
     if model_name == ModelNames.EFFICIENTNET:
         model_settings = _arch_efficientnet(variant, efficientnet_version)

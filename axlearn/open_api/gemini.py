@@ -9,7 +9,7 @@ import logging
 import os
 import random
 import string
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 # isort: off
 from axlearn.open_api.common import BaseClient, ClientRateLimitError, ValidationError
@@ -48,7 +48,7 @@ class GeminiClient(BaseClient):
     async def async_generate(
         self,
         *,
-        request: Dict[str, Any],
+        request: dict[str, Any],
         **kwargs,
     ) -> str:
         """Generates response asynchronously from the client.
@@ -112,7 +112,7 @@ class GeminiClient(BaseClient):
         )
 
     @classmethod
-    def parse_generation(cls, response: Dict[str, Any]) -> List[ChatCompletionMessage]:
+    def parse_generation(cls, response: dict[str, Any]) -> list[ChatCompletionMessage]:
         """Parse generation from response.
 
         Args:
@@ -157,7 +157,7 @@ class GeminiClient(BaseClient):
 _max_tool_name_length = 32
 
 
-def _format_tool_message(message: Dict[str, Any]) -> Dict[str, Any]:
+def _format_tool_message(message: dict[str, Any]) -> dict[str, Any]:
     """Formats tool role message to reduce tool name length."""
     if "tool_calls" in message:
         new_tool_calls = []
@@ -170,7 +170,7 @@ def _format_tool_message(message: Dict[str, Any]) -> Dict[str, Any]:
     return message
 
 
-def _aggregate_tool_role_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _aggregate_tool_role_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Aggregates all tool role messages into one."""
     aggregated_messages = []
     for message in messages:
@@ -187,7 +187,7 @@ def _aggregate_tool_role_messages(messages: List[Dict[str, Any]]) -> List[Dict[s
     return aggregated_messages
 
 
-def _format_request(request: Dict[str, Any]):
+def _format_request(request: dict[str, Any]):
     """Formats request to follow Gemini request rules."""
     if "messages" in request:
         request["messages"] = [
@@ -204,7 +204,7 @@ def _format_request(request: Dict[str, Any]):
         request["tools"] = new_tools
 
 
-def _convert_openai_messages_to_gemini(messages: List[Dict[str, Any]]) -> List[Content]:
+def _convert_openai_messages_to_gemini(messages: list[dict[str, Any]]) -> list[Content]:
     """Converts OpenAI messages to Gemini Content.
 
     Args:
@@ -297,10 +297,10 @@ def _convert_openai_messages_to_gemini(messages: List[Dict[str, Any]]) -> List[C
     return gemini_messages
 
 
-def _convert_openai_tools_to_gemini(tools: Optional[List[Any]]) -> List[Tool]:
+def _convert_openai_tools_to_gemini(tools: Optional[list[Any]]) -> list[Tool]:
     """Converts openai tools to Gemini FunctionDeclaration."""
 
-    def _convert_parameters(params: Dict[str, Any]) -> Dict[str, Any]:
+    def _convert_parameters(params: dict[str, Any]) -> dict[str, Any]:
         if "properties" not in params:
             return params
         for param in params["properties"].values():

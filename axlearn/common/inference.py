@@ -12,20 +12,10 @@ On compatible trainer checkpoints for `InferenceRunner`:
     state builder.
 """
 
+from collections.abc import Generator, Iterable, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Generator,
-    Iterable,
-    NamedTuple,
-    Optional,
-    Sequence,
-    Tuple,
-    Union,
-)
+from typing import Any, Callable, NamedTuple, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -64,7 +54,7 @@ class MethodRunner:
         input_batch_partition_spec: DataPartitionType,
         jit_run_on_batch: Callable[
             [Tensor, NestedTensor],
-            Tuple[Tensor, NestedTensor, NestedTensor, NestedTensor],
+            tuple[Tensor, NestedTensor, NestedTensor, NestedTensor],
         ],
     ):
         """Initializes MethodRunner object.
@@ -388,12 +378,12 @@ class InferenceRunner(Module):
         self,
         prng_key: Tensor,
         model_params: NestedTensor,
-        input_batch: Dict[str, Any],
+        input_batch: dict[str, Any],
         *,
         method: str,
         drop_module_outputs: Callable[[str], bool] = lambda _: True,
         **kwargs,
-    ) -> Tuple[Tensor, NestedTensor, NestedTensor, NestedTensor]:
+    ) -> tuple[Tensor, NestedTensor, NestedTensor, NestedTensor]:
         """Implements inference for a single input batch."""
         new_prng_key, iter_key = jax.random.split(prng_key)
 

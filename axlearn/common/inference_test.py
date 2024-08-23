@@ -8,7 +8,8 @@ Some tests are intended to be run on TPU.
 import itertools
 import os
 import tempfile
-from typing import Callable, Generator, List, Optional, Tuple, Union
+from collections.abc import Generator
+from typing import Callable, Optional, Union
 from unittest import mock
 
 import jax
@@ -146,7 +147,7 @@ class DummyModel(BaseModel):
         )
         self.predict_dtypes = []
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         y = self.predict(input_batch)
         return y.mean(), {}
 
@@ -166,7 +167,7 @@ class DummyModel(BaseModel):
 
 def is_supported(
     platform: str,
-    mesh_shape: Tuple[int, int],
+    mesh_shape: tuple[int, int],
     param_dtype: jnp.dtype,
     inference_dtype: Optional[jnp.dtype],
     global_batch_size: int,
@@ -200,7 +201,7 @@ class InferenceTest(test_utils.TestCase):
     def test_jsonl_feature(
         self,
         value: Union[Tensor, tf.Tensor],
-        expectation: Union[int, float, bool, str, List[Union[int, float, bool, str]]],
+        expectation: Union[int, float, bool, str, list[Union[int, float, bool, str]]],
     ):
         self.assertEqual(_json_feature(value), expectation)
 
@@ -208,8 +209,8 @@ class InferenceTest(test_utils.TestCase):
     def _runner_config(
         self,
         *,
-        mesh_shape: Tuple[int, int],
-        mesh_axis_names: Tuple[str, str],
+        mesh_shape: tuple[int, int],
+        mesh_axis_names: tuple[str, str],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         data_partition: DataPartitionType,
@@ -240,11 +241,11 @@ class InferenceTest(test_utils.TestCase):
         self,
         *,
         root_dir: str,
-        mesh_shape: Tuple[int, int],
-        mesh_axis_names: Tuple[str, str],
+        mesh_shape: tuple[int, int],
+        mesh_axis_names: tuple[str, str],
         prng_key: Tensor,
         use_ema: bool = False,
-    ) -> Tuple[NestedTensor, str]:
+    ) -> tuple[NestedTensor, str]:
         devices = mesh_utils.create_device_mesh(mesh_shape)
         mesh = jax.sharding.Mesh(devices, mesh_axis_names)
         logging.info("Global mesh: %s", mesh)
@@ -307,7 +308,7 @@ class InferenceTest(test_utils.TestCase):
     def test_runner(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,
@@ -416,7 +417,7 @@ class InferenceTest(test_utils.TestCase):
     def test_runner_module_outputs(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,
@@ -501,7 +502,7 @@ class InferenceTest(test_utils.TestCase):
     def test_pipeline(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,
@@ -648,7 +649,7 @@ class InferenceTest(test_utils.TestCase):
     def test_pipeline_with_string_tensors(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,
@@ -766,7 +767,7 @@ class InferenceTest(test_utils.TestCase):
     def test_pipeline_summary_writer(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,

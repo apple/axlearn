@@ -119,7 +119,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
 
             def submit_job(self, job_name: str, *, job_spec_file: str):
                 test_fixture.assertEqual("temp_dir", self.config.root_dir)
-                with open(job_spec_file, "r", encoding="utf-8") as f:
+                with open(job_spec_file, encoding="utf-8") as f:
                     spec = deserialize_jobspec(f)
                     test_fixture.assertEqual(spec.name, cfg.name)
                     test_fixture.assertEqual(spec.command, cfg.command)

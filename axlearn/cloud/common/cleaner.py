@@ -2,8 +2,8 @@
 
 """Utilities to clean resources."""
 
+from collections.abc import Sequence
 from enum import Enum
-from typing import Dict, Sequence
 
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.types import JobSpec
@@ -20,7 +20,7 @@ class Cleaner(Configurable):
     """A basic cleaner interface."""
 
     # pylint: disable-next=unused-argument,no-self-use
-    def sweep(self, jobs: Dict[str, JobSpec]) -> Sequence[str]:
+    def sweep(self, jobs: dict[str, JobSpec]) -> Sequence[str]:
         """Removes resources in a non-blocking manner."""
         raise NotImplementedError(type(self))
 
@@ -51,7 +51,7 @@ class CompositeCleaner(Cleaner):
         self._cleaners = [cleaner.instantiate() for cleaner in cfg.cleaners]
         self._aggregation = cfg.aggregation
 
-    def sweep(self, jobs: Dict[str, JobSpec]) -> Sequence[str]:
+    def sweep(self, jobs: dict[str, JobSpec]) -> Sequence[str]:
         """Apply all cleaners and return the union or intersection of the results."""
         if len(self._cleaners) < 1:
             raise ValueError("There should be at least one cleaner.")
@@ -77,7 +77,7 @@ class UnschedulableCleaner(Cleaner):
         super().__init__(cfg)
         self._quota_fn = cfg.scheduler.quota.instantiate()
 
-    def sweep(self, jobs: Dict[str, JobSpec]) -> Sequence[str]:
+    def sweep(self, jobs: dict[str, JobSpec]) -> Sequence[str]:
         """Return unschedulable jobs."""
         cfg = self.config
         # Only call quota function once per sweep.

@@ -3,7 +3,7 @@
 """A library to support writing inference outputs."""
 import json
 import os.path
-from typing import List, Optional, Union
+from typing import Optional, Union
 
 import jax
 import numpy as np
@@ -72,7 +72,7 @@ def _tf_feature(value: Union[Tensor, tf.Tensor]) -> tf.train.Feature:
 
 def _json_feature(
     value: Union[Tensor, tf.Tensor]
-) -> Union[int, float, bool, str, List[Union[int, float, bool, str]]]:
+) -> Union[int, float, bool, str, list[Union[int, float, bool, str]]]:
     if isinstance(value, tf.Tensor):
         value = value.numpy()
 

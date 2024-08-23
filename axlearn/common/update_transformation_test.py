@@ -1,7 +1,7 @@
 # Copyright © 2024 Apple Inc.
 """Tests for update_transformation.py."""
 import dataclasses
-from typing import Sequence
+from collections.abc import Sequence
 
 import chex
 import jax

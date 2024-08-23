@@ -5,7 +5,7 @@
 import io
 import os
 import pathlib
-from typing import Dict, Optional, Union
+from typing import Optional, Union
 from unittest import mock
 
 from absl import app, flags
@@ -37,7 +37,7 @@ def _setup_fake_repo(temp_dir: Union[pathlib.Path, str]):
 
 
 def create_default_config(
-    directory: Union[pathlib.Path, str], *, contents: Optional[Dict] = None
+    directory: Union[pathlib.Path, str], *, contents: Optional[dict] = None
 ) -> pathlib.Path:
     f = pathlib.Path(directory) / CONFIG_DIR / DEFAULT_CONFIG_FILE
     f.parent.mkdir(parents=True, exist_ok=True)

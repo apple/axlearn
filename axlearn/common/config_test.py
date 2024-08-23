@@ -9,7 +9,7 @@ import dataclasses
 import math
 import typing
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import attr
 import attrs
@@ -193,7 +193,7 @@ class ConfigTest(parameterized.TestCase):
     def test_mutable_values(self):
         @config_class
         class Config(ConfigBase):
-            list_value: List = []
+            list_value: list = []
 
         # Different Config instances do not share the default value instance.
         cfg1 = Config()
@@ -203,7 +203,7 @@ class ConfigTest(parameterized.TestCase):
         self.assertSequenceEqual(cfg1.list_value, [123])
         self.assertSequenceEqual(cfg2.list_value, [])
 
-        mutable_list: List = [1, 2, [3]]
+        mutable_list: list = [1, 2, [3]]
         cfg2.list_value = mutable_list
         # Assignment to a config field is by value.
         self.assertSequenceEqual(cfg2.list_value, [1, 2, [3]])
@@ -628,13 +628,13 @@ class ConfigTest(parameterized.TestCase):
         @config_class
         class TestConfigA(ConfigBase):
             num_layers: int = 10
-            extra: Dict[str, int] = {"alpha": 1, "beta": 2}
+            extra: dict[str, int] = {"alpha": 1, "beta": 2}
             required_int: Required[int] = REQUIRED
             fn: InstantiableConfig = config.config_for_function(fn_with_args).set(args=[1, 2, 3])
             person: Person = Person("Johnny Appleseed", 30)  # pytype: disable=invalid-annotation
             person_cls: type = Person
             notes: Optional[str] = None
-            cats: List[Cat] = [Cat(name="Ross", adopted=True)]  # pytype: disable=invalid-annotation
+            cats: list[Cat] = [Cat(name="Ross", adopted=True)]  # pytype: disable=invalid-annotation
 
         @config_class
         class TestConfigB(ConfigBase):
@@ -643,10 +643,10 @@ class ConfigTest(parameterized.TestCase):
         @config_class
         class TestConfigC(ConfigBase):
             foo: str = "hello world"
-            bar: List[str] = ["a", "b", "c"]
+            bar: list[str] = ["a", "b", "c"]
             my_config: TestConfigA = TestConfigA()  # pytype: disable=invalid-annotation
-            config_dict: Dict[str, ConfigBase] = {"config_b": TestConfigB()}
-            config_list: List[ConfigBase] = [TestConfigB(), TestConfigB().set(count=1)]
+            config_dict: dict[str, ConfigBase] = {"config_b": TestConfigB()}
+            config_list: list[ConfigBase] = [TestConfigB(), TestConfigB().set(count=1)]
             config_type: type = ConfigTest
             config_func: Callable = config.similar_names
 
@@ -791,7 +791,7 @@ class ConfigTest(parameterized.TestCase):
 
         @config_class
         class TestConfigWithDefaultDict(ConfigBase):
-            something: Dict[str, Any] = defaultdict(lambda: 1)
+            something: dict[str, Any] = defaultdict(lambda: 1)
 
         cfg = TestConfigWithDefaultDict()
         out = cfg.to_dict()

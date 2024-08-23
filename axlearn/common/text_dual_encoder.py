@@ -2,7 +2,8 @@
 
 """Text-based dual-encoder module."""
 
-from typing import Dict, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Optional, Union
 
 import jax.numpy as jnp
 
@@ -65,7 +66,7 @@ class TextEmbeddingStreamEncoder(StreamEncoder):
         # A map having output embedding name as key and input id name as value. All specified input
         # ids will be encoded by text_encoder and stored in input_batch with output embedding name
         # as the field name.
-        encoding_field_map: Dict[str, str] = ENCODING_FIELD_MAP
+        encoding_field_map: dict[str, str] = ENCODING_FIELD_MAP
         # Text encoder that outputs a single embedding vector for each input sequence.
         text_encoder: TextEmbeddingEncoder.Config = TextEmbeddingEncoder.default_config()
         # Hidden dimension of base text_encoder. If None, it is assumed to be the same as
@@ -151,7 +152,7 @@ def flatten_and_concat_embeddings(
     right_positive_paddings: Tensor,
     right_negative_embeddings: Optional[Tensor] = None,
     right_negative_paddings: Optional[Tensor] = None,
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """Flattens left and right embeddings and concatenates right encoder positive and negative
     embeddings.
 
@@ -358,7 +359,7 @@ class RankingPairwiseLossLayer(FusionNetwork):
         # A positive scalar float to be multiplied with logits. Default is 1.0.
         pairwise_loss_scale_factor: float = 1.0
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, Tensor]:
         """Forward function.
 
         Args:
@@ -436,7 +437,7 @@ class FLOPsLossLayer(FusionNetwork):
         cfg = self.config
         self._flops_weight_schedule = as_schedule_fn(cfg.flops_weight_schedule)
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         param_specs = {
             "step": ParameterSpec(
                 shape=[],

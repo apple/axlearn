@@ -8,8 +8,8 @@
 
 """Object Detection prediction heads."""
 import itertools
+from collections.abc import Sequence
 from enum import Enum
-from typing import Dict, Sequence
 
 from jax import numpy as jnp
 
@@ -201,8 +201,8 @@ class BoxProposals(struct.PyTreeNode):
         containing proposal scores from different feature levels.  Keys indicate the feature levels.
     """
 
-    boxes: Dict[int, Tensor]
-    scores: Dict[int, Tensor]
+    boxes: dict[int, Tensor]
+    scores: dict[int, Tensor]
 
 
 class RPNHead(BaseLayer):
@@ -301,7 +301,7 @@ class RPNHead(BaseLayer):
             ),
         )
 
-    def forward(self, inputs: Dict[int, Tensor]) -> BoxProposals:
+    def forward(self, inputs: dict[int, Tensor]) -> BoxProposals:
         """Runs forward pass and returns proposals.
 
         Args:

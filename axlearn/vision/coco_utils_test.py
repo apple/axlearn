@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for coco_utils.py."""
-from typing import Any, Dict, List, Union
+from typing import Any, Union
 
 import numpy as np
 import tensorflow as tf
@@ -108,9 +108,9 @@ class CocoToolsTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_export_groundtruths_to_coco(
         self,
-        groundtruth_classes: Union[List[List[int]], List[List[List[int]]]],
-        expected_categories: List[Dict[str, int]],
-        expected_annotations: List[Dict[str, Any]],
+        groundtruth_classes: Union[list[list[int]], list[list[list[int]]]],
+        expected_categories: list[dict[str, int]],
+        expected_annotations: list[dict[str, Any]],
     ):
         groundtruth_boxes = np.array(
             [[[100, 100, 200, 200]], [[50, 50, 100, 100]]], dtype=np.float32

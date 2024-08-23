@@ -1,7 +1,8 @@
 # Copyright © 2024 Apple Inc.
 
 """Utilities for loading pre-trained Hugging Face models."""
-from typing import Any, Callable, Sequence
+from collections.abc import Sequence
+from typing import Any, Callable
 
 from axlearn.common.config import config_for_function
 from axlearn.common.state_builder import HuggingFacePreTrainedBuilder

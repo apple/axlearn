@@ -2,7 +2,7 @@
 
 """Utilities relating to PyTorch."""
 
-from typing import Optional, Type, Union
+from typing import Optional, Union
 
 import torch
 from absl import logging
@@ -99,7 +99,7 @@ if _FAIRSEQ_INSTALLED:
 
 # pylint: disable-next=too-many-branches,too-many-statements
 def parameters_from_torch_layer(
-    src: torch.nn.Module, *, dst_layer: Optional[Union[BaseLayer, Type]] = None
+    src: torch.nn.Module, *, dst_layer: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     """Extracts parameters from a torch module into a compatible format with AXLearn layers.
 

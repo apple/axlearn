@@ -7,7 +7,7 @@
 # Licensed under BSD 3 clause.
 
 """Retrieval metrics."""
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -18,7 +18,7 @@ from axlearn.common.utils import Tensor, cast_floats
 def top_k_accuracy(
     sim: Tensor,
     gt_targets: Optional[Tensor],
-    top_ks: List[int],
+    top_ks: list[int],
     similarity_bias: Tensor = None,
     relevance_labels: Optional[Tensor] = None,
     return_counts: bool = False,
@@ -115,10 +115,10 @@ def top_k_accuracy(
 def top_k_recall(
     sim: Tensor,
     gt_targets: Optional[Tensor],
-    top_ks: List[int],
+    top_ks: list[int],
     similarity_bias: Optional[Tensor] = None,
     relevance_labels: Optional[Tensor] = None,
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """Compute Top@K recall.
 
     Recall@K = {# of relevant docs in top k retrieved docs} / {min(K, # of total relevant docs)}
@@ -184,7 +184,7 @@ def _reciprocal_rank(
     scores: Tensor,
     relevance_labels: Tensor,
     query_padding: Tensor,
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """Computes reciprocal rank of each query's first relevant item and updated query_padding that
     excludes query without any relevant item.
 
@@ -226,7 +226,7 @@ def mean_reciprocal_rank(
     scores: Tensor,
     relevance_labels: Tensor,
     query_padding: Tensor,
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """Computes mean reciprocal rank (MRR) of each query's first relevant item.
 
     Padded query or query without any relevant item will be excluded when averaging.
@@ -258,7 +258,7 @@ def average_rank(
     scores: Tensor,
     relevance_labels: Tensor,
     query_padding: Tensor,
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """Computes average rank of each query's first relevant item.
 
     Padded query or query without any relevant item will be excluded when averaging.
@@ -294,8 +294,8 @@ def average_rank(
 def average_precision_at_k(
     scores: Tensor,
     relevance_labels: Tensor,
-    top_ks: List[int],
-) -> Dict[int, Tensor]:
+    top_ks: list[int],
+) -> dict[int, Tensor]:
     """Computes Average Precision@K (AP@K) metrics.
 
     AP@K = sum_{k=1}^{K}(Precision@k * rel(k)) / min(K, total_num_relevant_items)
@@ -411,9 +411,9 @@ def _tie_averaged_dcg(*, y_true: Tensor, y_score: Tensor, discount_factor: Tenso
 def ndcg_at_k(
     scores: Tensor,
     relevance_labels: Tensor,
-    top_ks: List[int],
+    top_ks: list[int],
     ignore_ties: bool = True,
-) -> Dict[int, Tensor]:
+) -> dict[int, Tensor]:
     """Computes Normalized Discounted Cumulative Gain@K (NDCG@K) metrics.
 
     When ignoring ties:
@@ -492,13 +492,13 @@ def ndcg_at_k(
 
 def calculate_mean_average_precision_metrics(
     *,
-    top_ks: List[int],
+    top_ks: list[int],
     scores: Tensor,
     relevance_labels: Tensor,
     query_padding: Tensor,
     categories: Optional[Tensor] = None,
-    categories_names: Optional[Tuple[str, ...]] = None,
-) -> Dict[str, Tensor]:
+    categories_names: Optional[tuple[str, ...]] = None,
+) -> dict[str, Tensor]:
     """Calculates mean average precision at k (MAP@k) metrics.
 
     MAP@K = 1/n * sum(AP@K)
@@ -545,13 +545,13 @@ def calculate_mean_average_precision_metrics(
 
 def calculate_accuracy_metrics(
     *,
-    top_ks: List[int],
+    top_ks: list[int],
     scores: Tensor,
     relevance_labels: Tensor,
     query_padding: Tensor,
     categories: Optional[Tensor] = None,
-    categories_names: Optional[Tuple[str, ...]] = None,
-) -> Dict[str, Tensor]:
+    categories_names: Optional[tuple[str, ...]] = None,
+) -> dict[str, Tensor]:
     """Calculates accuracy at k (accuracy@k) metrics.
 
     Accuracy@k equals to a ratio of queries with at least one relevant result in the top k results.
@@ -596,13 +596,13 @@ def calculate_accuracy_metrics(
 
 def calculate_recall_metrics(
     *,
-    top_ks: List[int],
+    top_ks: list[int],
     scores: Tensor,
     relevance_labels: Tensor,
     query_padding: Tensor,
     categories: Optional[Tensor] = None,
-    categories_names: Optional[Tuple[str, ...]] = None,
-) -> Dict[str, Tensor]:
+    categories_names: Optional[tuple[str, ...]] = None,
+) -> dict[str, Tensor]:
     """Calculates recall at k (accuracy@k) metrics.
 
     Recall@k equals to average of recall over queries.
@@ -658,8 +658,8 @@ def calculate_mean_metrics(
     query_metrics: Tensor,
     query_padding: Tensor,
     query_categories: Optional[Tensor] = None,
-    categories_names: Optional[Tuple[str, ...]] = None,
-) -> Dict[str, Tensor]:
+    categories_names: Optional[tuple[str, ...]] = None,
+) -> dict[str, Tensor]:
     num_valid_or_one = jnp.maximum((1 - query_padding).sum(), 1.0)
     query_metrics = jnp.where(query_padding, 0.0, query_metrics)
     metrics = {metric_name: query_metrics.sum() / num_valid_or_one}

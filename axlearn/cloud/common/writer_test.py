@@ -34,7 +34,7 @@ class TfioWriterTest(absltest.TestCase):
                 w.write("test2\n")
 
             # Check contents.
-            with open(resolved_output_path, "r", encoding="utf-8") as f:
+            with open(resolved_output_path, encoding="utf-8") as f:
                 self.assertEqual(f.read().splitlines(), ["test1", "test2"])
             # Check that thread is joined.
             self.assertIsNone(w._flush_thread)
@@ -50,7 +50,7 @@ class TfioWriterTest(absltest.TestCase):
                     w.write(f"line{i}\n")
 
             # Ensure that all writes are captured and in-order.
-            with open(resolved_output_path, "r", encoding="utf-8") as f:
+            with open(resolved_output_path, encoding="utf-8") as f:
                 lines = f.read().splitlines()
                 self.assertEqual(100, len(lines))
                 for i, line in enumerate(lines):

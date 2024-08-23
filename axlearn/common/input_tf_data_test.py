@@ -4,7 +4,8 @@
 # pylint: disable=no-self-use,too-many-lines
 import os
 import tempfile
-from typing import Dict, Iterable, List, Optional, Sequence, Type, Union
+from collections.abc import Iterable, Sequence
+from typing import Optional, Union
 from unittest import mock
 
 import jax
@@ -65,8 +66,7 @@ def build_ds_fn(
 
     def ds_fn() -> tf.data.Dataset:
         def data_gen():
-            for text in texts:
-                yield text
+            yield from texts
 
         ds = tf.data.Dataset.from_generator(data_gen, output_types=tf.string)
         # Set the cardinality of the generated dataset.
@@ -312,7 +312,7 @@ class TfdsTest(parameterized.TestCase):
     )
     @pytest.mark.gs_login
     def test_tfds_decoders(self, split: str, is_training: bool, field_name: str, expected: str):
-        def tfds_custom_decoder() -> Dict[str, tfds.decode.Decoder]:
+        def tfds_custom_decoder() -> dict[str, tfds.decode.Decoder]:
             @tfds.decode.make_decoder()
             def replace_field_value(field_value, _):
                 return field_value + expected
@@ -342,7 +342,7 @@ class TfdsTest(parameterized.TestCase):
         ("prefix_ids"),
     )
     def test_tfds_decoders_ci(self, field_name: str):
-        def tfds_custom_decoder() -> Dict[str, tfds.decode.Decoder]:
+        def tfds_custom_decoder() -> dict[str, tfds.decode.Decoder]:
             @tfds.decode.make_decoder()
             def custom_fn(field_value, _):
                 return field_value
@@ -357,7 +357,7 @@ class TfdsTest(parameterized.TestCase):
         ), "The decoder fn is not of type tfds.decode.base.DecoderFn"
 
 
-def _text_ds(texts: List[str], *, repeat=1) -> tf.data.Dataset:
+def _text_ds(texts: list[str], *, repeat=1) -> tf.data.Dataset:
     dataset = {
         "text": [],
         "index": [],
@@ -372,7 +372,7 @@ def _text_ds(texts: List[str], *, repeat=1) -> tf.data.Dataset:
     return tf.data.Dataset.from_tensor_slices(dataset).repeat(repeat)
 
 
-def _tokens_ds(tokens: List[List[int]], *, repeat=1) -> tf.data.Dataset:
+def _tokens_ds(tokens: list[list[int]], *, repeat=1) -> tf.data.Dataset:
     dataset = {
         "tokens": [],
         "index": [],
@@ -1040,8 +1040,7 @@ class ProcessorsTest(parameterized.TestCase, tf.test.TestCase):
         ]
 
         def gen():
-            for ex in examples:
-                yield ex
+            yield from examples
 
         ds = tf.data.Dataset.from_generator(
             gen,
@@ -1078,8 +1077,7 @@ class ProcessorsTest(parameterized.TestCase, tf.test.TestCase):
         ]
 
         def gen():
-            for ex in examples:
-                yield ex
+            yield from examples
 
         ds = tf.data.Dataset.from_generator(
             gen,
@@ -1229,7 +1227,7 @@ class PadToBatchTest(parameterized.TestCase, tf.test.TestCase):
             ],
         ),
     )
-    def test_pad_to_batch(self, examples: Dict[str, tf.Tensor], expected: Dict[str, tf.Tensor]):
+    def test_pad_to_batch(self, examples: dict[str, tf.Tensor], expected: dict[str, tf.Tensor]):
         processor = pad_to_batch(batch_size=5)
         source = fake_source(
             is_training=False,
@@ -1317,9 +1315,9 @@ class PackTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_pack_to_batch(
         self,
-        examples: Sequence[Dict[str, tf.Tensor]],
-        expected: Union[Type[Exception], Sequence[Dict[str, tf.Tensor]]],
-        spec: Optional[Dict] = None,
+        examples: Sequence[dict[str, tf.Tensor]],
+        expected: Union[type[Exception], Sequence[dict[str, tf.Tensor]]],
+        spec: Optional[dict] = None,
     ):
         processor = pack_to_batch(batch_size=5)
         source = fake_source(
@@ -1366,9 +1364,9 @@ class PackTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_trim_and_pack_to_batch(
         self,
-        examples: Sequence[Dict[str, tf.Tensor]],
-        expected: Sequence[Dict[str, tf.Tensor]],
-        spec: Optional[Dict] = None,
+        examples: Sequence[dict[str, tf.Tensor]],
+        expected: Sequence[dict[str, tf.Tensor]],
+        spec: Optional[dict] = None,
     ):
         processor = chain(trim_to_batch(batch_size=5), pack_to_batch(batch_size=5))
         source = fake_source(

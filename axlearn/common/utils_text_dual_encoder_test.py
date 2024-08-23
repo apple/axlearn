@@ -1,7 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests text dual encoder utils."""
-from typing import Tuple
 
 # pylint: disable=no-self-use
 import jax
@@ -21,7 +20,7 @@ from axlearn.common.utils_text_dual_encoder import bert_text_embedding_stream_en
 
 def generate_random_tokenized_text(
     *, batch_size: int, max_seq_len: int
-) -> Tuple[np.ndarray, torch.Tensor]:
+) -> tuple[np.ndarray, torch.Tensor]:
     # Generate a random text.
     input_ids = np.random.randint(low=3, high=30522, size=[batch_size, max_seq_len - 1])
 

@@ -24,7 +24,7 @@ import time
 from collections import defaultdict
 from concurrent import futures
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 
 import jax
 import numpy as np
@@ -48,21 +48,21 @@ class _ShardInfo:
     """
 
     data: Tensor
-    index: Tuple[slice, ...]
-    slice_arg: Optional[Tuple[int, int, int]]
+    index: tuple[slice, ...]
+    slice_arg: Optional[tuple[int, int, int]]
     replica_count: int
 
 
 # Tuple (and thus hashable) representation of a slice object (start, end, step).
-_SliceTuple = Tuple[Optional[int], Optional[int], Optional[int]]
+_SliceTuple = tuple[Optional[int], Optional[int], Optional[int]]
 
 
-def _slices_to_tuple(slices: List[slice]) -> Tuple[_SliceTuple, ...]:
+def _slices_to_tuple(slices: list[slice]) -> tuple[_SliceTuple, ...]:
     """Converts a list of slices to a hashable representation."""
     return tuple(((s.start, s.stop, s.step) for s in slices))
 
 
-def _num_replicas_per_shard(arr: Tensor) -> Dict[Tuple[_SliceTuple, ...], int]:
+def _num_replicas_per_shard(arr: Tensor) -> dict[tuple[_SliceTuple, ...], int]:
     """Gets the global replication count for each unique shard."""
     replica_count = defaultdict(int)
     for slices in arr.sharding.devices_indices_map(arr.shape).values():
@@ -72,14 +72,14 @@ def _num_replicas_per_shard(arr: Tensor) -> Dict[Tuple[_SliceTuple, ...], int]:
     return dict(replica_count)
 
 
-def _get_shard_infos(arr_inp: Tensor, *, max_data_shard_degree: int) -> List[_ShardInfo]:
+def _get_shard_infos(arr_inp: Tensor, *, max_data_shard_degree: int) -> list[_ShardInfo]:
     """Returns a list of _ShardInfo for addressable shards that need to be saved.
 
     If replica count for the shards are greater than 0, all replicas will save slices of the
     shard provided that any dim of the shard is divisible by the replica count. If no such
     dim exists, we fallback to only replica 0 saving the shard.
     """
-    shard_infos: List[_ShardInfo] = []
+    shard_infos: list[_ShardInfo] = []
     replica_count_map = _num_replicas_per_shard(arr_inp)
     for shard in arr_inp.addressable_shards:
         replica_count = replica_count_map[_slices_to_tuple(shard.index)]
@@ -133,7 +133,7 @@ def _transfer_to_host(data: Tensor) -> Tensor:
     return data
 
 
-async def _slice_shard_and_copy_to_host(shard_infos: List[_ShardInfo], d2h_future: futures.Future):
+async def _slice_shard_and_copy_to_host(shard_infos: list[_ShardInfo], d2h_future: futures.Future):
     """Slices each shard according to shard info and then copy the sliced result to host.
 
     The .data field of each shard_info is modified in-place.
@@ -167,7 +167,7 @@ def _local_size(arr_inp: Tensor) -> int:
     return sum(shard.data.nbytes for shard in arr_inp.addressable_shards)
 
 
-def _fix_metadata(tspec: Dict[str, Any], shard_infos: List[_ShardInfo]):
+def _fix_metadata(tspec: dict[str, Any], shard_infos: list[_ShardInfo]):
     """Revises the medadata of a tensorspec based on `shard_infos`."""
     if len(shard_infos) != 0:
         # All shards have the same shape after data-sharding, so using [0] is sufficient.
@@ -177,7 +177,7 @@ def _fix_metadata(tspec: Dict[str, Any], shard_infos: List[_ShardInfo]):
 
 async def _async_serialize(
     arr_inp: Tensor,
-    tensorstore_spec: Dict[str, Any],
+    tensorstore_spec: dict[str, Any],
     d2h_future: futures.Future,
     *,
     limiter: Optional[serialization._LimitInFlightBytes] = None,
@@ -256,9 +256,9 @@ async def _async_serialize(
 
 
 async def _run_serializer(
-    arrays: List[Tensor],
-    tensorstore_specs: List[Dict[str, Any]],
-    d2h_futures: List[futures.Future],
+    arrays: list[Tensor],
+    tensorstore_specs: list[dict[str, Any]],
+    d2h_futures: list[futures.Future],
     *,
     max_concurrent_bytes: Optional[int] = None,
     max_data_shard_degree: Optional[int] = None,
@@ -383,8 +383,8 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
 
     def serialize(
         self,
-        arrays: List[Tensor],
-        tensorstore_specs: List[Dict[str, Any]],
+        arrays: list[Tensor],
+        tensorstore_specs: list[dict],
         *,
         on_commit_callback: Callable[[], None],
     ):

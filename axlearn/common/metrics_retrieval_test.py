@@ -1,7 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests retrieval metrics."""
-from typing import List
 
 import jax
 import jax.numpy as jnp
@@ -219,7 +218,7 @@ class NDCGTest(TestCase):
             "y_score": [1, 2, 3, 5],
         },
     )
-    def test_tie_averaged_dcg(self, y_true: List[float], y_score: List[float]):
+    def test_tie_averaged_dcg(self, y_true: list[float], y_score: list[float]):
         discount = 1 / jnp.log2(jnp.arange(2, len(y_true) + 2))
         discount_cumsum = jnp.cumsum(discount)
         y_true = jnp.array(y_true)
@@ -253,7 +252,7 @@ class NDCGTest(TestCase):
         ],
         ignore_ties=(True, False),
     )
-    def test_ndcg_at_k(self, scores: List[float], relevance_labels: List[float], ignore_ties: bool):
+    def test_ndcg_at_k(self, scores: list[float], relevance_labels: list[float], ignore_ties: bool):
         scores = jnp.array(scores)
         relevance_labels = jnp.array(relevance_labels)
         top_ks_for_ndcg = [1, 2, 3, 4, 5, 6, -1]
@@ -307,7 +306,7 @@ class NDCGTest(TestCase):
         },
     )
     def test_ndcg_at_k_with_ties(
-        self, scores: List[float], relevance_labels: List[float], top_ks_for_ndcg: List[int]
+        self, scores: list[float], relevance_labels: list[float], top_ks_for_ndcg: list[int]
     ):
         scores = jnp.array(scores)
         relevance_labels = jnp.array(relevance_labels)

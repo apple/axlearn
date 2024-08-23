@@ -8,7 +8,6 @@ balanced sampling.
 """
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List
 
 import jax
 import jax.numpy as jnp
@@ -54,9 +53,9 @@ class Matcher(Configurable):
     @config_class
     class Config(Configurable.Config):
         # A list of values representing match types (e.g. positive or negative or ignored match).
-        labels: List[int] = [BACKGROUND, IGNORE, FOREGROUND]
+        labels: list[int] = [BACKGROUND, IGNORE, FOREGROUND]
 
-    def match(self, per_level_anchor_boxes: Dict[str, Tensor], groundtruth_boxes: Tensor):
+    def match(self, per_level_anchor_boxes: dict[str, Tensor], groundtruth_boxes: Tensor):
         """Computes groundtruth assignment for anchors based on pairwise similarity.
 
         Args:
@@ -107,7 +106,7 @@ class ArgmaxMatcher(Matcher):
     class Config(Matcher.Config):
         # A list (ascending) of similarity thresholds sorted in ascending order to stratify the
         # matches into different levels.
-        thresholds: List[float] = [0.5, 0.5]
+        thresholds: list[float] = [0.5, 0.5]
         # Ensure that each anchor is matched to at least one groundtruth even though there may be
         # no groundtruths with sufficient similarity.
         force_match_columns: bool = True
@@ -134,7 +133,7 @@ class ArgmaxMatcher(Matcher):
         self.force_match_columns = cfg.force_match_columns
         self.thresholds = [-float("inf")] + cfg.thresholds + [float("inf")]
 
-    def match(self, per_level_anchor_boxes: Dict[str, Tensor], groundtruth_boxes: Tensor):
+    def match(self, per_level_anchor_boxes: dict[str, Tensor], groundtruth_boxes: Tensor):
         """Computes groundtruth assignment for anchors based on pairwise similarity.
 
         Args:
@@ -309,7 +308,7 @@ class ATSSMatcher(Matcher):
         )
         return distances
 
-    def match(self, per_level_anchor_boxes: Dict[str, Tensor], groundtruth_boxes: Tensor):
+    def match(self, per_level_anchor_boxes: dict[str, Tensor], groundtruth_boxes: Tensor):
         """Computes groundtruth assignment for anchors based on pairwise similarity.
 
         Args:

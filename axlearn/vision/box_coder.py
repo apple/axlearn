@@ -2,7 +2,6 @@
 
 """Box coder, for converting between image and anchor coordinates."""
 import enum
-from typing import Tuple
 
 import jax
 import jax.numpy as jnp
@@ -49,7 +48,7 @@ class BoxCoder(Configurable):
         box_wh_min_value: float = 0.0
         # Scaling factor for encoded box coordinates of the form
         # (y_center, x_center, height, width).
-        weights: Tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+        weights: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
         # Box clipping method.
         clip_boxes: BoxClipMethod = BoxClipMethod.MaxHW
 

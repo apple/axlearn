@@ -87,7 +87,7 @@ Reference:
 
 """
 import re
-from typing import Callable, List
+from typing import Callable
 
 # fmt: off
 EN_VQA_CONTRACTIONS = {
@@ -143,8 +143,8 @@ EN_VQA_DIGITS = {
 
 EN_VQA_ARTICLES = {"a", "an", "the"}
 # pylint: disable=anomalous-backslash-in-string
-EN_VQA_PERIOD_STRIP = re.compile("(?!<=\d)(\.)(?!\d)")
-EN_VQA_COMMA_STRIP = re.compile("(\d)(\,)(\d)")
+EN_VQA_PERIOD_STRIP = re.compile(r"(?!<=\d)(\.)(?!\d)")
+EN_VQA_COMMA_STRIP = re.compile(r"(\d)(\,)(\d)")
 # pylint: enable=anomalous-backslash-in-string
 
 EN_VQA_PUNCT = [
@@ -211,7 +211,7 @@ def _get_normalizer(lang: str) -> Callable[[str], str]:
         raise NotImplementedError(f"Normalizer for {lang} is not implemented.")
 
 
-def vqa_accuracy_score(*, answer: str, gt_answers: List[str], lang: str = "en") -> float:
+def vqa_accuracy_score(*, answer: str, gt_answers: list[str], lang: str = "en") -> float:
     """Computes visual question answering accuracy between a prediction and ground truth answers.
 
     This evaluation metrics compares a predicted answer to a set of 10 ground truth answers.

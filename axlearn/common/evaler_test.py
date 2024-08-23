@@ -9,7 +9,8 @@ import graphlib
 import json
 import os
 import tempfile
-from typing import List, Optional, Sequence, Tuple, Type, Union
+from collections.abc import Sequence
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -69,7 +70,7 @@ class DummyInput(Module):
 
         is_training: Required[bool] = REQUIRED
         batch_size: Required[int] = REQUIRED
-        shape: Required[List[int]] = REQUIRED
+        shape: Required[list[int]] = REQUIRED
         total_num_batches: Optional[int] = None
 
     @classmethod
@@ -117,7 +118,7 @@ class DummyModel(BaseModel):
         self._add_child("linear", cfg.layer)
         self.forward_dtypes = []
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         inputs = input_batch["inputs"]
         self.forward_dtypes.append(inputs.dtype)
         logits = self.linear(inputs)
@@ -156,7 +157,7 @@ class DummyMetricCalculator(ModelSummaryAccumulator):
         model_params: NestedTensor,
         input_batch: NestedTensor,
         **kwargs,
-    ) -> Tuple[NestedTensor, OutputCollection]:
+    ) -> tuple[NestedTensor, OutputCollection]:
         cfg = self.config
         model_outputs, model_output_collection = super()._call_model(
             method=method,
@@ -323,7 +324,7 @@ class EvalerTest(TestCase):
                 self.assertIsNotNone(summary)
 
     @parameterized.parameters(TfExampleRecordSink, JsonlExampleRecordSink)
-    def test_output_writer(self, sink: Type[BaseRecordSink]):
+    def test_output_writer(self, sink: type[BaseRecordSink]):
         with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
             with tempfile.TemporaryDirectory() as temp_dir:
                 with set_data_dir(temp_dir):
@@ -533,7 +534,7 @@ class CompositeMetricCalculatorTest(TestCase):
     def setup_model_and_calculator_inputs(
         self,
         calculator_cfg: CompositeMetricCalculator.Config,
-    ) -> Tuple[CompositeMetricCalculator, NestedTensor, NestedTensor, List[NestedTensor]]:
+    ) -> tuple[CompositeMetricCalculator, NestedTensor, NestedTensor, list[NestedTensor]]:
         with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
             model: DummyModel = (
                 DummyModel.default_config().set(name="model").instantiate(parent=None)

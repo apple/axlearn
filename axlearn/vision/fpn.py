@@ -20,7 +20,8 @@ BiFPN Reference: https://arxiv.org/abs/1911.09070
 """
 import copy
 import enum
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from collections.abc import Iterable
+from typing import Optional, Union
 
 import jax
 import jax.nn
@@ -89,7 +90,7 @@ class FPN(BaseLayer):
         hidden_dim: Required[int] = REQUIRED  # Output dim of the conv layer.
         # Input specifications dictionary of (level, dim) pairs for input features in the pyramid.
         # Must contain consecutive levels from `min_level`.
-        input_dims: Required[Dict[str, int]] = REQUIRED
+        input_dims: Required[dict[str, int]] = REQUIRED
         min_level: int = 3  # Min level for the feature pyramid.
         max_level: int = 7  # Max level for the feature pyramid.
         # The convolution layer config.
@@ -138,7 +139,7 @@ class FPN(BaseLayer):
         levels = [int(l) for l in self.config.input_dims.keys() if l.isdigit()]
         return min(max(levels), self.config.max_level)
 
-    def forward(self, inputs: Dict[str, Tensor]) -> Dict[int, Tensor]:
+    def forward(self, inputs: dict[str, Tensor]) -> dict[int, Tensor]:
         """FPN forward pass.
 
         Args:
@@ -202,7 +203,7 @@ class SimpleFPN(BaseLayer):
         hidden_dim: Required[int] = REQUIRED  # Output dim of the conv layer.
         # Input specifications dictionary of (level, dim) pairs for input features in the pyramid.
         # Must contain consecutive levels from `min_level`.
-        input_dims: Required[Dict[int, int]] = REQUIRED
+        input_dims: Required[dict[int, int]] = REQUIRED
         min_level: int = 2  # Min level for the feature pyramid.
         max_level: int = 6  # Max level for the feature pyramid.
         # The convolution layer config.
@@ -377,7 +378,7 @@ class SimpleFPN(BaseLayer):
     def _get_backbone_max_level(self, backbone_level):
         return min(backbone_level, self.config.max_level)
 
-    def forward(self, inputs: Dict[str, Tensor]) -> Dict[int, Tensor]:
+    def forward(self, inputs: dict[str, Tensor]) -> dict[int, Tensor]:
         """SimpleFPN forward pass.
 
         Args:
@@ -466,7 +467,7 @@ class WeightedFeatureFusion(BaseLayer):
         else:
             raise ValueError(f"No normalization function for FusionMethod {cfg.method=} found.")
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             weight=ParameterSpec(
@@ -475,7 +476,7 @@ class WeightedFeatureFusion(BaseLayer):
         )
         return params
 
-    def forward(self, x: List[Tensor]) -> Tensor:
+    def forward(self, x: list[Tensor]) -> Tensor:
         """Takes a list of Tensors and returns a weighted sum
 
         Args:
@@ -518,7 +519,7 @@ class DepthwiseSeparableConvolution(BaseLayer):
         # Kernel size for depthwise convolution
         depthwise_kernel_size: int = 3
         # Padding for depthwise convolution
-        padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int]]] = "SAME"
+        padding: Union[str, tuple[tuple[int, int], tuple[int, int]]] = "SAME"
         # Whether to add a bias to the pointwise convolution
         pointwise_conv_bias: bool = False
 
@@ -698,7 +699,7 @@ class BiFPNLayer(BaseLayer):
 
         # Input specifications dictionary of (level, dim) pairs for input features in the pyramid.
         # Must contain consecutive levels from `min_level`.
-        input_dims: Required[Dict[int, int]] = REQUIRED
+        input_dims: Required[dict[int, int]] = REQUIRED
         # Number of channels in hidden layers
         hidden_dim: Required[int] = REQUIRED
         # Depending on layer type add additional operations, e.g., downchanneling for first layer
@@ -865,7 +866,7 @@ class BiFPNLayer(BaseLayer):
                     cfg.fusion.clone(num_input_tensors=3),
                 )
 
-    def forward(self, inputs: Dict[int, Tensor]) -> Dict[int, Tensor]:
+    def forward(self, inputs: dict[int, Tensor]) -> dict[int, Tensor]:
         """BiFPN layer forward pass.
 
         Args:
@@ -961,7 +962,7 @@ class BiFPN(BaseLayer):
 
         # Input specifications dictionary of (level, dim) pairs for input features in the pyramid.
         # Must contain consecutive levels from `min_level`.
-        input_dims: Required[Dict[str, int]] = REQUIRED
+        input_dims: Required[dict[str, int]] = REQUIRED
         # Output dim for all output levels of the pyramid
         hidden_dim: Required[int] = REQUIRED
         # Number of BiFPN layers to create
@@ -989,7 +990,7 @@ class BiFPN(BaseLayer):
             )
             current_input_dims = {level: cfg.hidden_dim for level in current_input_dims}
 
-    def forward(self, inputs: Dict[str, Tensor]) -> Dict[int, Tensor]:
+    def forward(self, inputs: dict[str, Tensor]) -> dict[int, Tensor]:
         cfg = self.config
 
         x = {int(l): f for (l, f) in inputs.items() if l.isdigit()}
@@ -1075,7 +1076,7 @@ def bifpn_layer_config(
 
 def bifpn_config(
     *,
-    input_dims: Optional[Dict[str, int]] = None,
+    input_dims: Optional[dict[str, int]] = None,
     hidden_dim: int = 64,
     min_level: int = 3,
     max_level: int = 7,

@@ -4,9 +4,6 @@
 
 import os
 
-# pylint: disable=no-self-use
-from typing import Dict
-
 import jax
 import numpy as np
 import pytest
@@ -33,6 +30,9 @@ from axlearn.common.test_utils import TestCase
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import Tensor, as_tensor
 
+# pylint: disable=no-self-use
+
+
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
 
 
@@ -43,7 +43,7 @@ def random_inputs_for_t5(
     source_vocab_size: int,
     target_vocab_size: int,
     batch_size: int = 2,
-) -> Dict[str, jax.Array]:
+) -> dict[str, jax.Array]:
     """Generate random inputs for AXLearn T5.
 
     Args:
@@ -103,7 +103,7 @@ def random_inputs_for_t5(
 
 def prepare_hf_t5_inputs(
     source_ids: Tensor, target_ids: Tensor, target_labels: Tensor, pad_token_id: int = 0
-) -> Dict[str, torch.Tensor]:
+) -> dict[str, torch.Tensor]:
     input_ids = torch.as_tensor(np.asarray(source_ids).copy(), dtype=torch.int32)
     attention_mask = (input_ids != pad_token_id).int()
     labels = torch.as_tensor(np.asarray(target_labels).copy(), dtype=torch.long)

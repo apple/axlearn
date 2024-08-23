@@ -2,7 +2,7 @@
 
 """Decoder layers."""
 import contextlib
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Callable, Optional, Union
 
 import jax
 from jax import numpy as jnp
@@ -142,7 +142,7 @@ class DecodingMixin(Module):
         input_ids: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         """Initializes cache for autoregressive cached decoding.
 
         TODO(markblee): Rename to init_states once we add support for decoding at non-zero time
@@ -173,7 +173,7 @@ class DecodingMixin(Module):
         input_ids: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         """Computes incremental outputs during autoregressive decoding.
 
         Args:
@@ -328,7 +328,7 @@ class DecodingMixin(Module):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         logits_modifier: Optional[LogitsToLogitsFn] = None,
-    ) -> Callable[[Tensor, NestedTensor], Tuple[Tensor, NestedTensor]]:
+    ) -> Callable[[Tensor, NestedTensor], tuple[Tensor, NestedTensor]]:
         """Build a fn mapping current token IDs and model state to next logits and updated state."""
 
         if cross_attention_data is not None:
@@ -343,7 +343,7 @@ class DecodingMixin(Module):
             if cross_attention_logit_biases.ndim == 3:
                 cross_attention_logit_biases = cross_attention_logit_biases[:, None, ...]
 
-        def tokens_to_scores(token_ids: Tensor, cache: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+        def tokens_to_scores(token_ids: Tensor, cache: NestedTensor) -> tuple[Tensor, NestedTensor]:
             """Maps current token IDs and model state to next logits and updated state.
 
             Args:
@@ -435,7 +435,7 @@ class Decoder(DecodingMixin, BaseLayer):
         pad_token_id: int = 0  # Int ID of the inputs to be masked for self-attention.
         eos_token_id: int = 1  # Int ID of the end of sequence token id.
         # Specifies how to partition the output logits of shape [batch, max_seq_len, vocab_size].
-        logits_partition_spec: Tuple[Union[Optional[str], Tuple[Optional[str]]], ...] = (
+        logits_partition_spec: tuple[Union[Optional[str], tuple[Optional[str]]], ...] = (
             "data",
             None,
             "model",
@@ -472,7 +472,7 @@ class Decoder(DecodingMixin, BaseLayer):
         cross_attention_logit_biases: Optional[Tensor] = None,
         positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
-    ) -> Tuple[Optional[NestedTensor], Tensor]:
+    ) -> tuple[Optional[NestedTensor], Tensor]:
         x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
         if mode == ForwardMode.FORWARD:
             transformer_state, x = None, self.transformer(
@@ -527,7 +527,7 @@ class Decoder(DecodingMixin, BaseLayer):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         positions: Optional[Tensor] = None,
-    ) -> Dict[str, Tensor]:
+    ) -> dict[str, Tensor]:
         """Computes decoder hidden states and logits from input ids and cross attention hidden
         states.
 
@@ -588,7 +588,7 @@ class Decoder(DecodingMixin, BaseLayer):
         input_ids: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         """See `DecodingMixin.prefill_states`."""
         states, outputs = self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
@@ -609,7 +609,7 @@ class Decoder(DecodingMixin, BaseLayer):
         input_ids: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         """See `DecodingMixin.extend_step`."""
         time_step = cached_states["time_step"]
         assert time_step.ndim == 1
@@ -715,7 +715,7 @@ class LmHead(BaseLayer):
         cfg.param_partition_spec = (None, "model")
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         # Some similarity with Embedding.
         # pylint: disable=duplicate-code
         cfg = self.config

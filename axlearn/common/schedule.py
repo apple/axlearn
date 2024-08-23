@@ -8,7 +8,7 @@
 
 """Optimizer schedules."""
 import math
-from typing import Callable, List, Optional, Union
+from typing import Callable, Optional, Union
 
 import jax
 from jax import numpy as jnp
@@ -189,7 +189,7 @@ def decay_bias_correction(decay: float) -> ScheduleFn:
     return fn
 
 
-def stepwise(sub: List[Schedule], start_step: List[int]) -> ScheduleFn:
+def stepwise(sub: list[Schedule], start_step: list[int]) -> ScheduleFn:
     """A composite schedule consisting of multiple sub-schedules.
 
     The first sub-schedule starts at step 0. For the rest of sub-schedules,

@@ -49,7 +49,7 @@ import pathlib
 import shlex
 import subprocess
 import time
-from typing import Sequence
+from collections.abc import Sequence
 
 from absl import app, flags, logging
 
@@ -270,7 +270,7 @@ class CPURunnerJob(CPUJob):
             shell=True,
             check=False,
         )
-        valid_statuses = set(status.name for status in CPURunnerJob.Status)
+        valid_statuses = {status.name for status in CPURunnerJob.Status}
         if proc.returncode == 0:
             for line in proc.stdout.split("\n"):
                 line = line.strip()

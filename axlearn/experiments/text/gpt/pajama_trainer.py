@@ -39,7 +39,7 @@ axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NU
     --mesh_selector=$INSTANCE_TYPE --jax_backend=tpu
 ```
 """
-from typing import Callable, Dict
+from typing import Callable
 
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
@@ -63,7 +63,7 @@ _SENTENCEPIECE_MODEL_NAME = {
 
 def _eval_input_sources(
     *, vocab_size: int, max_sequence_length: int
-) -> Dict[str, InstantiableConfig]:
+) -> dict[str, InstantiableConfig]:
     return {
         name: config_for_function(tfds_input).set(
             dataset_name=dataset_name,
@@ -153,7 +153,7 @@ def _train_input_source_fn(
     return fn
 
 
-def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
+def named_trainer_configs() -> dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
     config_map = {}
     for model_version in (gala, honeycrisp):

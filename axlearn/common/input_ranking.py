@@ -1,7 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
 """Input processing utilities on tf.data for ranking-related tasks."""
-from typing import Dict
 
 import seqio
 import tensorflow as tf
@@ -31,7 +30,7 @@ def rank_by_value(
         of input_field, and the ranks are stored in output_field.
     """
 
-    def example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         if len(example[input_key].shape) != 1:
             raise NotImplementedError(
                 f"Only implemented for rank-1 tensors. Got rank-{len(example[input_key].shape)}."

@@ -12,8 +12,9 @@ import tempfile
 import threading
 import time
 import unittest
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Iterable, List, Optional, Sequence, Type, cast
+from typing import Optional, Type, cast
 from unittest import mock
 
 import jax
@@ -356,7 +357,7 @@ class CheckpointerTest(test_utils.TestCase):
             # Simulate a corrupted cleanup on the last ckpt.
             Checkpointer.cleanup_checkpoint(ckpt_paths[-1], sync=False)
             # Ensure that the last ckpt still has the "test" file.
-            with open(os.path.join(ckpt_paths[-1], "test"), "r", encoding="utf-8") as f:
+            with open(os.path.join(ckpt_paths[-1], "test"), encoding="utf-8") as f:
                 self.assertEqual("2", f.read())
             # Ensure that the last ckpt is considered invalid.
             self.assertEqual(Checkpointer.latest_checkpoint_path(temp_dir), ckpt_paths[0])
@@ -923,7 +924,7 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                 self.assertEqual("test", committed_value)
 
 
-def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> List[str]:
+def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> list[str]:
     filenames = [
         f"{path_prefix}-{shard_id:05d}-of-{num_shards:05d}" for shard_id in range(num_shards)
     ]
@@ -971,7 +972,7 @@ class TfIteratorTest(test_utils.TestCase):
         self.assertSetEqual(set(seen), set(range(num_examples)))
 
 
-SWITCHABLE_VDICT_IMPL: Optional[Type[VDict]] = None
+SWITCHABLE_VDICT_IMPL: Optional[type[VDict]] = None
 
 
 # Subclass VDict so that VDict-specific code works the same with this class.

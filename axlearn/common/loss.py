@@ -29,7 +29,7 @@
 """Loss functions."""
 # pylint: disable=too-many-lines
 import enum
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -91,7 +91,7 @@ def cross_entropy(
     z_loss_scale: float = 0.0,
     label_smoothing: float = 0.0,
     soft_target_labels: Optional[Tensor] = None,
-) -> Tuple[Tensor, Dict[str, Tensor]]:
+) -> tuple[Tensor, dict[str, Tensor]]:
     """Compute the cross entropy loss between logits and target_labels.
 
     Computes a stabilized-gradient version of:
@@ -169,7 +169,7 @@ def binary_cross_entropy(
     *,
     target_labels: Tensor,
     live_targets: Optional[Tensor] = None,
-) -> Tuple[Tensor, Dict[str, Tensor]]:
+) -> tuple[Tensor, dict[str, Tensor]]:
     """Compute the binary cross entropy loss between logits and targets.
 
     Computes a stabilized-gradient version of:
@@ -285,9 +285,9 @@ def _stable_cross_entropy_fwd(logits: Tensor, targets: Tensor, z_loss_scale: flo
 
 
 def _stable_cross_entropy_bwd(
-    res: Tuple,
-    g: Tuple[Tensor, Tensor, Tensor],
-) -> Tuple[Tensor, Tensor, Tensor]:
+    res: tuple,
+    g: tuple[Tensor, Tensor, Tensor],
+) -> tuple[Tensor, Tensor, Tensor]:
     """Backward-mode of `cross_entropy_with_logits`.
 
     This is a copy of x-entropy loss from the T5X codebase.
@@ -373,7 +373,7 @@ def bilinear_mean_squared_error(
     preds: Tensor,
     targets: Tensor,
     *,
-    shape: Tuple[int, ...],
+    shape: tuple[int, ...],
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
 ) -> WeightedScalar:
@@ -1001,7 +1001,7 @@ def negative_cosine_similarity_loss(
     eps: float = 1e-8,
     live_targets: Optional[Tensor] = None,
     reduction: ReductionMethod = ReductionMethod.MEAN,
-) -> Tuple[Tensor, Dict[str, Tensor]]:
+) -> tuple[Tensor, dict[str, Tensor]]:
     """Compute the negative cross similarity loss between predictions and targets.
 
     Args:
@@ -1123,7 +1123,7 @@ def koleo_loss(
 
 def pairwise_loss(
     *, logits: Tensor, pair_weights: Tensor, loss_scale: Tensor
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """Computes the mean pairwise loss from logits.
 
     Args:
@@ -1152,7 +1152,7 @@ def pairwise_loss(
 
 def ranking_pairwise_loss(
     *, logits: Tensor, ranks: Tensor, loss_scale: Tensor
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """Computes pairwise loss among ranked docs (ranks > 0).
 
     For every pair of docs (a, b) with 0 < rank_a < rank_b,
