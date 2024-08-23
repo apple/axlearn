@@ -106,7 +106,8 @@ vertexai_tensorboard = [
     # [1] https://bugs.launchpad.net/ubuntu/+source/distro-info/+bug/1991606
     # [2] https://github.com/pypa/setuptools/issues/3772
     "setuptools==65.7.0",
-    # pin version to fix Tensorboard uploader TypeError: can only concatenate str (not "NoneType") to str
+    # Pin version to fix Tensorboard uploader TypeError: can only concatenate str (not "NoneType") to str
+    # https://github.com/googleapis/python-aiplatform/commit/4f982ab254b05fe44a9d2ed959fca2793961b56c
     "google-cloud-aiplatform[tensorboard]==1.61.0",
     "tensorboard",
 ]
