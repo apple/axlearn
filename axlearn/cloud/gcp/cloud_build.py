@@ -61,8 +61,10 @@ class CloudBuildStatus(enum.Enum):
         return self in {CloudBuildStatus.PENDING, CloudBuildStatus.QUEUED, CloudBuildStatus.WORKING}
 
 
-def get_cloud_build_status(project_id: str, image_name: str) -> Optional[CloudBuildStatus]:
-    """Get the status of the latest build filter on the image_name.
+def get_cloud_build_status(
+    *, project_id: str, image_name: str, tag: str
+) -> Optional[CloudBuildStatus]:
+    """Get the status of the latest build filter on the tag or image_name.
 
     Returns:
         CloudBuild status for the latest build if exist.
@@ -73,12 +75,14 @@ def get_cloud_build_status(project_id: str, image_name: str) -> Optional[CloudBu
     """
     try:
         client = cloudbuild_v1.CloudBuildClient()
+        filter_by_tag = f'tags="{tag}"'
+        filter_by_image = f'results.images.name="{image_name}"'
         request = cloudbuild_v1.ListBuildsRequest(
             project_id=project_id,
-            filter=f'results.images.name="{image_name}"',
+            filter=filter_by_tag + " OR " + filter_by_image,
         )
-
         builds = list(client.list_builds(request=request))
+
         if not builds:
             logging.error("No builds found for image name: %s.", image_name)
             return None

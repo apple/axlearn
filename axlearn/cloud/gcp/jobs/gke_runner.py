@@ -419,7 +419,9 @@ class GKERunnerJob(GCPJob):
                 if bundler.TYPE == CloudBuildBundler.TYPE:
                     try:
                         image_name = bundler.id(cfg.name)
-                        build_status = get_cloud_build_status(cfg.project, image_name)
+                        build_status = get_cloud_build_status(
+                            project_id=cfg.project, image_name=image_name, tag=cfg.name
+                        )
                         if not build_status:
                             logging.error(
                                 "CloudBuild does not exist yet.%s.",
@@ -428,13 +430,19 @@ class GKERunnerJob(GCPJob):
                             time.sleep(cfg.status_interval_seconds)
                             continue
                         elif build_status.is_pending():
-                            logging.info("Job %s is waiting for CloudBuild.", cfg.name)
+                            logging.info(
+                                "Job %s is waiting for CloudBuild %s.", cfg.name, build_status.name
+                            )
                             time.sleep(cfg.status_interval_seconds)
                             continue
                         elif build_status.is_success():
                             logging.info("CloudBuild for %s is finished.", cfg.name)
                         elif build_status.is_failed():
-                            logging.error("CloudBuild failed. Stop starting the job %s.", cfg.name)
+                            logging.error(
+                                "CloudBuild failed with %s. Stop starting the job %s.",
+                                build_status.name,
+                                cfg.name,
+                            )
                             return
                         else:
                             logging.error("Unknown build status %s.", build_status)
