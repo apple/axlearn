@@ -69,11 +69,13 @@ NestedTorchTensor = Union[torch.Tensor, dict[str, Any]]
 
 
 class AXLearnToTorchFn(Protocol):
-    def __call__(self, *, src: BaseLayer, params: NestedTensor, dst: torch.nn.Module): ...
+    def __call__(self, *, src: BaseLayer, params: NestedTensor, dst: torch.nn.Module):
+        ...
 
 
 class TorchToAXLearnFn(Protocol):
-    def __call__(self, *, src: torch.nn.Module, dst: Optional[Union[BaseLayer, type]]): ...
+    def __call__(self, *, src: torch.nn.Module, dst: Optional[Union[BaseLayer, type]]):
+        ...
 
 
 # Mapping from (src_type, dst_type) to converter.

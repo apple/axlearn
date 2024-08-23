@@ -120,12 +120,12 @@ class PrecisionRecallMetricCalculator(GlobalMetricCalculator):
                 qualified_recalls = jnp.where(qualified_cond, recalls, -1)
                 idx_closest_to_threshold = jnp.argmin(qualified_precisions)
 
-                all_metrics[cfg.label_names[i] + f"_recall@p{precision_level * 100}"] = (
-                    qualified_recalls[idx_closest_to_threshold]
-                )
-                all_metrics[cfg.label_names[i] + f"_recall@p{precision_level * 100}_threshold"] = (
-                    thresholds[idx_closest_to_threshold]
-                )
+                all_metrics[
+                    cfg.label_names[i] + f"_recall@p{precision_level * 100}"
+                ] = qualified_recalls[idx_closest_to_threshold]
+                all_metrics[
+                    cfg.label_names[i] + f"_recall@p{precision_level * 100}_threshold"
+                ] = thresholds[idx_closest_to_threshold]
 
             # Mask out unqualified recalls (with inf) and precision (with -1).
             # [num_examples].
@@ -137,11 +137,11 @@ class PrecisionRecallMetricCalculator(GlobalMetricCalculator):
                 qualified_precisions = jnp.where(qualified_cond, precisions, -1)
                 idx_closest_to_threshold = jnp.argmin(qualified_recalls)
 
-                all_metrics[cfg.label_names[i] + f"_precision@r{recall_level * 100}"] = (
-                    qualified_precisions[idx_closest_to_threshold]
-                )
-                all_metrics[cfg.label_names[i] + f"_precision@r{recall_level * 100}_threshold"] = (
-                    thresholds[idx_closest_to_threshold]
-                )
+                all_metrics[
+                    cfg.label_names[i] + f"_precision@r{recall_level * 100}"
+                ] = qualified_precisions[idx_closest_to_threshold]
+                all_metrics[
+                    cfg.label_names[i] + f"_precision@r{recall_level * 100}_threshold"
+                ] = thresholds[idx_closest_to_threshold]
 
         return all_metrics

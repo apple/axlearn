@@ -412,9 +412,9 @@ class Decoder(DecodingMixin, BaseLayer):
 
         # attention_mask can be None if the attention layer supports the causal mode, e.g.,
         # FlashAttention with `causal=True`.
-        attention_mask: Optional[AttentionLogitBiasLayer.Config] = (
-            CausalAttentionLogitBiasLayer.default_config()
-        )
+        attention_mask: Optional[
+            AttentionLogitBiasLayer.Config
+        ] = CausalAttentionLogitBiasLayer.default_config()
         vocab_size: Required[int] = REQUIRED  # Size of vocabulary.
         # Dimensionality of embeddings and inputs to each transformer layer.
         dim: Required[int] = REQUIRED

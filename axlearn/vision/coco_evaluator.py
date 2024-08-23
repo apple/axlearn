@@ -192,42 +192,42 @@ class COCOEvaluator:
             else:
                 category_display_name = category_id
 
-            metrics_dict[prefix + f"Precision mAP ByCategory/{category_display_name}"] = (
-                category_stats[0][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Precision mAP ByCategory@50IoU/{category_display_name}"] = (
-                category_stats[1][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Precision mAP ByCategory@75IoU/{category_display_name}"] = (
-                category_stats[2][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Precision mAP ByCategory (small) /{category_display_name}"] = (
-                category_stats[3][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Precision mAP ByCategory (medium) /{category_display_name}"] = (
-                category_stats[4][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Precision mAP ByCategory (large) /{category_display_name}"] = (
-                category_stats[5][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Recall AR@1 ByCategory/{category_display_name}"] = (
-                category_stats[6][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Recall AR@10 ByCategory/{category_display_name}"] = (
-                category_stats[7][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Recall AR@100 ByCategory/{category_display_name}"] = (
-                category_stats[8][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Recall AR (small) ByCategory/{category_display_name}"] = (
-                category_stats[9][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Recall AR (medium) ByCategory/{category_display_name}"] = (
-                category_stats[10][category_index].astype(np.float32)
-            )
-            metrics_dict[prefix + f"Recall AR (large) ByCategory/{category_display_name}"] = (
-                category_stats[11][category_index].astype(np.float32)
-            )
+            metrics_dict[
+                prefix + f"Precision mAP ByCategory/{category_display_name}"
+            ] = category_stats[0][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Precision mAP ByCategory@50IoU/{category_display_name}"
+            ] = category_stats[1][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Precision mAP ByCategory@75IoU/{category_display_name}"
+            ] = category_stats[2][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Precision mAP ByCategory (small) /{category_display_name}"
+            ] = category_stats[3][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Precision mAP ByCategory (medium) /{category_display_name}"
+            ] = category_stats[4][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Precision mAP ByCategory (large) /{category_display_name}"
+            ] = category_stats[5][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Recall AR@1 ByCategory/{category_display_name}"
+            ] = category_stats[6][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Recall AR@10 ByCategory/{category_display_name}"
+            ] = category_stats[7][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Recall AR@100 ByCategory/{category_display_name}"
+            ] = category_stats[8][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Recall AR (small) ByCategory/{category_display_name}"
+            ] = category_stats[9][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Recall AR (medium) ByCategory/{category_display_name}"
+            ] = category_stats[10][category_index].astype(np.float32)
+            metrics_dict[
+                prefix + f"Recall AR (large) ByCategory/{category_display_name}"
+            ] = category_stats[11][category_index].astype(np.float32)
 
         return metrics_dict
 

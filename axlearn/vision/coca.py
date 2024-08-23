@@ -244,9 +244,9 @@ class CoCaImageStreamEncoder(StreamEncoder):
         # The dim of the contrastive output embeddings.
         contrastive_output_dim: Required[int] = REQUIRED
         contrastive_output_proj: Optional[Linear.Config] = None
-        contrastive_output_norm: Optional[BaseNormalizationLayer.Config] = (
-            None  # CoCa uses LayerNorm instead.
-        )
+        contrastive_output_norm: Optional[
+            BaseNormalizationLayer.Config
+        ] = None  # CoCa uses LayerNorm instead.
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)

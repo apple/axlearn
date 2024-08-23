@@ -12,8 +12,8 @@ import tempfile
 import threading
 import time
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Type, cast
 from unittest import mock
 

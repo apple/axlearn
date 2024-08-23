@@ -182,7 +182,8 @@ T = TypeVar("T")
 
 class Summable(Protocol):
     # Objects of the same type which adhere to this protocol may be added.
-    def __add__(self, other: T) -> T: ...
+    def __add__(self, other: T) -> T:
+        ...
 
 
 # TODO(markblee): Link to docs on invocation contexts.

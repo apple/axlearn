@@ -136,9 +136,9 @@ class CLIPImageStreamEncoder(StreamEncoder):
         output_dim: Required[int] = REQUIRED
         # The hidden dim of `image_encoder`. If None, uses output_dim.
         hidden_dim: Optional[int] = None
-        image_encoder: Union[VisionTransformer.Config, MobileNets.Config] = (
-            VisionTransformer.default_config()
-        )
+        image_encoder: Union[
+            VisionTransformer.Config, MobileNets.Config
+        ] = VisionTransformer.default_config()
         output_proj: Optional[Linear.Config] = None
         # Coca uses LayerNorm instead.
         output_norm: Optional[BaseNormalizationLayer.Config] = None

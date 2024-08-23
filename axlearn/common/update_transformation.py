@@ -71,10 +71,9 @@ class WrappedPartitionedGradientTransformation(UpdateTransformation):
                 f"Transformation must be a PartitionedGradientTransformation: {cfg.transformation}."
             )
 
-    def create_state_partition_specs(self, model_param_specs: Nested[ParameterSpec]) -> Union[
-        Nested[PartitionSpec],
-        tuple[Nested[PartitionSpec]],
-    ]:
+    def create_state_partition_specs(
+        self, model_param_specs: Nested[ParameterSpec]
+    ) -> Union[Nested[PartitionSpec], tuple[Nested[PartitionSpec]],]:
         return self.transformation.partition(model_param_specs)
 
     def init(self, model_params: Nested[OptParam]) -> Nested[Tensor] | tuple[Nested[Tensor], ...]:
