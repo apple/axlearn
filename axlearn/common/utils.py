@@ -66,6 +66,8 @@ _enable_xla_runtime_errors = False
 # The set of supported floating point dtypes.
 _supported_float_dtypes = [jnp.bfloat16, jnp.float32]
 
+T = TypeVar("T")
+
 
 @dataclasses.dataclass
 class HybridMeshShape:
@@ -158,6 +160,29 @@ def _concat(*, prefix: str, suffix: str, separator: str):
     return f"{prefix}{separator}{suffix}" if prefix else f"{suffix}"
 
 
+def _key_entry_to_str(key_entry: KeyEntry) -> str:
+    """Convert a pytree child key to a string suitable for building AXLearn paths.
+
+    See `tree_paths()` for an example.
+    """
+    # Although (e.g.) DictKey does have its own __str__ implementation, calling
+    # str(DictKey('a')) produces "['a']" instead of just "a".
+    if isinstance(key_entry, jax.tree_util.DictKey):
+        key = key_entry.key
+    elif isinstance(key_entry, jax.tree_util.GetAttrKey):
+        key = key_entry.name
+    elif isinstance(key_entry, jax.tree_util.SequenceKey):
+        key = key_entry.idx
+    elif isinstance(key_entry, jax.tree_util.FlattenedIndexKey):
+        key = key_entry.key
+    else:
+        raise RuntimeError(f"Unknown key entry type {type(key_entry)}: {key_entry}.")
+
+    # Use f-string instead of calling str() because it matches the behavior of the previous
+    # implementation and differs from str() for (e.g.) enums.
+    return f"{key}"
+
+
 def tree_paths(
     tree: NestedTree, separator: str = "/", is_leaf: Optional[Callable[[Any], bool]] = None
 ) -> NestedTree:
@@ -179,26 +204,8 @@ def tree_paths(
         tree_paths.
     """
 
-    def key_entry_to_str(key_entry: KeyEntry) -> str:
-        # Although (e.g.) DictKey does have its own __str__ implementation, calling
-        # str(DictKey('a')) produces "['a']" instead of just "a".
-        if isinstance(key_entry, jax.tree_util.DictKey):
-            key = key_entry.key
-        elif isinstance(key_entry, jax.tree_util.GetAttrKey):
-            key = key_entry.name
-        elif isinstance(key_entry, jax.tree_util.SequenceKey):
-            key = key_entry.idx
-        elif isinstance(key_entry, jax.tree_util.FlattenedIndexKey):
-            key = key_entry.key
-        else:
-            raise RuntimeError(f"Unknown key entry type {type(key_entry)}: {key_entry}.")
-
-        # Use f-string instead of calling str() because it matches the behavior of the previous
-        # implementation and differs from str() for (e.g.) enums.
-        return f"{key}"
-
     return jax.tree_util.tree_map_with_path(
-        lambda kp, _: separator.join(key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
+        lambda kp, _: separator.join(_key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
     )
 
 
@@ -971,37 +978,165 @@ def partial_with_fn_metadata(fn, *args, **kwargs):
     return functools.update_wrapper(partial_fn, fn)
 
 
-def prune_tree(
-    in_tree: NestedTensor,
-    should_prune: Callable[[str, NestedTensor], bool],
-    *,
-    prefix: str = "",
-    separator: str = "/",
-):
-    """Returns a shallow copy of the input tree with subtrees pruned based on `should_prune`.
+F = TypeVar("F")
 
-    This is a shallow copy because leaf nodes (non-dict values) are not deep-copied.
+
+def prune_tree(
+    tree: T,
+    should_prune: Callable[[str, Any], bool],
+    *,
+    fill_value: F = None,
+    prune_root: bool = True,
+    separator: str = "/",
+    prefix: str = "",
+) -> Union[T, F]:
+    """Returns a copy of the input pytree with subtrees pruned based on `should_prune`.
+
+    The tree structure is deep copied but the leaf values are shallow copied.
+
+    Pruned nodes have their value replaced with `fill_value`. For nodes that are children of a
+    dict-like object (nodes that have a DictKey as their key), we also prune the key itself from
+    the parent.
+
+    Example:
+        ```
+        assert prune_tree({}, should_prune=lambda path, v: True) is None
+        assert prune_tree(dict(a=3, b=4), should_prune=lambda path, v: v == 3) == dict(b=4)
+        # Assuming MyNode uses (e.g.) a GetAttrKey for child 'a'.
+        assert prune_tree(MyNode(a=3), should_prune=lambda path, v: v == 3) == MyNode(a=None)
+        ```
 
     Args:
-        in_tree: The input tree to be pruned.
+        tree: The pytree to be pruned.
         should_prune: A callable which takes (path, subtree) as input and returns a boolean. The
-            subtree provided will have already been pruned. If the callable returns True, the
-            subtree itself will be dropped.
-        prefix: Path prefix.
+            subtree provided will have already had its children pruned.
+            If the callable returns True, the subtree itself will be pruned.
+        fill_value: The value to replace pruned subtrees with.
+        prune_root: Whether the root may be pruned.
         separator: Separator used to join path parts.
+        prefix: Path prefix.
 
     Returns:
         The pruned copy of the input tree.
     """
-    if isinstance(in_tree, dict):
-        out_tree = {}
-        for k, v in in_tree.items():
-            path = _concat(prefix=prefix, suffix=k, separator=separator)
-            v = prune_tree(v, should_prune, prefix=path, separator=separator)
-            if not should_prune(path, v):
-                out_tree[k] = v
-        in_tree = out_tree
-    return in_tree
+
+    def unflatten_one_level(treedef: jax.tree_util.PyTreeDef, children: Sequence) -> Any:
+        """Create a pytree from a non-leaf `treedef` whose immediate children are `children`."""
+        placeholder_child_treedefs = len(children) * (jax.tree_util.tree_structure(object()),)
+        treedef = treedef.make_from_node_data_and_children(
+            registry=jax.tree_util.default_registry,
+            node_data=treedef.node_data(),
+            children=placeholder_child_treedefs,
+        )
+        return treedef.unflatten(children)
+
+    def maybe_remove_keys(tree: Any, keys: set[KeyEntry]):
+        """Remove top-level DictKey keys from tree.
+
+        This mutates `tree`.
+        """
+        for key in keys:
+            if isinstance(key, jax.tree_util.DictKey):
+                del tree[key.key]
+
+    # Sentinel value to replace pruned trees with.
+    # This is replaced with fill_value later.
+    pruned = object()
+
+    def _prune_tree(
+        tree: Any, *, treedef: jax.tree_util.PyTreeDef, prefix: str, is_root: bool
+    ) -> Any:
+        children = []
+        pruned_keys = set()
+        for (k, v), v_treedef in jax.util.safe_zip(pytree_children(tree), treedef.children()):
+            v_path = _concat(prefix=prefix, suffix=_key_entry_to_str(k), separator=separator)
+            v = _prune_tree(v, treedef=v_treedef, prefix=v_path, is_root=False)
+            if v is pruned:
+                pruned_keys.add(k)
+                v = fill_value
+            children.append(v)
+
+        # Don't try to unflatten (nonstrict) pytree leaves.
+        if children:
+            tree = unflatten_one_level(treedef, children)
+        maybe_remove_keys(tree, pruned_keys)
+
+        if is_root and not prune_root:
+            return tree
+        if should_prune(prefix, tree):
+            return pruned
+        return tree
+
+    tree = jax.tree_util.tree_map(lambda x: x, tree)
+    treedef = jax.tree_util.tree_structure(tree)
+    tree = _prune_tree(tree, treedef=treedef, prefix=prefix, is_root=True)
+    if tree is pruned:
+        return fill_value
+    return tree
+
+
+def prune_empty(tree: T, *, fill_value: Any = None) -> Optional[T]:
+    """Returns a copy of the input pytree with empty subtrees pruned.
+
+    A subtree is empty if it has no pytree leaves.
+    See `prune_tree()` for additional semantics.
+
+    Args:
+        tree: The pytree to prune.
+        fill_value: The value to replace pruned subtrees with. Unlike prune_tree(), this
+            replacement is only done after pruning, so it cannot turn empty subtrees
+            into non-empty subtrees if `fill_value` is a non-empty subtree.
+
+    Returns:
+        The pruned copy of the input tree.
+    """
+
+    @dataclasses.dataclass
+    class Reference:
+        """A hashable reference to an object that compares equal based on reference equality.
+
+        This is safer than using `id(value)` as a dictionary key because Python can reuse
+        ids if the original object is garbage collected.
+        """
+
+        value: Any
+
+        def __hash__(self):
+            return id(self.value)
+
+        def __eq__(self, other):
+            return self.value is other.value
+
+    # Maps Reference(tree) -> num_leaves.
+    leaf_counts: dict[Reference, int] = {}  # pytype: disable=invalid-annotation
+    # Sentinel for tracking where pruning happens.
+    pruned = object()
+
+    def num_leaves(tree: Any) -> int:
+        if Reference(tree) in leaf_counts:
+            return leaf_counts[Reference(tree)]
+        children = pytree_children(tree)
+        if tree is pruned:
+            count = 0
+        elif not children:
+            # E.g., 0 for [], 1 for object()
+            count = jax.tree_util.tree_structure(tree).num_leaves
+        else:
+            # Key is guaranteed to exist because prune_tree guarantees that it
+            # calls `should_prune` on child nodes before their parent.
+            count = sum(leaf_counts[Reference(c)] for _, c in children)
+        leaf_counts[Reference(tree)] = count
+        return count
+
+    # Pre-populate with number of leaves of `pruned` (0).
+    num_leaves(pruned)
+
+    def should_prune_empty(path: str, tree: T) -> bool:
+        del path
+        return num_leaves(tree) == 0
+
+    tree = prune_tree(tree, should_prune=should_prune_empty, fill_value=pruned)
+    return jax.tree_util.tree_map(lambda x: x if x is not pruned else fill_value, tree)
 
 
 @dataclasses.dataclass
@@ -1058,9 +1193,6 @@ def get_data_dir() -> Optional[str]:
 
 def get_or_none(x: Optional[Dict], key: Any) -> Optional[Any]:
     return None if x is None else x.get(key)
-
-
-T = TypeVar("T")
 
 
 def match_regex_rules(
@@ -1428,3 +1560,27 @@ def raise_for_cycles(tree: Any):
             f"Descendant KeyPath: {cycles['descendant']}.\n"
             f"Ancestor KeyPath: {cycles['ancestor']}."
         )
+
+
+def same_pruned_structure(tree_1: Any, tree_2: Any) -> bool:
+    """Returns whether the two input trees have the same structure after pruning empty subtrees.
+
+    A subtree is considered empty if it has no pytree leaves.
+
+    Example:
+        ```
+        assert same_pruned_structure(dict(a=1), dict(a=2, dict(b=[]) )
+        ```
+
+    Args:
+        tree_1: The first tree to compare.
+        tree_2: The second tree to compare.
+
+    Returns:
+        Whether the trees are the same after pruning.
+    """
+
+    def pruned_structure(tree: Any):
+        return jax.tree_util.tree_structure(prune_empty(tree))
+
+    return pruned_structure(tree_1) == pruned_structure(tree_2)

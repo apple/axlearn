@@ -44,7 +44,19 @@ import os.path
 import re
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import jax
 import numpy as np
@@ -59,9 +71,11 @@ from axlearn.common.utils import (
     Nested,
     NestedTensor,
     Tensor,
+    get_recursively,
     partial_with_fn_metadata,
     prune_tree,
     raise_for_cycles,
+    same_pruned_structure,
 )
 
 
@@ -540,6 +554,8 @@ class Module(Configurable):
             fn_sig = inspect.signature(fn)
             if "self" not in fn_sig.parameters:
                 return False
+            if getattr(fn, _NO_SIDE_EFFECTS_ATTRIBUTE_NAME, False):
+                return False
             return True
 
         return {
@@ -990,14 +1006,12 @@ def scan_in_context(
 
         # Filter output collection.
         if drop_output is not None:
-            pruned_collection_i = new_output_collection()._asdict()
-            pruned_collection_i.update(
-                prune_tree(
-                    output_collection_i._asdict(),
-                    lambda path, _: drop_output(path),
-                )
+            pruned_output_collection_i = prune_tree(
+                output_collection_i._asdict(), lambda path, _: drop_output(path), prune_root=False
             )
-            output_collection_i = OutputCollection(**pruned_collection_i)
+            output_collection_i = new_output_collection()._asdict()
+            output_collection_i.update(pruned_output_collection_i)
+            output_collection_i = OutputCollection(**output_collection_i)
 
         return carry_i, dict(y_i=y_i, output_collection=output_collection_i)
 
@@ -1009,3 +1023,124 @@ def scan_in_context(
     )
 
     return carry, scan_ys["y_i"]
+
+
+def get_state_or_update(module: Module, key: str) -> Optional[Nested[Tensor]]:
+    """Return `module.state[key]`, inclusive of any state update.
+
+    Unlike `module.state[key]`, this works even if in a parent context.
+
+    Args:
+        module: The module to get the state of.
+        key: The key to lookup in the state dict.
+        state: The state tree to traverse, rooted at the `current_context().module`.
+               If None, use `current_context().module`.
+
+    Returns
+        The requested state.
+
+    Raises:
+        KeyError: If it is not found.
+    """
+    ctx = current_context()
+    not_found = object()
+    state = get_state(module, state=ctx.get_state_updates(), default=not_found)
+    if state is not not_found and key in state:
+        return state[key]
+    return get_state(module)[key]
+
+
+# A sentinel that can be passed as the `default` parameter of `get_module_state()`.
+RAISE = object()
+_Default = TypeVar("_Default")
+
+
+def get_state(
+    module: Module, *, state: Optional[Nested[Tensor]] = None, default: _Default = RAISE
+) -> Union[Nested[Tensor], _Default]:
+    """Return `module.state`.
+
+    Unlike `module.state`, this works even if in a parent context.
+
+    Args:
+        module: The module to get the state of.
+        state: The state tree to traverse, rooted at the `current_context().module`.
+               If None, use `current_context().module`.
+        default: The default value to return if it is not found. If set to the sentinel RAISE,
+                 a KeyError is raised instead of returning.
+
+    Returns
+        The requested state.
+
+    Raises:
+        KeyError: If it is not found.
+    """
+    ctx = current_context()
+    if state is None:
+        state = ctx.state
+    path = ctx.module.path_to_descendant_module(module)
+    try:
+        state = get_recursively(state, path)
+    except KeyError:
+        if default is RAISE:
+            raise
+        state = default
+    return state
+
+
+_NO_SIDE_EFFECTS_ATTRIBUTE_NAME = "_no_side_effects"
+
+
+def no_side_effects(
+    fn: Callable, *, raise_for_side_effects: Literal["never", "structural"] = "structural"
+) -> Callable:
+    """A decorator for a function that does not alter the InvocationContext.
+
+    Module methods wrapped with this decorator will not wrapped in an auto-child context.
+
+    This allows calling them even if other methods in the same module have already been called,
+    without the caller needing to explicitly create a new InvocationContext.
+
+    Any side effects of `fn` on the invocation context will be reverted after `fn()` returns because
+    `fn()` is called on a copy of the real context. This is true regardless of the value of
+     `raise_for_side_effects`. However, one may control whether an error is generated
+     by setting `raise_for_side_effects`.
+
+    Args:
+        fn: The function to wrap.
+        raise_for_side_effects: What to do if `fn` is detected as having side effects.
+            * "structural" (Default). This raises if the side
+              effects change the pruned structure of the OutputCollection.
+            * "never" Does not raise. Any side effects will therefore be silently
+              dropped.
+
+    Returns:
+        The wrapped function.
+
+    Raises:
+        ValueError: If `fn` has side effects on the InvocationContext.
+    """
+    if raise_for_side_effects not in ["never", "structural"]:
+        raise ValueError(f"Invalid value of `raise_for_side_effects`: {raise_for_side_effects}.")
+
+    @no_stack_summary
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        ctx = current_context()
+        if ctx is None:
+            return fn(*args, **kwargs)
+
+        result, output_collection = ctx.functional(fn)(*args, **kwargs)
+        if raise_for_side_effects == "structural" and not same_pruned_structure(
+            output_collection, current_context().output_collection
+        ):
+            raise ValueError(
+                f"Function '{fn.__name__}' wrapped with `no_side_effects` has side effects.\n"
+                "Expected no change to output collection other than the possible creation of\n"
+                "empty subtrees.\n"
+                "Did you accidentally call `add_summary()` or `add_module_output()`?"
+            )
+        return result
+
+    setattr(wrapper, _NO_SIDE_EFFECTS_ATTRIBUTE_NAME, True)
+    return wrapper

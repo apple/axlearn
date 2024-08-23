@@ -22,7 +22,6 @@ from axlearn.common.learner import (
     Learner,
     UpdateType,
     _apply_updates,
-    _prune_empty,
     _split_gradients,
     _value_and_grad,
     should_update_with_optimizers,
@@ -55,6 +54,7 @@ from axlearn.common.utils import (
     VDict,
     flatten_items,
     match_regex_rules,
+    prune_empty,
     tree_paths,
 )
 
@@ -86,7 +86,7 @@ class LearnerTest(TestCase):
                 },
             },
         }
-        actual = _prune_empty(state)
+        actual = prune_empty(state)
         self.assertNestedAllClose(expected, actual)
 
     @parameterized.product(ema_decay=(None, 0.9), method=("update", "forward_and_backward"))
