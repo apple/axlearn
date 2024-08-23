@@ -12,6 +12,7 @@ for target message.
 """
 
 import copy
+import dataclasses
 import json
 import logging
 import re
@@ -22,6 +23,7 @@ import dateutil
 import dateutil.parser
 
 from axlearn.open_api.common import BaseClient, EvalGeneratorType, Generator
+from axlearn.open_api.metrics.tool_use_execution_utils import get_kwargs_alignment
 from axlearn.open_api.openai import OpenAIClient
 
 
@@ -232,6 +234,62 @@ def _compare_tool_calls(
     return True
 
 
+@dataclasses.dataclass
+class DetailedMatchResult:
+    func_name_match: bool = False
+    strict_arg_match: bool = False
+    lenient_arg_match: bool = False
+    lenient_bow_arg_match: bool = False
+
+
+def _compare_tool_call_detailed(
+    *,
+    pred_tool_calls: Sequence[Dict[str, Any]],
+    target_tool_calls: List[Dict[str, Any]],
+) -> List[DetailedMatchResult]:
+    target_tool_calls = copy.deepcopy(target_tool_calls)
+
+    results = []
+    for pred_tool in pred_tool_calls:
+        cur_res = None
+        for target_tool in target_tool_calls:
+            pred_tool_call = pred_tool["function"]
+            target_tool_call = target_tool["function"]
+            func_name_match = pred_tool_call["name"] == target_tool_call["name"]
+            if not func_name_match:
+                continue
+            try:
+                pred_args = _extract_arguments(pred_tool_call)
+                target_args = _extract_arguments(target_tool_call)
+            except (json.JSONDecodeError, KeyError):
+                logging.error(
+                    "Unable to decode arguments from predicted call %s or target call %s",
+                    pred_tool_call,
+                    target_tool_call,
+                )
+                continue
+
+            strict_arg_match = get_kwargs_alignment(pred_args=pred_args, target_args=target_args)
+            lenient_arg_match = get_kwargs_alignment(
+                pred_args=pred_args, target_args=target_args, check_lenient=True
+            )
+            lenient_bow_arg_match = get_kwargs_alignment(
+                pred_args=pred_args, target_args=target_args, check_lenient=True, bag_of_words=True
+            )
+            cur_res = DetailedMatchResult(
+                func_name_match=True,
+                strict_arg_match=strict_arg_match,
+                lenient_arg_match=lenient_arg_match,
+                lenient_bow_arg_match=lenient_bow_arg_match,
+            )
+            break
+
+        if cur_res is None:
+            cur_res = DetailedMatchResult(func_name_match=False)
+        results.append(cur_res)
+    return results
+
+
 def metric_fn(
     *,
     responses: list[dict[str, Any]],
@@ -268,6 +326,14 @@ def metric_fn(
         return new_tool_calls
 
     total_matches = 0
+
+    # The counters for the detailed metrics
+    total_tool_calls = 0
+    total_func_name_matches = 0
+    total_strict_matches = 0
+    total_lenient_matches = 0
+    total_bow_matches = 0
+
     number_of_parsing_errors = 0
     number_of_generation_errors = 0
     generator_cfg: Generator.Config = generators[EvalGeneratorType.RESPONSE].config
@@ -296,9 +362,30 @@ def metric_fn(
             # sometimes an error field.
             number_of_generation_errors += 1
         pred_tool_calls, target_tool_calls = None, None
+
+        target = OpenAIClient.format_message(target_message)
+
+        # detailed metrics
+        if target.tool_calls is not None:
+            target_tool_calls = get_tool_calls_from_message(target.model_dump())
+
+            total_tool_calls += len(target_tool_calls)
+            if len(pred_messages) == 0:
+                continue
+
+            pred = pred_messages[0]
+            pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
+            detailed_results = _compare_tool_call_detailed(
+                pred_tool_calls=pred_tool_calls, target_tool_calls=target_tool_calls
+            )
+            total_func_name_matches += sum(1 for d in detailed_results if d.func_name_match)
+            total_strict_matches += sum(1 for d in detailed_results if d.strict_arg_match)
+            total_lenient_matches += sum(1 for d in detailed_results if d.lenient_arg_match)
+            total_bow_matches += sum(1 for d in detailed_results if d.lenient_bow_arg_match)
+
         if len(pred_messages) > 0:
             pred = pred_messages[0]
-            target = OpenAIClient.format_message(target_message)
+
             # Check string match.
             if (
                 target.content is not None
@@ -312,13 +399,13 @@ def metric_fn(
                 and len(target.tool_calls) == len(pred.tool_calls)
             ):
                 pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
-                target_tool_calls = get_tool_calls_from_message(target.model_dump())
                 match_rules = response.get("target_message_match_rules", None)
                 matched = _compare_tool_calls(
                     pred_tool_calls=pred_tool_calls,
                     target_tool_calls=target_tool_calls,
                     match_rules=match_rules,
                 )
+
         if debug and not matched:
             deliverable_id = response.get("deliverable_id", response.get("id", ""))
             target = target_tool_calls or json.dumps(target_message, sort_keys=True)
@@ -342,4 +429,9 @@ def metric_fn(
         "number_of_examples": len(responses),
         "number_of_parsing_errors": number_of_parsing_errors,
         "number_of_generation_errors": number_of_generation_errors,
+        "func_name_accuracy": total_func_name_matches / total_tool_calls,
+        "strict_accuracy": total_strict_matches / total_tool_calls,
+        "lenient_accuracy": total_lenient_matches / total_tool_calls,
+        "bow_accuracy": total_bow_matches / total_tool_calls,
+        "number_of_expected_tool_calls": total_tool_calls,
     }
