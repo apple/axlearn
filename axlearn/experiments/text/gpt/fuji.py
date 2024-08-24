@@ -190,18 +190,18 @@ def get_trainer_kwargs(
     elif model_size == "70B":
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=80,
+                num_layers=10,
                 hidden_dim=128 * 64,
                 num_heads=64,
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
-                num_kv_heads=None if version == Version.V1 else 8,
+                num_kv_heads=None, #if version == Version.V1 else 8,
                 rope_theta=rope_theta,
                 flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
             input_partition_type=DataPartitionType.DATA,
-            train_batch_size=train_batch_size,
+            train_batch_size=int((jax.device_count()/TRN_MODEL_AXIS_SIZE)*GRADIENT_ACCUMULATION_MICROBATCHES),
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -213,7 +213,13 @@ def get_trainer_kwargs(
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
                 ),
+                (   
+                    "trn2",
+                    mesh_shape_from_axes(data=-1, model=TRN_MODEL_AXIS_SIZE),
+                ),
             ),
+            eval_batch_size=int(jax.device_count()/TRN_MODEL_AXIS_SIZE),
+            eval_every_n_steps=500_000,
         )
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")

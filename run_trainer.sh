@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-sudo dpkg -i /home/ptoulme/2d_collectives/aws-neuronx-runtime-lib-2.x.x.x-450608791.deb
-sudo dpkg -i /home/ptoulme/2d_collectives/aws-neuronx-collectives-2.x.x.x-e112cefea.deb
-
-PY_VENV_PATH="/home/ptoulme/axlearn_venv/bin/activate"
+sudo dpkg -i /home/apoorvgu/drop/drop_08_22/aws-neuronx-collectives-2.x.17114.0-afcd272e2.deb
+sudo dpkg -i /home/apoorvgu/drop/drop_08_22/aws-neuronx-runtime-lib-2.x.16062.0-a907e4619.deb
+PY_VENV_PATH="/home/apoorvgu/axlearn_pvenv/bin/activate"
 source ${PY_VENV_PATH}
 
 cd /axlearn
 
-ARTIFACTS_PATH="/home/ptoulme/artifacts"
+ARTIFACTS_PATH="/home/apoorvgu/artifacts"
 TIMESTAMP=$(date +"%y%m%d%H%M%S")
 TEST_ARTIFACTS_PATH="${ARTIFACTS_PATH}/${TIMESTAMP}"
 mkdir -p "$TEST_ARTIFACTS_PATH"
@@ -20,7 +19,7 @@ export XLA_FLAGS="--xla_dump_hlo_as_text --xla_disable_hlo_passes=aws_neuron_fli
 # Neuron compiler flags
 export NEURON_CC_FLAGS="--framework=XLA"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --target=trn2 --distribution-strategy=llm-training"
-export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-num-neuroncores-per-sengine=1 --internal-hlo2tensorizer-options='--verify-hlo --fuse-dot-logistic=false'"
+export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-num-neuroncores-per-sengine=1 --internal-hlo2tensorizer-options='--verify-hlo'"
 export NEURON_RT_VIRTUAL_CORE_SIZE=1
 export NEURON_RT_RESET_CORES=1
 export NEURON_RT_LOG_LEVEL="WARNING"
@@ -38,14 +37,15 @@ export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1
 
 # Neuron runtime flags
 export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
-
+export NEURON_RT_IO_RING_CACHE_SIZE=0
+export NEURON_RT_ENABLE_MEMORY_METRICS=0
 
 OUTPUT_DIR="${TEST_ARTIFACTS_PATH}/axlearn_out"
 mkdir -p ${OUTPUT_DIR}
 DATA_DIR="gs://axlearn-public/tensorflow_datasets"
 # Run the training script
 python -m axlearn.common.launch_trainer_main \
-    --module=text.gpt.c4_trainer --config=fuji-7B-v1 \
+    --module=text.gpt.c4_trainer --config=fuji-70B-v3 \
     --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR \
     --jax_backend=neuron --mesh_selector=trn2 
 
