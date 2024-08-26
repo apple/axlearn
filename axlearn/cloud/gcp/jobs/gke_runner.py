@@ -420,7 +420,7 @@ class GKERunnerJob(GCPJob):
                     try:
                         image_name = bundler.id(cfg.name)
                         build_status = get_cloud_build_status(
-                            project_id=cfg.project, image_name=image_name, tag=cfg.name
+                            project_id=cfg.project, image_name=image_name, tags=[cfg.name]
                         )
                         if not build_status:
                             logging.error(
