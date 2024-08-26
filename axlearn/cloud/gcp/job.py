@@ -572,23 +572,29 @@ class TPUGKEJob(GKEJob):
             }
         )
 
+        pod_spec = dict(
+            terminationGracePeriodSeconds=60,
+            # Fail if any pod fails, and allow retries to happen at JobSet level.
+            restartPolicy="Never",
+            nodeSelector={
+                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
+                "cloud.google.com/gke-tpu-topology": system.topology,
+                **selector,
+            },
+            tolerations=tolerations,
+            containers=[self._build_container()],
+            serviceAccountName=cfg.service_account,
+            volumes=volumes,
+        )
+
+        # hostNetwork True and dnsPolicy do not work with Workload Identity and GCS Fuse.
+        if not cfg.gcsfuse_mount:
+            pod_spec["hostNetwork"] = True
+            pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
+
         return dict(
             metadata=dict(annotations=annotations),
-            spec=dict(
-                # NOTE: Don't set hostNetwork or dnsPolicy for compat with Workload Identity.
-                terminationGracePeriodSeconds=60,
-                # Fail if any pod fails, and allow retries to happen at JobSet level.
-                restartPolicy="Never",
-                nodeSelector={
-                    "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                    "cloud.google.com/gke-tpu-topology": system.topology,
-                    **selector,
-                },
-                tolerations=tolerations,
-                containers=[self._build_container()],
-                serviceAccountName=cfg.service_account,
-                volumes=volumes,
-            ),
+            spec=pod_spec,
         )
 
     def _build_job(self) -> Nested[Any]:
