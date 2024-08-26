@@ -65,6 +65,7 @@ def get_cloud_build_status(
     *, project_id: str, image_name: str, tags: list[str]
 ) -> Optional[CloudBuildStatus]:
     """Gets the status of the latest build by filtering on the build tags or image name.
+
     Args:
         project_id: The GCP project ID.
         image_name: The image name including the image path of the Artifact Registry.
