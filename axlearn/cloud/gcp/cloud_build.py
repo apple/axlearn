@@ -62,9 +62,13 @@ class CloudBuildStatus(enum.Enum):
 
 
 def get_cloud_build_status(
-    *, project_id: str, image_name: str, tag: str
+    *, project_id: str, image_name: str, tags: list[str]
 ) -> Optional[CloudBuildStatus]:
     """Get the status of the latest build filter on the tag or image_name.
+    Args:
+        project_id: The GCP project ID.
+        image_name: The image name including the image path of the Artifact Registry.
+        tags: A list of the CloudBuild tags.
 
     Returns:
         CloudBuild status for the latest build if exist.
@@ -75,7 +79,7 @@ def get_cloud_build_status(
     """
     try:
         client = cloudbuild_v1.CloudBuildClient()
-        filter_by_tag = f'tags="{tag}"'
+        filter_by_tag = f'tags="{tags}"'
         filter_by_image = f'results.images.name="{image_name}"'
         request = cloudbuild_v1.ListBuildsRequest(
             project_id=project_id,
