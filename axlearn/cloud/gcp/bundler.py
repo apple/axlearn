@@ -158,7 +158,7 @@ class CloudBuildBundler(BaseDockerBundler):
             if cfg.cache_from
             else ""
         )
-        image_path = image.rsplit(":", maxsplit=1)[0]
+        image_path, image_tag = image.rsplit(":", maxsplit=1)
         latest_tag = f"{image_path}:latest"
         cloudbuild_yaml = f"""
 steps:
@@ -183,6 +183,7 @@ timeout: 3600s
 images:
 - "{image}"
 - "{latest_tag}"
+tags: [{image_tag}]
 options:
   logging: CLOUD_LOGGING_ONLY
         """
