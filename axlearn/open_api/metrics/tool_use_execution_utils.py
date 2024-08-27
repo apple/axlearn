@@ -1,5 +1,5 @@
 # Copyright © 2024 Apple Inc.
-"""Utilities for the detailed too use metrics."""
+"""Utilities for the detailed tool use metrics."""
 
 import re
 import string
@@ -10,7 +10,7 @@ from typing_extensions import TypeAlias
 Value = Union[str, int, bool, float]
 ValueOrListOf: TypeAlias = Union[Value, List[Value]]
 
-STOP_WORDS = {
+_STOP_WORDS = {
     "a",
     "about",
     "above",
@@ -193,42 +193,41 @@ STOP_WORDS = {
 }
 
 
-def string_lenient_transform(str_value: str) -> str:
+def _string_lenient_transform(str_value: str) -> str:
     normalized_str_value = str_value.lower()
     normalized_str_value = normalized_str_value.translate(str.maketrans("", "", string.punctuation))
     words = normalized_str_value.split()
-    while len(words) > 1 and words[0] in STOP_WORDS:
+    while len(words) > 1 and words[0] in _STOP_WORDS:
         words = words[1:]
-    while len(words) > 1 and words[-1] in STOP_WORDS:
+    while len(words) > 1 and words[-1] in _STOP_WORDS:
         words = words[:-1]
     normalized_str_value = " ".join(words)
     return normalized_str_value
 
 
-def word_set(input_str: str) -> set[str]:
-    """
-    Returns a set of words splitting by whitespace, newline and tab,
-    and skipping empty strings from the set.
-    """
+def _word_set(input_str: str) -> set[str]:
+    """Returns a set of words splitting by whitespace, newline and tab,
+    and skipping empty strings from the set."""
     return {s for s in re.split(r"\s+", input_str) if s}
 
 
-def match_strings_bag_of_words(pred_str: str, target_str: str, threshold: float = 1.0) -> bool:
-    """
-    Match strings using a bag of words approach.
+def _match_strings_bag_of_words(pred_str: str, target_str: str, threshold: float = 1.0) -> bool:
+    """Match strings using a bag of words approach.
 
     Args:
-    ----
         pred_str: .
         target_str: .
         threshold: applied to (# unique common words) / (# unique pred_str words)
+
+    Returns:
+        True if recall is higher or equal to threshold; otherwise return False.
     """
     if pred_str == target_str:
         return True
 
     assert threshold > 0, "bag of words string matching threshold must be above 0"
-    pred_word_set = word_set(pred_str)
-    target_word_set = word_set(target_str)
+    pred_word_set = _word_set(pred_str)
+    target_word_set = _word_set(target_str)
     common_words = target_word_set.intersection(pred_word_set)
     if len(pred_word_set) == 0:
         return False
@@ -236,7 +235,7 @@ def match_strings_bag_of_words(pred_str: str, target_str: str, threshold: float 
     return ratio >= threshold
 
 
-def is_arg_value_equal(
+def _is_arg_value_equal(
     pred_arg: ValueOrListOf,
     target_arg: ValueOrListOf,
     check_lenient: bool,
@@ -249,7 +248,7 @@ def is_arg_value_equal(
             and len(pred_arg) == len(target_arg)
         ):
             return all(
-                is_arg_value_equal(
+                _is_arg_value_equal(
                     pred_arg=el_pred,
                     target_arg=el_target,
                     check_lenient=check_lenient,
@@ -259,28 +258,38 @@ def is_arg_value_equal(
             )
         # Only handling string payloads for lenient evaluation
         if isinstance(pred_arg, str) and isinstance(target_arg, str):
-            pred_lenient = string_lenient_transform(pred_arg)
-            target_lenient = string_lenient_transform(target_arg)
+            pred_lenient = _string_lenient_transform(pred_arg)
+            target_lenient = _string_lenient_transform(target_arg)
             if bag_of_words:
-                return match_strings_bag_of_words(
+                return _match_strings_bag_of_words(
                     pred_str=pred_lenient, target_str=target_lenient, threshold=1.0
                 )
             return pred_lenient == target_lenient
     return pred_arg == target_arg
 
 
-def get_kwargs_alignment(
+def check_arguments(
     pred_args: Dict[str, ValueOrListOf],
     target_args: Dict[str, ValueOrListOf],
     check_lenient: bool = False,
     bag_of_words: bool = False,
 ) -> bool:
+    """Checks if the predicted and targets arguments are matching.
+
+    Args:
+        pred_args: The predicted arguments.
+        target_args: The target (GT) arguments.
+        check_lenient: Flag, if lenient argument transformations should be applied.
+        bag_of_word: Flag, if bag-of-word matching should be applied.
+    Returns:
+        True if the predicted and targets arguments are matching according to the flags.
+    """
     # Check names are not duplicated
     target_args_copy = dict(target_args.items())
 
     # Find different label/value pairs
     for pred_arg_name in pred_args:
-        if pred_arg_name in target_args_copy and is_arg_value_equal(
+        if pred_arg_name in target_args_copy and _is_arg_value_equal(
             pred_args[pred_arg_name],
             target_args[pred_arg_name],
             check_lenient,

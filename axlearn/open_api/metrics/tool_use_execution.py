@@ -9,6 +9,21 @@
 
 Following https://platform.openai.com/docs/guides/function-calling
 for target message.
+
+The file contains the code for several tool use metrics:
+* Gorilla tool use metrics
+* Lenient tool use metric
+* Bag of word tool use metric.
+
+The lenient matching is similar to the Gorilla metric. It performs the following steps:
+* Transforms the argument strings to lower case.
+* Removes punction.
+* Removes stop words. The stop words are statically predefined.
+* Comapres the results argument string.
+
+The bag of word tool user metric transforms the argument strings in the same way as the
+lenient matching. But instead of comparing the resulting strings it checks if the words
+in the ground truth arguments are contained in the predicted arguments.
 """
 
 import copy
@@ -23,7 +38,7 @@ import dateutil
 import dateutil.parser
 
 from axlearn.open_api.common import BaseClient, EvalGeneratorType, Generator
-from axlearn.open_api.metrics.tool_use_execution_utils import get_kwargs_alignment
+from axlearn.open_api.metrics.tool_use_execution_utils import check_arguments
 from axlearn.open_api.openai import OpenAIClient
 
 
@@ -269,11 +284,11 @@ def _compare_tool_call_detailed(
                 )
                 continue
 
-            strict_arg_match = get_kwargs_alignment(pred_args=pred_args, target_args=target_args)
-            lenient_arg_match = get_kwargs_alignment(
+            strict_arg_match = check_arguments(pred_args=pred_args, target_args=target_args)
+            lenient_arg_match = check_arguments(
                 pred_args=pred_args, target_args=target_args, check_lenient=True
             )
-            lenient_bow_arg_match = get_kwargs_alignment(
+            lenient_bow_arg_match = check_arguments(
                 pred_args=pred_args, target_args=target_args, check_lenient=True, bag_of_words=True
             )
             cur_res = DetailedMatchResult(
@@ -370,18 +385,6 @@ def metric_fn(
             target_tool_calls = get_tool_calls_from_message(target.model_dump())
 
             total_tool_calls += len(target_tool_calls)
-            if len(pred_messages) == 0:
-                continue
-
-            pred = pred_messages[0]
-            pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
-            detailed_results = _compare_tool_call_detailed(
-                pred_tool_calls=pred_tool_calls, target_tool_calls=target_tool_calls
-            )
-            total_func_name_matches += sum(1 for d in detailed_results if d.func_name_match)
-            total_strict_matches += sum(1 for d in detailed_results if d.strict_arg_match)
-            total_lenient_matches += sum(1 for d in detailed_results if d.lenient_arg_match)
-            total_bow_matches += sum(1 for d in detailed_results if d.lenient_bow_arg_match)
 
         if len(pred_messages) > 0:
             pred = pred_messages[0]
@@ -405,6 +408,16 @@ def metric_fn(
                     target_tool_calls=target_tool_calls,
                     match_rules=match_rules,
                 )
+
+            # Detailed matching
+            pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
+            detailed_results = _compare_tool_call_detailed(
+                pred_tool_calls=pred_tool_calls, target_tool_calls=target_tool_calls
+            )
+            total_func_name_matches += sum(1 for d in detailed_results if d.func_name_match)
+            total_strict_matches += sum(1 for d in detailed_results if d.strict_arg_match)
+            total_lenient_matches += sum(1 for d in detailed_results if d.lenient_arg_match)
+            total_bow_matches += sum(1 for d in detailed_results if d.lenient_bow_arg_match)
 
         if debug and not matched:
             deliverable_id = response.get("deliverable_id", response.get("id", ""))
