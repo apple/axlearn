@@ -3,6 +3,7 @@
 """Tests dataflow launch."""
 
 import contextlib
+from typing import Optional, Type, cast
 from unittest import mock
 
 from absl import app, flags
@@ -11,11 +12,12 @@ from absl.testing import parameterized
 from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE, BaseDockerBundler, _bundlers
 from axlearn.cloud.common.utils import canonicalize_to_string
 from axlearn.cloud.gcp import bundler, job
-from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
+from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.jobs import cpu_runner, dataflow
 from axlearn.cloud.gcp.jobs.cpu_runner_test import mock_vm
 from axlearn.cloud.gcp.jobs.dataflow import DataflowJob, _docker_bundler_to_flags, main
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
+from axlearn.common.config import maybe_set_config
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
@@ -123,14 +125,21 @@ class DataflowJobTest(TestWithTemporaryCWD):
 class UtilsTest(TestWithTemporaryCWD):
     """Tests util functions."""
 
-    @parameterized.parameters(
-        [
+    @parameterized.product(
+        bundler_klass=[
             bundler_klass
             for bundler_klass in _bundlers.values()
             if issubclass(bundler_klass, BaseDockerBundler)
-        ]
+        ],
+        private_worker_pool=[None, "test-pool"],
     )
-    def test_docker_bundler_to_flags(self, bundler_klass: BaseDockerBundler):
+    def test_docker_bundler_to_flags(
+        self,
+        bundler_klass: Type[BaseDockerBundler],
+        private_worker_pool: Optional[str] = None,
+    ):
+        if bundler_klass is not CloudBuildBundler and private_worker_pool:
+            return
         cfg = bundler_klass.default_config().set(
             image="test_image",
             repo="test_repo",
@@ -139,6 +148,7 @@ class UtilsTest(TestWithTemporaryCWD):
             allow_dirty=True,
             cache_from=("cache1", "cache2"),
         )
+        maybe_set_config(cfg, private_worker_pool=private_worker_pool)
         fv = flags.FlagValues()
         fv.mark_as_parsed()
         spec_flags = [
@@ -152,9 +162,13 @@ class UtilsTest(TestWithTemporaryCWD):
             "--bundler_spec=repo=test_repo",
             "--bundler_spec=cache_from=cache1,cache2",
         ]
+        if bundler_klass is CloudBuildBundler:
+            cfg = cast(CloudBuildBundler.Config, cfg)
+            if cfg.private_worker_pool:
+                spec_flags.append(f"--bundler_spec=private_worker_pool={cfg.private_worker_pool}")
+            spec_flags.append(f"--bundler_spec=is_async={cfg.is_async}")
+
         all_flags = [f"--bundler_type={bundler_klass.TYPE}"] + spec_flags
-        if bundler_klass.TYPE == "cloudbuild":
-            all_flags.append("--bundler_spec=is_async=True")
         actual = _docker_bundler_to_flags(cfg, fv=fv)
         self.assertSameElements(all_flags, actual)
 

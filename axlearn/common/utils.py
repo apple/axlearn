@@ -147,7 +147,7 @@ def _concat(*, prefix: str, suffix: str, separator: str):
     return f"{prefix}{separator}{suffix}" if prefix else f"{suffix}"
 
 
-def key_entry_to_str(key_entry: KeyEntry) -> str:
+def _key_entry_to_str(key_entry: KeyEntry) -> str:
     # Although (e.g.) DictKey does have its own __str__ implementation, calling
     # str(DictKey('a')) produces "['a']" instead of just "a".
     if isinstance(key_entry, jax.tree_util.DictKey):
@@ -186,31 +186,20 @@ def tree_paths(
         Note that None is not considered a leaf by jax.tree_util, hence also preserved by
         tree_paths.
     """
-
     return jax.tree_util.tree_map_with_path(
-        lambda kp, _: separator.join(key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
+        lambda kp, _: separator.join(_key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
     )
-
-
-@dataclasses.dataclass
-class PathAndValue:
-    path: str
-    value: Any
 
 
 def flatten_items(
-    tree: NestedTensor, separator="/", is_leaf: Optional[Callable[[Any], bool]] = None
+    tree: Nested[Tensor], separator: str = "/", is_leaf: Optional[Callable[[Any], bool]] = None
 ) -> Sequence[tuple[str, Tensor]]:
     """Flattens `tree` and returns a list of (path, value) pairs."""
-    paths = tree_paths(tree, separator=separator, is_leaf=is_leaf)
-    paths_and_values = jax.tree_util.tree_map(
-        # pylint: disable-next=unnecessary-lambda
-        lambda path, value: PathAndValue(path, value),
-        paths,
-        tree,
+    flat_paths_and_values, _ = jax.tree_util.tree_flatten_with_path(tree, is_leaf=is_leaf)
+    return list(
+        (separator.join(_key_entry_to_str(k) for k in path), value)
+        for path, value in flat_paths_and_values
     )
-    flat_paths_and_values, _ = jax.tree_util.tree_flatten(paths_and_values)
-    return list((pv.path, pv.value) for pv in flat_paths_and_values)
 
 
 @jax.tree_util.register_pytree_with_keys_class
