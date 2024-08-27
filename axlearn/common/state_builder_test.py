@@ -1193,8 +1193,8 @@ class ModelStateScopeConverterTest(TestCase):
             source_state.trainer_state.model["model"]["linear"]["bias"],
         )
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"]["linear"],
-            source_state.trainer_state.model["model"]["linear"],
+            converted_state.trainer_state.model["child"],
+            source_state.trainer_state.model["model"],
         )
         # source_state's "model/linear/bias" is donated to converted_state's "linear/bias".
         self.assertTrue(
@@ -1238,12 +1238,12 @@ class ModelStateScopeConverterTest(TestCase):
         )
         converted_state = converter.source_to_target(source_state, target_state)
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["linear"]["bias"],
-            source_state.trainer_state.model["model"]["linear"]["bias"],
+            converted_state.trainer_state.model["linear"],
+            source_state.trainer_state.model["model"]["linear"],
         )
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"]["linear"],
-            source_state.trainer_state.model["model"]["linear"],
+            converted_state.trainer_state.model["child"],
+            source_state.trainer_state.model["model"],
         )
         # source_state's "model/linear" is donated to converted_state's "linear".
         self.assertTrue(
@@ -1292,19 +1292,19 @@ class ModelStateScopeConverterTest(TestCase):
         converted_state = converter.source_to_target(source_state, target_state)
         self.assertNestedAllClose(
             converted_state.trainer_state.model["linear"],
-            source_state.trainer_state.model["model"]["linear"],
+            source_state.trainer_state.model["model"],
         )
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"]["linear"],
-            source_state.trainer_state.model["model"]["linear"],
+            converted_state.trainer_state.model["child"],
+            source_state.trainer_state.model["model"],
         )
-        # source_state's "model/linear" is donated to converted_state's "linear".
+        # source_state's "model" is donated to converted_state's "linear".
         self.assertTrue(
-            converted_state.trainer_state.model["linear"]["bias"]
+            converted_state.trainer_state.model["linear"]["linear"]["bias"]
             is source_state.trainer_state.model["model"]["linear"]["bias"]
         )
         self.assertTrue(
-            converted_state.trainer_state.model["linear"]["weight"]
+            converted_state.trainer_state.model["linear"]["linear"]["weight"]
             is source_state.trainer_state.model["model"]["linear"]["weight"]
         )
         # converted_state's "child" is a copy and has different memory.
@@ -1348,8 +1348,8 @@ class ModelStateScopeConverterTest(TestCase):
             source_state.trainer_state.model["model"]["linear"]["bias"],
         )
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"]["linear"],
-            source_state.trainer_state.model["model"]["linear"],
+            converted_state.trainer_state.model["child"],
+            source_state.trainer_state.model["model"],
         )
         # source_state's "model" is donated to coverted_state's "child".
         self.assertTrue(
@@ -1399,8 +1399,8 @@ class ModelStateScopeConverterTest(TestCase):
             source_state.trainer_state.model["model"]["linear"]["bias"],
         )
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"]["linear"],
-            source_state.trainer_state.model["model"]["linear"],
+            converted_state.trainer_state.model["child"],
+            source_state.trainer_state.model["model"],
         )
         # source_state's "model/linear/bias" is donated to converted_state's "linear/bias".
         self.assertTrue(
@@ -1451,8 +1451,8 @@ class ModelStateScopeConverterTest(TestCase):
             source_state.trainer_state.model["model"]["linear"]["bias"],
         )
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"]["linear"],
-            source_state.trainer_state.model["model"]["linear"],
+            converted_state.trainer_state.model["child"],
+            source_state.trainer_state.model["model"],
         )
         # source_state's "model/linear/bias" is donated to converted_state's "linear/bias".
         self.assertTrue(
