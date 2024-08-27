@@ -22,8 +22,7 @@ class Summary(struct.PyTreeNode):
         raise NotImplementedError(type(self))
 
     def validate(self):
-        """Validates that the summary was constructed with valid data. This is automatically
-        called during __post_init__().
+        """Validates that the summary was constructed with valid data.
 
         Raises:
             Exception: If the summary is invalid.
