@@ -61,6 +61,14 @@ class CloudBuildStatus(enum.Enum):
         return self in {CloudBuildStatus.PENDING, CloudBuildStatus.QUEUED, CloudBuildStatus.WORKING}
 
 
+def _get_build_request_filter(*, image_name: str, tags: list[str]) -> str:
+    # To filter builds by multiple tags, use "AND", "OR", or "NOT" to list tags.
+    # Example: gcloud builds list --filter "tags=('test1' OR 'test2') AND 'test3'"
+    filter_by_tag = " AND ".join(f"tags = {tag}" for tag in tags)
+    filter_by_image = f'results.images.name="{image_name}"'
+    return filter_by_tag + " OR " + filter_by_image
+
+
 def get_cloud_build_status(
     *, project_id: str, image_name: str, tags: list[str]
 ) -> Optional[CloudBuildStatus]:
@@ -80,13 +88,9 @@ def get_cloud_build_status(
     """
     try:
         client = cloudbuild_v1.CloudBuildClient()
-        # To filter builds by multiple tags, use "AND", "OR", or "NOT" to list tags.
-        # Example: gcloud builds list --filter "tags=('test1' OR 'test2') AND 'test3'"
-        filter_by_tag = " AND ".join(f"tags = {tag}" for tag in tags)
-        filter_by_image = f'results.images.name="{image_name}"'
         request = cloudbuild_v1.ListBuildsRequest(
             project_id=project_id,
-            filter=filter_by_tag + " OR " + filter_by_image,
+            filter=_get_build_request_filter(image_name=image_name, tags=tags),
         )
         builds = list(client.list_builds(request=request))
 
