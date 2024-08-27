@@ -188,7 +188,7 @@ def get_trainer_kwargs(
                 num_kv_heads=None if version == Version.V1 else 8,
                 rope_theta=rope_theta,
                 flash_attention=flash_attention,
-                # remat_offload_dst="pinned_host",
+                remat_offload_dst="pinned_host",
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
