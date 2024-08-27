@@ -259,9 +259,9 @@ class DetailedMatchResult:
 
 def _compare_tool_call_detailed(
     *,
-    pred_tool_calls: Sequence[Dict[str, Any]],
-    target_tool_calls: List[Dict[str, Any]],
-) -> List[DetailedMatchResult]:
+    pred_tool_calls: Sequence[dict[str, Any]],
+    target_tool_calls: list[dict[str, Any]],
+) -> list[DetailedMatchResult]:
     target_tool_calls = copy.deepcopy(target_tool_calls)
 
     results = []
