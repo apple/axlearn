@@ -80,7 +80,7 @@ def get_cloud_build_status(
     """
     try:
         client = cloudbuild_v1.CloudBuildClient()
-        filter_by_tag = f'tags="{tags}"'
+        filter_by_tag = " AND ".join(f"tags = {tag}" for tag in tags)
         filter_by_image = f'results.images.name="{image_name}"'
         request = cloudbuild_v1.ListBuildsRequest(
             project_id=project_id,
