@@ -63,10 +63,12 @@ class CloudBuildStatus(enum.Enum):
 
 def _get_build_request_filter(*, image_name: str, tags: list[str]) -> str:
     # To filter builds by multiple tags, use "AND", "OR", or "NOT" to list tags.
-    # Example: gcloud builds list --filter "tags=('test1' OR 'test2') AND 'test3'"
-    filter_by_tag = " AND ".join(f"tags = {tag}" for tag in tags)
+    # Example: '(tags = tag1 AND tags = tag2) OR results.images.name="image"',
+    filter_by_tag = ""
+    if tags:
+        filter_by_tag = "(" + " AND ".join(f"tags = {tag}" for tag in tags) + ")" + " OR "
     filter_by_image = f'results.images.name="{image_name}"'
-    return filter_by_tag + " OR " + filter_by_image
+    return filter_by_tag + filter_by_image
 
 
 def get_cloud_build_status(
