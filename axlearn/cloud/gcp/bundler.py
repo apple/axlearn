@@ -125,6 +125,9 @@ class CloudBuildBundler(BaseDockerBundler):
 
         # Build image asynchronously.
         is_async: bool = True
+        # If provided, should be the identifier of a private worker pool.
+        # See: https://cloud.google.com/build/docs/private-pools/private-pools-overview
+        private_worker_pool: Optional[str] = None
 
     @classmethod
     def from_spec(
@@ -201,6 +204,8 @@ options:
             cloudbuild_yaml_file,
             context,
         ]
+        if cfg.private_worker_pool:
+            cmd.extend(["--worker-pool", cfg.private_worker_pool])
         if cfg.is_async:
             cmd.append("--async")
         logging.info("Running %s", cmd)
