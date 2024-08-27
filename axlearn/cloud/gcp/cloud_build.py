@@ -80,6 +80,8 @@ def get_cloud_build_status(
     """
     try:
         client = cloudbuild_v1.CloudBuildClient()
+        # To filter builds by multiple tags, use "AND", "OR", or "NOT" to list tags.
+        # Example: gcloud builds list --filter "tags=('test1' OR 'test2') AND 'test3'"
         filter_by_tag = " AND ".join(f"tags = {tag}" for tag in tags)
         filter_by_image = f'results.images.name="{image_name}"'
         request = cloudbuild_v1.ListBuildsRequest(
