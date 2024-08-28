@@ -16,7 +16,7 @@ from axlearn.cloud.gcp import job as gcp_job
 from axlearn.cloud.gcp.jobs import tpu_runner
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.cloud.gcp.tpu import TpuInfo
-from axlearn.common.config import config_for_function
+from axlearn.common.config import config_for_function, maybe_set_config
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
@@ -173,6 +173,7 @@ class TPURunnerJobTest(TestWithTemporaryCWD):
                 dockerfile="test-dockerfile",
             ),
         )
+        maybe_set_config(cfg.bundler, project="test-project")
         job: tpu_runner.TPURunnerJob = cfg.set(command="test-command").instantiate()
         cmd = job._wrap(cfg.command, env={"TEST_ENV": "123"})
         self.assertStartsWith(cmd, "TEST_ENV=123 docker run")

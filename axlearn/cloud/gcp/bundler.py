@@ -48,6 +48,7 @@ Examples (cloudbuild):
 
 import os
 import subprocess
+import time
 from typing import Optional
 
 from absl import app, flags, logging
@@ -58,9 +59,10 @@ from axlearn.cloud.common.bundler import main_flags as bundler_main_flags
 from axlearn.cloud.common.bundler import register_bundler
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import canonicalize_to_list
+from axlearn.cloud.gcp.cloud_build import get_cloud_build_status
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.utils import common_flags
-from axlearn.common.config import config_class, maybe_set_config
+from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
 
 FLAGS = flags.FLAGS
 
@@ -121,8 +123,17 @@ class CloudBuildBundler(BaseDockerBundler):
 
     @config_class
     class Config(BaseDockerBundler.Config):
-        """Configures CloudBuildBundler."""
+        """Configures CloudBuildBundler.
 
+        Attributes:
+            project: GCP project. If using `from_spec`, this is inferred from `gcp_settings` or
+                from flags.
+            is_async: Whether to build asynchronously. If True, callers should invoke
+                `wait_until_finished()` to wait for bundling to complete.
+        """
+
+        # GCP project.
+        project: Required[str] = REQUIRED
         # Build image asynchronously.
         is_async: bool = True
 
@@ -130,7 +141,8 @@ class CloudBuildBundler(BaseDockerBundler):
     def from_spec(
         cls, spec: list[str], *, fv: Optional[flags.FlagValues]
     ) -> BaseDockerBundler.Config:
-        cfg = super().from_spec(spec, fv=fv)
+        cfg: CloudBuildBundler.Config = super().from_spec(spec, fv=fv)
+        cfg.project = cfg.project or gcp_settings("project", required=False, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
         return cfg
@@ -196,7 +208,7 @@ options:
             "builds",
             "submit",
             "--project",
-            gcp_settings("project"),
+            cfg.project,
             "--config",
             cloudbuild_yaml_file,
             context,
@@ -206,6 +218,39 @@ options:
         logging.info("Running %s", cmd)
         print(subprocess.run(cmd, check=True))
         return image
+
+    def wait_until_finished(self, name: str):
+        """Waits for async CloudBuild to finish by polling for status.
+
+        Is a no-op if `cfg.is_async` is False.
+
+        Args:
+            name: Bundle name.
+
+        Raises:
+            ValueError: If async build failed.
+        """
+        cfg: CloudBuildBundler.Config = self.config
+        while cfg.is_async:
+            try:
+                build_status = get_cloud_build_status(
+                    project_id=cfg.project, image_name=self.id(name), tags=[name]
+                )
+            except Exception as e:  # pylint: disable=broad-except
+                # TODO(liang-he,markblee): Distinguish transient from non-transient errors.
+                logging.warning("Failed to get the CloudBuild status, will retry: %s", e)
+            else:
+                if not build_status:
+                    logging.warning("CloudBuild for %s does not exist yet.", name)
+                elif build_status.is_pending():
+                    logging.info("CloudBuild for %s is pending: %s.", name, build_status)
+                elif build_status.is_success():
+                    logging.info("CloudBuild for %s is successful: %s.", name, build_status)
+                    return
+                else:
+                    # Unknown status is also considered a failure.
+                    raise RuntimeError(f"CloudBuild for {name} failed: {build_status}.")
+            time.sleep(30)
 
 
 def with_tpu_extras(bundler: Bundler.Config) -> Bundler.Config:
