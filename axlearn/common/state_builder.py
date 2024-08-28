@@ -17,6 +17,7 @@ import optax
 from absl import logging
 from chex import dataclass  # tree_map-friendly dataclass
 from jax import numpy as jnp
+from jax._src.tree_util import KeyEntry
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
@@ -801,7 +802,10 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
 
         copied_leaf_paths = set()
 
-        def _copy_leaf(path: str, leaf: Tensor, source_scope: str, separator: str = "/") -> Tensor:
+        def _copy_leaf(
+            path: tuple[KeyEntry], leaf: Tensor, source_scope: str, separator: str = "/"
+        ) -> Tensor:
+            path = separator.join(_key_entry_to_str(k) for k in path)
             if path:
                 # If path is not empty, concatenate with source_scope.
                 path = f"{source_scope}{separator}{path}"
@@ -817,7 +821,7 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
             orig_source_model = utils.get_recursively(source.trainer_state.model, source_scope)
             source_model = jax.tree_util.tree_map_with_path(
                 lambda path, leaf: _copy_leaf(
-                    "/".join(_key_entry_to_str(k) for k in path),
+                    path,
                     leaf,
                     source_scope=source_scope,  # pylint: disable=cell-var-from-loop
                 ),
