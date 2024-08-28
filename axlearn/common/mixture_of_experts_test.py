@@ -10,6 +10,7 @@
 # Copyright 2022 The Pax Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
 """Test for mixture_of_experts.py"""
+import copy
 from functools import partial
 
 import jax
@@ -26,6 +27,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.layers import set_bias_recursively
 from axlearn.common.mixture_of_experts import (
+    AdaptiveLoadBalanceLoss,
     Top2Gating,
     TransformerFeedForwardMoE,
     _convert_feedforward_to_moe_parameters,
@@ -242,6 +244,109 @@ class TransformerFeedForwardMoETest(parameterized.TestCase):
             self.assertEqual(gating.dispatch_tensor.shape[-1], 4)
         else:
             self.assertEqual(gating.dispatch_tensor.shape[-1], 8)
+
+    def test_adaptive_load_balance_loss(self):
+        cfg = AdaptiveLoadBalanceLoss.default_config().set(
+            name="test", min_value=0.4, max_value=0.6
+        )
+        cfg.moving_average.min_weight = 0.2
+        layer: AdaptiveLoadBalanceLoss = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        value_under_range = cfg.min_value / 2
+        value_in_range = (cfg.min_value + cfg.max_value) / 2
+        value_over_range = cfg.max_value * 2
+
+        scale, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(value=value_in_range),
+        )
+        self.assertAlmostEqual(scale, 1)
+        scale, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(value=value_under_range),
+        )
+        self.assertLess(scale, 1)
+        scale, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(value=value_over_range),
+        )
+        self.assertGreater(scale, 1)
+
+        num_values = 100
+        values = jax.random.uniform(jax.random.PRNGKey(1), [num_values], minval=0, maxval=1)
+        num_dec = num_inc = 0
+        prev_scale = 1.0
+        for i in range(num_values):
+            scale, output_collection = F(
+                layer,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(123),
+                state=state,
+                inputs=dict(value=values[i]),
+            )
+            moving_avg = output_collection.summaries["value_average"]
+            if moving_avg < cfg.min_value:
+                num_dec += 1
+                self.assertLess(scale, prev_scale)
+            elif moving_avg > cfg.max_value:
+                num_inc += 1
+                self.assertGreater(scale, prev_scale)
+            else:
+                self.assertEqual(scale, prev_scale)
+            prev_scale = scale
+            state = copy.deepcopy(output_collection.state_updates)
+        self.assertGreater(num_dec, 0)
+        self.assertGreater(num_inc, 0)
+
+    def test_top2_gating_with_adaptive_load_balance_loss(self):
+        num_experts = 4
+        group_size = 16
+
+        cfg = Top2Gating.default_config().set(name="test")
+        cfg.num_experts = num_experts
+        cfg.train_capacity_factor = 1.0
+        cfg.eval_capacity_factor = 2.0
+        cfg.adaptive_load_balance_loss = AdaptiveLoadBalanceLoss.default_config().set(
+            # Set a very low range for the target over-capacity ratio.
+            min_value=1e-7,
+            max_value=1e-6,
+        )
+        cfg.adaptive_load_balance_loss.moving_average.min_weight = 0.1
+
+        layer: Top2Gating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        logits = jax.random.uniform(jax.random.PRNGKey(1), shape=(2, 4, group_size, num_experts))
+        gating, output_collection = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits),
+        )
+        self.assertIn("adaptive_load_balance_loss", output_collection.summaries)
+        self.assertContainsSubset(
+            {"scale", "value_average"}, output_collection.summaries["adaptive_load_balance_loss"]
+        )
+        # We return the adjusted load balance loss.
+        self.assertEqual(
+            output_collection.summaries["load_balance_loss"],
+            gating.load_balance_loss,
+        )
+        # The adjusted load balance loss is greater than the original load balance loss.
+        self.assertGreater(
+            output_collection.summaries["load_balance_loss"],
+            output_collection.summaries["load_balance_loss_original"],
+        )
 
     @parameterized.parameters(
         "prenorm",

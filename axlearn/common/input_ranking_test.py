@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for input ranking."""
-from typing import Sequence
+from collections.abc import Sequence
 
 import tensorflow as tf
 from absl.testing import parameterized

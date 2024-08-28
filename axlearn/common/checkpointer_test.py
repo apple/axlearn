@@ -1,21 +1,26 @@
 # Copyright © 2023 Apple Inc.
 
-"""Tests checkpointer.py.
+"""Tests checkpointing utilities.
 
 Some tests are intended to be run on TPU.
 """
 
-# pylint: disable=no-self-use,protected-access
 import os
 import queue
 import re
 import tempfile
 import threading
+import time
 import unittest
-from typing import Iterable, List, Optional, Sequence, Type
+from collections.abc import Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional, Type, cast
 from unittest import mock
 
 import jax
+
+# pylint: disable=no-self-use,protected-access
+import orbax.checkpoint as ocp
 import pytest
 import tensorflow as tf
 from absl import logging
@@ -25,20 +30,22 @@ from jax.experimental import mesh_utils
 from jax.experimental.array_serialization import serialization as array_serialization
 
 from axlearn.common import serialization, test_utils, utils
-from axlearn.common.array_serialization import BoundedAsyncCheckpointManager
+from axlearn.common.array_serialization import BoundedDataShardedAsyncCheckpointManager
 from axlearn.common.checkpointer import (
+    BaseCheckpointer,
     BestMetricPolicy,
     Checkpointer,
     CheckpointValidationType,
     EvalMetric,
     TensorStoreStateStorage,
+    async_save_tf_savables,
     check_state_structure,
     every_n_steps_and_last_policy,
     every_n_steps_policy,
     read_state_spec,
     restore_tf_savables,
-    save_tf_savables,
 )
+from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.utils import VDict
@@ -49,19 +56,27 @@ def _mesh(mesh_shape: Sequence[int]):
     return jax.sharding.Mesh(devices, ("data", "model"))
 
 
-def _checkpointer_config():
-    return Checkpointer.default_config().set(name="test", dir=tempfile.mkdtemp())
+def _checkpointer_config(
+    checkpointer_cls: Type[BaseCheckpointer] = Checkpointer,
+) -> BaseCheckpointer.Config:
+    # TODO(markblee): Use context manager instead of mkdtemp.
+    return checkpointer_cls.default_config().set(
+        name="test",
+        dir=tempfile.mkdtemp(),
+        keep_last_n=1,
+    )
 
 
 class CheckpointerTest(test_utils.TestCase):
-    def test_save_and_restore(self):
+    @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
+    def test_save_and_restore(self, checkpointer_cls: Type[BaseCheckpointer]):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
         with _mesh(mesh_shape):
-            cfg = _checkpointer_config()
+            cfg = _checkpointer_config(checkpointer_cls)
             cfg.save_policy.min_step = 0
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
             state0 = dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32))
             state1 = dict(x=jnp.ones([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32) + 1)
 
@@ -103,7 +118,11 @@ class CheckpointerTest(test_utils.TestCase):
                 )
 
             # When the given state has a different dict shape: [1] instead of [] for x.
-            with self.assertRaisesRegex(ValueError, "checkpoint tree dtypes or shapes"):
+            # Orbax throws AssertionError in this case.
+            with self.assertRaisesRegex(
+                (AssertionError, ValueError),
+                "(checkpoint tree dtypes or shapes|do not match)",
+            ):
                 ckpt.restore(
                     step=None,
                     state=dict(
@@ -123,21 +142,85 @@ class CheckpointerTest(test_utils.TestCase):
                 )
             ckpt.stop()
 
-    def test_save_and_restore_latest_valid(self):
+    @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
+    def test_save_and_restore_mesh(self, checkpointer_cls: Type[BaseCheckpointer]):
+        """Tests that we can save with one sharding and restore with a different sharding."""
+        mesh_shape = (4, 2)
+        restore_mesh_shape = (2, 4)
+        if not test_utils.is_supported_mesh_shape(
+            mesh_shape
+        ) or not test_utils.is_supported_mesh_shape(restore_mesh_shape):
+            return
+
+        cfg = _checkpointer_config(checkpointer_cls)
+        ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
+        state = dict(
+            x=jax.random.uniform(jax.random.PRNGKey(123), shape=[8, 4], dtype=jnp.float32),
+        )
+        step = 1
+
+        def state_specs(state, partition_spec):
+            return jax.tree_util.tree_map(
+                lambda x: utils.TensorSpec(shape=x.shape, dtype=x.dtype, mesh_axes=partition_spec),
+                state,
+            )
+
+        with _mesh(mesh_shape) as mesh:
+            # Shard across both axes.
+            sharding = jax.sharding.NamedSharding(
+                mesh, spec=jax.sharding.PartitionSpec("data", "model")
+            )
+            state = jax.tree_util.tree_map(lambda x: jax.device_put(x, device=sharding), state)
+            ckpt.save(step=step, state=state)
+            ckpt.wait_until_finished()
+
+            # Shard only across axis=0.
+            partition_spec = jax.sharding.PartitionSpec(("data", "model"), None)
+            restored_step, restored_state = ckpt.restore(
+                step=step, state=state_specs(state, partition_spec)
+            )
+            self.assertEqual(step, restored_step)
+            self.assertNestedEqual(state, restored_state)
+
+        # Restore under a different mesh.
+        with _mesh(restore_mesh_shape) as mesh:
+            for partition_spec in [
+                jax.sharding.PartitionSpec("data", "model"),
+                jax.sharding.PartitionSpec(("data", "model"), None),
+            ]:
+                restored_step, restored_state = ckpt.restore(
+                    step=step, state=state_specs(state, partition_spec)
+                )
+                self.assertEqual(step, restored_step)
+                self.assertNestedEqual(state, restored_state)
+
+    @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
+    def test_save_and_restore_latest_valid(self, checkpointer_cls: Type[BaseCheckpointer]):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
         with _mesh(mesh_shape):
-            cfg = _checkpointer_config()
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            cfg = _checkpointer_config(checkpointer_cls)
+            ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
             state0 = dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32))
 
             # Restoring from an empty dir returns the input state if step=None.
             self.assertNestedEqual((None, state0), ckpt.restore(state=state0))
 
             def create_corrupt_ckpt(step):
-                final_dir = ckpt.ckpt_dir(step)
-                tf.io.gfile.makedirs(final_dir)
+                if checkpointer_cls is Checkpointer:
+                    ckpt_dir = cast(Checkpointer, ckpt).ckpt_dir(step)
+                elif checkpointer_cls is OrbaxCheckpointer:
+                    ckpt_dir = os.path.join(
+                        cast(OrbaxCheckpointer, ckpt)._manager.directory,
+                        f"{ocp.step.TMP_DIR_SUFFIX}{step}",
+                    )
+                else:
+                    raise NotImplementedError(checkpointer_cls)
+                tf.io.gfile.makedirs(ckpt_dir)
+
+                if checkpointer_cls is OrbaxCheckpointer:
+                    assert not ocp.step.is_checkpoint_finalized(ckpt_dir)
 
             # Test that we return the same state if no checkpoints valid.
             create_corrupt_ckpt(step=0)
@@ -157,12 +240,15 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.wait_until_finished()
             self.assertNestedEqual((3, state0), ckpt.restore(step=None, state=state0))
 
-    @parameterized.parameters((1, 1), (2, 2), (4, 2))
-    def test_gda(self, *mesh_shape):
+    @parameterized.product(
+        checkpointer_cls=[Checkpointer, OrbaxCheckpointer],
+        mesh_shape=[(1, 1), (2, 2), (4, 2)],
+    )
+    def test_gda(self, checkpointer_cls, mesh_shape):
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
         with _mesh(mesh_shape):
-            cfg = _checkpointer_config()
+            cfg = _checkpointer_config(checkpointer_cls)
             ckpt: Checkpointer = cfg.instantiate(parent=None)
             state = dict(x=jnp.arange(16).reshape((4, 4)))
             ckpt.save(step=10, state=state)
@@ -184,13 +270,16 @@ class CheckpointerTest(test_utils.TestCase):
                 )
             ckpt.stop()
 
-    @parameterized.parameters((utils.VDict,))
-    def test_custom_dict(self, custom_dict_type):
+    @parameterized.product(
+        checkpointer_cls=[Checkpointer, OrbaxCheckpointer],
+        custom_dict_type=(utils.VDict,),
+    )
+    def test_custom_dict(self, checkpointer_cls, custom_dict_type):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
         with _mesh(mesh_shape):
-            cfg = _checkpointer_config()
+            cfg = _checkpointer_config(checkpointer_cls)
             ckpt: Checkpointer = cfg.instantiate(parent=None)
             state0 = custom_dict_type(
                 x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32)
@@ -209,12 +298,13 @@ class CheckpointerTest(test_utils.TestCase):
             self.assertNestedEqual(state0, restored_state)
             ckpt.stop()
 
-    def test_input_iterator(self):
+    @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
+    def test_input_iterator(self, checkpointer_cls):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
         with _mesh(mesh_shape):
-            cfg = _checkpointer_config()
+            cfg = _checkpointer_config(checkpointer_cls)
             ckpt: Checkpointer = cfg.instantiate(parent=None)
             input_iter = iter(tf.data.Dataset.from_tensor_slices([1, 2, 3]))
             # Move the input_iter.
@@ -227,12 +317,26 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.save(step=100, state=state0)
             ckpt.wait_until_finished()
 
-            # Restore with state structure hints will preserve VDict.
-            step, restored_state = ckpt.restore(step=None, state=state0)
+            state0_specs = dict(
+                x=utils.TensorSpec(shape=[], dtype=jnp.int32),
+                # The same iterator, but with the position at 0.
+                input_iter=iter(tf.data.Dataset.from_tensor_slices([1, 2, 3])),
+            )
+
+            def tensors_only(tree):
+                return (
+                    utils.prune_tree(
+                        tree, should_prune=lambda _, v: not isinstance(v, utils.Tensor)
+                    ),
+                )
+
+            step, restored_state = ckpt.restore(step=None, state=state0_specs)
             self.assertEqual(100, step)
-            self.assertNestedEqual(state0, restored_state)
+            # The iterators will be different (despite pointing to the same values).
+            self.assertNestedEqual(tensors_only(state0), tensors_only(restored_state))
             # The restored_state contains the input_iter pointing to the next value.
             self.assertEqual(next(restored_state["input_iter"]), 2)
+            self.assertEqual(next(restored_state["input_iter"]), 3)
             ckpt.stop()
 
     def test_cleanup_checkpoint(self):
@@ -253,7 +357,7 @@ class CheckpointerTest(test_utils.TestCase):
             # Simulate a corrupted cleanup on the last ckpt.
             Checkpointer.cleanup_checkpoint(ckpt_paths[-1], sync=False)
             # Ensure that the last ckpt still has the "test" file.
-            with open(os.path.join(ckpt_paths[-1], "test"), "r", encoding="utf-8") as f:
+            with open(os.path.join(ckpt_paths[-1], "test"), encoding="utf-8") as f:
                 self.assertEqual("2", f.read())
             # Ensure that the last ckpt is considered invalid.
             self.assertEqual(Checkpointer.latest_checkpoint_path(temp_dir), ckpt_paths[0])
@@ -423,19 +527,23 @@ class CheckpointerTest(test_utils.TestCase):
         ckpt.stop()
         self.assertIsNone(ckpt._gc_thread)
 
-    def test_context(self):
-        ckpt = _checkpointer_config().instantiate(parent=None)
+    @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
+    def test_context(self, checkpointer_cls):
+        ckpt = _checkpointer_config(checkpointer_cls).instantiate(parent=None)
 
-        with ckpt:
-            self.assertIsNotNone(ckpt._gc_thread)
-        self.assertIsNone(ckpt._gc_thread)
+        if checkpointer_cls is Checkpointer:
+            with ckpt:
+                self.assertIsNotNone(ckpt._gc_thread)
+            self.assertIsNone(ckpt._gc_thread)
 
         # Nested contexts are not supported.
         with ckpt:
             with self.assertRaisesRegex(ValueError, "Already in a context"):
                 with ckpt:
                     pass
-        self.assertIsNone(ckpt._gc_thread)
+
+        if checkpointer_cls is Checkpointer:
+            self.assertIsNone(ckpt._gc_thread)
 
     def test_stop_on_exception(self):
         # Ensure that checkpointer gc thread terminates if there's an exception.
@@ -482,10 +590,11 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.stop()
 
     @parameterized.product(
+        checkpointer_cls=[Checkpointer, OrbaxCheckpointer],
         mode=("max", "min"),
         metric_type=("array", "weighted_scalar"),
     )
-    def test_best_metric_policy(self, mode, metric_type):
+    def test_best_metric_policy(self, checkpointer_cls, mode, metric_type):
         def _create_metric(value):
             if metric_type == "array":
                 return jnp.asarray(value)
@@ -499,7 +608,7 @@ class CheckpointerTest(test_utils.TestCase):
             return
 
         with _mesh(mesh_shape):
-            cfg = _checkpointer_config().set(
+            cfg = _checkpointer_config(checkpointer_cls).set(
                 save_policy=BestMetricPolicy.default_config().set(
                     metric=EvalMetric(evaler_name="evaler", metric_name="metric"), mode=mode
                 )
@@ -533,14 +642,16 @@ class CheckpointerTest(test_utils.TestCase):
                 self.assertNestedEqual((4, state4), ckpt.restore(step=None, state=state0))
             else:
                 self.assertNestedEqual((2, state2), ckpt.restore(step=None, state=state0))
+            ckpt.stop()
 
-    def test_best_metric_policy_value_error(self):
+    @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
+    def test_best_metric_policy_value_error(self, checkpointer_cls):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
 
         with _mesh(mesh_shape):
-            cfg = _checkpointer_config().set(
+            cfg = _checkpointer_config(checkpointer_cls).set(
                 save_policy=BestMetricPolicy.default_config().set(
                     metric=EvalMetric(evaler_name="evaler", metric_name="metric"), mode="max"
                 )
@@ -575,6 +686,7 @@ class CheckpointerTest(test_utils.TestCase):
                     evaler_summaries={"evaler": {"metric": jnp.asarray([1, 2])}},
                 )
                 ckpt.wait_until_finished()
+            ckpt.stop()
 
     def test_every_n_steps_policy(self):
         policy = every_n_steps_policy(n=3)
@@ -601,28 +713,39 @@ class CheckpointerTest(test_utils.TestCase):
         self.assertFalse(policy(step=12, evaler_summaries={}))
         self.assertTrue(policy(step=13, evaler_summaries={}))
 
-    def test_latest_checkpoint_path(self):
+    @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
+    def test_latest_checkpoint_path(self, checkpointer_cls: Type[BaseCheckpointer]):
         with tempfile.TemporaryDirectory() as td:
             # Test that the most recent checkpoint is returned.
             ckpt_paths = {}
             for step in [1, 2, 10, 11]:
-                ckpt_paths[step] = os.path.join(td, f"step_{step:08d}")
-                os.makedirs(ckpt_paths[step])
-                if step <= 10:
-                    with open(os.path.join(ckpt_paths[step], "index"), "w", encoding="utf-8") as f:
-                        f.write("dummy")
+                if checkpointer_cls is Checkpointer:
+                    ckpt_paths[step] = os.path.join(td, f"step_{step:08d}")
+                    os.makedirs(ckpt_paths[step])
+                    if step <= 10:
+                        with open(
+                            os.path.join(ckpt_paths[step], "index"), "w", encoding="utf-8"
+                        ) as f:
+                            f.write("dummy")
+                elif checkpointer_cls is OrbaxCheckpointer:
+                    if step <= 10:
+                        ckpt_paths[step] = os.path.join(td, f"step_{step:08d}")
+                        os.makedirs(ckpt_paths[step])
+                else:
+                    raise NotImplementedError(checkpointer_cls)
             final_ckpt_path = ckpt_paths[10]
             # Note: step 11 is not complete, so the latest path returns step 10.
-            self.assertEqual(Checkpointer.latest_checkpoint_path(td), final_ckpt_path)
+            self.assertEqual(checkpointer_cls.latest_checkpoint_path(td), final_ckpt_path)
 
-    def test_read_state_spec(self):
+    @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
+    def test_read_state_spec(self, checkpointer_cls: Type[BaseCheckpointer]):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
         with _mesh(mesh_shape):
-            cfg = _checkpointer_config()
+            cfg = _checkpointer_config(checkpointer_cls)
             cfg.save_policy.min_step = 0
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
             state0 = dict(
                 **{
                     f"v_{str(dtype.dtype)}": jnp.zeros([], dtype=dtype)
@@ -640,7 +763,7 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.save(step=0, state=state0)
             ckpt.wait_until_finished()
             # Tests `read_state_spec`.
-            state_spec = read_state_spec(Checkpointer.latest_checkpoint_path(cfg.dir))
+            state_spec = read_state_spec(checkpointer_cls.latest_checkpoint_path(cfg.dir))
             self.assertNestedEqual(
                 state_spec,
                 jax.tree_util.tree_map(
@@ -709,16 +832,34 @@ class CheckpointerTest(test_utils.TestCase):
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
-    @parameterized.parameters(None, 1)
-    def test_max_concurrent_gb(self, max_concurrent_gb: Optional[int]):
-        cfg = TensorStoreStateStorage.default_config().set(max_concurrent_gb=max_concurrent_gb)
+    @parameterized.product(max_concurrent_gb=[None, 1], max_data_shard_degree=[None, 1, -1])
+    def test_max_concurrent_gb(self, max_concurrent_gb: Optional[int], max_data_shard_degree: int):
+        cfg = TensorStoreStateStorage.default_config().set(
+            max_concurrent_gb=max_concurrent_gb, max_data_shard_degree=max_data_shard_degree
+        )
         storage = cfg.instantiate()
-        if max_concurrent_gb is not None:
-            self.assertIsInstance(storage._manager, BoundedAsyncCheckpointManager)
+        if max_concurrent_gb is not None or max_data_shard_degree:
+            self.assertIsInstance(storage._manager, BoundedDataShardedAsyncCheckpointManager)
         else:
             self.assertIsInstance(
                 storage._manager, array_serialization.GlobalAsyncCheckpointManager
             )
+
+    def test_stop(self):
+        storage = TensorStoreStateStorage.default_config().instantiate()
+        worker_result = None
+
+        def worker():
+            nonlocal worker_result
+            time.sleep(1)
+            worker_result = True
+
+        storage._executor.submit(worker)
+        storage.stop()
+        self.assertTrue(worker_result, "storage.stop() should wait for executor to finish.")
+
+        with self.assertRaisesRegex(RuntimeError, "cannot schedule new futures after shutdown"):
+            storage._executor.submit(worker)
 
     @parameterized.parameters(jnp.float32, jnp.bfloat16, jnp.int32, jnp.int16)
     def test_save_and_restore_from_dir(self, restore_floats_as: jnp.dtype):
@@ -783,7 +924,7 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                 self.assertEqual("test", committed_value)
 
 
-def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> List[str]:
+def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> list[str]:
     filenames = [
         f"{path_prefix}-{shard_id:05d}-of-{num_shards:05d}" for shard_id in range(num_shards)
     ]
@@ -795,6 +936,7 @@ def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> List[str]
 
 class TfIteratorTest(test_utils.TestCase):
     def test_restored_iterator_resumes(self):
+        executor = ThreadPoolExecutor(1)
         num_examples = 30
         tempdir = tempfile.mkdtemp()
         lines = [str(id) for id in range(num_examples)]
@@ -813,9 +955,15 @@ class TfIteratorTest(test_utils.TestCase):
                 # Save and restore the iterator.
                 ckpt_path = os.path.join(tempdir, "ckpt")
                 prev_it = it
-                save_tf_savables({"it": it}, dir=ckpt_path)
+                # Manually increase the delay of executor to test `it` mutation after
+                # call to async_save_tf_savables doesn't affect saving.
+                blocker = executor.submit(lambda: time.sleep(2))
+                f = async_save_tf_savables({"it": it}, executor=executor, dir=ckpt_path)
+                next(it)  # modify it in place
                 it = iter(ds)  # reset `it`.
                 self.assertIsNot(it, prev_it)
+                blocker.result()
+                f.result()  # wait for async save
                 restore_tf_savables({"it": it}, dir=ckpt_path)
             line = next(it).numpy()
             seen.append(int(line))
@@ -824,7 +972,7 @@ class TfIteratorTest(test_utils.TestCase):
         self.assertSetEqual(set(seen), set(range(num_examples)))
 
 
-SWITCHABLE_VDICT_IMPL: Optional[Type[VDict]] = None
+SWITCHABLE_VDICT_IMPL: Optional[type[VDict]] = None
 
 
 # Subclass VDict so that VDict-specific code works the same with this class.

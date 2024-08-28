@@ -6,7 +6,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """A collection of distillation methods."""
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -36,7 +36,7 @@ class BaseDistillationModel(BaseModel):
         teacher: Required[BaseLayer.Config] = REQUIRED
         student: Required[BaseLayer.Config] = REQUIRED
 
-    def forward(self, input_batch: Dict[str, Tensor]) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: dict[str, Tensor]) -> tuple[Tensor, NestedTensor]:
         raise NotImplementedError("Not implemented forward method for BaseDistillationModel")
 
 
@@ -169,7 +169,7 @@ class DistillationModel(BaseDistillationModel):
         self._add_child("student", cfg.student)
         self._add_child("metric", cfg.metric)
 
-    def forward(self, input_batch: Dict[str, Tensor]) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: dict[str, Tensor]) -> tuple[Tensor, NestedTensor]:
         # We freeze teacher weights in optimizer.
         with child_context("teacher", module=self.teacher, is_training=False):
             teacher_outputs = self.teacher.predict(input_batch)
@@ -310,7 +310,7 @@ class DeiTDistillationModel(BaseDistillationModel):
         )
         self._add_child("metric", cfg.metric.clone(num_classes=cfg.num_classes))
 
-    def forward(self, input_batch: Dict[str, Tensor]) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: dict[str, Tensor]) -> tuple[Tensor, NestedTensor]:
         with child_context("teacher", module=self.teacher, is_training=False):
             predictions_t = self.teacher.predict(input_batch)
 

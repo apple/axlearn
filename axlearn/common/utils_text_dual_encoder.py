@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Text dual encoder utils."""
-from typing import List, Optional
+from typing import Optional
 
 from axlearn.common.attention import (
     RepeatedTransformerLayer,
@@ -85,9 +85,11 @@ def bert_text_embedding_stream_encoder_config(
                     num_layers=num_layers,
                     num_heads=num_heads,
                     layer_norm_epsilon=1e-12,
-                    base_cfg=RepeatedTransformerLayer.default_config()
-                    if remat
-                    else StackedTransformerLayer.default_config(),
+                    base_cfg=(
+                        RepeatedTransformerLayer.default_config()
+                        if remat
+                        else StackedTransformerLayer.default_config()
+                    ),
                 ),
             ).encoder,
             pooler=pooler,
@@ -151,8 +153,8 @@ def init_state_builder_config(
 def hf_pretrained_builder_config(  # pylint: disable=dangerous-default-value
     *,
     model_path: str,
-    target_scope: List[str] = [],
-    source_scope: List[str] = ["encoder"],
+    target_scope: list[str] = [],
+    source_scope: list[str] = ["encoder"],
 ) -> Builder.Config:
     """Constructs HuggingFacePreTrainedBuilder to initialize from HF models.
 

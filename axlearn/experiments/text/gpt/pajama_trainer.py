@@ -39,7 +39,7 @@ axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NU
     --mesh_selector=$INSTANCE_TYPE --jax_backend=tpu
 ```
 """
-from typing import Callable, Dict
+from typing import Callable
 
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
@@ -63,7 +63,7 @@ _SENTENCEPIECE_MODEL_NAME = {
 
 def _eval_input_sources(
     *, vocab_size: int, max_sequence_length: int
-) -> Dict[str, InstantiableConfig]:
+) -> dict[str, InstantiableConfig]:
     return {
         name: config_for_function(tfds_input).set(
             dataset_name=dataset_name,
@@ -81,48 +81,51 @@ def _eval_input_sources(
     }
 
 
+_SHUFFLE_BUFFER_SIZE = 8192
+
+
 DATASETS = {
     "sp-rp": [
         DataMixtureComponent(
             name="rpg/common_crawl:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.726,
         ),
         DataMixtureComponent(
             name="slimpajama/c4:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.081,
         ),
         DataMixtureComponent(
             name="slimpajama/github:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.049,
         ),
         DataMixtureComponent(
             name="slimpajama/book:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.021,
         ),
         DataMixtureComponent(
             name="slimpajama/arxiv:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.023,
         ),
         DataMixtureComponent(
             name="slimpajama/wikipedia:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.05,
         ),
         DataMixtureComponent(
             name="slimpajama/stackexchange:1.0.0",
             split="train",
-            shuffle_buffer_size=8192,
+            shuffle_buffer_size=_SHUFFLE_BUFFER_SIZE,
             weight=0.05,
         ),
     ]
@@ -143,12 +146,14 @@ def _train_input_source_fn(
         )
         if get_data_dir() == "FAKE":
             source_cfg.preprocessor.shuffle_buffer_size = 0
+        else:
+            source_cfg.preprocessor.shuffle_buffer_size = _SHUFFLE_BUFFER_SIZE
         return source_cfg
 
     return fn
 
 
-def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
+def named_trainer_configs() -> dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
     config_map = {}
     for model_version in (gala, honeycrisp):

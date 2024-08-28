@@ -29,7 +29,7 @@ Each encoder/fusion_network consumes items from input_batch and updates the inpu
     with the new output.
 """
 from collections import defaultdict
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
@@ -70,7 +70,7 @@ class FusionNetwork(BaseLayer):
         embeddings.
     """
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         """Forward function for the fusion network.
 
         The forward function should contain:
@@ -101,9 +101,9 @@ class MultiStreamModel(BaseModel):
     @config_class
     class Config(BaseLayer.Config):
         # Keys in stream_encoder and fusion_network should be strictly disjointed.
-        stream_encoder: Dict[str, StreamEncoder.Config] = {}
-        fusion_network: Dict[str, FusionNetwork.Config] = {}
-        loss_weights: Dict[str, float] = defaultdict(lambda: 1)
+        stream_encoder: dict[str, StreamEncoder.Config] = {}
+        fusion_network: dict[str, FusionNetwork.Config] = {}
+        loss_weights: dict[str, float] = defaultdict(lambda: 1)
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -141,7 +141,7 @@ class MultiStreamModel(BaseModel):
         """
         return child_config
 
-    def _aggregate_loss(self, losses: Dict[str, Tensor]) -> Tensor:
+    def _aggregate_loss(self, losses: dict[str, Tensor]) -> Tensor:
         """Aggregating the loss from losses dictionary."""
         loss = 0
         for fusion_name in self._fusion_network:
@@ -183,7 +183,7 @@ class MultiStreamModel(BaseModel):
         input_batch = self._forward_all_stream_encoder(input_batch)
         return input_batch
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         """Forward function for the multi-stream model.
 
         The forward function should contain:

@@ -20,20 +20,9 @@ import re
 import sys
 import threading
 import traceback
+from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Mapping,
-    NamedTuple,
-    Optional,
-    Sequence,
-    Tuple,
-    TypeVar,
-    Union,
-)
+from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union
 
 import jax
 import numpy as np
@@ -50,12 +39,12 @@ from axlearn.common.config import is_named_tuple
 # New code should use Nested[XX] instead of NestedXX.
 # Old definitions are provided for backwards compatibility.
 _NestedT = TypeVar("_NestedT")
-Nested = Union[_NestedT, Dict[str, "Nested[_NestedT]"]]
+Nested = Union[_NestedT, dict[str, "Nested[_NestedT]"]]
 
 Tensor = jax.Array
-NestedTree = Union[Any, Dict[str, Any]]
-NestedTensor = Union[Tensor, Dict[str, Any]]
-NestedPartitionSpec = Optional[Union[PartitionSpec, Dict[str, Any]]]
+NestedTree = Union[Any, dict[str, Any]]
+NestedTensor = Union[Tensor, dict[str, Any]]
+NestedPartitionSpec = Optional[Union[PartitionSpec, dict[str, Any]]]
 
 # The device mesh shape in the form of a tuple of ints.
 # We avoid subscripting Sequence[int] so it can be used for isinstance checks.
@@ -110,7 +99,7 @@ class TensorSpec:
         return jax.sharding.NamedSharding(mesh, self.mesh_axes)
 
 
-NestedTensorSpec = Optional[Union[TensorSpec, Dict[str, Any]]]
+NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
 
 
 @contextlib.contextmanager
@@ -159,6 +148,25 @@ def _concat(*, prefix: str, suffix: str, separator: str):
     return f"{prefix}{separator}{suffix}" if prefix else f"{suffix}"
 
 
+def _key_entry_to_str(key_entry: KeyEntry) -> str:
+    # Although (e.g.) DictKey does have its own __str__ implementation, calling
+    # str(DictKey('a')) produces "['a']" instead of just "a".
+    if isinstance(key_entry, jax.tree_util.DictKey):
+        key = key_entry.key
+    elif isinstance(key_entry, jax.tree_util.GetAttrKey):
+        key = key_entry.name
+    elif isinstance(key_entry, jax.tree_util.SequenceKey):
+        key = key_entry.idx
+    elif isinstance(key_entry, jax.tree_util.FlattenedIndexKey):
+        key = key_entry.key
+    else:
+        raise RuntimeError(f"Unknown key entry type {type(key_entry)}: {key_entry}.")
+
+    # Use f-string instead of calling str() because it matches the behavior of the previous
+    # implementation and differs from str() for (e.g.) enums.
+    return f"{key}"
+
+
 def tree_paths(
     tree: NestedTree, separator: str = "/", is_leaf: Optional[Callable[[Any], bool]] = None
 ) -> NestedTree:
@@ -179,49 +187,20 @@ def tree_paths(
         Note that None is not considered a leaf by jax.tree_util, hence also preserved by
         tree_paths.
     """
-
-    def key_entry_to_str(key_entry: KeyEntry) -> str:
-        # Although (e.g.) DictKey does have its own __str__ implementation, calling
-        # str(DictKey('a')) produces "['a']" instead of just "a".
-        if isinstance(key_entry, jax.tree_util.DictKey):
-            key = key_entry.key
-        elif isinstance(key_entry, jax.tree_util.GetAttrKey):
-            key = key_entry.name
-        elif isinstance(key_entry, jax.tree_util.SequenceKey):
-            key = key_entry.idx
-        elif isinstance(key_entry, jax.tree_util.FlattenedIndexKey):
-            key = key_entry.key
-        else:
-            raise RuntimeError(f"Unknown key entry type {type(key_entry)}: {key_entry}.")
-
-        # Use f-string instead of calling str() because it matches the behavior of the previous
-        # implementation and differs from str() for (e.g.) enums.
-        return f"{key}"
-
     return jax.tree_util.tree_map_with_path(
-        lambda kp, _: separator.join(key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
+        lambda kp, _: separator.join(_key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
     )
-
-
-@dataclasses.dataclass
-class PathAndValue:
-    path: str
-    value: Any
 
 
 def flatten_items(
-    tree: NestedTensor, separator="/", is_leaf: Optional[Callable[[Any], bool]] = None
-) -> Sequence[Tuple[str, Tensor]]:
+    tree: Nested[Tensor], separator: str = "/", is_leaf: Optional[Callable[[Any], bool]] = None
+) -> Sequence[tuple[str, Tensor]]:
     """Flattens `tree` and returns a list of (path, value) pairs."""
-    paths = tree_paths(tree, separator=separator, is_leaf=is_leaf)
-    paths_and_values = jax.tree_util.tree_map(
-        # pylint: disable-next=unnecessary-lambda
-        lambda path, value: PathAndValue(path, value),
-        paths,
-        tree,
+    flat_paths_and_values, _ = jax.tree_util.tree_flatten_with_path(tree, is_leaf=is_leaf)
+    return list(
+        (separator.join(_key_entry_to_str(k) for k in path), value)
+        for path, value in flat_paths_and_values
     )
-    flat_paths_and_values, _ = jax.tree_util.tree_flatten(paths_and_values)
-    return list((pv.path, pv.value) for pv in flat_paths_and_values)
 
 
 @jax.tree_util.register_pytree_with_keys_class
@@ -319,7 +298,7 @@ def expand_vdicts(tree: NestedTensor) -> NestedTensor:
                 f"got {different_vdict_size_tensors[0].shape[0]} vs. {vdict_size} in {tree}"
             )
 
-        expanded: List[VDict] = []
+        expanded: list[VDict] = []
         for ind in range(vdict_size):
             value_i: VDict = jax.tree_util.tree_map(lambda x, i=ind: x[i], value)
             expanded_i = {k: expand_vdicts(v) for k, v in value_i.items()}
@@ -627,7 +606,7 @@ def host_to_global_device_array(
 
     local_devices = mesh.local_devices
 
-    def put_to_devices_fully_partitioned(x: Tensor) -> List[Tensor]:
+    def put_to_devices_fully_partitioned(x: Tensor) -> list[Tensor]:
         len_local_devices = len(local_devices)
         if x.shape[0] % len_local_devices != 0:
             raise ValueError(f"({x.shape}) cannot be sharded across {len_local_devices} devices.")
@@ -635,7 +614,7 @@ def host_to_global_device_array(
         xs = np.reshape(x, (len_local_devices, x.shape[0] // len_local_devices, *x.shape[1:]))
         return [jax.device_put(x_i, device) for x_i, device in zip(xs, local_devices)]
 
-    def put_to_devices_replicated(x: Tensor) -> List[Tensor]:
+    def put_to_devices_replicated(x: Tensor) -> list[Tensor]:
         # Replicate `x` to every local device.
         return [jax.device_put(x, device) for device in local_devices]
 
@@ -689,7 +668,7 @@ def global_to_host_array(
         are partitioned across hosts.
     """
 
-    def sort_global_shards(global_shards: List[jax.Shard]) -> List[jax.Shard]:
+    def sort_global_shards(global_shards: list[jax.Shard]) -> list[jax.Shard]:
         # We should sort jax.Array.global_shards by using this function to guarantee
         # round-trip equality of host_to_global_device_array and global_to_host_array.
         # Shards are sorted in-place.
@@ -1009,7 +988,7 @@ def prune_tree(
 class DataDirStack(threading.local):
     """See `install_context_stack` on how to ensure thread-safety of the global stack."""
 
-    stack: List[Optional[str]]
+    stack: list[Optional[str]]
 
 
 _global_data_dir_stack = DataDirStack(stack=[])
@@ -1057,7 +1036,7 @@ def get_data_dir() -> Optional[str]:
     return os.environ.get("DATA_DIR")
 
 
-def get_or_none(x: Optional[Dict], key: Any) -> Optional[Any]:
+def get_or_none(x: Optional[dict], key: Any) -> Optional[Any]:
     return None if x is None else x.get(key)
 
 
@@ -1065,7 +1044,7 @@ T = TypeVar("T")
 
 
 def match_regex_rules(
-    x: str, *, rules: Sequence[Tuple[str, T]], default_value: Optional[T] = None
+    x: str, *, rules: Sequence[tuple[str, T]], default_value: Optional[T] = None
 ) -> Optional[T]:
     """Matches the given string against a sequence of regex-based rules.
 
@@ -1349,7 +1328,7 @@ def thread_stack_traces() -> Sequence[Sequence[str]]:
     return grouped_lines
 
 
-def pytree_children(node: Any) -> Sequence[Tuple[KeyEntry, Any]]:
+def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
     """Generate the (key, value) pairs for the immediate children of a pytree `node`.
 
     The returned children match those returned by

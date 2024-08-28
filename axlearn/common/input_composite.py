@@ -2,7 +2,8 @@
 
 """A library to support composite inputs."""
 
-from typing import Dict, Iterable, Optional, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Optional
 
 import tensorflow as tf
 
@@ -14,8 +15,7 @@ from axlearn.common.utils import Nested, Tensor, as_numpy_array
 class BaseInput(Module):
     def __iter__(self) -> Iterable[Nested[Tensor]]:
         it = iter(self.dataset())
-        for input_batch in self.batches(it):
-            yield input_batch
+        yield from self.batches(it)
 
     def batches(self, it: Iterable[Nested[Tensor]]) -> Iterable[Nested[Tensor]]:
         for input_batch in it:
@@ -62,7 +62,7 @@ class ZipInput(BaseInput):
     @config_class
     class Config(BaseInput.Config):
         is_training: Required[bool] = REQUIRED
-        inputs: Dict[str, InstantiableConfig] = {}
+        inputs: dict[str, InstantiableConfig] = {}
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -75,6 +75,4 @@ class ZipInput(BaseInput):
 
     def dataset(self) -> tf.data.Dataset:
         dataset = tf.data.Dataset.zip(tuple(x.dataset() for x in self._inputs))
-        return dataset.map(
-            lambda *x: dict((self._inputs_name[i], data) for i, data in enumerate(x))
-        )
+        return dataset.map(lambda *x: {self._inputs_name[i]: data for i, data in enumerate(x)})

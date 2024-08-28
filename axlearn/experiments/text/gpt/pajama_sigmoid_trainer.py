@@ -40,7 +40,6 @@ axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NU
 ```
 """
 
-from typing import Dict
 
 from axlearn.experiments.text.gpt import gala_sigmoid, pajama_trainer
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
@@ -51,7 +50,7 @@ MAX_SEQUENCE_LENGTH = {"2k": 2048}
 MODEL_SIZES = {"85M", "1B"}
 
 
-def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
+def named_trainer_configs() -> dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
     arch = "gala-sigmoid"
     sigmoid_cfg_map = {}

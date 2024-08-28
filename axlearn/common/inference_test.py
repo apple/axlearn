@@ -4,10 +4,12 @@
 
 Some tests are intended to be run on TPU.
 """
+
 import itertools
 import os
 import tempfile
-from typing import Callable, Generator, List, Optional, Tuple, Union
+from collections.abc import Generator
+from typing import Callable, Optional, Union
 from unittest import mock
 
 import jax
@@ -31,7 +33,7 @@ from axlearn.common.inference_pipeline import (
     pop_string_tensors,
 )
 from axlearn.common.input_tf_data import identity
-from axlearn.common.module import Module
+from axlearn.common.module import Module, child_context
 from axlearn.common.optimizers import ParamEmaState
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,
@@ -145,12 +147,15 @@ class DummyModel(BaseModel):
         )
         self.predict_dtypes = []
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         y = self.predict(input_batch)
         return y.mean(), {}
 
     def predict(self, input_batch: NestedTensor) -> Tensor:
         x = input_batch["x"]
+        with child_context("input_stats", module=self):
+            self.add_module_output("x_mean", x.mean())
+            self.add_module_output("x_max", x.max())
         self.predict_dtypes.append(x.dtype)
         return self.linear(x)
 
@@ -162,7 +167,7 @@ class DummyModel(BaseModel):
 
 def is_supported(
     platform: str,
-    mesh_shape: Tuple[int, int],
+    mesh_shape: tuple[int, int],
     param_dtype: jnp.dtype,
     inference_dtype: Optional[jnp.dtype],
     global_batch_size: int,
@@ -196,7 +201,7 @@ class InferenceTest(test_utils.TestCase):
     def test_jsonl_feature(
         self,
         value: Union[Tensor, tf.Tensor],
-        expectation: Union[int, float, bool, str, List[Union[int, float, bool, str]]],
+        expectation: Union[int, float, bool, str, list[Union[int, float, bool, str]]],
     ):
         self.assertEqual(_json_feature(value), expectation)
 
@@ -204,8 +209,8 @@ class InferenceTest(test_utils.TestCase):
     def _runner_config(
         self,
         *,
-        mesh_shape: Tuple[int, int],
-        mesh_axis_names: Tuple[str, str],
+        mesh_shape: tuple[int, int],
+        mesh_axis_names: tuple[str, str],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         data_partition: DataPartitionType,
@@ -236,11 +241,11 @@ class InferenceTest(test_utils.TestCase):
         self,
         *,
         root_dir: str,
-        mesh_shape: Tuple[int, int],
-        mesh_axis_names: Tuple[str, str],
+        mesh_shape: tuple[int, int],
+        mesh_axis_names: tuple[str, str],
         prng_key: Tensor,
         use_ema: bool = False,
-    ) -> Tuple[NestedTensor, str]:
+    ) -> tuple[NestedTensor, str]:
         devices = mesh_utils.create_device_mesh(mesh_shape)
         mesh = jax.sharding.Mesh(devices, mesh_axis_names)
         logging.info("Global mesh: %s", mesh)
@@ -303,7 +308,7 @@ class InferenceTest(test_utils.TestCase):
     def test_runner(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,
@@ -400,6 +405,90 @@ class InferenceTest(test_utils.TestCase):
         filter(
             lambda params: is_supported(*params),
             itertools.product(
+                ("cpu", "gpu"),  # platform,
+                ((1, 1), (4, 1), (8, 1)),  # mesh_shape
+                (jnp.float32,),  # param_dtype
+                (jnp.float32,),  # inference_dtype
+                (16,),  # global_batch_size
+                (DataPartitionType.FULL,),  # data_partition
+            ),
+        )
+    )
+    def test_runner_module_outputs(
+        self,
+        platform: str,
+        mesh_shape: tuple[int, int],
+        param_dtype: jnp.dtype,
+        inference_dtype: Optional[jnp.dtype],
+        global_batch_size: int,
+        data_partition: DataPartitionType,
+    ):
+        logging.info(
+            "platform=%s mesh_shape=%s global_batch_size=%s data_partition=%s",
+            platform,
+            mesh_shape,
+            global_batch_size,
+            data_partition,
+        )
+        with tempfile.TemporaryDirectory() as local_tmp_dir:
+            prng_key = jax.random.PRNGKey(11)
+            local_run = jax.process_count() == 1
+            gs_dir = os.path.join(
+                "gs://axlearn-public/testdata/",
+                "inference_test",
+            )
+            root_dir = local_tmp_dir if local_run else gs_dir
+            mesh_axis_names = ("data", "model")
+            # Save ckpt.
+            _, ckpt_dir = self._build_ckpt(
+                prng_key=prng_key,
+                root_dir=root_dir,
+                mesh_shape=mesh_shape,
+                mesh_axis_names=mesh_axis_names,
+            )
+
+            cfg = self._runner_config(
+                mesh_shape=mesh_shape,
+                mesh_axis_names=mesh_axis_names,
+                param_dtype=param_dtype,
+                inference_dtype=inference_dtype,
+                ckpt_dir=ckpt_dir,
+                data_partition=data_partition,
+            )
+            inference_runner = cfg.set(name="test_inference_runner").instantiate(parent=None)
+
+        input_generator_fn = _build_input(global_batch_size, data_partition=data_partition)
+
+        # Run inference with module outputs.
+        module_outputs_path = "input_stats/x_mean"
+        method_runner = inference_runner.create_method_runner(
+            method="predict",
+            drop_module_outputs=lambda path: path not in module_outputs_path,
+        )
+        output = method_runner(next(input_generator_fn()))
+        module_outputs = utils.replicate_to_local_data(output.module_outputs)
+
+        # Check that only the expected module outputs are returned.
+        expected_module_outputs = {
+            "input_stats": {
+                "x_mean": utils.replicate_to_local_data(
+                    output.input_batch["x"].mean(),
+                )
+            }
+        }
+        self.assertNestedAllClose(module_outputs, expected_module_outputs)
+
+        # Run inference without module outputs (default behavior).
+        method_runner = inference_runner.create_method_runner(
+            method="predict",
+        )
+        output = method_runner(next(input_generator_fn()))
+        self.assertEqual(output.module_outputs, {})
+
+    @parameterized.parameters(
+        filter(
+            lambda params: is_supported(*params),
+            itertools.product(
                 ("cpu", "gpu", "tpu"),  # platform,
                 ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
                 (jnp.float32, jnp.bfloat16),  # param_dtype
@@ -413,7 +502,7 @@ class InferenceTest(test_utils.TestCase):
     def test_pipeline(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,
@@ -560,7 +649,7 @@ class InferenceTest(test_utils.TestCase):
     def test_pipeline_with_string_tensors(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,
@@ -678,7 +767,7 @@ class InferenceTest(test_utils.TestCase):
     def test_pipeline_summary_writer(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,

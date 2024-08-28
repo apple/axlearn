@@ -4,7 +4,8 @@
 
 # pylint: disable=no-self-use,protected-access
 import contextlib
-from typing import Iterator, Optional, Sequence, Type, Union, cast
+from collections.abc import Iterator, Sequence
+from typing import Optional, Union, cast
 from unittest import mock
 
 import kubernetes as k8s
@@ -27,9 +28,11 @@ def _mock_replicated_jobs(reservations: Sequence[str]):
                 "spec": {
                     "template": {
                         "spec": {
-                            "nodeSelector": {"cloud.google.com/reservation-name": reservation}
-                            if reservation != "spot"
-                            else {"cloud.google.com/gke-spot": "true"}
+                            "nodeSelector": (
+                                {"cloud.google.com/reservation-name": reservation}
+                                if reservation != "spot"
+                                else {"cloud.google.com/gke-spot": "true"}
+                            )
                         },
                     },
                 }
@@ -842,7 +845,7 @@ class MainTest(parameterized.TestCase):
         dict(instance_type="gpu-a3-highgpu-8g-256", expected=gke_runner.GPUGKERunnerJob),
         dict(instance_type="gpu", expected=app.UsageError("instance_type")),
     )
-    def test_get_runner_or_exit(self, instance_type: str, expected: Union[Exception, Type]):
+    def test_get_runner_or_exit(self, instance_type: str, expected: Union[Exception, type]):
         if isinstance(expected, Exception):
             with self.assertRaisesRegex(type(expected), str(expected)):
                 _get_runner_or_exit(instance_type)

@@ -6,8 +6,9 @@ import contextlib
 import enum
 import numbers
 import os
+from collections.abc import Sequence
 from functools import wraps
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Optional
 
 import jax
 import numpy as np
@@ -18,7 +19,7 @@ from tensorflow import summary as tf_summary
 
 from axlearn.common.config import REQUIRED, ConfigBase, Required, RequiredFieldValue, config_class
 from axlearn.common.module import Module
-from axlearn.common.summary import ImageSummary, Summary
+from axlearn.common.summary import AudioSummary, ImageSummary, Summary
 from axlearn.common.utils import NestedTensor, Tensor, tree_paths
 
 try:
@@ -90,12 +91,11 @@ class BaseWriter(Module):
             action: Represents a type of checkpoint action.
             step: Training step.
         """
-        pass
 
     # We adapt the args and kwargs from base Module to arguments specific to summary writer,
     # and drop the method argument since the caller does not decide which method to call.
     # pylint: disable=arguments-differ
-    def __call__(self, step: int, values: Dict[str, Any]):
+    def __call__(self, step: int, values: dict[str, Any]):
         """Log data to disk.
 
         Args:
@@ -113,20 +113,20 @@ class CompositeWriter(BaseWriter):
 
     @config_class
     class Config(BaseWriter.Config):
-        writers: Required[Dict[str, BaseWriter.Config]] = REQUIRED
+        writers: Required[dict[str, BaseWriter.Config]] = REQUIRED
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
-        self._writers: List[BaseWriter] = []
+        self._writers: list[BaseWriter] = []
         for writer_name, writer_cfg in cfg.writers.items():
             self._writers.append(
                 self._add_child(writer_name, writer_cfg.set(dir=os.path.join(cfg.dir, writer_name)))
             )
 
     @property
-    def writers(self) -> List[BaseWriter]:
+    def writers(self) -> list[BaseWriter]:
         """A list of writers."""
         return self._writers
 
@@ -135,7 +135,7 @@ class CompositeWriter(BaseWriter):
         for writer in self._writers:
             writer.log_config(config, step=step)
 
-    def __call__(self, step: int, values: Dict[str, Any]):
+    def __call__(self, step: int, values: dict[str, Any]):
         writer: BaseWriter
         for writer in self._writers:
             writer(step, values)
@@ -158,7 +158,7 @@ class NoOpWriter(BaseWriter):
     def log_config(self, config: ConfigBase, step: int = 0):
         pass
 
-    def __call__(self, step: int, values: Dict[str, Any]):
+    def __call__(self, step: int, values: dict[str, Any]):
         pass
 
 
@@ -208,7 +208,7 @@ class SummaryWriter(BaseWriter):
                 if len(parts) == 2:
                     tf_summary.text(f"trainer_config/{parts[0]}", parts[1], step=step)
 
-    def __call__(self, step: int, values: Dict[str, Any]):
+    def __call__(self, step: int, values: dict[str, Any]):
         cfg = self.config
         if step % cfg.write_every_n_steps != 0:
             return
@@ -229,6 +229,10 @@ class SummaryWriter(BaseWriter):
                     )
                 elif isinstance(value, ImageSummary):
                     tf_summary.image(path, raw_value, step=step, max_outputs=32)
+                elif isinstance(value, AudioSummary):
+                    tf_summary.audio(
+                        path, raw_value, value.sample_rate, step=step, max_outputs=1, encoding="wav"
+                    )
                 elif isinstance(raw_value, str):
                     tf_summary.text(path, raw_value, step=step)
                 elif isinstance(raw_value, numbers.Number) or raw_value.ndim == 0:
@@ -371,7 +375,7 @@ class WandBWriter(BaseWriter):
         wandb.config.update(fmt(config.to_dict()), allow_val_change=True)
 
     @processor_zero_only
-    def __call__(self, step: int, values: Dict[str, Any]):
+    def __call__(self, step: int, values: dict[str, Any]):
         cfg = self.config
         if step % cfg.write_every_n_steps != 0:
             return

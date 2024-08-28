@@ -14,7 +14,7 @@ https://github.com/tensorflow/models/blob/master/official/vision/ops/preprocess_
 # pylint: disable=too-many-lines
 import enum
 import math
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Optional, Union
 
 import jax.numpy as jnp
 import numpy as np
@@ -56,7 +56,7 @@ def denormalize_boxes(*, boxes: Tensor, image_shape: Tensor) -> tf.Tensor:
 
 # pylint: disable=unexpected-keyword-arg,no-value-for-parameter
 def normalize_boxes_tf(
-    boxes: tf.Tensor, image_shape: Union[Tuple[int, int], tf.Tensor]
+    boxes: tf.Tensor, image_shape: Union[tuple[int, int], tf.Tensor]
 ) -> tf.Tensor:
     """Converts boxes to the normalized coordinates.
 
@@ -94,7 +94,7 @@ def normalize_boxes_tf(
 
 
 def denormalize_boxes_tf(
-    boxes: tf.Tensor, image_shape: Union[Tuple[int, int], tf.Tensor]
+    boxes: tf.Tensor, image_shape: Union[tuple[int, int], tf.Tensor]
 ) -> tf.Tensor:
     """Converts boxes normalized by [height, width] to pixel coordinates.
 
@@ -147,7 +147,7 @@ def process_source_id(source_id: tf.Tensor) -> tf.Tensor:
     return source_id
 
 
-def clip_boxes(boxes: tf.Tensor, image_shape: List[int]):
+def clip_boxes(boxes: tf.Tensor, image_shape: list[int]):
     """Clips boxes to image boundaries.
 
     Args:
@@ -272,7 +272,7 @@ def get_non_empty_box_indices(boxes: tf.Tensor) -> tf.Tensor:
     return indices[:, 0]
 
 
-def compute_padded_size(desired_size: Tuple[int, int], stride: int):
+def compute_padded_size(desired_size: tuple[int, int], stride: int):
     """Compute the padded size given the desired size and the stride.
 
     The padded size will be the smallest rectangle, such that each dimension is
@@ -569,7 +569,7 @@ class BoxMatcher:
     """
 
     def __init__(
-        self, thresholds: List[float], indicators: List[int], force_match_for_each_col: bool = False
+        self, thresholds: list[float], indicators: list[int], force_match_for_each_col: bool = False
     ):
         """Construct BoxMatcher.
 
@@ -603,7 +603,7 @@ class BoxMatcher:
         self.thresholds = thresholds
         self._force_match_for_each_col = force_match_for_each_col
 
-    def __call__(self, similarity_matrix: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
+    def __call__(self, similarity_matrix: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         """Tries to match each column of the similarity matrix to a row.
 
         Args:
@@ -875,7 +875,7 @@ class BoxList:
             y_min, x_min, y_max, x_max = tf.split(value=self.get(), num_or_size_splits=4, axis=1)
             self.set(tf.concat([x_min, y_min, x_max, y_max], 1))
 
-    def as_tensor_dict(self, fields: Optional[List[str]] = None):
+    def as_tensor_dict(self, fields: Optional[list[str]] = None):
         """Retrieves specified fields as a dictionary of tensors.
 
         Args:
@@ -899,7 +899,7 @@ class BoxList:
 
 
 def multi_level_flatten(
-    multi_level_inputs: Dict[int, Tensor], last_dim: Optional[int] = None
+    multi_level_inputs: dict[int, Tensor], last_dim: Optional[int] = None
 ) -> Tensor:
     """Flattens a multi-level input.
 
@@ -961,8 +961,8 @@ def clip_or_pad_to_fixed_size(
 
 
 def pad_groundtruths_to_fixed_size(
-    groundtruths: Dict[str, tf.Tensor], size: int
-) -> Dict[str, tf.Tensor]:
+    groundtruths: dict[str, tf.Tensor], size: int
+) -> dict[str, tf.Tensor]:
     """Pads the first dimension of groundtruth labels to the fixed size.
 
     Args:
@@ -983,7 +983,7 @@ def pad_groundtruths_to_fixed_size(
 
 def filter_boxes_by_scores(
     boxes: Tensor, scores: Tensor, min_score_threshold: float
-) -> Tuple[Tensor, ...]:
+) -> tuple[Tensor, ...]:
     """Filters and removes boxes whose scores are smaller than the threshold.
 
     Args:

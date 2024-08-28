@@ -44,7 +44,7 @@ Examples:
     ```
 
 """
-from typing import Dict, Optional
+from typing import Optional
 
 import jax.numpy as jnp
 
@@ -130,7 +130,7 @@ def _get_config_fn(
     return config_fn
 
 
-def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
+def named_trainer_configs() -> dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
     return {
         "ResNet-Test": _get_config_fn(

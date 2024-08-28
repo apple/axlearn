@@ -40,7 +40,6 @@ axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NU
 ```
 """
 
-from typing import Dict
 
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
@@ -68,7 +67,7 @@ _train_data_mixture_components = [
 
 def _eval_input_sources(
     *, vocab_size: int, max_sequence_length: int
-) -> Dict[str, InstantiableConfig]:
+) -> dict[str, InstantiableConfig]:
     return {
         name: config_for_function(tfds_input).set(
             dataset_name="c4/en:3.0.1",
@@ -97,7 +96,7 @@ def _train_input_source(*, vocab_size: int, max_sequence_length: int) -> Instant
     return source_cfg
 
 
-def named_trainer_configs() -> Dict[str, TrainerConfigFn]:
+def named_trainer_configs() -> dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
     config_map = {}
     config_map.update(fuji.trainer_configs(_train_input_source, _eval_input_sources))

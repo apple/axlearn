@@ -9,7 +9,8 @@ import shlex
 import signal
 import subprocess
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import Any, Callable, Optional, Union
 
 import pkg_resources
 import psutil
@@ -142,7 +143,7 @@ def get_pyproject_version() -> str:
     return pkg_resources.get_distribution(ROOT_MODULE_NAME).version
 
 
-def parse_kv_flags(kv_flags: Sequence[str], *, delimiter: str = ":") -> Dict[str, str]:
+def parse_kv_flags(kv_flags: Sequence[str], *, delimiter: str = ":") -> dict[str, str]:
     """Parses sequence of k:v into a dict.
 
     Args:
@@ -165,7 +166,7 @@ def parse_kv_flags(kv_flags: Sequence[str], *, delimiter: str = ":") -> Dict[str
     return metadata
 
 
-def format_table(*, headings: List[str], rows: List[List[str]]) -> str:
+def format_table(*, headings: list[str], rows: list[list[str]]) -> str:
     """Formats headings and rows as a table.
 
     Args:
@@ -222,7 +223,7 @@ def subprocess_run(argv: Union[str, Sequence[str]], *args, **kwargs) -> subproce
         raise ValueError(error_msg) from e  # Re-raise.
 
 
-def canonicalize_to_list(v: Union[str, Sequence[str]], *, delimiter: str = ",") -> List[str]:
+def canonicalize_to_list(v: Union[str, Sequence[str]], *, delimiter: str = ",") -> list[str]:
     """Converts delimited strings to lists."""
     if not v:
         return []  # Note: "".split(",") returns [""].
@@ -322,7 +323,7 @@ def merge(base: dict, overrides: dict):
     return base
 
 
-_Row = List[Any]
+_Row = list[Any]
 
 
 @dataclasses.dataclass(repr=False)
@@ -330,7 +331,7 @@ class Table:
     """A table which can be pretty-printed."""
 
     headings: _Row
-    rows: List[_Row]
+    rows: list[_Row]
 
     def __post_init__(self):
         if not isinstance(self.headings, Sequence):
@@ -351,7 +352,7 @@ class Table:
         self._check_row(row)
         self.rows.append(row)
 
-    def add_col(self, key: str, col: List[Any]):
+    def add_col(self, key: str, col: list[Any]):
         """Adds a named column to the table. The name will be added as a heading."""
         col = list(col)
         if not self.rows:
@@ -364,7 +365,7 @@ class Table:
             for i, row in enumerate(self.rows):
                 row.append(col[i])
 
-    def get_col(self, *keys: str) -> List[_Row]:
+    def get_col(self, *keys: str) -> list[_Row]:
         """Gets one or more named columns from the table."""
         idx = [self.headings.index(k) for k in keys]
         return [[row[i] for i in idx] for row in self.rows]

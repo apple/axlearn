@@ -52,8 +52,9 @@ import os
 import shlex
 import sys
 import tempfile
+from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, NamedTuple, Optional, Protocol, Sequence, TextIO, Type
+from typing import Any, Callable, NamedTuple, Optional, Protocol, TextIO
 
 from absl import app, flags, logging
 
@@ -107,7 +108,7 @@ from axlearn.common.config import (
 FLAGS = flags.FLAGS
 
 
-def _get_bastion_vm(bastion_name: str) -> Optional[Dict[str, Any]]:
+def _get_bastion_vm(bastion_name: str) -> Optional[dict[str, Any]]:
     return get_vm_node(bastion_name, _compute_resource(get_credentials()))
 
 
@@ -135,7 +136,7 @@ class Launcher(NamedTuple):
 
     # We take a class here instead of a config, since a materialized config is often not available
     # at the time of registry. Instead, we often construct the config via `job_cls.from_flags`.
-    job_cls: Type[Job]
+    job_cls: type[Job]
     # A config is usually more print-friendly, but not strictly required.
     matcher: ConfigOr[_Matcher]
     description: str
@@ -154,7 +155,7 @@ class BaseBastionManagedJob(Job):
 
     # Runner class, a subclass of Job that runs locally on the bastion.
     # Used to infer launch flags and launch command.
-    runner: Type[Job]
+    runner: type[Job]
 
     @config_class
     class Config(Job.Config):
@@ -189,7 +190,7 @@ class BaseBastionManagedJob(Job):
         resources: ConfigOr[ResourceMap[int]] = {}
 
     @classmethod
-    def with_runner(cls, runner: Type[Job]):
+    def with_runner(cls, runner: type[Job]):
         return type(f"{cls.__name__}_{runner.__name__}", (cls,), {"runner": runner})
 
     @classmethod
@@ -282,7 +283,7 @@ class BaseBastionManagedJob(Job):
         """Submits a delete request to bastion."""
         self._bastion_dir.cancel_job(self.config.name)
 
-    def _list(self, output_file: Optional[TextIO] = None) -> Dict[str, BastionJob]:
+    def _list(self, output_file: Optional[TextIO] = None) -> dict[str, BastionJob]:
         """Lists running jobs and optionally prints them in tabular format.
 
         Args:

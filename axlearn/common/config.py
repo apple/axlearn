@@ -67,20 +67,8 @@ import inspect
 import re
 import types
 from collections import defaultdict
-from typing import (
-    Any,
-    Callable,
-    Collection,
-    Dict,
-    Generic,
-    Iterable,
-    List,
-    Optional,
-    Tuple,
-    Type,
-    TypeVar,
-    Union,
-)
+from collections.abc import Collection, Iterable
+from typing import Any, Callable, Generic, Optional, TypeVar, Union
 
 # attr provides similar features as Python dataclass. Unlike
 # dataclass, however, it provides a richer set of features to regulate
@@ -124,7 +112,7 @@ def is_attrs(x: Any):
     return hasattr(x, "__attrs_attrs__")
 
 
-def similar_names(name: str, candidates: Iterable[str]) -> List[str]:
+def similar_names(name: str, candidates: Iterable[str]) -> list[str]:
     """Return a sorted list of candidates that are similar to name."""
 
     def overlaps(name: str, key: str) -> float:
@@ -363,10 +351,10 @@ class ConfigBase:
     def __len__(self) -> int:
         return len(attr.fields(type(self)))
 
-    def keys(self) -> List[str]:
+    def keys(self) -> list[str]:
         return sorted(attr.fields_dict(type(self)).keys())
 
-    def items(self) -> List[Tuple[str, Any]]:
+    def items(self) -> list[tuple[str, Any]]:
         """Returns (key, value) pairs sorted by keys."""
         return [(key, getattr(self, key)) for key in self.keys()]
 
@@ -403,14 +391,14 @@ class ConfigBase:
         """
         flat_dict = self.to_flat_dict(omit_default_values=omit_default_values)
 
-        def fmt(key: str, val: Any) -> Union[str, Tuple[str, str]]:
+        def fmt(key: str, val: Any) -> Union[str, tuple[str, str]]:
             if isinstance(val, (type, types.FunctionType)):
                 val = f"{val.__module__}.{val.__name__}"
             return f"{key}{kv_separator}{repr(val)}"
 
         return field_separator.join([fmt(k, v) for k, v in flat_dict.items()])
 
-    def to_flat_dict(self, *, omit_default_values: Collection[Any]) -> Dict[str, Any]:
+    def to_flat_dict(self, *, omit_default_values: Collection[Any]) -> dict[str, Any]:
         """Returns a flattened dict with path -> value mappings.
 
         Args:
@@ -427,7 +415,7 @@ class ConfigBase:
         """
         result = {}
 
-        def enter(key: str, val: Any, default_result: Optional[List]) -> Optional[List]:
+        def enter(key: str, val: Any, default_result: Optional[list]) -> Optional[list]:
             if dataclasses.is_dataclass(val) and not isinstance(val, type):
                 fields_default_dict = {}
                 for field in dataclasses.fields(val):
@@ -471,7 +459,7 @@ class ConfigBase:
         self.visit(visit_fn=process_kv, enter_fn=enter)
         return result
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Returns a nested dictionary of config fields."""
 
         # pylint: disable-next=too-many-return-statements
@@ -511,7 +499,7 @@ class ConfigBase:
     def visit(
         self,
         visit_fn: Callable[[str, Any], None],
-        enter_fn: Optional[Callable[[str, Any, Optional[List]], Optional[List]]] = None,
+        enter_fn: Optional[Callable[[str, Any, Optional[list]], Optional[list]]] = None,
         exit_fn: Optional[Callable[[str, Any], None]] = None,
     ):
         """Recursively visits objects within this Config instance.
@@ -590,7 +578,7 @@ def _config_class_kwargs():
     return dict(init=False, kw_only=True, slots=True, on_setattr=_validate_and_transform_field)
 
 
-def _wrap_config_attr_cls(attr_cls: Type, *, name: Optional[str] = None):
+def _wrap_config_attr_cls(attr_cls: type, *, name: Optional[str] = None):
     """Wraps `attr_cls` to override `__{setattr,getattr}__`."""
     # pylint: disable=protected-access
 
@@ -630,7 +618,7 @@ def _wrap_config_attr_cls(attr_cls: Type, *, name: Optional[str] = None):
     return attr_cls
 
 
-def config_class(cls: Type[T], **kwargs) -> Type[T]:
+def config_class(cls: type[T], **kwargs) -> type[T]:
     if not issubclass(cls, ConfigBase):
         raise InvalidConfigClassError(f"A config class must be a subclass of ConfigBase: {cls}")
 
@@ -716,7 +704,7 @@ class Configurable:
         # Subclasses/users should not set `klass` explicitly.
         # It will be set by Configurable.default_config().
         # See ClassConfigBase for notes on why we name this `klass` rather than `cls`.
-        klass: Type[C]
+        klass: type[C]
 
         def instantiate(self, **kwargs) -> C:
             """Instantiates a Configurable object.
@@ -740,7 +728,7 @@ class Configurable:
             return self.klass(self, **kwargs)
 
     @classmethod
-    def default_config(cls: Type[C]) -> Config[C]:
+    def default_config(cls: type[C]) -> Config[C]:
         return cls.Config(klass=cls)
 
     def __init__(self, cfg):
@@ -763,8 +751,8 @@ def _attr_field_from_signature_param(param: inspect.Parameter) -> attr.Attribute
 
 
 def _prepare_args_and_kwargs(
-    kwargs: Dict[str, Any], *, sig: inspect.Signature, cfg: InstantiableConfig
-) -> List:
+    kwargs: dict[str, Any], *, sig: inspect.Signature, cfg: InstantiableConfig
+) -> list:
     """Fills `kwargs` and `args` with values from `cfg` according to `sig` and returns `args`."""
     args = []
 
@@ -810,7 +798,7 @@ class FunctionConfigBase(InstantiableConfig[T]):
 F = TypeVar("F", bound=Callable)
 
 
-def _config_class_for_function(fn: F) -> Type[FunctionConfigBase]:
+def _config_class_for_function(fn: F) -> type[FunctionConfigBase]:
     """Returns a config class."""
     init_sig = inspect.signature(fn)
     config_attrs = {
@@ -863,7 +851,7 @@ class ClassConfigBase(InstantiableConfig[T]):
     # Note: Generic classes come with a __new__(cls, *args, **kwds) method by default. Naming this
     # field `cls` (or even `_cls`, since `attr.make_class` strips leading underscores when
     # generating `__init__`) can cause conflicts.
-    klass: Type[T]
+    klass: type[T]
 
     def instantiate(self, **kwargs) -> T:
         _validate_required_fields(self)
@@ -873,7 +861,7 @@ class ClassConfigBase(InstantiableConfig[T]):
         return self.klass(*args, **kwargs)
 
 
-def _config_class_for_class(cls: Type[T]) -> Type[ClassConfigBase[T]]:
+def _config_class_for_class(cls: type[T]) -> type[ClassConfigBase[T]]:
     """Returns a config class."""
     init_sig = inspect.signature(cls.__init__)
     config_attrs = {
@@ -889,7 +877,7 @@ def _config_class_for_class(cls: Type[T]) -> Type[ClassConfigBase[T]]:
     )
 
 
-def config_for_class(cls: Type[T]) -> Union[Any, ClassConfigBase[T]]:
+def config_for_class(cls: type[T]) -> Union[Any, ClassConfigBase[T]]:
     """Returns an instance of ClassConfigBase, which is an object factory for `cls`.
 
     In other words, instantiating the config produces an instance of `cls`, where the configured

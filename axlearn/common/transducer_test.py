@@ -2,7 +2,6 @@
 
 """Tests tranducer layers."""
 # pylint: disable=duplicate-code,invalid-name
-from typing import Tuple
 
 import jax
 import jaxlib
@@ -523,7 +522,7 @@ class AlignmentTest(TestWithTemporaryCWD, tf.test.TestCase):
 
         def _loss(
             log_prob_blank: Tensor, log_prob_y: Tensor, am_pad: Tensor, lm_pad: Tensor
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             """Compute loss and grad from prediction outputs."""
             log_probs_mask = jax.vmap(apply_paddings)(
                 log_prob_blank=log_prob_blank,

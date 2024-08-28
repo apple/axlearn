@@ -18,7 +18,7 @@ https://github.com/microsoft/DeBERTa
 """
 import math
 from enum import Enum
-from typing import Optional, Set, Type, cast
+from typing import Optional, cast
 
 import jax.numpy as jnp
 
@@ -186,7 +186,7 @@ class DisentangledSelfAttention(MultiheadAttention):
         """Configures DisentangledSelfAttention.Config."""
 
         # Type(s) of attention to include in attention score.
-        attention_type: Required[Set[DisentangledAttentionType]] = REQUIRED
+        attention_type: Required[set[DisentangledAttentionType]] = REQUIRED
         # Maximum distance for bucketing.
         max_distance: Required[int] = REQUIRED
         # Number of relative position buckets in each distance. If None, defaults to max_distance.
@@ -240,7 +240,7 @@ class DisentangledSelfAttention(MultiheadAttention):
         cfg = self.config
 
         # Make sure attention types are all valid.
-        valid_attention_types = set(v for v in DisentangledAttentionType)
+        valid_attention_types = set(DisentangledAttentionType)
         invalid_attention_types = set(cfg.attention_type).difference(valid_attention_types)
         if invalid_attention_types:
             raise ValueError(
@@ -398,7 +398,7 @@ class DeBERTaV2Encoder(Encoder):
         relative_pos_emb: Embedding.Config = DeBERTaV2RelativePositionalEmbedding.default_config()
 
     @classmethod
-    def default_config(cls: Type["DeBERTaV2Encoder"]) -> Encoder.Config:
+    def default_config(cls: type["DeBERTaV2Encoder"]) -> Encoder.Config:
         cfg = super().default_config()
         cfg.transformer = RepeatedTransformerLayer.default_config()
         cfg.transformer.layer.self_attention.attention = (
@@ -427,7 +427,7 @@ def deberta_v2_self_attention_config(
     share_projections: bool = True,
     num_directional_buckets: Optional[int] = None,
     attention_type: Optional[
-        Set[DisentangledAttentionType]
+        set[DisentangledAttentionType]
     ] = (  # pytype: disable=annotation-type-mismatch
         DisentangledAttentionType.P2C,
         DisentangledAttentionType.C2P,
@@ -489,7 +489,7 @@ def deberta_v2_encoder_config(
     max_position_embeddings: Optional[int] = None,
     num_directional_buckets: Optional[int] = None,
     base_cfg: Optional[DeBERTaV2Encoder.Config] = None,
-    stack_cls: Optional[Type[BaseStackedTransformerLayer]] = None,
+    stack_cls: Optional[type[BaseStackedTransformerLayer]] = None,
 ) -> DeBERTaV2Encoder.Config:
     """Builds configs for DeBERTaV2 Encoder.
 

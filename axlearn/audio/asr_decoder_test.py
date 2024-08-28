@@ -4,7 +4,7 @@
 # pylint: disable=no-self-use,too-many-lines
 
 import functools
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Union
 
 import jax.random
 import numpy as np
@@ -165,7 +165,7 @@ class UtilsTest(TestCase):
 class ValidCtcSeqTest(TestCase):
     def get_logits_and_labels(
         self, batch_size: int, input_lengths: int, target_lengths: int, vocab_size: int
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         prng_key = jax.random.PRNGKey(1234)
         logits = jax.random.normal(
             prng_key, (batch_size, input_lengths, vocab_size), dtype=jnp.float32
@@ -520,7 +520,7 @@ class CTCDecoderModelTest(TestCase):
         assert_allclose(np.sum(ref_per_example_loss) / np.sum(per_example_weight), loss)
 
     def _check_summary(
-        self, summary_collection: Dict[str, Any], name: str, value: Union[Tensor, WeightedScalar]
+        self, summary_collection: dict[str, Any], name: str, value: Union[Tensor, WeightedScalar]
     ):
         self.assertIn(name, summary_collection)
         msg = f"mismatch in {name}: {summary_collection[name]} vs {value}"
@@ -1031,10 +1031,8 @@ class SimpleRecurrentCell(BaseRNNCell):
         cfg = self.config
         if cfg.output_dim and cfg.output_dim != cfg.input_dim:
             raise ValueError(
-                (
-                    "SimpleRecurrentCell requires input_dim = output_dim, but got "
-                    f"input_dim = {cfg.input_dim}, output_dim = {cfg.output_dim}."
-                )
+                "SimpleRecurrentCell requires input_dim = output_dim, but got "
+                f"input_dim = {cfg.input_dim}, output_dim = {cfg.output_dim}."
             )
 
     def init_states(self, *, batch_size: int) -> NestedTensor:
@@ -1047,7 +1045,7 @@ class SimpleRecurrentCell(BaseRNNCell):
 
     def extend_step(
         self, *, data: Tensor, cached_states: NestedTensor
-    ) -> Tuple[NestedTensor, Tensor]:
+    ) -> tuple[NestedTensor, Tensor]:
         # [batch*beam, emb_dim].
         memory_init = data
         # Markov chain transition probability.

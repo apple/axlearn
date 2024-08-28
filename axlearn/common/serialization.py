@@ -10,11 +10,11 @@
 
 import threading
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, List, Type
+from typing import Any, Callable
 
 import jax
 
-_STATE_DICT_REGISTRY: Dict[Any, Any] = {}
+_STATE_DICT_REGISTRY: dict[Any, Any] = {}
 
 
 class _ErrorContext(threading.local):
@@ -45,15 +45,13 @@ def current_path():
 class _NamedTuple:
     """Fake type marker for namedtuple for registry."""
 
-    pass
-
 
 def _is_namedtuple(x: Any) -> bool:
     """Duck typing test for namedtuple factory-generated objects."""
     return isinstance(x, tuple) and hasattr(x, "_fields")
 
 
-def to_state_dict(target: Any) -> Dict[str, Any]:
+def to_state_dict(target: Any) -> dict[str, Any]:
     """Returns a dictionary with the state of the given target.
 
     Equivalent to `flax.serialization.to_state_dict`.
@@ -83,7 +81,7 @@ def to_state_dict(target: Any) -> Dict[str, Any]:
     return state_dict
 
 
-def from_state_dict(target: Any, state: Dict[str, Any], name: str = ".") -> Any:
+def from_state_dict(target: Any, state: dict[str, Any], name: str = ".") -> Any:
     """Restores the state of the given target using a state dict.
 
     Equivalent to `flax.serialization.from_state_dict`.
@@ -108,7 +106,7 @@ def from_state_dict(target: Any, state: Dict[str, Any], name: str = ".") -> Any:
 
 
 def register_serialization_state(
-    ty: Type, ty_to_state_dict: Callable, ty_from_state_dict: Callable, override: bool = False
+    ty: type, ty_to_state_dict: Callable, ty_from_state_dict: Callable, override: bool = False
 ):
     """Register a type for serialization.
 
@@ -130,11 +128,11 @@ def register_serialization_state(
 # Below are serialization implementations for standard container types.
 
 
-def _list_state_dict(xs: List[Any]) -> Dict[str, Any]:
+def _list_state_dict(xs: list[Any]) -> dict[str, Any]:
     return {str(i): to_state_dict(x) for i, x in enumerate(xs)}
 
 
-def _restore_list(xs: List[Any], state_dict: Dict[str, Any]) -> List[Any]:
+def _restore_list(xs: list[Any], state_dict: dict[str, Any]) -> list[Any]:
     if len(state_dict) != len(xs):
         raise ValueError(
             "The size of the list and the state dict do not match, "
@@ -143,8 +141,8 @@ def _restore_list(xs: List[Any], state_dict: Dict[str, Any]) -> List[Any]:
     return [from_state_dict(xs[i], state_dict[str(i)], name=str(i)) for i in range(len(xs))]
 
 
-def _dict_state_dict(xs: Dict[str, Any]) -> Dict[str, Any]:
-    str_keys = set(str(k) for k in xs.keys())
+def _dict_state_dict(xs: dict[str, Any]) -> dict[str, Any]:
+    str_keys = {str(k) for k in xs.keys()}
     if len(str_keys) != len(xs):
         raise ValueError(
             "Dict keys do not have a unique string representation: " f"{str_keys} vs given: {xs}"
@@ -152,8 +150,8 @@ def _dict_state_dict(xs: Dict[str, Any]) -> Dict[str, Any]:
     return {str(key): to_state_dict(value) for key, value in xs.items()}
 
 
-def _restore_dict(xs: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict[str, Any]:
-    diff = set(str(k) for k in xs.keys()).difference(state_dict.keys())
+def _restore_dict(xs: dict[str, Any], state_dict: dict[str, Any]) -> dict[str, Any]:
+    diff = {str(k) for k in xs.keys()}.difference(state_dict.keys())
     if diff:
         raise ValueError(
             "The target dict keys and state dict keys do not match, target dict "
@@ -166,11 +164,11 @@ def _restore_dict(xs: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict[str, A
     }
 
 
-def _namedtuple_state_dict(xs) -> Dict[str, Any]:
+def _namedtuple_state_dict(xs) -> dict[str, Any]:
     return {key: to_state_dict(getattr(xs, key)) for key in xs._fields}
 
 
-def _restore_namedtuple(xs, state_dict: Dict[str, Any]):
+def _restore_namedtuple(xs, state_dict: dict[str, Any]):
     state_keys = set(state_dict.keys())
     namedtuple_keys = set(xs._fields)
     if state_keys != namedtuple_keys:

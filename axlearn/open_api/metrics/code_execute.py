@@ -27,13 +27,13 @@ import platform
 import signal
 import sys
 import tempfile
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional, Union
 
 
 # TODO(gyin): Consider refactoring this with context manager.
 def check_correctness(
-    check_program: str, *, inputs: List[Any], timeout: float, task_id: str, completion_id: str
-) -> Dict[str, Any]:
+    check_program: str, *, inputs: list[Any], timeout: float, task_id: str, completion_id: str
+) -> dict[str, Any]:
     """Evaluates the functional correctness of a completion by running a set of test
         inputs in the problem.
 
@@ -68,7 +68,7 @@ def check_correctness(
     return {"task_id": task_id, "completion_id": completion_id, "result": result[0]}
 
 
-def _unsafe_execute(check_program: str, inputs: List[Any], result: List[Any], timeout: float):
+def _unsafe_execute(check_program: str, inputs: list[Any], result: list[Any], timeout: float):
     """Evaluates the functional correctness of a completion by running a set of test
      inputs in the problem.
 
@@ -172,8 +172,6 @@ def _create_tempdir():
 
 class TimeoutException(Exception):
     """Defines a timeout exception."""
-
-    pass
 
 
 # pylint: disable=unused-argument

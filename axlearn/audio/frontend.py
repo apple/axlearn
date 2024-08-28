@@ -7,8 +7,9 @@
 """Audio frontends for feature extraction."""
 
 import functools
+from collections.abc import Sequence
 from functools import partial
-from typing import Callable, Dict, Optional, Protocol, Sequence, Union
+from typing import Callable, Optional, Protocol, Union
 
 import jax.numpy as jnp
 
@@ -190,7 +191,7 @@ class LogMelFrontend(BaseFrontend):
             self._frame_size += 1
             self._pre_emphasis = cfg.pre_emphasis.instantiate()
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
+    def forward(self, inputs: Tensor, *, paddings: Tensor) -> dict[str, Tensor]:
         """Computes log-mel spectrogram features.
 
         Args:

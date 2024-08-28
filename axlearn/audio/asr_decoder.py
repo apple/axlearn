@@ -6,7 +6,7 @@
 
 """ASR decoder layers."""
 
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Callable, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -173,7 +173,7 @@ class BaseASRDecoderModel(BaseModel):
     def forward(
         self,
         input_batch: Nested[Tensor],
-    ) -> Tuple[Tensor, Nested[Tensor]]:
+    ) -> tuple[Tensor, Nested[Tensor]]:
         """Computes decoder loss.
 
         Args:
@@ -217,7 +217,7 @@ class BaseASRDecoderModel(BaseModel):
 
     def _input_stats_summaries(
         self, input_batch: Nested[Tensor], *, target_paddings: Tensor, is_valid_example: Tensor
-    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
+    ) -> dict[str, Union[WeightedScalar, Tensor]]:
         """Computes input lengths stats.
 
         Args:
@@ -303,7 +303,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         per_example_weight: Tensor,
         paddings: Tensor,
         target_paddings: Tensor,
-    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
+    ) -> dict[str, Union[WeightedScalar, Tensor]]:
         valid_frame_mask = (1.0 - paddings) * per_example_weight[:, None]
         valid_label_mask = (1.0 - target_paddings) * per_example_weight[:, None]
 
@@ -332,7 +332,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
     def forward(
         self,
         input_batch: Nested[Tensor],
-    ) -> Tuple[Tensor, Nested[Tensor]]:
+    ) -> tuple[Tensor, Nested[Tensor]]:
         """Computes CTC loss.
 
         Args:
@@ -401,7 +401,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         *,
         num_decodes: int,
         logits_modifier: Optional[ConfigOr[LogitsToLogitsFn]] = None,
-    ) -> Callable[[Tensor, Nested[Tensor]], Tuple[Tensor, Nested[Tensor]]]:
+    ) -> Callable[[Tensor, Nested[Tensor]], tuple[Tensor, Nested[Tensor]]]:
         """Returns a function that maps current token IDs and model state to next logits and updated
         state, to be used with decoding (see e.g. `beam_search_decode` or `sample_decode`).
         """
@@ -431,7 +431,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
 
         def tokens_to_scores(
             token_ids: Tensor, state: Nested[Tensor]
-        ) -> Tuple[Tensor, Nested[Tensor]]:
+        ) -> tuple[Tensor, Nested[Tensor]]:
             # CTC assumes conditional independence between frames.
             del token_ids
             time_step = state["time_step"]
@@ -704,7 +704,7 @@ class RNNPredictionNetwork(BaseLayer):
         *,
         cached_states: Nested[Tensor],
         data: Tensor,
-    ) -> Tuple[Nested[Tensor], Tensor]:
+    ) -> tuple[Nested[Tensor], Tensor]:
         """Computes prediction network outputs and RNN state updates for one step.
 
         Args:
@@ -782,7 +782,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
         transducer_cfg.logits_to_log_probs.blank_id = cfg.blank_id
         self._add_child("transducer", transducer_cfg)
 
-    def forward(self, input_batch: Nested[Tensor]) -> Tuple[Tensor, Nested[Tensor]]:
+    def forward(self, input_batch: Nested[Tensor]) -> tuple[Tensor, Nested[Tensor]]:
         """Computes the transducer loss.
 
         Args:
@@ -860,7 +860,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
         *,
         num_decodes: int,
         max_decode_len: int,
-    ) -> Callable[[Tensor, Nested[Tensor]], Tuple[Tensor, Nested[Tensor]]]:
+    ) -> Callable[[Tensor, Nested[Tensor]], tuple[Tensor, Nested[Tensor]]]:
         """Returns a function that maps current token IDs and model state to next logits and updated
             state, to be used with decoding, see `beam_search_decode`.
 
@@ -882,7 +882,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
 
         def tokens_to_scores(
             token_ids: Tensor, state_cache: Nested[Tensor]
-        ) -> Tuple[Tensor, Nested[Tensor]]:
+        ) -> tuple[Tensor, Nested[Tensor]]:
             # [batch*beam, 1].
             is_blank = token_ids == blank_id
 
@@ -1102,7 +1102,7 @@ class LASDecoderModel(BaseASRDecoderModel):
         cfg.decoder.transformer.layer.cross_attention.source_dim = cfg.input_dim
         self._add_child("decoder", cfg.decoder)
 
-    def forward(self, input_batch: Nested[Tensor]) -> Tuple[Tensor, Nested[Tensor]]:
+    def forward(self, input_batch: Nested[Tensor]) -> tuple[Tensor, Nested[Tensor]]:
         """Computes the cross entropy loss.
 
         See BaseASRDecoderModel.forward docstring for details.
@@ -1241,7 +1241,7 @@ class LASDecoderModel(BaseASRDecoderModel):
 
     def sample_decode(
         self,
-        input_batch: Dict[str, Tensor],
+        input_batch: dict[str, Tensor],
         num_decodes: int,
         max_decode_len: int,
         logits_modifier: Optional[ConfigOr[LogitsToLogitsFn]] = None,

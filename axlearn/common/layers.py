@@ -17,7 +17,8 @@
 # pylint: disable=too-many-lines
 """Basic layers."""
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Any, Callable, Optional, Union
 
 import jax
 from absl import logging
@@ -89,7 +90,7 @@ class RedirectToSharedModule(BaseLayer):
         shared_module: Required[str] = REQUIRED
         # A mapping from redirection layer method name to the target layer method.
         # If empty, assume {"forward": "forward"}.
-        method_map: Dict[str, str] = {}
+        method_map: dict[str, str] = {}
 
         def set(self, **kwargs) -> "RedirectToSharedModule.Config":
             try:
@@ -99,7 +100,7 @@ class RedirectToSharedModule(BaseLayer):
                 # We intentionally ignore this exception.
             return self
 
-    def _methods_to_wrap_for_auto_child_context(self) -> Dict[str, Callable]:
+    def _methods_to_wrap_for_auto_child_context(self) -> dict[str, Callable]:
         cfg: RedirectToSharedModule.Config = self.config
         method_dict = {}
         for source_method, target_method in (cfg.method_map or {"forward": "forward"}).items():
@@ -296,7 +297,7 @@ class LayerNormStateless(BaseNormalizationLayer):
 class LayerNorm(LayerNormStateless):
     """Reference: https://arxiv.org/abs/1607.06450."""
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return {
             "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
@@ -319,7 +320,7 @@ class RMSNorm(BaseNormalizationLayer):
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return {
             "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
@@ -369,9 +370,9 @@ def _compute_moments_with_paddings(
     x: Tensor,
     *,
     paddings: Tensor,
-    reduction_axis: List[int],
+    reduction_axis: list[int],
     keepdims: bool = False,
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """Computes mean and variance over sequence data.
 
     Args:
@@ -410,7 +411,7 @@ class GroupNorm(BaseNormalizationLayer):
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return {
             "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
@@ -474,7 +475,7 @@ class BatchNorm(BaseNormalizationLayer):
         # Cast input to this dtype for the 'forward' call.  If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return {
             "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
@@ -540,7 +541,7 @@ class Linear(DenseGeneralBaseLayer):
         # Whether to add a bias.
         bias: bool = True
         # If not None, how to partition output values.
-        output_partition_spec: Optional[Tuple[Optional[str]]] = None
+        output_partition_spec: Optional[tuple[Optional[str]]] = None
 
     @classmethod
     def default_config(cls):
@@ -548,7 +549,7 @@ class Linear(DenseGeneralBaseLayer):
         cfg.param_partition_spec = (None, None)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             weight=ParameterSpec(
@@ -596,7 +597,7 @@ class UnitNormLinear(Linear):
             return super().forward(x)
 
 
-def _check_conv_cfg(padding: Union[str, Sequence[Tuple[int, int]]], strides: Sequence[int]):
+def _check_conv_cfg(padding: Union[str, Sequence[tuple[int, int]]], strides: Sequence[int]):
     if isinstance(padding, str):
         if padding in ("SAME", "VALID"):
             if padding == "SAME" and any(s > 1 for s in strides):
@@ -616,8 +617,8 @@ class MaxPool2D(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures MaxPool2D."""
 
-        window: Tuple[int, int] = (2, 2)
-        strides: Tuple[int, int] = (1, 1)
+        window: tuple[int, int] = (2, 2)
+        strides: tuple[int, int] = (1, 1)
 
     @classmethod
     def default_config(cls):
@@ -693,10 +694,10 @@ class Conv2D(BaseConv):
     class Config(BaseConv.Config):
         """Configures Conv2D."""
 
-        window: Tuple[int, int] = (1, 1)  # The convolution window.
-        strides: Tuple[int, int] = (1, 1)  # The convolution strides.
+        window: tuple[int, int] = (1, 1)  # The convolution window.
+        strides: tuple[int, int] = (1, 1)  # The convolution strides.
         # Paddings: "SAME", "VALID", or ((top, bottom), (left, right)).
-        padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int]]] = ((0, 0), (0, 0))
+        padding: Union[str, tuple[tuple[int, int], tuple[int, int]]] = ((0, 0), (0, 0))
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
         # The number of groups in which the input is split along the channel axis.
@@ -715,7 +716,7 @@ class Conv2D(BaseConv):
         cfg.param_partition_spec = (None, None, None, None)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         _check_conv_cfg(cfg.padding, cfg.strides)
         params = dict(
@@ -779,7 +780,7 @@ class Conv2D(BaseConv):
 
 
 def _compute_conv_output_1d_padding(
-    in_paddings: Tensor, *, window: int, stride: int, conv_padding_cfg: Union[str, Tuple[int, int]]
+    in_paddings: Tensor, *, window: int, stride: int, conv_padding_cfg: Union[str, tuple[int, int]]
 ):
     """Helper function to compute 1D paddings for 2D convolution.
 
@@ -833,9 +834,9 @@ class Conv2DTranspose(BaseConv):
     class Config(BaseConv.Config):
         """Configures Conv2DTranspose."""
 
-        window: Tuple[int, int] = (1, 1)
-        strides: Tuple[int, int] = (1, 1)
-        padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int]]] = ((0, 0), (0, 0))
+        window: tuple[int, int] = (1, 1)
+        strides: tuple[int, int] = (1, 1)
+        padding: Union[str, tuple[tuple[int, int], tuple[int, int]]] = ((0, 0), (0, 0))
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
 
@@ -845,7 +846,7 @@ class Conv2DTranspose(BaseConv):
         cfg.param_partition_spec = (None, None, None, None)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         _check_conv_cfg(cfg.padding, cfg.strides)
         params = dict(
@@ -925,7 +926,7 @@ class Conv2DWith1DPadding(Conv2D):
 
     # We add a kwargs "paddings" to the forward method.
     # pylint: disable-next=arguments-differ
-    def forward(self, x: Tensor, *, paddings: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, x: Tensor, *, paddings: Tensor) -> tuple[Tensor, Tensor]:
         """Computes convolution outputs and paddings.
 
         Args:
@@ -966,11 +967,11 @@ class Conv3D(BaseConv):
     class Config(BaseConv.Config):
         """Configures Conv3D."""
 
-        window: Tuple[int, int, int] = (1, 1, 1)  # The convolution window.
-        strides: Tuple[int, int, int] = (1, 1, 1)  # The convolution strides.
+        window: tuple[int, int, int] = (1, 1, 1)  # The convolution window.
+        strides: tuple[int, int, int] = (1, 1, 1)  # The convolution strides.
 
         # Paddings: "SAME" or "VALID, or ((top, bottom), (left, right), (front, back))
-        padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]] = (
+        padding: Union[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]] = (
             (0, 0),
             (0, 0),
             (0, 0),
@@ -995,7 +996,7 @@ class Conv3D(BaseConv):
         cfg.param_partition_spec = (None, None, None, None, None)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         _check_conv_cfg(cfg.padding, cfg.strides)
         params = dict(
@@ -1078,7 +1079,7 @@ class Conv1D(BaseConv):
         strides: int = 1  # The convolution strides.
         # Paddings: "SAME", "VALID", or (left, right).
         # For causal convolution, set padding to (window - 1, 0).
-        padding: Union[str, Tuple[int, int]] = (0, 0)
+        padding: Union[str, tuple[int, int]] = (0, 0)
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
         # The number of groups in which the input is split along the channel axis.
@@ -1109,7 +1110,7 @@ class Conv1D(BaseConv):
         if cfg.lhs_dilation is not None and cfg.lhs_dilation != 1 and isinstance(cfg.padding, str):
             raise ValueError("String padding is not supported for LHS dilation.")
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         if cfg.padding in ("SAME", "VALID"):
             if cfg.padding == "SAME" and cfg.strides > 1:
@@ -1162,7 +1163,7 @@ class DepthwiseConv1D(BaseConv):
         strides: int = 1  # The convolution strides.
         # Paddings: "SAME", "VALID", or (left, right).
         # For causal convolution, set padding to (window - 1, 0).
-        padding: Union[str, Tuple[int, int]] = (0, 0)
+        padding: Union[str, tuple[int, int]] = (0, 0)
         bias: bool = True  # Whether to add a bias.
 
     @classmethod
@@ -1171,7 +1172,7 @@ class DepthwiseConv1D(BaseConv):
         cfg.param_partition_spec = (None, None, "model")
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         if cfg.padding in ("SAME", "VALID"):
             if cfg.padding == "SAME" and cfg.strides > 1:
@@ -1247,7 +1248,7 @@ class Embedding(BaseLayer):
         )
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return dict(
             weight=ParameterSpec(
@@ -1701,9 +1702,9 @@ class StackOverTime(BaseLayer):
         stride: Required[int] = REQUIRED  # Number of frames to stack.
         # Number of paddings to apply along the time axis. The two integers indicate
         # leading and trailing padding to add respectively.
-        padding: Tuple[int, int] = (0, 0)
+        padding: tuple[int, int] = (0, 0)
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, inputs: Tensor, *, paddings: Tensor) -> tuple[Tensor, Tensor]:
         """Stacks stride number of frames into one frame along the time axis.
 
         Args:
@@ -1776,7 +1777,7 @@ class MultiLinear(BaseLayer):
         return cfg
 
     # pylint: disable-next=duplicate-code
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             weight=ParameterSpec(
@@ -1900,3 +1901,58 @@ class SeparableSpaceTimePositionalEmbedding(BaseLayer):
         """
         emb = self.embeddings()
         return emb[positions]
+
+
+class MovingAverage(BaseLayer):
+    """A layer to maintain an exponential moving average stats.
+
+    Given each value `x`, updates `moving_average` as:
+        moving_average = x * weight + moving_average * (1 - weight)
+        count = count + 1
+
+    where `weight` is determined by:
+        weight = max(cfg.min_weight, 1 / (count + 1))
+    """
+
+    @config_class
+    class Config(BaseLayer.Config):
+        shape: Sequence[int] = tuple()
+        # The minimum weight for an update.
+        min_weight: Required[float] = REQUIRED
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        cfg = self.config
+        return {
+            "count": ParameterSpec(
+                shape=[],
+                dtype=jnp.int32,
+                mesh_axes=(None,),
+                initializer=constant_initializer(0),
+                weight_decay_scale=0,
+            ),
+            "value": ParameterSpec(
+                shape=cfg.shape,
+                dtype=jnp.float32,
+                mesh_axes=(None,),
+                initializer=constant_initializer(0.0),
+                weight_decay_scale=0,
+            ),
+        }
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Computes a moving average of `x`.
+
+        The moving average updates will be set in OutputCollection.state_updates.
+
+        Args:
+            x: A Tensor of shape cfg.shape.
+
+        Returns:
+            Returns the current moving average.
+        """
+        cfg = self.config
+        weight = jnp.maximum(cfg.min_weight, 1.0 / (1 + self.parameters["count"]))
+        new_moving_average = (1 - weight) * self.parameters["value"] + weight * x
+        self.add_state_update("value", new_moving_average)
+        self.add_state_update("count", 1 + self.parameters["count"])
+        return new_moving_average

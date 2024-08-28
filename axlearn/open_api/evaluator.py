@@ -4,7 +4,7 @@
 import logging
 import os
 from datetime import timedelta
-from typing import Optional, Type
+from typing import Optional
 
 from absl import app, flags, logging
 from absl.flags import FlagValues
@@ -23,14 +23,14 @@ from axlearn.open_api.registry import ClientRegistry, MetricRegistry
 FLAGS = flags.FLAGS
 
 
-def evaluate_from_file(fv: FlagValues):
-    """Evaluates and computes for responses from open api clients given a file path.
+def initialize_evaluator(fv: FlagValues) -> Evaluator:
+    """Initializes an Evaluator from flag values.
 
     Args:
         fv: The flag values of evaluator.py.
 
     Returns:
-        None. The results are written directly to a file and logged.
+        An instance of Evaluator.
 
     Raises:
         ValueError: Client class must not be empty.
@@ -61,7 +61,7 @@ def evaluate_from_file(fv: FlagValues):
         if fv.model is None and fv.grader_model is None:
             raise ValueError("Either default model name or grader model name must be set.")
         # Initializes grader generator.
-        grader_client_cls: Optional[Type[BaseClient]] = ClientRegistry.load_client_cls(
+        grader_client_cls: Optional[type[BaseClient]] = ClientRegistry.load_client_cls(
             fv.grader_client_name
         )
         if grader_client_cls is None:
@@ -84,6 +84,19 @@ def evaluate_from_file(fv: FlagValues):
         )
         .instantiate()
     )
+    return evaluator
+
+
+def evaluate_from_file(fv: FlagValues):
+    """Evaluates and computes for responses from open api clients given a file path.
+
+    Args:
+        fv: The flag values of evaluator.py.
+
+    Returns:
+        None. The results are written directly to a file and logged.
+    """
+    evaluator = initialize_evaluator(fv=fv)
 
     metric_fn = MetricRegistry.load_metric(metric_name=fv.metric_name)
     if metric_fn is None:

@@ -10,7 +10,8 @@ import os.path
 import shutil
 import tempfile
 import unittest
-from typing import Any, Callable, Dict, Iterable, Literal, Optional, Sequence, Tuple, Union
+from collections.abc import Iterable, Sequence
+from typing import Any, Callable, Literal, Optional, Union
 
 import chex
 import jax
@@ -145,8 +146,7 @@ class DummyInput(Module):
         return ds
 
     def batches(self, it: tf.data.Iterator) -> Iterable[NestedTensor]:
-        for input_batch in it:
-            yield input_batch
+        yield from it
 
     def dispatch_global_batch(
         self,
@@ -160,8 +160,7 @@ class DummyInput(Module):
         # Use a different __iter__ than iter(self.dataset()), to test that input iter can be
         # checkpointed properly even with a custom __iter__ (note that a custom __iter__ is not
         # guaranteed to be savable).
-        for input_batch in self.dataset():
-            yield input_batch
+        yield from self.dataset()
 
 
 class DummyModel(BaseModel):
@@ -286,9 +285,7 @@ class DummyStateBuilder(TrainerStateBuilder):
             trainer_state=state.trainer_state,
             built_keys=copy.deepcopy(state.built_keys),
         )
-        built_keys = set(
-            f"model/{key}" for key, _ in flatten_items(built_state.trainer_state.model)
-        )
+        built_keys = {f"model/{key}" for key, _ in flatten_items(built_state.trainer_state.model)}
         logging.info("built_keys=%s", built_keys)
         return TrainerStateBuilder.State(
             step=self.config.step,
@@ -504,7 +501,7 @@ class TrainerTest(test_utils.TestCase):
                 )
             self.assertTrue(
                 expected_non_empty_keys
-                == set(k for k, v in output["evaler_summaries"].items() if v is not None)
+                == {k for k, v in output["evaler_summaries"].items() if v is not None}
             )
 
     def test_stop_on_exception(self):
@@ -521,8 +518,7 @@ class TrainerTest(test_utils.TestCase):
 
             def dataset(self):
                 cfg = self.config
-                for input_batch in super().dataset().take(cfg.raise_on_batch - 1):
-                    yield input_batch
+                yield from super().dataset().take(cfg.raise_on_batch - 1)
                 raise ValueError(f"Raising on batch {cfg.raise_on_batch}")
 
         cfg = self._trainer_config().set(max_step=3, watchdog_timeout_seconds=10)
@@ -754,7 +750,7 @@ class TrainerTest(test_utils.TestCase):
         model_cfg = DummyModel.default_config().set(dtype=jnp.float32)
 
         def checkpoint_if_all_evalers_run(evaler_names: Sequence[str]) -> CheckpointPolicy:
-            def fn(*, step: int, evaler_summaries: Dict[str, Any]):
+            def fn(*, step: int, evaler_summaries: dict[str, Any]):
                 del step
                 for evaler_name in evaler_names:
                     if evaler_summaries.get(evaler_name) is None:
@@ -1019,7 +1015,7 @@ class CompatibilityTest(test_utils.TestCase):
 class NanForwardModel(BaseModel):
     """A model that returns NaN in the forward pass."""
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         # Ensure we trigger a checkify error.
         return math.nan + jnp.asarray(0), {}
 

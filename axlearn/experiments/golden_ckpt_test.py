@@ -6,7 +6,8 @@ import dataclasses
 import os.path
 import resource
 import shutil
-from typing import List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Optional
 
 import jax.random
 from absl import flags
@@ -39,7 +40,7 @@ def _update_golden_checkpoints():
 
 def named_parameters(
     trainer_configs: Sequence[TrainerConfigSpec],
-) -> List[Tuple[str, TrainerConfigSpec]]:
+) -> list[tuple[str, TrainerConfigSpec]]:
     return [(config_spec.name, config_spec) for config_spec in trainer_configs]
 
 

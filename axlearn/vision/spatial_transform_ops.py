@@ -12,8 +12,8 @@ This module contains differentiable resampling ops in JAX.
 Reference TensorFlow implementation:
 https://github.com/tensorflow/models/blob/master/research/object_detection/utils/spatial_transform_ops.py
 """
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -338,7 +338,7 @@ def _feature_bilinear_interpolation(
     features_per_box: Tensor,
     num_samples_per_cell_y: int,
     num_samples_per_cell_x: int,
-    output_size: Tuple[int, int],
+    output_size: tuple[int, int],
 ) -> Tensor:
     """Resamples features at box grid coordinates with bilinear interpolation.
 
@@ -412,7 +412,7 @@ def roi_align(
     features: Sequence[Tensor],
     boxes: Tensor,
     box_levels: Tensor,
-    output_size: Tuple[int, int],
+    output_size: tuple[int, int],
     num_samples_per_cell_y: int = 1,
     num_samples_per_cell_x: int = 1,
     align_corners: bool = False,

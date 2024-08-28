@@ -11,7 +11,8 @@ See c4_trainer.py for how they are used.
 """
 
 import math
-from typing import Dict, List, Optional, Protocol, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Literal, Optional, Protocol, Union
 
 import jax.numpy as jnp
 import tensorflow as tf
@@ -179,11 +180,14 @@ def mesh_shape_from_axes(
     """
     assert MESH_AXIS_NAMES == ("pipeline", "data", "expert", "fsdp", "seq", "model")
     # We set the minimum size for a mesh axis to 1 as anything lower is degenerate, except -1.
-    return tuple((max(x, 1) if x != -1 else -1 for x in [pipeline, data, expert, fsdp, seq, model]))
+    return tuple(max(x, 1) if x != -1 else -1 for x in [pipeline, data, expert, fsdp, seq, model])
 
 
 def update_model_remat_config(
-    *, stack_cfg: causal_lm.TransformerStackConfig, layer_cfg: TransformerLayer.Config
+    *,
+    stack_cfg: causal_lm.TransformerStackConfig,
+    layer_cfg: TransformerLayer.Config,
+    offload_dst: Optional[Literal["pinned_host"]] = None,
 ):
     """Recomputes and sets the remat_spec based on provided layer_cfg.
 
@@ -192,6 +196,7 @@ def update_model_remat_config(
     Args:
         stack_cfg: The transformer stack config.
         layer_cfg: The transformer layer config.
+        offload_dst: Destination of remat checkptoing offloading.
 
     Raises:
         NotImplementedError: If `stack_cfg.klass` is not a RepeatedTransformerLayer.
@@ -203,10 +208,12 @@ def update_model_remat_config(
 
     if layer_cfg.self_attention.attention.klass is not FlashAttention:
         # Enable remat to reduce memory usage for larger models.
-        remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg))
+        remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg), offload_dst=offload_dst)
     else:
         # Checkpointing both ffn and attention to give the best performance.
-        remat_spec = build_remat_spec(stack_cfg, feed_forward=True, self_attention=True)
+        remat_spec = build_remat_spec(
+            stack_cfg, feed_forward=True, self_attention=True, offload_dst=offload_dst
+        )
     layer_cfg.set(remat_spec=remat_spec)
 
 
@@ -230,6 +237,7 @@ def model_config(
     ffn_structure: str = "prenorm",
     atten_structure: str = "prenorm",
     atten_logit_cap: Optional[float] = None,
+    remat_offload_dst: Optional[Literal["pinned_host"]] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -258,6 +266,7 @@ def model_config(
             Options: [prenorm, postnorm, hybridnorm].
         atten_logit_cap: Cap the absolute values of logits by tanh.
             Enabled by setting a positive value.
+        remat_offload_dst: Destination of remat checkptoing offloading.
 
     Returns:
         A causal LM config.
@@ -276,7 +285,9 @@ def model_config(
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
     if stack_cfg.klass is RepeatedTransformerLayer:
-        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
+        update_model_remat_config(
+            stack_cfg=stack_cfg, layer_cfg=layer_cfg, offload_dst=remat_offload_dst
+        )
     # Stack.
     transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(
@@ -447,8 +458,8 @@ def mixture_train_input_source(
     *,
     is_training: bool,
     vocab_cfg: InstantiableConfig,
-    preprocessor: Union[InstantiableConfig, List[InstantiableConfig]],
-    data_mixture_components: Union[InstantiableConfig, List[DataMixtureComponent]],
+    preprocessor: Union[InstantiableConfig, list[InstantiableConfig]],
+    data_mixture_components: Union[InstantiableConfig, list[DataMixtureComponent]],
     max_sequence_length: int,
     replace_newlines_with: str = REPLACE_NEWLINES_WITH,
     fake_input_source_cfg: Optional[InstantiableConfig] = None,
@@ -525,11 +536,11 @@ def mixture_train_input_source(
 
 
 def evaler_config_dict(
-    input_source_configs: Dict[str, InstantiableConfig],
+    input_source_configs: dict[str, InstantiableConfig],
     *,
-    metric_calculators: Optional[Dict[str, BaseMetricCalculator.Config]] = None,
+    metric_calculators: Optional[dict[str, BaseMetricCalculator.Config]] = None,
     summary_writer: Optional[BaseWriter.Config] = None,
-) -> Dict[str, SpmdEvaler.Config]:
+) -> dict[str, SpmdEvaler.Config]:
     """Makes evaler configs from the given input sources.
 
     Args:
@@ -617,10 +628,10 @@ def get_trainer_config_fn(
     max_step: int,
     train_batch_size: int,
     train_input_source: InstantiableConfig[input_tf_data.BuildDatasetFn],
-    evalers: Dict[str, SpmdEvaler.Config],
+    evalers: dict[str, SpmdEvaler.Config],
     mesh_shape: Union[MeshShape, HybridMeshShape],
     mesh_axis_names: Sequence[str] = MESH_AXIS_NAMES,
-    mesh_rules: Optional[Sequence[Tuple[str, Optional[Union[MeshShape, HybridMeshShape]]]]] = None,
+    mesh_rules: Optional[Sequence[tuple[str, Optional[Union[MeshShape, HybridMeshShape]]]]] = None,
     eval_every_n_steps: int = 5000,
     eval_batch_size: Optional[int] = None,
     keep_every_n_steps: int = 50_000,

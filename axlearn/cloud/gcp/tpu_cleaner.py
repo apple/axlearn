@@ -2,7 +2,7 @@
 
 """TPU job cleaner, e.g. to be used with BastionJob."""
 
-from typing import Dict, Sequence
+from collections.abc import Sequence
 
 from absl import logging
 from googleapiclient import discovery
@@ -24,7 +24,7 @@ from axlearn.cloud.gcp.utils import get_credentials
 class TPUCleaner(Cleaner):
     """Cleans up unused TPUs."""
 
-    def sweep(self, jobs: Dict[str, JobSpec]) -> Sequence[str]:
+    def sweep(self, jobs: dict[str, JobSpec]) -> Sequence[str]:
         """Removes TPU resources in a non-blocking manner.
 
         Note: If jobs use multiple resources, we only remove the TPU resources.

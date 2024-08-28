@@ -378,7 +378,6 @@ class TestAgainstHF(TestCase):
         if (source_padding_type == "segment_ids") != (target_padding_type == "segment_ids"):
             # segment_ids on source/target should be provided together.
             return
-
         batch_size = 3
         vocab_size = self.hf_encoder_cfg.vocab_size
         source_len = self.hf_encoder_cfg.max_position_embeddings

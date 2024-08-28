@@ -3,7 +3,8 @@
 """Utility to help dispatching input batches from hosts to devices."""
 
 import copy
-from typing import Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 import jax
 from jax import numpy as jnp
@@ -116,7 +117,7 @@ class InputDispatcher(Module):
         cfg = self.config
         return cfg.global_physical_batch_size // cfg.num_physical_feeds
 
-    def feed_read_config(self) -> Dict[str, int]:
+    def feed_read_config(self) -> dict[str, int]:
         """Generates the read configuration for the local physical feed.
 
         Returns:

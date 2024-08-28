@@ -5,7 +5,7 @@
 
 import collections
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Optional
 from unittest import mock
 
 from absl.testing import absltest, parameterized
@@ -527,7 +527,7 @@ class TierSchedulerTest(parameterized.TestCase):
         )
         # project_limits should reflect limits across tiers.
         self.assertEqual(expected_project_limits, results.project_limits)
-        job_verdicts: Dict[str, JobVerdict] = {
+        job_verdicts: dict[str, JobVerdict] = {
             job_name: verdict
             for project_verdicts in results.job_verdicts.values()
             for job_name, verdict in project_verdicts.items()
@@ -627,7 +627,7 @@ class TestJobScheduler(parameterized.TestCase):
         results = sched.schedule(jobs, dry_run=dry_run, verbosity=1)
 
         # Get verdicts by job name.
-        job_verdicts: Dict[str, JobVerdict] = {
+        job_verdicts: dict[str, JobVerdict] = {
             job_name: verdict
             for project_verdicts in results.job_verdicts.values()
             for job_name, verdict in project_verdicts.items()
@@ -674,7 +674,7 @@ class TestJobScheduler(parameterized.TestCase):
             for index, proj in enumerate(["a", "b", "c"])
         }
         results = sched.schedule(jobs)
-        job_verdicts: Dict[str, JobVerdict] = {
+        job_verdicts: dict[str, JobVerdict] = {
             job_name: verdict
             for project_verdicts in results.job_verdicts.values()
             for job_name, verdict in project_verdicts.items()
@@ -726,7 +726,7 @@ class TestJobScheduler(parameterized.TestCase):
         results = sched.schedule(jobs)
 
         # Get verdicts by job name.
-        job_verdicts: Dict[str, JobVerdict] = {
+        job_verdicts: dict[str, JobVerdict] = {
             job_name: verdict
             for project_verdicts in results.job_verdicts.values()
             for job_name, verdict in project_verdicts.items()

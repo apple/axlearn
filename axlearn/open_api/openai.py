@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any
 
 # isort: off
 from axlearn.open_api.common import BaseClient, ClientRateLimitError, ValidationError
@@ -47,7 +47,7 @@ class OpenAIClient(BaseClient):
     async def async_generate(
         self,
         *,
-        request: Dict[str, Any],
+        request: dict[str, Any],
         **kwargs,
     ) -> str:
         """Generates response asynchronously from the client.
@@ -113,7 +113,7 @@ class OpenAIClient(BaseClient):
         logging.warning("Reducing target length to %d, Retrying...", request_kwargs["max_tokens"])
 
     @classmethod
-    def _parse_generation_from_message(cls, message: Dict[str, Any]) -> ChatCompletionMessage:
+    def _parse_generation_from_message(cls, message: dict[str, Any]) -> ChatCompletionMessage:
         """Parse generation from a message.
 
         Args:
@@ -133,7 +133,7 @@ class OpenAIClient(BaseClient):
         return message
 
     @classmethod
-    def parse_generation(cls, response: Dict[str, Any]) -> List[ChatCompletionMessage]:
+    def parse_generation(cls, response: dict[str, Any]) -> list[ChatCompletionMessage]:
         """Parse generation from response.
 
         Args:
@@ -152,7 +152,7 @@ class OpenAIClient(BaseClient):
         return generations
 
     @classmethod
-    def format_message(cls, message: Dict[str, Any]) -> ChatCompletionMessage:
+    def format_message(cls, message: dict[str, Any]) -> ChatCompletionMessage:
         """Format message with requirements.
 
         Args:

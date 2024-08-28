@@ -17,7 +17,7 @@ https://arxiv.org/abs/2005.08100
 https://github.com/tensorflow/lingvo/blob/d2f1e1b3cccdac8f73ae20f86afb03560b1c176d/lingvo/core/conformer_layer.py
 """
 
-from typing import Literal, Optional, Tuple, Union
+from typing import Literal, Optional, Union
 
 from jax import numpy as jnp
 
@@ -70,7 +70,7 @@ class LConvLayer(BaseLayer):
 
         input_dim: Required[int] = REQUIRED  # Input feature dim.
         linear1_norm: LayerNorm.Config = LayerNorm.default_config()
-        linear1_activation: Tuple[str, str] = ("linear", "nn.sigmoid")
+        linear1_activation: tuple[str, str] = ("linear", "nn.sigmoid")
         linear1: Linear.Config = Linear.default_config().set(bias=True)
         conv: DepthwiseConv1D.Config = DepthwiseConv1D.default_config().set(
             # See Table 2 and 7.

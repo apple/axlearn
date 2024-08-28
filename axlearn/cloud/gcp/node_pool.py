@@ -5,7 +5,7 @@ import enum
 import hashlib
 import time
 from collections import defaultdict
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from absl import flags, logging
 from google.auth.credentials import Credentials
@@ -24,19 +24,13 @@ PRE_PROVISIONER_LABEL = "pre-provisioner-id"
 class NodePoolCreationError(RuntimeError):
     """An error with NodePool creation."""
 
-    pass
-
 
 class NodePoolValidationError(RuntimeError):
     """An error with NodePool body validation."""
 
-    pass
-
 
 class NodePoolDeletionError(RuntimeError):
     """An error with NodePool deletion."""
-
-    pass
 
 
 class NodePoolStatus(enum.Enum):
@@ -85,8 +79,8 @@ def _node_pool_body(
     disk_size: int = 100,
     service_account_email: Optional[str] = None,
     additional_labels: Optional[dict[str, str]] = None,
-    metadata: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    metadata: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
     """Node pool request body.
 
     See also:
@@ -593,7 +587,7 @@ def list_node_pools_by_label_key(
     zone: str,
     cluster: str,
     label_key: str,
-) -> Dict[str, list]:
+) -> dict[str, list]:
     """List all node pools with a label matching `label_key`.
 
     Args:

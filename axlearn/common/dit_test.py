@@ -9,10 +9,12 @@
 """Tests DiT layers."""
 # pylint: disable=no-self-use
 import math
+import re
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import torch
 from absl.testing import parameterized
 from timm.models.vision_transformer import Attention, Mlp, PatchEmbed
@@ -28,6 +30,7 @@ from axlearn.common.dit import (
     LabelEmbedding,
     TimeStepEmbedding,
 )
+from axlearn.common.layers import LayerNormStateless
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
@@ -214,23 +217,30 @@ class RefFinalLayer(nn.Module):
 class TestTimeStepEmbedding(parameterized.TestCase):
     """Tests TimeStepEmbedding."""
 
-    @parameterized.parameters(256, 257)
-    def test_time_step_embed(self, pos_embed_dim):
+    @parameterized.product(
+        pos_embed_dim=[256, 257],
+        norm_cls=[None, LayerNormStateless],
+    )
+    def test_time_step_embed(self, pos_embed_dim, norm_cls):
         batch_size = 5
         output_dim = 512
 
         timestep = np.random.randint(0, 10, size=batch_size)
-        ref_model = RefTimestepEmbedder(
-            hidden_size=output_dim, frequency_embedding_size=pos_embed_dim
-        )
-        ref_output = ref_model.forward(torch.as_tensor(timestep))
 
+        output_norm_cfg = norm_cls.default_config() if norm_cls else None
         axlearn_model_cfg = TimeStepEmbedding.default_config().set(
-            name="test", pos_embed_dim=pos_embed_dim, output_dim=output_dim
+            name="test",
+            pos_embed_dim=pos_embed_dim,
+            output_dim=output_dim,
+            output_norm=output_norm_cfg,
         )
         axlearn_model = axlearn_model_cfg.instantiate(parent=None)
 
+        ref_model = RefTimestepEmbedder(
+            hidden_size=output_dim, frequency_embedding_size=pos_embed_dim
+        )
         layer_params = parameters_from_torch_layer(ref_model, dst_layer=axlearn_model)
+
         layer_output, _ = F(
             axlearn_model,
             inputs=dict(positions=jnp.asarray(timestep)),
@@ -239,7 +249,9 @@ class TestTimeStepEmbedding(parameterized.TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
 
-        assert_allclose(layer_output, as_tensor(ref_output))
+        if norm_cls is None:
+            ref_output = ref_model.forward(torch.as_tensor(timestep))
+            assert_allclose(layer_output, as_tensor(ref_output))
 
 
 class TestLabelEmbedding(parameterized.TestCase):
@@ -475,6 +487,83 @@ class TestDiTAttn(parameterized.TestCase):
         )
         # Expect the output be the same for valid items because of logit_biases.
         assert_allclose(layer_output * valid_mask, layer_output2 * valid_mask)
+
+    @parameterized.parameters([True, False])
+    def test_dit_attn_optional_input(self, use_ssg):
+        batch_size = 2
+        seq_len = 3
+        dim = 32
+        num_heads = 2
+
+        prng_key = jax.random.PRNGKey(0)
+        inputs = jax.random.normal(prng_key, shape=(batch_size, seq_len, dim))
+
+        if use_ssg:
+            shift = scale = gate = jax.random.normal(prng_key, shape=(batch_size, dim))
+        else:
+            shift = scale = gate = None
+
+        layer_cfg = DiTAttentionLayer.default_config().set(
+            name="test",
+            source_dim=dim,
+            target_dim=dim,
+        )
+        layer_cfg.attention.num_heads = num_heads
+        layer_cfg.norm.eps = 1e-6
+        layer = layer_cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=prng_key)
+
+        layer_output, _ = F(
+            layer,
+            inputs=dict(
+                input=inputs,
+                shift=shift,
+                scale=scale,
+                gate=gate,
+            ),
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+        )
+        assert_allclose(layer_output.shape, inputs.shape)
+
+    def test_dit_attn_optional_input_value_error(self):
+        batch_size = 2
+        seq_len = 3
+        dim = 32
+        num_heads = 2
+
+        prng_key = jax.random.PRNGKey(0)
+        inputs = jax.random.normal(prng_key, shape=(batch_size, seq_len, dim))
+        shift = jax.random.normal(prng_key, shape=(batch_size, dim))
+        scale = gate = None
+
+        layer_cfg = DiTAttentionLayer.default_config().set(
+            name="test",
+            source_dim=dim,
+            target_dim=dim,
+        )
+        layer_cfg.attention.num_heads = num_heads
+        layer_cfg.norm.eps = 1e-6
+        layer = layer_cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=prng_key)
+
+        with pytest.raises(
+            ValueError, match=re.escape("shift and scale must be both provided or both None.")
+        ):
+            layer_output, _ = F(
+                layer,
+                inputs=dict(
+                    input=inputs,
+                    shift=shift,
+                    scale=scale,
+                    gate=gate,
+                ),
+                state=state,
+                is_training=False,
+                prng_key=prng_key,
+            )
+            assert_allclose(layer_output.shape, inputs.shape)
 
 
 class TestDiTBlock(parameterized.TestCase):

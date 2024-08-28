@@ -11,7 +11,7 @@
 Ref: https://github.com/facebookresearch/DiT
 """
 
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -47,6 +47,7 @@ class TimeStepEmbedding(BaseLayer):
         output_proj: Linear.Config = Linear.default_config()
         activation: str = "nn.silu"
         max_timescale: float = 10000
+        output_norm: Optional[InstantiableConfig] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -57,6 +58,8 @@ class TimeStepEmbedding(BaseLayer):
         self._add_child(
             "output_proj", cfg.output_proj.set(input_dim=cfg.output_dim, output_dim=cfg.output_dim)
         )
+        if cfg.output_norm is not None:
+            self._add_child("output_norm", cfg.output_norm.set(input_dim=cfg.output_dim))
 
     def dit_sinusoidal_positional_embeddings(self, positions: Tensor):
         """DiT Specific Sinusoidal Positional Embeddings.
@@ -102,6 +105,7 @@ class TimeStepEmbedding(BaseLayer):
         Returns:
             A Tensor of shape [batch_size, output_dim].
         """
+        cfg = self.config
         # pos_emb shape [batch_size, pos_embed_dim]
         pos_emb = self.dit_sinusoidal_positional_embeddings(positions)
         # x shape [batch_size, output_dim]
@@ -109,6 +113,8 @@ class TimeStepEmbedding(BaseLayer):
         x = get_activation_fn(self.config.activation)(x)
         # output shape [batch_size, output_dim]
         output = self.output_proj(x)
+        if cfg.output_norm is not None:
+            output = self.output_norm(output)
         return output
 
 
@@ -247,7 +253,7 @@ class DiTFeedForwardLayer(BaseLayer):
         norm: InstantiableConfig = (
             LayerNormStateless.default_config()
         )  # The normalization layer config.
-        activation: Union[str, Tuple[str, str]] = "nn.gelu"
+        activation: Union[str, tuple[str, str]] = "nn.gelu"
         dropout1: InstantiableConfig = Dropout.default_config()
         dropout2: InstantiableConfig = Dropout.default_config()
         structure: str = "prenorm"
@@ -373,24 +379,32 @@ class DiTAttentionLayer(BaseLayer):
         *,
         # pylint: disable-next=redefined-builtin
         input: Tensor,
-        shift: Tensor,
-        scale: Tensor,
-        gate: Tensor,
+        shift: Optional[Tensor] = None,
+        scale: Optional[Tensor] = None,
+        gate: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
     ) -> Tensor:
         """The forward function of DiTAttentionLayer.
 
         Args:
             input: input tensor with shape [batch_size, num_length, target_dim].
-            shift: shifting the norm tensor with shape [batch_size, target_dim].
-            scale: scaling the norm tensor with shape [batch_size, target_dim].
-            gate: applying before the residual addition with shape
+            shift: If provided, shifting the norm tensor with shape [batch_size, target_dim] and
+                scale should be provided.
+            scale: If provided, scaling the norm tensor with shape [batch_size, target_dim] and
+                shift should be provided.
+            gate: If provided, applying before the residual addition with shape
                 [batch_size, target_dim].
-            attention_logit_biases: An optional Tensor representing the self attention biases.
+            attention_logit_biases: Optional Tensor representing the self attention biases.
 
         Returns:
             A tensor with shape [batch_size, num_length, target_dim].
+
+        Raises:
+            ValueError: shift and scale are not both provided or both None.
         """
+        if (shift is None) != (scale is None):
+            raise ValueError("shift and scale must be both provided or both None.")
+
         cfg = self.config
 
         if cfg.structure == "prenorm":
@@ -400,7 +414,9 @@ class DiTAttentionLayer(BaseLayer):
         elif cfg.structure == "postnorm":
             x = input
 
-        x = modulate(x=x, shift=shift, scale=scale)
+        if shift is not None and scale is not None:
+            x = modulate(x=x, shift=shift, scale=scale)
+
         x = self.attention(query=x, attention_logit_biases=attention_logit_biases).data
 
         if cfg.structure == "postnorm":
@@ -408,7 +424,10 @@ class DiTAttentionLayer(BaseLayer):
         elif cfg.structure == "hybridnorm":
             x = self.postnorm(x)
 
-        output = input + x * jnp.expand_dims(gate, 1)
+        if gate is not None:
+            x = x * jnp.expand_dims(gate, 1)
+
+        output = input + x
         return output
 
 

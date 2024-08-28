@@ -5,20 +5,9 @@
 
 For example, utilities to convert AXLearn parameters to/from torch modules live here.
 """
+from collections.abc import Iterable, Mapping, Sequence
 from math import ceil
-from typing import (
-    Any,
-    Dict,
-    Iterable,
-    Mapping,
-    Optional,
-    Protocol,
-    Sequence,
-    Tuple,
-    Type,
-    Union,
-    cast,
-)
+from typing import Any, Optional, Protocol, Union, cast
 
 import jax
 import numpy as np
@@ -76,7 +65,7 @@ from axlearn.common.text_encoder import TextEmbeddingEncoder
 from axlearn.common.utils import NestedTensor, Tensor, VDict, as_tensor
 from axlearn.huggingface import hf_text_encoder
 
-NestedTorchTensor = Union[torch.Tensor, Dict[str, Any]]
+NestedTorchTensor = Union[torch.Tensor, dict[str, Any]]
 
 
 class AXLearnToTorchFn(Protocol):
@@ -85,16 +74,16 @@ class AXLearnToTorchFn(Protocol):
 
 
 class TorchToAXLearnFn(Protocol):
-    def __call__(self, *, src: torch.nn.Module, dst: Optional[Union[BaseLayer, Type]]):
+    def __call__(self, *, src: torch.nn.Module, dst: Optional[Union[BaseLayer, type]]):
         ...
 
 
 # Mapping from (src_type, dst_type) to converter.
-_axlearn_to_torch_registry: Dict[Tuple[Type, Type], AXLearnToTorchFn] = {}
-_torch_to_axlearn_registry: Dict[Tuple[Type, Type], TorchToAXLearnFn] = {}
+_axlearn_to_torch_registry: dict[tuple[type, type], AXLearnToTorchFn] = {}
+_torch_to_axlearn_registry: dict[tuple[type, type], TorchToAXLearnFn] = {}
 
 
-def register_axlearn_to_torch(*, src: Sequence[Type], dst: Sequence[Type]):
+def register_axlearn_to_torch(*, src: Sequence[type], dst: Sequence[type]):
     """Registers a converter for converting axlearn layers to torch."""
 
     def decorator(fn: AXLearnToTorchFn):
@@ -108,7 +97,7 @@ def register_axlearn_to_torch(*, src: Sequence[Type], dst: Sequence[Type]):
     return decorator
 
 
-def register_torch_to_axlearn(*, src: Sequence[Type], dst: Sequence[Type] = (type(None),)):
+def register_torch_to_axlearn(*, src: Sequence[type], dst: Sequence[type] = (type(None),)):
     """Registers a converter for converting torch layers to axlearn."""
 
     def decorator(fn: TorchToAXLearnFn):
@@ -141,7 +130,7 @@ def _parameters_from_attention(
     dst: Union[
         hf_bert.BertAttention, hf_roberta.RobertaAttention, hf_deberta_v2.DebertaV2Attention
     ],
-    key_mapping: Iterable[Tuple[str, str]] = (
+    key_mapping: Iterable[tuple[str, str]] = (
         ("q_proj", "query"),
         ("k_proj", "key"),
         ("v_proj", "value"),
@@ -290,7 +279,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
         ValueError: If conversion fails.
     """
 
-    def check_supported(*supported_layers: Type):
+    def check_supported(*supported_layers: type):
         if not isinstance(layer, supported_layers):
             raise NotImplementedError(
                 f"Conversion from {type(layer)} to {type(dst)} is not yet supported. "
@@ -665,7 +654,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
 
 # pylint: disable-next=too-many-branches,too-many-statements
 def torch_to_axlearn(
-    src: torch.nn.Module, *, dst_layer: Optional[Union[BaseLayer, Type]] = None
+    src: torch.nn.Module, *, dst_layer: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     """Extracts parameters from a torch module into a compatible format with AXLearn layers.
     See also `axlearn_to_torch` for the inverse.

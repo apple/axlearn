@@ -16,7 +16,8 @@ factorization, specifically:
    - weight_decay_scale: control the weight decay rate.
 """
 import dataclasses
-from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Any, Callable, NamedTuple, Optional, Union
 
 import optax
 import typing_extensions
@@ -43,7 +44,7 @@ class OptParam:
 
 
 # NestedOptParam = Union[OptParam, Dict[str, "NestedOptParam"]]
-NestedOptParam = Union[OptParam, Dict[str, Any]]
+NestedOptParam = Union[OptParam, dict[str, Any]]
 
 # Similar to optax.TransformInitFn, but with NestedOptParam as inputs so that factorization specs
 # are available.
@@ -59,13 +60,13 @@ class TransformUpdateFn(typing_extensions.Protocol):
 
     def __call__(
         self, updates: optax.Updates, state: optax.OptState, params: NestedOptParam
-    ) -> Tuple[optax.Updates, optax.OptState]:
+    ) -> tuple[optax.Updates, optax.OptState]:
         ...
 
 
 # Specification of an optimizer state array.
 OptStateSpec = TensorSpec
-NestedOptStateSpec = Union[OptStateSpec, Dict, Sequence]
+NestedOptStateSpec = Union[OptStateSpec, dict, Sequence]
 TransformPartitionSpecFn = Callable[[NestedParameterSpec], NestedOptStateSpec]
 
 

@@ -50,6 +50,7 @@ import collections
 import dataclasses
 import enum
 import functools
+import io
 import json
 import os
 import shlex
@@ -61,7 +62,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from subprocess import CalledProcessError
-from typing import IO, Any, Dict, List, Optional, Set, Tuple, Union
+from typing import IO, Any, Optional, Union
 
 from absl import flags, logging
 from tensorflow import errors as tf_errors
@@ -93,6 +94,7 @@ from axlearn.common.utils import Nested
 _LATEST_BASTION_VERSION = 1  # Determines job schema (see JobSpec).
 _LOG_DIR = "/var/tmp/logs"  # Use /var/tmp/ since /tmp/ is cleared every 10 days.
 _JOB_DIR = "/var/tmp/jobs"
+_BASTION_SERIALIZED_JOBSPEC_ENV_VAR = "_BASTION_SERIALIZED_JOBSPEC"
 
 FLAGS = flags.FLAGS
 
@@ -116,7 +118,7 @@ def _readfile(path: str) -> str:
         return f.read()
 
 
-def _listdir(path: str) -> List[str]:
+def _listdir(path: str) -> list[str]:
     """Wraps tf_io.gfile.listdir by returning empty list if dir is not found."""
     try:
         return tf_io.gfile.listdir(path)
@@ -153,8 +155,6 @@ class JobStatus(str, enum.Enum):
 
 class ValidationError(ValueError):
     """Validation failure (e.g. JobSpec deserialization)."""
-
-    pass
 
 
 def _validate_job_metadata(metadata: JobMetadata):
@@ -202,7 +202,7 @@ def new_jobspec(
     command: str,
     metadata: JobMetadata,
     cleanup_command: Optional[str] = None,
-    env_vars: Optional[Dict[str, str]] = None,
+    env_vars: Optional[dict[str, str]] = None,
     version: int = _LATEST_BASTION_VERSION,
 ) -> JobSpec:
     """Constructs a JobSpec with basic schema validation."""
@@ -237,7 +237,7 @@ def serialize_jobspec(spec: JobSpec, f: Union[str, IO]):
 def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
     """Loads job spec from filepath or file."""
     if isinstance(f, str):
-        with open(f, "r", encoding="utf-8") as fd:
+        with open(f, encoding="utf-8") as fd:
             return deserialize_jobspec(fd)
 
     data: dict = json.load(f)
@@ -288,7 +288,7 @@ class _PipedProcess:
     fd: IO
 
 
-def _piped_popen(cmd: str, f: str, *, env_vars: Optional[Dict[str, str]] = None) -> _PipedProcess:
+def _piped_popen(cmd: str, f: str, *, env_vars: Optional[dict[str, str]] = None) -> _PipedProcess:
     """Runs cmd in the background, piping stdout+stderr to a file."""
     # Open with "a" to append to an existing logfile, if any.
     fd = open(f, "a", encoding="utf-8")
@@ -335,7 +335,7 @@ class JobState:
     """
 
     status: JobStatus
-    metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass
@@ -427,7 +427,7 @@ def download_job_batch(
     verbose: bool = False,
     remove_invalid_job_specs: bool = False,
     quota: Optional[QuotaFn] = None,
-) -> Tuple[Dict[str, Job], Set[str]]:
+) -> tuple[dict[str, Job], set[str]]:
     """Downloads a batch of jobs.
 
     Args:
@@ -564,7 +564,7 @@ def download_job_batch(
     return jobs, jobs_with_user_states
 
 
-def _load_runtime_options(bastion_dir: str) -> Dict[str, Any]:
+def _load_runtime_options(bastion_dir: str) -> dict[str, Any]:
     """Loads runtime option(s) from file, or returns {} on failure."""
     flag_file = os.path.join(bastion_dir, "runtime_options")
     try:
@@ -632,9 +632,9 @@ class Bastion(Configurable):
         self._state_dir = os.path.join(self._job_dir, "states")
         # Local active jobs (and respective commands, files, etc).
         # TODO(markblee): Rename this, as it includes more than just ACTIVE jobs (e.g. PENDING).
-        self._active_jobs: Dict[str, Job] = {}
+        self._active_jobs: dict[str, Job] = {}
         # A set of job names which require cleanup of user states.
-        self._jobs_with_user_states: Set[str] = set()
+        self._jobs_with_user_states: set[str] = set()
         # Runtime options.
         self._runtime_options = {}
         # The QuotaFn that returns quota for scheduling.
@@ -653,7 +653,7 @@ class Bastion(Configurable):
             f.write(f"{curr_time} {msg}\n")
 
     def _append_to_project_history(
-        self, jobs: Dict[str, JobMetadata], schedule_results: BaseScheduler.ScheduleResults
+        self, jobs: dict[str, JobMetadata], schedule_results: BaseScheduler.ScheduleResults
     ):
         now = datetime.now(timezone.utc)
         for project_id, limits in schedule_results.project_limits.items():
@@ -668,7 +668,7 @@ class Bastion(Configurable):
                 continue
             self._project_history_previous_verdicts[project_id] = verdicts
             # Mapping from resource types to usage.
-            project_usage = collections.defaultdict(lambda: 0)
+            project_usage = collections.defaultdict(int)
             running_jobs = []
             queued_jobs = []
             for job_id, verdict in job_verdicts.items():
@@ -706,7 +706,7 @@ class Bastion(Configurable):
         """Loads (updated) runtime options from remote."""
         self._runtime_options = _load_runtime_options(self._output_dir)
 
-    def _get_runtime_options(self, key: str, defaults: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_runtime_options(self, key: str, defaults: dict[str, Any]) -> dict[str, Any]:
         """Reads runtime options with the given key.
 
         The defaults will be used as a schema to validate the runtime options.
@@ -841,10 +841,14 @@ class Bastion(Configurable):
                     f"ACTIVE: start process command: {job.spec.command} "
                     f"with metadata: {job.state.metadata}",
                 )
+            env_vars = {f"BASTION_{k.upper()}": v for k, v in job.state.metadata.items()}
+            serialized_jobspec = io.StringIO()
+            serialize_jobspec(job.spec, serialized_jobspec)
+            env_vars |= {_BASTION_SERIALIZED_JOBSPEC_ENV_VAR: serialized_jobspec.getvalue()}
             _start_command(
                 job,
                 remote_log_dir=self._log_dir,
-                env_vars={f"BASTION_{k.upper()}": v for k, v in job.state.metadata.items()},
+                env_vars=env_vars,
             )
             assert job.command_proc is not None
 
@@ -1142,7 +1146,7 @@ class BastionDirectory(Configurable):
                 local_spec_dir=tmpdir,
                 remove_invalid_job_specs=False,
             )
-            jobs: Dict[str, Job] = dict(sorted(jobs.items(), key=lambda kv: kv[0]))
+            jobs: dict[str, Job] = dict(sorted(jobs.items(), key=lambda kv: kv[0]))
             return jobs
 
     def cancel_job(self, job_name: str):

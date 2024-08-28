@@ -10,7 +10,6 @@ run_inference_huggingface#runinference_with_a_pretrained_model_from_hugging_face
 
 import logging
 import warnings
-from typing import Dict, Tuple
 
 # pylint: disable=import-error
 import apache_beam as beam  # pytype: disable=import-error
@@ -34,7 +33,7 @@ warnings.filterwarnings("ignore")
 
 
 # Define how to preprocess input
-def add_mask_to_last_word(text: str) -> Tuple[str, str]:
+def add_mask_to_last_word(text: str) -> tuple[str, str]:
     """Replace the last word of sentence with <mask> and return
     the original sentence and the masked sentence."""
     text_list = text.split()
@@ -43,8 +42,8 @@ def add_mask_to_last_word(text: str) -> Tuple[str, str]:
 
 
 def tokenize_sentence(
-    text_and_mask: Tuple[str, str], tokenizer
-) -> Tuple[str, Dict[str, tf.Tensor]]:
+    text_and_mask: tuple[str, str], tokenizer
+) -> tuple[str, dict[str, tf.Tensor]]:
     """Convert string examples to tensors."""
     text, masked_text = text_and_mask
     tokenized_sentence = tokenizer.encode_plus(masked_text, return_tensors="tf")
@@ -64,7 +63,7 @@ class PostProcessor(beam.DoFn):
         super().__init__()
         self.tokenizer = tokenizer
 
-    def process(self, element: Tuple[str, PredictionResult]) -> None:
+    def process(self, element: tuple[str, PredictionResult]) -> None:
         text, prediction_result = element
         inputs = prediction_result.example
         logits = prediction_result.inference["logits"]

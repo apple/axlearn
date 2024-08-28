@@ -9,7 +9,8 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
-from typing import Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 import google.auth
 from absl import app, flags, logging
@@ -210,7 +211,7 @@ def load_kube_config(*, project: str, zone: str, cluster: str):
             ) from e
 
 
-def custom_jobset_kwargs() -> Dict[str, str]:
+def custom_jobset_kwargs() -> dict[str, str]:
     """Common kwargs needed for CustomObjectsApi JobSets."""
     return dict(group="jobset.x-k8s.io", version="v1alpha2", plural="jobsets")
 
@@ -218,7 +219,7 @@ def custom_jobset_kwargs() -> Dict[str, str]:
 JOBSET_LABEL = "jobset.sigs.k8s.io/jobset-name"
 
 
-def list_k8s_jobsets(*, namespace: str) -> Dict[str, list]:
+def list_k8s_jobsets(*, namespace: str) -> dict[str, list]:
     """Returns a mapping from jobset name to list of K8s jobs."""
 
     # Avoid introducing a k8s dependency globally.
@@ -278,7 +279,7 @@ def delete_k8s_job(name: str, *, namespace: str):
         raise
 
 
-def k8s_jobset_table(jobsets: Dict[str, list]) -> Table:
+def k8s_jobset_table(jobsets: dict[str, list]) -> Table:
     """Produce a tabular view of the jobsets provided.
 
     Args:

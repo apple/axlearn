@@ -77,7 +77,8 @@ import re
 import shlex
 import signal
 import subprocess
-from typing import Any, Dict, List, Sequence, Tuple, cast
+from collections.abc import Sequence
+from typing import Any, cast
 
 from absl import app, flags, logging
 from google.auth.credentials import Credentials
@@ -182,7 +183,7 @@ class DataflowJob(GCPJob):
     @classmethod
     def _dataflow_spec_from_flags(
         cls, cfg: Config, fv: flags.FlagValues
-    ) -> Tuple[Dict[str, Any], List[str]]:
+    ) -> tuple[dict[str, Any], list[str]]:
         """Returns a flag dict and a list of flags considered as 'multi-flags'."""
         # Construct dataflow args, providing some defaults.
         service_account = cfg.service_account or gcp_settings("service_account_email", fv=fv)
@@ -266,7 +267,7 @@ class DataflowJob(GCPJob):
             handle_popen(proc)
 
 
-def _docker_bundler_to_flags(cfg: BaseDockerBundler.Config, *, fv: flags.FlagValues) -> List[str]:
+def _docker_bundler_to_flags(cfg: BaseDockerBundler.Config, *, fv: flags.FlagValues) -> list[str]:
     """Converts docker bundler config to a string of flags."""
     # TODO(markblee): Add a config to_spec() method to mirror from_spec().
     specs = []
@@ -300,7 +301,7 @@ def _dataflow_resource(credentials: Credentials):
     return dataflow.projects().locations().jobs()
 
 
-def _get_dataflow_jobs(*, project: str, zone: str, job_name: str) -> List[Dict[str, Any]]:
+def _get_dataflow_jobs(*, project: str, zone: str, job_name: str) -> list[dict[str, Any]]:
     """Attempts to retrieve a dataflow job.
 
     If dataflow job is not found, returns None.

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, cast
+from collections.abc import Mapping, Sequence
+from typing import Any, Callable, Optional, cast
 
 import jax
 import optax
@@ -171,7 +172,7 @@ class Learner(BaseLearner):
         #
         # If none of the rules matches the param path, assume value ALL_UPDATES, i.e., all updates
         # are allowed.
-        update_rules: Sequence[Tuple[str, Optional[UpdateType]]] = []
+        update_rules: Sequence[tuple[str, Optional[UpdateType]]] = []
 
         # Set ema.decay to enable Polyak averaging of model params.
         #
@@ -401,7 +402,7 @@ class CompositeLearner(BaseLearner):
         # on each parameter. Given a `param_path_regex`, the first
         # `re.fullmatch(param_path_regex, param_path)` determines the learner.
         # It will raise an error if none of the rules matches the param path.
-        rules: Required[Sequence[Tuple[str, str]]] = REQUIRED
+        rules: Required[Sequence[tuple[str, str]]] = REQUIRED
 
         # Ema config. All parameters should share the same ema config.
         # See Learner ema for more details.
@@ -604,7 +605,7 @@ class CompositeLearner(BaseLearner):
 
 def _split_gradients(
     fun: ForwardFn, *, should_compute_gradients: Nested[bool]
-) -> Tuple[ForwardFn, Callable]:
+) -> tuple[ForwardFn, Callable]:
     """Return a function that is the same as `fun` but where the call signature is now
 
      `fun(model_params=model_params_grad, inputs=(model_paramgs_nograd, inputs))`
@@ -639,7 +640,7 @@ def _split_gradients(
         )
         return fun(model_params=model_params, inputs=inputs)
 
-    def split_params_fn(model_params: Nested) -> Tuple[Nested, Nested]:
+    def split_params_fn(model_params: Nested) -> tuple[Nested, Nested]:
         dummy_value = None
         model_parameters_grad = jax.tree_util.tree_map(
             lambda compute_gradients, v: v if compute_gradients else dummy_value,
@@ -669,7 +670,7 @@ def _as_loss_fn(fun: ForwardFn) -> Callable:
         The wrapped function.
     """
 
-    def forward(model_params: Nested[Tensor], *, inputs: Any) -> Tuple[Tensor, ForwardPass]:
+    def forward(model_params: Nested[Tensor], *, inputs: Any) -> tuple[Tensor, ForwardPass]:
         outputs = fun(model_params=model_params, inputs=inputs)  # type: ignore
         return outputs.loss, ForwardPass(
             # We don't use `forward` here since it is not technically a `ForwardFn`.

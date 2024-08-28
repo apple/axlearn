@@ -1,7 +1,8 @@
 """Utilities for debugging training."""
+
 import functools
 import gc
-from typing import Any, Callable, FrozenSet, Protocol
+from typing import Any, Callable, Protocol
 
 import chex
 import jax
@@ -25,7 +26,7 @@ class JitFn(Protocol):
 JaxException = jax._src.checkify.JaxException  # type: ignore[module-attr]
 
 
-def checkify_pjit(errors: FrozenSet[JaxException], pjit: JitFn = pjit) -> JitFn:
+def checkify_pjit(errors: frozenset[JaxException], pjit: JitFn = pjit) -> JitFn:
     """Produce a checkified version of pjit.
 
     See the docstring of `checkify_and_rerun_on_nonfinite` for a usage example.
@@ -64,7 +65,7 @@ def checkify_and_rerun_for_float_errors(pjit: JitFn = pjit) -> JitFn:
 
 
 def checkify_and_rerun_on_nonfinite(
-    errors: FrozenSet[JaxException], *, pjit: JitFn = pjit
+    errors: frozenset[JaxException], *, pjit: JitFn = pjit
 ) -> JitFn:
     """Produce a pjit-like transformation that detects if the output contains nonfinite values
     and if found, rerurns with additional error instrumentation.

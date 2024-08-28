@@ -9,7 +9,7 @@ import copy
 import json
 import logging
 import re
-from typing import Any, Dict, List, Type
+from typing import Any
 
 from axlearn.open_api.common import BaseClient, EvalGeneratorType, Generator
 
@@ -45,10 +45,10 @@ def _get_judgement_from_generation(resp: str) -> str:
 
 def metric_fn(
     *,
-    responses: List[Dict[str, Any]],
-    generators: Dict[EvalGeneratorType, Generator],
+    responses: list[dict[str, Any]],
+    generators: dict[EvalGeneratorType, Generator],
     debug: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Implements math accuracy metric following axlearn.open_api.common.MetricFn.
 
     Args:
@@ -67,7 +67,7 @@ def metric_fn(
     invalid_judgments = 0
     judgement_requests = []
     generator_cfg: Generator.Config = generators[EvalGeneratorType.RESPONSE].config
-    client_cls: Type[BaseClient] = generator_cfg.client.klass
+    client_cls: type[BaseClient] = generator_cfg.client.klass
     for response in responses:
         pred = client_cls.parse_generation(response=json.loads(response["response"]))
         if len(pred) == 0:
@@ -96,7 +96,7 @@ def metric_fn(
     judgement_responses = asyncio.run(
         grader_generator.async_generate_from_requests(gen_requests=judgement_requests)
     )
-    grader_client_cls: Type[BaseClient] = grader_generator.config.client.klass
+    grader_client_cls: type[BaseClient] = grader_generator.config.client.klass
     for response in judgement_responses:
         pred = grader_client_cls.parse_generation(response=json.loads(response["response"]))
         if len(pred) == 0:

@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests dual encoder text metrics."""
-from typing import Dict, List, Optional
+from typing import Optional
 
 from jax import numpy as jnp
 
@@ -30,15 +30,15 @@ from axlearn.common.utils import Tensor
 
 def _calculate_retrieval_metrics_from_embeddings(
     *,
-    top_ks_for_accuracy: List[int],
+    top_ks_for_accuracy: list[int],
     query_embeddings: Tensor,
     query_paddings: Tensor,
     text_positive_embeddings: Tensor,
     text_positive_paddings: Tensor,
     text_negative_embeddings: Optional[Tensor] = None,
     text_negative_paddings: Optional[Tensor] = None,
-    top_ks_for_ndcg: Optional[List[int]] = None,
-) -> Dict[str, Tensor]:
+    top_ks_for_ndcg: Optional[list[int]] = None,
+) -> dict[str, Tensor]:
     """Main function to calculate all different retrieval metrics given embeddings for text dual
     encoder model.
 
@@ -92,9 +92,9 @@ def calculate_retrieval_metrics_from_similarity_matrix(
     text_positive_paddings: Tensor,
     query_paddings: Tensor,
     text_paddings: Tensor,
-    top_ks_for_accuracy: List[int],
-    top_ks_for_ndcg: Optional[List[int]] = None,
-) -> Dict[str, Tensor]:
+    top_ks_for_accuracy: list[int],
+    top_ks_for_ndcg: Optional[list[int]] = None,
+) -> dict[str, Tensor]:
     """Function to calculate all different retrieval metrics given similarity matrix.
 
     The retrieval is asymmetric meaning that relevant texts are retrieved given each valid query.
@@ -198,11 +198,11 @@ class TextDualEncoderMetricCalculator(GlobalMetricCalculator):
         # Name of text dual encoder's right encoder.
         right_encoder_name: Required[str] = REQUIRED
         # The values for k for which to compute accuracy.
-        top_ks_for_accuracy: Required[List[int]] = REQUIRED
+        top_ks_for_accuracy: Required[list[int]] = REQUIRED
         # The values for k for which to compute nDCG.
-        top_ks_for_ndcg: Optional[List[int]] = None
+        top_ks_for_ndcg: Optional[list[int]] = None
 
-    def _calculate_metrics(self, outputs: PredictionOutputs) -> Dict[str, Tensor]:
+    def _calculate_metrics(self, outputs: PredictionOutputs) -> dict[str, Tensor]:
         cfg = self.config
         predict_outputs, input_batch = outputs.predict_outputs, outputs.input_batch
         text_negative_embeddings = predict_outputs[cfg.right_encoder_name].get(
@@ -216,9 +216,11 @@ class TextDualEncoderMetricCalculator(GlobalMetricCalculator):
             text_positive_embeddings=predict_outputs[cfg.right_encoder_name][POSITIVE_EMBEDDINGS],
             text_positive_paddings=input_batch[cfg.right_encoder_name][POSITIVE_PADDINGS],
             text_negative_embeddings=text_negative_embeddings,
-            text_negative_paddings=input_batch[cfg.right_encoder_name][NEGATIVE_PADDINGS]
-            if text_negative_embeddings is not None
-            else None,
+            text_negative_paddings=(
+                input_batch[cfg.right_encoder_name][NEGATIVE_PADDINGS]
+                if text_negative_embeddings is not None
+                else None
+            ),
         )
 
         formatted_metrics = {}

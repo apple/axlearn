@@ -2,7 +2,8 @@
 
 """Subsampler layers."""
 
-from typing import Dict, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Optional, Union
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -42,7 +43,7 @@ class ConvSubSampler(BaseLayer):
         # (in which case no activations are used), a string (used for both convolutions), a pair of
         # strings (used for each convolution respectively), or a pair of string and None (to apply
         # activation to only one convolution).
-        activation: Optional[Union[Optional[str], Tuple[Optional[str], Optional[str]]]] = None
+        activation: Optional[Union[Optional[str], tuple[Optional[str], Optional[str]]]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -92,7 +93,7 @@ class ConvSubSampler(BaseLayer):
         conv2_shape = self.conv2.output_shape(input_shape=conv1_shape)
         return conv2_shape
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
+    def forward(self, inputs: Tensor, *, paddings: Tensor) -> dict[str, Tensor]:
         """Subsamples the speech.
 
         Args:

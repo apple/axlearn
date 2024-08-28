@@ -2,7 +2,7 @@
 
 """Tests VirTex implementations."""
 # pylint: disable=no-self-use
-from typing import Sequence
+from collections.abc import Sequence
 
 import jax.numpy as jnp
 import jax.random

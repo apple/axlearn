@@ -2,7 +2,6 @@
 
 # pylint: disable=no-self-use
 """Tests for eval_detection.py"""
-from typing import Dict, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -36,7 +35,7 @@ class DummyModel(BaseModel):
         super().__init__(cfg, parent=parent)
         self.fake_results = next(iter(self.config.input_cfg.instantiate(parent=None)))
 
-    def predict(self, input_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def predict(self, input_batch: dict[str, Tensor]) -> dict[str, Tensor]:
         if self.config.need_rescale_bboxes:
             image_scale = jnp.tile(input_batch["image_info"][:, 2:3, :], (1, 1, 2))
         else:
@@ -51,7 +50,7 @@ class DummyModel(BaseModel):
         }
         return outputs
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[float, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[float, NestedTensor]:
         del input_batch
         return 0.0, {}
 

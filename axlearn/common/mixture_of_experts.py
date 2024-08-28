@@ -14,7 +14,7 @@
 Reference: https://arxiv.org/abs/2405.15052.
 """
 import re
-from typing import Dict, NamedTuple, Optional, Tuple, Union
+from typing import NamedTuple, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -34,11 +34,13 @@ from axlearn.common.layers import (
     BaseNormalizationLayer,
     Dropout,
     LayerNorm,
+    MovingAverage,
     StochasticDepth,
     get_activation_fn,
 )
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
-from axlearn.common.param_init import FanAxes
+from axlearn.common.param_init import FanAxes, constant_initializer
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
@@ -162,6 +164,64 @@ def _cap_logits(logits: Tensor, gating_logit_cap: float) -> Tensor:
     return logits
 
 
+class AdaptiveLoadBalanceLoss(BaseLayer):
+    """A layer to adjust the aux loss weight based on the overcapacity ratio.
+
+    It maintains a moving average of the overcapacity ratios seen during training and adjusts
+    the scale if the average overcapacity ratio falls outside the target range.
+    """
+
+    @config_class
+    class Config(BaseLayer.Config):
+        moving_average: MovingAverage.Config = MovingAverage.default_config()
+        max_value: Required[float] = REQUIRED
+        min_value: float = 1e-3
+        # When adjusting the aux loss scale, increase or decrease by a factor of e^log_step.
+        log_step: float = 0.01
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg: AdaptiveLoadBalanceLoss.Config = self.config
+        self._add_child("value_average", cfg.moving_average)
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        return {
+            "log_scale": ParameterSpec(
+                shape=[],
+                dtype=jnp.float32,
+                mesh_axes=(None,),
+                initializer=constant_initializer(0.0),
+                weight_decay_scale=0,
+            ),
+        }
+
+    def forward(self, value: Tensor) -> Tensor:
+        """Adjusts and returns the loss scale based on a moving average of `value`.
+
+        The adjustments are set in OutputCollection.state_updates and won't take effect until
+        the state updates are applied.
+
+        Args:
+            value: The observed value (e.g., representing the MoE over-capacity ratio).
+
+        Returns:
+            The new loss scale, a scalar with a positive float value.
+        """
+        cfg = self.config
+        value = self.value_average(value)
+        self.add_summary("value_average", value)
+        # Increase log_scale if x > max_value;
+        # Decrease log_scale if x < min_value;
+        # Otherwise keep log_scale unchanged.
+        inc = jnp.greater(value, cfg.max_value).astype(jnp.float32)
+        dec = jnp.less(value, cfg.min_value).astype(jnp.float32)
+        new_log_scale = self.parameters["log_scale"] + (inc - dec) * cfg.log_step
+        self.add_state_update("log_scale", new_log_scale)
+        scale = jnp.exp(new_log_scale)
+        self.add_summary("scale", scale)
+        return scale
+
+
 class BaseGating(BaseLayer):
     """An abstract class to define the common interface of gating layers.
 
@@ -238,6 +298,15 @@ class Top2Gating(BaseGating):
         # of size input_dim, representing embedded token or an element of Transformer layer output.
         expert_capacity: Optional[int] = None
 
+        # If not None, adjust the aux loss according to recent over-capacity ratios.
+        adaptive_load_balance_loss: Optional[AdaptiveLoadBalanceLoss.Config] = None
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg: Top2Gating.Config = self.config
+        if cfg.adaptive_load_balance_loss is not None:
+            self._add_child("adaptive_load_balance_loss", cfg.adaptive_load_balance_loss)
+
     # pylint: disable-next=too-many-statements
     def forward(self, logits: Tensor) -> NestedTensor:
         """Please see comments of BaseGating.forward."""
@@ -249,9 +318,9 @@ class Top2Gating(BaseGating):
 
         expert_capacity = _compute_expert_capacity(
             expert_capacity=cfg.expert_capacity,
-            capacity_factor=cfg.train_capacity_factor
-            if self.is_training
-            else cfg.eval_capacity_factor,
+            capacity_factor=(
+                cfg.train_capacity_factor if self.is_training else cfg.eval_capacity_factor
+            ),
             group_size=logits.shape[-2],
             num_experts=cfg.num_experts,
         )
@@ -360,13 +429,22 @@ class Top2Gating(BaseGating):
         router_z_loss = _router_z_loss(logits)
 
         # Adding auxiliary losses and gating statistics to job summary.
-        self.add_summary("load_balance_loss", aux_loss)
-        self.add_summary("router_z_loss", router_z_loss)
-        self.add_summary("dispatch_0", dispatch_0)
-        self.add_summary("dispatch_1", dispatch_1)
-        self.add_summary("dispatch_2", dispatch_2)
-        self.add_summary("over_capacity_1", over_capacity_1)
-        self.add_summary("over_capacity_2", over_capacity_2)
+        self.add_summary("load_balance_loss", WeightedScalar(aux_loss, 1))
+        self.add_summary("router_z_loss", WeightedScalar(router_z_loss, 1))
+        self.add_summary("dispatch_0", WeightedScalar(dispatch_0, 1))
+        self.add_summary("dispatch_1", WeightedScalar(dispatch_1, 1))
+        self.add_summary("dispatch_2", WeightedScalar(dispatch_2, 1))
+        self.add_summary("over_capacity_1", WeightedScalar(over_capacity_1, 1))
+        self.add_summary("over_capacity_2", WeightedScalar(over_capacity_2, 1))
+
+        if cfg.adaptive_load_balance_loss is None:
+            self.add_summary("load_balance_loss", aux_loss)
+        else:
+            self.add_summary("load_balance_loss_original", aux_loss)
+            aux_loss *= self.adaptive_load_balance_loss(
+                jnp.maximum(over_capacity_1, over_capacity_2)
+            )
+            self.add_summary("load_balance_loss", aux_loss)
 
         return self.Output(
             combine_tensor=combine_tensor,
@@ -396,7 +474,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         # https://github.com/tensorflow/mesh/blob/fbf7b1e547e8b8cb134e81e1cd350c312c0b5a16/mesh_tensorflow/transformer/moe.py#L294-L336
         outer_batch: int = 1
         norm: BaseNormalizationLayer.Config = LayerNorm.default_config()
-        activation: Union[str, Tuple[str, str]] = "nn.relu"
+        activation: Union[str, tuple[str, str]] = "nn.relu"
         dropout: InstantiableConfig = Dropout.default_config()
         stochastic_depth: InstantiableConfig = StochasticDepth.default_config()
         # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm", "nonorm".
@@ -431,7 +509,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         # C - experts capacity dim
         # H - hidden dim
         # S - sequence dim
-        dim_to_mesh_axis_map: Dict[str, Optional[PartitionSpec]] = {}
+        dim_to_mesh_axis_map: dict[str, Optional[PartitionSpec]] = {}
 
     @classmethod
     def default_config(cls) -> Config:
@@ -449,7 +527,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         }
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         if isinstance(cfg.hidden_dim, int):
             hidden_dim = cfg.hidden_dim
@@ -655,7 +733,9 @@ def _convert_feedforward_to_moe_parameters(
         moe_weight_prefix = "wi" if m.group(1) == "1" else "wo"
         moe_weight_suffix = m.group(2)
         # Shard the dispatch tensor by 'expert'.
-        dispatch = with_sharding_constraint(jnp.ones([num_experts], dtype=value.dtype), ("expert",))
+        dispatch = with_sharding_constraint(
+            jnp.ones([num_experts], dtype=value.dtype), PartitionSpec("expert")
+        )
         moe_parameters[f"{moe_weight_prefix}{moe_weight_suffix}_weight"] = jnp.einsum(
             "xy,e->exy", value, dispatch
         )

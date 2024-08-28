@@ -3,7 +3,8 @@
 """Tests subsampler layers."""
 
 import contextlib
-from typing import Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Optional, Union
 
 import jax
 from absl.testing import parameterized
@@ -29,7 +30,7 @@ class ConvSubSamplerTest(TestCase):
     )
     def test_instantiate(
         self,
-        activation: Optional[Union[str, Tuple[str, str]]] = None,
+        activation: Optional[Union[str, tuple[str, str]]] = None,
         expected: Optional[Exception] = None,
     ):
         """Tests the checks in __init__."""
@@ -51,9 +52,9 @@ class ConvSubSamplerTest(TestCase):
     )
     def test_output_shape(
         self,
-        input_shape: Tuple[int, int],
-        output_dim: Union[int, Tuple[int, int]],
-        expected: Union[Tuple[int, int], Exception],
+        input_shape: tuple[int, int],
+        output_dim: Union[int, tuple[int, int]],
+        expected: Union[tuple[int, int], Exception],
     ):
         """Tests output_shape against specific inputs."""
         if isinstance(expected, Exception):
@@ -89,7 +90,7 @@ class ConvSubSamplerTest(TestCase):
     )
     def test_activations(
         self,
-        activation: Optional[Union[str, Tuple]],
+        activation: Optional[Union[str, tuple]],
         expected_activation: Sequence,
         output_dim: int,
         hidden_dim: Optional[int] = None,
@@ -115,7 +116,7 @@ class ConvSubSamplerTest(TestCase):
         self,
         window: int,
         stride: int,
-        conv_padding: Tuple[int, int],
+        conv_padding: tuple[int, int],
         output_dim: int,
         hidden_dim: Optional[int] = None,
     ):

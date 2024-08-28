@@ -7,9 +7,10 @@ import copy
 import enum
 import functools
 import re
+from collections.abc import Mapping, Sequence
 from importlib import import_module
 from tempfile import mkdtemp
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Type, Union
+from typing import Any, Optional, Union
 
 import jax
 import optax
@@ -71,7 +72,7 @@ class Builder(Module):
         # The trainer state. A nested structure with Tensors or TensorSpec as leaf nodes.
         trainer_state: Union[NestedTensor, NestedTensorSpec]
         # A set of paths in `trainer_state` that have been built by this builder.
-        built_keys: Set[str]
+        built_keys: set[str]
 
     def input_state_type(self) -> StateType:
         raise NotImplementedError(type(self))
@@ -155,7 +156,7 @@ class Converter(Module):
         """
         raise NotImplementedError(type(self))
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
         """Converts a target (e.g. new) state to a source (e.g. legacy) state.
         This should be called before `source_to_target`.
 
@@ -206,7 +207,7 @@ class ChainConverter(Converter):
                 ), converter.target_state_type()
         return Builder.StateType.TENSOR_SPECS
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
         """Converts a target state by applying a sequence of converters.
 
         Args:
@@ -260,7 +261,7 @@ class MergeStateConverter(Converter):
 
     @config_class
     class Config(Converter.Config):
-        selection_regexes: List[Tuple[str, Union[str, MergeStateSelection]]] = []
+        selection_regexes: list[tuple[str, Union[str, MergeStateSelection]]] = []
 
     def __init__(self, cfg: "MergeStateConverter.Config", *, parent: Optional[Module] = None):
         super().__init__(cfg, parent=parent)
@@ -281,7 +282,7 @@ class MergeStateConverter(Converter):
     def target_state_type(self) -> Builder.StateType:
         return Builder.StateType.TENSORS
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Builder.State]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Builder.State]:
         return target, clone_tree(target)
 
     def source_to_target(self, source: Builder.State, aux: Builder.State) -> Builder.State:
@@ -330,12 +331,12 @@ class RestoreAndConvertBuilder(Builder):
 
     def __call__(self, state: Builder.State) -> Builder.State:
         input_state = state.trainer_state
-        input_keys = set(key for key, _ in flatten_items(input_state))
+        input_keys = {key for key, _ in flatten_items(input_state)}
         source_state, aux = self.converter.target_to_source(state)
         restored_state = self.builder(source_state)
         converted_state = self.converter.source_to_target(restored_state, aux)
         output_state = converted_state.trainer_state
-        output_keys = set(key for key, _ in flatten_items(output_state))
+        output_keys = {key for key, _ in flatten_items(output_state)}
         assert input_keys == output_keys, (
             f"input-only keys: {input_keys - output_keys} "
             f"output-only keys: {output_keys - input_keys}"
@@ -407,7 +408,7 @@ class TensorStoreStateStorageBuilder(Builder):
             validation=cfg.validation,
             concurrent_gb=cfg.concurrent_gb,
         )
-        built_keys = state.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
+        built_keys = state.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=step, trainer_state=restored_state, built_keys=built_keys)
 
 
@@ -427,7 +428,7 @@ class BaseConverterFromPretrainedModel(Converter):
         mesh_axis_names: Optional[Sequence[str]] = None
         mesh_shape: Optional[Sequence[int]] = None
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
         """Produces state specs compatible with the pretrained checkpoint to be restored."""
         cfg = self.config
         # Initialize the model and learner states for the pretrained model.
@@ -476,15 +477,15 @@ class BertSequenceClassificationHeadConverter(BaseConverterFromPretrainedModel):
         # https://github.com/facebookresearch/fairseq/blob/acd9a53607d1e5c64604e88fc9601d0ee56fd6f1/examples/roberta/config/finetuning/cola.yaml#L21
         # https://github.com/facebookresearch/fairseq/blob/10b797a44f1d724465cd66ce1bb92d6b8fa052eb/fairseq/trainer.py#L587
         restored_state = restored_state._replace(learner=aux.trainer_state.learner)
-        built_keys = source.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
+        built_keys = source.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
 
     # pylint: disable-next=no-self-use
-    def _is_bert_lm_head(self, state: Dict[str, Any]) -> bool:
+    def _is_bert_lm_head(self, state: dict[str, Any]) -> bool:
         return is_dict(state, "head") and is_dict(state["head"], ["transform", "output_bias"])
 
     # pylint: disable-next=no-self-use
-    def _swap_heads(self, source: Dict[str, Any], target: Dict[str, Any]) -> Dict[str, Any]:
+    def _swap_heads(self, source: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
         out = clone_tree(source)
         out["head"] = target["head"]
         return out
@@ -492,11 +493,11 @@ class BertSequenceClassificationHeadConverter(BaseConverterFromPretrainedModel):
 
 def traverse_and_set_target_state_parameters(
     *,
-    target_state: Dict[str, Any],
-    target_scope: List[str],
-    source_params: Dict[str, Any],
-    source_scope: List[str],
-) -> Dict[str, Any]:
+    target_state: dict[str, Any],
+    target_scope: list[str],
+    source_params: dict[str, Any],
+    source_scope: list[str],
+) -> dict[str, Any]:
     """Traverse the target model state and source params and set the new parameters.
 
     The function traverses the target state based on ``target_scope``.
@@ -613,13 +614,13 @@ class FlaxPretrainedBuilder(Builder):
             parent_state[cfg.target_scope[-1]] = {"params": restored_target_state}
             new_trainer_state = state.trainer_state
 
-        built_keys = state.built_keys.union(set(key for key, _ in flatten_items(new_trainer_state)))
+        built_keys = state.built_keys.union({key for key, _ in flatten_items(new_trainer_state)})
         return Builder.State(step=0, trainer_state=new_trainer_state, built_keys=built_keys)
 
 
 def torch_to_axlearn_converter(
     module: str = "axlearn.common.param_converter",
-    dst_layer: Optional[ConfigOr[Union[BaseLayer, Type]]] = None,
+    dst_layer: Optional[ConfigOr[Union[BaseLayer, type]]] = None,
 ):
     """See HuggingFacePreTrainedBuilder.converter."""
     # Lazily import to avoid introducing a dependency otherwise.
@@ -737,7 +738,7 @@ class HuggingFacePreTrainedBuilder(Builder):
         # might be set to HF model's parameters.
         restored_state = state.trainer_state._replace(model=restored_model_state)
 
-        built_keys = state.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
+        built_keys = state.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=0, trainer_state=restored_state, built_keys=built_keys)
 
 
@@ -766,7 +767,7 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
     def target_state_type(self) -> Builder.StateType:
         return Builder.StateType.TENSOR_SPECS
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
         """Produces state compatible with the pretrained checkpoint to be restored."""
         source, aux = super().target_to_source(target)
         source_model = source.trainer_state.model
@@ -805,7 +806,7 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
 
         logging.info("restored_state=%s", sorted(key for key, _ in flatten_items(restored_state)))
         built_keys = source.built_keys.union(
-            set(key for key, value in flatten_items(restored_state) if isinstance(value, Tensor))
+            {key for key, value in flatten_items(restored_state) if isinstance(value, Tensor)}
         )
         return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
 
@@ -847,17 +848,17 @@ class PosEmbeddingConverter(BaseConverterFromPretrainedModel):
             is_leaf=self._is_pos_emb,
         )
         restored_state = restored_state._replace(learner=aux.trainer_state.learner)
-        built_keys = source.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
+        built_keys = source.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
 
     # pylint: disable-next=no-self-use
-    def _is_pos_emb(self, state: Dict[str, Any]) -> bool:
+    def _is_pos_emb(self, state: dict[str, Any]) -> bool:
         return is_dict(state, "pos_emb") and is_dict(state["pos_emb"], ["weight"])
 
     # pylint: disable-next=no-self-use
     def _derive_compat_source_pos_emb(
         self, source: NestedTensor, target: NestedTensor
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         cfg = self.config
         source_weight = source["pos_emb"]["weight"]
         target_weight = target["pos_emb"]["weight"]
@@ -935,7 +936,7 @@ class EmaParamsConverter(Converter):
     def target_state_type(self) -> Builder.StateType:
         return Builder.StateType.TENSOR_SPECS
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
         """Builds a source that contains ema state the same as target.model.
 
         The source model and optimizer state are empty trees.
@@ -950,7 +951,7 @@ class EmaParamsConverter(Converter):
             # Empty model.
             model={},
         )
-        built_keys = set(key for key, _ in flatten_items(source_trainer_state))
+        built_keys = {key for key, _ in flatten_items(source_trainer_state)}
         source = Builder.State(
             step=target.step,
             trainer_state=source_trainer_state,
@@ -975,7 +976,7 @@ class EmaParamsConverter(Converter):
                 ema=source.trainer_state.learner["ema"].ema,
             )
 
-        built_keys = aux.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
+        built_keys = aux.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
 
 
@@ -995,7 +996,7 @@ class PruneEmaStateBuilder(Builder):
         prune_state = state.trainer_state._replace(
             learner=state.trainer_state.learner,
         )
-        built_keys = state.built_keys.union(set(key for key, _ in flatten_items(prune_state)))
+        built_keys = state.built_keys.union({key for key, _ in flatten_items(prune_state)})
         return Builder.State(
             step=state.step,
             trainer_state=prune_state,
@@ -1145,7 +1146,7 @@ class UnknownBuilderError(NotImplementedError):
     pass
 
 
-def get_builder_config(spec: Union[str, Builder], builders: List[Type[Builder]]) -> Builder.Config:
+def get_builder_config(spec: Union[str, Builder], builders: list[type[Builder]]) -> Builder.Config:
     """Match the spec against a list of Builders.
 
     Args:

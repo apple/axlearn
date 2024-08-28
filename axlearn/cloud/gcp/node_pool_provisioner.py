@@ -2,12 +2,14 @@
 
 """Utilities to provision TPU node pools."""
 import hashlib
+import io
 import os
 import time
 from typing import Optional
 
 from absl import flags, logging
 
+from axlearn.cloud.common.bastion import _BASTION_SERIALIZED_JOBSPEC_ENV_VAR, deserialize_jobspec
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import AcceleratorConfig, GKEJob, TPUGKEJob
 from axlearn.cloud.gcp.node_pool import (
@@ -96,6 +98,13 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             use_spot_vm = True
             reservation = None
 
+        job_priority = None
+        if os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
+            spec = deserialize_jobspec(
+                io.StringIO(os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR))
+            )
+            job_priority = spec.metadata.priority
+
         node_pool_names = []
         additional_labels_list = []
         for i in range(num_node_pools):
@@ -110,9 +119,14 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             # TODO(ethanli): remove this hack once jobset-controller-manager
             #  supports disabling node-selector injections
             job_key = hashlib.sha1(
-                f"{job_cfg.namespace}/{job_cfg.name}-job-{i}".encode("utf-8")
+                f"{job_cfg.namespace}/{job_cfg.name}-job-{i}".encode()
             ).hexdigest()
             additional_labels = {"job-key": job_key}
+
+            # Populate job-priority label to nodes.
+            if job_priority is not None:
+                additional_labels.update({"job-priority": str(job_priority)})
+
             additional_labels_list.append(additional_labels)
 
         start_time = time.perf_counter()

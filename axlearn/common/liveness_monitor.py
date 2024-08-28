@@ -72,8 +72,7 @@ class TfSummaryMonitor(LivenessMonitor):
             accums = list(self._accums.values())
 
         for acc in accums:
-            for event in acc._generator.Load():  # pylint: disable=protected-access
-                yield event
+            yield from acc._generator.Load()  # pylint: disable=protected-access
 
     def ping(self) -> bool:
         """Returns True iff summaries are still updating."""

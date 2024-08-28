@@ -17,7 +17,7 @@ Later, when we support image tokenizer finetuning, we might implement EMA on KMe
 Ref: https://github.com/microsoft/unilm/blob/master/beit2/norm_ema_quantizer.py
 """
 
-from typing import Dict, Optional, Tuple, Union
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -67,7 +67,7 @@ class BEiTStochasticDepth(BaseLayer):
         cfg.param_init = ConstantInitializer.default_config().set(value=1)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         param_specs = {}
         param_specs["gamma"] = ParameterSpec(
             shape=(1, 1, self.config.input_dim),
@@ -163,7 +163,7 @@ class BEiTImageVQKD(BaseLayer):
         self._add_child("l2norm", cfg.l2norm)
         self._add_child("output_proj", cfg.output_proj)
 
-    def forward(self, inputs: Tensor) -> Tuple[Tensor, Dict[str, Tensor]]:
+    def forward(self, inputs: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         """Image encoder for BeiTImageTokenizer.
 
         Args:
@@ -201,8 +201,8 @@ def set_beit_image_tokenizer_encoder_config(
     codebook_dim: int = 32,
     num_heads: int = 12,
     feed_forward_dim: Union[int, FunctionConfigBase] = scaled_hidden_dim(scale=4),
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
     dropout_rate: float = 0,
     pooler_config: BasePoolingLayer.Config = AveragePooling.default_config(),
     feed_forward_act: str = "exact_gelu",

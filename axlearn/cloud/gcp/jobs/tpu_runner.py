@@ -62,7 +62,8 @@ import pathlib
 import shlex
 import subprocess
 import time
-from typing import Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 from absl import app, flags, logging
 from googleapiclient import errors
@@ -122,7 +123,7 @@ class TPURunnerJob(TPUQRMJob):
         # TODO(markblee): Support other cloud storages using tf.io.
         output_dir: Required[str] = REQUIRED
         # Optional env vars to set.
-        env_vars: Dict[str, str] = {}
+        env_vars: dict[str, str] = {}
         # Interval to poll status.
         status_interval_seconds: float = 30
         # A monitor that checks if a job is stalled/stuck.
@@ -215,7 +216,7 @@ class TPURunnerJob(TPUQRMJob):
         # Set check=False, since _delete can be invoked prior to outputs being written.
         self._execute_remote_cmd(f"gsutil cp -r {src} {dst}", shell=True, check=False)
 
-    def _wrap(self, cmd: str, *, env: Optional[Dict[str, str]] = None):
+    def _wrap(self, cmd: str, *, env: Optional[dict[str, str]] = None):
         """Wraps the command with env vars, and docker run if using docker bundler."""
         cfg: TPURunnerJob.Config = self.config
         if isinstance(self._bundler, BaseDockerBundler):
@@ -230,7 +231,7 @@ class TPURunnerJob(TPUQRMJob):
             cmd = f"{' '.join([f'{key}={value}' for key, value in env.items()])} {cmd}"
         return cmd.strip()
 
-    def _prepare_env(self) -> Dict[str, str]:
+    def _prepare_env(self) -> dict[str, str]:
         """Returns env vars to use in the command."""
         logging.info("Preparing env...")
         cfg: TPURunnerJob.Config = self.config
@@ -485,7 +486,7 @@ class TPURunnerJob(TPUQRMJob):
         )
         # Filter out statuses from each worker.
         statuses = {}
-        valid_statuses = set(status.name for status in TPURunnerJob.Status)
+        valid_statuses = {status.name for status in TPURunnerJob.Status}
         for proc in procs:
             if proc.returncode == 0:
                 for line in proc.stdout.split("\n"):  # pytype: disable=attribute-error

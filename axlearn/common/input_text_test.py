@@ -3,7 +3,8 @@
 """Tests text input processing."""
 # pylint: disable=no-self-use
 import os
-from typing import Dict, List, Mapping, Optional, Sequence, Union
+from collections.abc import Mapping, Sequence
+from typing import Optional, Union
 
 import numpy as np
 import pytest
@@ -35,7 +36,7 @@ def count_batches(dataset, max_batches=100):
 
 
 def make_ds_fn(
-    is_training: bool, texts: List[str], repeat: int = 100
+    is_training: bool, texts: list[str], repeat: int = 100
 ) -> input_tf_data.BuildDatasetFn:
     del is_training
 
@@ -57,7 +58,7 @@ def make_ds_fn(
 
 
 def make_ragged_ds_fn(
-    is_training: bool, texts: List[Dict], repeat: int = 100
+    is_training: bool, texts: list[dict], repeat: int = 100
 ) -> input_tf_data.BuildDatasetFn:
     del is_training
 
@@ -80,8 +81,8 @@ def make_ragged_ds_fn(
 
 def make_seq2seq_ds_fn(
     is_training: bool,
-    sources: List[str],
-    targets: List[str],
+    sources: list[str],
+    targets: list[str],
     repeat: int = 100,
     source_key: str = "source",
     target_key: str = "target",
@@ -106,7 +107,7 @@ def make_seq2seq_ds_fn(
     return ds_fn
 
 
-def extract_text(example: Dict[str, tf.Tensor], input_key: str = "text") -> str:
+def extract_text(example: dict[str, tf.Tensor], input_key: str = "text") -> str:
     return bytes.decode(example[input_key].numpy(), "utf-8")
 
 
@@ -122,7 +123,7 @@ def assert_oneof(test_case: tf.test.TestCase, actual: tf.Tensor, candidates: Seq
     raise AssertionError(f"Expected {actual} to be equal to one of {candidates}")
 
 
-def extract_text_ragged(example: Dict[str, tf.Tensor], input_key: str = "text") -> List[List[str]]:
+def extract_text_ragged(example: dict[str, tf.Tensor], input_key: str = "text") -> list[list[str]]:
     result = []
     for item in example[input_key].numpy():
         sub_result = []
@@ -313,8 +314,8 @@ class AddTokenTypeIDTest(test_utils.TestCase):
 
             def trim_and_pad_batch():
                 def example_fn(
-                    example: Dict[str, Union[tf.Tensor, tf.RaggedTensor]]
-                ) -> Dict[str, tf.Tensor]:
+                    example: dict[str, Union[tf.Tensor, tf.RaggedTensor]]
+                ) -> dict[str, tf.Tensor]:
                     # pytype: disable=attribute-error
                     for k, v in feature_lengths.items():
                         # pytype: enable=attribute-error
@@ -578,7 +579,7 @@ class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
             expected=["ah 博 推 zz HeLLo ! how Are yoU ?"],
         ),
     )
-    def test_normalize(self, normalizer: InstantiableConfig, expected: List[str]):
+    def test_normalize(self, normalizer: InstantiableConfig, expected: list[str]):
         texts = ["ah\u535A\u63A8zz \tHeLLo!how  \n Are yoU?  "]
         ds_fn = make_ds_fn(False, texts, repeat=1)
         process_fn = normalizer.set(input_key="text").instantiate()
@@ -619,7 +620,7 @@ class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
             ],
         ),
     )
-    def test_normalize_ragged_input(self, normalizer: InstantiableConfig, expected: List[str]):
+    def test_normalize_ragged_input(self, normalizer: InstantiableConfig, expected: list[str]):
         texts = [
             {
                 "text": [

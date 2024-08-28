@@ -12,7 +12,7 @@ Ref: https://github.com/openai/CLIP/blob/main/clip/model.py
 """
 # pylint: disable=duplicate-code
 
-from typing import Dict, Optional, Tuple, Type, Union
+from typing import Optional, Union
 
 import jax.numpy as jnp
 import numpy as np
@@ -240,14 +240,14 @@ def set_vision_encoder_config(
     num_heads: int,
     projection_dim: int,  # The projection dim for the shared image-text space.
     feed_forward_dim: Union[int, FunctionConfigBase] = scaled_hidden_dim(scale=4),
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
     dropout_rate: float = 0.1,
     pooler_config: BasePoolingLayer.Config = FirstNTokenPooling.default_config(),
     feed_forward_act: str = "nn.gelu",
     layer_norm_eps: float = 1e-5,
     num_cls_tokens: int = 1,
-    encoder_cls: Type[BaseLayer] = CLIPImageStreamEncoder,
+    encoder_cls: type[BaseLayer] = CLIPImageStreamEncoder,
     atten_logit_cap: Optional[float] = None,
     remat: bool = False,
 ) -> CLIPImageStreamEncoder.Config:
@@ -430,9 +430,11 @@ def set_bert_text_encoder_config(
             stack_cfg=bert_transformer_config(
                 num_layers=num_layers,
                 num_heads=num_heads,
-                base_cfg=RepeatedTransformerLayer.default_config()
-                if remat
-                else StackedTransformerLayer.default_config(),
+                base_cfg=(
+                    RepeatedTransformerLayer.default_config()
+                    if remat
+                    else StackedTransformerLayer.default_config()
+                ),
             ),
         ).encoder,
     )
@@ -469,7 +471,7 @@ class CLIPFusionNetwork(FusionNetwork):
         cfg = self.config
         self._log_logit_scale_init = cfg.log_logit_scale_init.instantiate()
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         param_specs = {}
         param_specs["log_logit_scale"] = ParameterSpec(
             shape=(1,),

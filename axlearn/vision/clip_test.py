@@ -68,7 +68,7 @@ class TestCLIPEncoder(parameterized.TestCase):
         # A dummy weight for the output projection.
         layer_params["output_proj"] = dict(
             weight=jnp.array(np.random.random((model_dim, model_dim))).astype(jnp.float32),
-            bias=jnp.array(np.random.random((model_dim))).astype(jnp.float32),
+            bias=jnp.array(np.random.random(model_dim)).astype(jnp.float32),
         )
         target = (
             np.random.randint(low=0, high=255, size=[batch_size, 3, image_size, image_size]) / 128
@@ -142,7 +142,7 @@ class TestCLIPEncoder(parameterized.TestCase):
         # A dummy weight for the output projection.
         layer_params["output_proj"] = dict(
             weight=jnp.array(np.random.random((model_dim, model_dim))).astype(jnp.float32),
-            bias=jnp.array(np.random.random((model_dim))).astype(jnp.float32),
+            bias=jnp.array(np.random.random(model_dim)).astype(jnp.float32),
         )
 
         tokenized_text_hf, tokenized_text = generate_random_tokenized_text(

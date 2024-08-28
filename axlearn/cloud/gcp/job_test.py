@@ -12,18 +12,26 @@
 
 import atexit
 import contextlib
+import io
 import math
 import os
 import subprocess
 import sys
-from typing import Optional, Type, Union
+from datetime import datetime
+from typing import Optional, Union
 from unittest import mock
 
 import pytest
 from absl import flags, logging
 from absl.testing import absltest, parameterized
 
+from axlearn.cloud.common.bastion import (
+    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
+    new_jobspec,
+    serialize_jobspec,
+)
 from axlearn.cloud.common.bundler import Bundler
+from axlearn.cloud.common.types import JobMetadata
 from axlearn.cloud.common.utils import configure_logging, generate_job_name
 from axlearn.cloud.gcp import bundler, job
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
@@ -210,7 +218,7 @@ class TPUGKEJobTest(TestCase):
     @contextlib.contextmanager
     def _job_config(
         self,
-        bundler_cls: Type[Bundler],
+        bundler_cls: type[Bundler],
         reservation: Optional[str] = None,
         service_account: Optional[str] = None,
         enable_pre_provisioner: Optional[bool] = None,
@@ -273,13 +281,42 @@ class TPUGKEJobTest(TestCase):
             gke_job: job.TPUGKEJob = cfg.instantiate()
             self.assertEqual("v4-8", gke_job._tpu_type)  # pylint: disable=protected-access
 
+    def _create_serialized_job_spec(self, job_priority):
+        test_spec = new_jobspec(
+            name="test_job",
+            command="test command",
+            metadata=JobMetadata(
+                user_id="test_id",
+                project_id="test_project",
+                # Make sure str timestamp isn't truncated even when some numbers are 0.
+                creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
+                resources={"test": 8},
+                priority=job_priority,
+            ),
+        )
+        serialized_jobspec = io.StringIO()
+        serialize_jobspec(test_spec, serialized_jobspec)
+        return serialized_jobspec.getvalue()
+
     @parameterized.product(
         [
-            dict(env={}, reservation=None, expect_reserved=False),
-            dict(env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False),
-            dict(env={"BASTION_TIER": "0"}, reservation="test-reservation", expect_reserved=True),
-            dict(env={"BASTION_TIER": "1"}, reservation="test-reservation", expect_reserved=False),
-            dict(env={}, reservation="test-reservation", expect_reserved=False),
+            dict(env={}, reservation=None, expect_reserved=False, job_priority=None),
+            dict(
+                env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False, job_priority=1
+            ),
+            dict(
+                env={"BASTION_TIER": "0"},
+                reservation="test-reservation",
+                expect_reserved=True,
+                job_priority=3,
+            ),
+            dict(
+                env={"BASTION_TIER": "1"},
+                reservation="test-reservation",
+                expect_reserved=False,
+                job_priority=5,
+            ),
+            dict(env={}, reservation="test-reservation", expect_reserved=False, job_priority=4),
         ],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         enable_ici_resiliency=[True, False, None],
@@ -295,7 +332,17 @@ class TPUGKEJobTest(TestCase):
         reservation: Optional[str] = None,
         enable_pre_provisioner: Optional[bool] = None,
         location_hint: Optional[str] = None,
+        job_priority: Optional[int] = None,
     ):
+        if job_priority is not None:
+            env.update(
+                {
+                    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR: self._create_serialized_job_spec(
+                        job_priority
+                    )
+                }
+            )  # pytype: disable=attribute-error
+
         with mock.patch.dict("os.environ", env), self._job_config(bundler_cls) as cfg:
             gke_job: job.TPUGKEJob = cfg.set(
                 reservation=reservation,
@@ -309,6 +356,7 @@ class TPUGKEJobTest(TestCase):
             pod_spec = pod["spec"]
             node_selector = pod_spec["nodeSelector"]
             annotations = pod["metadata"]["annotations"]
+            labels = pod["metadata"]["labels"]
             # The reservation should be used only if scheduled as tier 0.
             if expect_reserved:
                 self.assertEqual(
@@ -379,6 +427,13 @@ class TPUGKEJobTest(TestCase):
 
             self.assertEqual(location_hint, node_selector.get("cloud.google.com/gke-location-hint"))
 
+            if job_priority is None:
+                self.assertNotIn("job-priority", labels)
+                self.assertNotIn("job-priority", node_selector)
+            else:
+                self.assertEqual(str(job_priority), labels.get("job-priority", None))
+                self.assertEqual(str(job_priority), node_selector.get("job-priority", None))
+
 
 class GPUGKEJobTest(TestCase):
     @property
@@ -396,7 +451,7 @@ class GPUGKEJobTest(TestCase):
     @contextlib.contextmanager
     def _job_config(
         self,
-        bundler_cls: Type[Bundler],
+        bundler_cls: type[Bundler],
         service_account: Optional[str] = None,
         queue: Optional[str] = None,
         num_replicas: Optional[int] = None,

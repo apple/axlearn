@@ -3,7 +3,8 @@
 """Tests masked language modeling inputs."""
 # pylint: disable=no-self-use
 import os
-from typing import Dict, Iterator, Optional
+from collections.abc import Iterator
+from typing import Optional
 
 import numpy as np
 import pytest
@@ -37,8 +38,8 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
             sentencepiece_model_file=t5_sentence_piece_vocab_file, extra_ids=2
         )
 
-    def _make_ds(self, example: Dict[str, Tensor]) -> tf.data.Dataset:
-        def ds_fn() -> Iterator[Dict[str, Tensor]]:
+    def _make_ds(self, example: dict[str, Tensor]) -> tf.data.Dataset:
+        def ds_fn() -> Iterator[dict[str, Tensor]]:
             yield example
 
         return tf.data.Dataset.from_generator(
@@ -48,7 +49,7 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
             },
         )
 
-    def _mask_fn(self, example: Dict[str, Tensor], **kwargs) -> Optional[Dict[str, Tensor]]:
+    def _mask_fn(self, example: dict[str, Tensor], **kwargs) -> Optional[dict[str, Tensor]]:
         vocab = self.vocab_cfg.instantiate()
         pad_id = vocab.pad_id
         mask_id = vocab.vocab_size - 1
@@ -488,8 +489,8 @@ class ApplyMLMTestCombinatorialNgram(parameterized.TestCase, tf.test.TestCase):
             sentencepiece_model_file=t5_sentence_piece_vocab_file, extra_ids=2
         )
 
-    def _make_ds(self, example: Dict[str, Tensor]) -> tf.data.Dataset:
-        def ds_fn() -> Iterator[Dict[str, Tensor]]:
+    def _make_ds(self, example: dict[str, Tensor]) -> tf.data.Dataset:
+        def ds_fn() -> Iterator[dict[str, Tensor]]:
             yield example
 
         return tf.data.Dataset.from_generator(
@@ -499,7 +500,7 @@ class ApplyMLMTestCombinatorialNgram(parameterized.TestCase, tf.test.TestCase):
             },
         )
 
-    def _mask_fn(self, example: Dict[str, Tensor], **kwargs) -> Optional[Dict[str, Tensor]]:
+    def _mask_fn(self, example: dict[str, Tensor], **kwargs) -> Optional[dict[str, Tensor]]:
         vocab = self.vocab_cfg.instantiate()
         pad_id = vocab.pad_id
         mask_id = vocab.vocab_size - 1

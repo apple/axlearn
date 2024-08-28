@@ -14,7 +14,7 @@ https://github.com/pytorch/fairseq/blob/7e758841da9e05cb21826a60d30a563a9e189d1d
 
 import enum
 import functools
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Optional
 
 import seqio
 import tensorflow as tf
@@ -41,7 +41,7 @@ def _ids_to_word_starts(inputs: tf.Tensor, vocab: seqio.SentencePieceVocabulary)
     tokens = vocab.tf_tokenizer.id_to_string(inputs)  # Default encoding is UTF-8.
     # Compute word starts by looking for one of ▁, [, or <.
     # pylint: disable-next=anomalous-backslash-in-string
-    word_starts = tf.where(tf.strings.regex_full_match(tokens, b"^(\xe2\x96\x81|\[|<).*$"))
+    word_starts = tf.where(tf.strings.regex_full_match(tokens, b"^(\xe2\x96\x81|\\[|<).*$"))
     # Flatten the result, ensuring the result still has rank 1.
     return tf.reshape(word_starts, [-1])
 
@@ -250,7 +250,7 @@ def apply_mlm_mask(
     whole_word_mask: bool = False,
     input_key: str = "input_ids",
     target_key: str = "target_labels",
-    ignore_input_ids: List[int],
+    ignore_input_ids: list[int],
     ignore_target_id: int,
     mask_id: int,
     vocab_cfg: InstantiableConfig,
@@ -303,7 +303,7 @@ def apply_mlm_mask(
     if tf.size(_ids_to_word_starts([mask_id], vocab)) != 1:
         raise ValueError(f"Mask token ID ({mask_id}) should constitute a start-of-word.")
 
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         inputs = example[input_key]
 
         # Each input should be [seq_len].
@@ -403,7 +403,7 @@ def apply_mlm_mask_combinatorial_ngram(
     whole_word_mask: bool = False,
     input_key: str = "input_ids",
     target_key: str = "target_labels",
-    ignore_input_ids: List[int],
+    ignore_input_ids: list[int],
     ignore_target_id: int,
     mask_id: int,
     vocab_cfg: InstantiableConfig,
@@ -462,7 +462,7 @@ def apply_mlm_mask_combinatorial_ngram(
     if tf.size(_ids_to_word_starts([mask_id], vocab)) != 1:
         raise ValueError(f"Mask token ID ({mask_id}) should constitute a start-of-word.")
 
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         inputs = example[input_key]
 
         # Each input should be [seq_len].
@@ -629,7 +629,7 @@ def text_to_mlm_input(
         return ds.filter(lambda x: tf.shape(x["input_ids"])[0] <= max_len_without_bos)
 
     @seqio.map_over_dataset
-    def append_bos(example: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def append_bos(example: dict[str, Tensor]) -> dict[str, Tensor]:
         # BOS is only added to the very first sentence of the input, not subsequent ones.
         # Note: this also drops other keys from example.
         # pylint: disable-next=no-value-for-parameter,unexpected-keyword-arg

@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """HuggingFace sequence classification tests."""
-from typing import Any, Callable, Dict, Tuple, Type
+from typing import Any, Callable
 
 import jax.random
 import numpy as np
@@ -52,10 +52,10 @@ class HfSequenceClassificationWrapperTest(parameterized.TestCase):
     )
     def test_feed_forward(
         self,
-        seq_cls_wrapper: Type[HfSequenceClassificationWrapper],
-        hf_config_cls: Type[PretrainedConfig],
+        seq_cls_wrapper: type[HfSequenceClassificationWrapper],
+        hf_config_cls: type[PretrainedConfig],
         hidden_dim: int,
-        classifier_shape: Callable[[Dict[str, Any]], Dict[str, Tuple]],
+        classifier_shape: Callable[[dict[str, Any]], dict[str, tuple]],
     ):
         batch_size, seq_len = 4, 8
         num_labels = 2

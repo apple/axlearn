@@ -6,19 +6,22 @@
 # pytype: disable=wrong-arg-types
 import contextlib
 import copy
+import io
 import itertools
 import json
 import os
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Optional
 from unittest import mock
 
 from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common import bastion
 from axlearn.cloud.common.bastion import (
+    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
     _JOB_DIR,
     _LOG_DIR,
     Bastion,
@@ -572,7 +575,7 @@ class TestRuntimeOptions(parameterized.TestCase):
 
 
 # Returns a new mock Popen for each subprocess.Popen call.
-def _mock_popen_fn(mock_spec: Dict[str, Dict]):
+def _mock_popen_fn(mock_spec: dict[str, dict]):
     """Returns a callable that outputs mocked Popens for predetermined commands.
 
     For example:
@@ -583,7 +586,7 @@ def _mock_popen_fn(mock_spec: Dict[str, Dict]):
             mock.terminate()  # Raises ValueError.
     """
 
-    def popen(cmd, env: Optional[Dict] = None, **kwargs):
+    def popen(cmd, env: Optional[dict] = None, **kwargs):
         del kwargs
         if cmd not in mock_spec:
             raise ValueError(f"Don't know how to mock: {cmd}")
@@ -596,7 +599,7 @@ def _mock_popen_fn(mock_spec: Dict[str, Dict]):
 
 
 # Returns a new mock _PipedProcess.
-def _mock_piped_popen_fn(mock_spec: Dict[str, Dict]):
+def _mock_piped_popen_fn(mock_spec: dict[str, dict]):
     """See `_mock_popen_fn`."""
     mock_popen_fn = _mock_popen_fn(mock_spec)
 
@@ -625,7 +628,7 @@ class BastionTest(parameterized.TestCase):
             self.assertEqual("123", mock_popen.call_args[1]["env"]["tier"])
 
     @contextlib.contextmanager
-    def _patch_bastion(self, mock_popen_spec: Optional[Dict] = None):
+    def _patch_bastion(self, mock_popen_spec: Optional[dict] = None):
         mocks = []
         module_name = bastion.__name__
 
@@ -895,7 +898,10 @@ class BastionTest(parameterized.TestCase):
             # Command should be started on the first update.
             self.assertIsNotNone(updated_job.command_proc)
             # Scheduling metadata should be set.
-            self.assertEqual({"BASTION_TIER": 1}, updated_job.command_proc.popen.env)
+            self.assertEqual(1, updated_job.command_proc.popen.env["BASTION_TIER"])
+            # Valid serialized jobspec should be passed.
+            jobspec = updated_job.command_proc.popen.env[_BASTION_SERIALIZED_JOBSPEC_ENV_VAR]
+            self.assertEqual(job.spec, deserialize_jobspec(io.StringIO(jobspec)))
 
             # Log should be downloaded if it exists.
             download_call = mock.call(
@@ -1171,7 +1177,7 @@ class BastionTest(parameterized.TestCase):
                     self.assertFalse(os.path.exists(history_file), msg=history_file)
                 else:
                     self.assertTrue(os.path.exists(history_file), msg=history_file)
-                    with open(history_file, "r", encoding="utf-8") as f:
+                    with open(history_file, encoding="utf-8") as f:
                         history = f.read()
                         expected_msg = {
                             "resume": "ACTIVE: start process command",
@@ -1187,7 +1193,7 @@ class BastionTest(parameterized.TestCase):
                 project_history_dir = os.path.join(mock_bastion._project_history_dir, project_id)
                 project_history_files = list(os.scandir(project_history_dir))
                 for history_file in project_history_files:
-                    with open(history_file, "r", encoding="utf-8") as f:
+                    with open(history_file, encoding="utf-8") as f:
                         history = f.read()
                         print(f"[{project_id}] {history}")
                 all_history_files.extend(project_history_files)
@@ -1202,7 +1208,7 @@ class BastionTest(parameterized.TestCase):
         """
         # Note: command_proc and cleanup_proc shouldn't matter for GC. We only look at state +
         # resources.
-        active_jobs: Dict[str, Job] = {}
+        active_jobs: dict[str, Job] = {}
         init_job_states = {
             "pending": JobState(status=JobStatus.PENDING),
             "active": JobState(status=JobStatus.ACTIVE),
@@ -1238,7 +1244,7 @@ class BastionTest(parameterized.TestCase):
         )
         with self._patch_bastion() as mock_bastion, patch_tfio as mock_tfio:
 
-            def mock_clean(jobs: Dict[str, ResourceMap]) -> Sequence[str]:
+            def mock_clean(jobs: dict[str, ResourceMap]) -> Sequence[str]:
                 self.assertTrue(
                     all(
                         active_jobs[job_name].state.status == JobStatus.COMPLETED
@@ -1331,8 +1337,8 @@ class BastionTest(parameterized.TestCase):
     def test_update_scheduler(
         self,
         *,
-        initial_jobs: Dict[str, JobState],
-        runtime_options: Optional[Dict[str, Any]],
+        initial_jobs: dict[str, JobState],
+        runtime_options: Optional[dict[str, Any]],
         expect_schedulable: Sequence[str],
         expect_dry_run: bool = False,
         expect_verbosity: int = 0,

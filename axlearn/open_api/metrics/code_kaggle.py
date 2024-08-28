@@ -30,7 +30,7 @@ import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from typing import Any, Dict, List, Tuple, Type
+from typing import Any
 
 import numpy as np
 from tqdm import tqdm
@@ -68,7 +68,7 @@ You MUST answer in a list of uppercase single letter strings for multiple choice
 # pylint: enable=line-too-long
 
 
-def _post_process_cells(cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _post_process_cells(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Enhances cells with unique IDs and ensure consistent formatting.
 
     Args:
@@ -96,7 +96,7 @@ def _strip_ansi_codes(text: str) -> str:
     return ansi_escape.sub("", text)
 
 
-def _execute_notebook(nb_json: str, timeout: int = 180) -> Tuple[Any, bool]:
+def _execute_notebook(nb_json: str, timeout: int = 180) -> tuple[Any, bool]:
     """Executes a Jupyter notebook from a JSON string and return the executed notebook
     along with a success status. This function strips any ANSI color codes that may
     appear in error messages.
@@ -134,7 +134,7 @@ def _execute_notebook(nb_json: str, timeout: int = 180) -> Tuple[Any, bool]:
     return error_message, False
 
 
-def _execute_notebooks_batch(nb_jsons: List[str], timeout: int = 180, max_workers: int = 5) -> List:
+def _execute_notebooks_batch(nb_jsons: list[str], timeout: int = 180, max_workers: int = 5) -> list:
     """Executes a batch of notebooks in parallel using a ThreadPoolExecutor.
 
     Args:
@@ -159,7 +159,7 @@ def _execute_notebooks_batch(nb_jsons: List[str], timeout: int = 180, max_worker
     return results
 
 
-def _plotly_json_to_base64_png(plotly_json: Dict[str, Any]) -> str:
+def _plotly_json_to_base64_png(plotly_json: dict[str, Any]) -> str:
     """Converts Plotly JSON data to a base64 PNG image."""
     # pylint: disable-next=import-error,import-outside-toplevel
     import plotly.graph_objects as go  # pytype: disable=import-error
@@ -172,8 +172,8 @@ def _plotly_json_to_base64_png(plotly_json: Dict[str, Any]) -> str:
 
 
 def _organize_cell_output(
-    cell: Dict[str, Any], image_expected: bool
-) -> Tuple[Dict[str, Any], List]:
+    cell: dict[str, Any], image_expected: bool
+) -> tuple[dict[str, Any], list]:
     """Organizes the cell output to replace image data with placeholders and collect image data
     in a dedicated list."""
     if not image_expected:
@@ -271,7 +271,7 @@ def _is_multimodal_model(model_name: str) -> bool:
     return any(identifier in model_name for identifier in multimodal_identifiers)
 
 
-def _post_process_responses(responses: List[Dict[str, Any]], *, client_cls: Type[BaseClient]):
+def _post_process_responses(responses: list[dict[str, Any]], *, client_cls: type[BaseClient]):
     """Extracts executable notebooks from responses.
 
     Args:
@@ -323,7 +323,7 @@ def _post_process_responses(responses: List[Dict[str, Any]], *, client_cls: Type
         response["solutions"] = solutions
 
 
-def _execute_notebooks(responses: List[Dict[str, Any]]):
+def _execute_notebooks(responses: list[dict[str, Any]]):
     """Executes the notebooks in the results and store the execution results.
 
     Args:
@@ -369,7 +369,7 @@ def _execute_notebooks(responses: List[Dict[str, Any]]):
             responses[response_id]["solutions"][code_id]["last_cell"] = last_code_cell
 
 
-def _populate_qa_requests(responses: List[Dict[str, Any]], *, is_mutimodal: bool):
+def _populate_qa_requests(responses: list[dict[str, Any]], *, is_mutimodal: bool):
     """Populates QA requests from execution results.
 
     Args:
@@ -396,7 +396,7 @@ def _populate_qa_requests(responses: List[Dict[str, Any]], *, is_mutimodal: bool
 
 
 def _generate_answers_from_qa_requests(
-    responses: List[Dict[str, Any]], *, grader_generator: Generator
+    responses: list[dict[str, Any]], *, grader_generator: Generator
 ):
     """Generates answers from QA requests.
 
@@ -436,7 +436,7 @@ def _generate_answers_from_qa_requests(
                 continue
 
 
-def _compute_metrics_from_responses(responses: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _compute_metrics_from_responses(responses: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute metrics based on responses.
 
     Args:
@@ -501,10 +501,10 @@ def _compute_metrics_from_responses(responses: List[Dict[str, Any]]) -> Dict[str
 
 def metric_fn(
     *,
-    responses: List[Dict[str, Any]],
-    generators: Dict[EvalGeneratorType, Generator],
+    responses: list[dict[str, Any]],
+    generators: dict[EvalGeneratorType, Generator],
     debug: bool = False,  # pylint: disable=unused-argument
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Implements code kaggle metric following axlearn.open_api.common.MetricFn.
 
     Args:
@@ -527,7 +527,7 @@ def metric_fn(
     return _compute_metrics_from_responses(responses)
 
 
-def _populate_retry_requests(responses: List[Dict[str, Any]]):
+def _populate_retry_requests(responses: list[dict[str, Any]]):
     """Prepares retry requests from execution results.
 
     Args:
@@ -546,7 +546,7 @@ def _populate_retry_requests(responses: List[Dict[str, Any]]):
                 )
 
 
-def _generate_retry_solutions(responses: List[Dict[str, Any]], *, generator: Generator):
+def _generate_retry_solutions(responses: list[dict[str, Any]], *, generator: Generator):
     """Generates retry requests from execution results and generate answers.
 
     Args:
@@ -589,10 +589,10 @@ def _generate_retry_solutions(responses: List[Dict[str, Any]], *, generator: Gen
 
 def retry_metric_fn(
     *,
-    responses: List[Dict[str, Any]],
-    generators: Dict[EvalGeneratorType, Generator],
+    responses: list[dict[str, Any]],
+    generators: dict[EvalGeneratorType, Generator],
     debug: bool = False,  # pylint: disable=unused-argument
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Implements code kaggle with onlien retry metric following axlearn.open_api.common.MetricFn.
 
     Args:
@@ -618,7 +618,7 @@ def retry_metric_fn(
     return _compute_metrics_from_responses(responses)
 
 
-def _post_process_responses_oracle(responses: List[Dict[str, Any]]):
+def _post_process_responses_oracle(responses: list[dict[str, Any]]):
     """Extracts executable notebooks from responses with oracle response.
 
     Args:
@@ -644,10 +644,10 @@ def _post_process_responses_oracle(responses: List[Dict[str, Any]]):
 
 def oracle_metric_fn(
     *,
-    responses: List[Dict[str, Any]],
-    generators: Dict[EvalGeneratorType, Generator],
+    responses: list[dict[str, Any]],
+    generators: dict[EvalGeneratorType, Generator],
     debug: bool = False,  # pylint: disable=unused-argument
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Implements code kaggle with oracle response metric
         following axlearn.open_api.common.MetricFn.
 

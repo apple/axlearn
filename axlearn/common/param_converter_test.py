@@ -3,7 +3,7 @@
 """Tests param converter utils."""
 # pylint: disable=too-many-lines
 import os
-from typing import Any, Callable, Optional, Type
+from typing import Any, Callable, Optional
 
 import jax
 import pytest
@@ -760,7 +760,7 @@ class DeBERTaModelConverterTest(TestCase):
         num_directional_buckets: int,
         max_distance: int,
         query_len: int,
-        stack_cls: Type[BaseStackedTransformerLayer],
+        stack_cls: type[BaseStackedTransformerLayer],
     ):
         hf_cfg, axlearn_args = deberta_build_cfg(
             share_projections=share_projections,
@@ -994,9 +994,11 @@ class T5XModelConverterTest(TestCase):
 
         with jax.default_matmul_precision("float32"):
             test_outputs, _ = F(
-                self.test_model.encoder.relative_pos_emb
-                if bidirectional
-                else self.test_model.decoder.relative_pos_emb,
+                (
+                    self.test_model.encoder.relative_pos_emb
+                    if bidirectional
+                    else self.test_model.decoder.relative_pos_emb
+                ),
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
                 state=_parameters_from_t5x_rel_pos_emb(
@@ -1008,7 +1010,7 @@ class T5XModelConverterTest(TestCase):
         self.assertNestedAllClose(test_outputs, testcase["outputs"])
 
     @parameterized.parameters([QKVLinear, FusedQKVLinear])
-    def test_parameters_from_t5x_attention(self, proj_cls: Type[BaseQKVLinear]):
+    def test_parameters_from_t5x_attention(self, proj_cls: type[BaseQKVLinear]):
         testcase = jnp.load(
             os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_attention.npy"),
             allow_pickle=True,
@@ -1120,7 +1122,7 @@ class T5XModelConverterTest(TestCase):
         self.assertNestedAllClose(test_outputs.data, testcase["outputs"], atol=self.atol)
 
     @parameterized.parameters(StackedTransformerLayer, RepeatedTransformerLayer)
-    def test_parameters_from_t5x_decoder(self, stack_cls: Type[BaseStackedTransformerLayer]):
+    def test_parameters_from_t5x_decoder(self, stack_cls: type[BaseStackedTransformerLayer]):
         testcase = jnp.load(
             os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_decoder.npy"),
             allow_pickle=True,
@@ -1169,7 +1171,7 @@ class T5XModelConverterTest(TestCase):
         )
 
     @parameterized.parameters([StackedTransformerLayer, RepeatedTransformerLayer])
-    def test_parameters_from_t5x_encoder(self, stack_cls: Type[BaseStackedTransformerLayer]):
+    def test_parameters_from_t5x_encoder(self, stack_cls: type[BaseStackedTransformerLayer]):
         testcase = jnp.load(
             os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_encoder.npy"),
             allow_pickle=True,
@@ -1216,8 +1218,8 @@ class T5XModelConverterTest(TestCase):
     )
     def test_parameters_from_t5x_encoder_decoder(
         self,
-        stack_cls: Type[BaseStackedTransformerLayer],
-        proj_cls: Type[BaseQKVLinear],
+        stack_cls: type[BaseStackedTransformerLayer],
+        proj_cls: type[BaseQKVLinear],
     ):
         testcase = jnp.load(
             os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_encoder_decoder.npy"),

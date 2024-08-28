@@ -2,7 +2,7 @@
 
 """A custom op that provides an optimization barrier."""
 
-from typing import Any, Tuple
+from typing import Any
 
 import jax
 from jax._src import ad_checkpoint  # pylint: disable=protected-access
@@ -98,7 +98,7 @@ def forward_optimization_barrier(pytree: Any) -> Any:
 
 
 @forward_optimization_barrier.defjvp
-def forward_optimization_barrier_jvp(primals: Tuple, tangents: Tuple) -> Tuple[Any, Any]:
+def forward_optimization_barrier_jvp(primals: tuple, tangents: tuple) -> tuple[Any, Any]:
     """The JVP for `optimization_barrier`.
 
     Args:
@@ -123,9 +123,9 @@ def forward_optimization_barrier_jvp(primals: Tuple, tangents: Tuple) -> Tuple[A
 def forward_optimization_barrier_vmap(
     # pylint: disable-next=unused-argument
     batch_axis_size: int,
-    in_batched: Tuple,
+    in_batched: tuple,
     pytree: Any,
-) -> Tuple[Any, Any]:
+) -> tuple[Any, Any]:
     """VMAP rule for`optimization_barrier`.
 
     Args:

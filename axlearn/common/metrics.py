@@ -1,8 +1,9 @@
 # Copyright © 2023 Apple Inc.
 
 """Metrics."""
+
 import typing
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -26,12 +27,23 @@ class WeightedScalarValue(Summary):
 
 @typing.runtime_checkable  # Needed for isinstance checks to work.
 class WeightedScalar(WeightedScalarValue, Summable):
-    """A weighted scalar represents a weighted Summable value."""
+    """A weighted scalar represents a weighted Summable value.
+
+    Weight should be a scalar and is assumed to be non-negative.
+    A weight of zero corresponds to zero mean.
+    """
 
     def __add__(self, other: "WeightedScalar") -> "WeightedScalar":
+        # TODO(markblee): Handle possible overflows.
         weight = self.weight + other.weight
+        # Use the "double-where" trick to avoid division by 0.
+        # https://jax.readthedocs.io/en/latest/faq.html#gradients-contain-nan-where-using-where
+        # The only case where weight<=0 is if both weights are 0, since they are non-negative.
         mean = jnp.where(
-            weight > 0, (self.mean * self.weight + other.mean * other.weight) / weight, 0.0
+            weight > 0,
+            (self.mean * self.weight + other.mean * other.weight)
+            / jnp.where(weight > 0, weight, 1),
+            0.0,
         )
         return WeightedScalar(mean, weight)
 
@@ -46,9 +58,9 @@ class MetricAccumulator(Configurable):
 
     def __init__(self, cfg: Configurable.Config):
         super().__init__(cfg)
-        self._summaries: Dict[str, Any] = {}
+        self._summaries: dict[str, Any] = {}
 
-    def update(self, model_outputs: Dict[str, Any]):
+    def update(self, model_outputs: dict[str, Any]):
         logging.debug(
             "MetricAccumulator.update: current=%s update=%s",
             self._summaries,
@@ -68,7 +80,7 @@ class MetricAccumulator(Configurable):
             )
         logging.debug("MetricAccumulator.update: merged=%s", self._summaries)
 
-    def summaries(self) -> Dict[str, Any]:
+    def summaries(self) -> dict[str, Any]:
         return self._summaries
 
     @staticmethod
@@ -77,7 +89,7 @@ class MetricAccumulator(Configurable):
         return jax.tree_util.tree_map(*args, **kwargs, is_leaf=is_leaf)
 
 
-def _metric_accumulator_flatten(v: MetricAccumulator) -> Tuple[Tuple, Tuple]:
+def _metric_accumulator_flatten(v: MetricAccumulator) -> tuple[tuple, tuple]:
     """Specifies a flattening recipe for `MetricAccumulator`."""
     summaries = v.summaries()
     sorted_items = sorted(summaries.items(), key=lambda x: x[0])
@@ -88,7 +100,7 @@ def _metric_accumulator_flatten(v: MetricAccumulator) -> Tuple[Tuple, Tuple]:
 
 
 def _metric_accumulator_unflatten(
-    summaries_keys: Tuple, summaries_values: Tuple
+    summaries_keys: tuple, summaries_values: tuple
 ) -> MetricAccumulator:
     """Specifies an unflattening recipe for `MetricAccumulator`."""
     accumulator = MetricAccumulator.default_config().instantiate()

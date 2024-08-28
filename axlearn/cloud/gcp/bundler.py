@@ -48,7 +48,7 @@ Examples (cloudbuild):
 
 import os
 import subprocess
-from typing import Dict, List, Optional
+from typing import Optional
 
 from absl import app, flags, logging
 
@@ -72,7 +72,7 @@ class GCSTarBundler(BaseTarBundler):
     TYPE = "gcs"
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> BaseTarBundler.Config:
+    def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> BaseTarBundler.Config:
         """Converts a spec to a bundler.
 
         Possible options:
@@ -98,7 +98,7 @@ class ArtifactRegistryBundler(DockerBundler):
     TYPE = "artifactregistry"
 
     @classmethod
-    def from_spec(cls, spec: List[str], *, fv: Optional[flags.FlagValues]) -> DockerBundler.Config:
+    def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> DockerBundler.Config:
         cfg = super().from_spec(spec, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
@@ -125,10 +125,13 @@ class CloudBuildBundler(BaseDockerBundler):
 
         # Build image asynchronously.
         is_async: bool = True
+        # If provided, should be the identifier of a private worker pool.
+        # See: https://cloud.google.com/build/docs/private-pools/private-pools-overview
+        private_worker_pool: Optional[str] = None
 
     @classmethod
     def from_spec(
-        cls, spec: List[str], *, fv: Optional[flags.FlagValues]
+        cls, spec: list[str], *, fv: Optional[flags.FlagValues]
     ) -> BaseDockerBundler.Config:
         cfg = super().from_spec(spec, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
@@ -141,9 +144,9 @@ class CloudBuildBundler(BaseDockerBundler):
         *,
         dockerfile: str,
         image: str,
-        args: Dict[str, str],
+        args: dict[str, str],
         context: str,
-        labels: Dict[str, str],
+        labels: dict[str, str],
     ):
         cfg: CloudBuildBundler.Config = self.config
         logging.info("CloudBuild build args: %s", args)
@@ -158,7 +161,7 @@ class CloudBuildBundler(BaseDockerBundler):
             if cfg.cache_from
             else ""
         )
-        image_path = image.rsplit(":", maxsplit=1)[0]
+        image_path, image_tag = image.rsplit(":", maxsplit=1)
         latest_tag = f"{image_path}:latest"
         cloudbuild_yaml = f"""
 steps:
@@ -183,6 +186,7 @@ timeout: 3600s
 images:
 - "{image}"
 - "{latest_tag}"
+tags: [{image_tag}]
 options:
   logging: CLOUD_LOGGING_ONLY
         """
@@ -200,6 +204,8 @@ options:
             cloudbuild_yaml_file,
             context,
         ]
+        if cfg.private_worker_pool:
+            cmd.extend(["--worker-pool", cfg.private_worker_pool])
         if cfg.is_async:
             cmd.append("--async")
         logging.info("Running %s", cmd)

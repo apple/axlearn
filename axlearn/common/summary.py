@@ -2,7 +2,7 @@
 
 """Summary objects that can be logged."""
 
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Optional, Union
 
 import jax
 import numpy as np
@@ -22,8 +22,7 @@ class Summary(struct.PyTreeNode):
         raise NotImplementedError(type(self))
 
     def validate(self):
-        """Validates that the summary was constructed with valid data. This is automatically
-        called during __post_init__().
+        """Validates that the summary was constructed with valid data.
 
         Raises:
             Exception: If the summary is invalid.
@@ -78,6 +77,53 @@ class ImageSummary(Summary):
         return self
 
 
+class AudioSummary(Summary):
+    """Audio summary.
+
+    Attributes:
+        _value: A Tensor representing audio data with shape [t,] or [t,c], t is the number
+            of frames, and c is the number of channels. Elements should be floating-point
+            values in [-1.0,1.0].
+        sample_rate: An int or rank-0 int32 Tensor that represents the sample rate, in Hz.
+            Must be positive. When not passed, default value 16kHz will be used.
+
+    Example:
+        ```
+        # A 10 second 16kHz audio
+        audio_16k = jax.numpy.ones((16000*10,))
+        add_summary("audio_16k", AudioSummary(audio_16k))
+        # A 10 second 24kHz 2 channels audio
+        audio_24k = jax.numpy.ones((24000*10,2))
+        add_summary("audio_24k", AudioSummary(audio_24k, sample_rate=24000))
+        ```
+    """
+
+    _value: Tensor
+    sample_rate: int = 16000
+
+    def validate(self):
+        val = self._value
+        if val.ndim not in (1, 2):
+            raise ValueError(
+                f"Audio value has invalid shape: expected val.ndim in (1, 2), got {val.ndim}"
+            )
+
+    def value(self) -> Tensor:
+        val = self._value
+        # tf.summary.audio takes a tensor representing audio data with shape [k, t, c],
+        # where k is the number of audio clips, t is the number of frames, and c is
+        # the number of channels. Multiple audio clips are not supported, we set
+        # max_outputs=1 in tf_summary.audio
+        if val.ndim == 1:
+            # Add the audio clips and channels dimension.
+            return val[None, :, None]
+        # Add the audio clips dimension.
+        return val[None, :, :]
+
+    def accumulate(self, other: Summary) -> Summary:
+        return self
+
+
 class CallbackSummary(Summary):
     # pylint: disable=not-callable,super-init-not-called
     """A summary defined using a callback that is only called outside of JIT. The arguments
@@ -100,8 +146,8 @@ class CallbackSummary(Summary):
     """
 
     fn: Callable = struct.field(pytree_node=False)
-    args: Tuple
-    kwargs: Dict[str, Any]
+    args: tuple
+    kwargs: dict[str, Any]
 
     def __init__(self, fn: Callable, *args, **kwargs):
         """Initializes the class.

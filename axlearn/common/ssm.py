@@ -23,8 +23,9 @@
 
 import functools
 import math
+from collections.abc import Sequence
 from enum import Enum, unique
-from typing import Dict, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import NamedTuple, Optional, Union
 
 import jax
 import jax.ad_checkpoint
@@ -168,7 +169,7 @@ class BaseMambaRecurrence(BaseLayer):
         a: Tensor,
         b: Tensor,
         delta: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Computes discretization of SSM parameters, as implemented in Mamba.
 
         Args:
@@ -244,8 +245,8 @@ class LinearScanMambaRecurrence(BaseMambaRecurrence):
         cfg = self.config
 
         def advance(
-            carry: Nested[Tensor], a_b: Tuple[Nested[Tensor]]
-        ) -> Tuple[Nested[Tensor], Nested[Tensor]]:
+            carry: Nested[Tensor], a_b: tuple[Nested[Tensor]]
+        ) -> tuple[Nested[Tensor], Nested[Tensor]]:
             """Updates the SSM state given the previous state.
 
             Args:
@@ -378,7 +379,7 @@ class PallasLinearScanMambaRecurrence(BaseMambaRecurrence):
         # been tuned on a tpu-v5p.
         dim_tile_size: int = 512
         # A mapping from the dimensions of a Mamba input to its PartitionSpec.
-        mamba_dim_to_partition_spec: Dict[str, PartitionSpec] = {
+        mamba_dim_to_partition_spec: dict[str, PartitionSpec] = {
             "btd": PartitionSpec(None),
             "sd": PartitionSpec(None),
             "bts": PartitionSpec(None),
@@ -446,7 +447,7 @@ class PallasLinearScanMambaRecurrence(BaseMambaRecurrence):
 
 def default_mamba_dim_to_partition_specs(
     mesh_axis_names: Sequence[str],
-) -> Dict[str, PartitionSpec]:
+) -> dict[str, PartitionSpec]:
     """Builds a default mapping from tensor dims to partition specs for shard_mapping
     the Pallas-based Mamba implementation.
 
@@ -473,7 +474,7 @@ def default_mamba_dim_to_partition_specs(
 
 def default_output_partition_spec(
     mesh_axis_names: Sequence[str],
-) -> Dict[str, PartitionSpec]:
+) -> dict[str, PartitionSpec]:
     """Builds a default output partition spec for the shard_mapped Pallas-based Mamba
     implementation.
 
@@ -552,10 +553,10 @@ class MambaMixerLayer(BaseLayer):
         # The recurrence implementation to use for full-sequence inputs.
         mamba_recurrence: BaseMambaRecurrence = LinearScanMambaRecurrence.default_config()
         # The recurrence implementation to use for inference.
-        inference_mamba_recurrence: BaseMambaRecurrence = (
-            LinearScanMambaRecurrence.default_config().set(
-                output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
-            )
+        inference_mamba_recurrence: (
+            BaseMambaRecurrence
+        ) = LinearScanMambaRecurrence.default_config().set(
+            output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
         )
 
     class MambaOutput(NamedTuple):
@@ -636,7 +637,7 @@ class MambaMixerLayer(BaseLayer):
             ),
         )
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         """Creates log_a and d parameter specs.
 
         Returns:
@@ -661,7 +662,7 @@ class MambaMixerLayer(BaseLayer):
         )
         return params
 
-    def _project_input(self, inputs: Tensor) -> Tuple[Tensor, Tensor]:
+    def _project_input(self, inputs: Tensor) -> tuple[Tensor, Tensor]:
         """Projects inputs into Tensors with dimension inner_dim.
 
         Args:
@@ -742,7 +743,7 @@ class MambaMixerLayer(BaseLayer):
         mode: ForwardMode,
         query: Tensor,
         cached_states: Optional[Nested[Tensor]] = None,
-    ) -> Tuple[Optional[Nested[Tensor]], Tensor]:
+    ) -> tuple[Optional[Nested[Tensor]], Tensor]:
         """Computes MambaMixerLayer outputs.
 
         Args:
@@ -812,7 +813,7 @@ class MambaMixerLayer(BaseLayer):
         *,
         time_step: Tensor,
         query: Tensor,
-    ) -> Tuple[Nested[Tensor], MambaOutput]:
+    ) -> tuple[Nested[Tensor], MambaOutput]:
         """Initializes cache for autoregressive cached decoding.
 
         Args:
@@ -855,7 +856,7 @@ class MambaMixerLayer(BaseLayer):
         cached_conv_input: Tensor,
         weight: Tensor,
         bias: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Updates cache of convolutional inputs and returns updated state.
 
         Args:
@@ -890,7 +891,7 @@ class MambaMixerLayer(BaseLayer):
         b_bar_x: Tensor,
         c: Tensor,
         d: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Moves the SSM state forward by a single step.
 
         Args:
@@ -914,7 +915,7 @@ class MambaMixerLayer(BaseLayer):
         self,
         cached_states: Nested[Tensor],
         query: Tensor,
-    ) -> Tuple[Nested[Tensor], MambaOutput]:
+    ) -> tuple[Nested[Tensor], MambaOutput]:
         """Computes the next state given the query of the current step. This function is used
         in autoregressive decoding.
 
@@ -1065,7 +1066,7 @@ class BaseSSMLayer(BaseLayer):
         time_step: Tensor,
         data: Tensor,
         **_kwargs,
-    ) -> Tuple[Nested[Tensor], BaseTransformerLayer.Output]:
+    ) -> tuple[Nested[Tensor], BaseTransformerLayer.Output]:
         """Initializes cached states for incremental computation.
 
         Args:
@@ -1086,7 +1087,7 @@ class BaseSSMLayer(BaseLayer):
         cached_states: Nested[Tensor],
         data: Tensor,
         **_kwargs,
-    ) -> Tuple[Nested[Tensor], BaseTransformerLayer.Output]:
+    ) -> tuple[Nested[Tensor], BaseTransformerLayer.Output]:
         """Computes incremental outputs.
 
         Args:
@@ -1145,7 +1146,7 @@ class MambaBlock(BaseSSMLayer):
         data: Tensor,
         cached_states: Optional[Nested[Tensor]] = None,
         **_kwargs,
-    ) -> Tuple[Optional[Nested[Tensor]], BaseTransformerLayer.Output]:
+    ) -> tuple[Optional[Nested[Tensor]], BaseTransformerLayer.Output]:
         """Computes the standard Mamba block including residual connection over
         the input data.
 
@@ -1230,7 +1231,7 @@ class MambaBlock(BaseSSMLayer):
         time_step: Nested[Tensor],
         data: Tensor,
         **_kwargs,
-    ) -> Tuple[Nested[Tensor], BaseTransformerLayer.Output]:
+    ) -> tuple[Nested[Tensor], BaseTransformerLayer.Output]:
         """Initializes cache for autoregressive cached decoding.
 
         Args:
@@ -1255,7 +1256,7 @@ class MambaBlock(BaseSSMLayer):
         cached_states: Nested[Tensor],
         data: Tensor,
         **_kwargs,
-    ) -> Tuple[Nested[Tensor], BaseTransformerLayer.Output]:
+    ) -> tuple[Nested[Tensor], BaseTransformerLayer.Output]:
         """Computes incremental outputs.
 
         Args:
@@ -1302,7 +1303,7 @@ class JambaMambaBlock(MambaBlock):
         data: Tensor,
         cached_states: Optional[Nested[Tensor]] = None,
         **_kwargs,
-    ) -> Tuple[Optional[Nested[Tensor]], BaseTransformerLayer.Output]:
+    ) -> tuple[Optional[Nested[Tensor]], BaseTransformerLayer.Output]:
         cfg = self.config
         skip_input = data
         if cfg.residual_mode == BlockResidualMode.FP32:
@@ -1436,9 +1437,11 @@ class StackedMixedSSMTransformerLayer(StackedTransformerLayer):
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         layers = [
-            cfg.layer
-            if i % cfg.transformer_layer_period == cfg.transformer_layer_offset
-            else cfg.ssm_layer
+            (
+                cfg.layer
+                if i % cfg.transformer_layer_period == cfg.transformer_layer_offset
+                else cfg.ssm_layer
+            )
             for i in range(cfg.num_layers)
         ]
         super().__init__(cfg.set(layer=layers), parent=parent)

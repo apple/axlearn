@@ -10,7 +10,6 @@
 
 # pylint: disable=no-self-use,wrong-import-position,missing-module-docstring
 import os
-from typing import List
 
 import jax
 import jax.numpy as jnp
@@ -49,7 +48,7 @@ _CODE_BOOK = jnp.array(
 )
 
 
-def _create_prngkeyarray(key_data: List[int]) -> Tensor:
+def _create_prngkeyarray(key_data: list[int]) -> Tensor:
     return jax.random.wrap_key_data(
         jnp.array(key_data, dtype=jnp.uint32),
         impl=prng_interal.threefry_prng_impl,
@@ -213,7 +212,6 @@ class RandomVectorQuantizerTest(TestCase):
             ),
             shapes(layer_params),
         )
-        # pylint: disable-next=protected-access
         with prng_impl("threefry2x32"):
             proj_key = _create_prngkeyarray([3077990774, 2166202870])
             codebook_key = _create_prngkeyarray([791337683, 1373966058])

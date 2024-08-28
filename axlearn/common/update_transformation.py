@@ -15,7 +15,8 @@ are no plans to stop supporting `PartitionedGradientTransformation`.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable, Dict, Literal, Optional, Protocol, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Any, Callable, Literal, Optional, Protocol, Union
 
 import jax
 import optax
@@ -72,12 +73,10 @@ class WrappedPartitionedGradientTransformation(UpdateTransformation):
 
     def create_state_partition_specs(
         self, model_param_specs: Nested[ParameterSpec]
-    ) -> Union[Nested[PartitionSpec], Tuple[Nested[PartitionSpec]],]:
+    ) -> Union[Nested[PartitionSpec], tuple[Nested[PartitionSpec]],]:
         return self.transformation.partition(model_param_specs)
 
-    def init(
-        self, model_params: Nested[OptParam]
-    ) -> Union[Nested[Tensor], Tuple[Nested[Tensor], ...]]:
+    def init(self, model_params: Nested[OptParam]) -> Nested[Tensor] | tuple[Nested[Tensor], ...]:
         return self.transformation.init(model_params)
 
     def transform_update(self, updates: Updates) -> Updates:
@@ -118,7 +117,7 @@ class Updates(struct.PyTreeNode):
     inplace_updates: Optional[Nested[Union[Tensor, optax.MaskedNode, None]]] = None
 
     # The named forward passes that have previous been invoked.
-    forward_pass: Dict[str, ForwardPass] = struct.field(default_factory=dict)
+    forward_pass: dict[str, ForwardPass] = struct.field(default_factory=dict)
 
     def param_values(self) -> Nested[Tensor]:
         """Returns a tree with the same structure as `opt_params` with the value of each param."""

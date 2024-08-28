@@ -3,7 +3,6 @@
 """Tests classification metrics."""
 # pylint: disable=no-self-use
 import logging
-from typing import Tuple
 
 import evaluate
 import jax
@@ -173,6 +172,65 @@ class TestMetrics(TestWithTemporaryCWD):
             "batch_size": 2,
         },
         {
+            # Test case where we have float weights that sum up less than 1 with 1 positive.
+            "y_score": jnp.array([0.25, 0.75]),
+            "y_true": jnp.array([1, 1]),
+            "weights": jnp.array([0.5, 0.0]),
+            "batch_size": 2,
+        },
+        {
+            # Test case where we have float weights that sum up less than 1 with 1 pos and 1 neg.
+            "y_score": jnp.array([0.25, 0.5, 0.75]),
+            "y_true": jnp.array([1, 0, 1]),
+            "weights": jnp.array([0.5, 0.25, 0.0]),
+            "batch_size": 3,
+        },
+        {
+            # Test case where we have only one example.
+            "y_score": jnp.array([0.25]),
+            "y_true": jnp.array([1]),
+            "weights": jnp.ones(1),
+            "batch_size": 1,
+        },
+        {
+            # Test case where some examples are masked out.
+            "y_score": jnp.repeat(
+                jnp.array(
+                    [
+                        [9.9655354e-01, 3.7714792e-04, 3.7637529e-01],
+                        [1.7892958e-01, 3.9876872e-01, 9.9247831e-01],
+                    ]
+                ),
+                5,
+                axis=-1,
+            ).reshape(-1),
+            "y_true": jnp.array(
+                [
+                    [[0, 1, 1, 0, 1], [1, 0, 0, 1, 0], [0, 0, 1, 0, 0]],
+                    [[1, 1, 0, 0, 0], [1, 0, 1, 0, 1], [1, 1, 1, 1, 1]],
+                ]
+            )
+            .reshape(-1)
+            .astype(jnp.float32),
+            "weights": jnp.array(
+                [
+                    [
+                        [True, True, True, True, True],
+                        [True, False, True, True, True],
+                        [True, True, True, False, True],
+                    ],
+                    [
+                        [True, True, True, True, False],
+                        [True, True, True, True, True],
+                        [False, False, False, False, False],
+                    ],
+                ]
+            )
+            .reshape(-1)
+            .astype(jnp.float32),
+            "batch_size": 30,
+        },
+        {
             # Test case where we have non-integer y_score and all true negatives.
             "y_score": jnp.array([0.25, 0.75]),
             "y_true": jnp.array([0, 0]),
@@ -338,7 +396,7 @@ class TestMetrics(TestWithTemporaryCWD):
 
     def get_random_input_binary_classification(
         self, num_samples: int
-    ) -> Tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor]:
         pred = jax.random.uniform(jax.random.PRNGKey(123), [num_samples], minval=0, maxval=1)
         label = jax.random.randint(jax.random.PRNGKey(321), [num_samples], 0, 2)
         sample_weight = jax.random.uniform(

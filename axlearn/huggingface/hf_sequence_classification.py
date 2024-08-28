@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """HuggingFace sequence classification wrappers."""
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 import jax.numpy as jnp
 import optax
@@ -42,7 +42,7 @@ class HfSequenceClassificationWrapper(HfModuleWrapper):
         self,
         input_batch: NestedTensor,
         **kwargs,
-    ) -> Tuple[Tensor, NestedTensor]:
+    ) -> tuple[Tensor, NestedTensor]:
         """Runs prediction with targets to compute the loss.
         Currently, cross-entropy loss is used.
 
@@ -120,11 +120,11 @@ class HfBertForSequenceClassificationWrapper(HfSequenceClassificationWrapper):
         cfg = super().default_config().set(hf_model_type=FlaxBertForSequenceClassification)
         return cfg
 
-    def _dummy_input_kwargs(self) -> Dict[str, Optional[Tensor]]:
+    def _dummy_input_kwargs(self) -> dict[str, Optional[Tensor]]:
         """Returns a dictionary of kwargs to pass to linen.Module.init."""
         return {**super()._dummy_input_kwargs(), "head_mask": None}
 
-    def _forward_kwargs(self, input_batch: Dict[str, Tensor]) -> Dict[str, Any]:
+    def _forward_kwargs(self, input_batch: dict[str, Tensor]) -> dict[str, Any]:
         """Returns a dictionary of kwargs for HF module's forward __call__."""
         return {**super()._forward_kwargs(input_batch), "head_mask": None}
 
@@ -146,11 +146,11 @@ class HfRobertaForSequenceClassificationWrapper(HfSequenceClassificationWrapper)
         cfg = super().default_config().set(hf_model_type=FlaxRobertaForSequenceClassification)
         return cfg
 
-    def _dummy_input_kwargs(self) -> Dict[str, Optional[Tensor]]:
+    def _dummy_input_kwargs(self) -> dict[str, Optional[Tensor]]:
         """Returns a dictionary of kwargs to pass to linen.Module.init."""
         return {**super()._dummy_input_kwargs(), "head_mask": None}
 
-    def _forward_kwargs(self, input_batch: Dict[str, Tensor]) -> Dict[str, Any]:
+    def _forward_kwargs(self, input_batch: dict[str, Tensor]) -> dict[str, Any]:
         """Returns a dictionary of kwargs for HF module's forward __call__."""
         kwargs = super()._forward_kwargs(input_batch)
         input_ids: Tensor = input_batch["input_ids"]

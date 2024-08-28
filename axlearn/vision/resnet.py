@@ -24,7 +24,8 @@ https://github.com/tensorflow/tpu/blob/master/models/official/resnet/resnet_mode
 # pylint: disable=duplicate-code
 
 import math
-from typing import Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 import jax.nn
 from jax import numpy as jnp
@@ -562,7 +563,7 @@ class ResNet(BaseLayer):
         # The embedding layer after global average pooling.
         self._endpoints_dims["embedding"] = hidden_dim
 
-    def forward(self, image: Tensor) -> Dict[str, Tensor]:
+    def forward(self, image: Tensor) -> dict[str, Tensor]:
         """Computes prediction on an input batch.
 
         Args:
@@ -585,7 +586,7 @@ class ResNet(BaseLayer):
         return endpoints
 
     @property
-    def endpoints_dims(self) -> Dict[str, int]:
+    def endpoints_dims(self) -> dict[str, int]:
         """A dict of {level: hidden_dim} specifies hidden dimension of intermediate features.
 
         2**level is the ratio between the input resolution and the current feature resolution,

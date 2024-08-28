@@ -24,7 +24,7 @@ https://github.com/huggingface/pytorch-image-models/blob/main/timm/models/effici
 """
 import enum
 import math
-from typing import List, Optional, Tuple
+from typing import Optional
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
@@ -121,7 +121,7 @@ def _compute_same_padding(
     kernel_size: int = 1,
     stride: int = 1,
     padding_type: SamePaddingType = SamePaddingType.DEFAULT,
-) -> List[Tuple[int, int]]:
+) -> list[tuple[int, int]]:
     """Compute explicit SAME padding based on kernel size and stride.
 
     Reference:

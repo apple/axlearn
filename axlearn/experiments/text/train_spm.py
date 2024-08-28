@@ -40,7 +40,8 @@ import json
 import multiprocessing
 import os
 import re
-from typing import Any, Dict, Iterator, Optional
+from collections.abc import Iterator
+from typing import Any, Optional
 
 import sentencepiece as spm
 import seqio
@@ -127,7 +128,7 @@ def _build_tfds_iterator(is_training: bool) -> Iterator:
     return ds.as_numpy_iterator()
 
 
-def _build_spm_config(model_name: str) -> Dict[str, Any]:
+def _build_spm_config(model_name: str) -> dict[str, Any]:
     """Builds the sentencpiece trainer config."""
     # Set some default config values.
     configs = dict(
@@ -140,7 +141,7 @@ def _build_spm_config(model_name: str) -> Dict[str, Any]:
         shuffle_input_sentence=True,
         max_sentence_length=4192,
     )
-    with open(FLAGS.spm_config_file, "r", encoding="utf-8") as f:
+    with open(FLAGS.spm_config_file, encoding="utf-8") as f:
         overrides = json.load(f)
     configs.update(overrides)
 

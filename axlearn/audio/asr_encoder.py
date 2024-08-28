@@ -6,8 +6,9 @@
 
 """Speech encoder layers."""
 
+from collections.abc import Sequence
 from math import prod
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Optional
 
 import jax.numpy as jnp
 
@@ -53,7 +54,7 @@ class SpeechFeatureLayer(BaseLayer):
             ),
         )
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Any]:
+    def forward(self, inputs: Tensor, *, paddings: Tensor) -> dict[str, Any]:
         """Computes speech features.
 
         The default transformations and corresponding shapes are:
@@ -149,7 +150,7 @@ class SpeechContextNetwork(BaseLayer):
         self._add_child("pos_emb", cfg.pos_emb.set(dim=cfg.output_dim))
         self._add_child("context", cfg.context.set(input_dim=cfg.output_dim))
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
+    def forward(self, inputs: Tensor, *, paddings: Tensor) -> dict[str, Tensor]:
         """Computes context features.
 
         Args:
@@ -209,7 +210,7 @@ class ASREncoder(BaseLayer):
             "context", cfg.context.set(input_dim=prod(feature_shape[2:]), output_dim=cfg.dim)
         )
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> Dict[str, Tensor]:
+    def forward(self, inputs: Tensor, *, paddings: Tensor) -> dict[str, Tensor]:
         """Computes speech encoder features from waveform.
 
         Args:

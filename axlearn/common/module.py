@@ -43,8 +43,9 @@ import inspect
 import os.path
 import re
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union
 
 import jax
 import numpy as np
@@ -238,7 +239,7 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
         """
         if "parent" in override_kwargs:
             raise ValueError("Overriding parent is not allowed")
-        kwargs = {}  # type: Dict[str, Any]
+        kwargs = {}  # type: dict[str, Any]
         for field in dataclasses.fields(self):
             k = field.name
             if k in override_kwargs:
@@ -365,14 +366,14 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
 class ContextStack(threading.local):
     """See `install_context_stack` on how to ensure thread-safety of the global stack."""
 
-    stack: List[InvocationContext]
+    stack: list[InvocationContext]
     thread_id: int
 
 
 _global_context_stack = ContextStack(stack=[], thread_id=threading.get_ident())
 
 
-def clone_context_stack() -> List[InvocationContext]:
+def clone_context_stack() -> list[InvocationContext]:
     """Returns a copy of the current InvocationContext stack.
 
     This is often used together with `install_context_stack` to ensure that different threads
@@ -381,7 +382,7 @@ def clone_context_stack() -> List[InvocationContext]:
     return list(_global_context_stack.stack)
 
 
-def install_context_stack(stack: List[InvocationContext]):
+def install_context_stack(stack: list[InvocationContext]):
     """Installs the given context stack.
 
     `install_context_stack` should be called in every child thread to ensure that each thread
@@ -513,9 +514,9 @@ class Module(Configurable):
         cfg = self.config
         self._name = cfg.name
         self._parent = parent  # Avoid adding parent to self._modules.
-        self._children: Dict[str, "Module"] = {}
+        self._children: dict[str, "Module"] = {}
         # Mapping from descendant module name to relative path from current module.
-        self._paths_to_shared_modules: Dict[str, List[str]] = {}
+        self._paths_to_shared_modules: dict[str, list[str]] = {}
         self._vlog_level = cfg.vlog
         # TODO(markblee): Consider using a metaclass.
         for method_name, method_fn in self._methods_to_wrap_for_auto_child_context().items():
@@ -529,7 +530,7 @@ class Module(Configurable):
             method_fn = partial_with_fn_metadata(method_fn, self)
             setattr(self, method_name, method_fn)
 
-    def _methods_to_wrap_for_auto_child_context(self) -> Dict[str, Callable]:
+    def _methods_to_wrap_for_auto_child_context(self) -> dict[str, Callable]:
         def _should_wrap_method(method: str) -> bool:
             # Only public methods defined in subclasses of Module need to be wrapped.
             if hasattr(Module, method) or method.startswith("_"):
@@ -651,7 +652,7 @@ class Module(Configurable):
         self._children[name] = module
         return module
 
-    def path_to_descendant_module(self, module: "Module") -> Optional[List[str]]:
+    def path_to_descendant_module(self, module: "Module") -> Optional[list[str]]:
         """Returns the relative path from `self` to `module`.
 
         Args:
@@ -758,7 +759,7 @@ class Module(Configurable):
         return context
 
     @property
-    def children(self) -> Dict[str, "Module"]:
+    def children(self) -> dict[str, "Module"]:
         return self._children
 
     @property
@@ -838,7 +839,7 @@ class _Functional:
     # Whether to require that context.parent is current_context().
     require_parent: bool = struct.field(pytree_node=False)
 
-    def __call__(self, *args, **kwargs) -> Tuple[Any, OutputCollection]:
+    def __call__(self, *args, **kwargs) -> tuple[Any, OutputCollection]:
         """Invokes method_fn in a pure functional fashion.
 
         The invocation will not depend on external inputs or have any side effects. The results only
@@ -877,12 +878,12 @@ def functional(
     module: Module,
     prng_key: Optional[Tensor],
     state: NestedTensor,
-    inputs: Union[Sequence[Any], Dict[str, Any]],
+    inputs: Union[Sequence[Any], dict[str, Any]],
     *,
     method: str = "forward",
     is_training: bool,
     drop_output_collections: Sequence[str] = ("module_outputs",),
-) -> Tuple[Any, OutputCollection]:
+) -> tuple[Any, OutputCollection]:
     """Invokes <module>.<method> in a pure functional fashion.
 
     The invocation will not depend on external inputs or have any side effects. The results only
@@ -942,7 +943,7 @@ def scan_in_context(
     xs: NestedTensor,
     drop_output: Optional[Callable[[str], bool]] = None,
     child_name_prefix: str = "iter",
-) -> Tuple[NestedTensor, NestedTensor]:
+) -> tuple[NestedTensor, NestedTensor]:
     """A thin wrapper around `jax.lax.scan` which is compatible with `OutputCollection`.
 
     In particular, summaries and outputs added by `add_summary` and `add_module_output` respectively

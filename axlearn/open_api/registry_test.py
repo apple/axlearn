@@ -26,8 +26,6 @@ _module_root = "axlearn"
 class MockClient(BaseClient):
     """A mock of open api client."""
 
-    pass
-
 
 class TestClientRegistry(unittest.TestCase):
     """Unit tests for ClientRegistry."""
