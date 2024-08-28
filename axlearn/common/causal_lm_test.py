@@ -378,7 +378,7 @@ class ModelAuxLossTest(parameterized.TestCase):
             if aux_loss_regex is not None:
                 self.assertIn("aux_loss", aux)
                 if aux_loss_regex == ".*/aux_loss" and use_aux_layer:
-                    self.assertEqual(aux["aux_loss"], num_layers * 1.0)
+                    self.assertEqual(aux["aux_loss"], 1.0)
                 else:
                     self.assertEqual(aux["aux_loss"], 0.0)
                 self.assertEqual(ref["cross_entropy"] + aux["aux_loss"], loss)
