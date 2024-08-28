@@ -17,6 +17,7 @@ import optax
 from absl import logging
 from chex import dataclass  # tree_map-friendly dataclass
 from jax import numpy as jnp
+from jax._src.tree_util import KeyEntry
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
@@ -45,6 +46,7 @@ from axlearn.common.utils import (
     NestedTensorSpec,
     PartitionSpec,
     Tensor,
+    _key_entry_to_str,
     check_param_shape_alignment,
     flatten_items,
     get_data_dir,
@@ -791,10 +793,39 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
         return source, aux
 
     def source_to_target(self, source: Builder.State, aux: Any) -> Builder.State:
-        """Load model state from source to target."""
+        """Load model state from source to target.
+
+        Note: If a Tensor from `source` is included by multiple source scopes, makes deep copy of
+              the Tensor so that the target Tensors do not refer to the same underlying Tensor.
+        """
         restored_state = clone_tree(aux.trainer_state)
+
+        copied_leaf_paths = set()
+
+        def _copy_leaf(
+            path: tuple[KeyEntry], leaf: Tensor, source_scope: str, separator: str = "/"
+        ) -> Tensor:
+            path = separator.join(_key_entry_to_str(k) for k in path)
+            if path:
+                # If path is not empty, concatenate with source_scope.
+                path = f"{source_scope}{separator}{path}"
+            else:
+                # If path is empty, it means source_scope is leaf.
+                path = source_scope
+            if path in copied_leaf_paths:
+                return leaf.copy()
+            copied_leaf_paths.add(path)
+            return leaf
+
         for target_scope, source_scope in self.scopes.items():
-            source_model = utils.get_recursively(source.trainer_state.model, source_scope)
+            orig_source_model = utils.get_recursively(source.trainer_state.model, source_scope)
+            source_model = jax.tree_util.tree_map_with_path(
+                lambda path, leaf, source_scope=source_scope: _copy_leaf(
+                    path, leaf, source_scope=source_scope
+                ),
+                orig_source_model,
+            )
+
             if target_scope:
                 if "/" in target_scope:
                     target_path, last_scope = target_scope.rsplit("/", 1)
