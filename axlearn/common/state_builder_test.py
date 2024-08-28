@@ -5,7 +5,7 @@
 # pylint: disable=no-self-use,too-many-lines
 import os
 from copy import deepcopy
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import jax
 import jax.numpy as jnp
@@ -494,21 +494,28 @@ class DummyNestedLayer(BaseLayer):
 
         layer: InstantiableConfig = Linear.default_config().set(input_dim=5, output_dim=2)
         path: Required[str] = REQUIRED
+        path2: Optional[str] = None
 
     def __init__(self, cfg: BaseModel.Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        if "/" not in cfg.path:
-            self._add_child(cfg.path, cfg.layer)
-        else:
-            name, path = cfg.path.split("/", maxsplit=1)
-            self._add_child(
-                name,
-                DummyNestedLayer.default_config().set(
-                    layer=cfg.layer,
-                    path=path,
-                ),
-            )
+
+        def add_nested_child(path):
+            if "/" not in path:
+                self._add_child(path, cfg.layer)
+            else:
+                name, sub_path = path.split("/", maxsplit=1)
+                self._add_child(
+                    name,
+                    DummyNestedLayer.default_config().set(
+                        layer=cfg.layer,
+                        path=sub_path,
+                    ),
+                )
+
+        add_nested_child(cfg.path)
+        if cfg.path2 is not None:
+            add_nested_child(cfg.path2)
 
 
 class DummyNestedModel(BaseModel):
@@ -520,6 +527,7 @@ class DummyNestedModel(BaseModel):
 
         layer: InstantiableConfig = Linear.default_config().set(input_dim=5, output_dim=2)
         path: Required[str] = REQUIRED
+        path2: Optional[str] = None
 
     def __init__(self, cfg: BaseModel.Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -528,6 +536,7 @@ class DummyNestedModel(BaseModel):
             "model",
             DummyNestedLayer.default_config().set(
                 path=cfg.path,
+                path2=cfg.path2,
                 layer=cfg.layer,
             ),
         )
@@ -1162,11 +1171,11 @@ class ModelStateScopeConverterTest(TestCase):
             target_state.trainer_state.model["linear2"]["bias"],
         )
 
-    def test_duplicate_source_scopes1(self):
-        # Test case1: copy one leaf first, then copy an ancestor.
+    def _create_fake_state_and_convert(self, scope_mapping: Dict[str, str]):
         # Create fake source_state and target_state with nested layers.
         source_cfg, source_state = _create_dummy_state(
-            jax.random.PRNGKey(0), DummyNestedModel.default_config().set(path="linear")
+            jax.random.PRNGKey(0),
+            DummyNestedModel.default_config().set(path="linear", path2="linear2"),
         )
         _, target_state = _create_dummy_state(
             jax.random.PRNGKey(1),
@@ -1180,176 +1189,73 @@ class ModelStateScopeConverterTest(TestCase):
             .set(
                 name="test",
                 source_trainer_config=source_cfg,
-                scope={
-                    "linear/bias": "model/linear/bias",
-                    "child": "model",
-                },
+                scope=scope_mapping,
             )
             .instantiate(parent=None)
         )
         converted_state = converter.source_to_target(source_state, target_state)
+        return source_state, converted_state
+
+    @parameterized.parameters(
+        {"scope_mapping": {"linear": "model/linear", "child": "model"}},
+        {"scope_mapping": {"linear/bias": "model/linear/bias", "child": "model"}},
+        {
+            "scope_mapping": {
+                "linear/bias": "model/linear/bias",
+                "child/linear": "model/linear",
+                "child": "model",
+            }
+        },
+        {
+            "scope_mapping": {
+                "linear/bias": "model/linear/bias",
+                "child": "model",
+                "child/linear": "model/linear",
+            }
+        },
+    )
+    def test_duplicate_source_scopes_leaf_first(self, scope_mapping):
+        # Map leaf first.
+        # Create fake source_state and target_state with nested layers and perform conversion.
+        source_state, converted_state = self._create_fake_state_and_convert(scope_mapping)
+
         self.assertNestedAllClose(
             converted_state.trainer_state.model["linear"]["bias"],
             source_state.trainer_state.model["model"]["linear"]["bias"],
         )
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"],
-            source_state.trainer_state.model["model"],
+            converted_state.trainer_state.model["child"]["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
         )
-        # source_state's "model/linear/bias" is donated to converted_state's "linear/bias".
+        # converted_state's "linear/bias" is donated.
         self.assertTrue(
             converted_state.trainer_state.model["linear"]["bias"]
             is source_state.trainer_state.model["model"]["linear"]["bias"]
         )
-        # converted_state's "child/linear/bias" is a copy and has different memory.
+        # converted_state's "child" is a copy and has different memory.
         self.assertTrue(
             converted_state.trainer_state.model["child"]["linear"]["bias"]
             is not source_state.trainer_state.model["model"]["linear"]["bias"]
         )
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["weight"]
-            is source_state.trainer_state.model["model"]["linear"]["weight"]
-        )
 
-    def test_duplicate_source_scopes2(self):
-        # Test case2: copy one sub path first, then copy a parent.
-        # Create fake source_state and target_state with nested layers.
-        source_cfg, source_state = _create_dummy_state(
-            jax.random.PRNGKey(0), DummyNestedModel.default_config().set(path="linear")
-        )
-        _, target_state = _create_dummy_state(
-            jax.random.PRNGKey(1),
-            DummyModel.default_config().set(
-                child=DummyNestedLayer.default_config().set(path="linear")
-            ),
-        )
+    @parameterized.parameters(
+        {"scope_mapping": {"child/linear": "model/linear", "linear": "model/linear"}},
+        {"scope_mapping": {"child/linear": "model/linear", "linear/bias": "model/linear/bias"}},
+        {"scope_mapping": {"child": "model", "linear/bias": "model/linear/bias"}},
+    )
+    def test_duplicate_source_scopes_leaf_last(self, scope_mapping):
+        # Map leaf at last.
 
-        converter = (
-            ModelStateScopeConverter.default_config()
-            .set(
-                name="test",
-                source_trainer_config=source_cfg,
-                scope={
-                    "linear": "model/linear",
-                    "child": "model",
-                },
-            )
-            .instantiate(parent=None)
-        )
-        converted_state = converter.source_to_target(source_state, target_state)
+        # Create fake source_state and target_state with nested layers and perform conversion.
+        source_state, converted_state = self._create_fake_state_and_convert(scope_mapping)
+
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["linear"],
+            converted_state.trainer_state.model["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
+        )
+        self.assertNestedAllClose(
+            converted_state.trainer_state.model["child"]["linear"],
             source_state.trainer_state.model["model"]["linear"],
-        )
-        self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"],
-            source_state.trainer_state.model["model"],
-        )
-        # source_state's "model/linear" is donated to converted_state's "linear".
-        self.assertTrue(
-            converted_state.trainer_state.model["linear"]["bias"]
-            is source_state.trainer_state.model["model"]["linear"]["bias"]
-        )
-        self.assertTrue(
-            converted_state.trainer_state.model["linear"]["weight"]
-            is source_state.trainer_state.model["model"]["linear"]["weight"]
-        )
-        # converted_state's "child" is a copy and has different memory.
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["bias"]
-            is not source_state.trainer_state.model["model"]["linear"]["bias"]
-        )
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["weight"]
-            is not source_state.trainer_state.model["model"]["linear"]["weight"]
-        )
-
-    def test_duplicate_source_scopes3(self):
-        # Test case3: copy one path twice.
-        # Create fake source_state and target_state with nested layers.
-        source_cfg, source_state = _create_dummy_state(
-            jax.random.PRNGKey(0), DummyNestedModel.default_config().set(path="linear")
-        )
-        _, target_state = _create_dummy_state(
-            jax.random.PRNGKey(1),
-            DummyModel.default_config().set(
-                child=DummyNestedLayer.default_config().set(path="linear")
-            ),
-        )
-
-        converter = (
-            ModelStateScopeConverter.default_config()
-            .set(
-                name="test",
-                source_trainer_config=source_cfg,
-                scope={
-                    "linear": "model",
-                    "child": "model",
-                },
-            )
-            .instantiate(parent=None)
-        )
-        converted_state = converter.source_to_target(source_state, target_state)
-        self.assertNestedAllClose(
-            converted_state.trainer_state.model["linear"],
-            source_state.trainer_state.model["model"],
-        )
-        self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"],
-            source_state.trainer_state.model["model"],
-        )
-        # source_state's "model" is donated to converted_state's "linear".
-        self.assertTrue(
-            converted_state.trainer_state.model["linear"]["linear"]["bias"]
-            is source_state.trainer_state.model["model"]["linear"]["bias"]
-        )
-        self.assertTrue(
-            converted_state.trainer_state.model["linear"]["linear"]["weight"]
-            is source_state.trainer_state.model["model"]["linear"]["weight"]
-        )
-        # converted_state's "child" is a copy and has different memory.
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["bias"]
-            is not source_state.trainer_state.model["model"]["linear"]["bias"]
-        )
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["weight"]
-            is not source_state.trainer_state.model["model"]["linear"]["weight"]
-        )
-
-    def test_duplicate_source_scopes4(self):
-        # Test case4: copy a parent first, then copy a descendent.
-        # Create fake source_state and target_state with nested layers.
-        source_cfg, source_state = _create_dummy_state(
-            jax.random.PRNGKey(0), DummyNestedModel.default_config().set(path="linear")
-        )
-        _, target_state = _create_dummy_state(
-            jax.random.PRNGKey(1),
-            DummyModel.default_config().set(
-                child=DummyNestedLayer.default_config().set(path="linear")
-            ),
-        )
-
-        converter = (
-            ModelStateScopeConverter.default_config()
-            .set(
-                name="test",
-                source_trainer_config=source_cfg,
-                scope={
-                    "child": "model",
-                    "linear/bias": "model/linear/bias",
-                },
-            )
-            .instantiate(parent=None)
-        )
-        converted_state = converter.source_to_target(source_state, target_state)
-        self.assertNestedAllClose(
-            converted_state.trainer_state.model["linear"]["bias"],
-            source_state.trainer_state.model["model"]["linear"]["bias"],
-        )
-        self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"],
-            source_state.trainer_state.model["model"],
         )
         # source_state's "model" is donated to coverted_state's "child".
         self.assertTrue(
@@ -1366,109 +1272,36 @@ class ModelStateScopeConverterTest(TestCase):
             is not source_state.trainer_state.model["model"]["linear"]["bias"]
         )
 
-    def test_duplicate_source_scopes5(self):
-        # Test case5: copy one sub path first, then copy a parent, then copy a grand parent.
-        # Create fake source_state and target_state with nested layers.
-        source_cfg, source_state = _create_dummy_state(
-            jax.random.PRNGKey(0), DummyNestedModel.default_config().set(path="linear")
-        )
-        _, target_state = _create_dummy_state(
-            jax.random.PRNGKey(1),
-            DummyModel.default_config().set(
-                child=DummyNestedLayer.default_config().set(path="linear")
-            ),
-        )
+    def test_duplicate_source_scopes_edge_case(self):
+        # Create fake source_state and target_state with nested layers and perform conversion.
+        scope_mapping = {"linear": "model/linear", "child/linear": "model/linear2"}
+        source_state, converted_state = self._create_fake_state_and_convert(scope_mapping)
 
-        # The following cases won't happen in practice, also test these.
-        converter = (
-            ModelStateScopeConverter.default_config()
-            .set(
-                name="test",
-                source_trainer_config=source_cfg,
-                scope={
-                    "linear/bias": "model/linear/bias",
-                    "child/linear": "model/linear",
-                    "child": "model",
-                },
-            )
-            .instantiate(parent=None)
-        )
-        converted_state = converter.source_to_target(source_state, target_state)
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["linear"]["bias"],
-            source_state.trainer_state.model["model"]["linear"]["bias"],
+            converted_state.trainer_state.model["linear"],
+            source_state.trainer_state.model["model"]["linear"],
         )
         self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"],
-            source_state.trainer_state.model["model"],
+            converted_state.trainer_state.model["child"]["linear"],
+            source_state.trainer_state.model["model"]["linear2"],
         )
-        # source_state's "model/linear/bias" is donated to converted_state's "linear/bias".
+        # converted_state's "linear" is donated.
         self.assertTrue(
             converted_state.trainer_state.model["linear"]["bias"]
             is source_state.trainer_state.model["model"]["linear"]["bias"]
         )
-        # converted_state's "child/linear/bias" is a copy and has different memory.
+        self.assertTrue(
+            converted_state.trainer_state.model["linear"]["weight"]
+            is source_state.trainer_state.model["model"]["linear"]["weight"]
+        )
+        # converted_state's "child/linear" is also donated.
         self.assertTrue(
             converted_state.trainer_state.model["child"]["linear"]["bias"]
-            is not source_state.trainer_state.model["model"]["linear"]["bias"]
+            is source_state.trainer_state.model["model"]["linear2"]["bias"]
         )
-        # source_state's "model/linear/weight" is first donated to converted_state's
-        # "child/linear/weight". Then it is deep copied again.
         self.assertTrue(
             converted_state.trainer_state.model["child"]["linear"]["weight"]
-            is not source_state.trainer_state.model["model"]["linear"]["weight"]
-        )
-
-    def test_duplicate_source_scopes6(self):
-        # Test case6: copy one sub path first, then copy a grand parent, then copy a parent.
-        # Create fake source_state and target_state with nested layers.
-        source_cfg, source_state = _create_dummy_state(
-            jax.random.PRNGKey(0), DummyNestedModel.default_config().set(path="linear")
-        )
-        _, target_state = _create_dummy_state(
-            jax.random.PRNGKey(1),
-            DummyModel.default_config().set(
-                child=DummyNestedLayer.default_config().set(path="linear")
-            ),
-        )
-
-        converter = (
-            ModelStateScopeConverter.default_config()
-            .set(
-                name="test",
-                source_trainer_config=source_cfg,
-                scope={
-                    "linear/bias": "model/linear/bias",
-                    "child": "model",
-                    "child/linear": "model/linear",
-                },
-            )
-            .instantiate(parent=None)
-        )
-        converted_state = converter.source_to_target(source_state, target_state)
-        self.assertNestedAllClose(
-            converted_state.trainer_state.model["linear"]["bias"],
-            source_state.trainer_state.model["model"]["linear"]["bias"],
-        )
-        self.assertNestedAllClose(
-            converted_state.trainer_state.model["child"],
-            source_state.trainer_state.model["model"],
-        )
-        # source_state's "model/linear/bias" is donated to converted_state's "linear/bias".
-        self.assertTrue(
-            converted_state.trainer_state.model["linear"]["bias"]
-            is source_state.trainer_state.model["model"]["linear"]["bias"]
-        )
-        # converted_state's "child/linear/bias" is a copy and has different memory.
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["bias"]
-            is not source_state.trainer_state.model["model"]["linear"]["bias"]
-        )
-        # source_state's "model/linear/weight" is first donated to converted_state's
-        # "child/linear/weight". Then it is deep copied again.
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["weight"]
-            is not source_state.trainer_state.model["model"]["linear"]["weight"]
+            is source_state.trainer_state.model["model"]["linear2"]["weight"]
         )
 
     @parameterized.parameters(None, "FAKE")

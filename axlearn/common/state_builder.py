@@ -45,11 +45,11 @@ from axlearn.common.utils import (
     NestedTensorSpec,
     PartitionSpec,
     Tensor,
+    _key_entry_to_str,
     check_param_shape_alignment,
     flatten_items,
     get_data_dir,
     infer_mesh_shape,
-    key_entry_to_str,
     set_data_dir,
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
@@ -817,7 +817,7 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
             orig_source_model = utils.get_recursively(source.trainer_state.model, source_scope)
             source_model = jax.tree_util.tree_map_with_path(
                 lambda path, leaf: _copy_leaf(
-                    "/".join(key_entry_to_str(k) for k in path),
+                    "/".join(_key_entry_to_str(k) for k in path),
                     leaf,
                     source_scope=source_scope,  # pylint: disable=cell-var-from-loop
                 ),
