@@ -6,6 +6,7 @@ Note that these utilities do not handle resource management.
 """
 
 import atexit
+import io
 import logging
 import math
 import os
@@ -22,6 +23,7 @@ import kubernetes as k8s
 from absl import flags
 from google.auth.credentials import Credentials
 
+from axlearn.cloud.common.bastion import _BASTION_SERIALIZED_JOBSPEC_ENV_VAR, deserialize_jobspec
 from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import parse_kv_flags, subprocess_run
@@ -480,7 +482,7 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        annotations, selector, volumes, tolerations = {}, {}, [], []
+        annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
 
         if cfg.gcsfuse_mount:
             # Mount a GCS bucket as a volume.
@@ -562,6 +564,17 @@ class TPUGKEJob(GKEJob):
                 }
             )
 
+        if os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
+            spec = deserialize_jobspec(
+                io.StringIO(os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR))
+            )
+            job_priority = spec.metadata.priority
+
+            if job_priority is not None:
+                labels.update({"job-priority": str(job_priority)})
+                # For job-priority to be populated to node labels when tpu-provisioner is used.
+                selector.update({"job-priority": str(job_priority)})
+
         annotations.update(
             {
                 # Disable gcp auto-provisioner or not.
@@ -573,7 +586,7 @@ class TPUGKEJob(GKEJob):
         )
 
         return dict(
-            metadata=dict(annotations=annotations),
+            metadata=dict(annotations=annotations, labels=labels),
             spec=dict(
                 # NOTE: Don't set hostNetwork or dnsPolicy for compat with Workload Identity.
                 terminationGracePeriodSeconds=60,
