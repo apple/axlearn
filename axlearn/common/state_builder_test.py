@@ -1228,14 +1228,14 @@ class ModelStateScopeConverterTest(TestCase):
             source_state.trainer_state.model["model"]["linear"]["bias"],
         )
         # converted_state's "linear/bias" is donated.
-        self.assertTrue(
-            converted_state.trainer_state.model["linear"]["bias"]
-            is source_state.trainer_state.model["model"]["linear"]["bias"]
+        self.assertIs(
+            converted_state.trainer_state.model["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
         )
         # converted_state's "child" is a copy and has different memory.
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["bias"]
-            is not source_state.trainer_state.model["model"]["linear"]["bias"]
+        self.assertIsNot(
+            converted_state.trainer_state.model["child"]["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
         )
 
     @parameterized.parameters(
@@ -1258,18 +1258,18 @@ class ModelStateScopeConverterTest(TestCase):
             source_state.trainer_state.model["model"]["linear"],
         )
         # source_state's "model" is donated to coverted_state's "child".
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["bias"]
-            is source_state.trainer_state.model["model"]["linear"]["bias"]
+        self.assertIs(
+            converted_state.trainer_state.model["child"]["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
         )
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["weight"]
-            is source_state.trainer_state.model["model"]["linear"]["weight"]
+        self.assertIs(
+            converted_state.trainer_state.model["child"]["linear"]["weight"],
+            source_state.trainer_state.model["model"]["linear"]["weight"],
         )
         # converted_state's "linear/bias" is a copy and has different memory.
-        self.assertTrue(
-            converted_state.trainer_state.model["linear"]["bias"]
-            is not source_state.trainer_state.model["model"]["linear"]["bias"]
+        self.assertIsNot(
+            converted_state.trainer_state.model["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
         )
 
     def test_duplicate_source_scopes_edge_case(self):
@@ -1286,22 +1286,22 @@ class ModelStateScopeConverterTest(TestCase):
             source_state.trainer_state.model["model"]["linear2"],
         )
         # converted_state's "linear" is donated.
-        self.assertTrue(
-            converted_state.trainer_state.model["linear"]["bias"]
-            is source_state.trainer_state.model["model"]["linear"]["bias"]
+        self.assertIs(
+            converted_state.trainer_state.model["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
         )
-        self.assertTrue(
-            converted_state.trainer_state.model["linear"]["weight"]
-            is source_state.trainer_state.model["model"]["linear"]["weight"]
+        self.assertIs(
+            converted_state.trainer_state.model["linear"]["weight"],
+            source_state.trainer_state.model["model"]["linear"]["weight"],
         )
         # converted_state's "child/linear" is also donated.
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["bias"]
-            is source_state.trainer_state.model["model"]["linear2"]["bias"]
+        self.assertIs(
+            converted_state.trainer_state.model["child"]["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear2"]["bias"],
         )
-        self.assertTrue(
-            converted_state.trainer_state.model["child"]["linear"]["weight"]
-            is source_state.trainer_state.model["model"]["linear2"]["weight"]
+        self.assertIs(
+            converted_state.trainer_state.model["child"]["linear"]["weight"],
+            source_state.trainer_state.model["model"]["linear2"]["weight"],
         )
 
     @parameterized.parameters(None, "FAKE")
