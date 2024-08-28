@@ -356,7 +356,12 @@ class Model(BaseModel):
         regex = self.config.aux_loss_regex
         # Collect aux_loss from all leaves.
         module_outputs = self.get_module_outputs()
-        return sum(v.sum() for k, v in flatten_items(module_outputs) if re.fullmatch(regex, k))
+        accumulation = list(
+            v.mean() for k, v in flatten_items(module_outputs) if re.fullmatch(regex, k)
+        )
+        if accumulation:
+            return sum(accumulation) / len(accumulation)
+        return 0
 
 
 TransformerStackConfig = Union[
