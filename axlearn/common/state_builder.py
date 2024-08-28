@@ -820,10 +820,8 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
         for target_scope, source_scope in self.scopes.items():
             orig_source_model = utils.get_recursively(source.trainer_state.model, source_scope)
             source_model = jax.tree_util.tree_map_with_path(
-                lambda path, leaf: _copy_leaf(
-                    path,
-                    leaf,
-                    source_scope=source_scope,  # pylint: disable=cell-var-from-loop
+                lambda path, leaf, source_scope=source_scope: _copy_leaf(
+                    path, leaf, source_scope=source_scope
                 ),
                 orig_source_model,
             )
