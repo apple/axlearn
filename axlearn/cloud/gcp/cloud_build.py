@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """CloudBuild utilities"""
+
 import enum
 from typing import Optional
 
@@ -97,7 +98,7 @@ def get_cloud_build_status(
         builds = list(client.list_builds(request=request))
 
         if not builds:
-            logging.error("No builds found for image name: %s.", image_name)
+            logging.warning("No builds found for image name: %s.", image_name)
             return None
 
         builds.sort(key=lambda build: build.create_time)
