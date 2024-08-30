@@ -194,6 +194,7 @@ _STOP_WORDS = {
 
 
 def _string_lenient_transform(str_value: str) -> str:
+    """Performs a lenient string transformation."""
     normalized_str_value = str_value.lower()
     normalized_str_value = normalized_str_value.translate(str.maketrans("", "", string.punctuation))
     words = normalized_str_value.split()
@@ -241,6 +242,7 @@ def _is_arg_value_equal(
     check_lenient: bool,
     bag_of_words: bool,
 ) -> bool:
+    """Checks if the predicted and target arguments are equal under different checks."""
     if check_lenient:
         if (
             isinstance(pred_arg, list)

@@ -251,6 +251,8 @@ def _compare_tool_calls(
 
 @dataclasses.dataclass
 class DetailedMatchResult:
+    """Represents the tool matches for different metrics."""
+
     func_name_match: bool = False
     strict_arg_match: bool = False
     lenient_arg_match: bool = False
@@ -262,6 +264,17 @@ def _compare_tool_call_detailed(
     pred_tool_calls: Sequence[dict[str, Any]],
     target_tool_calls: list[dict[str, Any]],
 ) -> list[DetailedMatchResult]:
+    """Performs a detailed comparison of the predicted tool calls with the target tool calls and
+    returns different metrics.
+
+    Args:
+        pred_tool_calls: Predicted tool calls.
+        target_tool_calls: Target tool calls.
+
+    Returns:
+        DetailedMatchResult, containing the Booleans denoting matches for different metrics.
+    """
+
     target_tool_calls = copy.deepcopy(target_tool_calls)
 
     results = []
