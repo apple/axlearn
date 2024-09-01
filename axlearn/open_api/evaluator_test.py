@@ -6,19 +6,20 @@ import json
 import os
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from absl import flags
 
-from axlearn.open_api.mock_utils import mock_openai_package
+from axlearn.open_api.mock_utils import mock_huggingface_hub_package, mock_openai_package
 
 mock_openai_package()
+mock_huggingface_hub_package()
 
 # isort: off
 # pylint: disable=wrong-import-position
 from axlearn.open_api import common
 from axlearn.open_api.common import Evaluator, Generator
-from axlearn.open_api.evaluator import evaluate_from_file
+from axlearn.open_api.evaluator import evaluate_from_file, evaluate_from_eval_set
 
 # pylint: enable=wrong-import-position
 # isort: one
@@ -64,6 +65,35 @@ class TestEvaluateFromFile(unittest.IsolatedAsyncioTestCase):
         # Call the method under test.
         evaluate_from_file(fv=fv)
         mock_evaluate.assert_called_once()
+
+    @patch(
+        "axlearn.open_api.generator.generate_from_requests",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "axlearn.open_api.eval_set.mmau.ToolUsePlan.load_requests",
+        new_callable=MagicMock,
+    )
+    @patch(
+        "axlearn.open_api.metrics.tool_use_plan.metric_fn",
+        new_callable=MagicMock,
+    )
+    def test_evaluate_from_eval_set(
+        self, mock_metric_fn, mock_eval_set_fn, mock_generate_from_requests
+    ):
+        fv = flags.FlagValues()
+        Generator.define_flags(fv)
+        Evaluator.define_flags(fv)
+        fv.set_default("model", "test")
+        fv.set_default("check_vllm_readiness", False)
+        fv.set_default("eval_set_name", "mmau_tool_use_plan")
+        fv.mark_as_parsed()
+        mock_eval_set_fn.return_value = [{"messages": [{"role": "user", "content": "prompt1"}]}]
+        mock_generate_from_requests.return_value = [{"response": "resp1"}]
+        mock_metric_fn.return_value = {"accuracy": 1.0}
+        # Call the method under test.
+        evaluate_from_eval_set(fv=fv)
+        mock_metric_fn.assert_called_once()
 
     @patch(
         f"{common.__name__}.Evaluator.evaluate",

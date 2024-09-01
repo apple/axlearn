@@ -3,7 +3,7 @@
 ![MMAU Logo](./figures/MMAU-herofig.png)
 
 
-[![Dataset](https://img.shields.io/badge/Dataset-orange)](./README.md#dataset-preparation)
+[![Dataset](https://img.shields.io/badge/Dataset-orange)](./README.md#dataset)
 [![arXiv](https://img.shields.io/badge/arXiv-gray)](https://arxiv.org/abs/2407.18961)
 [![GitHub](https://img.shields.io/badge/GitHub-black)](https://github.com/apple/axlearn/docs/research/mmau)
 
@@ -35,8 +35,9 @@ With a total of 20 meticulously designed tasks encompassing over 3,000 distinct 
 - [Overview](#overview)
 - [Dataset Summary](#dataset-summary)
 - [Quick Start](#quick-start)
-- [Data prepartion](#dataset-preparation)
+- [Data prepartion](#dataset)
 - [Benchmark](#benchmark)
+- [Leaderboard](#leaderboard)
 - [Citation](#citation)
 
 ---
@@ -85,7 +86,14 @@ MMAU involves meticulous curation and rewriting of these data sources to create 
 
 ## Quick Start
 
-To get started quickly, follow these steps:
+Make sure you are using python3.10+. To get started quickly, follow these steps:
+
+```sh
+pip install "axlearn[mmau]@git+https://github.com/apple/axlearn.git@main"
+```
+
+<details>
+  <summary>Install from repository</summary>
 
 1. Clone the repository:
     ```sh
@@ -99,191 +107,116 @@ To get started quickly, follow these steps:
     ```sh
     # Install for all mmau metrics.
     pip install ".[mmau]"
-    # Install for generator only.
-    pip install ".[open_api]"
     ```
 
-## Dataset Preparation
+</details>
 
-Download from GCP (Coming soon).
-```sh
-mkdir -p ./data/
-gsutil -m cp -r "gs://axlearn-public/datasets/mmau/20240712/*" ./data/
-```
+## Dataset
 
-Download from Huggingface (Coming soon).
-```sh
-huggingface-cli download apple/mmau --local-dir ./data --repo-type dataset
-```
+The dataset is [available](https://huggingface.co/datasets/apple/mmau) on Huggingface Hub.
 
 ## Benchmark
 
-<details>
-  <summary>Click to expand the Benchmark section</summary>
+Here is a simple command to run generation and evaluation for one of MMAU eval sets.
 
-
-### Generator
-
-The first step is to generate responses from the target client. The generator is designed with following features:
-
-- **Reusable**: same input data (OpenAI request style json line file) across different model clients.
-- **Fast**: asynchronously concurrent requests.
-- **Extendible**: easy to add new clients and open source models (via [vLLM OpenAI endpoint](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html) or other similar inference frameworks).
-
-<details>
-  <summary>Input Data Format</summary>
-
-
-**Chat endpoint (Recommended):**
-
-```json
-{
-  "messages": [
-    {"role": "user", "content": "Hello"},
-    {"role": "assistant", "content": "Hi, how can I help you?"}
-  ],
-  "tools": [
-    {
-      "type": "function",
-      "function": {
-        "name": "get_current_weather",
-        "description": "Get the current weather in a given location",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "location": {
-              "type": "string",
-              "description": "The city and state, e.g. San Francisco, CA"
-            },
-            "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
-          },
-          "required": ["location"]
-        }
-      }
-    }
-  ],
-  "id": 1
-}
-```
-
-
-**Completion endpoint:**
-```json
-{
-  "prompt": "Q: What color is mars? A:",
-  "id": 1
-}
-```
-</details>
-
-
-**OpenAI**
+**OpenAI Models**
 
 ```sh
 export OPENAI_API_KEY=<your_openai_key>
-MODEL=gpt-3.5-turbo-0125
-EVAL_SET=tool_use_single_step_20240712.jsonl
-CLIENT_NAME=openai
-python3 -m axlearn.open_api.generator \
---model $MODEL \
---client_name $CLIENT_NAME \
---input_file ./data/$EVAL_SET \
---output_file ./generated_data/$MODEL/$EVAL_SET \
---decode_parameters '{"temperature": 0.0, "max_tokens": 1024}'
+python3 -m axlearn.open_api.evaluator \
+--model gpt-3.5-turbo-0125 \
+--eval_set_name mmau_tool_use_plan \
+--client_name openai
 ```
+
+**Open Source Models**
+
+Use [vLLM](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html) or other inference framework to start an OpenAI compatible server. In this case, `--client_name=openai` can be re-used.
+
+```sh
+export OPENAI_API_KEY=EMPTY
+export OPENAI_BASE_URL=http://127.0.0.1:8000/v1
+export GRADER_OPENAI_API_KEY=<your_openai_key>
+python3 -m axlearn.open_api.evaluator \
+--model Mistral-7B-Instruct-v0.3 \
+--eval_set_name mmau_tool_use_plan \
+--client_name openai
+```
+
+
+All available `eval_set_name` are:
+
+| eval_set_name       | Required GRADER_OPENAI_API_KEY | Number of Examples |
+|---------------------|---------------------|---------------------|
+| mmau_tool_use_execution         | ❌                  |~1000                  |
+| mmau_tool_use_plan         | ❌                  |~450                  |
+| mmau_code_contests         | ❌                  |~250                  |
+| mmau_math         | ✅                  |~1000                  |
+| mmau         | ✅                  |~2700                  |
+
+`--eval_set_name mmau` is a collection of `mmau_tool_use_execution` (require function calling endpoint), `mmau_tool_use_plan`, `mmau_code_contests`, `mmau_math` and the score is the average of all 4 categories. Note we will add `mmau_code_kaggle` later as well.
+
+You may find `mmau_code_contests` to be slow since it will execute generated code.
+
+<details>
+  <summary>Gemini or Anthropic Models</summary>
 
 **Gemini**
 
-Add following modifications from above OpenAI command examples.
 ```sh
-# Set up environments.
 export VERTEX_AI_PROJECT=<your_project_name>
 export VERTEX_AI_LOCATION=<your_project_location>
-MODEL=gemini-1.0-pro
-# Change CLIENT_NAME from openai to gemini.
-CLIENT_NAME=gemini
+export GRADER_OPENAI_API_KEY=<your_openai_key>
+python3 -m axlearn.open_api.evaluator \
+--model gemini-1.5-flash-001 \
+--eval_set_name mmau_tool_use_plan \
+--client_name gemini
 ```
 
 **Anthropic**
 
-Add following modifications from above OpenAI command examples.
 ```sh
-# Set up environments.
-export ANTHROPIC_API_KEY=<sk-xxxx>
-MODEL=claude-3-haiku-20240307
-```
-Change to `--client_name anthropic` in the above OpenAI example command.
-
-
-**Open Source Models**
-
-Use [vLLM](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html) or other inference framework to start an OpenAI compatible server. In this case, `--client_name=openai` can be re-used. Note it may need implementations of new clients for function calling style.
-
-```sh
-export OPENAI_API_KEY=EMPTY
-export OPENAI_BASE_URL=http://127.0.0.1/8000/v1
-MODEL=Mistral-7B-Instruct-v0.3
-CLIENT_NAME=openai
-```
-
-### Evaluator
-
-**[Tool Use Execution](../../axlearn/open_api/metrics/tool_use_execution.py)**
-
-```sh
-EVAL_SET=tool_use_single_step_20240712.jsonl
-MODEL=gpt-3.5-turbo-0125
+export ANTHROPIC_API_KEY=<your_anthropic_key>
+export GRADER_OPENAI_API_KEY=<your_openai_key>
 python3 -m axlearn.open_api.evaluator \
---input_file ./generated_data/$MODEL/$EVAL_SET \
---output_file ./metrics/$MODEL/$EVAL_SET \
---metric_name tool_use_execution
+--model claude-3-haiku-20240307 \
+--eval_set_name mmau_tool_use_plan \
+--client_name anthropic \
+--decode_parameters '{"add_system_parallel_tools": true}'
 ```
 
-The same metric can be used for tool use execution retry tasks.
+</details>
 
-**[Tool Use Plan](../../axlearn/open_api/metrics/tool_use_plan.py)**
 
-Change to use `--metric_name tool_use_plan` from the above Tool Use Execution example command.
 
-**[Math](../../axlearn/open_api/metrics/math.py)**
+**Arguments**
 
-This benchmark needs OpenAI client as LLM grader.
-```sh
-export OPENAI_API_KEY=<your_openai_key>
-MODEL=gpt-3.5-turbo-0125
-EVAL_SET=mmau_math_standard_20240712.jsonl
-python3 -m axlearn.open_api.evaluator \
---input_file ./generated_data/$MODEL/$EVAL_SET \
---output_file ./metrics/$MODEL/$EVAL_SET \
---metric_name math \
---grader_model gpt-4o-2024-05-13
-```
+- Pass `--concurrency 16` to increase request throughput.
+- Pass `--max_instances 32` to run first few instances for debugging.
+- Pass `--output_file ./output` to save responses and metrics.
 
-**[Code Contests](../../axlearn/open_api/metrics/code_contests.py)**
 
-This benchmark needs OpenAI client as LLM grader.
+## Leaderboard
 
-Change to use `--metric_name code_contests` from the above Math example command.
 
-There are also `code_contests_retry`, `code_contests_plan` and `code_contests_understand` for detailed benchmark and study.
-
-**[Code Kaggle](../../axlearn/open_api/metrics/code_kaggle.py)**
-
-This benchmark needs OpenAI client as LLM grader.
-
-Change to use `--metric_name code_kaggle` from the above Math example command.
-
-There are also `code_kaggle_oracle` and `code_kaggle_retry` for detailed benchmark and study.
-
-### All in One
-
-We will provide a simple script to run all benchmarks soon. Stay tuned.
+| Model | MMAU Tool Use Plan | MMAU Tool Use Execution | MMAU Math | MMAU Code Contests |
+|---|---|---|---|---|
+| OpenAI/gpt-3.5-turbo-0125 | 26.1 | 68.2 | 20.7 | 6.5 |
+| OpenAI/gpt-4o-mini-2024-07-18 | 68.5 | 68.9 | 45.7 | 12.3 |
+| OpenAI/gpt-4o-2024-08-06 | 80.0 | 74.5 | 63.1 | 23.4 |
+| Google/gemini-1.0-pro-001 | 46.7 | 32.9 | 27.9 | 5.4 |
+| Google/gemini-1.5-pro-001 | 75.7 | 56.1 | 37.8 | 6.9 |
+| Anthropic/claude-3-haiku-20240307 | 34.6 | 45.1 | 31.1 | 6.9 |
+| Anthropic/claude-3-5-sonnet-20240620 | 74.6 | 68.3 | 48.1 | 13.4 |
+| Microsoft/phi-3.5-mini-instruct | 26.5 | N/A | 30.5 | 3.1 |
+| Meta/llama3.1-8b-instruct | 35.7 | N/A | 27.2 | 7.7 |
+| Meta/llama3.1-70b-instruct | 79.3 | N/A | 31.0 | 16.8 |
+| Meta/llama3.1-405b-instruct | 85.2 | N/A | 50.9 | 25.7 |
 
 ## TODO
 
-- [ ] Add all in one script to launch all benchmarks.
 - [ ] Add more open api clients.
-- [ ] Load from Huggingface datasets directly.
+- [ ] Add code kaggle into `mmau` eval set.
 
 </details>
 

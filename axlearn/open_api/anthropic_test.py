@@ -30,7 +30,11 @@ class TestAnthropicClient(unittest.IsolatedAsyncioTestCase):
     """Unit test for class AnthropicClient."""
 
     def _create_anthropic_client(self) -> AnthropicClient:
-        client = AnthropicClient.default_config().set(model="claude").instantiate()
+        client = (
+            AnthropicClient.default_config()
+            .set(model="claude", extra_body={"add_system_parallel_tools": True})
+            .instantiate()
+        )
         client._client = AsyncMock()
         return client
 
@@ -48,7 +52,6 @@ class TestAnthropicClient(unittest.IsolatedAsyncioTestCase):
                 "messages": [{"role": "user", "content": "Hello"}],
                 "tools": [{"name": "tool1"}],
             },
-            add_system_parallel_tools=True,
         )
         # Assert the expected result.
         self.assertEqual(result, json.dumps({"response": "test_response"}))
@@ -59,7 +62,7 @@ class TestAnthropicClient(unittest.IsolatedAsyncioTestCase):
         client._client.messages.create.assert_called_with(
             messages="converted_messages",
             tools="converted_tools",
-            extra_body=client.config.extra_body,
+            extra_body={},
             system=_system_parallel_tools_prompt,
         )
 
