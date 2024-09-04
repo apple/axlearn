@@ -276,45 +276,85 @@ def _compare_tool_call_detailed(
     """
 
     target_tool_calls = copy.deepcopy(target_tool_calls)
+    pred_tool_calls = copy.deepcopy(pred_tool_calls)
+
+    target_funcs = []
+    for t in target_tool_calls:
+        if not "function" in t:
+            continue
+        try:
+            t["function"]["arguments"] = _extract_arguments(t["function"])
+        except (json.JSONDecodeError, KeyError):
+            logging.error("Unable to decode arguments from target call %s", t["function"])
+            continue
+        target_funcs.append(t["function"])
+
+    strict_target_funcs = copy.deepcopy(target_funcs)
+    lenient_target_funcs = copy.deepcopy(target_funcs)
+    lenient_bow_target_funcs = copy.deepcopy(target_funcs)
 
     results = []
     for pred_tool in pred_tool_calls:
-        cur_res = None
-        for target_tool in target_tool_calls:
-            pred_tool_call = pred_tool["function"]
-            target_tool_call = target_tool["function"]
-            func_name_match = pred_tool_call["name"] == target_tool_call["name"]
-            if not func_name_match:
-                continue
-            try:
-                pred_args = _extract_arguments(pred_tool_call)
-                target_args = _extract_arguments(target_tool_call)
-            except (json.JSONDecodeError, KeyError):
-                logging.error(
-                    "Unable to decode arguments from predicted call %s or target call %s",
-                    pred_tool_call,
-                    target_tool_call,
-                )
+        pred_func = pred_tool["function"]
+        try:
+            pred_func["arguments"] = _extract_arguments(pred_func)
+        except (json.JSONDecodeError, KeyError):
+            logging.error("Unable to decode arguments from predicted call %s", pred_func)
+            continue
+
+        fname_match = False
+        strict_match = False
+        lenient_match = False
+        lenient_bow_match = False
+
+        for idx, target_func in enumerate(strict_target_funcs):
+            if pred_func["name"] == target_func["name"]:
+                fname_match = True
+            else:
                 continue
 
-            strict_arg_match = check_arguments(pred_args=pred_args, target_args=target_args)
-            lenient_arg_match = check_arguments(
-                pred_args=pred_args, target_args=target_args, check_lenient=True
-            )
-            lenient_bow_arg_match = check_arguments(
-                pred_args=pred_args, target_args=target_args, check_lenient=True, bag_of_words=True
-            )
-            cur_res = DetailedMatchResult(
-                func_name_match=True,
-                strict_arg_match=strict_arg_match,
-                lenient_arg_match=lenient_arg_match,
-                lenient_bow_arg_match=lenient_bow_arg_match,
-            )
-            break
+            if check_arguments(
+                pred_args=pred_func["arguments"], target_args=target_func["arguments"]
+            ):
+                strict_match = True
+                del strict_target_funcs[idx]
+                break
 
-        if cur_res is None:
-            cur_res = DetailedMatchResult(func_name_match=False)
-        results.append(cur_res)
+        for idx, target_func in enumerate(lenient_target_funcs):
+            if pred_func["name"] != target_func["name"]:
+                continue
+
+            if check_arguments(
+                pred_args=pred_func["arguments"],
+                target_args=target_func["arguments"],
+                check_lenient=True,
+            ):
+                lenient_match = True
+                del lenient_target_funcs[idx]
+                break
+
+        for idx, target_func in enumerate(lenient_bow_target_funcs):
+            if pred_func["name"] != target_func["name"]:
+                continue
+
+            if check_arguments(
+                pred_args=pred_func["arguments"],
+                target_args=target_func["arguments"],
+                check_lenient=True,
+                bag_of_words=True,
+            ):
+                lenient_bow_match = True
+                del lenient_bow_target_funcs[idx]
+                break
+
+        results.append(
+            DetailedMatchResult(
+                func_name_match=fname_match,
+                strict_arg_match=strict_match,
+                lenient_arg_match=lenient_match,
+                lenient_bow_arg_match=lenient_bow_match,
+            )
+        )
     return results
 
 
@@ -353,6 +393,9 @@ def metric_fn(
             new_tool_calls.append(tool_call)
         return new_tool_calls
 
+    def _safe_div(dividend: int, divisor: int) -> float:
+        return 0.0 if divisor == 0 else dividend / divisor
+
     total_matches = 0
 
     # The counters for the detailed metrics
@@ -388,6 +431,7 @@ def metric_fn(
             # If the content is empty and there are no tool or function calls we usually have
             # a generation error. In this case, there is no content field generated, but
             # sometimes an error field.
+            print("HUHU")
             number_of_generation_errors += 1
         pred_tool_calls, target_tool_calls = None, None
 
@@ -422,15 +466,17 @@ def metric_fn(
                     match_rules=match_rules,
                 )
 
-            # Detailed matching
-            pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
-            detailed_results = _compare_tool_call_detailed(
-                pred_tool_calls=pred_tool_calls, target_tool_calls=target_tool_calls
-            )
-            total_func_name_matches += sum(1 for d in detailed_results if d.func_name_match)
-            total_strict_matches += sum(1 for d in detailed_results if d.strict_arg_match)
-            total_lenient_matches += sum(1 for d in detailed_results if d.lenient_arg_match)
-            total_bow_matches += sum(1 for d in detailed_results if d.lenient_bow_arg_match)
+            if target.tool_calls is not None and pred.tool_calls is not None:
+                # Detailed matching
+                # if target.tool_calls is not None and pred.tool_calls is not None:
+                pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
+                detailed_results = _compare_tool_call_detailed(
+                    pred_tool_calls=pred_tool_calls, target_tool_calls=target_tool_calls
+                )
+                total_func_name_matches += sum(1 for d in detailed_results if d.func_name_match)
+                total_strict_matches += sum(1 for d in detailed_results if d.strict_arg_match)
+                total_lenient_matches += sum(1 for d in detailed_results if d.lenient_arg_match)
+                total_bow_matches += sum(1 for d in detailed_results if d.lenient_bow_arg_match)
 
         if debug and not matched:
             deliverable_id = response.get("deliverable_id", response.get("id", ""))
@@ -455,9 +501,9 @@ def metric_fn(
         "number_of_examples": len(responses),
         "number_of_parsing_errors": number_of_parsing_errors,
         "number_of_generation_errors": number_of_generation_errors,
-        "func_name_accuracy": total_func_name_matches / total_tool_calls,
-        "strict_accuracy": total_strict_matches / total_tool_calls,
-        "lenient_accuracy": total_lenient_matches / total_tool_calls,
-        "bow_accuracy": total_bow_matches / total_tool_calls,
+        "func_name_accuracy": _safe_div(total_func_name_matches, total_tool_calls),
+        "strict_accuracy": _safe_div(total_strict_matches, total_tool_calls),
+        "lenient_accuracy": _safe_div(total_lenient_matches, total_tool_calls),
+        "bow_accuracy": _safe_div(total_bow_matches, total_tool_calls),
         "number_of_expected_tool_calls": total_tool_calls,
     }

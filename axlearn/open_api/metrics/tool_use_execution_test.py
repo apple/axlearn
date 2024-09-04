@@ -290,3 +290,47 @@ class TestToolUseExecution(parameterized.TestCase):
             self.assertEqual(
                 metrics["number_of_expected_tool_calls"], number_of_expected_tool_calls
             )
+
+    def test_empty_pred(self):
+        pred_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": None,
+        }
+        target_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "arguments": {"location": "cupertino"},
+                        "name": "get_weather",
+                    },
+                }
+            ],
+        }
+        responses = [
+            {
+                "response": json.dumps({"choices": [{"message": pred_message}]}),
+                "target_message": target_message,
+            }
+        ]
+        mock_target_message = Mock(**target_message)
+        mock_target_message.model_dump.return_value = target_message
+        mock_pred_message = Mock(**pred_message)
+        mock_pred_message.model_dump.return_value = pred_message
+        self.generator.config.client.klass.parse_generation.return_value = [mock_pred_message]
+
+        with patch(
+            "axlearn.open_api.openai.OpenAIClient.format_message", return_value=mock_target_message
+        ):
+            metrics = metric_fn(
+                responses=responses,
+                generators={
+                    EvalGeneratorType.RESPONSE: self.generator,
+                    EvalGeneratorType.GRADER: self.generator,
+                },
+            )
+            self.assertEqual(metrics["accuracy"], 0.0)
