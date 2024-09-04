@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for module.py."""
+
 # pylint: disable=protected-access
 # type: ignore[attribute-error]
 import contextlib
@@ -728,6 +729,23 @@ class ModuleTest(TestWithTemporaryCWD):
                 method="get_shared_module",
                 inputs=dict(shared_module_name="outer_shared"),
             )
+
+    def test_path_to_descendant_module(self):
+        class CompositeModule(Module):
+            @config_class
+            class Config(Module.Config):
+                child1: Module.Config = TestModule.default_config()
+                child2: Module.Config = TestModule.default_config()
+
+            def __init__(self, cfg: Module.Config, *, parent: Optional[Module]):
+                super().__init__(cfg, parent=parent)
+                self._add_child("child1", cfg.child1)
+                self._add_child("child2", cfg.child2)
+
+        module = CompositeModule.default_config().set(name="test").instantiate(parent=None)
+
+        with self.assertRaisesRegex(ValueError, "descendant"):
+            module.child2.path_to_descendant_module(module.child1)
 
 
 class ScanInContextTest(TestWithTemporaryCWD):
