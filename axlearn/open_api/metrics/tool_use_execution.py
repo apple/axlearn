@@ -11,11 +11,11 @@ Following https://platform.openai.com/docs/guides/function-calling
 for target message.
 
 The file contains the code for several tool use metrics:
-* Gorilla tool use metrics
+* Standard tool use metrics
 * Lenient tool use metric
 * Bag of word tool use metric.
 
-The lenient matching is similar to the Gorilla metric. It performs the following steps:
+The lenient matching is similar to the standard metric. It performs the following steps:
 * Transforms the argument strings to lower case.
 * Removes punction.
 * Removes stop words. The stop words are statically predefined.
