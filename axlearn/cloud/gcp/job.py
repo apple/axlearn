@@ -518,6 +518,7 @@ class TPUGKEJob(GKEJob):
         if tier == "0" and cfg.reservation is not None:
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
+            labels.update({"bastion-tier": "reserved"})
         else:
             logging.info("Found tier=%s in env. Using spot quota", tier)
             selector.update({"cloud.google.com/gke-spot": "true"})
@@ -529,6 +530,7 @@ class TPUGKEJob(GKEJob):
                     "effect": "NoSchedule",
                 }
             )
+            labels.update({"bastion-tier": "spot"})
 
         if cfg.enable_tpu_ici_resiliency is not None:
             selector.update(

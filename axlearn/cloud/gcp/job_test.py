@@ -359,6 +359,7 @@ class TPUGKEJobTest(TestCase):
                 )
                 self.assertNotIn("cloud.google.com/gke-spot", node_selector)
                 self.assertEqual([], pod_spec.get("tolerations", []))
+                self.assertEqual("reserved", labels.get("bastion-tier", None))
             else:
                 self.assertEqual("true", node_selector.get("cloud.google.com/gke-spot", None))
                 self.assertNotIn("cloud.google.com/reservation-name", node_selector)
@@ -368,6 +369,7 @@ class TPUGKEJobTest(TestCase):
                 self.assertEqual(
                     ("true", "NoSchedule"), tolerations.get("cloud.google.com/gke-spot", None)
                 )
+                self.assertEqual("spot", labels.get("bastion-tier", None))
 
             self.assertEqual(len(pod_spec["containers"]), 1)
             container = pod_spec["containers"][0]
