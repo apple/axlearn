@@ -351,6 +351,9 @@ class ConfigBase:
     def __len__(self) -> int:
         return len(attr.fields(type(self)))
 
+    def __getattr__(self, name: str) -> Any:
+        return attr.asdict(self, recurse=False)[name]
+
     def keys(self) -> list[str]:
         return sorted(attr.fields_dict(type(self)).keys())
 
@@ -366,9 +369,10 @@ class ConfigBase:
     def clone(self, **kwargs):
         """Returns a clone of the original config with the optional keyword overrides.
 
-        Unlike, :meth:`self.set`, this function does not modify the config in-place.
+        Unlike `self.set`, this function does not modify the config in-place.
         """
-        return attr.evolve(self, **kwargs)
+        # Invoke `set` explicitly, so that subclassed implementations apply.
+        return attr.evolve(self).set(**kwargs)
 
     def debug_string(
         self,
@@ -583,6 +587,7 @@ def _wrap_config_attr_cls(attr_cls: type, *, name: Optional[str] = None):
     # pylint: disable=protected-access
 
     orig_setattr = attr_cls.__setattr__
+    orig_getattr = attr_cls.__getattr__
 
     def wrapped_setattr(self, key: str, value):
         if key.startswith("__"):
@@ -600,7 +605,7 @@ def _wrap_config_attr_cls(attr_cls: type, *, name: Optional[str] = None):
                 raise AttributeError(key) from e
         else:
             try:
-                return attr.asdict(self, recurse=False)[key]
+                return orig_getattr(self, key)
             except KeyError as e:
                 raise AttributeError(self._key_error_string(key)) from e
 

@@ -904,6 +904,36 @@ class ConfigTest(parameterized.TestCase):
         with self.assertRaises(config.InvalidConfigValueError):
             MyConfig()
 
+    def test_override_set_get(self):
+        @config_class
+        class MyConfig(ConfigBase):
+            """A dummy config overriding setattr/getattr."""
+
+            a: Required[int] = REQUIRED
+
+            def __getattr__(self, name: str) -> Any:
+                try:
+                    return super().__getattr__(name)
+                except KeyError:
+                    return "default"
+
+            def set(self, **kwargs):
+                try:
+                    return super().set(**kwargs)
+                except config.UnknownFieldError:
+                    return self
+
+        cfg = MyConfig()
+        cfg.a = 123
+        self.assertEqual(123, cfg.a)
+        self.assertEqual("default", cfg.b)
+        cfg.set(b=345)
+        self.assertEqual(123, cfg.a)
+        self.assertEqual("default", cfg.b)
+        cfg_clone = cfg.clone(b=345)
+        self.assertEqual(123, cfg_clone.a)
+        self.assertEqual("default", cfg_clone.b)
+
 
 if __name__ == "__main__":
     absltest.main()

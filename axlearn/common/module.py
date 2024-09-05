@@ -34,6 +34,7 @@ in RedirectToSharedModule). It will then wrap the method via
 This allows MyModule's parents to invoke `do_foo` as `self.my_child.do_foo(...)` without having
 to create the child context explicitly.
 """
+
 import contextlib
 import copy
 import dataclasses
@@ -668,9 +669,10 @@ class Module(Configurable):
         while module is not None and module is not self:
             relative_path.append(module.name)
             module = module.parent
+        path = list(reversed(relative_path))
         if module is None:
-            raise ValueError(f"Module {module.path()} is not a descendant of {self.path()}")
-        return list(reversed(relative_path))
+            raise ValueError(f"Module at {'.'.join(path)} is not a descendant of {self.path()}")
+        return path
 
     def _share_with_descendants(self, module: "Module", *, shared_module_name: str):
         """Share `module` with self's descendant modules.
