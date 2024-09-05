@@ -240,6 +240,16 @@ class Bundler(Configurable):
         """
         raise NotImplementedError(type(self))
 
+    def wait_until_finished(self, name: str):
+        """Blocks until bundling has completed.
+
+        This can be used in cases where `bundle()` is async.
+
+        Args:
+            name: Bundle name.
+        """
+        pass
+
 
 _bundlers: dict[str, type[Bundler]] = {}
 T = TypeVar("T")

@@ -27,6 +27,7 @@ from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bastion import (
     _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
+    deserialize_jobspec,
     new_jobspec,
     serialize_jobspec,
 )
@@ -200,6 +201,24 @@ class UtilTest(TestCase):
             os.environ.update(old_environ)
 
 
+def _create_serialized_job_spec(job_priority, user_id):
+    test_spec = new_jobspec(
+        name="test_job",
+        command="test command",
+        metadata=JobMetadata(
+            user_id=user_id,
+            project_id="test_project",
+            # Make sure str timestamp isn't truncated even when some numbers are 0.
+            creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
+            resources={"test": 8},
+            priority=job_priority,
+        ),
+    )
+    serialized_jobspec = io.StringIO()
+    serialize_jobspec(test_spec, serialized_jobspec)
+    return serialized_jobspec.getvalue()
+
+
 class TPUGKEJobTest(TestCase):
     @property
     def _mock_settings(self):
@@ -281,42 +300,28 @@ class TPUGKEJobTest(TestCase):
             gke_job: job.TPUGKEJob = cfg.instantiate()
             self.assertEqual("v4-8", gke_job._tpu_type)  # pylint: disable=protected-access
 
-    def _create_serialized_job_spec(self, job_priority):
-        test_spec = new_jobspec(
-            name="test_job",
-            command="test command",
-            metadata=JobMetadata(
-                user_id="test_id",
-                project_id="test_project",
-                # Make sure str timestamp isn't truncated even when some numbers are 0.
-                creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
-                resources={"test": 8},
-                priority=job_priority,
-            ),
-        )
-        serialized_jobspec = io.StringIO()
-        serialize_jobspec(test_spec, serialized_jobspec)
-        return serialized_jobspec.getvalue()
-
     @parameterized.product(
         [
-            dict(env={}, reservation=None, expect_reserved=False, job_priority=None),
+            dict(env={}, reservation=None, expect_reserved=False),
+            dict(env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False),
             dict(
-                env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False, job_priority=1
-            ),
-            dict(
-                env={"BASTION_TIER": "0"},
+                env={
+                    "BASTION_TIER": "0",
+                    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR: _create_serialized_job_spec(1, "user-1"),
+                },
                 reservation="test-reservation",
                 expect_reserved=True,
-                job_priority=3,
             ),
             dict(
                 env={"BASTION_TIER": "1"},
                 reservation="test-reservation",
                 expect_reserved=False,
-                job_priority=5,
             ),
-            dict(env={}, reservation="test-reservation", expect_reserved=False, job_priority=4),
+            dict(
+                env={_BASTION_SERIALIZED_JOBSPEC_ENV_VAR: _create_serialized_job_spec(5, "user-2")},
+                reservation="test-reservation",
+                expect_reserved=False,
+            ),
         ],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         enable_ici_resiliency=[True, False, None],
@@ -328,21 +333,11 @@ class TPUGKEJobTest(TestCase):
         bundler_cls,
         expect_reserved: bool,
         enable_ici_resiliency: bool,
-        env: Optional[dict] = None,
+        env: dict,
         reservation: Optional[str] = None,
         enable_pre_provisioner: Optional[bool] = None,
         location_hint: Optional[str] = None,
-        job_priority: Optional[int] = None,
     ):
-        if job_priority is not None:
-            env.update(
-                {
-                    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR: self._create_serialized_job_spec(
-                        job_priority
-                    )
-                }
-            )  # pytype: disable=attribute-error
-
         with mock.patch.dict("os.environ", env), self._job_config(bundler_cls) as cfg:
             gke_job: job.TPUGKEJob = cfg.set(
                 reservation=reservation,
@@ -364,6 +359,7 @@ class TPUGKEJobTest(TestCase):
                 )
                 self.assertNotIn("cloud.google.com/gke-spot", node_selector)
                 self.assertEqual([], pod_spec.get("tolerations", []))
+                self.assertEqual("reserved", labels.get("bastion-tier", None))
             else:
                 self.assertEqual("true", node_selector.get("cloud.google.com/gke-spot", None))
                 self.assertNotIn("cloud.google.com/reservation-name", node_selector)
@@ -373,6 +369,7 @@ class TPUGKEJobTest(TestCase):
                 self.assertEqual(
                     ("true", "NoSchedule"), tolerations.get("cloud.google.com/gke-spot", None)
                 )
+                self.assertEqual("spot", labels.get("bastion-tier", None))
 
             self.assertEqual(len(pod_spec["containers"]), 1)
             container = pod_spec["containers"][0]
@@ -427,12 +424,20 @@ class TPUGKEJobTest(TestCase):
 
             self.assertEqual(location_hint, node_selector.get("cloud.google.com/gke-location-hint"))
 
-            if job_priority is None:
+            if _BASTION_SERIALIZED_JOBSPEC_ENV_VAR in env:
+                spec = deserialize_jobspec(
+                    io.StringIO(os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR))
+                )
+
+                self.assertEqual(str(spec.metadata.priority), labels.get("job-priority", None))
+                self.assertEqual(
+                    str(spec.metadata.priority), node_selector.get("job-priority", None)
+                )
+                self.assertEqual(spec.metadata.user_id, labels.get("user-id", None))
+            else:
                 self.assertNotIn("job-priority", labels)
                 self.assertNotIn("job-priority", node_selector)
-            else:
-                self.assertEqual(str(job_priority), labels.get("job-priority", None))
-                self.assertEqual(str(job_priority), node_selector.get("job-priority", None))
+                self.assertNotIn("user-id", labels)
 
 
 class GPUGKEJobTest(TestCase):

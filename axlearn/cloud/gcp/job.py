@@ -518,6 +518,7 @@ class TPUGKEJob(GKEJob):
         if tier == "0" and cfg.reservation is not None:
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
+            labels.update({"bastion-tier": "reserved"})
         else:
             logging.info("Found tier=%s in env. Using spot quota", tier)
             selector.update({"cloud.google.com/gke-spot": "true"})
@@ -529,6 +530,7 @@ class TPUGKEJob(GKEJob):
                     "effect": "NoSchedule",
                 }
             )
+            labels.update({"bastion-tier": "spot"})
 
         if cfg.enable_tpu_ici_resiliency is not None:
             selector.update(
@@ -568,12 +570,12 @@ class TPUGKEJob(GKEJob):
             spec = deserialize_jobspec(
                 io.StringIO(os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR))
             )
-            job_priority = spec.metadata.priority
 
-            if job_priority is not None:
-                labels.update({"job-priority": str(job_priority)})
-                # For job-priority to be populated to node labels when tpu-provisioner is used.
-                selector.update({"job-priority": str(job_priority)})
+            labels.update({"job-priority": str(spec.metadata.priority)})
+            labels.update({"user-id": spec.metadata.user_id})
+
+            # For job-priority to be populated to node labels when tpu-provisioner is used.
+            selector.update({"job-priority": str(spec.metadata.priority)})
 
         annotations.update(
             {

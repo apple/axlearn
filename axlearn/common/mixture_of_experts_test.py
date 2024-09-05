@@ -29,6 +29,7 @@ from axlearn.common.layers import set_bias_recursively
 from axlearn.common.mixture_of_experts import (
     AdaptiveLoadBalanceLoss,
     Top2Gating,
+    TopKGating,
     TransformerFeedForwardMoE,
     _convert_feedforward_to_moe_parameters,
     convert_dense_to_moe_parameters,
@@ -244,6 +245,111 @@ class TransformerFeedForwardMoETest(parameterized.TestCase):
             self.assertEqual(gating.dispatch_tensor.shape[-1], 4)
         else:
             self.assertEqual(gating.dispatch_tensor.shape[-1], 8)
+
+    @parameterized.product(
+        expert_capacity=(0, 200),
+        outer_batch=(1, 2),
+        top_k=(1, 2, 8),
+    )
+    def test_topk_gating(
+        self,
+        expert_capacity,
+        outer_batch,
+        top_k,
+    ):
+        batch_size = 2
+        seq_len = 12
+        num_experts = 8
+
+        cfg = TopKGating.default_config().set(name="test")
+        cfg.num_experts = num_experts
+        cfg.expert_capacity = expert_capacity
+        cfg.eval_capacity_factor = (
+            100.0  # set to a larger number to prevent token dropping for test.
+        )
+        cfg.top_k = top_k
+
+        layer: TopKGating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        shape = (outer_batch, batch_size, seq_len, num_experts)
+
+        logits = jax.random.uniform(jax.random.PRNGKey(1), shape=shape)
+        gating, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits),
+        )
+
+        # Number of selected experts should be exactly `top_k`.
+        num_experts_per_token = jnp.sum(gating.dispatch_tensor, axis=(-2, -1))
+        expected = jnp.ones(shape=shape[:-1]) * top_k
+        assert_allclose(num_experts_per_token, expected)
+
+        # The total probabilities over all experts should be 1 for all tokens.
+        prob_per_token = jnp.sum(gating.combine_tensor, axis=(-2, -1))
+        expected = jnp.ones(shape=shape[:-1])
+        assert_allclose(prob_per_token, expected)
+
+    @parameterized.product(
+        expert_capacity=(0, 200),
+        outer_batch=(1, 2),
+    )
+    def test_top2_and_topk_gating_parity(
+        self,
+        expert_capacity,
+        outer_batch,
+    ):
+        batch_size = 2
+        seq_len = 12
+        num_experts = 8
+
+        # Inputs
+        shape = (outer_batch, batch_size, seq_len, num_experts)
+        logits = jax.random.uniform(jax.random.PRNGKey(1), shape=shape)
+
+        # Top-2 config.
+        cfg = Top2Gating.default_config().set(name="test")
+        cfg.num_experts = num_experts
+        cfg.expert_capacity = expert_capacity
+        cfg.eval_capacity_factor = (
+            100.0  # set to a larger number to prevent token dropping for test.
+        )
+        layer: Top2Gating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        gating, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits),
+        )
+
+        # Top-K config with K=2.
+        cfg1 = TopKGating.default_config().set(name="test")
+        cfg1.num_experts = num_experts
+        cfg1.expert_capacity = expert_capacity
+        cfg1.eval_capacity_factor = (
+            100.0  # set to a larger number to prevent token dropping for test.
+        )
+        cfg1.top_k = 2
+        layer1: TopKGating = cfg.instantiate(parent=None)
+        state1 = layer1.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        gating1, _ = F(
+            layer1,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state1,
+            inputs=dict(logits=logits),
+        )
+
+        # Everything in top-2 outputs and top-k outputs should be the same.
+        assert_allclose(gating.dispatch_tensor, gating1.dispatch_tensor)
+        assert_allclose(gating.combine_tensor, gating1.combine_tensor)
+        assert_allclose(gating.load_balance_loss, gating1.load_balance_loss)
+        assert_allclose(gating.router_z_loss, gating1.router_z_loss)
 
     def test_adaptive_load_balance_loss(self):
         cfg = AdaptiveLoadBalanceLoss.default_config().set(

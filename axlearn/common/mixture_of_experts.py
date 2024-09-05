@@ -454,6 +454,201 @@ class Top2Gating(BaseGating):
         )
 
 
+class TopKGating(BaseGating):
+    """Generalized Top-K gating for Mixture-of-Experts."""
+
+    @config_class
+    class Config(BaseGating.Config):
+        """Configures TopKGating."""
+
+        # Number of selected experts.
+        top_k: int = 2
+
+        # Soft cap, applied for gating logits, this is a stability fix to avoid extreme values
+        # during initial steps. Defaults to 0.0.
+        gating_logit_cap: float = 0.0
+        # Note using bfloat16 for fprop_dtype could be problematic for mask tensors. Reference:
+        # https://github.com/google/praxis/blob/2d85369a6cb04161fa5be88c6669454ff1f60574/praxis/gshard_utils.py#L849
+        mask_dtype: jnp.dtype = jnp.int32
+        # Set expert_capacity to at least (group_size * capacity_factor) / num_experts. Default
+        # to 2.0 for top-2 gating.
+        train_capacity_factor: float = 2.0
+        eval_capacity_factor: float = 2.0
+        # Number of examples per minibatch/group per expert. Each example is typically a vector
+        # of size input_dim, representing embedded token or an element of Transformer layer output.
+        expert_capacity: Optional[int] = None
+
+        # If not None, adjust the aux loss according to recent over-capacity ratios.
+        adaptive_load_balance_loss: Optional[AdaptiveLoadBalanceLoss.Config] = None
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg: TopKGating.Config = self.config
+        if cfg.adaptive_load_balance_loss is not None:
+            self._add_child("adaptive_load_balance_loss", cfg.adaptive_load_balance_loss)
+
+    # pylint: disable-next=too-many-statements
+    def forward(self, logits: Tensor) -> NestedTensor:
+        """Please see comments of BaseGating.forward."""
+        cfg = self.config
+        if logits.dtype != jnp.float32:
+            logits = logits.astype(jnp.float32)
+        logits = _cap_logits(logits, cfg.gating_logit_cap)
+        raw_gates = jax.nn.softmax(logits, axis=-1)  # along E dim
+
+        expert_capacity = _compute_expert_capacity(
+            expert_capacity=cfg.expert_capacity,
+            capacity_factor=(
+                cfg.train_capacity_factor if self.is_training else cfg.eval_capacity_factor
+            ),
+            group_size=logits.shape[-2],
+            num_experts=cfg.num_experts,
+        )
+
+        # top-1 index: OGS tensor.
+        index_1 = jnp.argmax(raw_gates, axis=-1)
+        # OGSE tensor.
+        mask_1 = jax.nn.one_hot(index_1, raw_gates.shape[-1], dtype=cfg.mask_dtype)
+
+        density_1 = jnp.mean(mask_1.astype(jnp.float32), axis=-2)
+        # density_1_proxy[:, e] represents mean of raw_gates for expert e, including
+        # those of examples not assigned to e with top_k.
+        density_1_proxy = jnp.mean(raw_gates, axis=-2, dtype=jnp.float32)
+
+        # Compute aux_loss.
+        aux_loss = jnp.mean(density_1_proxy * density_1, dtype=jnp.float32)
+        aux_loss *= cfg.num_experts * cfg.num_experts
+
+        gate_1 = jnp.einsum("ogse,ogse->ogs", raw_gates, mask_1.astype(raw_gates.dtype))
+        gates_list = [gate_1]  # OGS tensor.
+        index_list = [index_1]  # OGS tensor.
+        masks_list = [mask_1]  # OGSE tensor.
+        raw_gates_i = raw_gates  # OGSE tensor.
+
+        denom = gate_1 + 1e-9
+
+        # Greedily pick top-k experts and find `gates`, `masks`, `index` for all experts.
+        for i in range(1, cfg.top_k):
+            # Gates without the previous experts.
+            raw_gates_i *= 1.0 - masks_list[i - 1].astype(raw_gates_i.dtype)
+            index_i = jnp.argmax(raw_gates_i, axis=-1)
+            mask_i = jax.nn.one_hot(index_i, cfg.num_experts, dtype=cfg.mask_dtype)
+            gate_i = jnp.einsum("ogse,ogse->ogs", raw_gates_i, mask_i.astype(raw_gates_i.dtype))
+            denom += gate_i
+            gates_list.append(gate_i)
+            masks_list.append(mask_i)
+            index_list.append(index_i)
+
+        # Renormalize.
+        gates_list = [x / denom for x in gates_list]
+
+        # We reshape the mask as [OGS, E], and compute cumulative sums of assignment
+        # indicators for each expert index e \in 0..E-1 independently.
+        # cumsum over S dim: mask_1 is OGSE tensor.
+        position_in_expert_1 = _cum_sum(masks_list[0], exclusive=True, axis=-2)
+        # Add the over capacity ratio for expert 1.
+        over_capacity_list = [
+            _create_over_capacity_ratio_summary(
+                mask=masks_list[0],
+                position_in_expert=position_in_expert_1,
+                capacity=expert_capacity,
+            )
+        ]
+        # Filter valid positions for top 1 selection
+        masks_list[0] *= jnp.less(position_in_expert_1, expert_capacity).astype(masks_list[0].dtype)
+        position_in_expert_1 = jnp.einsum("ogse,ogse->ogs", position_in_expert_1, masks_list[0])
+        # How many examples in this sequence go to this expert?
+        mask_1_count = jnp.einsum("ogse->oge", masks_list[0])
+        # ogs - mostly ones, but zeros where something didn't fit.
+        mask_1_flat = jnp.sum(masks_list[0], axis=-1, dtype=cfg.mask_dtype)
+        assert mask_1_count.dtype == cfg.mask_dtype
+        assert mask_1_flat.dtype == cfg.mask_dtype
+        position_in_expert_list = [position_in_expert_1]
+        mask_i_flat_list = [mask_1_flat]
+        mask_count_all = mask_1_count
+
+        for i in range(1, cfg.top_k):
+            position_in_expert_i = _cum_sum(
+                masks_list[i], exclusive=True, axis=-2
+            ) + jnp.expand_dims(mask_count_all, -2)
+            # Add the over capacity ratio for expert i.
+            over_capacity_list.append(
+                _create_over_capacity_ratio_summary(
+                    mask=masks_list[i],
+                    position_in_expert=position_in_expert_i,
+                    capacity=expert_capacity,
+                )
+            )
+            # Filter invalid positions for top i selection
+            masks_list[i] *= jnp.less(position_in_expert_i, expert_capacity).astype(
+                masks_list[i].dtype
+            )
+            # How many examples in this sequence go to this expert?
+            mask_count_all += jnp.einsum("ogse->oge", masks_list[i])
+            position_in_expert_i = jnp.einsum("ogse,ogse->ogs", position_in_expert_i, masks_list[i])
+            position_in_expert_list.append(position_in_expert_i)
+            mask_i_flat_list.append(jnp.sum(masks_list[i], axis=-1, dtype=cfg.mask_dtype))
+
+        # OGSEC tensor.
+        combine_tensor = jnp.zeros(
+            [*logits.shape[:3], cfg.num_experts, expert_capacity],
+            dtype=jnp.float32,
+        )
+
+        for gate_i, index_i, position_in_expert_i, mask_i_flat in zip(
+            gates_list, index_list, position_in_expert_list, mask_i_flat_list
+        ):
+            # OGS Filter valid gate values.
+            gate_i *= mask_i_flat.astype(gate_i.dtype)
+            # OGSC tensor.
+            b = jax.nn.one_hot(
+                position_in_expert_i.astype(np.int32),
+                expert_capacity,
+                dtype=jnp.float32,
+            )
+            # OGSE tensor.
+            a = jnp.expand_dims(gate_i * mask_i_flat.astype(jnp.float32), axis=-1) * jax.nn.one_hot(
+                index_i, cfg.num_experts, dtype=jnp.float32
+            )
+            combine_tensor += jnp.einsum("ogse,ogsc->ogsec", a, b)
+
+        # OGSEC tensor.
+        dispatch_tensor = combine_tensor.astype(bool)
+
+        # Counts for tokens that are dispatched to 0, 1 and 2 experts.
+        dispatch_count_tensor = jnp.sum(dispatch_tensor.astype(jnp.int32), [-2, -1])
+
+        router_z_loss = _router_z_loss(logits)
+
+        # Add auxiliary losses and gating statistics to job summary.
+        self.add_summary("load_balance_loss", WeightedScalar(aux_loss, 1))
+        self.add_summary("router_z_loss", WeightedScalar(router_z_loss, 1))
+        # Summary for number of tokens dispatched to 0, 1, ..., k experts.
+        for i in range(cfg.top_k + 1):
+            dispatch_i = jnp.sum(dispatch_count_tensor == i)
+            self.add_summary(f"dispatch_{i}", WeightedScalar(dispatch_i, 1))
+        # Over capacity ratios for top-k experts.
+        for i, over_capacity_i in enumerate(over_capacity_list):
+            self.add_summary(f"over_capacity_{i + 1}", WeightedScalar(over_capacity_i, 1))
+
+        if cfg.adaptive_load_balance_loss is None:
+            self.add_summary("load_balance_loss", aux_loss)
+        else:
+            self.add_summary("load_balance_loss_original", aux_loss)
+            over_capacity_max = over_capacity_list[0]
+            for over_capacity_i in over_capacity_list[1:]:
+                over_capacity_max = jnp.maximum(over_capacity_max, over_capacity_i)
+            aux_loss *= self.adaptive_load_balance_loss(over_capacity_max)
+            self.add_summary("load_balance_loss", aux_loss)
+
+        return self.Output(
+            combine_tensor=combine_tensor,
+            dispatch_tensor=dispatch_tensor,
+            load_balance_loss=aux_loss,
+            router_z_loss=router_z_loss,
+        )
+
+
 class TransformerFeedForwardMoE(BaseLayer):
     """A Transformer feed-forward layer with mixture of experts.
 
