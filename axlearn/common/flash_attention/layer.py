@@ -6,7 +6,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
-from jax.experimental.maps import thread_resources
+from jax._src.mesh import thread_resources
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 

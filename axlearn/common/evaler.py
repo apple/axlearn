@@ -91,7 +91,7 @@ class BaseMetricCalculator(Module):
         super().__init__(cfg, parent=parent)
         self._model = model
         self._model_param_partition_specs = model_param_partition_specs
-        mesh = jax.experimental.maps.thread_resources.env.physical_mesh
+        mesh = jax._src.mesh.thread_resources.env.physical_mesh
         if mesh.empty:
             raise RuntimeError("MetricCalculator should be created within the context of a mesh")
 

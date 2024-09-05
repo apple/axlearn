@@ -21,7 +21,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import pytest
-from jax.experimental.pallas.ops.attention import mha as pallas_mha
+from jax.experimental.pallas.ops.gpu.attention import mha as pallas_mha
 
 from axlearn.common.flash_attention.gpu_attention import flash_attention
 from axlearn.common.flash_attention.utils import mha_reference

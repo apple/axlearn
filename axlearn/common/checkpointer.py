@@ -18,7 +18,8 @@ import jax
 import jax.numpy as jnp
 import tensorflow as tf
 from absl import logging
-from jax.experimental import maps, multihost_utils
+from jax._src.mesh import thread_resources
+from jax.experimental import multihost_utils
 from jax.experimental.array_serialization import serialization as array_serialization
 
 from axlearn.common import utils
@@ -360,7 +361,7 @@ class TensorStoreStateStorage(StateStorage):
             tf_ckpt_map={},
         )
 
-        mesh = maps.thread_resources.env.physical_mesh
+        mesh = thread_resources.env.physical_mesh
         if not mesh.shape:
             raise RuntimeError(
                 "Checkpoint restoration must take place within the context of a Mesh"

@@ -15,7 +15,7 @@ from typing import Callable
 
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.maps import thread_resources
+from jax._src.mesh import thread_resources
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from numpy.typing import ArrayLike

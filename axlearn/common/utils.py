@@ -28,8 +28,9 @@ import jax
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
+from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
-from jax.experimental import maps, mesh_utils, multihost_utils
+from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
 
 from axlearn.common import serialization
@@ -94,7 +95,7 @@ class TensorSpec:
 
     @property
     def sharding(self) -> jax.sharding.Sharding:
-        mesh = maps.thread_resources.env.physical_mesh
+        mesh = thread_resources.env.physical_mesh
         return jax.sharding.NamedSharding(mesh, self.mesh_axes)
 
 
@@ -410,7 +411,7 @@ def as_numpy_array(x: Any):
 
 
 def with_sharding_constraint(x, shardings):
-    mesh = jax.experimental.maps.thread_resources.env.physical_mesh  # type: ignore
+    mesh = thread_resources.env.physical_mesh
     if mesh.empty or mesh.size == 1:
         return x
     return jax.lax.with_sharding_constraint(x, shardings)
@@ -510,7 +511,7 @@ def input_partition_spec() -> PartitionSpec:
 
     Must be called within the context of a Mesh.
     """
-    mesh = maps.thread_resources.env.physical_mesh
+    mesh = thread_resources.env.physical_mesh
     return PartitionSpec(
         mesh.axis_names,
     )
@@ -600,7 +601,7 @@ def host_to_global_device_array(
     Raises:
         NotImplementedError: if the given `partition` type is not supported.
     """
-    mesh = maps.thread_resources.env.physical_mesh
+    mesh = thread_resources.env.physical_mesh
     partition_spec = data_partition_type_to_spec(partition)
 
     local_devices = mesh.local_devices
