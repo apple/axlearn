@@ -495,7 +495,38 @@ def _call_method_in_context(
     return call_thunk_in_context(list(reversed(context.module.path_to_descendant_module(module))))
 
 
-class Module(Configurable):
+class _PostInitMeta(type):
+    """A metaclass that invokes `__post_init__`."""
+
+    def __call__(cls, *args: Any, **kwds: Any) -> Any:
+        instance = super().__call__(*args, **kwds)
+        maybe_post_init = getattr(instance, "__post_init__", None)
+        if callable(maybe_post_init):
+            maybe_post_init()
+        return instance
+
+
+def _wrap_method_with_auto_child_context(*, method_fn: Callable, method_name: str) -> Callable:
+    """Wraps a method by proxying through `_call_method_in_context`.
+
+    Note that this does not bind any instance to the `self` parameter of the method.
+    We keep this function separate from a `Module` method to avoid confounding the `self` argument
+    of this function with the `self` argument in `wrap_method_fn`.
+
+    Callers of this function should either bind the returned function to an instance, e.g. using
+    `partial(method_fn, instance)`, or supply an instance explicitly as the first arg.
+    """
+
+    @no_stack_summary
+    def wrap_method_fn(self, *args, method_fn=method_fn, **kwargs):
+        return _call_method_in_context(
+            self, *args, method_fn=method_fn, method_name=method_name, **kwargs
+        )
+
+    return wrap_method_fn
+
+
+class Module(Configurable, metaclass=_PostInitMeta):
     """A node in a tree of Modules."""
 
     @config_class
@@ -519,19 +550,49 @@ class Module(Configurable):
         # Mapping from descendant module name to relative path from current module.
         self._paths_to_shared_modules: dict[str, list[str]] = {}
         self._vlog_level = cfg.vlog
-        # TODO(markblee): Consider using a metaclass.
+
+    def __post_init__(self):
+        # Wrap methods after `__init__`, allowing access to child modules.
+        for method_name, method_fn in self._wrapped_methods_for_auto_child_context().items():
+            setattr(self, method_name, method_fn)
+
+    def _wrapped_methods_for_auto_child_context(self) -> dict[str, Callable]:
+        """Returns methods that have been wrapped and bound to `self`.
+
+        This ensures that module methods are bound to the instance that defined the method, rather
+        than the instance that the method is assigned to in `__post_init__`.
+
+        For example, `self.child._wrapped_methods_for_auto_child_context()` returns methods bound to
+        `self.child` rather than `self`, which affects what `self.config` points to within the
+        wrapped method.
+
+        On the other hand, `self.child._methods_to_wrap_for_auto_child_context()` returns un-bound
+        methods of `self.child`. Subclasses will typically override this method to control which
+        methods of the subclass to wrap.
+        """
+        wrapped = {}
+
         for method_name, method_fn in self._methods_to_wrap_for_auto_child_context().items():
             # method_fn is not bound to any instance.
             self.vlog(1, "Wrapping method %s of %s with auto child context", method_name, self)
             # Wrap method with automatic child context.
-            method_fn = self._wrap_method_with_auto_child_context(
+            method_fn = _wrap_method_with_auto_child_context(
                 method_fn=method_fn, method_name=method_name
             )
             # Bind method_fn to self and override self.<method>.
-            method_fn = partial_with_fn_metadata(method_fn, self)
-            setattr(self, method_name, method_fn)
+            wrapped[method_name] = partial_with_fn_metadata(method_fn, self)
+
+        return wrapped
 
     def _methods_to_wrap_for_auto_child_context(self) -> dict[str, Callable]:
+        """Returns methods to be wrapped in `_wrapped_methods_for_auto_child_context`.
+
+        These methods should not be bound to any instance (i.e., `self` should be left as a required
+        first argument to the returned methods). Such a binding instead happens in
+        `_wrapped_methods_for_auto_child_context`, which is invoked automatically in
+        `__post_init__`.
+        """
+
         def _should_wrap_method(method: str) -> bool:
             # Only public methods defined in subclasses of Module need to be wrapped.
             if hasattr(Module, method) or method.startswith("_"):
@@ -549,15 +610,6 @@ class Module(Configurable):
             for method in dir(self)
             if _should_wrap_method(method)
         }
-
-    def _wrap_method_with_auto_child_context(self, *, method_fn, method_name):
-        @no_stack_summary
-        def wrap_method_fn(self, *args, method_fn=method_fn, **kwargs):
-            return _call_method_in_context(
-                self, *args, method_fn=method_fn, method_name=method_name, **kwargs
-            )
-
-        return wrap_method_fn
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -653,7 +705,7 @@ class Module(Configurable):
         self._children[name] = module
         return module
 
-    def path_to_descendant_module(self, module: "Module") -> Optional[list[str]]:
+    def path_to_descendant_module(self, module: "Module") -> list[str]:
         """Returns the relative path from `self` to `module`.
 
         Args:

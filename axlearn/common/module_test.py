@@ -6,7 +6,7 @@
 # type: ignore[attribute-error]
 import contextlib
 import threading
-from typing import Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import chex
 import jax.random
@@ -746,6 +746,53 @@ class ModuleTest(TestWithTemporaryCWD):
 
         with self.assertRaisesRegex(ValueError, "descendant"):
             module.child2.path_to_descendant_module(module.child1)
+
+    def test_post_init(self):
+        class InnerModule(Module):
+            """A dummy module wrapped by `OuterModule`."""
+
+            @config_class
+            class Config(Module.Config):
+                inner_a: Required[int] = REQUIRED
+
+            def inner_method(self):
+                return self.config.inner_a
+
+        class OuterModule(Module):
+            """A dummy module exposing `InnerModule` methods as part of its API."""
+
+            @config_class
+            class Config(Module.Config):
+                inner: Module.Config = InnerModule.default_config()
+                outer_a: Required[int] = REQUIRED
+
+            def __init__(self, cfg: Module.Config, *, parent: Optional[Module]):
+                super().__init__(cfg, parent=parent)
+                self._add_child("inner", cfg.inner)
+
+            def _wrapped_methods_for_auto_child_context(self) -> dict[str, Callable[..., Any]]:
+                """Override `_wrapped_methods_for_auto_child_context` rather than
+                `_methods_to_wrap_for_auto_child_context` to ensure that inner methods are bound to
+                self.inner.
+                """
+                # We should have access to `inner` at this point.
+                self.inner: Module
+                outer_methods = super()._wrapped_methods_for_auto_child_context()
+                inner_methods = self.inner._wrapped_methods_for_auto_child_context()
+                return {**outer_methods, **inner_methods}
+
+            def outer_method(self):
+                return self.config.outer_a
+
+        inner_cfg = InnerModule.default_config().set(inner_a=123)
+        outer_cfg = OuterModule.default_config().set(outer_a=456, inner=inner_cfg)
+
+        outer = outer_cfg.set(name="test").instantiate(parent=None)
+        # Outer method should have been wrapped.
+        self.assertEqual(outer_cfg.outer_a, outer.outer_method())
+        # Outer should also wrap the inner methods. We also ensure that `self.config` points to
+        # `InnerModule.Config` rather than `OuterModule.Config`.
+        self.assertEqual(inner_cfg.inner_a, outer.inner_method())
 
 
 class ScanInContextTest(TestWithTemporaryCWD):
