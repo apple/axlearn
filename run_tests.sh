@@ -28,27 +28,27 @@ download_assets() {
 
 precommit_checks() {
   set -e -x
-
-  if [[ "${1:-x}" = "--skip-pre-commit" ]] ; then
-    SKIP_PRECOMMIT=true
-    shift
-  fi
-
-  # Skip pre-commit on parallel CI because it is run as a separate job.
-  if [[ "${SKIP_PRECOMMIT:-false}" = "false" ]] ; then
-    pre-commit install
-    pre-commit run --all-files || exit_if_error $? "pre-commit failed."
-    # Run pytype separately to utilize all cpus and for better output.
-    pytype -j auto . || exit_if_error $? "pytype failed."
-  fi
+  pre-commit install
+  pre-commit run --all-files || exit_if_error $? "pre-commit failed."
+  # Run pytype separately to utilize all cpus and for better output.
+  pytype -j auto . || exit_if_error $? "pytype failed."
 }
 
 # Collect all background PIDs explicitly.
 TEST_PIDS=()
 
 download_assets
-precommit_checks &
-TEST_PIDS[$!]=1
+
+if [[ "${1:-x}" = "--skip-pre-commit" ]] ; then
+  SKIP_PRECOMMIT=true
+  shift
+fi
+
+# Skip pre-commit on parallel CI because it is run as a separate job.
+if [[ "${SKIP_PRECOMMIT:-false}" = "false" ]] ; then
+  precommit_checks &
+  TEST_PIDS[$!]=1
+fi
 
 UNQUOTED_PYTEST_FILES=$(echo $1 |  tr -d "'")
 pytest --durations=100 -n auto -v \
