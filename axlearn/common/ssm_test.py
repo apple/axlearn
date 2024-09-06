@@ -39,6 +39,8 @@ from axlearn.common.ssm import (
     RepeatedSSMLayer,
     StackedMixedSSMTransformerLayer,
     StackedSSMLayer,
+    HybridMambaRecurrence,
+    AlternativeMambaRecurrence,
 )
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import Nested, Tensor, cast_floats
@@ -509,6 +511,66 @@ class MambaMixerLayerTest(TestCase):
 
         assert_allclose(decoder_output, forward_outputs.data, atol=1e-6)
 
+    @parameterized.parameters(jnp.float32, jnp.bfloat16)
+    def test_hybrid_recurrence(self, dtype: jnp.dtype):
+        model_dim = 4
+        state_dim = 16
+        cfg = MambaMixerLayer.default_config().set(
+            input_dim=model_dim,
+            state_dim=state_dim,
+            cache_dtype=dtype,
+            dtype=dtype,
+        )
+        layer: MambaMixerLayer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        layer_params = cast_floats(layer_params, to_dtype=dtype)
+        batch_size, tgt_len = 2, 6
+        query = jax.random.normal(
+            jax.random.PRNGKey(1),
+            [batch_size, tgt_len, model_dim],
+            dtype=dtype,
+        )
+        inputs = dict(query=query)
+        forward_outputs, _ = F(
+            layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            inputs=inputs,
+            recurrence=HybridMambaRecurrence.default_config().instantiate(parent=None),
+        )
+        assert forward_outputs.data.shape == (batch_size, tgt_len, model_dim)
+
+    @parameterized.parameters(jnp.float32, jnp.bfloat16)
+    def test_alternative_recurrence(self, dtype: jnp.dtype):
+        model_dim = 4
+        state_dim = 16
+        cfg = MambaMixerLayer.default_config().set(
+            input_dim=model_dim,
+            state_dim=state_dim,
+            cache_dtype=dtype,
+            dtype=dtype,
+        )
+        layer: MambaMixerLayer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        layer_params = cast_floats(layer_params, to_dtype=dtype)
+        batch_size, tgt_len = 2, 6
+        query = jax.random.normal(
+            jax.random.PRNGKey(1),
+            [batch_size, tgt_len, model_dim],
+            dtype=dtype,
+        )
+        inputs = dict(query=query)
+        forward_outputs, _ = F(
+            layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            inputs=inputs,
+            recurrence=AlternativeMambaRecurrence.default_config().instantiate(parent=None),
+        )
+        assert forward_outputs.data.shape == (batch_size, tgt_len, model_dim)
+
 
 def _test_extend_step(layer_cfg: InstantiableConfig, *, model_dim: int, dtype: jnp.dtype):
     """Tests extend for composite layers."""
@@ -834,6 +896,58 @@ class StackedMambaTest(TestCase):
 
         _test_prefill_states(cfg, model_dim=model_dim, dtype=dtype)
 
+    @parameterized.product(
+        block_klass=(MambaBlock, JambaMambaBlock),
+        dtype=(jnp.float32, jnp.bfloat16),
+    )
+    def test_hybrid_recurrence_in_block(self, block_klass: MambaBlock, dtype: jnp.dtype):
+        model_dim = 16
+        state_dim = 16
+        hidden_dim = 32
+        num_layers = 3
+
+        cfg = StackedSSMLayer.default_config().set(
+            input_dim=model_dim,
+            num_layers=num_layers,
+            layer=block_klass.default_config().set(
+                state_dim=state_dim,
+                mamba_layer=MambaMixerLayer.default_config().set(
+                    recurrence=HybridMambaRecurrence.default_config()
+                )
+            ),
+        )
+        cfg.layer.mamba_layer.set(dtype=dtype, cache_dtype=None)
+        if hasattr(cfg.layer, "feed_forward"):
+            cfg.layer.feed_forward.hidden_dim = hidden_dim
+
+        _test_extend_step(cfg, model_dim=model_dim, dtype=dtype)
+
+    @parameterized.product(
+        block_klass=(MambaBlock, JambaMambaBlock),
+        dtype=(jnp.float32, jnp.bfloat16),
+    )
+    def test_alternative_recurrence_in_block(self, block_klass: MambaBlock, dtype: jnp.dtype):
+        model_dim = 16
+        state_dim = 16
+        hidden_dim = 32
+        num_layers = 3
+
+        cfg = StackedSSMLayer.default_config().set(
+            input_dim=model_dim,
+            num_layers=num_layers,
+            layer=block_klass.default_config().set(
+                state_dim=state_dim,
+                mamba_layer=MambaMixerLayer.default_config().set(
+                    recurrence=AlternativeMambaRecurrence.default_config()
+                )
+            ),
+        )
+        cfg.layer.mamba_layer.set(dtype=dtype, cache_dtype=None)
+        if hasattr(cfg.layer, "feed_forward"):
+            cfg.layer.feed_forward.hidden_dim = hidden_dim
+
+        _test_extend_step(cfg, model_dim=model_dim, dtype=dtype)
+
 
 class StackedMixedSSMTransformerTest(TestCase):
     """Tests that mixing SSM layers and transformer layers behaves as expected."""
@@ -927,3 +1041,57 @@ class StackedMixedSSMTransformerTest(TestCase):
         cfg.layer.self_attention.attention.num_heads = num_heads
         cfg.layer.self_attention.attention.input_linear.set(dtype=dtype, cache_dtype=None)
         _test_prefill_states(cfg, model_dim=model_dim, dtype=dtype)
+
+    @parameterized.parameters(jnp.float32, jnp.bfloat16)
+    def test_hybrid_recurrence_in_mixed_layer(self, dtype: jnp.dtype):
+        model_dim = 16
+        state_dim = 16
+        num_heads = 4
+        hidden_dim = 32
+        num_layers = 4
+        cfg = StackedMixedSSMTransformerLayer.default_config().set(
+            input_dim=model_dim,
+            num_layers=num_layers,
+            transformer_layer_period=3,
+            transformer_layer_offset=1,
+            ssm_layer=JambaMambaBlock.default_config().set(
+                state_dim=state_dim,
+                mamba_layer=MambaMixerLayer.default_config().set(
+                    recurrence=HybridMambaRecurrence.default_config()
+                )
+            ),
+            dtype=dtype,
+        )
+        cfg.ssm_layer.feed_forward.hidden_dim = hidden_dim
+        cfg.ssm_layer.mamba_layer.set(dtype=dtype, cache_dtype=None)
+        cfg.layer.feed_forward.hidden_dim = hidden_dim
+        cfg.layer.self_attention.attention.num_heads = num_heads
+        cfg.layer.self_attention.attention.input_linear.set(dtype=dtype, cache_dtype=None)
+        _test_extend_step(cfg, model_dim=model_dim, dtype=dtype)
+
+    @parameterized.parameters(jnp.float32, jnp.bfloat16)
+    def test_alternative_recurrence_in_mixed_layer(self, dtype: jnp.dtype):
+        model_dim = 16
+        state_dim = 16
+        num_heads = 4
+        hidden_dim = 32
+        num_layers = 4
+        cfg = StackedMixedSSMTransformerLayer.default_config().set(
+            input_dim=model_dim,
+            num_layers=num_layers,
+            transformer_layer_period=3,
+            transformer_layer_offset=1,
+            ssm_layer=JambaMambaBlock.default_config().set(
+                state_dim=state_dim,
+                mamba_layer=MambaMixerLayer.default_config().set(
+                    recurrence=AlternativeMambaRecurrence.default_config()
+                )
+            ),
+            dtype=dtype,
+        )
+        cfg.ssm_layer.feed_forward.hidden_dim = hidden_dim
+        cfg.ssm_layer.mamba_layer.set(dtype=dtype, cache_dtype=None)
+        cfg.layer.feed_forward.hidden_dim = hidden_dim
+        cfg.layer.self_attention.attention.num_heads = num_heads
+        cfg.layer.self_attention.attention.input_linear.set(dtype=dtype, cache_dtype=None)
+        _test_extend_step(cfg, model_dim=model_dim, dtype=dtype)
