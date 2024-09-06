@@ -142,11 +142,11 @@ def _parameters_from_attention(
     for src_proj, dst_proj in key_mapping:
         src_dense = src["i_proj"][src_proj]
         dst_dense = getattr(dst_self, dst_proj)
+        # pytype: disable=attribute-error
         dst_dense.weight.data = as_torch_tensor(
             src_dense["weight"].reshape(-1, all_head_dim)
-        ).transpose(
-            0, 1
-        )  # pytype: disable=attribute-error
+        ).transpose(0, 1)
+        # pytype: enable=attribute-error
         dst_dense.bias.data = as_torch_tensor(src_dense["bias"].reshape(all_head_dim))
 
     # Copy O. In Hugging Face, this dense layer is in *SelfOutput layer.
