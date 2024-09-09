@@ -55,8 +55,9 @@ apple-silicon = [
 
 # Requirements for testing and development.
 dev = [
-    "axlearn[orbax]",  # checkpointer tests
+    "axlearn[audio]",  # audio tests
     "axlearn[grain]",  # grain input tests
+    "axlearn[orbax]",  # checkpointer tests
     "black==23.1a1",  # formatting
     "einops",
     "evaluate",
@@ -102,7 +103,7 @@ tpu = [
     "axlearn[gcp]",
     "jax[tpu]==0.4.30",  # must be >=0.4.19 for compat with v5p.
 ]
-# Vertex AI tensorboard.
+# Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
 vertexai_tensorboard = [
     # Required to fix a `distro-info` bug we run into when using `tb_gcp_tensorboard` from
     # `google_cloud_aiplatform[tensorboard]`. See:
@@ -149,6 +150,10 @@ orbax = [
 # Grain input processing. Currently does not support macos.
 grain = [
     "grain==0.2.1; platform_machine == 'x86_64'",
+]
+# Audio dependencies.
+audio = [
+    "levenshtein==0.25.1",
 ]
 
 [tool.flit.module]

@@ -71,12 +71,13 @@ def text_input(
     vocab: InstantiableConfig[seqio.Vocabulary],
     input_key: str = "text",
     truncate: bool,
-    eos_id: int,
+    min_len: int = 1,
+    eos_id: Optional[int] = None,
 ) -> input_tf_data.DatasetToDatasetFn:
     """Processor for text targets.
 
     1. Form "target_labels" by tokenizing `input_key` without EOS appended.
-    2. Drop empty examples.
+    2. Drop examples where length of "target_labels" is strictly less than `min_len`.
     3. If `truncate=False`, drop examples whose lengths including EOS would be greater than
         `max_len`.
     4. Append EOS and apply padding (and if `truncate=True`, apply truncation). Note that EOS is
@@ -91,7 +92,9 @@ def text_input(
         vocab: Vocabulary for tokenization.
         input_key: Key in each example corresponding to the text inputs.
         truncate: Whether to allow text to be truncated.
-        eos_id: EOS token ID.
+        min_len: Minimum length of "target_labels". For instance, `min_len=1` means examples with
+            empty "target_labels" are dropped.
+        eos_id: EOS token ID. If None, infers from `vocab.eos_id`.
 
     Returns:
         A DatasetToDatasetFn.
@@ -105,6 +108,8 @@ def text_input(
         raise ValueError("Max length must be at least 1.")
 
     spm_vocab = vocab.instantiate()
+    if eos_id is None:
+        eos_id = spm_vocab.eos_id
     pad_id = -1
 
     @seqio.map_over_dataset
@@ -120,7 +125,7 @@ def text_input(
             {"target_labels": seqio.Feature(spm_vocab)},
             copy_pretokenized=False,
         ),
-        _filter_by_length(input_key="target_labels", min_len=1),
+        _filter_by_length(input_key="target_labels", min_len=min_len),
     ]
     if not truncate:
         processors.append(_filter_by_length(input_key="target_labels", max_len=max_len - 1))
