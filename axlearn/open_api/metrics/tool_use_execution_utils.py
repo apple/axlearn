@@ -216,8 +216,8 @@ def _match_strings_bag_of_words(pred_str: str, target_str: str, threshold: float
     """Match strings using a bag of words approach.
 
     Args:
-        pred_str: .
-        target_str: .
+        pred_str: The predicted argument string.
+        target_str: The target argument string.
         threshold: applied to (# unique common words) / (# unique pred_str words)
 
     Returns:
@@ -283,6 +283,7 @@ def check_arguments(
         target_args: The target (GT) arguments.
         check_lenient: Flag, if lenient argument transformations should be applied.
         bag_of_word: Flag, if bag-of-word matching should be applied.
+
     Returns:
         True if the predicted and targets arguments are matching according to the flags.
     """
