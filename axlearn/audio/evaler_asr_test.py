@@ -12,7 +12,7 @@ import tensorflow as tf
 from absl.testing import parameterized
 from jax.experimental import mesh_utils
 
-from axlearn.audio.asr_decoder import DecodeOutputs
+from axlearn.audio.decoder_asr import DecodeOutputs
 from axlearn.audio.evaler_asr import (
     WordErrorRateMetricCalculator,
     WordErrors,

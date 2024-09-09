@@ -17,7 +17,7 @@ import seqio
 from jax.sharding import PartitionSpec
 from Levenshtein import opcodes as levenshtein
 
-from axlearn.audio.asr_decoder import DecodeOutputs
+from axlearn.audio.decoder_asr import DecodeOutputs
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import (
     REQUIRED,
