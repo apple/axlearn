@@ -7,6 +7,7 @@ from absl import app, flags
 from axlearn.common import launch, launch_trainer, measurement
 from axlearn.common.config import config_for_function
 
+import previewutilities
 
 def main(_):
     measurement.initialize(flags.FLAGS)
