@@ -1,9 +1,9 @@
 # Copyright © 2023 Apple Inc.
 
 """HuggingFace module wrappers."""
+
 import json
 import os
-from abc import ABC
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -68,7 +68,7 @@ def download_hf_models_from_remote(remote_path: str) -> str:
     return str(local_pretrained_model_path)
 
 
-class HfModuleWrapper(BaseModel, ABC):
+class HfModuleWrapper(BaseModel):
     """A wrapper for Hugging Face Flax modules so that they can be used within AXLearn.
 
     This is the super class for all Hugging Face Flax module wrappers, such as
