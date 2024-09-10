@@ -36,13 +36,19 @@ import optax
 import typing_extensions
 from absl import logging
 from jax import numpy as jnp
+from jax._src.mesh import thread_resources
+from jax.experimental.compute_on import compute_on
+from jax.experimental.shard_map import shard_map
 from optax._src import numerics
+from functools import partial
 
 from axlearn.common import schedule, struct
 from axlearn.common.base_layer import NestedParameterSpec, ParameterSpec, PartitionSpec
 from axlearn.common.config import ConfigOr, maybe_instantiate
 from axlearn.common.factorized_rms import scale_by_factored_rms
 from axlearn.common.module import current_context
+from axlearn.common.module import Module, child_context, new_output_collection, functional as F, InvocationContext
+
 from axlearn.common.optimizer_base import (
     NestedOptParam,
     OptParam,
@@ -86,7 +92,7 @@ def chain(*args):
         init=base.init, update=base.update, partition=partition
     )
 
-
+import inspect
 def named_chain(**kwargs):
     kwargs = {k: _to_partitioned_transformation(v) for k, v in kwargs.items()}
 
@@ -94,11 +100,14 @@ def named_chain(**kwargs):
         return {k: v.init(params) for k, v in kwargs.items()}
 
     def update_fn(
-        updates: NestedTensor, state: dict[str, Any], params: NestedOptParam
+        updates: NestedTensor, state: dict[str, Any], params: NestedOptParam, is_valid_step
     ) -> tuple[NestedTensor, optax.EmptyState]:
         new_state = {}
         for k, v in kwargs.items():
-            updates, new_state[k] = v.update(updates, state[k], params)
+            if "is_valid_step" in inspect.signature(v.update).parameters:
+                updates, new_state[k] = v.update(updates, state[k], params, is_valid_step)
+            else:
+                updates, new_state[k] = v.update(updates, state[k], params)
         return updates, new_state
 
     def partition_fn(param_spec):
@@ -139,10 +148,13 @@ def with_partition_fn(
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
-def copy_partition(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
+def copy_partition(param_specs: NestedParameterSpec, memory_kind=None) -> NestedPartitionSpec:
     return jax.tree.map(
         lambda param_spec: OptStateSpec(
-            dtype=param_spec.dtype, shape=param_spec.shape, mesh_axes=param_spec.mesh_axes
+            dtype=param_spec.dtype,
+            shape=param_spec.shape,
+            mesh_axes=param_spec.mesh_axes,
+            memory_kind=memory_kind or param_spec.memory_kind,
         ),
         param_specs,
     )
@@ -157,17 +169,39 @@ def trace_partition(
     return with_partition_fn(base, partition_fn)
 
 
-def adam_partition(base: optax.GradientTransformation) -> PartitionedGradientTransformation:
+def adam_partition(
+    base: optax.GradientTransformation, offload: bool
+) -> PartitionedGradientTransformation:
     state: optax.ScaleByAdamState = base.init({})
+    memory_kind = "pinned_host" if offload else None
+    update_spec = None
+    state_spec = None
 
-    def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
-        return optax.ScaleByAdamState(
+    def partition_fn(param_specs: NestedPartitionSpec) -> NestedPartitionSpec:
+        nonlocal update_spec, state_spec
+        out = optax.ScaleByAdamState(
             count=OptStateSpec(
-                dtype=state.count.dtype, shape=state.count.shape, mesh_axes=PartitionSpec()
+                dtype=state.count.dtype,
+                shape=state.count.shape,
+                mesh_axes=PartitionSpec(),
+                memory_kind=memory_kind,
             ),
-            mu=copy_partition(param_specs),
-            nu=copy_partition(param_specs),
+            mu=copy_partition(param_specs, memory_kind),
+            nu=copy_partition(param_specs, memory_kind),
         )
+        update_spec = jax.tree_map(lambda x: x.mesh_axes, param_specs)
+        state_spec = jax.tree_map(lambda x: x.mesh_axes, out)
+        return out
+
+    if offload:
+        logging.info("Adam optimizer offloading enabled.")
+        prev_update = base.update
+
+        def update_fn(updates, states, params):
+            del params
+            return compute_on("device_host")(jax.jit(prev_update))(updates, states, None)
+
+        base = optax.GradientTransformation(base.init, update_fn)
 
     return with_partition_fn(base, partition_fn)
 
@@ -686,6 +720,7 @@ def adamw_optimizer(
     weight_decay_per_param_scale: Optional[Callable[[NestedOptParam], Any]] = None,
     mu_dtype: Optional[jnp.dtype] = None,
     adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
+    offload: bool = True,
 ) -> PartitionedGradientTransformation:
     """AdamW optimizer with parameter scaling.
 
@@ -713,7 +748,11 @@ def adamw_optimizer(
     Returns:
         A PartitionedGradientTransformation representing an AdamW optimizer with parameter scaling.
     """
-    tx = [adam_partition(optax.scale_by_adam(b1=b1, b2=b2, eps=eps, mu_dtype=mu_dtype))]
+    tx = [
+        adam_partition(
+            optax.scale_by_adam(b1=b1, b2=b2, eps=eps, mu_dtype=mu_dtype), offload=offload
+        )
+    ]
     if adam_update_transformation is not None:
         tx.append(maybe_instantiate(adam_update_transformation))
     tx.extend(
@@ -742,6 +781,7 @@ def adamw_decoupled_optimizer(
     weight_decay_per_param_scale: Optional[Callable[[NestedOptParam], Any]] = None,
     mu_dtype: Optional[jnp.dtype] = None,
     adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
+    offload: bool = True,
 ) -> PartitionedGradientTransformation:
     """A "decoupled" version of the AdamW optimizer, with optional parameter scaling.
 
@@ -772,7 +812,11 @@ def adamw_decoupled_optimizer(
         A PartitionedGradientTransformation representing a decoupled AdamW optimizer with
             parameter scaling.
     """
-    tx = [adam_partition(optax.scale_by_adam(b1=b1, b2=b2, eps=eps, mu_dtype=mu_dtype))]
+    tx = [
+        adam_partition(
+            optax.scale_by_adam(b1=b1, b2=b2, eps=eps, mu_dtype=mu_dtype), offload=offload
+        )
+    ]
     if adam_update_transformation is not None:
         tx.append(maybe_instantiate(adam_update_transformation))
     tx.extend(
@@ -803,6 +847,7 @@ def adam_optimizer(
     l2_regularizer_weight: float = 0,
     l2_regularizer_per_param_scale: Optional[Callable[[NestedOptParam], Any]] = None,
     mu_dtype: Optional[jnp.dtype] = None,
+    offload: bool = True,
 ) -> PartitionedGradientTransformation:
     """Adam optimizer with l2 regularization."""
     tx = [
@@ -810,7 +855,9 @@ def adam_optimizer(
             regularizer_weight=l2_regularizer_weight,
             per_param_scale=l2_regularizer_per_param_scale,
         ),
-        adam_partition(optax.scale_by_adam(b1=b1, b2=b2, eps=eps, mu_dtype=mu_dtype)),
+        adam_partition(
+            optax.scale_by_adam(b1=b1, b2=b2, eps=eps, mu_dtype=mu_dtype), offload=offload
+        ),
         scale_by_schedule(scale_from_learning_rate(learning_rate)),
     ]
     return chain(*tx)
@@ -1388,25 +1435,47 @@ def skip_and_clip_by_global_norm(
             if context is not None:
                 context.add_summary("gradient_scale", g_scale)
         # Apply subsequent gradient transformation.
-        new_updates, new_inner_state = inner.update(clipped_updates, inner_state, params)
+        new_updates, new_inner_state = inner.update(clipped_updates, inner_state, params, is_valid_step)
         # Discard the updates and states in a nonvalid step.
-        final_updates = jax.tree.map(
-            lambda x, y: jnp.where(is_valid_step, x, jnp.zeros_like(y)),
-            new_updates,
-            updates,
-        )
-        final_inner_state = jax.tree.map(
-            lambda x, y: jnp.where(is_valid_step, x, y),
-            new_inner_state,
-            inner_state,
-        )
+        # final_updates = jax.tree_util.tree_map(
+        #     lambda x, y: jnp.where(is_valid_step, x, jnp.zeros_like(y)),
+        #     new_updates,
+        #     updates,
+        # )
 
+        # @compute_on("device_host")
+        # @partial(jax.jit, donate_argnums=(1,))
+        # def replace_fn(is_valid_step, new_inner_state, inner_state):
+        #     return jax.tree_util.tree_map(
+        #         lambda x, y: jnp.where(is_valid_step, x, y),
+        #         new_inner_state,
+        #         inner_state,
+        #     )
+        # new_inner_state = replace_fn(is_valid_step, new_inner_state, inner_state)
+        
+        # fact_spec = jax.tree.map(lambda p: (p.factorization_spec, None), params)
+
+        # @compute_on("device_host")
+        # @jax.jit
+        # def host_fn(is_valid_step, args):
+        #     def true_fun(clipped_updates, inner_state, params):
+        #         params = jax.tree_map(lambda p, f: OptParam(p[0], f[0], p[1]), params, fact_spec, is_leaf=lambda x: isinstance(x, tuple) and len(x) == 2)
+        #         return inner.update(clipped_updates, inner_state, params)
+
+        #     def false_fun(clipped_updates, inner_state, params):
+        #         return jax.tree_map(lambda x: jnp.zeros_like(x), clipped_updates), inner_state
+
+        #     return jax.lax.cond(is_valid_step, true_fun, false_fun, *args)
+
+        # final_updates, new_inner_state = host_fn(is_valid_step, (clipped_updates, inner_state, jax.tree.map(lambda p: (p.value, p.weight_decay_scale), params)))
+
+        final_updates = new_updates
         return final_updates, SkipClipState(
             count=inc_count,
             nonvalid_count=nonvalid_count,
             grad_norm_ema=new_norm_ema,
             grad_norm_square_ema=new_norm_square_ema,
-            inner_state=final_inner_state,
+            inner_state=new_inner_state,
             drop_stats=new_drop_stats,
         )
 
@@ -1697,6 +1766,7 @@ def adastar_optimizer(
     weight_decay: float = 0,
     update_schedule: schedule.Schedule,
     verbosity: int = 0,
+    offload: bool = True,
 ) -> PartitionedGradientTransformation:
     """An optimizer covering both {adamw_decoupled,adafactor}_optimizer (with factored=False).
 
@@ -1790,6 +1860,11 @@ def adastar_optimizer(
         pps: _AdastarPerParamState
 
     update_schedule = schedule.as_schedule_fn(update_schedule)
+    memory_kind = "pinned_host" if offload else None
+    if offload:
+        logging.info("Adastar optimizer offloading enabled.")
+    update_specs = None
+    state_specs = None
 
     def init_fn(params: NestedOptParam):
         """Initializes the stage 1 state."""
@@ -1804,12 +1879,9 @@ def adastar_optimizer(
 
         return _AdastarState(count=jnp.zeros([], jnp.int32), pps=jax.tree.map(_init, params))
 
-    def update_fn(grads: NestedTensor, state: _AdastarState, params: NestedOptParam):
+    def core_computation(grads: NestedTensor, state: _AdastarState):
         """Applies (stage 1) gradient transformation to compute raw_updates."""
         incremented_count = optax.safe_int32_increment(state.count)
-
-        if params is None:
-            raise ValueError("param is None")
 
         def _moment(
             x: Tensor, *, acc: Optional[Tensor], decay: Optional[float], debias: bool
@@ -1888,10 +1960,8 @@ def adastar_optimizer(
             )
         )
         # Clip raw updates if necessary.
-        clip_fn = clip_by_block_rms(
-            raw_update_clipping_threshold, summary_suffix="raw_update_norm"
-        ).update
-        raw_updates, _ = clip_fn(raw_updates, None, params)
+        clip_fn = clip_by_block_rms(raw_update_clipping_threshold, summary_suffix=None).update
+        raw_updates, _ = clip_fn(raw_updates, None, None)  # TODO
         # Compute smoothed updates.
         smoothed_updates, pps_tree = _split_update_results(
             jax.tree.map(
@@ -1900,12 +1970,61 @@ def adastar_optimizer(
                 pps_tree,
             )
         )
+        # Do not return raw_updates when it's no needed to reduce D2H transfers when offloading is active.
+        if verbosity <= 0:
+            raw_updates = None
+        return smoothed_updates, _AdastarState(count=incremented_count, pps=pps_tree)
+
+    def update_fn(grads: NestedTensor, state: _AdastarState, params: NestedOptParam, is_valid_step):
+        if params is None:
+            raise ValueError("param is None")
+
+        if not offload:
+            raw_updates, smoothed_updates, updated_state = core_computation(grads, state)
+        else:
+            # @compute_on("device_host")
+            # @jax.jit
+            # def false_fn(grads, state):
+            #     return grads, state
+            
+            # @compute_on("device_host")
+            # @jax.jit
+            # def cond_fn(is_valid_step, grads, state):
+            #     return jax.lax.cond(is_valid_step, core_computation, false_fn, grads, state)
+            
+            # smoothed_updates, updated_state = cond_fn(is_valid_step, grads, state)
+
+
+            def true_fn(grads, state):
+                return shard_map(
+                    core_computation,
+                    mesh=thread_resources.env.physical_mesh,
+                    in_specs=(update_specs, state_specs),
+                    out_specs=(update_specs, state_specs),
+                )(grads, state)
+
+            def false_fn(grads, state):
+                return grads, state
+            
+            @compute_on("device_host")
+            @partial(jax.jit, donate_argnums=(1, 2))
+            def cond_fn(is_valid_step, grads, state):
+                return jax.lax.cond(is_valid_step, true_fn, false_fn, grads, state)
+            
+            smoothed_updates, updated_state = cond_fn(is_valid_step, grads, state)
+        
+            # smoothed_updates, updated_state = shard_map(
+            #     compute_on("device_host")(jax.jit(core_computation)),
+            #     mesh=thread_resources.env.physical_mesh,
+            #     in_specs=(update_specs, state_specs),
+            #     out_specs=(update_specs, state_specs),
+            # )(grads, state)
         # Add param and update stats to summaries.
-        _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
-        param_values = jax.tree.map(lambda p: p.value, params)
-        param_norm = _compute_rms_norms(param_values, summary_suffix="param_norm")
+        # _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
         # Computing extra stats increases step time. Only adds them to summaries in verbose mode.
         if verbosity > 0:
+            param_values = jax.tree.map(lambda p: p.value, params)
+            param_norm = _compute_rms_norms(param_values, summary_suffix="param_norm")
             # Note the covariance and correlation stats might be biased if params and updates do not
             # have zero mean.
             raw_update_norm = _compute_rms_norms(raw_updates)
@@ -1931,14 +2050,17 @@ def adastar_optimizer(
                 ),
                 summary_suffix="corr_param_smoothed_updates",
             )
-        return smoothed_updates, _AdastarState(count=incremented_count, pps=pps_tree)
+        return smoothed_updates, updated_state
 
     def partition_fn(param_specs):
+        nonlocal update_specs, state_specs
+
         def _partition(param_spec: ParameterSpec):
             opt_state_spec = OptStateSpec(
                 dtype=param_spec.dtype,
                 shape=param_spec.shape,
                 mesh_axes=param_spec.mesh_axes,
+                memory_kind=memory_kind,
             )
             return _AdastarPerParamState(
                 gradient_ema=None if gradient_ema_decay is None else opt_state_spec,
@@ -1946,10 +2068,15 @@ def adastar_optimizer(
                 update_ema=None if update_ema_decay is None else opt_state_spec,
             )
 
-        return _AdastarState(
-            count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+        out = _AdastarState(
+            count=OptStateSpec(
+                dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec(), memory_kind=memory_kind
+            ),
             pps=jax.tree.map(_partition, param_specs),
         )
+        update_specs = jax.tree_map(lambda x: x.mesh_axes, param_specs)
+        state_specs = jax.tree_map(lambda x: x.mesh_axes, out)
+        return out
 
     def update2_fn(updates, state: Tensor, params: NestedOptParam):
         step = state
@@ -1958,12 +2085,12 @@ def adastar_optimizer(
             lr_scaled_updates = learning_rate * u
             updates_with_wd = lr_scaled_updates + weight_decay * param.value
             schedule_scale = update_schedule(step)
-            context = current_context()
-            if context:
-                context.add_summary("schedule_step", step)
-                context.add_summary("schedule_scale", schedule_scale)
-                context.add_summary("learning_rate", learning_rate * schedule_scale)
-                context.add_summary("weight_decay_rate", weight_decay * schedule_scale)
+            # context = current_context()
+            # if context:
+            #     context.add_summary("schedule_step", step)
+            #     context.add_summary("schedule_scale", schedule_scale)
+            #     context.add_summary("learning_rate", learning_rate * schedule_scale)
+            #     context.add_summary("weight_decay_rate", weight_decay * schedule_scale)
             return -schedule_scale * updates_with_wd
 
         updates2 = jax.tree.map(lambda u, p: _update2(u, param=p), updates, params)

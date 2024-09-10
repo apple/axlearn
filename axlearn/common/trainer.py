@@ -274,6 +274,11 @@ class SpmdTrainer(Module):
             self._trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._trainer_state_specs
             )
+            self._trainer_state_partition_specs = self._trainer_state_partition_specs._replace(
+                learner=jax.tree_util.tree_map(
+                    lambda spec: spec.sharding, self._trainer_state_specs.learner
+                )
+            )
             # Create evalers, which depend on model_param_partition_specs.
             self._evalers = {}
             for evaler_name, evaler_cfg in cfg.evalers.items():
