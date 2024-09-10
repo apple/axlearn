@@ -267,6 +267,19 @@ def _compare_tool_call_detailed(
     """Performs a detailed comparison of the predicted tool calls with the target tool calls and
     returns different metrics.
 
+    The number of predicted and target tool calls can be different. The comparsion works by
+    iterating over all predicted calls and finding the corresponding target call. The correspoding
+    target call is found here by the following rules:
+    - String metric: The function name matches and all arguments are identical.
+    - Lenient metric: The gunction name matches and all arguments match by the lenient argument
+      comparision.
+    - Lenient BOW metric: The function name matches and all arguments match by the lenient BOW
+      comparison.
+
+    Note, that this function return the matching results for every predicted tool call. The final
+    metric is taking the overall number of target calls into account too. That happens in the
+    calling function.
+
     Args:
         pred_tool_calls: Predicted tool calls.
         target_tool_calls: Target tool calls.
