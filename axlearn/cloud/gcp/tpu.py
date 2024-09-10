@@ -23,8 +23,8 @@ from axlearn.cloud.common.types import ResourceMap
 from axlearn.cloud.common.utils import Table
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
-from axlearn.cloud.gcp.storage import list_blobs
 from axlearn.cloud.gcp.utils import validate_resource_name
+from axlearn.common import file_system as fs
 
 
 class TPUCreationError(RuntimeError):
@@ -191,7 +191,7 @@ def get_tpu_node_status(name: str, *, node: dict[str, Any]) -> dict[str, Union[s
             f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{name}/tpu_vm_ready_flags"
         )
         ready_flags_path = f"{ready_flags_base_path}/{node['metadata']['create_request_time']}/"
-        num_booted = len(list_blobs(ready_flags_path))
+        num_booted = len(fs.listdir(ready_flags_path))
     return dict(state=state, num_booted=num_booted)
 
 
@@ -425,7 +425,7 @@ def get_queued_tpu_node_status(name: str, *, node: dict[str, Any]) -> dict[str, 
         # Only one node spec is permitted (even though it's a list).
         create_request_time = node["tpu"]["nodeSpec"][0]["node"]["metadata"]["create_request_time"]
         ready_flags_path = f"{ready_flags_base_path}/{create_request_time}/"
-        num_booted = len(list_blobs(ready_flags_path))
+        num_booted = len(fs.listdir(ready_flags_path))
     return dict(state=state, num_booted=num_booted)
 
 
