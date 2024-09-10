@@ -17,9 +17,9 @@ The file contains the code for several tool use metrics:
 
 The lenient matching is similar to the standard metric. It performs the following steps:
 * Transforms the argument strings to lower case.
-* Removes punction.
+* Removes punctions.
 * Removes stop words. The stop words are statically predefined.
-* Comapres the results argument string.
+* Compares the results argument string.
 
 The bag of word tool user metric transforms the argument strings in the same way as the
 lenient matching. But instead of comparing the resulting strings it checks if the words
@@ -262,7 +262,7 @@ class DetailedMatchResult:
 def _compare_tool_call_detailed(
     *,
     pred_tool_calls: Sequence[dict[str, Any]],
-    target_tool_calls: list[dict[str, Any]],
+    target_tool_calls: Sequence[dict[str, Any]],
 ) -> list[DetailedMatchResult]:
     """Performs a detailed comparison of the predicted tool calls with the target tool calls and
     returns different metrics.
@@ -275,8 +275,8 @@ def _compare_tool_call_detailed(
         DetailedMatchResult, containing the Booleans denoting matches for different metrics.
     """
 
-    target_tool_calls = copy.deepcopy(target_tool_calls)
-    pred_tool_calls = copy.deepcopy(pred_tool_calls)
+    target_tool_calls = list(target_tool_calls)
+    pred_tool_calls = list(pred_tool_calls)
 
     target_funcs = []
     for t in target_tool_calls:
@@ -289,9 +289,9 @@ def _compare_tool_call_detailed(
             continue
         target_funcs.append(t["function"])
 
-    strict_target_funcs = copy.deepcopy(target_funcs)
-    lenient_target_funcs = copy.deepcopy(target_funcs)
-    lenient_bow_target_funcs = copy.deepcopy(target_funcs)
+    strict_target_funcs = list(target_funcs)
+    lenient_target_funcs = list(target_funcs)
+    lenient_bow_target_funcs = list(target_funcs)
 
     results = []
     for pred_tool in pred_tool_calls:
