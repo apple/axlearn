@@ -268,10 +268,10 @@ def _compare_tool_call_detailed(
     returns different metrics.
 
     The number of predicted and target tool calls can be different. The comparsion works by
-    iterating over all predicted calls and finding the corresponding target call. The correspoding
-    target call is found here by the following rules:
-    - String metric: The function name matches and all arguments are identical.
-    - Lenient metric: The gunction name matches and all arguments match by the lenient argument
+    iterating over all predicted calls and finding the corresponding target call. Correspondence
+    is defined here by the following rules:
+    - Strict metric: The function name matches and all arguments are identical.
+    - Lenient metric: The function name matches and all arguments match by the lenient argument
       comparision.
     - Lenient BOW metric: The function name matches and all arguments match by the lenient BOW
       comparison.
