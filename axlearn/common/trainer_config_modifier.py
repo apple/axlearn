@@ -12,7 +12,7 @@ from axlearn.common.utils import HybridMeshShape, MeshShape
 
 
 class GradientAccumulation(ConfigModifier):
-    """Accumulate gradients for `steps` steps."""
+    """Accumulate gradients for grad_acc_steps steps."""
 
     @config_class
     class Config(ConfigModifier.Config):
@@ -54,7 +54,7 @@ class GradientAccumulation(ConfigModifier):
 
 
 class RematPolicies(ConfigModifier):
-    """Remat policies for the specified modules."""
+    """Update the remat policies for specified modules."""
 
     @config_class
     class Config(ConfigModifier.Config):
@@ -98,7 +98,7 @@ class RematPolicies(ConfigModifier):
 
 
 class MeshShapeUpdate(ConfigModifier):
-    """A mesh shape update for the trainer config."""
+    """Update the mesh_shape for the trainer config."""
 
     @config_class
     class Config(ConfigModifier.Config):
