@@ -20,6 +20,7 @@ import re
 import sys
 import threading
 import traceback
+import types
 from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union
@@ -29,6 +30,8 @@ import numpy as np
 from absl import logging
 from jax import numpy as jnp
 from jax._src.mesh import thread_resources
+from jax._src.interpreters import partial_eval as pe
+from jax._src.lax import lax as lax_internal
 from jax._src.tree_util import KeyEntry, KeyPath
 from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
@@ -100,6 +103,26 @@ class TensorSpec:
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
+
+
+def offload_dots_saveble(offload_src, offload_dst):
+    """Extract and combine the policy from save_and_offload_only_these_names and dots_saveable.
+    https://github.com/google/jax/blob/e3110c18f8bce83901cff42458d4204df9e3abeb/jax/_src/ad_checkpoint.py#L151
+    This would remove the need to match the names for activation tensors.
+    Args:
+        offload_src (str): the source device for offloading.
+        offload_dst (str): the target device for offloading.
+    """
+
+    def policy(prim, *_):
+        if prim is lax_internal.dot_general_p:
+            return pe.Offloadable(src=offload_src, dst=offload_dst)
+        return pe.Recompute
+
+    return policy
+
+
+extended_checkpoint_policies = types.SimpleNamespace(offload_dots_saveble=offload_dots_saveble)
 
 
 @contextlib.contextmanager

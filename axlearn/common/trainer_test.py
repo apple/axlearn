@@ -32,7 +32,7 @@ from axlearn.common import (
     struct_test,
     test_utils,
 )
-from axlearn.common.base_layer import NestedParameterSpec, ParameterSpec
+from axlearn.common.base_layer import NestedParameterSpec, ParameterSpec, RematSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import (
     Checkpointer,
@@ -47,6 +47,12 @@ from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.trainer import SpmdTrainer, TrainerState, select_mesh_config
+from axlearn.common.trainer_config_modifier import (
+    ChainConfigModifier,
+    GradientAccumulation,
+    MeshShapeUpdate,
+    RematPolicies,
+)
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
@@ -172,13 +178,14 @@ class DummyModel(BaseModel):
 
         # Whether to explicitly init dummy state to test pruning backwards compat.
         init_dummy_state: bool = False
+        linear: layers.Linear.Config = layers.Linear.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._add_child(
             "fc",
-            layers.Linear.default_config().set(
+            cfg.linear.set(
                 input_dim=3,
                 output_dim=NUM_CLASSES,
                 bias=True,
@@ -919,6 +926,50 @@ class SelectMeshConfigTest(test_utils.TestCase):
         self.assertEqual(cfg.mesh_shape, (4, 1, 8, 1))
         select_mesh_config(cfg, mesh_selector="gpu-p4d.24xlarge-128")
         self.assertIsNone(cfg.mesh_shape)
+
+
+class SelectExtendedMeshConfigTest(test_utils.TestCase):
+    def test_select_mesh_config(self):
+        cfg = SpmdTrainer.default_config().set(model=DummyModel.default_config())
+        self.assertIs(cfg.mesh_shape, REQUIRED)
+
+        # When mesh_rules=None.
+        self.assertIsNone(cfg.mesh_rules)
+        select_mesh_config(cfg, mesh_selector="tpu-v4-128")
+        # cfg.mesh_shape remains unchanged.
+        self.assertIs(cfg.mesh_shape, REQUIRED)
+
+        # When no mesh rule matches the selector.
+        cfg.mesh_rules = (
+            (
+                "tpu-v4-64",
+                ChainConfigModifier.default_config().set(
+                    config_modifiers=[
+                        MeshShapeUpdate.default_config().set(mesh_shape=(4, 1, 8, 1)),
+                        RematPolicies.default_config().set(
+                            remat_policies={
+                                "model.linear": RematSpec(
+                                    prevent_cse=True,
+                                    policy=jax.ad_checkpoint.checkpoint_policies.dots_saveable,
+                                ),
+                            }
+                        ),
+                        GradientAccumulation.default_config().set(grad_acc_steps=4),
+                    ],
+                ),
+            ),
+        )
+        select_mesh_config(cfg, mesh_selector="tpu-v4-128")
+        # cfg.mesh_shape still remains unchanged.
+        self.assertIs(cfg.mesh_shape, REQUIRED)
+        # When there is a match.
+        select_mesh_config(cfg, mesh_selector="tpu-v4-64")
+        # cfg.mesh_shape is overridden.
+        self.assertEqual(cfg.mesh_shape, (4, 1, 8, 1))
+        # Check if gradient accumulation is set up.
+        self.assertRegex(str(cfg.learner.forward_fn_transformation), "steps: 4")
+        # Check if remat policy is set up.
+        self.assertRegex(str(cfg.model.linear), "dots_saveable")
 
 
 class CompatibilityTest(test_utils.TestCase):

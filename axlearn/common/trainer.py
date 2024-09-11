@@ -1059,19 +1059,25 @@ class SpmdTrainer(Module):
 
 
 def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str):
-    """Selects a mesh rule (if one matches `mesh_selector` to override mesh config.
+    """Selects a mesh rule (if one matches mesh_selector to override mesh config.
 
-    If any of `trainer_config.mesh_rules` matches `mesh_selector`, modifies
-    `trainer_config.mesh_shape` according to the rule.
+    If any of trainer_config.mesh_rules matches mesh_selector, modifies
+    trainer_config.mesh_shape according to the rule.
 
     Args:
         trainer_config: The trainer config. Will be modified if any mesh rule matches.
         mesh_selector: A string used to select the mesh rule to apply.
     """
     if trainer_config.mesh_rules:
-        mesh = match_regex_rules(
+        mesh_rule = match_regex_rules(
             mesh_selector, rules=trainer_config.mesh_rules, default_value=REQUIRED
         )
-        logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh)
-        if mesh is not REQUIRED:
-            trainer_config.mesh_shape = mesh
+        logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh_rule)
+        if mesh_rule is not REQUIRED:
+            # Mesh config is just mesh rule or hybrid mesh rule.
+            if isinstance(mesh_rule, (tuple, HybridMeshShape)) or mesh_rule is None:
+                trainer_config.mesh_shape = mesh_rule
+            else:
+                # Override configs from ConfigModifier.
+                mesh_rule_fn = maybe_instantiate(mesh_rule)
+                trainer_config = mesh_rule_fn(trainer_config)
