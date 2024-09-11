@@ -59,7 +59,7 @@ TEST_PIDS[$!]=1
 JAX_ENABLE_X64=1 pytest -n auto -v -m "fp64" --dist worksteal &
 TEST_PIDS[$!]=1
 
-# Use Bash 5.2's new wait -p feature to quit immediately if any subprocess fails to make error
+# Use Bash 5.1's new wait -p feature to quit immediately if any subprocess fails to make error
 # finding a bit easier.
 while [ ${#TEST_PIDS[@]} -ne 0 ]; do
   wait -n -p PID ${!TEST_PIDS[@]} || exit_if_error $? "Test failed."
