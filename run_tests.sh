@@ -51,7 +51,7 @@ if [[ "${SKIP_PRECOMMIT:-false}" = "false" ]] ; then
 fi
 
 UNQUOTED_PYTEST_FILES=$(echo $1 |  tr -d "'")
-pytest --durations=100 -n auto -v \
+pytest --durations=100 -n logical -v \
   -m "not (gs_login or tpu or high_cpu or fp64)" ${UNQUOTED_PYTEST_FILES} \
   --dist worksteal &
 TEST_PIDS[$!]=1
