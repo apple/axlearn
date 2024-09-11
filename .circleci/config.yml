@@ -9,7 +9,7 @@ jobs:
   pre-commit:
     docker:
       - image: cimg/python:3.10
-    resource_class: large
+    resource_class: xlarge
     steps:
       - checkout
       - setup_remote_docker:
@@ -77,4 +77,3 @@ workflows:
       - build-and-test-job:
           requires:
             - hold
-            - pre-commit
