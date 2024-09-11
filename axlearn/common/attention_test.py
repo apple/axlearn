@@ -1399,6 +1399,85 @@ class QKVLinearTest(TestCase):
                 # Check that the outputs are close for all pairs.
                 self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
 
+    @parameterized.parameters(jnp.float32, jnp.float16, jnp.bfloat16)
+    def test_dtypes_inherited_from_parent(self, dtype: jnp.dtype):
+        """Test that the dtype is inherited from the parent.
+
+        When neither `Config.cache_dtype` nor `BaseLayer.Config.dtype` are set the dtype should
+        be inherited from the parent, and the dtype should be preserved in values in the
+        cached states and outputs.
+        """
+
+        target_batch_size = 3
+        target_max_len = 6
+        model_dim = 12
+        num_heads = 4
+        per_head_dim = model_dim // num_heads
+        layer_kwargs = dict(
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            per_head_dim=per_head_dim,
+        )
+
+        class Parent(BaseLayer):
+            @config_class
+            class Config(BaseLayer.Config):
+                qkv_linear: InstantiableConfig = QKVLinear.default_config().set(**layer_kwargs)
+
+            def __init__(self, cfg: Config, *, parent: Module):
+                super().__init__(cfg, parent=parent)
+                cfg = self.config
+                self._add_child("qkv_linear", cfg.qkv_linear)
+
+        parent_cfg = Parent.default_config().set(name="parent", dtype=dtype)
+        # Test assumes that dtype is not set in test_cfg.
+        self.assertIs(parent_cfg.qkv_linear.dtype, None)
+        parent = parent_cfg.instantiate(parent=None)
+        qkv_linear = parent.qkv_linear
+        state = qkv_linear.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        # Check dtypes from init_states
+        cache, _ = F(
+            qkv_linear,
+            prng_key=jax.random.PRNGKey(0),
+            state=state,
+            inputs=dict(
+                target_batch_size=target_batch_size,
+                target_max_len=target_max_len,
+            ),
+            method="init_states",
+            is_training=False,
+        )
+        self.assertEqual(cache["key"].dtype, dtype)
+        self.assertEqual(cache["value"].dtype, dtype)
+
+        query = jax.random.uniform(
+            jax.random.PRNGKey(0),
+            shape=(target_batch_size, target_max_len, model_dim),
+            dtype=dtype,
+        )
+        # Time step in the middle, so that some of the init_state is masked.
+        time_step = jnp.full(
+            shape=target_batch_size,
+            fill_value=target_max_len // 2,
+            dtype=jnp.int32,
+        )
+        (init_state, output), _ = F(
+            qkv_linear,
+            prng_key=jax.random.PRNGKey(0),
+            state=state,
+            inputs=dict(time_step=time_step, query=query),
+            method="prefill_states",
+            is_training=False,
+        )
+        self.assertEqual(init_state["key"].dtype, dtype)
+        self.assertEqual(init_state["value"].dtype, dtype)
+        self.assertEqual(output.query.dtype, dtype)
+        self.assertEqual(output.key.dtype, dtype)
+        self.assertEqual(output.value.dtype, dtype)
+
 
 class PerDimScaleTest(TestCase):
     """Tests PerDimScale."""
