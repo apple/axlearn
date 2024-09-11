@@ -212,7 +212,10 @@ def update_model_remat_config(
     else:
         # Checkpointing both ffn and attention to give the best performance.
         remat_spec = build_remat_spec(
-            stack_cfg.clone(layer=layer_cfg), feed_forward=True, self_attention=True, offload_dst=offload_dst
+            stack_cfg.clone(layer=layer_cfg),
+            feed_forward=True,
+            self_attention=True,
+            offload_dst=offload_dst,
         )
     layer_cfg.set(remat_spec=remat_spec)
 

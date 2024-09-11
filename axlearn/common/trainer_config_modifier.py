@@ -26,8 +26,14 @@ class GradientAccumulation(ConfigModifier):
         self._metric_accumulator = cfg.metric_accumulator
 
     def __call__(self, cfg: SpmdTrainer.Config) -> SpmdTrainer.Config:
-        """Overwrite the forward_fn_transformation to accumulate gradients
-        for grad_acc_steps steps.
+        """Overwrite the forward_fn_transformation to accumulate gradients for grad_acc_steps steps.
+
+        Note this would not affect the global batch size or the logical training steps.
+        The optimization step is applied each time after grad_acc_steps steps of
+        forward and backward passes on mini-batches.
+
+        global_bs=mini_bs*grad_acc_steps
+        train_steps=mini_steps/grad_acc_steps
 
         Args:
             cfg (SpmdTrainer.Config): the trainer config to be modified.
@@ -132,6 +138,7 @@ class ChainConfigModifier(ConfigModifier):
 
     def __call__(self, cfg: SpmdTrainer.Config) -> SpmdTrainer.Config:
         """Chain multiple config modifiers together.
+        The config modifiers will be applied in the order they are provided.
 
         Args:
             cfg (SpmdTrainer.Config): the trainer config to be modified.

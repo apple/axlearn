@@ -29,9 +29,9 @@ import jax
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
-from jax._src.mesh import thread_resources
 from jax._src.interpreters import partial_eval as pe
 from jax._src.lax import lax as lax_internal
+from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
 from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
