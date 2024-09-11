@@ -177,6 +177,7 @@ class LmTrainingInputTest(BaseLmInputTest):
                     "target_num_bytes": [19, 3],
                 },
             ],
+            max_padding_fraction=1.0,  # Always pad
         ),
         dict(
             packing_method=PackingMethodType.EOS_DELIM_NO_MASK,
@@ -204,13 +205,61 @@ class LmTrainingInputTest(BaseLmInputTest):
                     "target_num_bytes": [19, 3],
                 },
             ],
+            max_padding_fraction=1.0,  # Always pad
+        ),
+        dict(
+            packing_method=PackingMethodType.EOS_DELIM_MASK,
+            expected_batches=[
+                {
+                    "input_ids": [
+                        [1, 21820, 296, 2, 29],
+                        [3155, 1, 21820, 8114, 2],
+                    ],
+                    "target_labels": [
+                        [21820, 296, 2, 29, 3155],
+                        [1, 21820, 8114, 2, 29],
+                    ],
+                    "input_segment_ids": [
+                        [1, 1, 1, 1, 1],
+                        [1, 2, 2, 2, 2],
+                    ],
+                    "input_positions": [
+                        [0, 1, 2, 3, 4],
+                        [0, 0, 1, 2, 3],
+                    ],
+                    "target_num_bytes": [18, 17],
+                },
+                {
+                    "input_ids": [
+                        [29, 3155, 1, 21820, 296],
+                        [1, 21820, 8114, 2, 29],
+                    ],
+                    "target_labels": [
+                        [3155, 1, 21820, 296, 2],
+                        [21820, 8114, 2, 29, 3155],
+                    ],
+                    "input_segment_ids": [
+                        [1, 1, 2, 2, 2],
+                        [1, 1, 1, 1, 1],
+                    ],
+                    "input_positions": [
+                        [0, 1, 0, 1, 2],
+                        [0, 1, 2, 3, 4],
+                    ],
+                    "target_num_bytes": [19, 17],
+                },
+            ],
+            max_padding_fraction=0.0,  # Do not pad
         ),
     )
     @pytest.mark.skipif(
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_fake_text_lm_training_data(
-        self, packing_method: PackingMethodType, expected_batches: list[dict[str, Any]]
+        self,
+        packing_method: PackingMethodType,
+        expected_batches: list[dict[str, Any]],
+        max_padding_fraction: float,
     ):
         texts = [
             "hello world\n",
@@ -222,13 +271,14 @@ class LmTrainingInputTest(BaseLmInputTest):
         #      2,     29,  3155,     1, 21820,   296,     2,    29,  3155]
         window_size = 3
 
-        # Pad the concatenated sequence to 20 tokens.
+        # Pad the concatenated sequence to 20 tokens:
         # [    1,  21820,   296,     2,    29,  3155,     1, 21820,  8114,    2
         #     29,  3155,     1, 21820,   296,     2,    29,  3155,      0,    0]
+        #
+        # Or, trim the sequence to 15 tokens:
+        # [    1,  21820,   296,     2,    29,  3155,     1, 21820,  8114,    2
+        #     29,  3155,     1, 21820,   296]
         batch_size, max_len = 2, 5
-
-        # Always pad.
-        max_padding_fraction = 1.0
 
         # Disable shuffling to make results interpretable.
         shuffle_buffer_size = 0
