@@ -513,7 +513,6 @@ class MambaMixerLayer(BaseLayer):
     Can be substituted for a MultiheadAttention layer.
     """
 
-
     @config_class
     class Config(BaseLayer.Config):
         """Configures a MambaMixerLayer."""
@@ -883,30 +882,6 @@ class MambaMixerLayer(BaseLayer):
             conv_state = conv_state + bias
         return conv_state, new_cache
 
-
-    def _full_sequence_forward(
-        self, inputs: Tensor, *, recurrence: BaseMambaRecurrence
-    ) -> MambaOutput:
-        """Computes the Mamba layer output from a full sequence of inputs.
-
-        Args:
-            inputs: A Tensor of shape [batch_size, seq_len, input_dim].
-            recurrence: A BaseMambaRecurrence to use for computing the recurrence.
-
-        Returns:
-            A MambaOutput.
-        """
-        conv_input, res = self._project_input(inputs)
-        conv_states = jax.nn.silu(self.conv(conv_input))
-        # Get "continuous" ssm parameters.
-        a, b, c, delta, d = self._ssm_parameters(conv_states)
-        recurrence_output = recurrence(conv_states, a=a, b=b, c=c, delta=delta, d=d)
-        output = self._output_from_states(recurrence_output.data, res=res)
-        return MambaMixerLayer.MambaOutput(
-            data=output, conv_input=conv_input, states=recurrence_output.states
-        )
-
-
     def _single_step_ssm_update(
         self,
         inputs: Tensor,
@@ -996,30 +971,6 @@ class MambaMixerLayer(BaseLayer):
 class JambaMixerLayer(MambaMixerLayer):
     """A Jamba-style Mamba layer, which norms the input-dependent SSM parameters."""
 
-    def _ssm_parameters(self, inputs: Tensor) -> MambaMixerLayer.SSMParameters:
-        """Computes layer-normed versions of the input-dependent SSM parameters.
-
-        Args:
-            inputs: [batch_size, seq_len, inner_dim]
-
-        Returns:
-            An instance of MambaMixerLayer.SSMParameters.
-        """
-        cfg = self.config
-        x_dbl = self.x_proj(inputs)  # [batch_size, seq_len, dt_rank, state_dim*2]
-        dt, b, c = jnp.split(
-            x_dbl,
-            (
-                self.dt_rank,
-                self.dt_rank + cfg.state_dim,
-            ),
-            axis=-1,
-        )
-        dt, b, c = self.dt_norm(dt), self.b_norm(b), self.c_norm(c)
-        delta = jax.nn.softplus(self.dt_proj(dt))  # [batch_size, seq_len, inner_dim]
-        a = -jnp.exp(_at_least_float32(self.parameters["log_a"])).astype(inputs.dtype)
-        return MambaMixerLayer.SSMParameters(a=a, b=b, c=c, delta=delta, d=self.parameters["d"])
-
     @config_class
     class Config(MambaMixerLayer.Config):
         dt_norm: InstantiableConfig = RMSNorm.default_config()
@@ -1032,30 +983,6 @@ class JambaMixerLayer(MambaMixerLayer):
         self._add_child("dt_norm", cfg.dt_norm.set(input_dim=self.dt_rank))
         self._add_child("b_norm", cfg.b_norm.set(input_dim=cfg.state_dim))
         self._add_child("c_norm", cfg.c_norm.set(input_dim=cfg.state_dim))
-
-    def _ssm_parameters(self, inputs: Tensor) -> MambaMixerLayer.SSMParameters:
-        """Computes layer-normed versions of the input-dependent SSM parameters.
-
-        Args:
-            inputs: [batch_size, seq_len, inner_dim]
-
-        Returns:
-            An instance of MambaMixerLayer.SSMParameters.
-        """
-        cfg = self.config
-        x_dbl = self.x_proj(inputs)  # [batch_size, seq_len, dt_rank, state_dim*2]
-        dt, b, c = jnp.split(
-            x_dbl,
-            (
-                self.dt_rank,
-                self.dt_rank + cfg.state_dim,
-            ),
-            axis=-1,
-        )
-        dt, b, c = self.dt_norm(dt), self.b_norm(b), self.c_norm(c)
-        delta = jax.nn.softplus(self.dt_proj(dt))  # [batch_size, seq_len, inner_dim]
-        a = -jnp.exp(_at_least_float32(self.parameters["log_a"])).astype(inputs.dtype)
-        return MambaMixerLayer.SSMParameters(a=a, b=b, c=c, delta=delta, d=self.parameters["d"])
 
 
 class BaseSSMLayer(BaseLayer):
@@ -1496,13 +1423,13 @@ class StackedMixedSSMTransformerLayer(StackedTransformerLayer):
         super().__init__(cfg.set(layer=layers), parent=parent)
 
 
-
 class HybridMambaRecurrence(BaseMambaRecurrence):
     """A layer that combines different recurrence methods to leverage their strengths."""
 
     @config_class
     class Config(BaseMambaRecurrence.Config):
         """Configures a HybridMambaRecurrence."""
+
         primary_recurrence: BaseMambaRecurrence = LinearScanMambaRecurrence.default_config()
         secondary_recurrence: BaseMambaRecurrence = AssociativeScanMambaRecurrence.default_config()
 
@@ -1517,7 +1444,11 @@ class HybridMambaRecurrence(BaseMambaRecurrence):
         primary_output = self.primary_recurrence(x, a=a, b=b, c=c, delta=delta, d=d)
         secondary_output = self.secondary_recurrence(x, a=a, b=b, c=c, delta=delta, d=d)
         combined_data = (primary_output.data + secondary_output.data) / 2
-        combined_states = (primary_output.states + secondary_output.states) / 2 if primary_output.states is not None and secondary_output.states is not None else None
+        combined_states = (
+            (primary_output.states + secondary_output.states) / 2
+            if primary_output.states is not None and secondary_output.states is not None
+            else None
+        )
         return BaseMambaRecurrence.Output(data=combined_data, states=combined_states)
 
 
@@ -1531,7 +1462,9 @@ class AlternativeMambaRecurrence(BaseMambaRecurrence):
         # For demonstration, let's use a simple weighted sum of inputs and parameters.
         weighted_sum = jnp.einsum("btd,sd->btsd", x, a) + jnp.einsum("bts,sd->btsd", b, c)
         y = jnp.sum(weighted_sum, axis=-2) + d * x
-        states = weighted_sum if self.config.output_mode == MambaRecurrenceOutputMode.OUTPUTS_AND_STATES else None
+        states = (
+            weighted_sum
+            if self.config.output_mode == MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
+            else None
+        )
         return BaseMambaRecurrence.Output(data=y, states=states)
-
-

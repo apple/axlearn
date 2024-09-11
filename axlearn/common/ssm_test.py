@@ -30,8 +30,10 @@ from axlearn.common.attention import make_causal_mask
 from axlearn.common.config import InstantiableConfig
 from axlearn.common.module import functional as F
 from axlearn.common.ssm import (
+    AlternativeMambaRecurrence,
     AssociativeScanMambaRecurrence,
     BlockResidualMode,
+    HybridMambaRecurrence,
     JambaMambaBlock,
     LinearScanMambaRecurrence,
     MambaBlock,
@@ -39,8 +41,6 @@ from axlearn.common.ssm import (
     RepeatedSSMLayer,
     StackedMixedSSMTransformerLayer,
     StackedSSMLayer,
-    HybridMambaRecurrence,
-    AlternativeMambaRecurrence,
 )
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import Nested, Tensor, cast_floats
@@ -537,7 +537,6 @@ class MambaMixerLayerTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(2),
             inputs=inputs,
-            recurrence=HybridMambaRecurrence.default_config().instantiate(parent=None),
         )
         assert forward_outputs.data.shape == (batch_size, tgt_len, model_dim)
 
@@ -567,7 +566,6 @@ class MambaMixerLayerTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(2),
             inputs=inputs,
-            recurrence=AlternativeMambaRecurrence.default_config().instantiate(parent=None),
         )
         assert forward_outputs.data.shape == (batch_size, tgt_len, model_dim)
 
@@ -913,7 +911,7 @@ class StackedMambaTest(TestCase):
                 state_dim=state_dim,
                 mamba_layer=MambaMixerLayer.default_config().set(
                     recurrence=HybridMambaRecurrence.default_config()
-                )
+                ),
             ),
         )
         cfg.layer.mamba_layer.set(dtype=dtype, cache_dtype=None)
@@ -939,7 +937,7 @@ class StackedMambaTest(TestCase):
                 state_dim=state_dim,
                 mamba_layer=MambaMixerLayer.default_config().set(
                     recurrence=AlternativeMambaRecurrence.default_config()
-                )
+                ),
             ),
         )
         cfg.layer.mamba_layer.set(dtype=dtype, cache_dtype=None)
@@ -1058,7 +1056,7 @@ class StackedMixedSSMTransformerTest(TestCase):
                 state_dim=state_dim,
                 mamba_layer=MambaMixerLayer.default_config().set(
                     recurrence=HybridMambaRecurrence.default_config()
-                )
+                ),
             ),
             dtype=dtype,
         )
@@ -1085,7 +1083,7 @@ class StackedMixedSSMTransformerTest(TestCase):
                 state_dim=state_dim,
                 mamba_layer=MambaMixerLayer.default_config().set(
                     recurrence=AlternativeMambaRecurrence.default_config()
-                )
+                ),
             ),
             dtype=dtype,
         )
