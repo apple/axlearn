@@ -27,7 +27,6 @@ from typing import Optional, Union
 import jax
 from absl import logging
 from aqt.jax.v2 import aqt_dot_general
-from aqt.jax.v2 import utils as aqt_utils
 from jax import numpy as jnp
 from jax.lax import DotDimensionNumbers, Precision
 from jax.typing import DTypeLike
@@ -80,7 +79,7 @@ class AQTDotGeneralType(Protocol):
         dimension_numbers: DotDimensionNumbers,
         precision: PrecisionLike = None,
         preferred_element_type: Optional[DTypeLike] = None,
-        context: aqt_utils.Context = aqt_utils.Context(key=None, train_step=None),
+        context: aqt_dot_general.Context = aqt_dot_general.Context(key=None, train_step=None),
     ) -> Tensor:
         ...
 

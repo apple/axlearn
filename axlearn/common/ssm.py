@@ -984,6 +984,30 @@ class JambaMixerLayer(MambaMixerLayer):
         self._add_child("b_norm", cfg.b_norm.set(input_dim=cfg.state_dim))
         self._add_child("c_norm", cfg.c_norm.set(input_dim=cfg.state_dim))
 
+    def _ssm_parameters(self, inputs: Tensor) -> MambaMixerLayer.SSMParameters:
+        """Computes layer-normed versions of the input-dependent SSM parameters.
+
+        Args:
+            inputs: [batch_size, seq_len, inner_dim]
+
+        Returns:
+            An instance of MambaMixerLayer.SSMParameters.
+        """
+        cfg = self.config
+        x_dbl = self.x_proj(inputs)  # [batch_size, seq_len, dt_rank, state_dim*2]
+        dt, b, c = jnp.split(
+            x_dbl,
+            (
+                self.dt_rank,
+                self.dt_rank + cfg.state_dim,
+            ),
+            axis=-1,
+        )
+        dt, b, c = self.dt_norm(dt), self.b_norm(b), self.c_norm(c)
+        delta = jax.nn.softplus(self.dt_proj(dt))  # [batch_size, seq_len, inner_dim]
+        a = -jnp.exp(_at_least_float32(self.parameters["log_a"])).astype(inputs.dtype)
+        return MambaMixerLayer.SSMParameters(a=a, b=b, c=c, delta=delta, d=self.parameters["d"])
+
 
 class BaseSSMLayer(BaseLayer):
     """An abstract class representing SSM layers.
@@ -1421,50 +1445,3 @@ class StackedMixedSSMTransformerLayer(StackedTransformerLayer):
             for i in range(cfg.num_layers)
         ]
         super().__init__(cfg.set(layer=layers), parent=parent)
-
-
-class HybridMambaRecurrence(BaseMambaRecurrence):
-    """A layer that combines different recurrence methods to leverage their strengths."""
-
-    @config_class
-    class Config(BaseMambaRecurrence.Config):
-        """Configures a HybridMambaRecurrence."""
-
-        primary_recurrence: BaseMambaRecurrence = LinearScanMambaRecurrence.default_config()
-        secondary_recurrence: BaseMambaRecurrence = AssociativeScanMambaRecurrence.default_config()
-
-    def __init__(self, cfg: Config, *, parent: Module):
-        super().__init__(cfg, parent=parent)
-        self._add_child("primary_recurrence", cfg.primary_recurrence)
-        self._add_child("secondary_recurrence", cfg.secondary_recurrence)
-
-    def forward(
-        self, x: Tensor, *, a: Tensor, b: Tensor, c: Tensor, delta: Tensor, d: Tensor
-    ) -> BaseMambaRecurrence.Output:
-        primary_output = self.primary_recurrence(x, a=a, b=b, c=c, delta=delta, d=d)
-        secondary_output = self.secondary_recurrence(x, a=a, b=b, c=c, delta=delta, d=d)
-        combined_data = (primary_output.data + secondary_output.data) / 2
-        combined_states = (
-            (primary_output.states + secondary_output.states) / 2
-            if primary_output.states is not None and secondary_output.states is not None
-            else None
-        )
-        return BaseMambaRecurrence.Output(data=combined_data, states=combined_states)
-
-
-class AlternativeMambaRecurrence(BaseMambaRecurrence):
-    """A layer that implements an alternative recurrence method."""
-
-    def forward(
-        self, x: Tensor, *, a: Tensor, b: Tensor, c: Tensor, delta: Tensor, d: Tensor
-    ) -> BaseMambaRecurrence.Output:
-        # Implement an alternative recurrence method here.
-        # For demonstration, let's use a simple weighted sum of inputs and parameters.
-        weighted_sum = jnp.einsum("btd,sd->btsd", x, a) + jnp.einsum("bts,sd->btsd", b, c)
-        y = jnp.sum(weighted_sum, axis=-2) + d * x
-        states = (
-            weighted_sum
-            if self.config.output_mode == MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
-            else None
-        )
-        return BaseMambaRecurrence.Output(data=y, states=states)
