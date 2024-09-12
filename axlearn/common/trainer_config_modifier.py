@@ -25,16 +25,17 @@ class GradientAccumulationModifier(ConfigModifier):
 
     @config_class
     class Config(ConfigModifier.Config):
-        grad_acc_steps: Required[int] = REQUIRED
-        metric_accumulator: MetricAccumulator.Config = MetricAccumulator.default_config()
-
-    def __init__(self, cfg: Config):
         """Configure GradientAccumulationModifier.
 
         Attributes:
             grad_acc_steps: The number of steps to accumulate the gradients from mini-batches.
             metric_accumulator: The metric accumulator to export the metrics.
         """
+
+        grad_acc_steps: Required[int] = REQUIRED
+        metric_accumulator: MetricAccumulator.Config = MetricAccumulator.default_config()
+
+    def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
         self._grad_acc_steps = cfg.grad_acc_steps
