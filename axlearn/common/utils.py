@@ -112,8 +112,8 @@ def offload_dots_saveable(offload_src: str, offload_dst: str) -> Callable[[Any],
     This would remove the need to match the names for activation tensors.
 
     Args:
-        offload_src: the source device for offloading.
-        offload_dst: the target device for offloading.
+        offload_src: The source device for offloading.
+        offload_dst: The target device for offloading.
     """
 
     def policy(prim, *_, **params):

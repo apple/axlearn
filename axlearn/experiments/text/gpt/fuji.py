@@ -125,6 +125,9 @@ def get_trainer_kwargs(
 
     rope_theta = ROPE_THETA[version]
 
+    offload_dots_saveable_policy = config_for_function(
+        extended_checkpoint_policies.offload_dots_saveable
+    ).set(offload_src="device", offload_dst="pinned_host")
     # dict() is more readable here.
     # pylint: disable=use-dict-literal
     if model_size == "test":
@@ -185,9 +188,7 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        policy=config_for_function(
-                                            extended_checkpoint_policies.offload_dots_saveable
-                                        ).set(offload_src="device", offload_dst="pinned_host"),
+                                        policy=offload_dots_saveable_policy,
                                     ),
                                 }
                             ),
@@ -206,9 +207,7 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        policy=config_for_function(
-                                            extended_checkpoint_policies.offload_dots_saveable
-                                        ).set(offload_src="device", offload_dst="pinned_host"),
+                                        policy=offload_dots_saveable_policy,
                                     ),
                                 }
                             ),
@@ -277,9 +276,7 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        policy=config_for_function(
-                                            extended_checkpoint_policies.offload_dots_saveable
-                                        ).set(offload_src="device", offload_dst="pinned_host"),
+                                        policy=offload_dots_saveable_policy,
                                     ),
                                 }
                             ),
