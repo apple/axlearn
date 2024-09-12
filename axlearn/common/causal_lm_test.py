@@ -196,6 +196,104 @@ class ModelMetricsTest(TestCase):
         bits_per_byte = per_token_loss.sum() / jnp.maximum(1, total_bytes) / jnp.log(2)
         self.assertAlmostEqual(bits_per_byte, summaries["bits_per_byte"].mean)
 
+    def test_segment_ids(self):
+        batch_size, seq_len, vocab_size = 3, 10, 10
+
+        ref_decoder_cfg = causal_lm.gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=2,
+            hidden_dim=10,
+            num_heads=2,
+            vocab_size=vocab_size,
+            activation_function="nn.gelu",
+            max_position_embeddings=seq_len,
+            layer_norm_epsilon=0.1,
+            dropout_rate=0.0,
+        )
+        ref_model_cfg = causal_lm.Model.default_config().set(
+            decoder=ref_decoder_cfg, name="ref_model"
+        )
+        ref_model = ref_model_cfg.instantiate(parent=None)
+
+        # Enable attention_mask
+        decoder_cfg = ref_decoder_cfg.clone()
+        decoder_cfg.transformer.layer.self_attention.attention.causal = False
+        decoder_cfg.attention_mask = CausalAttentionLogitBiasLayer.default_config()
+        model_cfg = causal_lm.Model.default_config().set(decoder=decoder_cfg, name="model")
+        model = model_cfg.instantiate(parent=None)
+
+        prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
+        )
+        target_labels = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        input_batch = dict(
+            input_ids=input_ids,
+            target_labels=target_labels,
+        )
+
+        model_params = ref_model.initialize_parameters_recursively(init_key)
+
+        ctx = InvocationContext(
+            name="root",
+            parent=None,
+            module=ref_model,
+            state=model_params,
+            output_collection=new_output_collection(),
+            is_training=True,
+            prng_key=prng_key,
+        )
+        with set_current_context(ctx):
+            ref_loss, _ = ref_model.forward(input_batch=input_batch)
+
+        # Results should be the same.
+        segment_ids = jnp.ones(shape=[batch_size, seq_len], dtype=jnp.int32)
+        positions = jnp.broadcast_to(jnp.arange(seq_len), shape=[batch_size, seq_len])
+        input_batch = dict(
+            input_ids=input_ids,
+            target_labels=target_labels,
+            input_segment_ids=segment_ids,
+            input_positions=positions,
+        )
+        ctx = InvocationContext(
+            name="root",
+            parent=None,
+            module=model,
+            state=model_params,
+            output_collection=new_output_collection(),
+            is_training=True,
+            prng_key=prng_key,
+        )
+        with set_current_context(ctx):
+            loss, _ = model.forward(input_batch=input_batch)
+
+        self.assertAlmostEqual(ref_loss, loss)
+
+        # Use a different attention mask.
+        segment_ids = jnp.broadcast_to(jnp.arange(seq_len), shape=[batch_size, seq_len])
+        positions = jnp.broadcast_to(jnp.arange(seq_len), shape=[batch_size, seq_len])
+        input_batch = dict(
+            input_ids=input_ids,
+            target_labels=target_labels,
+            input_segment_ids=segment_ids,
+            input_positions=positions,
+        )
+        ctx = InvocationContext(
+            name="root",
+            parent=None,
+            module=model,
+            state=model_params,
+            output_collection=new_output_collection(),
+            is_training=True,
+            prng_key=prng_key,
+        )
+        with set_current_context(ctx):
+            loss, _ = model.forward(input_batch=input_batch)
+        self.assertNotAlmostEqual(ref_loss, loss)
+
     def test_forward(self):
         batch_size, seq_len, vocab_size = 3, 10, 10
 
@@ -277,6 +375,8 @@ class ModelMetricsTest(TestCase):
             "prefix": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "target_num_bytes": jnp.ones((batch_size,), dtype=jnp.int32),
             "extra_variable": jnp.ones((batch_size,), dtype=jnp.int32),
+            "input_segment_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "input_positions": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
         }
 
         with jax.sharding.Mesh(
