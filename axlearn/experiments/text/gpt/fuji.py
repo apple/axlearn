@@ -34,7 +34,7 @@ from axlearn.common.layers import RMSNorm
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
-    GradientAccumulation,
+    GradientAccumulationModifier,
     MeshShapeModifier,
     RematSpecModifier,
 )
@@ -191,7 +191,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
-                            GradientAccumulation.default_config().set(grad_acc_steps=4),
+                            GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                         ],
                     ),
                 ),

@@ -106,10 +106,11 @@ NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
 
 
 def offload_dots_saveable(offload_src: str, offload_dst: str) -> Callable[[Any], Any]:
-    """Extract and combine the policy from offload_dot_with_no_batch_dims and dots_saveable.
-    https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/ad_checkpoint.py#L59
+    """Extract from offload_dot_with_no_batch_dims and remove no-batch-dims limit.
+
     https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/ad_checkpoint.py#L81C1-L90C1
     This would remove the need to match the names for activation tensors.
+
     Args:
         offload_src: the source device for offloading.
         offload_dst: the target device for offloading.

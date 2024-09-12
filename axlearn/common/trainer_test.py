@@ -49,7 +49,7 @@ from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.trainer import SpmdTrainer, TrainerState, select_mesh_config
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
-    GradientAccumulation,
+    GradientAccumulationModifier,
     MeshShapeModifier,
     RematSpecModifier,
 )
@@ -954,7 +954,7 @@ class SelectExtendedMeshConfigTest(test_utils.TestCase):
                                 ),
                             }
                         ),
-                        GradientAccumulation.default_config().set(grad_acc_steps=4),
+                        GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                     ],
                 ),
             ),

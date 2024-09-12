@@ -2,26 +2,39 @@
 
 """Defines trainer config modifiers, which will be used in model definitions."""
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, Sequence, Union
 
 from axlearn.common import config
 from axlearn.common.base_layer import RematSpec
-from axlearn.common.config import REQUIRED, ConfigModifier, ConfigOr, Required, config_class
+from axlearn.common.config import (
+    REQUIRED,
+    ConfigModifier,
+    ConfigOr,
+    Required,
+    config_class,
+    maybe_instantiate,
+)
 from axlearn.common.gradient_accumulation import with_minibatch_steps
 from axlearn.common.metrics import MetricAccumulator
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import HybridMeshShape, MeshShape
 
 
-class GradientAccumulation(ConfigModifier):
+class GradientAccumulationModifier(ConfigModifier):
     """Accumulate gradients for grad_acc_steps steps."""
 
     @config_class
     class Config(ConfigModifier.Config):
         grad_acc_steps: Required[int] = REQUIRED
-        metric_accumulator: Required[MetricAccumulator.Config] = MetricAccumulator.default_config()
+        metric_accumulator: MetricAccumulator.Config = MetricAccumulator.default_config()
 
     def __init__(self, cfg: Config):
+        """Configure GradientAccumulationModifier.
+
+        Attributes:
+            grad_acc_steps: The number of steps to accumulate the gradients from mini-batches.
+            metric_accumulator: The metric accumulator to export the metrics.
+        """
         super().__init__(cfg)
         cfg = self.config
         self._grad_acc_steps = cfg.grad_acc_steps
@@ -38,7 +51,7 @@ class GradientAccumulation(ConfigModifier):
         train_steps=mini_steps/grad_acc_steps
 
         Args:
-            cfg: the trainer config to be modified.
+            cfg: The trainer config to be modified.
 
         Returns:
             The modified trainer config.
@@ -57,7 +70,13 @@ class RematSpecModifier(ConfigModifier):
 
     @config_class
     class Config(ConfigModifier.Config):
-        remat_policies: Optional[Dict[str, RematSpec]] = None
+        """Configure RematSpecModifier.
+
+        Attributes:
+            remat_policies: A mapping from module path (e.g. `model.decoder.transformer.layer`) to remat spec.
+        """
+
+        remat_policies: Required[Dict[str, RematSpec]] = REQUIRED
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -68,17 +87,15 @@ class RematSpecModifier(ConfigModifier):
         """Update the remat policy for the specified modules.
 
         Args:
-            cfg (SpmdTrainer.Config): the trainer config to be modified.
+            cfg: The trainer config to be modified.
 
         Raises:
-            ValueError: the target module is not found.
-            ValueError: the remat_spec attribute is not found.
+            ValueError: The target module is not found.
+            ValueError: The remat_spec attribute is not found.
 
         Returns:
             The modified trainer config.
         """
-        if self._remat_policies is None:
-            return cfg
 
         for module_name, remat_spec in self._remat_policies.items():
             # Here we assume x.y.z format.
@@ -101,7 +118,13 @@ class MeshShapeModifier(ConfigModifier):
 
     @config_class
     class Config(ConfigModifier.Config):
-        mesh_shape: Optional[Union[MeshShape, HybridMeshShape]] = None
+        """Configure MeshShapeModifier.
+
+        Attributes:
+            mesh_shape: The mesh shape to be updated to.
+        """
+
+        mesh_shape: Union[MeshShape, HybridMeshShape] = REQUIRED
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -112,7 +135,7 @@ class MeshShapeModifier(ConfigModifier):
         """Overwrite the mesh shape.
 
         Args:
-            cfg (SpmdTrainer.Config): the trainer config to be modified.
+            cfg: The trainer config to be modified.
 
         Returns:
             The modified trainer config.
@@ -126,13 +149,19 @@ class ChainConfigModifier(ConfigModifier):
 
     @config_class
     class Config(ConfigModifier.Config):
-        config_modifiers: Required[List[ConfigOr[ConfigModifier]]] = REQUIRED
+        """Configure MeshShapeModifier.
+
+        Attributes:
+            config_modifiers: A list of config modifiers to be applied.
+        """
+
+        config_modifiers: Required[Sequence[ConfigOr[ConfigModifier]]] = REQUIRED
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
         self._config_modifiers = [
-            cfg_modifier.instantiate() for cfg_modifier in cfg.config_modifiers
+            maybe_instantiate(cfg_modifier) for cfg_modifier in cfg.config_modifiers
         ]
 
     def __call__(self, cfg: SpmdTrainer.Config) -> SpmdTrainer.Config:
@@ -140,7 +169,7 @@ class ChainConfigModifier(ConfigModifier):
         The config modifiers will be applied in the order they are provided.
 
         Args:
-            cfg (SpmdTrainer.Config): the trainer config to be modified.
+            cfg: The trainer config to be modified.
 
         Returns:
             The modified trainer config.

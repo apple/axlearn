@@ -10,17 +10,19 @@ from axlearn.common.base_layer import RematSpec
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
-    GradientAccumulation,
+    GradientAccumulationModifier,
     MeshShapeModifier,
     RematSpecModifier,
 )
 from axlearn.common.trainer_test import DummyModel
 
 
-class GradientAccumulationTest(test_utils.TestCase):
+class GradientAccumulationModifierTest(test_utils.TestCase):
     def test_gradient_accumulation_override(self):
         cfg = SpmdTrainer.default_config().set(model=DummyModel.default_config())
-        cfg_modifier = GradientAccumulation.default_config().set(grad_acc_steps=4).instantiate()
+        cfg_modifier = (
+            GradientAccumulationModifier.default_config().set(grad_acc_steps=4).instantiate()
+        )
         cfg = cfg_modifier(cfg)
         self.assertEqual(cfg.learner.forward_fn_transformation.steps, 4)
 
@@ -78,7 +80,7 @@ class ChainConfigModifierTest(test_utils.TestCase):
             ChainConfigModifier.default_config()
             .set(
                 config_modifiers=[
-                    GradientAccumulation.default_config().set(grad_acc_steps=4),
+                    GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                     MeshShapeModifier.default_config().set(mesh_shape=(4, 1, 8, 1)),
                 ]
             )
