@@ -315,11 +315,14 @@ class TensorStoreStateStorage(StateStorage):
                 `None` and `1` means no sharding. `-1` means fully shard along data-parallel
                 replicas. `>1` means custom sharding degree (currently not implemented).
             max_concurrent_gb: Max concurrent shards (in GB) to write.
+            max_concurrent_restore_gb: Max concurrent shards (in GB) to read during checkpoint
+                restore. `None` or `0` means using a default value of 32GB.
         """
 
         timeout_secs: float = 3600
         max_data_shard_degree: Optional[int] = None
         max_concurrent_gb: Optional[int] = None
+        max_concurrent_restore_gb: Optional[int] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -333,7 +336,15 @@ class TensorStoreStateStorage(StateStorage):
                 max_data_shard_degree=cfg.max_data_shard_degree,
             )
         else:
-            self._manager = GlobalAsyncCheckpointManager(timeout_secs=cfg.timeout_secs)
+            self._manager = array_serialization.GlobalAsyncCheckpointManager(
+                timeout_secs=cfg.timeout_secs
+            )
+        self._max_concurrent_restore_gb = cfg.max_concurrent_restore_gb or 32
+        if self._max_concurrent_restore_gb <= 0:
+            raise ValueError(
+                f"max_concurrent_restore_gb must be strictly positive. "
+                f"Got {self._max_concurrent_restore_gb}"
+            )
         self._executor = futures.ThreadPoolExecutor()
 
     @dataclasses.dataclass
@@ -451,7 +462,6 @@ class TensorStoreStateStorage(StateStorage):
         *,
         ckpt_dir: str,
         validation: CheckpointValidationType = CheckpointValidationType.EXACT,
-        concurrent_gb: int = 32,
     ) -> NestedTensor:
         spec = self._get_spec(step, state, ckpt_dir)
         logging.info("Restoring checkpoint from directory %s", ckpt_dir)
@@ -467,7 +477,7 @@ class TensorStoreStateStorage(StateStorage):
             tensorstore_specs=spec.tensorstore_specs,
             global_shapes=spec.shapes,
             dtypes=spec.dtypes,
-            concurrent_gb=concurrent_gb,
+            concurrent_gb=self._max_concurrent_restore_gb,
         )
         state_leaves = []
         for path, value in spec.index:
