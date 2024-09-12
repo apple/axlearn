@@ -50,8 +50,8 @@ from axlearn.common.trainer import SpmdTrainer, TrainerState, select_mesh_config
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     GradientAccumulation,
-    MeshShapeUpdate,
-    RematPolicies,
+    MeshShapeModifier,
+    RematSpecModifier,
 )
 from axlearn.common.utils import (
     Nested,
@@ -945,8 +945,8 @@ class SelectExtendedMeshConfigTest(test_utils.TestCase):
                 "tpu-v4-64",
                 ChainConfigModifier.default_config().set(
                     config_modifiers=[
-                        MeshShapeUpdate.default_config().set(mesh_shape=(4, 1, 8, 1)),
-                        RematPolicies.default_config().set(
+                        MeshShapeModifier.default_config().set(mesh_shape=(4, 1, 8, 1)),
+                        RematSpecModifier.default_config().set(
                             remat_policies={
                                 "model.linear": RematSpec(
                                     prevent_cse=True,

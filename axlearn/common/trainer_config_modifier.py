@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Defines trainer config modifiers, which will be used in model definitions."""
 
 from typing import Dict, List, Optional, Union
@@ -16,7 +18,7 @@ class GradientAccumulation(ConfigModifier):
 
     @config_class
     class Config(ConfigModifier.Config):
-        grad_acc_steps: Optional[int] = None
+        grad_acc_steps: Required[int] = REQUIRED
         metric_accumulator: Required[MetricAccumulator.Config] = MetricAccumulator.default_config()
 
     def __init__(self, cfg: Config):
@@ -36,14 +38,11 @@ class GradientAccumulation(ConfigModifier):
         train_steps=mini_steps/grad_acc_steps
 
         Args:
-            cfg (SpmdTrainer.Config): the trainer config to be modified.
+            cfg: the trainer config to be modified.
 
         Returns:
-            SpmdTrainer.Config: the modified trainer config.
+            The modified trainer config.
         """
-        if self._grad_acc_steps is None:
-            return cfg
-
         cfg.learner.forward_fn_transformation = config.config_for_function(
             with_minibatch_steps
         ).set(
@@ -53,7 +52,7 @@ class GradientAccumulation(ConfigModifier):
         return cfg
 
 
-class RematPolicies(ConfigModifier):
+class RematSpecModifier(ConfigModifier):
     """Update the remat policies for specified modules."""
 
     @config_class
@@ -76,7 +75,7 @@ class RematPolicies(ConfigModifier):
             ValueError: the remat_spec attribute is not found.
 
         Returns:
-            SpmdTrainer.Config: the modified trainer config.
+            The modified trainer config.
         """
         if self._remat_policies is None:
             return cfg
@@ -97,7 +96,7 @@ class RematPolicies(ConfigModifier):
         return cfg
 
 
-class MeshShapeUpdate(ConfigModifier):
+class MeshShapeModifier(ConfigModifier):
     """Update the mesh_shape for the trainer config."""
 
     @config_class
@@ -116,7 +115,7 @@ class MeshShapeUpdate(ConfigModifier):
             cfg (SpmdTrainer.Config): the trainer config to be modified.
 
         Returns:
-            SpmdTrainer.Config: the modified trainer config.
+            The modified trainer config.
         """
         cfg.mesh_shape = self._mesh_shape
         return cfg
@@ -144,7 +143,7 @@ class ChainConfigModifier(ConfigModifier):
             cfg (SpmdTrainer.Config): the trainer config to be modified.
 
         Returns:
-            SpmdTrainer.Config: the modified trainer config.
+            The modified trainer config.
         """
         for config_modifier_fn in self._config_modifiers:
             cfg = config_modifier_fn(cfg)

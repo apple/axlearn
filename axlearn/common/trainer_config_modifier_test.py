@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Test various ConfigModifier classes in trainer_config_modifier.py."""
 
 import jax
@@ -9,8 +11,8 @@ from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     GradientAccumulation,
-    MeshShapeUpdate,
-    RematPolicies,
+    MeshShapeModifier,
+    RematSpecModifier,
 )
 from axlearn.common.trainer_test import DummyModel
 
@@ -23,11 +25,11 @@ class GradientAccumulationTest(test_utils.TestCase):
         self.assertEqual(cfg.learner.forward_fn_transformation.steps, 4)
 
 
-class RematPoliciesTest(test_utils.TestCase):
+class RematSpecModifierTest(test_utils.TestCase):
     def test_remat_policy_override(self):
         cfg = SpmdTrainer.default_config().set(model=DummyModel.default_config())
         cfg_modifier = (
-            RematPolicies.default_config()
+            RematSpecModifier.default_config()
             .set(
                 remat_policies={
                     "model.linear": RematSpec(
@@ -41,7 +43,7 @@ class RematPoliciesTest(test_utils.TestCase):
         cfg = cfg_modifier(cfg)
         self.assertRegex(str(cfg.model.linear), "dots_saveable")
         cfg_modifier = (
-            RematPolicies.default_config()
+            RematSpecModifier.default_config()
             .set(
                 remat_policies={
                     "model.linear": RematSpec(
@@ -61,10 +63,10 @@ class RematPoliciesTest(test_utils.TestCase):
             _ = cfg_modifier(cfg)
 
 
-class MeshShapeUpdateTest(test_utils.TestCase):
+class MeshShapeModifierTest(test_utils.TestCase):
     def test_mesh_shape_update(self):
         cfg = SpmdTrainer.default_config().set(model=DummyModel.default_config())
-        cfg_modifier = MeshShapeUpdate.default_config().set(mesh_shape=(4, 1, 8, 1)).instantiate()
+        cfg_modifier = MeshShapeModifier.default_config().set(mesh_shape=(4, 1, 8, 1)).instantiate()
         cfg = cfg_modifier(cfg)
         self.assertEqual(cfg.mesh_shape, (4, 1, 8, 1))
 
@@ -77,7 +79,7 @@ class ChainConfigModifierTest(test_utils.TestCase):
             .set(
                 config_modifiers=[
                     GradientAccumulation.default_config().set(grad_acc_steps=4),
-                    MeshShapeUpdate.default_config().set(mesh_shape=(4, 1, 8, 1)),
+                    MeshShapeModifier.default_config().set(mesh_shape=(4, 1, 8, 1)),
                 ]
             )
             .instantiate()

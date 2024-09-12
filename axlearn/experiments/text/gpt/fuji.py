@@ -35,8 +35,8 @@ from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     GradientAccumulation,
-    MeshShapeUpdate,
-    RematPolicies,
+    MeshShapeModifier,
+    RematSpecModifier,
 )
 from axlearn.common.utils import extended_checkpoint_policies
 from axlearn.experiments.text.gpt.common import (
@@ -182,10 +182,10 @@ def get_trainer_kwargs(
                     "tpu-v5litepod-256",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
-                            MeshShapeUpdate.default_config().set(
+                            MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
                             ),
-                            RematPolicies.default_config().set(
+                            RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True, policy=offload_saveable_policy
@@ -200,10 +200,10 @@ def get_trainer_kwargs(
                     "tpu-v5litepod-256-2",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
-                            MeshShapeUpdate.default_config().set(
+                            MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
                             ),
-                            RematPolicies.default_config().set(
+                            RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True, policy=offload_saveable_policy
@@ -218,10 +218,10 @@ def get_trainer_kwargs(
                     "tpu-v5litepod-256-4",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
-                            MeshShapeUpdate.default_config().set(
+                            MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
                             ),
-                            RematPolicies.default_config().set(
+                            RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True, policy=jax_remat_policies.dots_saveable
@@ -268,10 +268,10 @@ def get_trainer_kwargs(
                     "tpu-v5litepod-256-4",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
-                            MeshShapeUpdate.default_config().set(
+                            MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
                             ),
-                            RematPolicies.default_config().set(
+                            RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True, policy=offload_saveable_policy

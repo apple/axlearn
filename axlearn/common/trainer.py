@@ -1059,10 +1059,10 @@ class SpmdTrainer(Module):
 
 
 def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str):
-    """Selects a mesh rule (if one matches mesh_selector to override mesh config.
+    """Selects a mesh rule (if one matches `mesh_selector` to override mesh config.
 
-    If any of trainer_config.mesh_rules matches mesh_selector, modifies
-    trainer_config.mesh_shape according to the rule.
+    If any of `trainer_config.mesh_rules` matches `mesh_selector`, modifies
+    `trainer_config.mesh_shape` according to the rule.
 
     Args:
         trainer_config: The trainer config. Will be modified if any mesh rule matches.

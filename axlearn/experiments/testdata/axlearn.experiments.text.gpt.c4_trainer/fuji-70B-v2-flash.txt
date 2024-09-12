@@ -115,14 +115,14 @@ mesh_axis_names[3]: 'fsdp'
 mesh_axis_names[4]: 'seq'
 mesh_axis_names[5]: 'model'
 mesh_rules[0][0]: 'tpu-v5litepod-256-4'
-mesh_rules[0][1].config_modifiers[0].klass: 'axlearn.common.trainer_config_modifier.MeshShapeUpdate'
+mesh_rules[0][1].config_modifiers[0].klass: 'axlearn.common.trainer_config_modifier.MeshShapeModifier'
 mesh_rules[0][1].config_modifiers[0].mesh_shape[0]: 1
 mesh_rules[0][1].config_modifiers[0].mesh_shape[1]: -1
 mesh_rules[0][1].config_modifiers[0].mesh_shape[2]: 1
 mesh_rules[0][1].config_modifiers[0].mesh_shape[3]: 256
 mesh_rules[0][1].config_modifiers[0].mesh_shape[4]: 1
 mesh_rules[0][1].config_modifiers[0].mesh_shape[5]: 1
-mesh_rules[0][1].config_modifiers[1].klass: 'axlearn.common.trainer_config_modifier.RematPolicies'
+mesh_rules[0][1].config_modifiers[1].klass: 'axlearn.common.trainer_config_modifier.RematSpecModifier'
 mesh_rules[0][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['prevent_cse']: True
 mesh_rules[0][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].fn: 'axlearn.common.utils.offload_dots_saveble'
 mesh_rules[0][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_dst: 'pinned_host'
