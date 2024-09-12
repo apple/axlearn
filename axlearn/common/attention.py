@@ -659,7 +659,7 @@ class BaseQKVLinear(BaseLayer):
         # Dimension of each attention head.
         per_head_dim: Required[int] = REQUIRED
         # Autoregressive cache dtype. Should match the step dtype.
-        # Needs to match the forward dtype for Repeated layers. If None, infer as config.dtype.
+        # Needs to match the forward dtype for Repeated layers. If None, infer as BaseLayer.dtype().
         cache_dtype: Optional[jnp.dtype] = None
 
     class Output(NamedTuple):
@@ -683,7 +683,8 @@ class BaseQKVLinear(BaseLayer):
     ) -> NestedTensor:
         cfg = self.config
         # Default to base layer dtype for initialization if cache_dtype is None.
-        dtype = cfg.cache_dtype or cfg.dtype
+        dtype = cfg.cache_dtype or self.dtype()
+        assert dtype is not None
 
         # Following T5X, we cache key, value as [batch, num_heads, head_dim, seq_len] to take
         # advantage of TPU optimizations (see `extend_step`).
@@ -767,7 +768,8 @@ class BaseQKVLinear(BaseLayer):
         """
         cfg = self.config
         # Default to base layer dtype for initialization if cache_dtype is None.
-        dtype = cfg.cache_dtype or cfg.dtype
+        dtype = cfg.cache_dtype or self.dtype()
+        assert dtype is not None
 
         if kv_state is not None:
             if key is not None or value is not None:
