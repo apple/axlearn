@@ -23,6 +23,7 @@ from axlearn.cloud.gcp.tpu import (
     queued_resource_info_table,
     tpu_info_table,
 )
+from axlearn.common import file_system as fs
 
 
 class TpuUtilsTest(parameterized.TestCase):
@@ -233,13 +234,15 @@ class TpuUtilsTest(parameterized.TestCase):
             get_queued_tpu_node=mock.Mock(side_effect=nodes),
             _execute_create_tpu_request=mock.Mock(),
             delete_queued_tpu=mock.Mock(),
-            list_blobs=mock.Mock(side_effect=[list(range(x)) for x in list_blobs]),
+        )
+        mock_fs = mock.patch.multiple(
+            fs.__name__, listdir=mock.Mock(side_effect=[list(range(x)) for x in list_blobs])
         )
         mock_settings = mock_gcp_settings(
             module,
             settings={"project": "project", "zone": "zone", "ttl_bucket": "ttl_bucket"},
         )
-        with mock_sleep, mock_settings, mock_gcp:
+        with mock_sleep, mock_settings, mock_gcp, mock_fs:
             if isinstance(expected, Exception):
                 ctx = self.assertRaisesRegex(type(expected), str(expected))
             else:

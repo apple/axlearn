@@ -29,6 +29,7 @@ from jax import numpy as jnp
 from jax.experimental import mesh_utils
 from jax.experimental.array_serialization import serialization as array_serialization
 
+from axlearn.common import file_system as fs
 from axlearn.common import serialization, test_utils, utils
 from axlearn.common.array_serialization import BoundedDataShardedAsyncCheckpointManager
 from axlearn.common.checkpointer import (
@@ -217,7 +218,7 @@ class CheckpointerTest(test_utils.TestCase):
                     )
                 else:
                     raise NotImplementedError(checkpointer_cls)
-                tf.io.gfile.makedirs(ckpt_dir)
+                fs.makedirs(ckpt_dir)
 
                 if checkpointer_cls is OrbaxCheckpointer:
                     assert not ocp.step.is_checkpoint_finalized(ckpt_dir)
@@ -928,7 +929,7 @@ def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> list[str]
     filenames = [
         f"{path_prefix}-{shard_id:05d}-of-{num_shards:05d}" for shard_id in range(num_shards)
     ]
-    files = [tf.io.gfile.GFile(filename, "w") for filename in filenames]
+    files = [fs.open(filename, "w") for filename in filenames]
     for i, line in enumerate(lines):
         files[i % num_shards].write(line + "\n")
     return filenames

@@ -12,12 +12,12 @@ from collections.abc import Sequence
 from typing import Any, Callable, ContextManager, Literal, NamedTuple, Optional, Union
 
 import jax
-import tensorflow as tf
 from absl import logging
 from jax import numpy as jnp
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
 
+from axlearn.common import file_system as fs
 from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
@@ -719,7 +719,7 @@ class SpmdTrainer(Module):
 
             # Log trainer state tree.
             if jax.process_index() == 0:
-                with tf.io.gfile.GFile(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
+                with fs.open(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
                     f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
 
         self._log_trainer_state_stats()

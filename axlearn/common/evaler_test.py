@@ -4,6 +4,7 @@
 
 Some tests are intended to be run on TPU.
 """
+
 # pylint: disable=no-self-use
 import graphlib
 import json
@@ -24,6 +25,7 @@ from tensorflow.python.summary.summary_iterator import (  # pylint: disable=no-n
     summary_iterator,
 )
 
+from axlearn.common import file_system as fs
 from axlearn.common import param_init, test_utils
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
@@ -399,7 +401,7 @@ class EvalerTest(TestCase):
                     else:
                         assert sink == JsonlExampleRecordSink
                         num_output_records = 0
-                        with tf.io.gfile.GFile(actual_output_path) as f:
+                        with fs.open(actual_output_path) as f:
                             for line in f:
                                 record = json.loads(line)
                                 self.assertIsInstance(record["logits"], list)
