@@ -114,6 +114,9 @@ def offload_dots_saveable(offload_src: str, offload_dst: str) -> Callable[[Any],
     Args:
         offload_src: The source device for offloading.
         offload_dst: The target device for offloading.
+        
+    Returns:
+        A policy function that offloads dot_general_p to the target device, and recomputes all other.
     """
 
     def policy(prim, *_, **params):
