@@ -105,16 +105,17 @@ class TensorSpec:
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
 
 
-def offload_dots_saveble(offload_src, offload_dst):
-    """Extract and combine the policy from save_and_offload_only_these_names and dots_saveable.
-    https://github.com/google/jax/blob/e3110c18f8bce83901cff42458d4204df9e3abeb/jax/_src/ad_checkpoint.py#L151
+def offload_dots_saveable(offload_src: str, offload_dst: str) -> Callable[[Any], Any]:
+    """Extract and combine the policy from offload_dot_with_no_batch_dims and dots_saveable.
+    https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/ad_checkpoint.py#L59
+    https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/ad_checkpoint.py#L81C1-L90C1
     This would remove the need to match the names for activation tensors.
     Args:
-        offload_src (str): the source device for offloading.
-        offload_dst (str): the target device for offloading.
+        offload_src: the source device for offloading.
+        offload_dst: the target device for offloading.
     """
 
-    def policy(prim, *_):
+    def policy(prim, *_, **params):
         if prim is lax_internal.dot_general_p:
             return pe.Offloadable(src=offload_src, dst=offload_dst)
         return pe.Recompute
@@ -122,7 +123,7 @@ def offload_dots_saveble(offload_src, offload_dst):
     return policy
 
 
-extended_checkpoint_policies = types.SimpleNamespace(offload_dots_saveble=offload_dots_saveble)
+extended_checkpoint_policies = types.SimpleNamespace(offload_dots_saveable=offload_dots_saveable)
 
 
 @contextlib.contextmanager

@@ -186,7 +186,7 @@ def get_trainer_kwargs(
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
                                         policy=config_for_function(
-                                            extended_checkpoint_policies.offload_dots_saveble
+                                            extended_checkpoint_policies.offload_dots_saveable
                                         ).set(offload_src="device", offload_dst="pinned_host"),
                                     ),
                                 }
@@ -207,7 +207,7 @@ def get_trainer_kwargs(
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
                                         policy=config_for_function(
-                                            extended_checkpoint_policies.offload_dots_saveble
+                                            extended_checkpoint_policies.offload_dots_saveable
                                         ).set(offload_src="device", offload_dst="pinned_host"),
                                     ),
                                 }
@@ -278,7 +278,7 @@ def get_trainer_kwargs(
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
                                         policy=config_for_function(
-                                            extended_checkpoint_policies.offload_dots_saveble
+                                            extended_checkpoint_policies.offload_dots_saveable
                                         ).set(offload_src="device", offload_dst="pinned_host"),
                                     ),
                                 }
