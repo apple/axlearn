@@ -344,7 +344,7 @@ class TensorStoreStateStorage(StateStorage):
                 f"max_concurrent_restore_gb must be strictly positive. "
                 f"Got {cfg.max_concurrent_restore_gb}"
             )
-        self._max_concurrent_restore_gb = cfg.max_concurrent_restore_gb
+        self._max_concurrent_restore_gb = cfg.max_concurrent_restore_gb or 32
         self._executor = futures.ThreadPoolExecutor()
 
     @dataclasses.dataclass
@@ -462,7 +462,6 @@ class TensorStoreStateStorage(StateStorage):
         *,
         ckpt_dir: str,
         validation: CheckpointValidationType = CheckpointValidationType.EXACT,
-        concurrent_gb: int = 32,
     ) -> NestedTensor:
         spec = self._get_spec(step, state, ckpt_dir)
         logging.info("Restoring checkpoint from directory %s", ckpt_dir)
@@ -478,8 +477,7 @@ class TensorStoreStateStorage(StateStorage):
             tensorstore_specs=spec.tensorstore_specs,
             global_shapes=spec.shapes,
             dtypes=spec.dtypes,
-            # self._max_concurrent_restore_gb takes priority over concurrent_gb
-            concurrent_gb=self._max_concurrent_restore_gb or concurrent_gb,
+            concurrent_gb=self._max_concurrent_restore_gb,
         )
         state_leaves = []
         for path, value in spec.index:
