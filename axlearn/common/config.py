@@ -926,3 +926,11 @@ def maybe_set_config(cfg: _ConfigBase, **kwargs) -> _ConfigBase:
         if hasattr(cfg, key):
             setattr(cfg, key, value)
     return cfg
+
+
+class ConfigModifier(Configurable):
+    """A class that takes a config and returns a modified config."""
+
+    def __call__(self, cfg: InstantiableConfig[T]) -> InstantiableConfig[T]:
+        """A function that modifies the input config, should be defined by subclasses."""
+        return cfg

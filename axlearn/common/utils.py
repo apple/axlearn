@@ -20,6 +20,7 @@ import re
 import sys
 import threading
 import traceback
+import types
 from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union
@@ -28,6 +29,8 @@ import jax
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
+from jax._src.interpreters import partial_eval as pe
+from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
 from jax.experimental import mesh_utils, multihost_utils
@@ -100,6 +103,32 @@ class TensorSpec:
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
+
+
+def offload_dots_saveable(offload_src: str, offload_dst: str) -> Callable[[Any], Any]:
+    """Extract from offload_dot_with_no_batch_dims and remove no-batch-dims limit.
+
+    https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/ad_checkpoint.py#L81C1-L90C1
+    This would remove the need to match the names for activation tensors.
+
+    Args:
+        offload_src: The source device for offloading.
+        offload_dst: The target device for offloading.
+
+    Returns:
+        A policy fun that offloads dot_general_p to the target device and recomputes all other.
+    """
+
+    # pylint: disable-next=unused-argument
+    def policy(prim, *_, **params):
+        if prim is lax_internal.dot_general_p:
+            return pe.Offloadable(src=offload_src, dst=offload_dst)
+        return pe.Recompute
+
+    return policy
+
+
+extended_checkpoint_policies = types.SimpleNamespace(offload_dots_saveable=offload_dots_saveable)
 
 
 @contextlib.contextmanager
