@@ -1,4 +1,4 @@
-# Copyright © 2023 Apple Inc.
+# Copyright © 2024 Apple Inc.
 
 """Test various ConfigModifier classes in trainer_config_modifier.py."""
 

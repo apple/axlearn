@@ -116,9 +116,10 @@ def offload_dots_saveable(offload_src: str, offload_dst: str) -> Callable[[Any],
         offload_dst: The target device for offloading.
 
     Returns:
-        A policy function that offloads dot_general_p to the target device, and recomputes all other.
+        A policy fun that offloads dot_general_p to the target device and recomputes all other.
     """
 
+    # pylint: disable-next=unused-argument
     def policy(prim, *_, **params):
         if prim is lax_internal.dot_general_p:
             return pe.Offloadable(src=offload_src, dst=offload_dst)

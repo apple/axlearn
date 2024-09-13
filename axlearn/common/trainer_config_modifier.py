@@ -1,4 +1,4 @@
-# Copyright © 2023 Apple Inc.
+# Copyright © 2024 Apple Inc.
 
 """Defines trainer config modifiers, which will be used in model definitions."""
 
@@ -74,7 +74,8 @@ class RematSpecModifier(ConfigModifier):
         """Configure RematSpecModifier.
 
         Attributes:
-            remat_policies: A mapping from module path (e.g. `model.decoder.transformer.layer`) to remat spec.
+            remat_policies: A mapping from module path
+                (e.g. `model.decoder.transformer.layer`) to remat spec.
         """
 
         remat_policies: Required[Dict[str, RematSpec]] = REQUIRED
