@@ -13,15 +13,15 @@ for target message.
 The file contains the code for several tool use metrics:
 * Standard tool use metrics
 * Lenient tool use metric
-* Bag of word tool use metric.
+* Bag of word tool (BOW) use metric.
 
 The lenient matching is similar to the standard metric. It performs the following steps:
 * Transforms the argument strings to lower case.
-* Removes punctions.
+* Removes punctuations.
 * Removes stop words. The stop words are statically predefined.
 * Compares the results argument string.
 
-The bag of word tool user metric transforms the argument strings in the same way as the
+The bag of word tool use metric transforms the argument strings in the same way as the
 lenient matching. But instead of comparing the resulting strings it checks if the words
 in the ground truth arguments are contained in the predicted arguments.
 """
@@ -251,7 +251,16 @@ def _compare_tool_calls(
 
 @dataclasses.dataclass
 class DetailedMatchResult:
-    """Represents the tool matches for different metrics."""
+    """Represents the tool matches for different metrics.
+
+    Attributes:
+        func_name_match: The predicted function name matches the target function name.
+        strict_arg_match: The predicted tool arguments match strictly all target tool arguments.
+        lenient_arg_match: The predicted tool arguments match all target tool arguments via the
+           lenient comparison.
+        lenient_bow_arg_match: The predicted tool arguments match all target tool arguments via
+           the lenient bag-of-work comparison.
+    """
 
     func_name_match: bool = False
     strict_arg_match: bool = False
@@ -276,9 +285,10 @@ def _compare_tool_call_detailed(
     - Lenient BOW metric: The function name matches and all arguments match by the lenient BOW
       comparison.
 
-    Note, that this function return the matching results for every predicted tool call. The final
-    metric is taking the overall number of target calls into account too. That happens in the
-    calling function.
+    Note that this function return the matching results for every predicted tool call.
+
+    It is possible that strict, lenient, or lenient-bow matches correspond to different tool
+    calls.
 
     Args:
         pred_tool_calls: Predicted tool calls.
@@ -407,7 +417,7 @@ def metric_fn(
         return new_tool_calls
 
     def _safe_div(dividend: int, divisor: int) -> float:
-        return 0.0 if divisor == 0 else dividend / divisor
+        return dividend / max(1, divisor)
 
     total_matches = 0
 
@@ -444,7 +454,6 @@ def metric_fn(
             # If the content is empty and there are no tool or function calls we usually have
             # a generation error. In this case, there is no content field generated, but
             # sometimes an error field.
-            print("HUHU")
             number_of_generation_errors += 1
         pred_tool_calls, target_tool_calls = None, None
 
@@ -453,7 +462,6 @@ def metric_fn(
         # detailed metrics
         if target.tool_calls is not None:
             target_tool_calls = get_tool_calls_from_message(target.model_dump())
-
             total_tool_calls += len(target_tool_calls)
 
         if len(pred_messages) > 0:
@@ -480,8 +488,7 @@ def metric_fn(
                 )
 
             if target.tool_calls is not None and pred.tool_calls is not None:
-                # Detailed matching
-                # if target.tool_calls is not None and pred.tool_calls is not None:
+                # Run the detailed too call matching.
                 pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
                 detailed_results = _compare_tool_call_detailed(
                     pred_tool_calls=pred_tool_calls, target_tool_calls=target_tool_calls
