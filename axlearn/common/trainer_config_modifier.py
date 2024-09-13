@@ -126,7 +126,7 @@ class MeshShapeModifier(ConfigModifier):
             mesh_shape: The mesh shape to be updated to.
         """
 
-        mesh_shape: Union[MeshShape, HybridMeshShape] = REQUIRED
+        mesh_shape: Required[Union[MeshShape, HybridMeshShape]] = REQUIRED
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
