@@ -405,6 +405,11 @@ class CheckpointerTest(test_utils.TestCase):
                 gc_loop_interval_seconds=1,
             )
             cfg.save_policy.min_step = 0
+
+            # Running gc for non-existent dir shouldn't fail.
+            ckpt_fake = cfg.clone(dir=os.path.join(temp_dir, "fake_dir")).instantiate(parent=None)
+            ckpt_fake._run_garbage_collection()
+
             ckpt: Checkpointer = cfg.instantiate(parent=None)
             state = dict(x=jnp.zeros([], dtype=jnp.int32))
 

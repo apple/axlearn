@@ -900,15 +900,13 @@ class Checkpointer(BaseCheckpointer):
         cfg: Checkpointer.Config = self.config
         remaining_dirs, gc_dirs = [], []
 
+        try:
+            step_dirs = [step for step in fs.listdir(cfg.dir) if step.startswith(STEP_PREFIX)]
+        except fs.NotFoundError:
+            step_dirs = []
+
         # Gather all candidate checkpoint dirs, as well as all committed checkpoint dirs.
-        dirs = sorted(
-            [
-                os.path.join(cfg.dir, step)
-                for step in fs.listdir(cfg.dir)
-                if step.startswith(STEP_PREFIX)
-            ],
-            reverse=True,
-        )
+        dirs = sorted([os.path.join(cfg.dir, step) for step in step_dirs], reverse=True)
         committed_dirs = set(self.checkpoint_paths(cfg.dir))
 
         # Collect the recent non-committed checkpoints, since any of them could be in-progress.
