@@ -1,6 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests FlashAttention layers."""
+from unittest import mock
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -204,6 +206,28 @@ class TestFlashAttention(TestCase):
             mesh_axis_names=("data", "seq", "expert", "fsdp", "model"),
         ),
     ]
+
+    @parameterized.parameters(_TEST_CONFIGS)
+    def test_backend(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names):
+        del batch, seq_len
+        mock_device = mock.Mock(spec=jax.Device)
+        mock_device.platform = "tpu"
+        mock_device.coords = (0, 0, 0)
+        mock_device.core_on_chip = 0
+        devices = [mock_device]
+
+        if not is_supported_mesh_shape(mesh, devices):
+            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+
+        with Mesh(mesh_utils.create_device_mesh(mesh, devices), mesh_axis_names):
+            test_layer, _, _, _ = _prepare_layers(
+                num_heads=num_heads,
+                per_head_dim=per_head_dim,
+                mesh_axis_names=mesh_axis_names,
+                causal=True,
+            )
+            backend = test_layer._backend()  # pylint: disable=protected-access
+            self.assertEqual(backend, "tpu")
 
     @parameterized.product(_TEST_CONFIGS, causal=[False, True])
     def test_forward(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names, causal):

@@ -6,8 +6,8 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
-from jax._src.mesh import thread_resources
 from jax.experimental.shard_map import shard_map
+from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import ForwardMode, GroupedQueryAttention
@@ -103,6 +103,16 @@ class FlashAttention(GroupedQueryAttention):
             return None
         return super()._causal_mask(mode=mode, seq_len=seq_len, time_step=time_step)
 
+    def _backend(self):
+        # For compatibility with AOT compilation, we obtain the backend type from physical_mesh.
+        global_mesh = thread_resources.env.physical_mesh
+        if len(global_mesh.devices):
+            backend = global_mesh.devices.flat[0].platform
+        else:
+            # Fall back to jax.default_backend() if no device is found in physical_mesh.
+            backend = jax.default_backend()
+        return backend
+
     def _compute_attention(
         self,
         *,
@@ -112,12 +122,13 @@ class FlashAttention(GroupedQueryAttention):
         attention_logit_biases: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor]:
         cfg = self.config
+        backend = self._backend()
 
         # Repeats key/value heads dim if necessary.
         k_proj = self._repeat_kv_heads(k_proj)
         v_proj = self._repeat_kv_heads(v_proj)
 
-        if jax.default_backend() == "tpu":
+        if backend == "tpu":
             assert (
                 q_proj.shape[1] % cfg.tpu_block_size == 0
             ), "Target seq len must divide block size."
@@ -144,8 +155,6 @@ class FlashAttention(GroupedQueryAttention):
             # TODO(senyut): Implement FlashDecoding kernel and support TPU decoding.
             if q_proj.shape[1] == 1:
                 causal = False
-        else:
-            backend = jax.default_backend()
 
         jit_attn: MultiHeadAttentionImpl = flash_attention_implementation(
             backend=backend,

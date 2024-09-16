@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from typing import Any, Callable, ContextManager, Literal, NamedTuple, Optional, Union
 
 import jax
+import numpy as np
 from absl import logging
 from jax import numpy as jnp
 from jax.experimental import multihost_utils
@@ -180,7 +181,7 @@ class SpmdTrainer(Module):
         cfg: Config,
         *,
         parent: Optional[Module],
-        devices: Optional[Sequence[jax.Device]] = None,
+        devices: Optional[np.ndarray] = None,
     ):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -211,12 +212,21 @@ class SpmdTrainer(Module):
             utils.validate_float_dtype(cfg.train_dtype)
 
         # Create the device mesh.
-        self._step_log(
-            "Devices: global=%s local=%s %s",
-            jax.device_count(),
-            jax.local_device_count(),
-            [device.platform for device in jax.local_devices()],
-        )
+        if devices is None:
+            self._step_log(
+                "Devices: global=%s local=%s %s",
+                jax.device_count(),
+                jax.local_device_count(),
+                [device.platform for device in jax.local_devices()],
+            )
+        else:
+            local_devices = [d for d in devices.flatten() if d.process_index == jax.process_index()]
+            self._step_log(
+                "Devices: global=%s local=%s %s",
+                len(devices),
+                len(local_devices),
+                [device.platform for device in local_devices],
+            )
         self._step_log("Mesh shape: %s", cfg.mesh_shape)
         devices = (
             utils.create_device_mesh(mesh_shape=cfg.mesh_shape) if devices is None else devices
