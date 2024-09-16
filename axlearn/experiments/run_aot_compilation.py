@@ -34,6 +34,9 @@ flags.DEFINE_string("module", None, "The trainer config module.", required=True)
 flags.DEFINE_string("config", None, "The trainer config name.", required=True)
 flags.DEFINE_string("topology", None, "The TPU topology.")
 flags.DEFINE_integer("topology_num_slices", 1, "The number of TPU slices.")
+flags.DEFINE_string(
+    "data_dir", "FAKE", "Sets the environment variable `DATA_DIR` to the given `data_dir`."
+)
 
 FLAGS = flags.FLAGS
 
@@ -49,7 +52,7 @@ def _compile_and_dump_programs(
     compile_topology: Optional[str],
     compile_topology_num_slices: int = 1,
 ):
-    with set_data_dir("FAKE"):
+    with set_data_dir(FLAGS.data_dir):
         programs = compile_trainer_programs(
             trainer_config,
             topology=compile_topology,

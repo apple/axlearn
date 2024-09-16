@@ -94,9 +94,11 @@ def is_supported_platform(target_platform: str) -> bool:
     return supported
 
 
-def is_supported_mesh_shape(mesh_shape: Sequence[int]) -> bool:
+def is_supported_mesh_shape(
+    mesh_shape: Sequence[int], devices: Optional[list[jax.Device]] = None
+) -> bool:
     """Checks if a function intended for a mesh shape is compatible with the current device(s)."""
-    device_count = jax.device_count()
+    device_count = jax.device_count() if devices is None else len(devices)
     supported = device_count == np.prod(mesh_shape)
     if not supported:
         logging.info("Skipping mesh_shape=%s with device_count=%s", mesh_shape, device_count)
