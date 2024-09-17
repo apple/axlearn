@@ -347,7 +347,7 @@ def _compare_tool_call_detailed(
             pred_func["arguments"] = _extract_arguments(pred_func)
         except (json.JSONDecodeError, KeyError) as e:
             logging.error(
-                "Unable to decode arguments from predicted call %s, Error %s", pred_func, e
+                "Unable to decode arguments from predicted call %s, Error %s", pred_tool, e
             )
             results.append(DetailedMatchResult())
             continue
