@@ -226,6 +226,7 @@ class StateStorage(Configurable):
 
 def write_index_file(*, ckpt_dir: str, index: Any):
     """An on_commit_callback that writes an index file to ckpt_dir."""
+    # Should this happen only on process 0?
     index_path = os.path.join(ckpt_dir, "index")
     logging.info("Writing index file to %s", index_path)
     with fs.open(index_path, "w") as f:
@@ -423,6 +424,8 @@ class TensorStoreStateStorage(StateStorage):
 
         def commit():
             save_tf_future.result()
+            # Wait for all processes to finish saving TF checkpoints.
+            multihost_utils.sync_global_devices(ckpt_dir + "/tf")
             on_commit_callback(ckpt_dir=ckpt_dir, index=spec.index)
             logging.info(
                 "Serialization of %s completed in %s seconds.",
