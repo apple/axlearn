@@ -136,10 +136,12 @@ def check_state_structure(
         )
 
 
-def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str):
+def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str, global_barrier: str):
     """Upload a directory (non-recursively) from a temporary dir to dst_dir.
 
     Temporary dir will be deleted after the upload is complete.
+
+    Waits on `global_barrier` across processes before returning.
     """
     src_dir = src_dir_handle.name
     fs.makedirs(dst_dir)
@@ -149,23 +151,26 @@ def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str):
         assert not fs.isdir(src_file)
         fs.copy(src_file, dst_file, overwrite=True)
     src_dir_handle.cleanup()
+    # Wait for all processes to finish uploading.
+    multihost_utils.sync_global_devices(global_barrier)
 
 
 # pylint: disable=redefined-builtin
 def async_save_tf_savables(
-    value_map: Nested[Any], *, executor: futures.ThreadPoolExecutor, dir: str
+    value_map: Nested[Any], *, executor: futures.ThreadPoolExecutor, dir: str, global_barrier: str
 ) -> futures.Future:
     """Asynchronously saves TF savables from `value_map` into `dir`.
 
     When this call returns, `value_map` can be safely mutated, but saving to `dir` will not
-    complete unless the returned future is set.
+    complete unless the returned future is set. The future also waits on `global_barrier` for
+    saving to finish across processes before the result is set.
     """
     # pylint: disable-next=consider-using-with
     f = tempfile.TemporaryDirectory()
     for path, value in utils.flatten_items(value_map):
         tf_checkpoint = tf.train.Checkpoint(value)
         tf_checkpoint.write(os.path.join(f.name, path))
-    return executor.submit(_upload_dir, f, dst_dir=dir)
+    return executor.submit(_upload_dir, f, dst_dir=dir, global_barrier=global_barrier)
 
 
 # pylint: disable-next=redefined-builtin
@@ -420,12 +425,11 @@ class TensorStoreStateStorage(StateStorage):
             spec.tf_ckpt_map,
             executor=self._executor,
             dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"),
+            global_barrier=ckpt_dir + "/tf",
         )
 
         def commit():
             save_tf_future.result()
-            # Wait for all processes to finish saving TF checkpoints.
-            multihost_utils.sync_global_devices(ckpt_dir + "/tf")
             on_commit_callback(ckpt_dir=ckpt_dir, index=spec.index)
             logging.info(
                 "Serialization of %s completed in %s seconds.",
