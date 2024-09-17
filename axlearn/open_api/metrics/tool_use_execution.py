@@ -253,6 +253,9 @@ def _compare_tool_calls(
 class DetailedMatchResult:
     """Represents the tool matches for different metrics.
 
+    Argument matches require that function name matches too. It is not possible that the
+    `func_name_match` is false, while one of the arg match members is true.
+
     Attributes:
         func_name_match: The predicted function name matches the target function name.
         strict_arg_match: The predicted tool arguments match strictly all target tool arguments.
@@ -290,12 +293,33 @@ def _compare_tool_call_detailed(
     It is possible that strict, lenient, or lenient-bow matches correspond to different tool
     calls.
 
+    Invalid tool calls which fail to parse or decode are ignored and considered as non
+    matches.
+
+    An example of a tool call is
+
+    ```
+    {
+        "id": "call_0",
+        "type": "function",
+        "function": {
+            "name": "add_contact",
+            "arguments": {
+                "name": "John Doe",
+                "phone": "1234567890",
+                "email": "johndoe@example.com"
+            }
+        }
+    }
+    ```
+
     Args:
         pred_tool_calls: Predicted tool calls.
         target_tool_calls: Target tool calls.
 
     Returns:
-        DetailedMatchResult, containing the Booleans denoting matches for different metrics.
+        A list of DetailedMatchResults with the same length as `pred_tool_calls`. Each result
+        indicates whether the corresponding predicted tool call matches any target tool call.
     """
 
     target_tool_calls = list(target_tool_calls)
@@ -303,12 +327,12 @@ def _compare_tool_call_detailed(
 
     target_funcs = []
     for t in target_tool_calls:
-        if not "function" in t:
-            continue
         try:
             t["function"]["arguments"] = _extract_arguments(t["function"])
-        except (json.JSONDecodeError, KeyError):
-            logging.error("Unable to decode arguments from target call %s", t["function"])
+        except (json.JSONDecodeError, KeyError) as e:
+            logging.error(
+                "Unable to decode arguments from target call %s, Error %s", t["function"], e
+            )
             continue
         target_funcs.append(t["function"])
 
@@ -318,11 +342,14 @@ def _compare_tool_call_detailed(
 
     results = []
     for pred_tool in pred_tool_calls:
-        pred_func = pred_tool["function"]
         try:
+            pred_func = pred_tool["function"]
             pred_func["arguments"] = _extract_arguments(pred_func)
-        except (json.JSONDecodeError, KeyError):
-            logging.error("Unable to decode arguments from predicted call %s", pred_func)
+        except (json.JSONDecodeError, KeyError) as e:
+            logging.error(
+                "Unable to decode arguments from predicted call %s, Error %s", pred_func, e
+            )
+            results.append(DetailedMatchResult())
             continue
 
         fname_match = False
