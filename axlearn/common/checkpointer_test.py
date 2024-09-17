@@ -959,7 +959,9 @@ class TfIteratorTest(test_utils.TestCase):
                 # Manually increase the delay of executor to test `it` mutation after
                 # call to async_save_tf_savables doesn't affect saving.
                 blocker = executor.submit(lambda: time.sleep(2))
-                f = async_save_tf_savables({"it": it}, executor=executor, dir=ckpt_path)
+                f = async_save_tf_savables(
+                    {"it": it}, executor=executor, dir=ckpt_path, global_barrier=ckpt_path
+                )
                 next(it)  # modify it in place
                 it = iter(ds)  # reset `it`.
                 self.assertIsNot(it, prev_it)

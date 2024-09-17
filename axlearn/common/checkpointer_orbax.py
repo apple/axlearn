@@ -61,7 +61,11 @@ class _TfIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
         futs = []
         with futures.ThreadPoolExecutor(max_workers=1) as executor:
             for value, info in zip(values, infos):
-                futs.append(async_save_tf_savables(value, executor=executor, dir=info.path))
+                futs.append(
+                    async_save_tf_savables(
+                        value, executor=executor, dir=info.path, global_barrier=None
+                    )
+                )
         return futs
 
     async def deserialize(
