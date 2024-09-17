@@ -331,8 +331,8 @@ class _CommitFuture:
 
 
 class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
-    """Similar to GlobalAsyncCheckpointManager but allows passing additional futures to wait while
-    asynchronously serializing tensors.
+    """Similar to GlobalAsyncCheckpointManager but allows passing additional futures to be awaited
+    while asynchronously serializing tensors.
     """
 
     def serialize(
