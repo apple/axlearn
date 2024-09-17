@@ -24,7 +24,10 @@ from jax.experimental.array_serialization import serialization as array_serializ
 
 from axlearn.common import file_system as fs
 from axlearn.common import utils
-from axlearn.common.array_serialization import BoundedDataShardedAsyncCheckpointManager
+from axlearn.common.array_serialization import (
+    BoundedDataShardedAsyncCheckpointManager,
+    GlobalAsyncCheckpointManager,
+)
 from axlearn.common.config import (
     REQUIRED,
     Configurable,
@@ -330,9 +333,7 @@ class TensorStoreStateStorage(StateStorage):
                 max_data_shard_degree=cfg.max_data_shard_degree,
             )
         else:
-            self._manager = array_serialization.GlobalAsyncCheckpointManager(
-                timeout_secs=cfg.timeout_secs
-            )
+            self._manager = GlobalAsyncCheckpointManager(timeout_secs=cfg.timeout_secs)
         self._executor = futures.ThreadPoolExecutor()
 
     @dataclasses.dataclass
@@ -422,7 +423,6 @@ class TensorStoreStateStorage(StateStorage):
         )
 
         def commit():
-            save_tf_future.result()
             on_commit_callback(ckpt_dir=ckpt_dir, index=spec.index)
             logging.info(
                 "Serialization of %s completed in %s seconds.",
@@ -434,7 +434,12 @@ class TensorStoreStateStorage(StateStorage):
         logging.debug(
             "array_values=%s tensorstore=%s", utils.shapes(spec.gda_values), spec.tensorstore_specs
         )
-        self._manager.serialize(spec.gda_values, spec.tensorstore_specs, on_commit_callback=commit)
+        self._manager.serialize(
+            spec.gda_values,
+            spec.tensorstore_specs,
+            on_commit_callback=commit,
+            additional_futures=[save_tf_future],
+        )
 
     def wait_until_finished(self):
         self._manager.wait_until_finished()
