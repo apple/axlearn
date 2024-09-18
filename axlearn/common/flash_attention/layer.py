@@ -74,6 +74,7 @@ class FlashAttention(GroupedQueryAttention):
         _check_bias_recursively(cfg)  # Bias not supported.
         if getattr(cfg, "atten_logit_cap", None) is not None:
             raise NotImplementedError("cfg.atten_logit_cap is not supported.")
+        # TODO(kelvinzou): enable dropout for flash attention.
         if cfg.dropout.rate:
             raise NotImplementedError("cfg.dropout.rate is not supported.")
         if cfg.tpu_block_size % 128 != 0:
