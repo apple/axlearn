@@ -231,7 +231,7 @@ def flash_attention(
         key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
         value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
         bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
-        softmax_scale: Optional scale to apply to softmax. Defaults to 1/sqrt(per_head_dim).
+        softmax_scale: Optional scale to apply to softmax. Defaults to 1.
         causal: Whether to apply causal mask.
         **kwargs: Pallas/triton kwargs.
 
@@ -717,7 +717,7 @@ def cudnn_dot_product_attention(
         value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
         bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
         mask: Optional logit mask of shape [batch_size, num_heads, target_length, source_length].
-        softmax_scale: Optional scale to apply to softmax. Defaults to 1/sqrt(per_head_dim).
+        softmax_scale: Optional scale to apply to softmax. Defaults to 1.
         seed: Random seed for dropout.
         dropout_rate: Dropout rate.
         qkv_layout: Layout string, with supported formats being BTNH, BNTH, BSNH,
@@ -732,9 +732,9 @@ def cudnn_dot_product_attention(
 
     if qkv_layout != "BTNH":
         raise NotImplementedError(f"Unsupported qkv_layout: {qkv_layout}")
-    # check if cuDNN is installed.
+    # Check if cuDNN is installed.
     cudnn_version = check_cudnn_version()
-    # only support Ampere and Hopper for now.
+    # Support Ampere and Hopper only for now.
     check_local_compute_capability((80, 90))
     mask_type = MaskType.NO_MASK if not causal else MaskType.CAUSAL
     layout = _normalize_layout(qkv_layout)

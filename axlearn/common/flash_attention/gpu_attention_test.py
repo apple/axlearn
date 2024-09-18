@@ -215,8 +215,11 @@ def test_cudnn_against_triton_ref(
     # Compare outputs.
     jax_out = cudnn_dot_product_attention(q, k, v, bias=None, causal=causal, softmax_scale=sm_scale)
     jax_ref_out = flash_attention(q, k, v, bias=None, causal=causal, softmax_scale=sm_scale)
-    # We relax the atol to support both fp16 and bf16 in the unit test.
-    chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.02, rtol=1e-5)
+    if dtype == jnp.bfloat16:
+        # We relax the atol to support bf16 in the unit test.
+        chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.02, rtol=1e-5)
+    elif dtype == jnp.float16:
+        chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005, rtol=1e-5)
 
     def fn(q, k, v):
         return cudnn_dot_product_attention(
@@ -229,6 +232,9 @@ def test_cudnn_against_triton_ref(
     # Compare gradients.
     jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v)
     jax_ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v)
-    # We relax the rtol to support both fp16 and bf16 in the unit test.
     # The diff between grads are expected to be larger than the forward pass.
-    chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05, rtol=1e-2)
+    if dtype == jnp.bfloat16:
+        # We relax the rtol to support bf16 in the unit test.
+        chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05, rtol=1e-2)
+    elif dtype == jnp.float16:
+        chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05, rtol=1e-5)
