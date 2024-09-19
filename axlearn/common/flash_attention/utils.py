@@ -10,6 +10,7 @@ from absl import logging
 from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes
 
 from axlearn.common.attention import NEG_INF
+from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
 from axlearn.common.flash_attention.tpu_attention import flash_attention as tpu_flash_attention
 from axlearn.common.utils import Tensor
 
@@ -100,17 +101,17 @@ def flash_attention_implementation(
         NotImplementedError: If implementation for the backend is not available.
     """
     if backend == "gpu":
-        # Lazy import GPU flash-attention to avoid file-level dependency on jax-triton.
-        # pylint: disable-next=import-outside-toplevel
-        from axlearn.common.flash_attention.gpu_attention import (
-            flash_attention as gpu_flash_attention,
-        )
-
         # shard_map-decorated function needs to be jitted.
         @jax.jit
         def jit_attn(query, key, value, bias):
-            return gpu_flash_attention(
-                query, key, value, bias=bias, causal=causal, softmax_scale=softmax_scale
+            return cudnn_dot_product_attention(
+                query,
+                key,
+                value,
+                bias=bias,
+                softmax_scale=softmax_scale,
+                causal=causal,
+                dropout_rate=0.0,
             )
 
         return jit_attn
@@ -156,7 +157,12 @@ def flash_attention_implementation(
         @jax.jit
         def jit_attn(query, key, value, bias):
             return mha_reference(
-                query, key, value, bias=bias, causal=causal, softmax_scale=softmax_scale
+                query,
+                key,
+                value,
+                bias=bias,
+                causal=causal,
+                softmax_scale=softmax_scale,
             )
 
         return jit_attn

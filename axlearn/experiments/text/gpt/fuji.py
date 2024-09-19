@@ -238,6 +238,8 @@ def get_trainer_kwargs(
                 # Maximum per-node batch size = 64, hence need >= 32 nodes.
                 # Without sequence sharding, the maximum number of devices <= batch_size,
                 # so at most 512 GPUs (64 nodes) for training 7B-v3.
+                # v2 on gpu-p5.48xlarge-256, step time: 1.78s/step, MFU 39%.
+                # TODO(kelvin-zou): need to match 1.5s/step perf on TransformerEngine.
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),

@@ -38,11 +38,16 @@ import jax.numpy as jnp
 
 # pytype: disable=import-error  # pylint: disable=import-error
 from jax import lax
+from jax._src.cudnn.fused_attention_stablehlo import (
+    MaskType,
+    _dot_product_attention,
+    _normalize_layout,
+    check_cudnn_version,
+)
+from jax._src.lib import cuda_versions
 from jax.experimental import pallas as pl
 
 from axlearn.common.attention import NEG_INF
-
-# pytype: enable=import-error  # pylint: enable=import-error
 
 Tensor = jax.Array
 
@@ -185,6 +190,8 @@ def _mha_forward_kernel(
     pl.store(o_ref, (curr_q_slice, pl.dslice(None)), acc)
 
 
+# TODO(kelvin-zou): may decide to deprecate the triton backend if we can fully move to
+# more low-level CUDA kernels.
 @functools.partial(jax.custom_vjp, nondiff_argnums=[4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
 @functools.partial(
     jax.jit,
@@ -224,7 +231,7 @@ def flash_attention(
         key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
         value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
         bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
-        softmax_scale: Optional scale to apply to softmax. Defaults to 1/sqrt(per_head_dim).
+        softmax_scale: Optional scale to apply to softmax. Defaults to 1.
         causal: Whether to apply causal mask.
         **kwargs: Pallas/triton kwargs.
 
@@ -666,3 +673,105 @@ def _mha_backward(
 
 
 flash_attention.defvjp(_mha_forward, _mha_backward)
+
+
+def _check_local_compute_capability(cc: Any):
+    """Check if the local devices meet the required compute capability.
+
+    Args:
+        cc: Required compute capability.
+
+    Raises:
+        RuntimeError: cuDNN is not detected.
+        RuntimeError: compute capability does not match the target.
+    """
+    if cuda_versions is None:
+        raise RuntimeError("cuDNN is not detected.")
+    for i in range(jax.local_device_count()):
+        compute_cap = cuda_versions.cuda_compute_capability(i)
+        if compute_cap not in cc:
+            raise RuntimeError("Require compute capability in " + str(cc))
+
+
+# Interface to cuDNN's dot product attention.
+# TODO(kelvin-zou): Verify dropout rate functions.
+# TODO(kelvin-zou): Add support for segment IDs.
+def cudnn_dot_product_attention(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    bias: Optional[Tensor] = None,
+    mask: Optional[Tensor] = None,
+    causal: bool = False,
+    *,
+    softmax_scale: float = 1.0,
+    seed: int = 42,
+    dropout_rate: float = 0.0,
+    qkv_layout: str = "BTNH",
+):
+    """Computes dot-product attention given query (Q), key (K), and value (V).
+
+    Reference implementation:
+    https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/cudnn/fused_attention_stablehlo.py#L927.
+    https://github.com/openxla/xla/blob/536ba0b7d74f6637a7a772471a99ecf4f578aef2/xla/service/gpu/cublas_cudnn.cc#L77.
+
+    We override the Jax fused multihead attention(fMHA) interface in axlearn
+    due to following reasons:
+    1. Original Jax implementation has a bug to support multi-node training (fixed in jax 0.4.32).
+    2. We may want to leverage more lower level CuDNN capabilities from xla and expose to users.
+
+    Args:
+        query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
+        key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
+        value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
+        bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
+        mask: Optional logit mask of shape [batch_size, num_heads, target_length, source_length].
+        softmax_scale: Optional scale to apply to softmax. Defaults to 1.
+        seed: Random seed for dropout.
+        dropout_rate: Dropout rate.
+        qkv_layout: Layout string, with supported formats being BTNH, BNTH, BSNH,
+                    BNSH. Now it only supports BTNH.
+
+    Returns:
+        Output of the same shape as the query.
+
+    Raises:
+        NotImplementedError: If qkv_layout is not supported.
+    """
+
+    if qkv_layout != "BTNH":
+        raise NotImplementedError(f"Unsupported qkv_layout: {qkv_layout}")
+    # Check if cuDNN is installed.
+    cudnn_version = check_cudnn_version()
+    # Support Ampere and Hopper only for now.
+    _check_local_compute_capability((80, 90))
+    mask_type = MaskType.NO_MASK if not causal else MaskType.CAUSAL
+    layout = _normalize_layout(qkv_layout)
+
+    has_bias = bias is not None
+    has_mask = mask is not None
+    has_dbias = False
+    variadic_args = (has_bias, has_mask, has_dbias)
+    if bias is None:
+        bias = jnp.zeros(0, dtype=query.dtype)
+    if mask is None:
+        mask = jnp.zeros(0, dtype=query.dtype)
+    q_seqlen = jnp.zeros(0, dtype=query.dtype)
+    kv_seqlen = jnp.zeros(0, dtype=query.dtype)
+    output = _dot_product_attention(
+        query,
+        key,
+        value,
+        bias,
+        mask,
+        q_seqlen,
+        kv_seqlen,
+        softmax_scale,
+        seed,
+        dropout_rate,
+        variadic_args,
+        mask_type,
+        layout.value,
+        cudnn_version,
+    )
+    return output
