@@ -38,7 +38,7 @@ import dateutil
 import dateutil.parser
 
 from axlearn.open_api.common import BaseClient, EvalGeneratorType, Generator
-from axlearn.open_api.metrics.tool_use_execution_utils import check_arguments
+from axlearn.open_api.metrics.tool_use_execution_utils import ArgumentMatchType, check_arguments
 from axlearn.open_api.openai import OpenAIClient
 
 
@@ -250,7 +250,7 @@ def _compare_tool_calls(
 
 
 @dataclasses.dataclass
-class DetailedMatchResult:
+class _DetailedMatchResult:
     """Represents the tool matches for different metrics.
 
     Argument matches require that function name matches too. It is not possible that the
@@ -275,7 +275,7 @@ def _compare_tool_call_detailed(
     *,
     pred_tool_calls: Sequence[dict[str, Any]],
     target_tool_calls: Sequence[dict[str, Any]],
-) -> list[DetailedMatchResult]:
+) -> list[_DetailedMatchResult]:
     """Performs a detailed comparison of the predicted tool calls with the target tool calls and
     returns different metrics.
 
@@ -349,7 +349,7 @@ def _compare_tool_call_detailed(
             logging.error(
                 "Unable to decode arguments from predicted call %s, Error %s", pred_tool, e
             )
-            results.append(DetailedMatchResult())
+            results.append(_DetailedMatchResult())
             continue
 
         fname_match = False
@@ -364,7 +364,9 @@ def _compare_tool_call_detailed(
                 continue
 
             if check_arguments(
-                pred_args=pred_func["arguments"], target_args=target_func["arguments"]
+                pred_args=pred_func["arguments"],
+                target_args=target_func["arguments"],
+                match_type=ArgumentMatchType.STRICT,
             ):
                 strict_match = True
                 del strict_target_funcs[idx]
@@ -377,7 +379,7 @@ def _compare_tool_call_detailed(
             if check_arguments(
                 pred_args=pred_func["arguments"],
                 target_args=target_func["arguments"],
-                check_lenient=True,
+                match_type=ArgumentMatchType.LENIENT,
             ):
                 lenient_match = True
                 del lenient_target_funcs[idx]
@@ -390,15 +392,14 @@ def _compare_tool_call_detailed(
             if check_arguments(
                 pred_args=pred_func["arguments"],
                 target_args=target_func["arguments"],
-                check_lenient=True,
-                bag_of_words=True,
+                match_type=ArgumentMatchType.LENIENT_BAG_OF_WORD,
             ):
                 lenient_bow_match = True
                 del lenient_bow_target_funcs[idx]
                 break
 
         results.append(
-            DetailedMatchResult(
+            _DetailedMatchResult(
                 func_name_match=fname_match,
                 strict_arg_match=strict_match,
                 lenient_arg_match=lenient_match,
@@ -443,12 +444,9 @@ def metric_fn(
             new_tool_calls.append(tool_call)
         return new_tool_calls
 
-    def _safe_div(dividend: int, divisor: int) -> float:
-        return dividend / max(1, divisor)
-
     total_matches = 0
 
-    # The counters for the detailed metrics
+    # The counters for the detailed metrics.
     total_tool_calls = 0
     total_func_name_matches = 0
     total_strict_matches = 0
@@ -486,7 +484,6 @@ def metric_fn(
 
         target = OpenAIClient.format_message(target_message)
 
-        # detailed metrics
         if target.tool_calls is not None:
             target_tool_calls = get_tool_calls_from_message(target.model_dump())
             total_tool_calls += len(target_tool_calls)
@@ -548,9 +545,9 @@ def metric_fn(
         "number_of_examples": len(responses),
         "number_of_parsing_errors": number_of_parsing_errors,
         "number_of_generation_errors": number_of_generation_errors,
-        "func_name_accuracy": _safe_div(total_func_name_matches, total_tool_calls),
-        "strict_accuracy": _safe_div(total_strict_matches, total_tool_calls),
-        "lenient_accuracy": _safe_div(total_lenient_matches, total_tool_calls),
-        "bow_accuracy": _safe_div(total_bow_matches, total_tool_calls),
+        "func_name_accuracy": total_func_name_matches / max(1, total_tool_calls),
+        "strict_accuracy": total_strict_matches / max(1, total_tool_calls),
+        "lenient_accuracy": total_lenient_matches / max(1, total_tool_calls),
+        "bow_accuracy": total_bow_matches / max(1, total_tool_calls),
         "number_of_expected_tool_calls": total_tool_calls,
     }
