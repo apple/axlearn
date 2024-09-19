@@ -675,7 +675,16 @@ def _mha_backward(
 flash_attention.defvjp(_mha_forward, _mha_backward)
 
 
-def check_local_compute_capability(cc):
+def _check_local_compute_capability(cc: Any):
+    """Check if the local devices meet the required compute capability.
+
+    Args:
+        cc: Required compute capability.
+
+    Raises:
+        RuntimeError: cuDNN is not detected.
+        RuntimeError: compute capability does not match the target.
+    """
     if cuda_versions is None:
         raise RuntimeError("cuDNN is not detected.")
     for i in range(jax.local_device_count()):
@@ -735,7 +744,7 @@ def cudnn_dot_product_attention(
     # Check if cuDNN is installed.
     cudnn_version = check_cudnn_version()
     # Support Ampere and Hopper only for now.
-    check_local_compute_capability((80, 90))
+    _check_local_compute_capability((80, 90))
     mask_type = MaskType.NO_MASK if not causal else MaskType.CAUSAL
     layout = _normalize_layout(qkv_layout)
 
