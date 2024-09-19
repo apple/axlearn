@@ -220,6 +220,8 @@ def test_cudnn_against_triton_ref(
         chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.02, rtol=1e-5)
     elif dtype == jnp.float16:
         chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005, rtol=1e-5)
+    else:
+        raise ValueError(f"Unsupported dtype: {dtype}")
 
     def fn(q, k, v):
         return cudnn_dot_product_attention(
@@ -238,3 +240,5 @@ def test_cudnn_against_triton_ref(
         chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05, rtol=1e-2)
     elif dtype == jnp.float16:
         chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05, rtol=1e-5)
+    else:
+        raise ValueError(f"Unsupported dtype: {dtype}")
