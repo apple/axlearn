@@ -33,6 +33,10 @@ class WeightedScalar(WeightedScalarValue, Summable):
     A weight of zero corresponds to zero mean.
     """
 
+    # Needed for typing.Protocol.
+    # >4.9.0 runs into attribute error `__non_callable_proto_members__`.
+    __non_callable_proto_members__ = set()
+
     def __add__(self, other: "WeightedScalar") -> "WeightedScalar":
         # TODO(markblee): Handle possible overflows.
         weight = self.weight + other.weight
