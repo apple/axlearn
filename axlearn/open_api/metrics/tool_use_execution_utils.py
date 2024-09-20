@@ -195,6 +195,8 @@ _STOP_WORDS = {
 
 
 class ArgumentMatchType(Enum):
+    """The argument matching types."""
+
     STRICT = 1
     LENIENT = 2
     LENIENT_BAG_OF_WORD = 3
@@ -209,6 +211,7 @@ def _string_lenient_transform(str_value: str) -> str:
         (i for i in range(len(words)) if words[i] not in _STOP_WORDS),
         len(words) - 1 if len(words) > 0 and words[-1] not in _STOP_WORDS else len(words),
     )
+
     end_index = next(
         (
             i + 1
@@ -285,7 +288,7 @@ def _is_arg_value_equal(
             )
             for el_pred, el_target in zip(pred_arg, target_arg)
         )
-    # Only handling string payloads for lenient evaluation
+    # Only handling string payloads for lenient evaluation.
     if isinstance(pred_arg, str) and isinstance(target_arg, str):
         pred_lenient = _string_lenient_transform(pred_arg)
         target_lenient = _string_lenient_transform(target_arg)
@@ -309,16 +312,15 @@ def check_arguments(
     Args:
         pred_args: The predicted arguments.
         target_args: The target (GT) arguments.
-        check_lenient: Flag, if lenient argument transformations should be applied.
-        bag_of_word: Flag, if bag-of-word matching should be applied.
+        match_type: The match type.
 
     Returns:
         True if the predicted and targets arguments are matching according to the flags.
     """
-    # Check names are not duplicated
+    # Check names are not duplicated.
     target_args_copy = dict(target_args.items())
 
-    # Find different label/value pairs
+    # Find different label/value pairs.
     for pred_arg_name in pred_args:
         if pred_arg_name in target_args_copy and _is_arg_value_equal(
             pred_arg=pred_args[pred_arg_name],
@@ -329,6 +331,6 @@ def check_arguments(
         else:
             return False
 
-    # If there are still element in to_kwargs, to_kwargs contains more entries than from_kwargs
-    # and miss.
+    # If there are still elements in to_kwargs, to_kwargs contains more entries than from_kwargs
+    # and the arguments are not matching.
     return len(target_args_copy) == 0
