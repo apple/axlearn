@@ -23,7 +23,7 @@
 
 https://arxiv.org/abs/1810.04805
 """
-from typing import Optional
+from typing import Dict, Optional
 
 import jax.numpy as jnp
 
@@ -154,7 +154,7 @@ class BertLMHead(BaseClassificationHead):
             "transform", cfg.transform.set(input_dim=cfg.input_dim, output_dim=cfg.input_dim)
         )
 
-    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
         cfg = self.config
         return dict(
             # Output layer weights are shared with encoder, but bias is a separate parameter.
@@ -181,7 +181,7 @@ class BertLMHead(BaseClassificationHead):
         return x
 
     def loss(
-        self, *, logits: Tensor, target_labels: Tensor, soft_labels: Optional[Tensor] = None
+            self, *, logits: Tensor, target_labels: Tensor, soft_labels: Optional[Tensor] = None
     ) -> Tensor:
         """Computes cross-entropy loss.
 
@@ -240,7 +240,7 @@ class BertSequenceClassificationHead(BaseClassificationHead):
         return x
 
     def loss(
-        self, *, logits: Tensor, target_labels: Tensor, soft_labels: Optional[Tensor] = None
+            self, *, logits: Tensor, target_labels: Tensor, soft_labels: Optional[Tensor] = None
     ) -> Tensor:
         """Computes the loss based on the number of classes.
 
@@ -348,10 +348,10 @@ class BertModel(EncoderModel):
 
 
 def bert_embedding_config(
-    *,
-    max_position_embeddings: Optional[int] = 512,
-    layer_norm_epsilon: Optional[float] = None,
-    type_vocab_size: Optional[int] = None,
+        *,
+        max_position_embeddings: Optional[int] = 512,
+        layer_norm_epsilon: Optional[float] = None,
+        type_vocab_size: Optional[int] = None,
 ) -> TransformerTextEmbeddings.Config:
     """Builds configs for BERT Embedding layer.
 
@@ -386,12 +386,12 @@ def bert_embedding_config(
 # ignore the warning.
 # pylint: disable-next=useless-param-doc
 def bert_lm_head_config(
-    *,
-    vocab_size: int,
-    activation: str = "nn.gelu",
-    ignored_target_id: int = 0,
-    layer_norm_epsilon: Optional[float] = None,
-    base_cfg: Optional[BertLMHead.Config] = None,  # Keep this at the end.
+        *,
+        vocab_size: int,
+        activation: str = "nn.gelu",
+        ignored_target_id: int = 0,
+        layer_norm_epsilon: Optional[float] = None,
+        base_cfg: Optional[BertLMHead.Config] = None,  # Keep this at the end.
 ) -> BertLMHead.Config:
     """Builds configs for BertLMHead.
 
@@ -409,6 +409,12 @@ def bert_lm_head_config(
     """
     base_cfg = base_cfg.clone() if base_cfg else BertLMHead.default_config()
     return base_cfg.set(
+        # transform=NonLinear.default_config().set(
+        #     input_dim=777,
+        #     output_dim=768,
+        #     activation=activation,
+        #     norm=LayerNorm.default_config().set(eps=layer_norm_epsilon),
+        # ),
         transform=NonLinear.default_config().set(
             activation=activation,
             norm=LayerNorm.default_config().set(eps=layer_norm_epsilon),
@@ -419,11 +425,11 @@ def bert_lm_head_config(
 
 
 def bert_transformer_config(
-    *,
-    num_layers: int = 12,
-    num_heads: int = 12,
-    layer_norm_epsilon: Optional[float] = None,
-    base_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
+        *,
+        num_layers: int = 12,
+        num_heads: int = 12,
+        layer_norm_epsilon: Optional[float] = None,
+        base_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
 ) -> BaseStackedTransformerLayer.Config:
     """Builds configs for BERT transformer stack.
 
@@ -459,17 +465,64 @@ def bert_transformer_config(
     return base_cfg.set(num_layers=num_layers, layer=layer_cfg)
 
 
+def bert_transformer_config_large_768(
+        *,
+        num_layers: int = 12,
+        num_heads: int = 12,
+        layer_norm_epsilon: Optional[float] = None,
+        base_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
+) -> BaseStackedTransformerLayer.Config:
+    """Builds configs for BERT transformer stack.
+
+    Defaults are from the BERT-BASE model.
+
+    Args:
+        num_layers: Number of transformer encoder layers.
+        num_heads: Number of attention heads per transformer layer.
+        layer_norm_epsilon: Epsilon for layer normalization.
+        base_cfg: Optional base config. Will be cloned.
+
+    Returns:
+        The stack config.
+    """
+    base_cfg = base_cfg.clone() if base_cfg else StackedTransformerLayer.default_config()
+    layer_norm_epsilon = (
+        layer_norm_epsilon
+        if layer_norm_epsilon is not None
+        else bert_layer_norm_epsilon(dtype=base_cfg.dtype)
+    )
+
+    layer_cfg = TransformerLayer.default_config()
+    # Feed-forward transformer layer config.
+    layer_cfg.feed_forward.activation = "nn.gelu"
+    layer_cfg.feed_forward.norm.eps = layer_norm_epsilon
+    layer_cfg.feed_forward.hidden_dim = scaled_hidden_dim(4)
+    layer_cfg.feed_forward.structure = "postnorm"
+    # Self attention transformer layer config.
+    layer_cfg.self_attention.norm.eps = layer_norm_epsilon
+    layer_cfg.self_attention.attention.num_heads = num_heads
+    layer_cfg.self_attention.structure = "postnorm"
+
+    all_layers = [layer_cfg] * (num_layers-1)
+
+    modified_layer = layer_cfg.clone()
+    modified_layer.feed_forward.structure = "nonorm"
+    modified_layer.feed_forward.linear2.set(output_dim=768)
+    all_layers.append(modified_layer)
+    return base_cfg.set(num_layers=num_layers, layer=all_layers)
+
+
 def bert_model_config(
-    *,
-    vocab_size: int,
-    hidden_dim: int = 768,
-    dropout_rate: float = 0.0,
-    dtype: jnp.dtype = jnp.float32,
-    embedding_cfg: Optional[Embedding.Config] = None,
-    stack_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
-    head_cfg: Optional[BaseClassificationHead.Config] = None,
-    encoder_cfg: Optional[Encoder.Config] = None,
-    base_cfg: Optional[BertModel.Config] = None,
+        *,
+        vocab_size: int,
+        hidden_dim: int = 768,
+        dropout_rate: float = 0.0,
+        dtype: jnp.dtype = jnp.float32,
+        embedding_cfg: Optional[Embedding.Config] = None,
+        stack_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
+        head_cfg: Optional[BaseClassificationHead.Config] = None,
+        encoder_cfg: Optional[Encoder.Config] = None,
+        base_cfg: Optional[BertModel.Config] = None,
 ) -> BertModel.Config:
     """Builds configs for BERT model.
 
@@ -499,6 +552,7 @@ def bert_model_config(
         transformer=stack_cfg or bert_transformer_config(),
         pad_token_id=0,
     )
+
     head_cfg = head_cfg or bert_lm_head_config(
         base_cfg=base_cfg.head,  # pylint: disable=no-member
         vocab_size=vocab_size,
