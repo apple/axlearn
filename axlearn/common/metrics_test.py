@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from absl.testing import parameterized
 
 from axlearn.common import metrics, summary, test_utils, utils
+from axlearn.common.module import Summable
 
 
 class TestMetricAccumulator(test_utils.TestCase):
@@ -124,3 +125,6 @@ class TestMetricAccumulator(test_utils.TestCase):
         # Test with and without jit.
         self.assertNestedAllClose(expected, add(weight))
         self.assertNestedAllClose(expected, jax.jit(add)(weight))
+
+        # Test isinstance check.
+        self.assertIsInstance(metrics.WeightedScalar(1.0, 1.0), Summable)
