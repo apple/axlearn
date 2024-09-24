@@ -177,7 +177,8 @@ class DataflowJob(GCPJob):
             sorted(flags.flag_dict_to_args(dataflow_spec, multi_flags=multi_flags))
         )
         cfg.setup_command = f"{docker_setup_cmd} && {docker_auth_cmd} && {bundle_cmd}"
-        cfg.command = f"{cfg.command.strip('\'\"')} {dataflow_flags}"
+        cfg.command = cfg.command.strip('\'\"')
+        cfg.command = f"{cfg.command} {dataflow_flags}"
         return cfg
 
     @classmethod
