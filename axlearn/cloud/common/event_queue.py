@@ -179,12 +179,12 @@ class RabbitMQClient(BaseQueueClient):
         """Closes the RabbitMQ connection."""
         if self._connection and not self._connection.is_closed:
             self._connection.close()
-            self._connection = None
             logging.info("Closed RabbitMQ connection.")
         if self._channel and not self._channel.is_closed:
             self._channel.close()
-            self._channel = None
             logging.info("Closed RabbitMQ channel.")
+        self._connection = None
+        self._channel = None
 
     def publish(self, event: Event):
         """Publishes an event to the queue."""
