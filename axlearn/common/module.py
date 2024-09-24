@@ -44,6 +44,7 @@ import inspect
 import os.path
 import re
 import threading
+import typing
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union
@@ -181,6 +182,7 @@ def propagate_repeated_output_collections(
 T = TypeVar("T")
 
 
+@typing.runtime_checkable  # Needed for isinstance checks to work.
 class Summable(Protocol):
     # Objects of the same type which adhere to this protocol may be added.
     def __add__(self, other: T) -> T:
