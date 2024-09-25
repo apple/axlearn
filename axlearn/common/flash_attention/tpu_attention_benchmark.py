@@ -92,38 +92,43 @@ def _benchmark(
     causal: bool = True,
 ):
     """Benchmarks TPU FlashAttention vs reference impl."""
-    k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(0), 4)
+    k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
     q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
     k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
     v = jax.random.normal(k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
     bias = jax.random.normal(k4, (batch_size, num_heads, seq_len, seq_len), dtype=jnp.bfloat16)
+    segment_ids = jnp.cumsum(
+        jax.random.bernoulli(k5, shape=(batch_size, seq_len)).astype(jnp.int32), axis=1
+    )
 
     softmax_scale = per_head_dim**-0.5
     ref_fwd_time = _time_call(
-        lambda: mha_reference(q, k, v, bias, causal=causal, softmax_scale=softmax_scale)
+        lambda: mha_reference(
+            q, k, v, bias, segment_ids, causal=causal, softmax_scale=softmax_scale
+        )
     )
 
     grad_fn = jax.jit(
         jax.grad(
-            lambda q, k, v, b: mha_reference(
-                q, k, v, b, causal=causal, softmax_scale=softmax_scale
+            lambda q, k, v, b, s: mha_reference(
+                q, k, v, b, s, causal=causal, softmax_scale=softmax_scale
             ).mean(),
             argnums=(0, 1, 2),
         )
     )
-    ref_bwd_time = _time_call(lambda: grad_fn(q, k, v, bias)[0])
+    ref_bwd_time = _time_call(lambda: grad_fn(q, k, v, bias, segment_ids)[0])
 
     # Get fwd & bwd timing information when softmax scaling applied before calling the kernel.
     mha_impl = flash_attention_implementation(
         "tpu", causal=causal, softmax_scale=softmax_scale, block_size=block_size
     )
 
-    flash_fwd_time = _time_call(lambda: mha_impl(q, k, v, bias))
+    flash_fwd_time = _time_call(lambda: mha_impl(q, k, v, bias, segment_ids))
 
     flash_grad_fn = jax.jit(
-        jax.grad(lambda q, k, v, b: mha_impl(q, k, v, b).mean(), argnums=(0, 1, 2))
+        jax.grad(lambda q, k, v, b, s: mha_impl(q, k, v, b, s).mean(), argnums=(0, 1, 2))
     )
-    flash_bwd_time = _time_call(lambda: flash_grad_fn(q, k, v, bias)[0])
+    flash_bwd_time = _time_call(lambda: flash_grad_fn(q, k, v, bias, segment_ids)[0])
 
     print(f"ref_fwd:{ref_fwd_time:.4f}s, flash_fwd:{flash_fwd_time:.4f}s")
     print(f"ref_bwd:{ref_bwd_time:.4f}s, flash_bwd:{flash_bwd_time:.4f}s\n")

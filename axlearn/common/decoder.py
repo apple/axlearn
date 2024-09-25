@@ -467,6 +467,7 @@ class Decoder(DecodingMixin, BaseLayer):
         mode: ForwardMode,
         input_ids: Tensor,
         self_attention_logit_biases: Optional[Tensor],
+        input_segment_ids: Optional[Tensor] = None,
         token_type_ids: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
@@ -478,11 +479,13 @@ class Decoder(DecodingMixin, BaseLayer):
             transformer_state, x = None, self.transformer(
                 x,
                 self_attention_logit_biases=self_attention_logit_biases,
+                segment_ids=input_segment_ids,
                 cross_attention_data=cross_attention_data,
                 cross_attention_logit_biases=cross_attention_logit_biases,
             )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
+            assert input_segment_ids is None
             transformer_state, x = self.transformer.prefill_states(
                 time_step=cached_states["transformer_state"],
                 data=x,
@@ -492,6 +495,7 @@ class Decoder(DecodingMixin, BaseLayer):
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
+            assert input_segment_ids is None
             transformer_state, x = self.transformer.extend_step(
                 cached_states=cached_states["transformer_state"],
                 data=x,
@@ -559,6 +563,7 @@ class Decoder(DecodingMixin, BaseLayer):
             self_attention_logit_biases=self.compute_attention_logit_biases(
                 input_ids, segment_ids=input_segment_ids, positions=positions
             ),
+            input_segment_ids=input_segment_ids,
             token_type_ids=token_type_ids,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
@@ -690,7 +695,7 @@ class Decoder(DecodingMixin, BaseLayer):
         if "attention_mask" not in self.children:
             return None
         if (segment_ids is None) != (positions is None):
-            raise ValueError("segment_ids and positions must be provided together")
+            raise ValueError("segment_ids and positions must be provided together.")
         cfg = self.config
         if segment_ids is None or positions is None:
             segment_ids = _segment_ids_from_causal_input_ids(
