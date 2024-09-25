@@ -11,6 +11,7 @@ from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes
 
 from axlearn.common.attention import NEG_INF
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
+from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
 from axlearn.common.flash_attention.tpu_attention import flash_attention as tpu_flash_attention
 from axlearn.common.utils import Tensor
 
@@ -107,16 +108,27 @@ def flash_attention_implementation(
         # shard_map-decorated function needs to be jitted.
         @jax.jit
         def jit_attn(query, key, value, bias, segment_ids):
-            assert segment_ids is None, "segment_ids is not support for GPU."
-            return cudnn_dot_product_attention(
-                query,
-                key,
-                value,
-                bias=bias,
-                softmax_scale=softmax_scale,
-                causal=causal,
-                dropout_rate=0.0,
-            )
+            if segment_ids is None:
+                return cudnn_dot_product_attention(
+                    query,
+                    key,
+                    value,
+                    bias=bias,
+                    softmax_scale=softmax_scale,
+                    causal=causal,
+                    dropout_rate=0.0,
+                )
+            else:
+                # Fall back to triton kernel when segment_ids is present.
+                return gpu_flash_attention(
+                    query,
+                    key,
+                    value,
+                    bias=bias,
+                    segment_ids=segment_ids,
+                    softmax_scale=softmax_scale,
+                    causal=causal,
+                )
 
         return jit_attn
 

@@ -70,12 +70,12 @@ def _mha_forward_kernel(
     k_ref,
     v_ref,
     b_ref,
+    s_ref,
     # Outputs.
     o_ref,
     # Residual outputs.
     *residual_refs,
     softmax_scale: float,
-    bias_type: str,
     causal: bool,
     block_q: int,
     block_d: int,
@@ -94,10 +94,10 @@ def _mha_forward_kernel(
         k_ref: Input key ref.
         v_ref: Input value ref.
         b_ref: Input bias ref.
+        s_ref: Input segment_ids ref.
         o_ref: Output ref.
         *residual_refs: Residual output refs, e.g. softmax statistics.
         softmax_scale: Softmax scale.
-        bias_type: Type of bias matrix.
         causal: Whether to apply causal mask.
         block_q: Block size for query seq dim.
         block_d: Block size for head dim.
@@ -120,8 +120,8 @@ def _mha_forward_kernel(
     q = pl.load(q_ref, (curr_q_slice, pl.dslice(None)))
 
     # Effectively a segment id for padding mask.
-    if bias_type == "vector":
-        q_bias_ids = pl.load(b_ref, (curr_q_slice,))
+    if s_ref is not None:
+        q_segment_ids = pl.load(s_ref, (curr_q_slice,))
 
     # In FlashAttention algorithm 1 there are 2 loops: slow over tiles of kv (size
     # Bc == block_k here), and fast over blocks of q (size Br == block_q here).
@@ -136,25 +136,22 @@ def _mha_forward_kernel(
         if softmax_scale != 1.0:
             qk *= softmax_scale  # [block_q, block_k].
 
-        if bias_type == "matrix":
+        if b_ref is not None:
             b = pl.load(
                 b_ref,
                 (curr_q_slice, curr_k_slice),
             )
             qk += b
-        elif bias_type == "vector":
-            kv_bias_ids = pl.load(b_ref, (curr_k_slice,))
 
-        if causal or bias_type == "vector":
-            mask = None
-            if bias_type == "vector":
-                mask = _bias_mask(q_bias_ids, kv_bias_ids)
-            if causal:
-                span_q = start_q * block_q + jnp.arange(block_q)
-                span_k = start_k * block_k + jnp.arange(block_k)
-                causal_mask = span_q[:, None] >= span_k[None, :]
-                mask = causal_mask if mask is None else jnp.logical_and(mask, causal_mask)
-            # Apply mask to qk.
+        if s_ref is not None:
+            kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
+            mask = _bias_mask(q_segment_ids, kv_segment_ids)
+            qk = jnp.where(mask, qk, NEG_INF)
+
+        if causal:
+            span_q = start_q * block_q + jnp.arange(block_q)
+            span_k = start_k * block_k + jnp.arange(block_k)
+            mask = span_q[:, None] >= span_k[None, :]
             qk = jnp.where(mask, qk, NEG_INF)
 
         # Bring closer to XLA:GPU numerics.
@@ -213,6 +210,7 @@ def flash_attention(
     key: Tensor,
     value: Tensor,
     bias: Optional[Tensor] = None,
+    segment_ids: Optional[Tensor] = None,
     softmax_scale: float = 1.0,
     causal: bool = False,
     block_q: int = 128,
@@ -231,6 +229,7 @@ def flash_attention(
         key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
         value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
         bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
+        segment_ids: Optional segment ids of shape [batch_size, target_length].
         softmax_scale: Optional scale to apply to softmax. Defaults to 1.
         causal: Whether to apply causal mask.
         **kwargs: Pallas/triton kwargs.
@@ -247,22 +246,16 @@ def flash_attention(
     grid_ = grid
     if grid_ is None:
         grid_ = (pl.cdiv(seq_len, block_q), batch_size, num_heads)
-
     # Bias.
-    bias_type = "none"
     bias_block_spec = None
     if bias is not None:
-        # If we have explicitly defined the bias type as a vector (segment ids).
-        if bias.ndim == 2:
-            bias_type = "vector"
-            bias_block_spec = pl.BlockSpec(lambda _, j, k: (j, 0), (None, seq_len))
-        elif bias.ndim == 4:
-            bias_type = "matrix"
-            bias_block_spec = pl.BlockSpec(
-                lambda _, j, k: (j, k, 0, 0), (None, None, seq_len, seq_len)
-            )
-        else:
-            raise ValueError(f"Invalid bias shape: {bias.shape}")
+        assert bias.ndim == 4
+        bias_block_spec = pl.BlockSpec(lambda _, j, k: (j, k, 0, 0), (None, None, seq_len, seq_len))
+    # Segment Ids
+    segment_ids_block_spec = None
+    if segment_ids is not None:
+        assert segment_ids.ndim == 2
+        segment_ids_block_spec = pl.BlockSpec(lambda _, j, k: (j, 0), (None, seq_len))
 
     num_warps_ = num_warps
     if num_warps_ is None:
@@ -273,7 +266,6 @@ def flash_attention(
     kernel = functools.partial(
         _mha_forward_kernel,
         softmax_scale=softmax_scale,
-        bias_type=bias_type,
         causal=causal,
         block_q=block_q,
         block_k=block_k,
@@ -289,6 +281,7 @@ def flash_attention(
             pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # key
             pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # value
             bias_block_spec,  # bias
+            segment_ids_block_spec,  # segment_ids
         ],
         out_specs=pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
         compiler_params=dict(triton=dict(num_warps=num_warps_, num_stages=num_stages_)),
@@ -296,7 +289,7 @@ def flash_attention(
         debug=debug,
         interpret=interpret,
         name="mha_forward",
-    )(query, key, value, bias)
+    )(query, key, value, bias, segment_ids)
 
 
 def _mha_forward(

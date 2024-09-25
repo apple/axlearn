@@ -38,6 +38,13 @@ On `attention_logit_biases`:
 * Each value represents a bias to be added to the attention logits
   (therefore a -inf represents a disconnected position pair).
 * biases=None represents an all-zero tensor, i.e., all position pairs are connected.
+
+On `segment_ids`:
+* A tensor of shape [batch, target_length] with values in [0, num_segments].
+* Tokens are only allowed to attend to other tokens within the same segment.
+* segment_ids == 0 represents paddings.
+* None represents an all-one tensor, i.e. all positions are in the same segment.
+
 """
 
 # pylint: disable=abstract-method,too-many-lines
@@ -1682,8 +1689,7 @@ class MultiheadAttention(BaseLayer):
             value: An optional Tensor of shape [batch, source_length, source_dim].
             kv_state: An optional KVState. If specified, both `key` and `value` should be None.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            segment_ids: Optional integer Tensor of shape [batch, source_length] with values in
-                [0, num_segments).
+            segment_ids: See ``On segment_ids`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
             return_aux: See comments on `Output`.
 
@@ -1813,7 +1819,7 @@ class MultiheadAttention(BaseLayer):
             k_proj: [batch_size, source_length, num_heads, per_head_dim].
             v_proj: [batch_size, source_length, num_heads, per_head_dim].
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            segment_ids: [batch_size, target_length].
+            segment_ids: See ``segment_ids`` in the file comments.
 
         Returns:
             The context of shape [batch_size, target_length, num_heads, per_head_dim],
@@ -1852,8 +1858,7 @@ class MultiheadAttention(BaseLayer):
             value: An optional Tensor of shape [batch, source_length, source_dim].
             kv_state: An optional KVState. If not None, both key and value must be None.
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
-            segment_ids: An optional integer Tensor of shape [batch, source_length] with values in
-                [0, num_segments).
+            segment_ids: See `On segment_ids` in the file comments.
             return_aux: See comments on `Output`.
 
         Returns:
@@ -2042,8 +2047,7 @@ class GroupedQueryAttention(MultiheadAttention):
         q_proj: Tensor,
         k_proj: Tensor,
         v_proj: Tensor,
-        attention_logit_biases: Optional[Tensor] = None,
-        segment_ids: Optional[Tensor] = None,
+        **kwargs,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
         k_proj = self._repeat_kv_heads(k_proj)
@@ -2052,8 +2056,7 @@ class GroupedQueryAttention(MultiheadAttention):
             q_proj=q_proj,
             k_proj=k_proj,
             v_proj=v_proj,
-            attention_logit_biases=attention_logit_biases,
-            segment_ids=segment_ids,
+            **kwargs,
         )
 
 
@@ -2441,9 +2444,7 @@ class TransformerAttentionLayer(BaseLayer):
             source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention).
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            segment_ids: Optional Tensor of same shape as `target` with values in [0, num_segments).
-                Tokens are only allowed to attend to other tokens within the same segment.
-                segment_ids == 0 represents paddings.
+            segment_ids: segment_ids: See ``On segment_ids`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
             return_aux: See comments on `Output`.
 
@@ -2538,9 +2539,7 @@ class TransformerAttentionLayer(BaseLayer):
             source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            segment_ids: An optional Tensor of same shape as `target` with values in
-                [0, num_segments). Tokens are only allowed to attend to other tokens within the
-                same segment. segment_ids == 0 represents paddings.
+            segment_ids: See ``segment_ids`` in the file comments.
             return_aux: See comments on `Output`.
 
         Returns:
@@ -2976,9 +2975,7 @@ class TransformerLayer(BaseTransformerLayer):
             cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
-            segment_ids: An optional Tensor of same shape as `data` with values in
-                [0, num_segments). Tokens are only allowed to attend to other tokens within the
-                same segment. segment_ids == 0 represents paddings.
+            segment_ids: See ``segment_ids`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
             return_aux: See comments on BaseTransformerLayer.forward.
 

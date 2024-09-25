@@ -6,6 +6,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
+from absl import logging
 from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
@@ -131,9 +132,12 @@ class FlashAttention(GroupedQueryAttention):
         k_proj = self._repeat_kv_heads(k_proj)
         v_proj = self._repeat_kv_heads(v_proj)
 
-        assert (
-            attention_logit_biases is None or segment_ids is None
-        ), "Only one of attention_logit_biases and segment_ids can be set."
+        if attention_logit_biases is not None and segment_ids is not None:
+            logging.warning(
+                "Using both segment_ids and attention_logit_biases is not recommended. "
+                "If you have segment_ids, consider merging them into attention_logit_biases using "
+                "CausalAttentionLogitBiasLayer."
+            )
 
         if backend == "tpu":
             assert (

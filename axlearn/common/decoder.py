@@ -485,7 +485,8 @@ class Decoder(DecodingMixin, BaseLayer):
             )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
-            assert input_segment_ids is None
+            if input_segment_ids is not None:
+                raise ValueError("input_segment_ids is not supported in INIT_STATES.")
             transformer_state, x = self.transformer.prefill_states(
                 time_step=cached_states["transformer_state"],
                 data=x,
@@ -495,7 +496,8 @@ class Decoder(DecodingMixin, BaseLayer):
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
-            assert input_segment_ids is None
+            if input_segment_ids is not None:
+                raise ValueError("input_segment_ids is not supported in EXTEND_STEP.")
             transformer_state, x = self.transformer.extend_step(
                 cached_states=cached_states["transformer_state"],
                 data=x,
