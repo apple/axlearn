@@ -336,9 +336,7 @@ class TensorStoreStateStorage(StateStorage):
                 max_data_shard_degree=cfg.max_data_shard_degree,
             )
         else:
-            self._manager = array_serialization.GlobalAsyncCheckpointManager(
-                timeout_secs=cfg.timeout_secs
-            )
+            self._manager = GlobalAsyncCheckpointManager(timeout_secs=cfg.timeout_secs)
         if cfg.max_concurrent_restore_gb is not None and cfg.max_concurrent_restore_gb <= 0:
             raise ValueError(
                 f"max_concurrent_restore_gb must be strictly positive. "
