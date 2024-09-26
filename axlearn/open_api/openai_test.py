@@ -37,6 +37,40 @@ class TestOpenAIClient(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(str(context.exception), "Both prompt and messages are None.")
 
+    async def test_generate_with_messages_tools(self):
+        request = {
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": ["tool_1", "tool_2"],
+        }
+
+        mock_chat_completion = MagicMock()
+        mock_response = '{"id": "chat_test", "choices": []}'
+        mock_chat_completion.model_dump_json.return_value = mock_response
+        self.client._client.chat.completions.create.return_value = mock_chat_completion
+
+        result = await self.client.async_generate(request=request)
+
+        self.client._client.chat.completions.create.assert_awaited_once_with(
+            messages=request["messages"],
+            extra_body=self.client.config.extra_body,
+            tools=["tool_1", "tool_2"],
+        )
+        self.assertEqual(result, mock_response)
+
+    async def test_generate_with_messages(self):
+        request = {"messages": [{"role": "user", "content": "Hello"}]}
+
+        mock_chat_completion = MagicMock()
+        mock_chat_completion.model_dump_json.return_value = '{"id": "chat_test", "choices": []}'
+        self.client._client.chat.completions.create.return_value = mock_chat_completion
+
+        await self.client.async_generate(request=request)
+
+        self.client._client.chat.completions.create.assert_awaited_once_with(
+            messages=request["messages"],
+            extra_body=self.client.config.extra_body,
+        )
+
 
 class TestOpenAIAsyncGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
     """Unit test for async_generate_from_requests."""
