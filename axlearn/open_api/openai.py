@@ -5,6 +5,7 @@ https://github.com/openai/openai-python
 
 This would work for both ChatGPT and vLLM based open source models.
 """
+import copy
 import json
 import logging
 import os
@@ -77,11 +78,13 @@ class OpenAIClient(BaseClient):
                     **kwargs,
                 )
             else:
+                req_kwargs = copy.deepcopy(kwargs)
+                if "tools" in request:
+                    req_kwargs.update({"tools": request["tools"]})
                 response: ChatCompletion = await client.chat.completions.create(
                     messages=messages,
-                    tools=request.get("tools", None),
                     extra_body=cfg.extra_body,
-                    **kwargs,
+                    **req_kwargs,
                 )
         except RateLimitError as e:
             raise ClientRateLimitError("Rate limiting") from e
