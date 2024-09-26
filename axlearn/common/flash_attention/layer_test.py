@@ -28,7 +28,16 @@ from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 
 
-def _fake_inputs(*, batch: int, num_heads: int, seq_len: int, hidden_dim: int, causal: bool):
+def _fake_inputs(
+    *,
+    batch: int,
+    num_heads: int,
+    seq_len: int,
+    hidden_dim: int,
+    causal: bool,
+    use_bias: bool,
+    use_segment_ids: bool,
+):
     query = jax.random.normal(
         jax.random.PRNGKey(0),
         [batch, seq_len, hidden_dim],
@@ -47,12 +56,21 @@ def _fake_inputs(*, batch: int, num_heads: int, seq_len: int, hidden_dim: int, c
             [batch, seq_len, hidden_dim],
             dtype=jnp.bfloat16,
         )
-    bias = jax.random.normal(
-        jax.random.PRNGKey(3),
-        [batch, num_heads, seq_len, seq_len],
-        dtype=jnp.bfloat16,
+    if use_bias:
+        bias = jax.random.normal(
+            jax.random.PRNGKey(3),
+            [batch, num_heads, seq_len, seq_len],
+            dtype=jnp.bfloat16,
+        )
+    else:
+        bias = None
+    if use_segment_ids:
+        segment_ids = jnp.ones([batch, seq_len], dtype=jnp.int32)
+    else:
+        segment_ids = None
+    return dict(
+        query=query, key=key, value=value, attention_logit_biases=bias, segment_ids=segment_ids
     )
-    return dict(query=query, key=key, value=value, attention_logit_biases=bias)
 
 
 def _prepare_layers(*, num_heads, per_head_dim, mesh_axis_names, causal, inference=False):
@@ -229,8 +247,21 @@ class TestFlashAttention(TestCase):
             backend = test_layer._backend()  # pylint: disable=protected-access
             self.assertEqual(backend, "tpu")
 
-    @parameterized.product(_TEST_CONFIGS, causal=[False, True])
-    def test_forward(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names, causal):
+    @parameterized.product(
+        _TEST_CONFIGS, causal=[False, True], use_bias=[False, True], use_segment_ids=[False, True]
+    )
+    def test_forward(
+        self,
+        batch,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        mesh,
+        mesh_axis_names,
+        causal,
+        use_bias,
+        use_segment_ids,
+    ):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
@@ -248,14 +279,19 @@ class TestFlashAttention(TestCase):
                 seq_len=seq_len,
                 hidden_dim=hidden_dim,
                 causal=causal,
+                use_bias=use_bias,
+                use_segment_ids=use_segment_ids,
             )
-            ref_inputs = inputs
+
+            ref_inputs = dict(inputs)
 
             if causal:
                 # Apply causal mask to ref_inputs.
                 ref_inputs["attention_logit_biases"] = apply_attention_logit_biases(
-                    inputs["attention_logit_biases"], make_causal_mask(seq_len)
+                    make_causal_mask(seq_len), inputs["attention_logit_biases"]
                 )
+            if use_bias and use_segment_ids:
+                inputs["segment_ids"] = None
 
             ref_out, _ = F(
                 ref_layer,
@@ -275,10 +311,20 @@ class TestFlashAttention(TestCase):
             self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
 
     @parameterized.product(
-        _TEST_CONFIGS,
-        causal=[False, True],
+        _TEST_CONFIGS, causal=[False, True], use_bias=[False, True], use_segment_ids=[False, True]
     )
-    def test_backward(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names, causal):
+    def test_backward(
+        self,
+        batch,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        mesh,
+        mesh_axis_names,
+        causal,
+        use_bias,
+        use_segment_ids,
+    ):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
@@ -296,13 +342,14 @@ class TestFlashAttention(TestCase):
                     cfg = self.config
                     self._add_child("layer", cfg.layer)
 
-                def forward(self, *, query, key, value, attention_logit_biases):
+                def forward(self, *, query, key, value, attention_logit_biases, segment_ids):
                     # [batch, target_length, target_dim].
                     x = self.layer(
                         query,
                         key=key,
                         value=value,
                         attention_logit_biases=attention_logit_biases,
+                        segment_ids=segment_ids,
                     )
                     # TODO(markblee,zhaoyi-zhang): The atol needs to increase significantly if using
                     # jnp.sum, as we no longer scale by the size of the data dims.
@@ -342,13 +389,17 @@ class TestFlashAttention(TestCase):
                 seq_len=seq_len,
                 hidden_dim=hidden_dim,
                 causal=causal,
+                use_bias=use_bias,
+                use_segment_ids=use_segment_ids,
             )
-            ref_inputs = inputs
+            ref_inputs = dict(inputs)
             if causal:
                 # Apply causal mask to ref_inputs.
                 ref_inputs["attention_logit_biases"] = apply_attention_logit_biases(
-                    inputs["attention_logit_biases"], make_causal_mask(seq_len)
+                    make_causal_mask(seq_len), inputs["attention_logit_biases"]
                 )
+            if use_bias and use_segment_ids:
+                inputs["segment_ids"] = None
 
             def loss(params, inputs, layer):
                 loss, _ = F(

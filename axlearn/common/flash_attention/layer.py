@@ -89,7 +89,6 @@ class FlashAttention(GroupedQueryAttention):
             "btnh": PartitionSpec(None),
             "bsnh": PartitionSpec(None),
             "bnts": PartitionSpec(None),
-            "bt": PartitionSpec(None),
         }
         cfg.output_dim_to_partition_spec = {
             "btnh": PartitionSpec(None),
@@ -173,6 +172,13 @@ class FlashAttention(GroupedQueryAttention):
             block_size=cfg.tpu_block_size,
         )
 
+        q_spec = cfg.mha_dim_to_partition_spec["btnh"]
+        segment_ids_spec = (
+            PartitionSpec(q_spec[0], q_spec[1])
+            if q_spec != PartitionSpec(None)
+            else PartitionSpec(None)
+        )
+
         # We need to manually partition pallas | jax-triton calls.
         # Note: shard_map doesn't support kwargs.
         partitioned_mha = shard_map(
@@ -186,7 +192,7 @@ class FlashAttention(GroupedQueryAttention):
                 # Bias [batch_size, num_heads, seq_len, seq_len].
                 cfg.mha_dim_to_partition_spec["bnts"],
                 # Segment IDs [batch_size, seq_len].
-                cfg.mha_dim_to_partition_spec["bt"],
+                segment_ids_spec,
             ),
             # O [batch_size, seq_len, num_heads, per_head_dim].
             out_specs=cfg.mha_dim_to_partition_spec["btnh"],
@@ -225,7 +231,7 @@ class FlashAttention(GroupedQueryAttention):
                     "segment_ids must have matching batch dim: "
                     f"{segment_ids.shape} vs. {q_proj.shape[0]}"
                 )
-            segment_ids = with_sharding_constraint(segment_ids, cfg.mha_dim_to_partition_spec["bt"])
+            segment_ids = with_sharding_constraint(segment_ids, segment_ids_spec)
 
         outputs = with_sharding_constraint(
             partitioned_mha(q_proj, k_proj, v_proj, attention_logit_biases, segment_ids),
