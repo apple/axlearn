@@ -185,7 +185,7 @@ class FlashAttention(GroupedQueryAttention):
                 cfg.mha_dim_to_partition_spec["bsnh"],
                 # Bias [batch_size, num_heads, seq_len, seq_len].
                 cfg.mha_dim_to_partition_spec["bnts"],
-                # Segment IDs [batch_size, seq_len]
+                # Segment IDs [batch_size, seq_len].
                 cfg.mha_dim_to_partition_spec["bt"],
             ),
             # O [batch_size, seq_len, num_heads, per_head_dim].

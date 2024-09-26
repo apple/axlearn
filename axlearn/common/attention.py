@@ -3012,7 +3012,7 @@ class TransformerLayer(BaseTransformerLayer):
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
             if segment_ids is not None:
-                raise ValueError("segment_ids is not supported in INIT_STATES.")
+                raise NotImplementedError("segment_ids is not supported in INIT_STATES.")
             self_atten_state, self_atten_outputs = self.self_attention.prefill_states(
                 time_step=cached_states["self_attention"],
                 target=data,
@@ -3023,7 +3023,7 @@ class TransformerLayer(BaseTransformerLayer):
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
             if segment_ids is not None:
-                raise ValueError("segment_ids is not supported in EXTEND_STEP.")
+                raise NotImplementedError("segment_ids is not supported in EXTEND_STEP.")
             self_atten_state, self_atten_outputs = self.self_attention.extend_step(
                 cached_states=cached_states["self_attention"],
                 target=data,
