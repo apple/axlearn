@@ -1757,6 +1757,15 @@ class MultiheadAttention(BaseLayer):
                     causal_mask.astype(q_proj.dtype),
                     attention_logit_biases,
                 )
+
+        # Merge segment ids into attention_logit_biases if attention_logit_biases is already set.
+        if attention_logit_biases is not None and segment_ids is not None:
+            attention_logit_biases = apply_attention_logit_biases(
+                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
+                attention_logit_biases,
+            )
+            segment_ids = None
+
         context, probs = self._compute_attention(
             q_proj=q_proj,
             k_proj=k_proj,
@@ -1825,10 +1834,12 @@ class MultiheadAttention(BaseLayer):
             The context of shape [batch_size, target_length, num_heads, per_head_dim],
             and probs of shape [batch, num_heads, target_length, source_length].
         """
-        # Caller must provide attention_logit_biases when segment_ids specified. segment_ids will
-        # be ignored.
-        if segment_ids is not None and attention_logit_biases is None:
-            raise ValueError("attention_logit_biases must be set in the presence of segment_ids.")
+        if attention_logit_biases is not None and segment_ids is not None:
+            raise ValueError(
+                "Using both segment_ids and attention_logit_biases is not allowed. "
+                "If you have segment_ids, consider merging them into attention_logit_biases using "
+                "AttentionLogitBiasLayer."
+            )
 
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
@@ -2084,10 +2095,12 @@ class SigmoidAttention(MultiheadAttention):
         segment_ids: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
-        # Caller must provide attention_logit_biases when segment_ids specified. segment_ids will
-        # be ignored.
-        if segment_ids is not None and attention_logit_biases is None:
-            raise ValueError("attention_logit_biases must be set in the presence of segment_ids.")
+        if attention_logit_biases is not None and segment_ids is not None:
+            raise ValueError(
+                "Using both segment_ids and attention_logit_biases is not allowed. "
+                "If you have segment_ids, consider merging them into attention_logit_biases using "
+                "AttentionLogitBiasLayer."
+            )
 
         cfg = self.config
         logits = self._compute_logits(q_proj, k_proj)
@@ -2965,7 +2978,7 @@ class TransformerLayer(BaseTransformerLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-        segment_ids: Optional[Tensor] = None,
+        target_segment_ids: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Optional[NestedTensor], BaseTransformerLayer.Output]:
@@ -2980,7 +2993,7 @@ class TransformerLayer(BaseTransformerLayer):
             cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
-            segment_ids: See ``segment_ids`` in the file comments.
+            target_segment_ids: See ``segment_ids`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
             return_aux: See comments on BaseTransformerLayer.forward.
 
@@ -3008,7 +3021,7 @@ class TransformerLayer(BaseTransformerLayer):
                 None,
                 self.self_attention(
                     target=data,
-                    segment_ids=segment_ids,
+                    segment_ids=target_segment_ids,
                     source=self_attention_kv_state,
                     attention_logit_biases=self_attention_logit_biases,
                     return_aux=self_attention_return_aux,
@@ -3016,8 +3029,8 @@ class TransformerLayer(BaseTransformerLayer):
             )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
-            if segment_ids is not None:
-                raise NotImplementedError("segment_ids is not supported in INIT_STATES.")
+            if target_segment_ids is not None:
+                raise NotImplementedError("target_segment_ids is not supported in INIT_STATES.")
             self_atten_state, self_atten_outputs = self.self_attention.prefill_states(
                 time_step=cached_states["self_attention"],
                 target=data,
@@ -3027,8 +3040,8 @@ class TransformerLayer(BaseTransformerLayer):
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
-            if segment_ids is not None:
-                raise NotImplementedError("segment_ids is not supported in EXTEND_STEP.")
+            if target_segment_ids is not None:
+                raise NotImplementedError("target_segment_ids is not supported in EXTEND_STEP.")
             self_atten_state, self_atten_outputs = self.self_attention.extend_step(
                 cached_states=cached_states["self_attention"],
                 target=data,

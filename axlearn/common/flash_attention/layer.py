@@ -134,7 +134,7 @@ class FlashAttention(GroupedQueryAttention):
             raise ValueError(
                 "Using both segment_ids and attention_logit_biases is not allowed. "
                 "If you have segment_ids, consider merging them into attention_logit_biases using "
-                "CausalAttentionLogitBiasLayer."
+                "AttentionLogitBiasLayer."
             )
 
         if backend == "tpu":

@@ -479,7 +479,7 @@ class Decoder(DecodingMixin, BaseLayer):
             transformer_state, x = None, self.transformer(
                 x,
                 self_attention_logit_biases=self_attention_logit_biases,
-                segment_ids=input_segment_ids,
+                target_segment_ids=input_segment_ids,
                 cross_attention_data=cross_attention_data,
                 cross_attention_logit_biases=cross_attention_logit_biases,
             )
@@ -541,7 +541,7 @@ class Decoder(DecodingMixin, BaseLayer):
             input_ids: An int Tensor of shape [batch_size, target_len].
                 Values should be in the range [0, vocab_size).
             input_segment_ids: An optional Tensor of same shape as `input_ids` with values in
-                [0, num_segments). Tokens are only allowed to attend to other tokens within the same
+                [0, num_segments]. Tokens are only allowed to attend to other tokens within the same
                 segment. input_segment_ids == 0 represents paddings. If None, inferred from
                 input_ids != pad_token_id.
             token_type_ids: An optional int Tensor of shape [batch_size, target_len].
