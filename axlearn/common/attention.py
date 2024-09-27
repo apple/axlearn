@@ -1836,8 +1836,8 @@ class MultiheadAttention(BaseLayer):
         """
         if segment_ids is not None:
             raise ValueError(
-                "segment_ids is not supported. To use segment_ids, construct attention_logit_biases using an "
-                "AttentionLogitBiasLayer."
+                "segment_ids is not supported. To use segment_ids, construct "
+                "attention_logit_biases using an AttentionLogitBiasLayer."
             )
 
         logits = self._compute_logits(q_proj, k_proj)
@@ -2094,11 +2094,10 @@ class SigmoidAttention(MultiheadAttention):
         segment_ids: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
-        if attention_logit_biases is not None and segment_ids is not None:
+        if segment_ids is not None:
             raise ValueError(
-                "Using both segment_ids and attention_logit_biases is not allowed. "
-                "If you have segment_ids, consider merging them into attention_logit_biases using "
-                "AttentionLogitBiasLayer."
+                "segment_ids is not supported. To use segment_ids, construct "
+                "attention_logit_biases using an AttentionLogitBiasLayer."
             )
 
         cfg = self.config
