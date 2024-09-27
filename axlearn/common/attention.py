@@ -1834,10 +1834,9 @@ class MultiheadAttention(BaseLayer):
             The context of shape [batch_size, target_length, num_heads, per_head_dim],
             and probs of shape [batch, num_heads, target_length, source_length].
         """
-        if attention_logit_biases is not None and segment_ids is not None:
+        if segment_ids is not None:
             raise ValueError(
-                "Using both segment_ids and attention_logit_biases is not allowed. "
-                "If you have segment_ids, consider merging them into attention_logit_biases using "
+                "segment_ids is not supported. To use segment_ids, construct attention_logit_biases using an "
                 "AttentionLogitBiasLayer."
             )
 
