@@ -56,6 +56,7 @@ apple-silicon = [
 # Requirements for testing and development.
 dev = [
     "axlearn[orbax]",  # checkpointer tests
+    "axlearn[grain]",  # grain input tests
     "black==23.1a1",  # formatting
     "einops",
     "evaluate",
@@ -143,6 +144,10 @@ mmau = [
 orbax = [
     "humanize==4.10.0",
     "orbax-checkpoint==0.5.23",
+]
+# Grain input processing. Currently does not support macos.
+grain = [
+    "grain==0.2.1; platform_machine == 'x86_64'",
 ]
 
 [tool.flit.module]
