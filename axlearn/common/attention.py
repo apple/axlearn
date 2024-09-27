@@ -1825,8 +1825,10 @@ class MultiheadAttention(BaseLayer):
             The context of shape [batch_size, target_length, num_heads, per_head_dim],
             and probs of shape [batch, num_heads, target_length, source_length].
         """
-        # Ignore segment_ids. attention_logit_biases should be used instead.
-        del segment_ids
+        # Caller must provide attention_logit_biases when segment_ids specified. segment_ids will
+        # be ignored.
+        if segment_ids is not None and attention_logit_biases is None:
+            raise ValueError("attention_logit_biases must be set in the presence of segment_ids.")
 
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
@@ -2082,7 +2084,10 @@ class SigmoidAttention(MultiheadAttention):
         segment_ids: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
-        del segment_ids
+        # Caller must provide attention_logit_biases when segment_ids specified. segment_ids will
+        # be ignored.
+        if segment_ids is not None and attention_logit_biases is None:
+            raise ValueError("attention_logit_biases must be set in the presence of segment_ids.")
 
         cfg = self.config
         logits = self._compute_logits(q_proj, k_proj)

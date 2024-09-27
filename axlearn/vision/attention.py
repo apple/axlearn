@@ -190,7 +190,10 @@ class WindowedAttention(MultiheadAttention):
         Raises:
             ValueError: If key & value are an invalid combination.
         """
-        del segment_ids
+        # Caller must provide attention_logit_biases when segment_ids specified. segment_ids will
+        # be ignored.
+        if segment_ids is not None and attention_logit_biases is None:
+            raise ValueError("attention_logit_biases must be set in the presence of segment_ids.")
         if key is not None or value is not None:
             raise ValueError("Both key and value must be None for WindowedAttention")
         cfg = self.config
