@@ -20,6 +20,8 @@ from axlearn.common.attention import (
     KVState,
     MultiheadAttention,
     TransformerAttentionLayer,
+    apply_attention_logit_biases,
+    make_segment_mask,
     softmax_with_biases,
 )
 from axlearn.common.base_layer import ParameterSpec
@@ -190,10 +192,11 @@ class WindowedAttention(MultiheadAttention):
         Raises:
             ValueError: If key & value are an invalid combination.
         """
+        # Merge segment ids into attention_logit_biases.
         if segment_ids is not None:
-            raise ValueError(
-                "segment_ids is not supported. To use segment_ids, construct "
-                "attention_logit_biases using an AttentionLogitBiasLayer."
+            attention_logit_biases = apply_attention_logit_biases(
+                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
+                attention_logit_biases,
             )
         if key is not None or value is not None:
             raise ValueError("Both key and value must be None for WindowedAttention")

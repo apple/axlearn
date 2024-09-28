@@ -10,7 +10,12 @@ from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
 
-from axlearn.common.attention import ForwardMode, GroupedQueryAttention
+from axlearn.common.attention import (
+    ForwardMode,
+    GroupedQueryAttention,
+    apply_attention_logit_biases,
+    make_segment_mask,
+)
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import ConfigBase, config_class
 from axlearn.common.flash_attention.utils import (
@@ -130,12 +135,13 @@ class FlashAttention(GroupedQueryAttention):
         k_proj = self._repeat_kv_heads(k_proj)
         v_proj = self._repeat_kv_heads(v_proj)
 
-        if attention_logit_biases is not None and segment_ids is not None:
-            raise ValueError(
-                "Using both segment_ids and attention_logit_biases is not allowed. "
-                "If you have segment_ids, consider merging them into attention_logit_biases using "
-                "AttentionLogitBiasLayer."
+        # Merge segment ids into attention_logit_biases.
+        if segment_ids is not None and attention_logit_biases is not None:
+            attention_logit_biases = apply_attention_logit_biases(
+                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
+                attention_logit_biases,
             )
+            segment_ids = None
 
         if backend == "tpu":
             assert (

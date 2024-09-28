@@ -1758,14 +1758,6 @@ class MultiheadAttention(BaseLayer):
                     attention_logit_biases,
                 )
 
-        # Merge segment ids into attention_logit_biases if attention_logit_biases is already set.
-        if attention_logit_biases is not None and segment_ids is not None:
-            attention_logit_biases = apply_attention_logit_biases(
-                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
-                attention_logit_biases,
-            )
-            segment_ids = None
-
         context, probs = self._compute_attention(
             q_proj=q_proj,
             k_proj=k_proj,
@@ -1834,10 +1826,11 @@ class MultiheadAttention(BaseLayer):
             The context of shape [batch_size, target_length, num_heads, per_head_dim],
             and probs of shape [batch, num_heads, target_length, source_length].
         """
+        # Merge segment ids into attention_logit_biases.
         if segment_ids is not None:
-            raise ValueError(
-                "segment_ids is not supported. To use segment_ids, construct "
-                "attention_logit_biases using an AttentionLogitBiasLayer."
+            attention_logit_biases = apply_attention_logit_biases(
+                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
+                attention_logit_biases,
             )
 
         logits = self._compute_logits(q_proj, k_proj)
@@ -2094,10 +2087,11 @@ class SigmoidAttention(MultiheadAttention):
         segment_ids: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
+        # Merge segment ids into attention_logit_biases.
         if segment_ids is not None:
-            raise ValueError(
-                "segment_ids is not supported. To use segment_ids, construct "
-                "attention_logit_biases using an AttentionLogitBiasLayer."
+            attention_logit_biases = apply_attention_logit_biases(
+                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
+                attention_logit_biases,
             )
 
         cfg = self.config

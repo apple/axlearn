@@ -14,7 +14,6 @@ from axlearn.common.attention import (
     GroupedQueryAttention,
     apply_attention_logit_biases,
     make_causal_mask,
-    make_segment_mask,
 )
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
@@ -291,17 +290,6 @@ class TestFlashAttention(TestCase):
                 ref_inputs["attention_logit_biases"] = apply_attention_logit_biases(
                     make_causal_mask(seq_len), ref_inputs["attention_logit_biases"]
                 )
-            if use_segment_ids:
-                ref_inputs["attention_logit_biases"] = apply_attention_logit_biases(
-                    make_segment_mask(
-                        source_segments=ref_inputs["segment_ids"],
-                        target_segments=ref_inputs["segment_ids"],
-                    ),
-                    ref_inputs["attention_logit_biases"],
-                )
-                ref_inputs["segment_ids"] = None
-            if use_bias and use_segment_ids:
-                inputs["segment_ids"] = None
 
             ref_out, _ = F(
                 ref_layer,
@@ -408,17 +396,6 @@ class TestFlashAttention(TestCase):
                 ref_inputs["attention_logit_biases"] = apply_attention_logit_biases(
                     make_causal_mask(seq_len), ref_inputs["attention_logit_biases"]
                 )
-            if use_segment_ids:
-                ref_inputs["attention_logit_biases"] = apply_attention_logit_biases(
-                    make_segment_mask(
-                        source_segments=ref_inputs["segment_ids"],
-                        target_segments=ref_inputs["segment_ids"],
-                    ),
-                    ref_inputs["attention_logit_biases"],
-                )
-                ref_inputs["segment_ids"] = None
-            if use_bias and use_segment_ids:
-                inputs["segment_ids"] = None
 
             def loss(params, inputs, layer):
                 loss, _ = F(
