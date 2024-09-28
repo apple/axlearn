@@ -38,6 +38,13 @@ On `attention_logit_biases`:
 * Each value represents a bias to be added to the attention logits
   (therefore a -inf represents a disconnected position pair).
 * biases=None represents an all-zero tensor, i.e., all position pairs are connected.
+
+On `segment_ids`:
+* A tensor of shape [batch, target_length] with values in [0, num_segments].
+* Tokens are only allowed to attend to other tokens within the same segment.
+* segment_ids == 0 represents paddings.
+* None represents an all-one tensor, i.e. all positions are in the same segment.
+
 """
 
 # pylint: disable=abstract-method,too-many-lines
@@ -1666,6 +1673,7 @@ class MultiheadAttention(BaseLayer):
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Optional[NestedTensor], Output]:
@@ -1681,6 +1689,7 @@ class MultiheadAttention(BaseLayer):
             value: An optional Tensor of shape [batch, source_length, source_dim].
             kv_state: An optional KVState. If specified, both `key` and `value` should be None.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
+            segment_ids: See ``On segment_ids`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
             return_aux: See comments on `Output`.
 
@@ -1748,11 +1757,13 @@ class MultiheadAttention(BaseLayer):
                     causal_mask.astype(q_proj.dtype),
                     attention_logit_biases,
                 )
+
         context, probs = self._compute_attention(
             q_proj=q_proj,
             k_proj=k_proj,
             v_proj=v_proj,
             attention_logit_biases=attention_logit_biases,
+            segment_ids=segment_ids,
         )
         self.vlog(3, "atten.prob=%s", probs[0, 0, 0, :])
         self.vlog(3, "atten.context=%s", context.sum())
@@ -1800,6 +1811,7 @@ class MultiheadAttention(BaseLayer):
         k_proj: Tensor,
         v_proj: Tensor,
         attention_logit_biases: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor]:
         """Computes attention context and probs.
 
@@ -1808,11 +1820,19 @@ class MultiheadAttention(BaseLayer):
             k_proj: [batch_size, source_length, num_heads, per_head_dim].
             v_proj: [batch_size, source_length, num_heads, per_head_dim].
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
+            segment_ids: See ``segment_ids`` in the file comments.
 
         Returns:
             The context of shape [batch_size, target_length, num_heads, per_head_dim],
             and probs of shape [batch, num_heads, target_length, source_length].
         """
+        # Merge segment ids into attention_logit_biases.
+        if segment_ids is not None:
+            attention_logit_biases = apply_attention_logit_biases(
+                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
+                attention_logit_biases,
+            )
+
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
@@ -1830,6 +1850,7 @@ class MultiheadAttention(BaseLayer):
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes attention for the given query, key, value, and attention logit biases.
@@ -1842,6 +1863,7 @@ class MultiheadAttention(BaseLayer):
             value: An optional Tensor of shape [batch, source_length, source_dim].
             kv_state: An optional KVState. If not None, both key and value must be None.
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
+            segment_ids: See `On segment_ids` in the file comments.
             return_aux: See comments on `Output`.
 
         Returns:
@@ -1858,6 +1880,7 @@ class MultiheadAttention(BaseLayer):
             value=value,
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
+            segment_ids=segment_ids,
             return_aux=return_aux,
         )
         return output
@@ -2029,7 +2052,7 @@ class GroupedQueryAttention(MultiheadAttention):
         q_proj: Tensor,
         k_proj: Tensor,
         v_proj: Tensor,
-        attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
         k_proj = self._repeat_kv_heads(k_proj)
@@ -2038,7 +2061,7 @@ class GroupedQueryAttention(MultiheadAttention):
             q_proj=q_proj,
             k_proj=k_proj,
             v_proj=v_proj,
-            attention_logit_biases=attention_logit_biases,
+            **kwargs,
         )
 
 
@@ -2061,18 +2084,16 @@ class SigmoidAttention(MultiheadAttention):
         k_proj: Tensor,
         v_proj: Tensor,
         attention_logit_biases: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor]:
-        """Computes attention context and probs.
+        """See `MultiheadAttention._compute_attention` for details."""
+        # Merge segment ids into attention_logit_biases.
+        if segment_ids is not None:
+            attention_logit_biases = apply_attention_logit_biases(
+                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
+                attention_logit_biases,
+            )
 
-        Args:
-            q_proj: [batch_size, target_length, num_heads, per_head_dim].
-            k_proj: [batch_size, source_length, num_heads, per_head_dim].
-            v_proj: [batch_size, source_length, num_heads, per_head_dim].
-
-        Returns:
-            The context of shape [batch_size, target_length, num_heads, per_head_dim],
-            and probs of shape [batch, num_heads, target_length, source_length].
-        """
         cfg = self.config
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
@@ -2420,6 +2441,7 @@ class TransformerAttentionLayer(BaseLayer):
         target: Tensor,
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Optional[NestedTensor], Output]:
@@ -2432,6 +2454,7 @@ class TransformerAttentionLayer(BaseLayer):
             source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention).
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
+            segment_ids: segment_ids: See ``On segment_ids`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
             return_aux: See comments on `Output`.
 
@@ -2464,6 +2487,7 @@ class TransformerAttentionLayer(BaseLayer):
                         query=target,
                         **kv_kwargs,
                         attention_logit_biases=attention_logit_biases,
+                        segment_ids=segment_ids,
                     ),
                 )
             elif mode == ForwardMode.INIT_STATES:
@@ -2515,6 +2539,7 @@ class TransformerAttentionLayer(BaseLayer):
         target: Tensor,
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes attention with target as query and source as key and value.
@@ -2524,6 +2549,7 @@ class TransformerAttentionLayer(BaseLayer):
             source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
+            segment_ids: See ``segment_ids`` in the file comments.
             return_aux: See comments on `Output`.
 
         Returns:
@@ -2538,6 +2564,7 @@ class TransformerAttentionLayer(BaseLayer):
             target=target,
             source=source,
             attention_logit_biases=attention_logit_biases,
+            segment_ids=segment_ids,
             cached_states=None,
             return_aux=return_aux,
         )
@@ -2943,6 +2970,7 @@ class TransformerLayer(BaseTransformerLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
+        target_segment_ids: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Optional[NestedTensor], BaseTransformerLayer.Output]:
@@ -2957,6 +2985,7 @@ class TransformerLayer(BaseTransformerLayer):
             cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
+            target_segment_ids: See ``segment_ids`` in the file comments.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
             return_aux: See comments on BaseTransformerLayer.forward.
 
@@ -2984,6 +3013,7 @@ class TransformerLayer(BaseTransformerLayer):
                 None,
                 self.self_attention(
                     target=data,
+                    segment_ids=target_segment_ids,
                     source=self_attention_kv_state,
                     attention_logit_biases=self_attention_logit_biases,
                     return_aux=self_attention_return_aux,
@@ -2991,6 +3021,8 @@ class TransformerLayer(BaseTransformerLayer):
             )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
+            if target_segment_ids is not None:
+                raise NotImplementedError("target_segment_ids is not supported in INIT_STATES.")
             self_atten_state, self_atten_outputs = self.self_attention.prefill_states(
                 time_step=cached_states["self_attention"],
                 target=data,
@@ -3000,6 +3032,8 @@ class TransformerLayer(BaseTransformerLayer):
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
+            if target_segment_ids is not None:
+                raise NotImplementedError("target_segment_ids is not supported in EXTEND_STEP.")
             self_atten_state, self_atten_outputs = self.self_attention.extend_step(
                 cached_states=cached_states["self_attention"],
                 target=data,

@@ -6,7 +6,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
-from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes
+from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes, SegmentIds
 from jax.experimental.pallas.ops.tpu.flash_attention import flash_attention as tpu_flash_attention
 
 from axlearn.common.utils import Tensor
@@ -25,6 +25,7 @@ def flash_attention(
     key: Tensor,  # [batch_size, kv_seq_len, num_heads, d_model]
     value: Tensor,  # [batch_size, kv_seq_len, num_heads, d_model]
     bias: Tensor = None,  # [batch_size, num_heads, q_seq_len, kv_seq_len]
+    segment_ids: Tensor = None,  # [batch_size, q_seq_len]
     *,
     causal: bool = False,
     softmax_scale: float = 1.0,
@@ -40,7 +41,8 @@ def flash_attention(
         query: The query tensor, of shape [batch_size, target_seq_len, num_heads, head_dim].
         key: The key tensor, of shape [batch_size, source_seq_len, num_heads, head_dim].
         value: The value tensor, of shape [batch_size, source_seq_len, num_heads, head_dim].
-        bias: The attention biases, of shape [batch_size, num_heads, q_seq_len, source_seq_len].
+        bias: The attention biases, of shape [batch_size, num_heads, q_seq_len, source_seq_len],
+        segment_ids: Segment IDs in the form of [batch_size, q_seq_len].
         causal: Whether the attention is causal (allows for additional optimizations).
         softmax_scale: A scaling factor applied to the query.
 
@@ -48,6 +50,8 @@ def flash_attention(
         The context tensor, of shape [batch_size, q_seq_len, num_heads, head_dim].
 
     """
+    if segment_ids is not None:
+        assert query.shape[1] == key.shape[1] and query.shape[1] == value.shape[1]
     # Apply the softmax scale outside the kernel (see docstring for why).
     if softmax_scale != 1.0:
         query *= softmax_scale
@@ -60,6 +64,7 @@ def flash_attention(
         k=key,
         v=value,
         ab=bias,
+        segment_ids=SegmentIds(q=segment_ids, kv=segment_ids) if segment_ids is not None else None,
         causal=causal,
         # If sm_scale==1.0, the kernel skips applying it.
         sm_scale=1.0,

@@ -467,6 +467,7 @@ class Decoder(DecodingMixin, BaseLayer):
         mode: ForwardMode,
         input_ids: Tensor,
         self_attention_logit_biases: Optional[Tensor],
+        input_segment_ids: Optional[Tensor] = None,
         token_type_ids: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
@@ -478,11 +479,14 @@ class Decoder(DecodingMixin, BaseLayer):
             transformer_state, x = None, self.transformer(
                 x,
                 self_attention_logit_biases=self_attention_logit_biases,
+                target_segment_ids=input_segment_ids,
                 cross_attention_data=cross_attention_data,
                 cross_attention_logit_biases=cross_attention_logit_biases,
             )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
+            if input_segment_ids is not None:
+                raise ValueError("input_segment_ids is not supported in INIT_STATES.")
             transformer_state, x = self.transformer.prefill_states(
                 time_step=cached_states["transformer_state"],
                 data=x,
@@ -492,6 +496,8 @@ class Decoder(DecodingMixin, BaseLayer):
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
+            if input_segment_ids is not None:
+                raise ValueError("input_segment_ids is not supported in EXTEND_STEP.")
             transformer_state, x = self.transformer.extend_step(
                 cached_states=cached_states["transformer_state"],
                 data=x,
@@ -535,7 +541,7 @@ class Decoder(DecodingMixin, BaseLayer):
             input_ids: An int Tensor of shape [batch_size, target_len].
                 Values should be in the range [0, vocab_size).
             input_segment_ids: An optional Tensor of same shape as `input_ids` with values in
-                [0, num_segments). Tokens are only allowed to attend to other tokens within the same
+                [0, num_segments]. Tokens are only allowed to attend to other tokens within the same
                 segment. input_segment_ids == 0 represents paddings. If None, inferred from
                 input_ids != pad_token_id.
             token_type_ids: An optional int Tensor of shape [batch_size, target_len].
@@ -559,6 +565,7 @@ class Decoder(DecodingMixin, BaseLayer):
             self_attention_logit_biases=self.compute_attention_logit_biases(
                 input_ids, segment_ids=input_segment_ids, positions=positions
             ),
+            input_segment_ids=input_segment_ids,
             token_type_ids=token_type_ids,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
@@ -690,7 +697,7 @@ class Decoder(DecodingMixin, BaseLayer):
         if "attention_mask" not in self.children:
             return None
         if (segment_ids is None) != (positions is None):
-            raise ValueError("segment_ids and positions must be provided together")
+            raise ValueError("segment_ids and positions must be provided together.")
         cfg = self.config
         if segment_ids is None or positions is None:
             segment_ids = _segment_ids_from_causal_input_ids(
