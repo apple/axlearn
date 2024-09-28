@@ -181,8 +181,7 @@ class WindowedAttention(MultiheadAttention):
             key:   an optional Tensor of shape [batch, source_length, source_dim].
             value: an optional Tensor of shape [batch, source_length, source_dim].
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
-            segment_ids: Not used. See `On segment_ids` in
-                MultiheadAttention's file comments.
+            segment_ids: See `On segment_ids` in MultiheadAttention's file comments.
             return_aux: See comments in MultiheadAttention.Output.
 
         Returns:
@@ -274,7 +273,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
             target: a Tensor of shape [batch, target_length, target_dim].
             source: None, uses norm(target) as source for self-attention
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            segment_ids: Not used. See `On segment_ids` in MultiheadAttention's file comments.
+            segment_ids: See `On segment_ids` in MultiheadAttention's file comments.
             return_aux: See comments in TransformerAttentionLayer.Output.
 
         Returns:
