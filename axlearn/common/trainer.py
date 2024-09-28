@@ -932,7 +932,9 @@ class SpmdTrainer(Module):
             donate_argnums=(0,),  # donate the state
         )
 
-    def compile_train_step(self) -> jax.stages.Compiled:
+    def compile_train_step(
+        self, compiler_options: Optional[dict[str, Union[str, bool]]] = None
+    ) -> jax.stages.Compiled:
         with self.mesh(), self._context_manager():
             # Do not run init(), which require real devices.
             trainer_state_specs = jax.tree_util.tree_map(
@@ -947,7 +949,7 @@ class SpmdTrainer(Module):
             )
             jit_train_step = self._pjit_train_step()
             lowered_train_step = jit_train_step.lower(trainer_state_specs, input_batch_specs)
-            return lowered_train_step.compile()
+            return lowered_train_step.compile(compiler_options=compiler_options)
 
     def _train_step(
         self,

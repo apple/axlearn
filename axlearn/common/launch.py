@@ -6,35 +6,17 @@
 import os
 import sys
 
+# pylint: disable-next=ungrouped-imports
+from axlearn.common import compiler_options
+
 instance_type = os.environ.get("TPU_TYPE", "none")
-
-# Set LIBTPU_INIT_ARGS before importing jax!
-libtpu_init_args = [
-    "--xla_tpu_spmd_rng_bit_generator_unsafe=1",  # SPMD partition-aware RngBitGenerator.
-    "--xla_tpu_enable_latency_hiding_scheduler=true",  # Try to schedule ops efficiently.
-    "--xla_tpu_perform_spmd_cse_prevention=false",  # b/229655601: prevent OOM on gpt2-small-repeat.
-]
-if instance_type.startswith("v4-"):
-    libtpu_init_args += [
-        # Per maggioni@google.com, the following flags are not supported by V3.
-        "--xla_enable_async_all_gather=true",  # Allow async all-gather.
-        "--xla_enable_async_collective_permute=true",  # Allow async collective permute.
-    ]
-
 num_tpu_slices = int(os.environ.get("NUM_TPU_SLICES", 1))
 
-if num_tpu_slices > 1:
-    # Support multiple TPU slices connected over a data center network.
-    libtpu_init_args += [
-        # For collectives across multiple slices.
-        "--xla_tpu_enable_megascale_barrier=true",
-        # Per rwitten@google.com the following two flags allow gradient all-reduce to happen
-        # concurrently with gradient computation for the following layer.
-        "--xla_tpu_enable_data_parallel_all_reduce_opt=true",
-        "--xla_tpu_data_parallel_opt_different_sized_ops=true",
-    ]
-
-os.environ["LIBTPU_INIT_ARGS"] = " ".join(libtpu_init_args)
+# Set LIBTPU_INIT_ARGS before importing jax!
+libtpu_init_options = compiler_options.default_xla_options(
+    instance_type=instance_type, num_slices=num_tpu_slices, backend="tpu"
+)
+os.environ["LIBTPU_INIT_ARGS"] = compiler_options.xla_flags_from_options(libtpu_init_options)
 
 # Set TF_CPP_MIN_LOG_LEVEL to ignore msg like  "PNG warning: iCCP: known incorrect sRGB profile"
 # Reference: https://stackoverflow.com/questions/35869137/avoid-tensorflow-print-on-standard-error
@@ -87,7 +69,6 @@ flags.DEFINE_integer(
     os.environ.get("PROCESS_ID", None),
     "Rank of the current process. Must be None on tpu, otherwise required.",
 )
-
 
 FLAGS = flags.FLAGS
 
