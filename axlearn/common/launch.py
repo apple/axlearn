@@ -13,10 +13,11 @@ instance_type = os.environ.get("TPU_TYPE", "none")
 num_tpu_slices = int(os.environ.get("NUM_TPU_SLICES", 1))
 
 # Set LIBTPU_INIT_ARGS before importing jax!
-libtpu_init_options = compiler_options.default_xla_options(
-    instance_type=instance_type, num_slices=num_tpu_slices, backend="tpu"
-)
-os.environ["LIBTPU_INIT_ARGS"] = compiler_options.xla_flags_from_options(libtpu_init_options)
+if instance_type.startswith("tpu"):
+    libtpu_init_options = compiler_options.default_xla_options(
+        instance_type=instance_type, num_slices=num_tpu_slices, backend="tpu"
+    )
+    os.environ["LIBTPU_INIT_ARGS"] = compiler_options.xla_flags_from_options(libtpu_init_options)
 
 # Set TF_CPP_MIN_LOG_LEVEL to ignore msg like  "PNG warning: iCCP: known incorrect sRGB profile"
 # Reference: https://stackoverflow.com/questions/35869137/avoid-tensorflow-print-on-standard-error
