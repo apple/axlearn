@@ -4,10 +4,10 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "axlearn"
-version = "0.1.1"
+version = "0.1.2"
 description = "AXLearn"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 
 # Production dependencies.
 # Minimal requirments for axlearn/common/config.py.
