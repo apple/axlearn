@@ -13,11 +13,15 @@ instance_type = os.environ.get("TPU_TYPE", "none")
 num_tpu_slices = int(os.environ.get("NUM_TPU_SLICES", 1))
 
 # Set LIBTPU_INIT_ARGS before importing jax!
-if instance_type.startswith("tpu"):
+tpu_flags_exc = None
+try:
     libtpu_init_options = compiler_options.default_xla_options(
         instance_type=instance_type, num_slices=num_tpu_slices, backend="tpu"
     )
     os.environ["LIBTPU_INIT_ARGS"] = compiler_options.xla_flags_from_options(libtpu_init_options)
+except compiler_options.NotTpuError as e:
+    # Log this when setup() is called.
+    tpu_flags_exc = e
 
 # Set TF_CPP_MIN_LOG_LEVEL to ignore msg like  "PNG warning: iCCP: known incorrect sRGB profile"
 # Reference: https://stackoverflow.com/questions/35869137/avoid-tensorflow-print-on-standard-error
@@ -75,6 +79,10 @@ FLAGS = flags.FLAGS
 
 
 def setup():
+    if tpu_flags_exc is not None:
+        logging.info("LIBTPU_INIT_FLAGS was not set. Reason: %s", tpu_flags_exc)
+    else:
+        logging.info("LIBTPU_INIT_ARGS='%s'", os.environ["LIBTPU_INIT_ARGS"])
     setup_spmd(
         distributed_coordinator=FLAGS.distributed_coordinator,
         num_processes=FLAGS.num_processes,

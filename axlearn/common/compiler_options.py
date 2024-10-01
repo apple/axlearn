@@ -74,10 +74,14 @@ def xla_flags_from_options(xla_options: dict[str, Union[str, bool]]) -> str:
     return " ".join(flags)
 
 
+class NotTpuError(ValueError):
+    pass
+
+
 def infer_tpu_type(instance_type: str) -> str:
     """Infers tpu type (e.g. v4-8) from instance type (e.g. tpu-v4-8 or v4-8)."""
     if not (instance_type and re.fullmatch(r"(tpu-)?v.+-\d+", instance_type)):
-        raise ValueError(f"Invalid TPU instance: {instance_type}")
+        raise NotTpuError(f"Instance does not appear to be a TPU instance: {instance_type}")
     return instance_type.replace("tpu-", "")
 
 

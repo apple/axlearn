@@ -10,7 +10,12 @@ from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
 
-from axlearn.common.attention import ForwardMode, GroupedQueryAttention
+from axlearn.common.attention import (
+    ForwardMode,
+    GroupedQueryAttention,
+    apply_attention_logit_biases,
+    make_segment_mask,
+)
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import ConfigBase, config_class
 from axlearn.common.flash_attention.utils import (
@@ -121,6 +126,7 @@ class FlashAttention(GroupedQueryAttention):
         k_proj: Tensor,
         v_proj: Tensor,
         attention_logit_biases: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor]:
         cfg = self.config
         backend = self._backend()
@@ -128,6 +134,14 @@ class FlashAttention(GroupedQueryAttention):
         # Repeats key/value heads dim if necessary.
         k_proj = self._repeat_kv_heads(k_proj)
         v_proj = self._repeat_kv_heads(v_proj)
+
+        # Merge segment ids into attention_logit_biases.
+        if segment_ids is not None and attention_logit_biases is not None:
+            attention_logit_biases = apply_attention_logit_biases(
+                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
+                attention_logit_biases,
+            )
+            segment_ids = None
 
         if backend == "tpu":
             assert (
@@ -164,6 +178,13 @@ class FlashAttention(GroupedQueryAttention):
             block_size=cfg.tpu_block_size,
         )
 
+        q_spec = cfg.mha_dim_to_partition_spec["btnh"]
+        segment_ids_spec = (
+            PartitionSpec(q_spec[0], q_spec[1])
+            if q_spec != PartitionSpec(None)
+            else PartitionSpec(None)
+        )
+
         # We need to manually partition pallas | jax-triton calls.
         # Note: shard_map doesn't support kwargs.
         partitioned_mha = shard_map(
@@ -176,6 +197,8 @@ class FlashAttention(GroupedQueryAttention):
                 cfg.mha_dim_to_partition_spec["bsnh"],
                 # Bias [batch_size, num_heads, seq_len, seq_len].
                 cfg.mha_dim_to_partition_spec["bnts"],
+                # Segment IDs [batch_size, seq_len].
+                segment_ids_spec,
             ),
             # O [batch_size, seq_len, num_heads, per_head_dim].
             out_specs=cfg.mha_dim_to_partition_spec["btnh"],
@@ -192,29 +215,36 @@ class FlashAttention(GroupedQueryAttention):
         q_proj = with_sharding_constraint(q_proj, cfg.mha_dim_to_partition_spec["btnh"])
         k_proj = with_sharding_constraint(k_proj, cfg.mha_dim_to_partition_spec["bsnh"])
         v_proj = with_sharding_constraint(v_proj, cfg.mha_dim_to_partition_spec["bsnh"])
+
+        batch, target_len, num_heads, _ = q_proj.shape
+        _, source_len, _, _ = k_proj.shape
         if attention_logit_biases is not None:
             if attention_logit_biases.shape[0] != q_proj.shape[0]:
                 raise ValueError(
                     "attention_logit_biases must have matching batch dim: "
                     f"{attention_logit_biases.shape} vs. {q_proj.shape[0]}"
                 )
+
+            attention_logit_biases = jnp.broadcast_to(
+                attention_logit_biases, (batch, num_heads, target_len, source_len)
+            )
             attention_logit_biases = with_sharding_constraint(
                 attention_logit_biases, cfg.mha_dim_to_partition_spec["bnts"]
             )
+        if segment_ids is not None:
+            if segment_ids.shape[0] != q_proj.shape[0]:
+                raise ValueError(
+                    "segment_ids must have matching batch dim: "
+                    f"{segment_ids.shape} vs. {q_proj.shape[0]}"
+                )
+            segment_ids = with_sharding_constraint(segment_ids, segment_ids_spec)
 
         outputs = with_sharding_constraint(
-            partitioned_mha(
-                q_proj,
-                k_proj,
-                v_proj,
-                attention_logit_biases,
-            ),
+            partitioned_mha(q_proj, k_proj, v_proj, attention_logit_biases, segment_ids),
             cfg.output_dim_to_partition_spec["btnh"],
         )
 
         # TODO(markblee): Add output probs and benchmark.
-        batch, target_len, num_heads, _ = q_proj.shape
-        _, source_len, _, _ = k_proj.shape
         output_probs = with_sharding_constraint(
             jnp.empty((batch, num_heads, target_len, source_len)),
             cfg.output_dim_to_partition_spec["bnts"],
@@ -242,6 +272,7 @@ def default_mha_dim_to_partition_spec(
         "btnh": PartitionSpec(batch_axis_names, None, tp_axis_name, None),
         "bsnh": PartitionSpec(batch_axis_names, None, tp_axis_name, None),
         "bnts": PartitionSpec(batch_axis_names, tp_axis_name, None, None),
+        "bt": PartitionSpec(batch_axis_names, None),
     }
 
 

@@ -11,6 +11,7 @@ from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes
 
 from axlearn.common.attention import NEG_INF
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
+from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
 from axlearn.common.flash_attention.tpu_attention import flash_attention as tpu_flash_attention
 from axlearn.common.utils import Tensor
 
@@ -22,6 +23,7 @@ def mha_reference(
     k: Tensor,
     v: Tensor,
     bias: Optional[Tensor] = None,
+    segment_ids: Optional[Tensor] = None,
     *,
     causal: bool = False,
     softmax_scale: float = 1.0,
@@ -48,16 +50,18 @@ def mha_reference(
     # Check if we need to build a segment id mask.
     if bias is not None:
         # matrix bias, shape [batch_size, ..., seq_len, seq_len]
-        if bias.ndim >= 3:
-            logits += bias.astype(logits.dtype)
-        else:  # vector bias, shape [batch_size, seq_len]
-            target_segment_ids = jnp.expand_dims(bias, -1)
-            source_segment_ids = jnp.expand_dims(bias, -2)
-            # Target [b..., t] + Source [b..., s] -> [b..., t, s]
-            # [b, 1, ..., t, s] where the value at [..., i, j] = false if
-            # target_segments[..., i] == source_segments[..., j], or true otherwise.
-            mask = jax.lax.ne(source_segment_ids, target_segment_ids)[:, None, ...]
-            logits = jnp.where(mask, NEG_INF, logits)
+        assert bias.ndim >= 3
+        logits += bias.astype(logits.dtype)
+
+    if segment_ids is not None:
+        assert segment_ids.ndim == 2  # shape [batch_size, seq_len]
+        target_segment_ids = jnp.expand_dims(segment_ids, -1)
+        source_segment_ids = jnp.expand_dims(segment_ids, -2)
+        # Target [b..., t] + Source [b..., s] -> [b..., t, s]
+        # [b, 1, ..., t, s] where the value at [..., i, j] = false if
+        # target_segments[..., i] == source_segments[..., j], or true otherwise.
+        mask = jax.lax.ne(source_segment_ids, target_segment_ids)[:, None, ...]
+        logits = jnp.where(mask, NEG_INF, logits)
 
     if causal:
         mask_shape = (q.shape[1], k.shape[1])
@@ -73,8 +77,8 @@ def mha_reference(
     return jnp.einsum("bnts,bsnh->btnh", probs, v).astype(v.dtype)
 
 
-# Accepts [query, key, value, attention_bias] tensors and returns the context Tensor.
-MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor], Tensor]
+# Accepts [query, key, value, attention_bias, segment_ids] tensors and returns the context Tensor.
+MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tensor]
 
 
 def flash_attention_implementation(
@@ -103,16 +107,28 @@ def flash_attention_implementation(
     if backend == "gpu":
         # shard_map-decorated function needs to be jitted.
         @jax.jit
-        def jit_attn(query, key, value, bias):
-            return cudnn_dot_product_attention(
-                query,
-                key,
-                value,
-                bias=bias,
-                softmax_scale=softmax_scale,
-                causal=causal,
-                dropout_rate=0.0,
-            )
+        def jit_attn(query, key, value, bias, segment_ids):
+            if segment_ids is None:
+                return cudnn_dot_product_attention(
+                    query,
+                    key,
+                    value,
+                    bias=bias,
+                    softmax_scale=softmax_scale,
+                    causal=causal,
+                    dropout_rate=0.0,
+                )
+            else:
+                # Fall back to triton kernel when segment_ids is present.
+                return gpu_flash_attention(
+                    query,
+                    key,
+                    value,
+                    bias=bias,
+                    segment_ids=segment_ids,
+                    softmax_scale=softmax_scale,
+                    causal=causal,
+                )
 
         return jit_attn
 
@@ -134,12 +150,13 @@ def flash_attention_implementation(
 
         # shard_map-decorated function needs to be jitted.
         @jax.jit
-        def jit_attn(query, key, value, bias):
+        def jit_attn(query, key, value, bias, segment_ids):
             context = tpu_flash_attention(
                 query,
                 key,
                 value,
                 bias=bias,
+                segment_ids=segment_ids,
                 causal=causal,
                 softmax_scale=softmax_scale,
                 block_sizes=block_sizes,
@@ -155,12 +172,13 @@ def flash_attention_implementation(
 
         # shard_map-decorated function needs to be jitted.
         @jax.jit
-        def jit_attn(query, key, value, bias):
+        def jit_attn(query, key, value, bias, segment_ids):
             return mha_reference(
                 query,
                 key,
                 value,
                 bias=bias,
+                segment_ids=segment_ids,
                 causal=causal,
                 softmax_scale=softmax_scale,
             )
