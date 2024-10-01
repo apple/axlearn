@@ -26,10 +26,6 @@ Due to the caveats mentioned in the above link, we make several simplifying assu
 """
 # pylint: disable=wrong-import-position,missing-param-doc,differing-param-doc
 import functools
-import os
-
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5"
-
 from collections.abc import Sequence
 from typing import Any, Optional
 
