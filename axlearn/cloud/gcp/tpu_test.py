@@ -24,6 +24,7 @@ from axlearn.cloud.gcp.tpu import (
     tpu_info_table,
 )
 from axlearn.common import file_system as fs
+from axlearn.common.compiler_options import NotTpuError
 
 
 class TpuUtilsTest(parameterized.TestCase):
@@ -42,8 +43,8 @@ class TpuUtilsTest(parameterized.TestCase):
     @parameterized.parameters(
         dict(instance_type="v4-8", expected="v4-8"),
         dict(instance_type="tpu-v4-8", expected="v4-8"),
-        dict(instance_type="gpu", expected=ValueError("Invalid")),
-        dict(instance_type=None, expected=ValueError("Invalid")),
+        dict(instance_type="gpu", expected=NotTpuError("Invalid")),
+        dict(instance_type=None, expected=NotTpuError("Invalid")),
     )
     def test_infer_tpu_type(self, instance_type, expected: Union[str, Exception]):
         if isinstance(expected, Exception):
