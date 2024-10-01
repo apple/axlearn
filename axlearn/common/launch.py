@@ -113,7 +113,9 @@ def setup():
     logging.info("Devices: %s", devices)
     local_devices = jax.local_devices()
     logging.info("Local Devices: %s", local_devices)
-    if FLAGS.jax_backend != "proxy" and (not devices or not all(device.platform == FLAGS.jax_backend for device in devices) ):
+    if FLAGS.jax_backend != "proxy" and (
+        not devices or not all(device.platform == FLAGS.jax_backend for device in devices)
+    ):
         raise RuntimeError(f"Expected backend {FLAGS.jax_backend}. Got {devices}.")
     if FLAGS.data_dir:
         # TODO(ruoming): Get rid of --data_dir and use only env var DATA_DIR.

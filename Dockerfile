@@ -33,8 +33,6 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
 RUN pip install flit
 RUN pip install --upgrade pip
-COPY previewutilities-0.0.5-py3-none-any.whl previewutilities-0.0.5-py3-none-any.whl
-RUN pip install previewutilities-0.0.5-py3-none-any.whl
 
 ################################################################################
 # CI container spec.                                                           #
