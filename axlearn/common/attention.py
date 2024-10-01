@@ -189,6 +189,7 @@ class BaseTransformerLayer(BaseLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
+        target_segment_ids: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes transformer layer outputs given full-sequence inputs.
@@ -205,6 +206,7 @@ class BaseTransformerLayer(BaseLayer):
                 [source_batch, source_length, source_dim].
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
+            target_segment_ids: See ``segment_ids`` in the file comments.
             return_aux: A set of auxiliary output fields to return. Each element must be an
                 optional field of `Output`, e.g.,
                 `return_aux = {"self_attention_probs", "self_attention_kv_state"}` means that
@@ -3166,12 +3168,14 @@ class ParallelTransformerLayer(BaseTransformerLayer):
         *,
         data: Tensor,
         self_attention_logit_biases: Optional[Tensor] = None,
+        target_segment_ids: Optional[Tensor] = None,
     ) -> BaseTransformerLayer.Output:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
         Args:
             data: A Tensor of shape [batch, target_length, target_dim].
             self_attention_logit_biases: An optional Tensor representing the self-attention biases.
+            target_segment_ids: See ``segment_ids`` in the file comments.
 
         Returns:
             An Output instance, where .data is of the same shape as `data`, .self_attention_probs is
@@ -3187,6 +3191,7 @@ class ParallelTransformerLayer(BaseTransformerLayer):
             key=data,
             value=data,
             attention_logit_biases=self_attention_logit_biases,
+            segment_ids=target_segment_ids,
         )
         feed_forward_outputs = self.feed_forward(data)
         outputs = inputs + self_atten_outputs.data + feed_forward_outputs
@@ -3251,10 +3256,6 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             data: A Tensor of shape [batch, target_length, target_dim].
-            self_attention_logit_biases: An optional Tensor representing the self-attention biases.
-            cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
-            cross_attention_logit_biases: An optional Tensor representing the cross-attention
-                biases.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
 
         Returns:
@@ -3816,23 +3817,13 @@ class _TransformerPipeline(Pipeline):
         self,
         data: Tensor,
         *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
+        **kwargs,
     ) -> TransformerLayer.Output:
         carry_in = dict(data=data)
         return_aux = return_aux or set()
 
-        # Even though attention logit biases do not change across layers, we
-        # include them in the carry so that they are aligned with the microbatches.
-        if self_attention_logit_biases is not None:
-            carry_in["self_attention_logit_biases"] = self_attention_logit_biases
-        if cross_attention_data is not None:
-            carry_in["cross_attention_data"] = cross_attention_data
-        if cross_attention_logit_biases is not None:
-            carry_in["cross_attention_logit_biases"] = cross_attention_logit_biases
-
+        carry_in.update(kwargs)
         carry_in = self._to_microbatches(carry_in)
         self.vlog(3, "carry_in=%s", shapes(carry_in))
 
@@ -3899,19 +3890,9 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
     def forward(
         self,
         data: Tensor,
-        *,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
-        return_aux: Optional[set[str]] = None,
+        **kwargs,
     ) -> TransformerLayer.Output:
-        return self.pipeline(
-            data,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
-            return_aux=return_aux,
-        )
+        return self.pipeline(data, **kwargs)
 
     # TODO(sneha): extend_step
 
