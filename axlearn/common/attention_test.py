@@ -3996,7 +3996,9 @@ class StackedTransformerTest(BaseTransformerTest):
                 def _loss(layer_params, data, mask, layer=layer):
                     layer_outputs, layer_output_collection = F(
                         layer,
-                        inputs=dict(data=data, self_attention_logit_biases=mask),
+                        inputs=dict(
+                            data=data, self_attention_logit_biases=mask, target_segment_ids=None
+                        ),
                         state=layer_params,
                         is_training=True,
                         prng_key=jax.random.PRNGKey(0),
