@@ -3823,6 +3823,8 @@ class _TransformerPipeline(Pipeline):
         carry_in = dict(data=data)
         return_aux = return_aux or set()
 
+        # Even though attention logit biases do not change across layers, we
+        # include them in the carry so that they are aligned with the microbatches.
         carry_in.update(kwargs)
         carry_in = self._to_microbatches(carry_in)
         self.vlog(3, "carry_in=%s", shapes(carry_in))
