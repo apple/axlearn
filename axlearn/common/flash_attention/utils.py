@@ -7,12 +7,11 @@ from typing import Callable, Literal, Optional
 import jax
 import jax.numpy as jnp
 from absl import logging
-from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes
 
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention import NEG_INF, MaskFn, causal_mask
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
 from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
-from axlearn.common.flash_attention.tpu_attention import flash_attention as tpu_flash_attention
+from axlearn.common.flash_attention.tpu_attention import tpu_flash_attention
 from axlearn.common.utils import Tensor
 
 
@@ -67,8 +66,8 @@ def mha_reference(
         mask_shape = (q.shape[1], k.shape[1])
         row_ids = jax.lax.broadcasted_iota(jnp.int32, mask_shape, 0)
         col_ids = jax.lax.broadcasted_iota(jnp.int32, mask_shape, 1)
-        causal_mask = (row_ids < col_ids)[None, None, :, :]
-        logits = jnp.where(causal_mask, NEG_INF, logits)
+        mask = (row_ids < col_ids)[None, None, :, :]  # Causal mask.
+        logits = jnp.where(mask, NEG_INF, logits)
 
     logits_dtype = logits.dtype
     logits = logits.astype(jnp.float32)
@@ -84,7 +83,7 @@ MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tens
 def flash_attention_implementation(
     backend: Literal["cpu", "tpu", "gpu", "xla"],
     *,
-    causal: bool,
+    mask: Optional[MaskFn] = None,
     softmax_scale: float,
     block_size: int = 128,
 ) -> MultiHeadAttentionImpl:
@@ -92,7 +91,8 @@ def flash_attention_implementation(
 
     Args:
         backend: A valid XLA backend name. 'cpu' intended for testing only.
-        causal: Whether the attention is causal (allows for additional efficiency optimizations).
+        mask: A mask to use when computing the attention. This allows for more efficient
+            computation than setting bias = -inf on certain backends.
         softmax_scale: A scalar value applied to the logits before softmax.
         block_size: The size of the computation-block unit, only applies to the 'tpu' backend.
             A multiple of 128, and should be less than the target sequence length.
@@ -104,6 +104,14 @@ def flash_attention_implementation(
     Raises:
         NotImplementedError: If implementation for the backend is not available.
     """
+    causal = mask is causal_mask
+    if mask is not None and not causal and backend != "tpu":
+        raise NotImplementedError(
+            "Custom (non-causal, non-full) mask only supported on TPU.\n"
+            "You can use NEG_INF biases instead, but it won't "
+            "have the sparsity optimizations."
+        )
+
     if backend == "gpu":
         # shard_map-decorated function needs to be jitted.
         @jax.jit
@@ -133,21 +141,6 @@ def flash_attention_implementation(
         return jit_attn
 
     elif backend == "tpu":
-        # TODO(tom_gunter): See if we can do better block-size tuning.
-        block_sizes = BlockSizes(
-            block_q=block_size,
-            block_k_major=block_size,
-            block_k=block_size,
-            block_b=1,
-            block_q_major_dkv=block_size,
-            block_k_major_dkv=block_size,
-            block_k_dkv=block_size,
-            block_q_dkv=block_size,
-            block_k_major_dq=block_size,
-            block_k_dq=block_size,
-            block_q_dq=block_size,
-        )
-
         # shard_map-decorated function needs to be jitted.
         @jax.jit
         def jit_attn(query, key, value, bias, segment_ids):
@@ -157,9 +150,9 @@ def flash_attention_implementation(
                 value,
                 bias=bias,
                 segment_ids=segment_ids,
-                causal=causal,
+                mask=mask,
                 softmax_scale=softmax_scale,
-                block_sizes=block_sizes,
+                block_size=block_size,
             )
             return context
 
