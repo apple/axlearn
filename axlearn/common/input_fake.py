@@ -450,24 +450,22 @@ def fake_speech_source(
 
 def fake_grain_source(
     examples: Sequence[Any],
-    repeat: int = 1,
+    *,
+    repeat: Optional[int] = 1,
     shuffle_seed: Optional[int] = None,
-) -> BuildDatasetFn:
+):
     """Returns a fake grain input source."""
 
     if len(examples) == 0:
-        raise ValueError("examples cannot be empty")
+        raise ValueError("Input examples cannot be empty.")
 
-    def fn():
-        # Lazy import to avoid introducing a global dependency.
-        # pylint: disable-next=import-outside-toplevel
-        from grain._src.python.dataset.transformations import source
+    # Lazy import to avoid introducing a global dependency.
+    # pylint: disable-next=import-outside-toplevel
+    from grain._src.python.dataset.transformations import source
 
-        ds = source.SourceMapDataset(examples)
-        if shuffle_seed is not None:
-            ds = ds.seed(shuffle_seed)
-            ds = ds.shuffle()  # Uses the configured seed, if provided.
-        ds = ds.repeat(num_epochs=repeat)
-        return ds
-
-    return fn
+    ds = source.SourceMapDataset(examples)
+    if shuffle_seed is not None:
+        ds = ds.seed(shuffle_seed)
+        ds = ds.shuffle()  # Uses the configured seed, if provided.
+    ds = ds.repeat(num_epochs=repeat)
+    return ds
