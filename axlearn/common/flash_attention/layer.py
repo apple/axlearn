@@ -48,14 +48,23 @@ class FlashAttention(GroupedQueryAttention):
             * Does not support dropout.
             * Does not support gradients wrt. attention logit biases.
             * Supports a subset of config fields and outputs.
+
+    On TPU, we only pay to attend to non-masked entries by using Pallas's SplashAttention
+    when supported.
+    Otherwise, we pay for every entry unless `mask=causal_mask`.
+    Note that using an identical implementation of `causal_mask` that does not
+    compare reference equal to `causal_activated_attention` will not trigger the optimization
+    when not using SplashAttention.
     """
 
     @config_class
     class Config(GroupedQueryAttention.Config):
         """Configures FlashAttention."""
 
+        # Deprecated. Use `mask=causal_mask` instead.
         # If True, applies additional optimizations in the FlashAttention kernels.
         # Causal attention can still be used when False, by passing logit biases.
+        # TODO (apghml) remove this in favor of `mask`.
         causal: bool = False
         # The block size used to tile attention computation (for TPU only).
         # Should be less than the target sequence length and a multiple of 128 on TPU.
@@ -101,13 +110,13 @@ class FlashAttention(GroupedQueryAttention):
         }
         return cfg
 
-    def _causal_mask(
+    def _logit_biases_for_mask(
         self, *, mode: ForwardMode, seq_len: int, time_step: Optional[Tensor] = None
     ) -> Optional[Tensor]:
         if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
             # No need for mask because flash attention supports the causal mode natively.
             return None
-        return super()._causal_mask(mode=mode, seq_len=seq_len, time_step=time_step)
+        return super()._logit_biases_for_mask(mode=mode, seq_len=seq_len, time_step=time_step)
 
     def _backend(self):
         # For compatibility with AOT compilation, we obtain the backend type from physical_mesh.
@@ -144,12 +153,14 @@ class FlashAttention(GroupedQueryAttention):
             segment_ids = None
 
         if backend == "tpu":
-            assert (
-                q_proj.shape[1] % cfg.tpu_block_size == 0
-            ), "Target seq len must divide block size."
-            assert (
-                k_proj.shape[1] % cfg.tpu_block_size == 0
-            ), "Source seq len must divide block size."
+            assert q_proj.shape[1] % cfg.tpu_block_size == 0, (
+                f"Target seq len {q_proj.shape[1]} must be "
+                f"divisible by block size {cfg.tpu_block_size}."
+            )
+            assert k_proj.shape[1] % cfg.tpu_block_size == 0, (
+                f"Source seq len {k_proj.shape[1]} must be "
+                f"divisible by block size {cfg.tpu_block_size}."
+            )
 
         if attention_logit_biases is not None:
             if attention_logit_biases.ndim != 4:
@@ -158,22 +169,23 @@ class FlashAttention(GroupedQueryAttention):
                 )
             attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
+        mask_fn = self._mask_fn
+
         # During GPU decoding, fall back to plain MHA implementation
         # since the seq_len will not be divisible by block size.
         # For prefilling, seq_len can be > 1 and logit biases may not always be provided,
-        # so we retain `cfg.causal`.
+        # so we retain `mask_fn`.
         # For decoding, seq_len = 1 and logit biases are always provided,
-        # so we set "causal" flag to False.
-        causal = cfg.causal
+        # so we set `mask_fn` to None.
         if q_proj.shape[1] % 128 != 0:
             backend = "xla"
             # TODO(senyut): Implement FlashDecoding kernel and support TPU decoding.
             if q_proj.shape[1] == 1:
-                causal = False
+                mask_fn = None
 
         jit_attn: MultiHeadAttentionImpl = flash_attention_implementation(
             backend=backend,
-            causal=causal,
+            mask=mask_fn,
             softmax_scale=1.0,
             block_size=cfg.tpu_block_size,
         )

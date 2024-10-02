@@ -747,6 +747,7 @@ def cudnn_dot_product_attention(
         mask = jnp.zeros(0, dtype=query.dtype)
     q_seqlen = jnp.zeros(0, dtype=query.dtype)
     kv_seqlen = jnp.zeros(0, dtype=query.dtype)
+    # pylint: disable-next=too-many-function-args
     output = _dot_product_attention(
         query,
         key,
