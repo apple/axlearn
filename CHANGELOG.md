@@ -1,5 +1,10 @@
 # Change Log
 
+## 0.1.2
+
+* Changes
+    * Upgrade Python to 3.10
+
 ## 0.1.1
 
 * Changes
