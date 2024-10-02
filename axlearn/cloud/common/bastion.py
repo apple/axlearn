@@ -716,6 +716,8 @@ class Bastion(Configurable):
             f.write(f"{curr_time} {msg}\n")
         # Publish event into queue.
         if self._event_publisher:
+            logging.info("Publishing event for job: %s, job_id: %s, state: %s",
+                         job.spec.name, job.spec.metadata.job_id, state)
             self._event_publisher.publish(
                 JobLifecycleEvent(
                     job_name=job.spec.name,
