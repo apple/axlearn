@@ -321,6 +321,7 @@ class TensorStoreStateStorage(StateStorage):
 
         timeout_secs: float = 3600
         max_data_shard_degree: Optional[int] = None
+        # TODO(hanzhi-zhou): rename this to max_concurrent_save_gb.
         max_concurrent_gb: Optional[int] = None
         max_concurrent_restore_gb: Optional[int] = None
 
