@@ -91,6 +91,7 @@ gcp = [
     "google-auth==2.29.0",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
     "google-cloud-storage==2.16.0",
+    "google-cloud-compute==1.19.2", # Needed for region discovery for CloudBuild API access.
     "google-cloud-core==2.3.3",
     "google-cloud-build==3.24.1",
     "ml_goodput_measurement==0.0.2",
