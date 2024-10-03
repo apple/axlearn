@@ -759,7 +759,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
         self.vlog(
             3,
             (
-                f"am_dim={cfg.input_dim}, lm_dim={cfg.lm_dim}, joint_dim={cfg.joint_dim}，"
+                f"am_dim={cfg.input_dim}, lm_dim={cfg.lm_dim}, joint_dim={cfg.joint_dim}, "
                 f"vocab_size={cfg.vocab_size}."
             ),
         )
@@ -995,9 +995,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
         """
         batch_size, src_max_len = input_batch["paddings"].shape  # pytype: disable=attribute-error
         if max_decode_len <= src_max_len:
-            raise ValueError(
-                f"max_decode_len = {max_decode_len} is smaller than src_max_len={src_max_len}."
-            )
+            raise ValueError(f"{max_decode_len=} is smaller than {src_max_len=}.")
 
         cfg = self.config
         blank_id, eos_id, bos_id = cfg.blank_id, cfg.eos_id, cfg.bos_id
