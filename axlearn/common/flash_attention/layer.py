@@ -128,6 +128,15 @@ class FlashAttention(GroupedQueryAttention):
             backend = jax.default_backend()
         return backend
 
+    def _logit_biases_spec(self, attention_logit_biases: Tensor) -> Tensor:
+        spec = self.config.mha_dim_to_partition_spec["bnts"]
+        if spec != PartitionSpec(None):
+            if attention_logit_biases.shape[0] == 1:
+                spec = PartitionSpec(None, *spec[1:])
+            if attention_logit_biases.shape[1] == 1:
+                spec = PartitionSpec(spec[0], None, *spec[2:])
+        return spec
+
     def _compute_attention(
         self,
         *,
@@ -143,6 +152,9 @@ class FlashAttention(GroupedQueryAttention):
         # Repeats key/value heads dim if necessary.
         k_proj = self._repeat_kv_heads(k_proj)
         v_proj = self._repeat_kv_heads(v_proj)
+
+        batch, target_len, num_heads, _ = q_proj.shape
+        _, source_len, _, _ = k_proj.shape
 
         # Merge segment ids into attention_logit_biases.
         if segment_ids is not None and attention_logit_biases is not None:
@@ -166,6 +178,15 @@ class FlashAttention(GroupedQueryAttention):
             if attention_logit_biases.ndim != 4:
                 raise ValueError(
                     f"Expected attention_logit_biases.ndim == 4, got {attention_logit_biases.ndim}"
+                )
+            bias_shape = attention_logit_biases.shape
+            if (bias_shape[0] != 1 and bias_shape[0] != batch) or (
+                bias_shape[1] != 1 and bias_shape[1] != num_heads
+            ):
+                raise ValueError(
+                    "attention_logit_biases must broadcast to "
+                    f"{(batch, num_heads, target_len, source_len)}, "
+                    f"got {attention_logit_biases.shape}."
                 )
             attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
@@ -197,27 +218,12 @@ class FlashAttention(GroupedQueryAttention):
             else PartitionSpec(None)
         )
 
-        # We need to manually partition pallas | jax-triton calls.
-        # Note: shard_map doesn't support kwargs.
-        partitioned_mha = shard_map(
-            jit_attn,
-            mesh=thread_resources.env.physical_mesh,
-            in_specs=(
-                # QKV [batch_size, seq_len, num_heads, per_head_dim].
-                cfg.mha_dim_to_partition_spec["btnh"],
-                cfg.mha_dim_to_partition_spec["bsnh"],
-                cfg.mha_dim_to_partition_spec["bsnh"],
-                # Bias [batch_size, num_heads, seq_len, seq_len].
-                cfg.mha_dim_to_partition_spec["bnts"],
-                # Segment IDs [batch_size, seq_len].
-                segment_ids_spec,
-            ),
-            # O [batch_size, seq_len, num_heads, per_head_dim].
-            out_specs=cfg.mha_dim_to_partition_spec["btnh"],
-            # Disables a checking pass which jax can't apply when there's a triton | pallas
-            # call in the body.
-            check_rep=False,
-        )
+        attention_logit_biases_spec = cfg.mha_dim_to_partition_spec["bnts"]
+        if attention_logit_biases is not None:
+            attention_logit_biases_spec = self._logit_biases_spec(attention_logit_biases)
+            attention_logit_biases = with_sharding_constraint(
+                attention_logit_biases, attention_logit_biases_spec
+            )
 
         # Scale query and key.
         q_proj = self.scale_query(q_proj)
@@ -228,21 +234,6 @@ class FlashAttention(GroupedQueryAttention):
         k_proj = with_sharding_constraint(k_proj, cfg.mha_dim_to_partition_spec["bsnh"])
         v_proj = with_sharding_constraint(v_proj, cfg.mha_dim_to_partition_spec["bsnh"])
 
-        batch, target_len, num_heads, _ = q_proj.shape
-        _, source_len, _, _ = k_proj.shape
-        if attention_logit_biases is not None:
-            if attention_logit_biases.shape[0] != q_proj.shape[0]:
-                raise ValueError(
-                    "attention_logit_biases must have matching batch dim: "
-                    f"{attention_logit_biases.shape} vs. {q_proj.shape[0]}"
-                )
-
-            attention_logit_biases = jnp.broadcast_to(
-                attention_logit_biases, (batch, num_heads, target_len, source_len)
-            )
-            attention_logit_biases = with_sharding_constraint(
-                attention_logit_biases, cfg.mha_dim_to_partition_spec["bnts"]
-            )
         if segment_ids is not None:
             if segment_ids.shape[0] != q_proj.shape[0]:
                 raise ValueError(
@@ -250,6 +241,28 @@ class FlashAttention(GroupedQueryAttention):
                     f"{segment_ids.shape} vs. {q_proj.shape[0]}"
                 )
             segment_ids = with_sharding_constraint(segment_ids, segment_ids_spec)
+
+        # We need to manually partition pallas | jax-triton calls.
+        # Note: shard_map doesn't support kwargs.
+        partitioned_mha = shard_map(
+            jit_attn,
+            mesh=thread_resources.env.physical_mesh,
+            in_specs=(
+                # QKV [batch_size, seq_len, num_heads, per_head_dim].
+                cfg.mha_dim_to_partition_spec["btnh"],
+                cfg.mha_dim_to_partition_spec["bsnh"],
+                cfg.mha_dim_to_partition_spec["bsnh"],
+                # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].
+                attention_logit_biases_spec,
+                # Segment IDs [batch_size, seq_len].
+                segment_ids_spec,
+            ),
+            # O [batch_size, seq_len, num_heads, per_head_dim].
+            out_specs=cfg.mha_dim_to_partition_spec["btnh"],
+            # Disables a checking pass which jax can't apply when there's a triton | pallas
+            # call in the body.
+            check_rep=False,
+        )
 
         outputs = with_sharding_constraint(
             partitioned_mha(q_proj, k_proj, v_proj, attention_logit_biases, segment_ids),
@@ -284,7 +297,6 @@ def default_mha_dim_to_partition_spec(
         "btnh": PartitionSpec(batch_axis_names, None, tp_axis_name, None),
         "bsnh": PartitionSpec(batch_axis_names, None, tp_axis_name, None),
         "bnts": PartitionSpec(batch_axis_names, tp_axis_name, None, None),
-        "bt": PartitionSpec(batch_axis_names, None),
     }
 
 

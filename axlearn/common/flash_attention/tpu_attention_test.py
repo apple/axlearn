@@ -52,7 +52,7 @@ class TestFlashAttention(TestCase):
     @parameterized.product(
         _TEST_CONFIGS,
         mask=[None, causal_mask, jax_fn_mask],
-        with_attention_bias=[False, True],
+        attention_bias_type=[None, "2d", "4d"],
         with_segment_ids=[False, True],
         per_head_dim=[32, 64, 128, 256],
     )
@@ -63,13 +63,15 @@ class TestFlashAttention(TestCase):
         num_heads,
         per_head_dim,
         mask,
-        with_attention_bias,
+        attention_bias_type,
         with_segment_ids,
     ):
         # pylint: disable=protected-access
         causal = mask in [causal_mask, jax_fn_mask]
 
-        fallback_to_legacy = per_head_dim % 128 != 0 or with_attention_bias or with_segment_ids
+        fallback_to_legacy = (
+            per_head_dim % 128 != 0 or (attention_bias_type is not None) or with_segment_ids
+        )
 
         if fallback_to_legacy and mask is jax_fn_mask:
             pytest.skip("Custom masks are not supported by legacy attention.")
@@ -85,7 +87,9 @@ class TestFlashAttention(TestCase):
             k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16
         )
         attention_bias = None
-        if with_attention_bias:
+        if attention_bias_type == "2d":
+            attention_bias = jax.random.normal(k4, (1, 1, seq_len, seq_len), dtype=jnp.bfloat16)
+        elif attention_bias_type == "4d":
             attention_bias = jax.random.normal(
                 k4, (batch_size, num_heads, seq_len, seq_len), dtype=jnp.bfloat16
             )

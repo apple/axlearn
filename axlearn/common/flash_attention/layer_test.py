@@ -271,6 +271,30 @@ class TestFlashAttention(TestCase):
             backend = test_layer._backend()  # pylint: disable=protected-access
             self.assertEqual(backend, "tpu")
 
+    @parameterized.parameters(_TEST_CONFIGS)
+    def test_shard_biases(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names):
+        if not is_supported_mesh_shape(mesh):
+            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            test_layer, _, _, _ = _prepare_layers(
+                num_heads=num_heads,
+                per_head_dim=per_head_dim,
+                mesh_axis_names=mesh_axis_names,
+                causal=True,
+            )
+            bias = jnp.ones((batch, num_heads, seq_len, seq_len))
+            spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            self.assertEqual(spec, test_layer.config.mha_dim_to_partition_spec["bnts"])
+
+            bias = jnp.ones((batch, 1, seq_len, seq_len))
+            spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            self.assertEqual(spec[1], None)
+
+            bias = jnp.ones((1, 1, seq_len, seq_len))
+            spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            self.assertEqual(spec[0], None)
+            self.assertEqual(spec[1], None)
+
     @parameterized.product(
         _TEST_CONFIGS, causal=[False, True], use_bias=[False, True], use_segment_ids=[False, True]
     )

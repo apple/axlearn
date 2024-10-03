@@ -33,8 +33,10 @@
 """Attention layers with pjit partition specs.
 
 On `attention_logit_biases`:
-* A biases tensor can have shape [batch, target_length, source_length] or
-  [batch, num_heads, target_length, source_length].
+* A biases tensor can have one of the following shapes:
+  * [target_length, source_length]
+  * [batch, target_length, source_length]
+  * [batch, num_heads, target_length, source_length].
 * Each value represents a bias to be added to the attention logits
   (therefore a -inf represents a disconnected position pair).
 * biases=None represents an all-zero tensor, i.e., all position pairs are connected.
@@ -1810,9 +1812,17 @@ class MultiheadAttention(BaseLayer):
         self.vlog(3, "atten.q_proj=%s", q_proj.sum())
         self.vlog(3, "atten.k_proj=%s", k_proj.sum())
         self.vlog(3, "atten.v_proj=%s", v_proj.sum())
-        if attention_logit_biases is not None and attention_logit_biases.ndim == 3:
-            # [batch, 1, target_length, source_length].
-            attention_logit_biases = attention_logit_biases[:, None, :, :]
+        if attention_logit_biases is not None:
+            if attention_logit_biases.ndim == 3:
+                # [batch, 1, target_length, source_length].
+                attention_logit_biases = attention_logit_biases[:, None, :, :]
+            elif attention_logit_biases.ndim == 2:
+                # [1, 1, target_length, source_length].
+                attention_logit_biases = attention_logit_biases[None, None, :, :]
+            elif attention_logit_biases.ndim != 4:
+                raise ValueError(
+                    f"Invalid attention_logit_biases shape: {attention_logit_biases.shape}."
+                )
         if self._mask_fn is not None:
             if mode == ForwardMode.EXTEND_STEP:
                 seq_len = k_proj.shape[1]
