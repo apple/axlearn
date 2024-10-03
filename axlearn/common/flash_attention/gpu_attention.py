@@ -34,12 +34,7 @@ import jax.numpy as jnp
 
 # pytype: disable=import-error  # pylint: disable=import-error
 from jax import lax
-from jax._src.cudnn.fused_attention_stablehlo import (
-    MaskType,
-    _dot_product_attention,
-    _normalize_layout,
-    check_cudnn_version,
-)
+from jax._src.cudnn.fused_attention_stablehlo import MaskType, dot_product_attention
 from jax._src.lib import cuda_versions
 from jax.experimental import pallas as pl
 
@@ -730,38 +725,20 @@ def cudnn_dot_product_attention(
 
     if qkv_layout != "BTNH":
         raise NotImplementedError(f"Unsupported qkv_layout: {qkv_layout}")
-    # Check if cuDNN is installed.
-    cudnn_version = check_cudnn_version()
     # Support Ampere and Hopper only for now.
     _check_local_compute_capability((80, 90))
     mask_type = MaskType.NO_MASK if not causal else MaskType.CAUSAL
-    layout = _normalize_layout(qkv_layout)
 
-    has_bias = bias is not None
-    has_mask = mask is not None
-    has_dbias = False
-    variadic_args = (has_bias, has_mask, has_dbias)
-    if bias is None:
-        bias = jnp.zeros(0, dtype=query.dtype)
-    if mask is None:
-        mask = jnp.zeros(0, dtype=query.dtype)
-    q_seqlen = jnp.zeros(0, dtype=query.dtype)
-    kv_seqlen = jnp.zeros(0, dtype=query.dtype)
-    # pylint: disable-next=too-many-function-args
-    output = _dot_product_attention(
-        query,
-        key,
-        value,
-        bias,
-        mask,
-        q_seqlen,
-        kv_seqlen,
-        softmax_scale,
-        seed,
-        dropout_rate,
-        variadic_args,
-        mask_type,
-        layout.value,
-        cudnn_version,
+    output = dot_product_attention(
+        query=query,
+        key=key,
+        value=value,
+        bias=bias,
+        mask=mask,
+        scale=softmax_scale,
+        seed=seed,
+        dropout_rate=dropout_rate,
+        mask_type=mask_type,
+        qkv_layout=qkv_layout,
     )
     return output
