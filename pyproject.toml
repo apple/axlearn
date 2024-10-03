@@ -138,6 +138,7 @@ mmau = [
     "nbconvert==7.16.4",
     "google-cloud-aiplatform==1.50.0",
     "transformers==4.44.1",
+    "huggingface-hub==0.24.6",
 ]
 # Orbax checkpointing.
 orbax = [

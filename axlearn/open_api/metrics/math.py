@@ -91,7 +91,7 @@ def metric_fn(
         del resp["response"]
         resp.update({"messages": [{"role": "user", "content": judgement_prompt}]})
         judgement_requests.append(resp)
-
+    judgement_requests = copy.deepcopy(judgement_requests)
     grader_generator = generators[EvalGeneratorType.GRADER]
     judgement_responses = asyncio.run(
         grader_generator.async_generate_from_requests(gen_requests=judgement_requests)
