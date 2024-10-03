@@ -851,6 +851,13 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                 storage._manager, array_serialization.GlobalAsyncCheckpointManager
             )
 
+    def test_max_concurrent_restore_gb_setting(self):
+        with self.assertRaisesRegex(ValueError, "strictly positive"):
+            TensorStoreStateStorage.default_config().set(max_concurrent_restore_gb=-2).instantiate()
+        t = TensorStoreStateStorage.default_config().instantiate()
+        # Test default value.
+        self.assertEqual(t._max_concurrent_restore_gb, 32)
+
     def test_stop(self):
         storage = TensorStoreStateStorage.default_config().instantiate()
         worker_result = None
