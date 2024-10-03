@@ -33,8 +33,9 @@ def mha_reference(
         q: query tensor with shape [batch_size, seq_len, num_heads, per_head_dim]
         k: key tensor with shape [batch_size, seq_len, num_heads, per_head_dim]
         v: value tensor with shape [batch_size, seq_len, num_heads, per_head_dim]
-        bias: bias tensor with shape [batch_size, num_heads, seq_len, seq_len] for matrix bias,
-                and [batch_size, seq_len] for vector bias.
+        bias: bias tensor with a shape that can broadcast to
+            [batch_size, num_heads, seq_len, seq_len], e.g. [1, 1, seq_len, seq_len].
+        segment_ids: segment ids tensor with shape [batch_size, seq_len].
         causal: whether the attention is causal.
         softmax_scale: a scalar value applied to the logits before softmax.
         bias_type: the type of bias to apply. "matrix" for matrix bias, "vector" for additive bias.
@@ -48,8 +49,8 @@ def mha_reference(
 
     # Check if we need to build a segment id mask.
     if bias is not None:
-        # matrix bias, shape [batch_size, ..., seq_len, seq_len]
-        assert bias.ndim >= 3
+        # bias should broadcast to [batch_size, num_heads, seq_len, seq_len].
+        assert bias.ndim >= 2
         logits += bias.astype(logits.dtype)
 
     if segment_ids is not None:
@@ -116,18 +117,12 @@ def flash_attention_implementation(
         # shard_map-decorated function needs to be jitted.
         @jax.jit
         def jit_attn(query, key, value, bias, segment_ids):
-            if segment_ids is None:
-                return cudnn_dot_product_attention(
-                    query,
-                    key,
-                    value,
-                    bias=bias,
-                    softmax_scale=softmax_scale,
-                    causal=causal,
-                    dropout_rate=0.0,
-                )
-            else:
-                # Fall back to triton kernel when segment_ids is present.
+            batch, target_len, num_heads, _ = query.shape
+            _, source_len, _, _ = key.shape
+            if segment_ids is not None or (
+                bias is not None and bias.shape != (batch, num_heads, target_len, source_len)
+            ):
+                # Fall back to triton kernel.
                 return gpu_flash_attention(
                     query,
                     key,
@@ -136,6 +131,16 @@ def flash_attention_implementation(
                     segment_ids=segment_ids,
                     softmax_scale=softmax_scale,
                     causal=causal,
+                )
+            else:
+                return cudnn_dot_product_attention(
+                    query,
+                    key,
+                    value,
+                    bias=bias,
+                    softmax_scale=softmax_scale,
+                    causal=causal,
+                    dropout_rate=0.0,
                 )
 
         return jit_attn

@@ -13,6 +13,7 @@ Currently tested on A100/H100.
 # pylint: disable=wrong-import-position
 import functools
 import os
+from typing import Literal
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
@@ -44,7 +45,7 @@ from axlearn.common.flash_attention.utils import mha_reference
 @pytest.mark.parametrize("use_fwd", [True, False])
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("sm_scale", [1.0, 0.123])
-@pytest.mark.parametrize("use_bias", [True, False])
+@pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
 @pytest.mark.parametrize("use_segment_ids", [True, False])
 @pytest.mark.skipif(jax.devices()[0].platform != "gpu", reason="Test only runs on GPU.")
 def test_fwd_against_ref(
@@ -56,7 +57,7 @@ def test_fwd_against_ref(
     use_fwd: bool,
     causal: bool,
     sm_scale: float,
-    use_bias: bool,
+    attention_bias_type: Literal["2d", "4d", None],
     use_segment_ids: bool,
 ):
     k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(0), 4)
@@ -64,11 +65,12 @@ def test_fwd_against_ref(
     k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16)
     v = jax.random.normal(k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16)
 
-    bias = (
-        jax.random.normal(k4, (batch_size, num_heads, seq_len, seq_len), dtype=jnp.float16)
-        if use_bias
-        else None
-    )
+    if attention_bias_type == "4d":
+        bias = jax.random.normal(k4, (batch_size, num_heads, seq_len, seq_len), dtype=jnp.float16)
+    elif attention_bias_type == "2d":
+        bias = jax.random.normal(k4, (1, 1, seq_len, seq_len), dtype=jnp.float16)
+    else:
+        bias = None
 
     segment_left = jnp.ones((batch_size, seq_len // 2), dtype=jnp.int32)
     segment_right = jnp.zeros((batch_size, seq_len // 2), dtype=jnp.int32)
@@ -118,7 +120,7 @@ def test_fwd_against_ref(
         (2, 8, 384, 64),
     ],
 )
-@pytest.mark.parametrize("use_bias", [True, False])
+@pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
 @pytest.mark.parametrize("use_segment_ids", [True, False])
 @pytest.mark.parametrize("block_size", [128, 64])
 @pytest.mark.parametrize("causal", [True, False])
@@ -128,7 +130,7 @@ def test_bwd_against_ref(
     num_heads: int,
     seq_len: int,
     per_head_dim: int,
-    use_bias: bool,
+    attention_bias_type: Literal["2d", "4d", None],
     use_segment_ids: bool,
     block_size: int,
     causal: bool,
@@ -143,13 +145,14 @@ def test_bwd_against_ref(
         jax.random.PRNGKey(2), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
     )
 
-    bias = (
-        jax.random.normal(
+    if attention_bias_type == "4d":
+        bias = jax.random.normal(
             jax.random.PRNGKey(3), (batch_size, num_heads, seq_len, seq_len), dtype=jnp.float16
         )
-        if use_bias
-        else None
-    )
+    elif attention_bias_type == "2d":
+        bias = jax.random.normal(jax.random.PRNGKey(3), (1, 1, seq_len, seq_len), dtype=jnp.float16)
+    else:
+        bias = None
 
     segment_left = jnp.ones((batch_size, seq_len // 2), dtype=jnp.int32)
     segment_right = jnp.zeros((batch_size, seq_len // 2), dtype=jnp.int32)
@@ -186,8 +189,8 @@ def test_bwd_against_ref(
         ).sum()
 
     # Compare gradients.
-    jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v, bias)
-    jax_ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v, bias)
+    jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v, bias, segment_ids)
+    jax_ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v, bias, segment_ids)
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05)
 
 
