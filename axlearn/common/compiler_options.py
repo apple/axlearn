@@ -52,6 +52,11 @@ def default_xla_options(
             # concurrently with gradient computation for the following layer.
             xla_tpu_enable_data_parallel_all_reduce_opt="true",
             xla_tpu_data_parallel_opt_different_sized_ops="true",
+            # If MegaScale Runtime Error is encountered when running multi-slice jobs,
+            # enabling this flag will allow for termination of the job, triggering
+            # the process to exit. This is set to true to prevent the job from
+            # silently hanging and to reduce time to recovery.
+            megascale_abort_on_hangs="true",
         )
 
     # Validate options. Will never fail if this function is implemented correctly.
