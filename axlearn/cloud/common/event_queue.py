@@ -188,6 +188,7 @@ class RabbitMQClient(BaseQueueClient):
 
     def publish(self, event: Event):
         """Publishes an event to the queue."""
+        logging.info("Publishing event: %s", event)
         message = event.serialize()
         attempt = 0
         while attempt <= self._num_tries:
@@ -212,7 +213,7 @@ class RabbitMQClient(BaseQueueClient):
                         correlation_id=str(uuid.uuid4()),
                     ),
                 )
-                logging.debug("Published event in queue: %s. message: %s", self._queue_id, message)
+                logging.info("Published event in queue: %s. message: %s", self._queue_id, message)
                 return
             except EventQueueInvalidCredentialsError as e:
                 # Throws for un-recoverable errors.

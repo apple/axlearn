@@ -464,7 +464,7 @@ class GKERunnerJob(GCPJob):
         # Publish events to event queue.
         if not self._event_publisher:
             return
-        logging.info("Publishing event for job: %s, state: %s", job_name, state)
+
         self._event_publisher.publish(JobLifecycleEvent(job_name, state, msg))
 
 
