@@ -370,7 +370,7 @@ class CTCPrefixMergerTest(TestCase):
                 axis=-1,
             )
         )
-        jax.tree_util.tree_map(
+        jax.tree.map(
             np.testing.assert_array_equal,
             state,
             prefill_state,

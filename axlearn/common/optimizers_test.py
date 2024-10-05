@@ -216,7 +216,7 @@ class OptimizerTest(TestCase):
         )
         opt_specs = opt.partition(param_specs)
         print(opt_specs)
-        params = jax.tree_util.tree_map(
+        params = jax.tree.map(
             lambda spec: OptParam(
                 value=jnp.ones(spec.shape, dtype=spec.dtype),
                 factorization_spec=spec.factorization,
@@ -231,7 +231,7 @@ class OptimizerTest(TestCase):
             self.assertEqual(spec.dtype, state.dtype)
             self.assertSequenceEqual(spec.shape, state.shape)
 
-        jax.tree_util.tree_map(_check_spec, opt_specs, states)
+        jax.tree.map(_check_spec, opt_specs, states)
 
     @parameterized.parameters((0.1, 0, True), (0.1, 0.01, True), (0.1, 0.01, False))
     def test_sgd_optimizer(self, learning_rate, weight_decay, decouple_weight_decay):
@@ -376,7 +376,7 @@ class OptimizerTest(TestCase):
                 getattr(x, "dtype", None) == getattr(y, "dtype", None) == getattr(z, "dtype", None)
             )
 
-        jax.tree_util.tree_map(_check_dtypes, init_state, partition_state, update_state)
+        jax.tree.map(_check_dtypes, init_state, partition_state, update_state)
 
     def _test_optimizer(self, optimizer):
         params = OptParam(
@@ -397,7 +397,7 @@ class OptimizerTest(TestCase):
             self.assertEqual(list(spec.shape), list(tree.shape))
             self.assertEqual(len(spec.mesh_axes), tree.ndim)
 
-        jax.tree_util.tree_map(check_partition_spec, state_partition_spec, state)
+        jax.tree.map(check_partition_spec, state_partition_spec, state)
 
         def compute_loss(x):
             return -jax.nn.log_softmax(x)[1]
@@ -568,7 +568,7 @@ class OptimizerTest(TestCase):
         def check_pps(update_pps, update_no_pps, param_rms):
             assert_allclose(update_pps, update_no_pps * param_rms)
 
-        jax.tree_util.tree_map(check_pps, updates_pps, updates_no_pps, params_rms)
+        jax.tree.map(check_pps, updates_pps, updates_no_pps, params_rms)
 
     @parameterized.product(
         weight_decay=(0.1, 0.2), update_schedule=(1.0, 0.2, 0.3), scale_adam_by=(0.2, 0.5)
@@ -738,7 +738,7 @@ class OptimizerTest(TestCase):
         )
         state = optimizer.init(params)
         # Start with zero gradients. Only apply weight decay.
-        zero_grads = jax.tree_util.tree_map(jnp.zeros_like, opt_param_values(params))
+        zero_grads = jax.tree.map(jnp.zeros_like, opt_param_values(params))
         updates, _ = optimizer.update(zero_grads, state=state, params=params)
         updated_value = optax.apply_updates(opt_param_values(params), updates)
         # Weight is decayed with scale 1.
@@ -906,7 +906,7 @@ class OptimizerTest(TestCase):
         state = apply_l2.init(params)
         self.assertEqual(optax.EmptyState, type(state))
         # Start with zero gradients.
-        zero_grads = jax.tree_util.tree_map(jnp.zeros_like, opt_param_values(params))
+        zero_grads = jax.tree.map(jnp.zeros_like, opt_param_values(params))
         updates, _ = apply_l2.update(zero_grads, state=state, params=params)
         updated_value = optax.apply_updates(opt_param_values(params), updates)
         if not per_param_scale:
@@ -923,7 +923,7 @@ class OptimizerTest(TestCase):
             )
         self.assertNestedAllClose(
             updated_value,
-            jax.tree_util.tree_map(lambda p, s: p.value + p.value * s, params, per_param_l2_weight),
+            jax.tree.map(lambda p, s: p.value + p.value * s, params, per_param_l2_weight),
         )
 
     def test_scale_by_trust_ratio(self):
@@ -1154,7 +1154,7 @@ class OptimizerTest(TestCase):
 
         # Check update behaves the same, excepting for any quantization error.
         for step in range(10):
-            updates = jax.tree_util.tree_map(
+            updates = jax.tree.map(
                 lambda x, key=jax.random.PRNGKey(100 + step): jax.random.normal(key, x.shape),
                 opt_params,
             )
@@ -1209,9 +1209,7 @@ class OptimizerTest(TestCase):
             self.assertEqual(optax.EmptyState(), state)
         else:
             self.assertNestedAllClose(
-                ParamEmaState(
-                    count=0, ema=jax.tree_util.tree_map(lambda p: jnp.zeros_like(p.value), params)
-                ),
+                ParamEmaState(count=0, ema=jax.tree.map(lambda p: jnp.zeros_like(p.value), params)),
                 state,
             )
 
@@ -1222,12 +1220,12 @@ class OptimizerTest(TestCase):
             self.assertEqual(new_state.count, 1)
             if isinstance(decay, float):
                 self.assertNestedAllClose(
-                    jax.tree_util.tree_map(lambda p: (1 - decay) * p.value, params),
+                    jax.tree.map(lambda p: (1 - decay) * p.value, params),
                     new_state.ema,
                 )
             else:
                 self.assertNestedAllClose(
-                    jax.tree_util.tree_map(lambda p: p.value, params),
+                    jax.tree.map(lambda p: p.value, params),
                     new_state.ema,
                 )
 
@@ -1360,7 +1358,7 @@ class OptimizerTest(TestCase):
             def compute_loss(param_values):
                 return -jnp.mean(jax.nn.log_softmax(param_values["layer"]["w"])[..., 1])
 
-            param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+            param_values = jax.tree.map(lambda p: p.value, params)
             grads = jax.grad(compute_loss)(param_values)
             print(f"grads={grads}")
             updates, _ = opt.update(grads, state=state, params=params)
@@ -1439,7 +1437,7 @@ class OptimizerTest(TestCase):
             def compute_loss(param_values):
                 return -jnp.mean(jax.nn.log_softmax(param_values["layer"]["w"])[..., 1])
 
-            param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+            param_values = jax.tree.map(lambda p: p.value, params)
             grads = jax.grad(compute_loss)(param_values)
             updates, _ = opt.update(grads, state=state, params=params)
             return updates
@@ -1495,7 +1493,7 @@ class OptimizerTest(TestCase):
                 )
             )
         )
-        param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+        param_values = jax.tree.map(lambda p: p.value, params)
         updates = dict(
             layer=VDict(
                 w=OptParam(
@@ -1505,7 +1503,7 @@ class OptimizerTest(TestCase):
                 )
             )
         )
-        update_values = jax.tree_util.tree_map(lambda u: u.value, updates)
+        update_values = jax.tree.map(lambda u: u.value, updates)
         p_norm = _compute_rms_norms(param_values)
         u_norm = _compute_rms_norms(update_values)
         cov = _compute_covariance(param_values, update_values)

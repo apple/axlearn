@@ -46,7 +46,7 @@ class FactorizationSpec:
 NestedFactorizationSpec = dict[str, Union[FactorizationSpec, Any]]
 
 
-# ParameterSpec is a dataclass so that jax.tree_util.tree_map does not expand it.
+# ParameterSpec is a dataclass so that jax.tree.map does not expand it.
 @dataclasses.dataclass
 class ParameterSpec(TensorSpec):
     """Specification of a layer parameter."""

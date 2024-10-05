@@ -247,7 +247,7 @@ class TreeUtilsTest(TestCase):
             as_tensor(torch.ones([4, 1], dtype=torch.float16)),
         )
         # From a nested structure.
-        jax.tree_util.tree_map(
+        jax.tree.map(
             self.assertTensorEqual,
             {
                 "a": jnp.ones([1], dtype=jnp.float32),
@@ -348,7 +348,7 @@ class TreeUtilsTest(TestCase):
             as_numpy_array(torch.ones([4, 1], dtype=torch.float)),
         )
         # From a nested structure.
-        jax.tree_util.tree_map(
+        jax.tree.map(
             self.assertNumpyArrayEqual,
             {
                 "a": np.ones([1], dtype=np.float32),
@@ -377,16 +377,12 @@ class TreeUtilsTest(TestCase):
         self.assertNestedAllClose([("a", tree["a"]), ("b", tree["b"])], flatten_items(tree))
 
         # Stack 3 trees together.
-        stacked_tree = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), tree, tree, tree)
+        stacked_tree = jax.tree.map(lambda *xs: jnp.stack(xs), tree, tree, tree)
         self.assertEqual(type(stacked_tree), VDict)
-        self.assertEqual(
-            VDict(a=(3, 10), b=(3, 7)), jax.tree_util.tree_map(lambda t: t.shape, stacked_tree)
-        )
+        self.assertEqual(VDict(a=(3, 10), b=(3, 7)), jax.tree.map(lambda t: t.shape, stacked_tree))
 
-        # jax.tree_util.tree_map() treats VDict similarly to dict.
-        self.assertEqual(
-            VDict(a=45 * 3, b=0), jax.tree_util.tree_map(lambda t: t.sum(), stacked_tree)
-        )
+        # jax.tree.map() treats VDict similarly to dict.
+        self.assertEqual(VDict(a=45 * 3, b=0), jax.tree.map(lambda t: t.sum(), stacked_tree))
         # vectorized_tree_map() vectorizes 'fn' on VDict and processes the 3 trees separately.
         self.assertNestedAllClose(
             VDict(a=jnp.asarray([45, 45, 45]), b=jnp.asarray([0, 0, 0])),
@@ -395,10 +391,10 @@ class TreeUtilsTest(TestCase):
 
         # Nested VDict.
         tree2 = VDict(c=stacked_tree)
-        stacked_tree2 = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), tree2, tree2)
+        stacked_tree2 = jax.tree.map(lambda *xs: jnp.stack(xs), tree2, tree2)
         self.assertEqual(
             VDict(c=VDict(a=(2, 3, 10), b=(2, 3, 7))),
-            jax.tree_util.tree_map(lambda t: t.shape, stacked_tree2),
+            jax.tree.map(lambda t: t.shape, stacked_tree2),
         )
         self.assertNestedAllClose(
             VDict(c=VDict(a=jnp.full([2, 3], 45), b=jnp.full([2, 3], 0))),
@@ -453,13 +449,13 @@ class TreeUtilsTest(TestCase):
         v2 = VDict(d2)
 
         # Make sure keys are in sorted order after using tree utils like they are for dicts.
-        d_result = jax.tree_util.tree_map(lambda *args: args, d1, d2)
-        v_result = jax.tree_util.tree_map(lambda *args: args, v1, v2)
+        d_result = jax.tree.map(lambda *args: args, d1, d2)
+        v_result = jax.tree.map(lambda *args: args, v1, v2)
         self.assertSequenceEqual(v_result, d_result)
         self.assertSequenceEqual(list(v_result.values()), list(d_result.values()))
 
         # Explicitly test that mismatching key orders work.
-        result = jax.tree_util.tree_map(lambda *args: args, VDict(b=2, a=1), VDict(a=1, b=2))
+        result = jax.tree.map(lambda *args: args, VDict(b=2, a=1), VDict(a=1, b=2))
         self.assertSequenceEqual(list(result), ["a", "b"])
         self.assertSequenceEqual(list(result.values()), [(1, 1), (2, 2)])
 
@@ -703,7 +699,7 @@ class TreeUtilsTest(TestCase):
             if x.dtype in [jnp.float32, jnp.bfloat16]:
                 self.assertEqual(x.dtype, to_dtype)
 
-        jax.tree_util.tree_map(check_type, out_tree)
+        jax.tree.map(check_type, out_tree)
 
         self.assertEqual(out_tree["w2"].dtype, in_tree["w2"].dtype)
 

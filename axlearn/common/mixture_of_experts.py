@@ -911,7 +911,7 @@ def _convert_feedforward_to_moe_parameters(
         NotImplementedError: if the source TransformerFeedForwardLayer includes bias in its linear
             parameters or upon unexpected source parameter names.
     """
-    moe_parameters = jax.tree_util.tree_map(lambda x: None, moe_parameter_specs)
+    moe_parameters = jax.tree.map(lambda x: None, moe_parameter_specs)
     for path, value in flatten_items(source_parameters):
         m = re.fullmatch("linear([0-9_]+)/(weight|bias)", path)
         if not m:
@@ -1018,9 +1018,7 @@ def convert_dense_to_moe_parameters(
                 moe_layer_parameter_specs=ff_layer_parameter_specs,
             ) -> Nested[Tensor]:
                 """Converts source_layer_parameters[layer_index] to params of a target layer."""
-                layer_parameters = jax.tree_util.tree_map(
-                    lambda w: w[layer_index], source_layer_parameters
-                )
+                layer_parameters = jax.tree.map(lambda w: w[layer_index], source_layer_parameters)
                 if not num_experts:
                     return layer_parameters
 
@@ -1043,11 +1041,11 @@ def convert_dense_to_moe_parameters(
             return None
         return parameter_spec.mesh_axes
 
-    out_shardings = jax.tree_util.tree_map(
+    out_shardings = jax.tree.map(
         compute_out_sharding, tree_paths(target_parameter_specs), target_parameter_specs
     )
     target_parameters = pjit(convert_fn, out_shardings=out_shardings)(source_parameters)
-    target_parameters = jax.tree_util.tree_map(
+    target_parameters = jax.tree.map(
         lambda spec, param: spec if param is None else param,
         target_parameter_specs,
         target_parameters,

@@ -107,9 +107,9 @@ class SerializationTest(parameterized.TestCase):
             "1": {},
         }
         self.assertEqual(state, expected_state)
-        state = jax.tree_util.tree_map(lambda x: x + 1, expected_state)
+        state = jax.tree.map(lambda x: x + 1, expected_state)
         restored_tx_state = serialization.from_state_dict(tx_state, state)
-        tx_state_plus1 = jax.tree_util.tree_map(lambda x: x + 1, tx_state)
+        tx_state_plus1 = jax.tree.map(lambda x: x + 1, tx_state)
         self.assertEqual(restored_tx_state, tx_state_plus1)
 
     def test_collection_serialization(self):

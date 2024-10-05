@@ -161,7 +161,7 @@ class CheckpointerTest(test_utils.TestCase):
         step = 1
 
         def state_specs(state, partition_spec):
-            return jax.tree_util.tree_map(
+            return jax.tree.map(
                 lambda x: utils.TensorSpec(shape=x.shape, dtype=x.dtype, mesh_axes=partition_spec),
                 state,
             )
@@ -171,7 +171,7 @@ class CheckpointerTest(test_utils.TestCase):
             sharding = jax.sharding.NamedSharding(
                 mesh, spec=jax.sharding.PartitionSpec("data", "model")
             )
-            state = jax.tree_util.tree_map(lambda x: jax.device_put(x, device=sharding), state)
+            state = jax.tree.map(lambda x: jax.device_put(x, device=sharding), state)
             ckpt.save(step=step, state=state)
             ckpt.wait_until_finished()
 
@@ -772,9 +772,7 @@ class CheckpointerTest(test_utils.TestCase):
             state_spec = read_state_spec(checkpointer_cls.latest_checkpoint_path(cfg.dir))
             self.assertNestedEqual(
                 state_spec,
-                jax.tree_util.tree_map(
-                    lambda t: utils.TensorSpec(shape=t.shape, dtype=t.dtype), state0
-                ),
+                jax.tree.map(lambda t: utils.TensorSpec(shape=t.shape, dtype=t.dtype), state0),
             )
             step, state1 = ckpt.restore(state=state_spec)
             self.assertNestedEqual(0, step)
@@ -816,7 +814,7 @@ class CheckpointerTest(test_utils.TestCase):
                 ckpt: Checkpointer = cfg.instantiate(parent=None)
                 # VDict with out of order keys.
                 state0 = dict(a=3, b=SwitchableVDict(d=6, b=5))
-                state0 = jax.tree_util.tree_map(jnp.asarray, state0)
+                state0 = jax.tree.map(jnp.asarray, state0)
                 self.assertEqual(list(state0["b"].keys()), ["d", "b"])
                 ckpt.save(step=0, state=state0)
                 ckpt.wait_until_finished()
@@ -829,7 +827,7 @@ class CheckpointerTest(test_utils.TestCase):
                 self.assertNestedEqual(state0, result)
                 self.assertEqual(list(result["b"].keys()), ["b", "d"])
 
-                after_tree_map = jax.tree_util.tree_map(lambda x: x, result)
+                after_tree_map = jax.tree.map(lambda x: x, result)
                 self.assertEqual(list(after_tree_map["b"].keys()), ["b", "d"])
 
                 _, result = ckpt.restore(step=0, state=after_tree_map)

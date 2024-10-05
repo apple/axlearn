@@ -362,7 +362,7 @@ class EmbeddingRetrievalMetricCalculator(GlobalMetricCalculator):
             categories = jnp.concatenate(categories_chunked)
         else:
             categories = None
-        per_query_metrics = jax.tree_util.tree_map(  # pylint: disable=no-value-for-parameter
+        per_query_metrics = jax.tree.map(  # pylint: disable=no-value-for-parameter
             lambda *xs: jnp.concatenate(xs), *metrics_chunked
         )
 

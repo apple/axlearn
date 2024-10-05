@@ -281,7 +281,7 @@ def _tpu_splash_attention(
                 ):
                     with jax.ensure_compile_time_eval():
                         result = mask(*args, **kwargs)
-                        return jax.tree_util.tree_map(np.asarray, result)
+                        return jax.tree.map(np.asarray, result)
                 return mask(*args, **kwargs)
 
             return wrapped_mask

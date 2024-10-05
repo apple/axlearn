@@ -121,7 +121,7 @@ class Updates(struct.PyTreeNode):
 
     def param_values(self) -> Nested[Tensor]:
         """Returns a tree with the same structure as `opt_params` with the value of each param."""
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda x: x.value, self.opt_params, is_leaf=lambda x: isinstance(x, OptParam)
         )
 
@@ -129,7 +129,7 @@ class Updates(struct.PyTreeNode):
         """Returns a tree with the same structure as `opt_params` with the metadata of each
         param.
         """
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda x: ParameterSpec(
                 shape=x.value.shape,
                 dtype=x.value.dtype,
@@ -257,7 +257,7 @@ def mask_tree(tree: dict, *, keep: dict, mask_value: Any) -> dict:
     """
     # For sub-learner optimizer state, only the subset of parameters
     # that belongs to the optimizer is kept and the rest is masked as optax.MaskNode().
-    return jax.tree_util.tree_map(
+    return jax.tree.map(
         lambda should_keep, leaf: leaf if should_keep else mask_value,
         keep,
         tree,

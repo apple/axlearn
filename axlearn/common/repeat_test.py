@@ -87,7 +87,7 @@ class TestRepeat(Repeat):
         cfg = self.config
         layer_state = self.layer.init_forward_state(batch_size)
         return dict(
-            layer=jax.tree_util.tree_map(
+            layer=jax.tree.map(
                 lambda x: jnp.tile(x[None, :], [cfg.num_layers, 1]),
                 layer_state,
             )
@@ -380,7 +380,7 @@ class RepeatTest(TestCase):
 
         input_forward_state = layer.shared_layer.init_forward_state(batch_size)
         input_forward_state = dict(
-            layer=jax.tree_util.tree_map(
+            layer=jax.tree.map(
                 lambda x: jnp.tile(x[None, :], [num_layers, 1]),
                 input_forward_state,
             )
@@ -433,7 +433,7 @@ class RepeatTest(TestCase):
 
 
 def _get_first_n(n, tree):
-    return jax.tree_util.tree_map(lambda x: x[:n], tree)
+    return jax.tree.map(lambda x: x[:n], tree)
 
 
 if __name__ == "__main__":

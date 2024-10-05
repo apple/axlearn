@@ -170,7 +170,7 @@ def check_numerics(x: Tensor, msg_fmt: str = "", **msg_kwargs):
 def shapes(nested_tensor: NestedTensor) -> NestedTree:
     """Returns a tree of the same structure as `nested_tensor` but with corresponding shapes instead
     of tensors."""
-    return jax.tree_util.tree_map(lambda x: getattr(x, "shape", x), nested_tensor)
+    return jax.tree.map(lambda x: getattr(x, "shape", x), nested_tensor)
 
 
 def _concat(*, prefix: str, suffix: str, separator: str):
@@ -209,7 +209,7 @@ def tree_paths(
         tree: A nested structure.
         separator: The separator between parts of a path.
         is_leaf: A Callable to evaluate whether the given node should be considered a leaf when
-                 it otherwise would not, similarly to the is_leaf in jax.tree_util.tree_map.
+                 it otherwise would not, similarly to the is_leaf in jax.tree.map.
 
     Returns:
         A nested structure with the same structure as `tree`, but each leaf will be a string path.
@@ -268,7 +268,7 @@ serialization.register_serialization_state(
 
 
 def vectorized_tree_map(fn, tree, *rest):
-    """Similar to jax.tree_util.tree_map(), but vectorizes `fn` on VDict's."""
+    """Similar to jax.tree.map(), but vectorizes `fn` on VDict's."""
 
     def vectorized_fn(*nodes):
         if isinstance(nodes[0], VDict):
@@ -280,9 +280,7 @@ def vectorized_tree_map(fn, tree, *rest):
             return VDict(**result)
         return fn(*nodes)
 
-    return jax.tree_util.tree_map(
-        vectorized_fn, tree, *rest, is_leaf=lambda t: isinstance(t, VDict)
-    )
+    return jax.tree.map(vectorized_fn, tree, *rest, is_leaf=lambda t: isinstance(t, VDict))
 
 
 def expand_vdicts(tree: NestedTensor) -> NestedTensor:
@@ -329,12 +327,12 @@ def expand_vdicts(tree: NestedTensor) -> NestedTensor:
 
         expanded: list[VDict] = []
         for ind in range(vdict_size):
-            value_i: VDict = jax.tree_util.tree_map(lambda x, i=ind: x[i], value)
+            value_i: VDict = jax.tree.map(lambda x, i=ind: x[i], value)
             expanded_i = {k: expand_vdicts(v) for k, v in value_i.items()}
             expanded.append(expanded_i)
         return expanded
 
-    return jax.tree_util.tree_map(fn, tree, is_leaf=lambda x: isinstance(x, VDict))
+    return jax.tree.map(fn, tree, is_leaf=lambda x: isinstance(x, VDict))
 
 
 class StackedKeyArray(NamedTuple):
@@ -365,7 +363,7 @@ def split_prng_key(
             assert x.shape[: len(num_keys)] == num_keys, f"{x.shape} vs. {num_keys}"
             return x
 
-        return jax.tree_util.tree_map(verify_key_shape, prng_key)
+        return jax.tree.map(verify_key_shape, prng_key)
 
     total_num_keys = np.prod(num_keys)
     child_prng_keys = []
@@ -378,11 +376,11 @@ def split_prng_key(
     def stack_and_reshape(*keys):
         # Reshape keys from [num_layers, ...] to [num_stages, num_layers_per_stage, ...].
         keys = jnp.stack(keys, axis=0)
-        keys = jax.tree_util.tree_map(lambda x: x.reshape(list(num_keys) + list(x.shape[1:])), keys)
+        keys = jax.tree.map(lambda x: x.reshape(list(num_keys) + list(x.shape[1:])), keys)
         return keys
 
     # pylint: disable-next=no-value-for-parameter
-    keys = jax.tree_util.tree_map(stack_and_reshape, *child_prng_keys)
+    keys = jax.tree.map(stack_and_reshape, *child_prng_keys)
 
     for _ in num_keys:
         keys = StackedKeyArray(keys=keys)
@@ -410,7 +408,7 @@ def as_tensor(x: Any):
     if hasattr(x, "numpy"):
         return jnp.asarray(x.numpy())
     if isinstance(x, (Mapping, Sequence)):
-        return jax.tree_util.tree_map(as_tensor, x)
+        return jax.tree.map(as_tensor, x)
     raise NotImplementedError(f"{type(x)}: {x}")
 
 
@@ -435,7 +433,7 @@ def as_numpy_array(x: Any):
     if hasattr(x, "numpy"):
         return x.numpy()
     if isinstance(x, (Mapping, Sequence)):
-        return jax.tree_util.tree_map(as_numpy_array, x)
+        return jax.tree.map(as_numpy_array, x)
     raise NotImplementedError(f"{type(x)}: {x}")
 
 
@@ -502,7 +500,7 @@ def complete_partition_spec_tree(
         axes.extend([i] * len(jax.tree_util.tree_flatten(x)[0]))
 
     try:
-        jax.tree_util.tree_map(add_leaves, partition_spec_tree_with_proxy, dummy)
+        jax.tree.map(add_leaves, partition_spec_tree_with_proxy, dummy)
     except ValueError as err:
         logging.info("[complete_partition_spec_tree] ValueError: %s", err)
         logging.info(
@@ -571,7 +569,7 @@ def dispatch_input_batch(
             may be dropped after use if present.
     """
     # Constrain the input batch.
-    input_batch = jax.tree_util.tree_map(
+    input_batch = jax.tree.map(
         lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)), input_batch
     )
 
@@ -580,9 +578,7 @@ def dispatch_input_batch(
             # Dispatch from physical batch dimensions to logical batch.
             if PHYSICAL_TO_LOGICAL_DISPATCH_KEY in data:
                 dispatch = data.pop(PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
-                return jax.tree_util.tree_map(
-                    lambda x: jnp.einsum("b...,bl->l...", x, dispatch), data
-                )
+                return jax.tree.map(lambda x: jnp.einsum("b...,bl->l...", x, dispatch), data)
             for key, value in data.items():
                 data[key] = traverse_and_dispatch(value)
         return data
@@ -654,7 +650,7 @@ def host_to_global_device_array(
     else:
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
-    device_arrays = jax.tree_util.tree_map(put_to_devices, host_arrays)
+    device_arrays = jax.tree.map(put_to_devices, host_arrays)
     partition_specs = complete_partition_spec_tree(
         jax.tree_util.tree_structure(host_arrays),
         partition_spec,
@@ -674,7 +670,7 @@ def host_to_global_device_array(
             arrays=device_buffers,
         )
 
-    return jax.tree_util.tree_map(make_gda, host_arrays, device_arrays, partition_specs)
+    return jax.tree.map(make_gda, host_arrays, device_arrays, partition_specs)
 
 
 def global_to_host_array(
@@ -735,7 +731,7 @@ def global_to_host_array(
         else:
             raise NotImplementedError(f"Unsupported partition: {partition}")
 
-    return jax.tree_util.tree_map(get_local_array, tree_paths(global_arrays), global_arrays)
+    return jax.tree.map(get_local_array, tree_paths(global_arrays), global_arrays)
 
 
 def get_recursively(
@@ -866,7 +862,7 @@ def cast_floats(
     """
     if to_dtype is None:
         # Still make a copy of the tree.
-        return jax.tree_util.tree_map(lambda x: x, in_tree)
+        return jax.tree.map(lambda x: x, in_tree)
 
     if to_dtype not in _supported_float_dtypes:
         raise ValueError(f"to_dtype must be one of {_supported_float_dtypes}")
@@ -881,7 +877,7 @@ def cast_floats(
                 return x.astype(to_dtype)
         return x
 
-    return jax.tree_util.tree_map(cast, in_tree)
+    return jax.tree.map(cast, in_tree)
 
 
 def count_model_params(tree: NestedTensor) -> int:
@@ -907,8 +903,8 @@ def check_param_shape_alignment(
         A message indicating which parameter shapes are mismatched.
         e.g. "(linear1/weight/0) shape is different: source: (32), target: (15)."
     """
-    param_shape_source = jax.tree_util.tree_map(lambda x: x.shape, source_tree)
-    param_shape_target = jax.tree_util.tree_map(lambda x: x.shape, target_tree)
+    param_shape_source = jax.tree.map(lambda x: x.shape, source_tree)
+    param_shape_target = jax.tree.map(lambda x: x.shape, target_tree)
     output_str = []
     flatten_param_shape_source = dict(flatten_items(param_shape_source))
     flatten_param_shape_target = dict(flatten_items(param_shape_target))

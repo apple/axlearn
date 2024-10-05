@@ -780,7 +780,7 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         ref_rope_emb,
     ):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
-        layer_param_shapes = jax.tree_util.tree_map(lambda x: x.shape, layer_params)
+        layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
         print(f"layer state={layer_param_shapes}")
         layer_params = parameters_from_torch_layer(ref)
         model_dim, num_heads = layer.config.target_dim, layer.config.attention.num_heads
@@ -1578,7 +1578,7 @@ class ScaleQueryTest(TestCase):
         layer = cfg.instantiate(parent=None)
 
         param_specs = layer.create_parameter_specs_recursively()
-        layer_params = jax.tree_util.tree_map(
+        layer_params = jax.tree.map(
             lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
         )
 
@@ -1652,7 +1652,7 @@ class ScaleKeyTest(TestCase):
         layer = cfg.instantiate(parent=None)
 
         param_specs = layer.create_parameter_specs_recursively()
-        layer_params = jax.tree_util.tree_map(
+        layer_params = jax.tree.map(
             lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
         )
 
@@ -2551,7 +2551,7 @@ class MultiheadAttentionTest(TestCase):
         layer = cfg.instantiate(parent=None)
 
         param_specs = layer.create_parameter_specs_recursively()
-        layer_params = jax.tree_util.tree_map(
+        layer_params = jax.tree.map(
             lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
         )
 
@@ -3152,7 +3152,7 @@ class TransformerTest(BaseTransformerTest):
         self, ref: hf_roberta.RobertaAttention, layer: TransformerAttentionLayer
     ):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
-        layer_param_shapes = jax.tree_util.tree_map(lambda x: x.shape, layer_params)
+        layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
         print(f"layer state={layer_param_shapes}")
         layer_params = parameters_from_torch_layer(ref)
         batch_size, tgt_len = 2, 6
@@ -3445,7 +3445,7 @@ def _convert_from_stacked_params(
             x_shape = list(x.shape)
             return jnp.reshape(x, [target_stack_cfg.num_stages, num_layers_per_stage] + x_shape[1:])
 
-        pipeline_params = jax.tree_util.tree_map(reshape, layer_params["stack"].pop("repeat"))
+        pipeline_params = jax.tree.map(reshape, layer_params["stack"].pop("repeat"))
 
         if pipeline_stage_cfg.klass == RepeatedTransformerLayer:
             layer_params["stack"]["pipeline"] = VDict({"layer": {"repeat": pipeline_params}})
@@ -3453,9 +3453,7 @@ def _convert_from_stacked_params(
             layer_params["stack"]["pipeline"] = VDict(
                 {
                     "layer": {
-                        f"layer{i}": jax.tree_util.tree_map(
-                            lambda x, i=i: x[:, i], pipeline_params["layer"]
-                        )
+                        f"layer{i}": jax.tree.map(lambda x, i=i: x[:, i], pipeline_params["layer"])
                         for i in range(num_layers_per_stage)
                     }
                 }
@@ -3626,7 +3624,7 @@ class StackedTransformerTest(BaseTransformerTest):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                jax.tree_util.tree_map(
+                jax.tree.map(
                     lambda v: self.assertIsInstance(v, utils.VDict),
                     updated_states,
                     is_leaf=lambda v: isinstance(v, dict),
@@ -3784,7 +3782,7 @@ class StackedTransformerTest(BaseTransformerTest):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                jax.tree_util.tree_map(
+                jax.tree.map(
                     lambda v: self.assertIsInstance(v, utils.VDict),
                     updated_states,
                     is_leaf=lambda v: isinstance(v, dict),
@@ -3965,7 +3963,7 @@ class StackedTransformerTest(BaseTransformerTest):
                 logging.info(
                     "%s.factorization_specs=%s",
                     cls,
-                    jax.tree_util.tree_map(lambda x: x.factorization, param_specs),
+                    jax.tree.map(lambda x: x.factorization, param_specs),
                 )
                 layer_params = layer.initialize_parameters_recursively(
                     prng_key=jax.random.PRNGKey(123)
@@ -4036,7 +4034,7 @@ class StackedTransformerTest(BaseTransformerTest):
                     clipping_threshold=1.0,
                     eps=1e-2,
                 )
-                opt_params = jax.tree_util.tree_map(
+                opt_params = jax.tree.map(
                     lambda spec, p: OptParam(
                         value=p,
                         factorization_spec=spec.factorization,
@@ -4053,11 +4051,9 @@ class StackedTransformerTest(BaseTransformerTest):
                     return jnp.sqrt(jnp.mean(x**2))
 
                 if cls == StackedTransformerLayer:
-                    update_norms = jax.tree_util.tree_map(rms_norm, updates)
+                    update_norms = jax.tree.map(rms_norm, updates)
                 else:
-                    update_norms = jax.vmap(
-                        lambda x, norm=rms_norm: jax.tree_util.tree_map(norm, x)
-                    )(updates)
+                    update_norms = jax.vmap(lambda x, norm=rms_norm: jax.tree.map(norm, x))(updates)
                 logging.info(
                     "global_update_norm=%s update_norms=%s",
                     optax.global_norm(updates),
@@ -4089,7 +4085,7 @@ class StackedTransformerTest(BaseTransformerTest):
                             raise NotImplementedError(cfg.stack.stage.klass)
 
                         # Then reshape across stages.
-                        x["stack"] = jax.tree_util.tree_map(
+                        x["stack"] = jax.tree.map(
                             lambda x: x.reshape([num_layers] + list(x.shape[2:])),
                             x["stack"]["pipeline"]["layer"],
                         )

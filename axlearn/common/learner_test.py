@@ -183,7 +183,7 @@ class LearnerTest(TestCase):
             )
 
         loss, grads = jax.value_and_grad(lambda x: loss_fn(x, None).loss)(
-            jax.tree_util.tree_map(lambda p: p.value, params)
+            jax.tree.map(lambda p: p.value, params)
         )
         np.testing.assert_allclose(loss, 1.412078, atol=1e-6)
         self.assertNestedAllClose(
@@ -249,7 +249,7 @@ class LearnerTest(TestCase):
         if ema_decay:
             expected_state_update["ema"] = ParamEmaState(
                 count=1,
-                ema=jax.tree_util.tree_map(lambda v: v * (1 - ema_decay), updated_params),
+                ema=jax.tree.map(lambda v: v * (1 - ema_decay), updated_params),
             )
         self.assertNestedAllClose(
             expected_state_update,
@@ -351,7 +351,7 @@ class LearnerTest(TestCase):
         def loss_fn(x):
             return -jax.nn.log_softmax(x["v"])[1]
 
-        loss, grads = jax.value_and_grad(loss_fn)(jax.tree_util.tree_map(lambda p: p.value, params))
+        loss, grads = jax.value_and_grad(loss_fn)(jax.tree.map(lambda p: p.value, params))
         np.testing.assert_allclose(loss, 1.412078, atol=1e-6)
         self.assertNestedAllClose(
             dict(v=jnp.asarray([0.089629, -0.756364, 0.662272, 0.004462]), c=0.0), grads, atol=1e-6
@@ -468,7 +468,7 @@ class LearnerTest(TestCase):
         def loss_fn(params):
             return jnp.mean(jax.vmap(lambda x: -jax.nn.log_softmax(x)[1])(params["v"]))
 
-        loss, grads = jax.value_and_grad(loss_fn)(jax.tree_util.tree_map(lambda p: p.value, params))
+        loss, grads = jax.value_and_grad(loss_fn)(jax.tree.map(lambda p: p.value, params))
         np.testing.assert_allclose(3.270226, loss, atol=1e-6)
         self.assertNestedAllClose(
             VDict(
@@ -537,7 +537,7 @@ class LearnerTest(TestCase):
         def loss_fn(x):
             return -jax.nn.log_softmax(x["weight"] + x["moving_mean"])[1]
 
-        loss, grads = jax.value_and_grad(loss_fn)(jax.tree_util.tree_map(lambda p: p.value, params))
+        loss, grads = jax.value_and_grad(loss_fn)(jax.tree.map(lambda p: p.value, params))
         np.testing.assert_allclose(loss, 1.412078, atol=1e-6, rtol=1e-6)
         expected_grad = jnp.asarray([0.089629, -0.756364, 0.662272, 0.004462])
         self.assertNestedAllClose(
@@ -663,7 +663,7 @@ class LearnerTest(TestCase):
             return ForwardOutputs(loss=loss, aux={}, output_collection=output_collection)
 
         loss, grads = jax.value_and_grad(lambda x: loss_fn(model_params=x, inputs=None).loss)(
-            jax.tree_util.tree_map(lambda p: p.value, params)
+            jax.tree.map(lambda p: p.value, params)
         )
         np.testing.assert_allclose(loss, 1.412078, atol=1e-6, rtol=1e-6)
         expected_grads = jnp.asarray([0.089629, -0.756364, 0.662272, 0.004462])
@@ -766,7 +766,7 @@ class HelperTest(TestCase):
 
     def test__value_and_grad(self):
         params = dict(a=3.0, b=dict(c=5.0, d=7.0))
-        opt_params = jax.tree_util.tree_map(
+        opt_params = jax.tree.map(
             lambda p: OptParam(value=p, factorization_spec=None, weight_decay_scale=None), params
         )
         updates = _value_and_grad(
@@ -796,7 +796,7 @@ class HelperTest(TestCase):
                 )
             ),
         )
-        updates, expected = jax.tree_util.tree_map(
+        updates, expected = jax.tree.map(
             lambda x: jnp.asarray(x) if isinstance(x, Number) else x, (updates, expected)
         )
         self.assertEqual(
@@ -901,25 +901,19 @@ class CompositeLearnerTest(TestCase):
             opt1_specs[0].trace["encoder"],
             partition_state["encoder"]["optimizer"][0].trace["encoder"],
         )
-        jax.tree_util.tree_map(
-            _check_mask_state, partition_state["encoder"]["optimizer"][0].trace["decoder"]
-        )
+        jax.tree.map(_check_mask_state, partition_state["encoder"]["optimizer"][0].trace["decoder"])
         self.assertSequenceEqual(opt1_specs[1:], partition_state["encoder"]["optimizer"][1:])
         # adam states.
         self.assertEqual(
             opt2_specs[1].mu["decoder"],
             partition_state["decoder"]["optimizer"][1].mu["decoder"],
         )
-        jax.tree_util.tree_map(
-            _check_mask_state, partition_state["decoder"]["optimizer"][1].mu["encoder"]
-        )
+        jax.tree.map(_check_mask_state, partition_state["decoder"]["optimizer"][1].mu["encoder"])
         self.assertEqual(
             opt2_specs[1].nu["decoder"],
             partition_state["decoder"]["optimizer"][1].nu["decoder"],
         )
-        jax.tree_util.tree_map(
-            _check_mask_state, partition_state["decoder"]["optimizer"][1].nu["encoder"]
-        )
+        jax.tree.map(_check_mask_state, partition_state["decoder"]["optimizer"][1].nu["encoder"])
         self.assertEqual(opt2_specs[1].count, partition_state["decoder"]["optimizer"][1].count)
         # optax.EmptyState().
         self.assertEqual(opt2_specs[0], partition_state["decoder"]["optimizer"][0])
@@ -962,7 +956,7 @@ class CompositeLearnerTest(TestCase):
             self.assertSequenceEqual(partition_state["ema"], expected_ema_state_spec)
 
         # Test update.
-        params = jax.tree_util.tree_map(
+        params = jax.tree.map(
             lambda spec: OptParam(
                 value=5.1 * jnp.ones(spec.shape, dtype=spec.dtype),
                 factorization_spec=spec.factorization,
@@ -1054,14 +1048,14 @@ class CompositeLearnerTest(TestCase):
         self.assertNestedAllClose(updated_params["decoder"], updated_decoder["decoder"])
         self.assertNestedAllClose(updated_params["encoder"], updated_encoder["encoder"])
         # Test state updates match with sub learners.
-        expected_encoder_updates = jax.tree_util.tree_map(
+        expected_encoder_updates = jax.tree.map(
             # Mask decoder states.
             lambda v, path: optax.MaskedNode() if re.fullmatch(".*decoder.*|.*ema.*", path) else v,
             encoder_collection.state_updates,
             tree_paths(encoder_collection.state_updates),
         )
 
-        expected_decoder_updates = jax.tree_util.tree_map(
+        expected_decoder_updates = jax.tree.map(
             # Mask encoder states.
             lambda v, path: optax.MaskedNode() if re.fullmatch(".*encoder.*|.*ema.*", path) else v,
             decoder_collection.state_updates,
@@ -1173,7 +1167,7 @@ class CompositeLearnerTest(TestCase):
                 mesh_axes=PartitionSpec("model", None),
             ),
         )
-        params = jax.tree_util.tree_map(
+        params = jax.tree.map(
             lambda spec: OptParam(
                 value=jnp.ones(spec.shape, dtype=spec.dtype),
                 factorization_spec=spec.factorization,
