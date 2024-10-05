@@ -1,13 +1,5 @@
 # ML API Styles
 
-Self-link: [https://tinyurl.com/ml-api-styles](https://tinyurl.com/ml-api-styles)
-
-Ruoming Pang ([ruoming@gmail.com](mailto:ruoming@gmail.com))
-With feedback from Zhifeng Chen, Yonghui Wu, Drew Frank, Chris DuBois, and Tom Nickson
-
-November 2021
-*Status: Reviewed*
-
 API design (including configuration) is an important but often overlooked aspect of machine
 learning (ML) development. A flexible, readable API helps speeding up iterations, reducing mistakes,
 and improving reproducibility.
@@ -70,7 +62,7 @@ DO NOT:
 ```python
 @configurable
 def my_dropout(inputs, ratio):
-return ...
+    return ...
 
 my_dropout.ratio = 0.1 # affects all users of my_dropout
 ```
