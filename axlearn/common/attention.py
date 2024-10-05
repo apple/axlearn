@@ -3573,6 +3573,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         all_layer_states = []
         for i, layer in enumerate(self._layers):
             # Prepare inputs to the current layer.
+            data = self._update_data(data, all_layer_outputs=all_layer_outputs)
             self._update_layer_kwargs(layer_kwargs, all_layer_outputs=all_layer_outputs)
 
             if mode == ForwardMode.FORWARD:
@@ -3598,6 +3599,28 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             data = layer_outputs.data
 
         return all_layer_states, self._aggregate_layer_outputs(all_layer_outputs)
+
+    def _update_data(
+        self,
+        data: Tensor,
+        *,
+        all_layer_outputs: list[BaseTransformerLayer.Output],
+    ):
+        """Updates `data` using other args.
+
+        This method is called before we invoke each layer in `self._layers`.
+        The updated data will be passed to the layer invocation.
+
+        Args:
+            data: A Tensor denoting the input data to the upcoming layer.
+            all_layer_outputs: A list of BaseTransformerLayer.Output that is appended with
+                the output of each constituent layer in the stack.
+
+        Returns:
+            A new Tensor.
+        """
+        del all_layer_outputs
+        return data
 
     def _update_layer_kwargs(
         self,
