@@ -23,7 +23,7 @@ useful to focus on a specific area with concrete examples.
 
 [Use Configs to Customize Module Creation](#use-configs-to-customize-module-creation)
 
-[Configure Object Instances, Not Object Types](#configure-object-instances,-not-object-types)
+[Configure Object Instances, Not Object Types](#configure-object-instances-not-object-types)
 
 [Configuration of Composite Modules](#configuration-of-composite-modules)
 
@@ -31,15 +31,15 @@ useful to focus on a specific area with concrete examples.
 
 [Avoid Multiple Positional Arguments](#avoid-multiple-positional-arguments)
 
-[Returning a Tuple of Values](#returning-a-tuple-of-values)
+[Avoid Returning a Tuple of Values](#avoid-returning-a-tuple-of-values)
 
-[Naming: Consistency and Generality](#naming:-consistency-and-generality)
+[Naming: Consistency and Generality](#naming-consistency-and-generality)
 
 [Keep Default Values Simple](#keep-default-values-simple)
 
-[Booleans in API](#booleans-in-api)
+[Avoid Booleans in APIs](#avoid-booleans-in-apis)
 
-## Use Configs to Customize Module Creation {#use-configs-to-customize-module-creation}
+## Use Configs to Customize Module Creation
 
 A ML system consists of a hierarchy of modules. It will bring a lot of flexibility if users can
 customize how each module is created. This can be achieved by using configs to capture the arguments
@@ -59,7 +59,7 @@ DO:
 encoder = instantiate(config.encoder)
 ```
 
-## Configure Object Instances, Not Object Types {#configure-object-instances,-not-object-types}
+## Configure Object Instances, Not Object Types
 
 It is more flexible when each instance of an object type can be configured independently than to
 only make the object type configurable. This is following the same philosophy to minimize the use of
@@ -81,7 +81,7 @@ DO:
 my_config.dropout.ratio = 0.1 # only affects my_config
 ```
 
-## Configuration of Composite Modules {#configuration-of-composite-modules}
+## Configuration of Composite Modules
 
 When defining the config for a composite model, **avoid “leaking” configurations of sub-modules into
 the composite module**.
@@ -155,7 +155,7 @@ class EncoderConfig:
 Further, if a dim is shared by multiple sub-modules, e.g., as the output_dim of one module and the
 input_dim of the subsequent module, it should also be configured in the parent module config.
 
-## The Config Factory Pattern {#the-config-factory-pattern}
+## The Config Factory Pattern
 
 Config factory is a useful design pattern to decouple the API of general-purpose modules from
 specific use cases.
@@ -196,7 +196,7 @@ class MyEncoderConfig:
 Notice that the factory builds the encoder config object, rather than the encoder directly. This
 allows its users to further customize it and log the output config if necessary.
 
-## Avoid Multiple Positional Arguments {#avoid-multiple-positional-arguments}
+## Avoid Multiple Positional Arguments
 
 Avoid long lists of positional arguments. Positional arguments make call sites harder to read. They
 also make it harder to extend the API with new arguments in the most natural ordering. Instead, *
@@ -214,7 +214,7 @@ DO:
 def attention(*, query, key, value, query_mask, kv_mask):
 ```
 
-## Returning a Tuple of Values {#returning-a-tuple-of-values}
+## Avoid Returning a Tuple of Values
 
 When a function returns multiple values, **prefer returning a dict, or even better, a dataclass or
 namedtuple over returning a tuple**. This allows the function to be extended to return more values
@@ -236,7 +236,7 @@ DO:
 return Output(data=data, mask=mask, atten_probs=atten_probs if return_atten_probs else None)
 ```
 
-## Naming: Consistency and Generality {#naming:-consistency-and-generality}
+## Naming: Consistency and Generality
 
 Respect the conventions of the repository, which should take precedence over personal preferences.
 Sometimes there are multiple reasonable names, e.g., “input_dim”, “num_input_channels”,
@@ -246,7 +246,7 @@ singular vs. plural, e.g., “padding” vs. “paddings”.
 Prefer generic names over implementation specific ones, e.g., “normalization_layer” instead of
 “layer_norm” since in the future we may want to use a normalization layer other than LayerNorm.
 
-## Keep Default Values Simple {#keep-default-values-simple}
+## Keep Default Values Simple
 
 For general-purpose modules, the default configuration values should reflect the simplest scenarios,
 not hyperparameters of specific models. Optional features such as dropout should be disabled by
@@ -273,7 +273,7 @@ dropout = None, # must be set explicitly.
 A potential downside of decoupling the API from specific models is that configurations tend to get
 more verbose. Consider applying the “config factory” pattern to this problem.
 
-## Booleans in API {#booleans-in-api}
+## Avoid Booleans in APIs
 
 Boolean arguments in the API makes it difficult to extend. **It is often better to use enums instead
 of booleans.**
