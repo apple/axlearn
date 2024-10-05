@@ -1,5 +1,7 @@
 # ML API Styles
 
+_Originally published at https://tinyurl.com/ml-api-styles, Nov 2021._
+
 API design (including configuration) is an important but often overlooked aspect of machine
 learning (ML) development. A flexible, readable API helps speeding up iterations, reducing mistakes,
 and improving reproducibility.
@@ -48,7 +50,7 @@ encoder = TransformerEncoder(num_layers=..., input_dim=...)
 DO:
 
 ```python
-encoder = instantiate(config.encoder)
+encoder = instantiate(encoder_config)
 ```
 
 ## Configure Object Instances, Not Object Types
@@ -64,13 +66,13 @@ DO NOT:
 def my_dropout(inputs, ratio):
     return ...
 
-my_dropout.ratio = 0.1 # affects all users of my_dropout
+my_dropout.ratio = 0.1  # affects all users of my_dropout
 ```
 
 DO:
 
 ```python
-my_config.dropout.ratio = 0.1 # only affects my_config
+my_config.dropout.ratio = 0.1  # only affects my_config
 ```
 
 ## Configuration of Composite Modules
@@ -191,8 +193,8 @@ allows its users to further customize it and log the output config if necessary.
 ## Avoid Multiple Positional Arguments
 
 Avoid long lists of positional arguments. Positional arguments make call sites harder to read. They
-also make it harder to extend the API with new arguments in the most natural ordering. Instead, *
-*limit the number of positional arguments to <= 1 and use keyword arguments for the rest**.
+also make it harder to extend the API with new arguments in the most natural ordering. Instead,
+**limit the number of positional arguments to <= 1 and use keyword arguments for the rest**.
 
 DO NOT:
 
@@ -208,8 +210,8 @@ def attention(*, query, key, value, query_mask, kv_mask):
 
 ## Avoid Returning a Tuple of Values
 
-When a function returns multiple values, **prefer returning a dict, or even better, a dataclass or
-namedtuple over returning a tuple**. This allows the function to be extended to return more values
+When a function returns multiple values, **prefer returning a dict or a dataclass
+over returning a tuple**. This allows the function to be extended to return more values
 in the future without breaking existing callers. Named return fields also make the code less
 error-prone.
 
@@ -235,7 +237,7 @@ Sometimes there are multiple reasonable names, e.g., “input_dim”, “num_inp
 “num_input_nodes”---pick one consistently across modules. Also pay attention to details such as
 singular vs. plural, e.g., “padding” vs. “paddings”.
 
-Prefer generic names over implementation specific ones, e.g., “normalization_layer” instead of
+Prefer generic names over implementation specific ones, e.g., “norm" instead of
 “layer_norm” since in the future we may want to use a normalization layer other than LayerNorm.
 
 ## Keep Default Values Simple
@@ -247,19 +249,19 @@ default.
 DO NOT:
 
 ```python
-dropout = 0.1,
+dropout = 0.1
 ```
 
 DO:
 
 ```python
-dropout = 0,
+dropout = 0
 ```
 
 Or require the user to set it explicitly:
 
 ```python
-dropout = None, # must be set explicitly.
+dropout = None  # must be set explicitly.
 ```
 
 A potential downside of decoupling the API from specific models is that configurations tend to get
@@ -274,20 +276,20 @@ DO NOT:
 
 ```python
 # If true, use GeLU as the activation function. Otherwise use ReLU.
-use_gelu: bool = False,
+use_gelu: bool = False
 ```
 
 Boolean args can lead to an awkward API when we need to extend it to accommodate more than two
-possibilities :
+possibilities:
 
 ```python
 # If true, use SeLU as the activation function. Otherwise use ReLU.
 # WARNING: use_gelu and use_selu cannot be true at the same time.
-use_selu: bool = False,
+use_selu: bool = False
 ```
 
 DO:
 
 ```python
-activation_function = RELU,
+activation_function = RELU
 ```
