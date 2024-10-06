@@ -378,12 +378,15 @@ class TPUGKEJob(GKEJob):
                 TPU topology.
             location_hint: If set, the job will be scheduled to run on this TPU location.
                 If None, we leave it to GCP to determine where the TPUs are located.
+            enable_tpu_smart_repair: Whether to enable TPU smart repair.
+                GKE 1.29.3-gke.1154000 or above is required.
         """
 
         accelerator: AcceleratorConfig = AcceleratorConfig()
         reservation: Optional[str] = None
         enable_tpu_ici_resiliency: Optional[bool] = None
         location_hint: Optional[str] = None
+        enable_tpu_smart_repair: bool = False
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -406,6 +409,9 @@ class TPUGKEJob(GKEJob):
         cfg.reservation = cfg.reservation or gcp_settings("gke_reservation", required=False, fv=fv)
         # Only read from the config file since users shouldn't need to configure this.
         cfg.location_hint = gcp_settings("location_hint", required=False, fv=fv)
+        cfg.enable_tpu_smart_repair = bool(
+            gcp_settings("enable_tpu_smart_repair", required=False, fv=fv)
+        )
         return cfg
 
     def __init__(self, cfg: Config):
@@ -586,6 +592,17 @@ class TPUGKEJob(GKEJob):
                 ),
             }
         )
+
+        if cfg.enable_tpu_smart_repair:
+            labels.update({"cloud.google.com/gke-tpu-auto-restart": "true"})
+            annotations.update(
+                {
+                    # The list of labels to be copied to node pools by tpu-provisioner.
+                    # https://github.com/GoogleCloudPlatform/ai-on-gke/blob/main/tpu-provisioner/internal/cloud/common.go#L27-L28
+                    # pylint: disable=line-too-long
+                    "tpu-provisioner.cloud.google.com/copy-labels": "cloud.google.com/gke-tpu-auto-restart"
+                }
+            )
 
         return dict(
             metadata=dict(annotations=annotations, labels=labels),

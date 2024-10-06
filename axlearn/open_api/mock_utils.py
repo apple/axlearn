@@ -106,3 +106,12 @@ def mock_anthropic_package():
     sys.modules["anthropic"] = mock_anthropic
     sys.modules["anthropic.types"] = mock_anthropic_types
     sys.modules["anthropic.types.message"] = mock_anthropic_message
+
+
+def mock_huggingface_hub_package():
+    """Initialize huggingface hub package for unit tests."""
+    # Create mock for the openai module and its submodules.
+    mock_hf_hub = types.ModuleType("huggingface_hub")
+    mock_hf_hub.snapshot_download = MagicMock()
+    # Patch sys.modules to replace the huggingface_hub package with our mock.
+    sys.modules["huggingface_hub"] = mock_hf_hub

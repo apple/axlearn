@@ -247,7 +247,7 @@ def cosine_with_linear_warmup(
         peak_lr: Peak value of the cosine learning rate.
         max_step: The total number of steps of the warm-up schedule and the cosine learning
             rate decay schedule.
-        warmup_steps: The number of steps of the warm-up schedule.
+        warmup_steps: The number of steps of the warm-up schedule. Skip warm-up if set to 0.
         begin_value: The begin value of the linear warm-up.
         alpha: The minimum value of the multiplier used to adjust the cosine learning rate.
         decay_begin_step: The step to begin cosine decay. The learning rate is kept constant
@@ -256,15 +256,17 @@ def cosine_with_linear_warmup(
     Returns:
         A composite schedule.
     """
-    sub = [
-        config_for_function(polynomial).set(
-            begin_step=0,
-            begin_value=begin_value,
-            end_step=warmup_steps,
-            end_value=peak_lr,
+    sub, start_step = [], []
+    if warmup_steps > 0:
+        sub.append(
+            config_for_function(polynomial).set(
+                begin_step=0,
+                begin_value=begin_value,
+                end_step=warmup_steps,
+                end_value=peak_lr,
+            )
         )
-    ]
-    start_step = [warmup_steps]
+        start_step.append(warmup_steps)
     if decay_begin_step is not None and decay_begin_step > warmup_steps:
         sub.append(
             config_for_function(polynomial).set(
@@ -278,7 +280,7 @@ def cosine_with_linear_warmup(
     sub.append(
         config_for_function(cosine_decay_schedule).set(
             init_value=peak_lr,
-            decay_steps=max_step - start_step[-1],
+            decay_steps=max_step - start_step[-1] if start_step else max_step,
             alpha=alpha,
         )
     )

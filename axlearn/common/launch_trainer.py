@@ -7,9 +7,9 @@ import os
 from typing import Any, Optional
 
 import jax
-import tensorflow as tf
 from absl import flags, logging
 
+from axlearn.common import file_system as fs
 from axlearn.common import measurement
 from axlearn.common.trainer import SpmdTrainer, select_mesh_config
 from axlearn.common.utils import MeshShape, get_data_dir, infer_mesh_shape
@@ -113,11 +113,11 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
     logging.info("Trainer config:\n%s", trainer_config_debug_string)
     if jax.process_index() == 0:
         trainer_config_file = os.path.join(trainer_config.dir, "trainer_config")
-        with tf.io.gfile.GFile(trainer_config_file, "w") as f:
+        with fs.open(trainer_config_file, "w") as f:
             f.write(trainer_config_debug_string)
 
         config_file = os.path.join(trainer_config.dir, "launch_trainer_flags")
-        with tf.io.gfile.GFile(config_file, "w") as f:
+        with fs.open(config_file, "w") as f:
             json.dump(
                 {
                     **FLAGS.flag_values_dict(),

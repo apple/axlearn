@@ -27,6 +27,8 @@ from axlearn.cloud.common.bastion import (
     Bastion,
     BastionDirectory,
     Job,
+    JobLifecycleEvent,
+    JobLifecycleState,
     JobState,
     JobStatus,
     ValidationError,
@@ -557,6 +559,30 @@ class TestJobState(parameterized.TestCase):
             )
 
 
+class TestJobLifecycleEvent(parameterized.TestCase):
+    """Tests for JobLifecycleEvent."""
+
+    def test_serialize(self):
+        """Test serialization of JobLifecycleEvent."""
+        job_event = JobLifecycleEvent(
+            job_name="test_job",
+            state=JobLifecycleState.RUNNING.value,
+            job_id="12345",
+            details="test_details",
+        )
+        with mock.patch("time.time_ns", return_value=1234567890123456789):
+            expected_output = json.dumps(
+                {
+                    "job_name": "test_job",
+                    "job_id": "12345",
+                    "message": "test_details",
+                    "state": "RUNNING",
+                    "timestamp": 1234567890123456789,
+                }
+            )
+            self.assertEqual(job_event.serialize(), expected_output)
+
+
 class TestRuntimeOptions(parameterized.TestCase):
     """Tests runtime options."""
 
@@ -667,6 +693,57 @@ class BastionTest(parameterized.TestCase):
                 quota=config_for_function(mock_quota_config),
             )
             yield cfg.instantiate()
+
+    @parameterized.parameters(
+        [
+            dict(
+                popen_spec={
+                    "command": {
+                        "wait.return_value": None,
+                        "poll.side_effect": ValueError,
+                        "terminate.side_effect": ValueError,
+                    },
+                    "cleanup": {
+                        "poll.side_effect": ValueError,
+                        "terminate.side_effect": ValueError,
+                    },
+                },
+            ),
+        ],
+    )
+    def test_append_to_job_history_event_publish(self, popen_spec):
+        """Test event publishing."""
+        mock_proc = _mock_piped_popen_fn(popen_spec)
+        job = Job(
+            spec=new_jobspec(
+                name="test_job",
+                command="command",
+                cleanup_command="cleanup",
+                metadata=JobMetadata(
+                    user_id="test_user",
+                    project_id="test_project",
+                    creation_time=datetime.now(),
+                    resources={"v4": 8},
+                ),
+            ),
+            state=JobState(status=JobStatus.PENDING),
+            command_proc=mock_proc("command", "test_command") if "command" in popen_spec else None,
+            cleanup_proc=mock_proc("cleanup", "test_cleanup") if "cleanup" in popen_spec else None,
+        )
+        mock_event_publisher = mock.MagicMock()
+        with (
+            self._patch_bastion(popen_spec) as mock_bastion,
+            mock.patch.object(mock_bastion, "_event_publisher", mock_event_publisher),
+        ):
+            mock_bastion._append_to_job_history(
+                job, msg="Job is starting", state=JobLifecycleState.STARTING
+            )
+            mock_event_publisher.publish.assert_called()
+            mock_event_publisher.publish.assert_called_once_with(
+                JobLifecycleEvent(
+                    job_name="test_job", state=JobLifecycleState.STARTING, details="Job is starting"
+                )
+            )
 
     def test_sync_jobs(self):
         """Tests downloading jobspecs."""

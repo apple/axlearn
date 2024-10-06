@@ -20,7 +20,7 @@ The installation steps depend on your machine's hardware, and whether you plan t
 If you use an Intel (x86) machine, we recommend installing in a virtual environment, e.g. with [conda](https://conda.io).
 
 ```shell
-conda create -n axlearn python=3.9
+conda create -n axlearn python=3.10
 conda activate axlearn
 ```
 
@@ -34,12 +34,12 @@ For Apple Silicon machines, we will install native versions of Python and Python
 We need Xcode to build packages like `tensorstore`. Please install Xcode from the App Store if you haven't already.
 
 ```shell
-# Install the arm64 version of Miniforge3 + Python 3.9.
-curl -L -O https://github.com/conda-forge/miniforge/releases/download/4.12.0-2/Miniforge3-MacOSX-arm64.sh
-bash Miniforge3-MacOSX-arm64.sh
+# Install the arm64 version of Miniforge3 + Python 3.10.
+curl -L -o miniforge.sh https://github.com/conda-forge/miniforge/releases/download/24.7.1-0/Miniforge3-24.7.1-0-MacOSX-arm64.sh
+bash miniforge.sh -u
 
 # Create a conda environment.
-conda create -n axlearn python=3.9
+conda create -n axlearn python=3.10
 conda activate axlearn
 
 # Install tensorflow following https://developer.apple.com/metal/tensorflow-plugin.
@@ -57,7 +57,7 @@ cd ~/builds/text && git checkout 0f9f6df5b4da19bc7a734ba05fc4fa12bccbedbe
 
 # Build tensorflow-text.
 ./oss_scripts/run_build.sh
-pip install ./tensorflow_text-2.16.1-cp39-cp39-macosx_*_arm64.whl
+pip install ./tensorflow_text-2.16.1-cp310-cp310-macosx_*_arm64.whl
 ```
 </details>
 

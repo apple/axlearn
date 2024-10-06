@@ -39,6 +39,20 @@ class InputDataType(Enum):
     SEQ2SEQ_NO_MASK = "seq2seq_no_mask"
 
 
+class PackingMethodType(Enum):
+    """Represents methods of packing multiple documents into a single sequence.
+
+    Values:
+        EOS_DELIM_NO_MASK: Documents within a sequence are delimited with an EOS token. No
+            self-attention masks between documents.
+        EOS_DELIM_MASK: Documents within a sequence are delimited with an EOS token. Inject
+            `input_segment_ids` and `input_positions` for self-attention masks in a causal LM.
+    """
+
+    EOS_DELIM_NO_MASK = "eos_delim_no_mask"
+    EOS_DELIM_MASK = "eos_delim_mask"
+
+
 def text_to_lm_training_input(
     vocab_cfg: InstantiableConfig,
     max_len: int,
@@ -48,6 +62,7 @@ def text_to_lm_training_input(
     shuffle_buffer_size: int = 1024,
     is_training: bool = True,
     token_adjuster_cfg: Optional[InstantiableConfig] = None,
+    packing_method: Optional[PackingMethodType] = None,
 ) -> input_tf_data.DatasetToDatasetFn:
     """Returns a function that generates training inputs for language models from raw text.
 
@@ -79,14 +94,20 @@ def text_to_lm_training_input(
             sliced up, otherwise a single document at a time may dominate data feeding.
         is_training: whether the input is used for training (should be True).
         token_adjuster_cfg: pre-batching modifier for the token stream, used for transforms
-            like fill in the middle (fitm)
+            like fill in the middle (fitm).
+        packing_method: method of packing multiple documents into a single sequence. If None,
+            defaults to EOS_DELIM_NO_MASK.
 
     Returns:
         A DatasetToDatasetFn, where each input example should be a dict containing key "text" with
         string values and each output example is a dict with:
             * "input_ids" as int32 tensor with shape [max_len],
             * "target_labels" as int32 tensor with shape [max_len],
-            * "target_num_bytes" as int32 scalar describing the number of bytes in "target_labels".
+            * "target_num_bytes" as int32 scalar describing the number of bytes in "target_labels",
+            * "input_segment_ids" as an optional int32 tensor with shape [max_len], present if
+                packing_method is EOS_DELIM_MASK.
+            * "input_positions" as an optional int32 tensor with shape [max_len], present if
+                packing_method is EOS_DELIM_MASK.
     """
     if not is_training:
         logging.warning("is_training was %s, did you mean to use this processor?", is_training)
@@ -142,11 +163,44 @@ def text_to_lm_training_input(
         target_num_bytes = num_bytes(
             batched_target_labels, sp_vocab=vocab, newlines_replaced_with=replace_newlines_with
         )
-        return dict(
+
+        result = dict(
             input_ids=batched_input_ids,
             target_labels=batched_target_labels,
             target_num_bytes=target_num_bytes,
         )
+
+        if packing_method == PackingMethodType.EOS_DELIM_MASK:
+            segment_starts = tf.cast(tf.equal(batched_input_ids, vocab.eos_id), tf.int32)
+            segment_ids = tf.cumsum(segment_starts, axis=1)
+            segment_ids = segment_ids - segment_ids[:, :1] + 1
+            segment_ids = tf.where(tf.equal(batched_input_ids, vocab.pad_id), 0, segment_ids)
+
+            assert segment_ids.shape[1] == max_len
+
+            def cummax_on_last_axis(x):
+                """tf.scan implementation of cummax."""
+                assert len(x.shape) == 2
+                # transpose to [seq, batch] for tf.scan, which iterates on dimension 0.
+                x = tf.transpose(x)
+                x = tf.scan(tf.maximum, x, initializer=tf.reduce_min(x, axis=0))
+                x = tf.transpose(x)
+                return x
+
+            # segment_start_offsets[i] = i if it's the first position of a segment, otherwise 0.
+            segment_start_offsets = segment_starts * tf.range(max_len)
+            # segment_start_offsets[i] = j if j is the first position of a segment containing
+            # position i.
+            segment_start_offsets = cummax_on_last_axis(segment_start_offsets)
+            # Within-segment positions.
+            positions = tf.range(max_len) - segment_start_offsets
+            # Mask out padded positions.
+            positions = tf.where(tf.equal(batched_input_ids, vocab.pad_id), 0, positions)
+
+            result["input_segment_ids"] = segment_ids
+            result["input_positions"] = positions
+
+        return result
 
     def process(ds: tf.data.Dataset) -> tf.data.Dataset:
         """Applies processing strategy to dataset."""
@@ -871,6 +925,7 @@ def lm_text_preprocessor(
     window_size: int = 128,
     additional_preprocessors: Optional[Sequence[InstantiableConfig]] = None,
     token_adjuster_cfg: Optional[InstantiableConfig] = None,
+    packing_method: Optional[PackingMethodType] = None,
     is_training: Optional[bool] = None,
 ) -> input_tf_data.DatasetToDatasetFn:
     """Produces processors for lm data for LM training."""
@@ -899,6 +954,7 @@ def lm_text_preprocessor(
                 window_size=window_size,
                 shuffle_buffer_size=shuffle_buffer_size,
                 token_adjuster_cfg=token_adjuster_cfg,
+                packing_method=packing_method,
                 is_training=is_training if is_training is not None else True,
             )
         )

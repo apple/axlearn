@@ -73,7 +73,10 @@ import jax.numpy as jnp
 import triton  # pytype: disable=import-error
 from jax.experimental.pallas.ops.gpu.attention import mha as pallas_mha
 
-from axlearn.common.flash_attention.gpu_attention import flash_attention
+from axlearn.common.flash_attention.gpu_attention import (
+    cudnn_dot_product_attention,
+    flash_attention,
+)
 from axlearn.common.flash_attention.utils import mha_reference
 
 
@@ -86,9 +89,9 @@ def _perf_report(prefix: str):
         x_names=["batch_size"],
         x_vals=[2, 4, 8, 16],
         line_arg="library",
-        line_vals=["jax", "jax-triton", "jax-pallas"],
-        line_names=["Jax", "Jax Triton", "Pallas"],
-        styles=[("blue", "-"), ("purple", "-"), ("green", "-")],
+        line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
+        line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
+        styles=[("blue", "-"), ("purple", "-"), ("green", "-"), ("red", "-")],
         ylabel="ms",
         plot_name=f"{prefix}-head{num_heads}-seq1024-d{per_head_dim}",
         args={"num_heads": num_heads, "seq_len": 1024, "per_head_dim": per_head_dim},
@@ -98,9 +101,9 @@ def _perf_report(prefix: str):
         x_names=["num_heads"],
         x_vals=[12, 16, 32, 48, 72],
         line_arg="library",
-        line_vals=["jax", "jax-triton", "jax-pallas"],
-        line_names=["Jax", "Jax Triton", "Pallas"],
-        styles=[("blue", "-"), ("purple", "-"), ("green", "-")],
+        line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
+        line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
+        styles=[("blue", "-"), ("purple", "-"), ("green", "-"), ("red", "-")],
         ylabel="ms",
         plot_name=f"{prefix}-batch{batch_size}-seq{seq_len}-d{per_head_dim}",
         args={"batch_size": batch_size, "seq_len": seq_len, "per_head_dim": per_head_dim},
@@ -110,9 +113,9 @@ def _perf_report(prefix: str):
         x_names=["seq_len"],
         x_vals=[2**i for i in range(7, 12)],  # 128 to 2048.
         line_arg="library",
-        line_vals=["jax", "jax-triton", "jax-pallas"],
-        line_names=["Jax", "Jax Triton", "Pallas"],
-        styles=[("blue", "-"), ("purple", "-"), ("green", "-")],
+        line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
+        line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
+        styles=[("blue", "-"), ("purple", "-"), ("green", "-"), ("red", "-")],
         ylabel="ms",
         plot_name=f"{prefix}-batch{batch_size}-head{num_heads}-d{per_head_dim}",
         args={"batch_size": batch_size, "num_heads": num_heads, "per_head_dim": per_head_dim},
@@ -122,9 +125,9 @@ def _perf_report(prefix: str):
         x_names=["per_head_dim"],
         x_vals=[16, 32, 64, 128],
         line_arg="library",
-        line_vals=["jax", "jax-triton", "jax-pallas"],
-        line_names=["Jax", "Jax Triton", "Pallas"],
-        styles=[("blue", "-"), ("purple", "-"), ("green", "-")],
+        line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
+        line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
+        styles=[("blue", "-"), ("purple", "-"), ("green", "-"), ("red", "-")],
         ylabel="ms",
         plot_name=f"{prefix}-batch{batch_size}-head{num_heads}-seq{seq_len}",
         args={"batch_size": batch_size, "num_heads": num_heads, "seq_len": seq_len},
@@ -158,6 +161,8 @@ def bench_flash_attention(
             fn = lambda: flash_attention(q, k, v, bias, causal=True)
         elif "pallas" in library:
             fn = lambda: pallas_mha(q, k, v, segment_ids=None, causal=True)
+        elif "cudnn" in library:
+            fn = lambda: cudnn_dot_product_attention(q, k, v, bias=bias, causal=True)
         else:
             fn = lambda: mha_reference(q, k, v, bias, causal=True)
         ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
@@ -203,6 +208,14 @@ def bench_flash_attention_backward(
 
             pallas_bwd = jax.grad(pallas_fn, argnums=(0, 1, 2))
             fn = lambda: pallas_bwd(q, k, v)
+        elif "cudnn" in library:
+
+            @jax.jit
+            def cudnn_fn(q, k, v):
+                return cudnn_dot_product_attention(q, k, v, bias=bias, causal=True).sum()
+
+            cudnn_bwd = jax.grad(cudnn_fn, argnums=(0, 1, 2))
+            fn = lambda: cudnn_bwd(q, k, v)
         else:
 
             @jax.jit

@@ -135,6 +135,7 @@ from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.uploader import Uploader, with_interval
 from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import CPUJob, docker_command
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
 from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, common_flags
@@ -514,7 +515,9 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
                 upload_fn=config_for_function(with_interval).set(upload_fn=_gcloud_storage_rsync),
             ),
             quota=config_for_function(_project_quotas_from_file).set(quota_file=quota_file()),
+            event_publisher=event_queue_from_config(flag_values=flag_values),
         )
+
         _with_retry(
             lambda: bastion_cfg.instantiate().execute(),
             interval=60,

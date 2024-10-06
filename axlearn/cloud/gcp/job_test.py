@@ -327,6 +327,7 @@ class TPUGKEJobTest(TestCase):
         enable_ici_resiliency=[True, False, None],
         enable_pre_provisioner=[None, True, False],
         location_hint=["test-location-hint", None],
+        enable_tpu_smart_repair=[True, False],
     )
     def test_build_pod(
         self,
@@ -337,6 +338,7 @@ class TPUGKEJobTest(TestCase):
         reservation: Optional[str] = None,
         enable_pre_provisioner: Optional[bool] = None,
         location_hint: Optional[str] = None,
+        enable_tpu_smart_repair: bool = False,
     ):
         with mock.patch.dict("os.environ", env), self._job_config(bundler_cls) as cfg:
             gke_job: job.TPUGKEJob = cfg.set(
@@ -345,6 +347,7 @@ class TPUGKEJobTest(TestCase):
                 enable_pre_provisioner=enable_pre_provisioner,
                 location_hint=location_hint,
                 name="test",
+                enable_tpu_smart_repair=enable_tpu_smart_repair,
             ).instantiate()
             # pylint: disable-next=protected-access
             pod = gke_job._build_pod()
@@ -438,6 +441,19 @@ class TPUGKEJobTest(TestCase):
                 self.assertNotIn("job-priority", labels)
                 self.assertNotIn("job-priority", node_selector)
                 self.assertNotIn("user-id", labels)
+
+            if enable_tpu_smart_repair:
+                self.assertIn(
+                    "cloud.google.com/gke-tpu-auto-restart",
+                    annotations.get("tpu-provisioner.cloud.google.com/copy-labels", {}),
+                )
+                self.assertEqual("true", labels.get("cloud.google.com/gke-tpu-auto-restart", None))
+            else:
+                self.assertNotIn(
+                    "cloud.google.com/gke-tpu-auto-restart",
+                    annotations.get("tpu-provisioner.cloud.google.com/copy-labels", {}),
+                )
+                self.assertNotIn("cloud.google.com/gke-tpu-auto-restart", labels)
 
 
 class GPUGKEJobTest(TestCase):

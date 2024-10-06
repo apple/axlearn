@@ -117,7 +117,6 @@ class Model(BaseModel):
                 hidden_states: a float Tensor of shape [batch_size, seq_len, hidden_dim].
                 per_label_loss: a float Tensor of shape [batch_size, seq_len].
         """
-        self._constrain_input_batch(input_batch)
         predictions = self.predict(input_batch)
         aux_outputs = {**predictions}
         # [batch source_length, vocab_size]
@@ -264,6 +263,10 @@ class Model(BaseModel):
                     Used as decoder input ids. Values should be in the range [0, vocab_size].
                 token_type_ids: an optional int Tensor of shape [batch_size, seq_len].
                     Values should be in the range [0, type_vocab_size].
+                input_segment_ids: an optional int Tensor of shape [batch_size, seq_len].
+                    Denotes the segments within the sequence.
+                input_positions: an optional int Tensor of shape [batch_size, seq_len].
+                    Values should be in the range [0, seq_len].
 
         Returns:
             A dict containing:
@@ -272,11 +275,15 @@ class Model(BaseModel):
         """
         self._constrain_input_batch(input_batch)
         input_ids: Tensor = input_batch["input_ids"]
-        token_type_ids: Tensor = input_batch.get("token_type_ids")
+        token_type_ids: Optional[Tensor] = input_batch.get("token_type_ids")
+        input_segment_ids: Optional[Tensor] = input_batch.get("input_segment_ids")
+        input_positions: Optional[Tensor] = input_batch.get("input_positions")
         # Decoder hidden states: [batch_size, target_len, hidden_dim].
         decoder_output = self.decoder(
             input_ids=input_ids,
             token_type_ids=token_type_ids,
+            input_segment_ids=input_segment_ids,
+            positions=input_positions,
         )
         return decoder_output
 
@@ -338,6 +345,8 @@ class Model(BaseModel):
                 "target_labels",
                 "token_type_ids",
                 "prefix",
+                "input_segment_ids",
+                "input_positions",
             ]:
                 assert v.ndim == 2
                 input_batch[k] = with_sharding_constraint(
