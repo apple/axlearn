@@ -554,7 +554,7 @@ def _get_subtokens_and_answer_subtoken_indices(
 
 def _get_doc_subtoken_chunks(
     doc_subtokens: list[str], max_doc_subtokens_per_chunk: int, doc_stride: int
-) -> list[list[int]]:
+) -> list[list[str]]:
     """Produce chunks of the context.
 
     Produce chunks of the context based off of the max_doc_subtokens_per_chunk and the

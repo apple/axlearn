@@ -162,7 +162,7 @@ options:
   --zone ZONE
 ```
 
-The leaves of the command tree may be implementation dependent. Typically, they correspond to an [abseil-py](https://github.com/abseil/abseil-py) module.
+The leaves of the command tree may be implementation dependent. Typically, they correspond to an [abseil-py](https://github.com/abseil/abseil-py) module.[^1]
 For example, `axlearn gcp launch` simply maps to:
 https://github.com/apple/axlearn/blob/204f3de2650c098410749d078195e4f8db96d6f6/axlearn/cli/gcp.py#L56-L60
 
@@ -170,3 +170,7 @@ In some cases, they can map to shell commands. For example, `axlearn gcp auth` s
 https://github.com/apple/axlearn/blob/204f3de2650c098410749d078195e4f8db96d6f6/axlearn/cli/gcp.py#L86-L96
 
 In general, when in doubt, run `--help`.
+
+<br>
+
+[^1]: You can learn more about how abseil flags work from their [Python Devguide](https://abseil.io/docs/python/guides/flags#flag-types).

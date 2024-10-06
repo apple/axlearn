@@ -400,7 +400,8 @@ class TensorStoreStateStorageBuilder(Builder):
         Returns:
             The restored state.
         """
-        cfg = self.config
+        cfg: Builder.Config = self.config
+        cfg.storage.max_concurrent_restore_gb = cfg.concurrent_gb
         storage = cfg.storage.instantiate()
         step = parse_step_from_dir(cfg.dir)
         restored_state = storage.restore_from_dir(
@@ -408,7 +409,6 @@ class TensorStoreStateStorageBuilder(Builder):
             state=state.trainer_state,
             ckpt_dir=cfg.dir,
             validation=cfg.validation,
-            concurrent_gb=cfg.concurrent_gb,
         )
         built_keys = state.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=step, trainer_state=restored_state, built_keys=built_keys)

@@ -29,6 +29,7 @@ from jax import numpy as jnp
 from jax.experimental import mesh_utils
 from jax.experimental.array_serialization import serialization as array_serialization
 
+from axlearn.common import file_system as fs
 from axlearn.common import serialization, test_utils, utils
 from axlearn.common.array_serialization import BoundedDataShardedAsyncCheckpointManager
 from axlearn.common.checkpointer import (
@@ -217,7 +218,7 @@ class CheckpointerTest(test_utils.TestCase):
                     )
                 else:
                     raise NotImplementedError(checkpointer_cls)
-                tf.io.gfile.makedirs(ckpt_dir)
+                fs.makedirs(ckpt_dir)
 
                 if checkpointer_cls is OrbaxCheckpointer:
                     assert not ocp.step.is_checkpoint_finalized(ckpt_dir)
@@ -404,6 +405,11 @@ class CheckpointerTest(test_utils.TestCase):
                 gc_loop_interval_seconds=1,
             )
             cfg.save_policy.min_step = 0
+
+            # Running gc for non-existent dir shouldn't fail.
+            ckpt_fake = cfg.clone(dir=os.path.join(temp_dir, "fake_dir")).instantiate(parent=None)
+            ckpt_fake._run_garbage_collection()
+
             ckpt: Checkpointer = cfg.instantiate(parent=None)
             state = dict(x=jnp.zeros([], dtype=jnp.int32))
 
@@ -845,6 +851,13 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                 storage._manager, array_serialization.GlobalAsyncCheckpointManager
             )
 
+    def test_max_concurrent_restore_gb_setting(self):
+        with self.assertRaisesRegex(ValueError, "strictly positive"):
+            TensorStoreStateStorage.default_config().set(max_concurrent_restore_gb=-2).instantiate()
+        t = TensorStoreStateStorage.default_config().instantiate()
+        # Test default value.
+        self.assertEqual(t._max_concurrent_restore_gb, 32)
+
     def test_stop(self):
         storage = TensorStoreStateStorage.default_config().instantiate()
         worker_result = None
@@ -928,7 +941,7 @@ def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> list[str]
     filenames = [
         f"{path_prefix}-{shard_id:05d}-of-{num_shards:05d}" for shard_id in range(num_shards)
     ]
-    files = [tf.io.gfile.GFile(filename, "w") for filename in filenames]
+    files = [fs.open(filename, "w") for filename in filenames]
     for i, line in enumerate(lines):
         files[i % num_shards].write(line + "\n")
     return filenames

@@ -12,12 +12,13 @@ from collections.abc import Sequence
 from typing import Any, Callable, ContextManager, Literal, NamedTuple, Optional, Union
 
 import jax
-import tensorflow as tf
+import numpy as np
 from absl import logging
 from jax import numpy as jnp
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
 
+from axlearn.common import file_system as fs
 from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
@@ -180,7 +181,7 @@ class SpmdTrainer(Module):
         cfg: Config,
         *,
         parent: Optional[Module],
-        devices: Optional[Sequence[jax.Device]] = None,
+        devices: Optional[np.ndarray] = None,
     ):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -211,12 +212,21 @@ class SpmdTrainer(Module):
             utils.validate_float_dtype(cfg.train_dtype)
 
         # Create the device mesh.
-        self._step_log(
-            "Devices: global=%s local=%s %s",
-            jax.device_count(),
-            jax.local_device_count(),
-            [device.platform for device in jax.local_devices()],
-        )
+        if devices is None:
+            self._step_log(
+                "Devices: global=%s local=%s %s",
+                jax.device_count(),
+                jax.local_device_count(),
+                [device.platform for device in jax.local_devices()],
+            )
+        else:
+            local_devices = [d for d in devices.flatten() if d.process_index == jax.process_index()]
+            self._step_log(
+                "Devices: global=%s local=%s %s",
+                len(devices),
+                len(local_devices),
+                [device.platform for device in local_devices],
+            )
         self._step_log("Mesh shape: %s", cfg.mesh_shape)
         devices = (
             utils.create_device_mesh(mesh_shape=cfg.mesh_shape) if devices is None else devices
@@ -719,7 +729,7 @@ class SpmdTrainer(Module):
 
             # Log trainer state tree.
             if jax.process_index() == 0:
-                with tf.io.gfile.GFile(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
+                with fs.open(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
                     f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
 
         self._log_trainer_state_stats()
@@ -922,7 +932,9 @@ class SpmdTrainer(Module):
             donate_argnums=(0,),  # donate the state
         )
 
-    def compile_train_step(self) -> jax.stages.Compiled:
+    def compile_train_step(
+        self, compiler_options: Optional[dict[str, Union[str, bool]]] = None
+    ) -> jax.stages.Compiled:
         with self.mesh(), self._context_manager():
             # Do not run init(), which require real devices.
             trainer_state_specs = jax.tree_util.tree_map(
@@ -937,7 +949,7 @@ class SpmdTrainer(Module):
             )
             jit_train_step = self._pjit_train_step()
             lowered_train_step = jit_train_step.lower(trainer_state_specs, input_batch_specs)
-            return lowered_train_step.compile()
+            return lowered_train_step.compile(compiler_options=compiler_options)
 
     def _train_step(
         self,
@@ -1069,9 +1081,15 @@ def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str
         mesh_selector: A string used to select the mesh rule to apply.
     """
     if trainer_config.mesh_rules:
-        mesh = match_regex_rules(
+        mesh_rule = match_regex_rules(
             mesh_selector, rules=trainer_config.mesh_rules, default_value=REQUIRED
         )
-        logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh)
-        if mesh is not REQUIRED:
-            trainer_config.mesh_shape = mesh
+        logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh_rule)
+        if mesh_rule is not REQUIRED:
+            # Mesh config is just mesh rule or hybrid mesh rule.
+            if isinstance(mesh_rule, (tuple, HybridMeshShape)) or mesh_rule is None:
+                trainer_config.mesh_shape = mesh_rule
+            else:
+                # Override configs from ConfigModifier.
+                mesh_rule_fn = maybe_instantiate(mesh_rule)
+                trainer_config = mesh_rule_fn(trainer_config)

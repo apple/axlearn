@@ -23,8 +23,9 @@ from axlearn.cloud.common.types import ResourceMap
 from axlearn.cloud.common.utils import Table
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
-from axlearn.cloud.gcp.storage import list_blobs
 from axlearn.cloud.gcp.utils import validate_resource_name
+from axlearn.common import file_system as fs
+from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
 
 
 class TPUCreationError(RuntimeError):
@@ -191,7 +192,7 @@ def get_tpu_node_status(name: str, *, node: dict[str, Any]) -> dict[str, Union[s
             f"gs://{gcp_settings('ttl_bucket')}/axlearn/jobs/{name}/tpu_vm_ready_flags"
         )
         ready_flags_path = f"{ready_flags_base_path}/{node['metadata']['create_request_time']}/"
-        num_booted = len(list_blobs(ready_flags_path))
+        num_booted = len(fs.listdir(ready_flags_path))
     return dict(state=state, num_booted=num_booted)
 
 
@@ -425,7 +426,7 @@ def get_queued_tpu_node_status(name: str, *, node: dict[str, Any]) -> dict[str, 
         # Only one node spec is permitted (even though it's a list).
         create_request_time = node["tpu"]["nodeSpec"][0]["node"]["metadata"]["create_request_time"]
         ready_flags_path = f"{ready_flags_base_path}/{create_request_time}/"
-        num_booted = len(list_blobs(ready_flags_path))
+        num_booted = len(fs.listdir(ready_flags_path))
     return dict(state=state, num_booted=num_booted)
 
 
@@ -689,28 +690,6 @@ def get_queued_tpu_node(name: str, resource_qrm: discovery.Resource) -> Optional
             continue
 
 
-_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p")
-
-
-def infer_tpu_version(tpu_type: str) -> str:
-    """Infer TPU version from the TPU type.
-
-    Args:
-        tpu_type: A string of the format {version}-{cores}.
-
-    Returns:
-        Inferred TPU version string.
-
-    Raises:
-        ValueError: if the TPU version string is unknown.
-    """
-    tpu_type = infer_tpu_type(tpu_type)
-    tpu_version = tpu_type.rsplit("-", 1)[0]  # split from the last occurrence of '-'
-    if tpu_version not in _TPU_VERSIONS:
-        raise ValueError(f"Unknown TPU version {tpu_version}. Expected one of {_TPU_VERSIONS}")
-    return tpu_version
-
-
 def infer_tpu_cores(tpu_type: str) -> int:
     """Infer the number of TPU cores from the TPU type.
 
@@ -744,13 +723,6 @@ def infer_tpu_workers(tpu_type: str) -> int:
     except Exception as e:  # pylint: disable=broad-except
         logging.error("Failed to parse tpu_type %s: %s", tpu_type, e)
     raise NotImplementedError(tpu_type)
-
-
-def infer_tpu_type(instance_type: str) -> str:
-    """Infers tpu type (e.g. v4-8) from instance type (e.g. tpu-v4-8 or v4-8)."""
-    if not (instance_type and re.fullmatch(r"(tpu-)?v.+-\d+", instance_type)):
-        raise ValueError(f"Invalid TPU instance: {instance_type}")
-    return instance_type.replace("tpu-", "")
 
 
 def infer_tpu_resources(instance_type: str, num_replicas: int) -> ResourceMap[int]:

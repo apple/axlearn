@@ -9,9 +9,25 @@
 
 Following https://platform.openai.com/docs/guides/function-calling
 for target message.
+
+The file contains the code for several tool use metrics:
+* Standard tool use metrics
+* Lenient tool use metric
+* Bag of word tool (BOW) use metric.
+
+The lenient matching is similar to the standard metric. It performs the following steps:
+* Transforms the argument strings to lower case.
+* Removes punctuations.
+* Removes stop words. The stop words are statically predefined.
+* Compares the results argument string.
+
+The bag of word tool use metric transforms the argument strings in the same way as the
+lenient matching. But instead of comparing the resulting strings it checks if the words
+in the ground truth arguments are contained in the predicted arguments.
 """
 
 import copy
+import dataclasses
 import json
 import logging
 import re
@@ -22,6 +38,7 @@ import dateutil
 import dateutil.parser
 
 from axlearn.open_api.common import BaseClient, EvalGeneratorType, Generator
+from axlearn.open_api.metrics.tool_use_execution_utils import ArgumentMatchType, check_arguments
 from axlearn.open_api.openai import OpenAIClient
 
 
@@ -232,6 +249,166 @@ def _compare_tool_calls(
     return True
 
 
+@dataclasses.dataclass
+class _DetailedMatchResult:
+    """Represents the tool matches for different metrics.
+
+    Argument matches require that function name matches too. It is not possible that the
+    `func_name_match` is false, while one of the arg match members is true.
+
+    Attributes:
+        func_name_match: The predicted function name matches the target function name.
+        strict_arg_match: The predicted tool arguments match strictly all target tool arguments.
+        lenient_arg_match: The predicted tool arguments match all target tool arguments via the
+           lenient comparison.
+        lenient_bow_arg_match: The predicted tool arguments match all target tool arguments via
+           the lenient bag-of-work comparison.
+    """
+
+    func_name_match: bool = False
+    strict_arg_match: bool = False
+    lenient_arg_match: bool = False
+    lenient_bow_arg_match: bool = False
+
+
+def _compare_tool_call_detailed(
+    *,
+    pred_tool_calls: Sequence[dict[str, Any]],
+    target_tool_calls: Sequence[dict[str, Any]],
+) -> list[_DetailedMatchResult]:
+    """Performs a detailed comparison of the predicted tool calls with the target tool calls and
+    returns different metrics.
+
+    The number of predicted and target tool calls can be different. The comparsion works by
+    iterating over all predicted calls and finding the corresponding target call. Correspondence
+    is defined here by the following rules:
+    - Strict metric: The function name matches and all arguments are identical.
+    - Lenient metric: The function name matches and all arguments match by the lenient argument
+      comparision.
+    - Lenient BOW metric: The function name matches and all arguments match by the lenient BOW
+      comparison.
+
+    Note that this function return the matching results for every predicted tool call.
+
+    It is possible that strict, lenient, or lenient-bow matches correspond to different tool
+    calls.
+
+    Invalid tool calls which fail to parse or decode are ignored and considered as non
+    matches.
+
+    An example of a tool call is
+
+    ```
+    {
+        "id": "call_0",
+        "type": "function",
+        "function": {
+            "name": "add_contact",
+            "arguments": {
+                "name": "John Doe",
+                "phone": "1234567890",
+                "email": "johndoe@example.com"
+            }
+        }
+    }
+    ```
+
+    Args:
+        pred_tool_calls: Predicted tool calls.
+        target_tool_calls: Target tool calls.
+
+    Returns:
+        A list of DetailedMatchResults with the same length as `pred_tool_calls`. Each result
+        indicates whether the corresponding predicted tool call matches any target tool call.
+    """
+
+    target_tool_calls = list(target_tool_calls)
+    pred_tool_calls = list(pred_tool_calls)
+
+    target_funcs = []
+    for t in target_tool_calls:
+        try:
+            t["function"]["arguments"] = _extract_arguments(t["function"])
+        except (json.JSONDecodeError, KeyError) as e:
+            logging.error(
+                "Unable to decode arguments from target call %s, Error %s", t["function"], e
+            )
+            continue
+        target_funcs.append(t["function"])
+
+    strict_target_funcs = list(target_funcs)
+    lenient_target_funcs = list(target_funcs)
+    lenient_bow_target_funcs = list(target_funcs)
+
+    results = []
+    for pred_tool in pred_tool_calls:
+        try:
+            pred_func = pred_tool["function"]
+            pred_func["arguments"] = _extract_arguments(pred_func)
+        except (json.JSONDecodeError, KeyError) as e:
+            logging.error(
+                "Unable to decode arguments from predicted call %s, Error %s", pred_tool, e
+            )
+            results.append(_DetailedMatchResult())
+            continue
+
+        fname_match = False
+        strict_match = False
+        lenient_match = False
+        lenient_bow_match = False
+
+        for idx, target_func in enumerate(strict_target_funcs):
+            if pred_func["name"] == target_func["name"]:
+                fname_match = True
+            else:
+                continue
+
+            if check_arguments(
+                pred_args=pred_func["arguments"],
+                target_args=target_func["arguments"],
+                match_type=ArgumentMatchType.STRICT,
+            ):
+                strict_match = True
+                del strict_target_funcs[idx]
+                break
+
+        for idx, target_func in enumerate(lenient_target_funcs):
+            if pred_func["name"] != target_func["name"]:
+                continue
+
+            if check_arguments(
+                pred_args=pred_func["arguments"],
+                target_args=target_func["arguments"],
+                match_type=ArgumentMatchType.LENIENT,
+            ):
+                lenient_match = True
+                del lenient_target_funcs[idx]
+                break
+
+        for idx, target_func in enumerate(lenient_bow_target_funcs):
+            if pred_func["name"] != target_func["name"]:
+                continue
+
+            if check_arguments(
+                pred_args=pred_func["arguments"],
+                target_args=target_func["arguments"],
+                match_type=ArgumentMatchType.LENIENT_BAG_OF_WORD,
+            ):
+                lenient_bow_match = True
+                del lenient_bow_target_funcs[idx]
+                break
+
+        results.append(
+            _DetailedMatchResult(
+                func_name_match=fname_match,
+                strict_arg_match=strict_match,
+                lenient_arg_match=lenient_match,
+                lenient_bow_arg_match=lenient_bow_match,
+            )
+        )
+    return results
+
+
 def metric_fn(
     *,
     responses: list[dict[str, Any]],
@@ -268,6 +445,14 @@ def metric_fn(
         return new_tool_calls
 
     total_matches = 0
+
+    # The counters for the detailed metrics.
+    total_tool_calls = 0
+    total_func_name_matches = 0
+    total_strict_matches = 0
+    total_lenient_matches = 0
+    total_bow_matches = 0
+
     number_of_parsing_errors = 0
     number_of_generation_errors = 0
     generator_cfg: Generator.Config = generators[EvalGeneratorType.RESPONSE].config
@@ -296,9 +481,16 @@ def metric_fn(
             # sometimes an error field.
             number_of_generation_errors += 1
         pred_tool_calls, target_tool_calls = None, None
+
+        target = OpenAIClient.format_message(target_message)
+
+        if target.tool_calls is not None:
+            target_tool_calls = get_tool_calls_from_message(target.model_dump())
+            total_tool_calls += len(target_tool_calls)
+
         if len(pred_messages) > 0:
             pred = pred_messages[0]
-            target = OpenAIClient.format_message(target_message)
+
             # Check string match.
             if (
                 target.content is not None
@@ -312,13 +504,24 @@ def metric_fn(
                 and len(target.tool_calls) == len(pred.tool_calls)
             ):
                 pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
-                target_tool_calls = get_tool_calls_from_message(target.model_dump())
                 match_rules = response.get("target_message_match_rules", None)
                 matched = _compare_tool_calls(
                     pred_tool_calls=pred_tool_calls,
                     target_tool_calls=target_tool_calls,
                     match_rules=match_rules,
                 )
+
+            if target.tool_calls is not None and pred.tool_calls is not None:
+                # Run the detailed too call matching.
+                pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
+                detailed_results = _compare_tool_call_detailed(
+                    pred_tool_calls=pred_tool_calls, target_tool_calls=target_tool_calls
+                )
+                total_func_name_matches += sum(1 for d in detailed_results if d.func_name_match)
+                total_strict_matches += sum(1 for d in detailed_results if d.strict_arg_match)
+                total_lenient_matches += sum(1 for d in detailed_results if d.lenient_arg_match)
+                total_bow_matches += sum(1 for d in detailed_results if d.lenient_bow_arg_match)
+
         if debug and not matched:
             deliverable_id = response.get("deliverable_id", response.get("id", ""))
             target = target_tool_calls or json.dumps(target_message, sort_keys=True)
@@ -342,4 +545,9 @@ def metric_fn(
         "number_of_examples": len(responses),
         "number_of_parsing_errors": number_of_parsing_errors,
         "number_of_generation_errors": number_of_generation_errors,
+        "func_name_accuracy": total_func_name_matches / max(1, total_tool_calls),
+        "strict_accuracy": total_strict_matches / max(1, total_tool_calls),
+        "lenient_accuracy": total_lenient_matches / max(1, total_tool_calls),
+        "bow_accuracy": total_bow_matches / max(1, total_tool_calls),
+        "number_of_expected_tool_calls": total_tool_calls,
     }

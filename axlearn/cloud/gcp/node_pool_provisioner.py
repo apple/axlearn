@@ -85,6 +85,7 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
         reservation = job_cfg.reservation
         location_hint = job_cfg.location_hint
         enable_tpu_ici_resiliency = job_cfg.enable_tpu_ici_resiliency
+        enable_tpu_smart_repair = job_cfg.enable_tpu_smart_repair
         tpu_type = infer_tpu_type(acc_cfg.instance_type)
         job_sys_property = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
         num_node_pools = acc_cfg.num_replicas
@@ -126,6 +127,9 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             # Populate job-priority label to nodes.
             if job_priority is not None:
                 additional_labels.update({"job-priority": str(job_priority)})
+
+            if enable_tpu_smart_repair:
+                additional_labels.update({"cloud.google.com/gke-tpu-auto-restart": "true"})
 
             additional_labels_list.append(additional_labels)
 

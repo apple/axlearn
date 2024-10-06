@@ -18,6 +18,7 @@ from axlearn.common.input_fake import fake_source
 from axlearn.common.input_lm import (
     InputDataType,
     ModelType,
+    PackingMethodType,
     _trim_and_pack_with_segments,
     augment_text_from_inputs_targets_pretokenized,
     joint_truncation_for_seq2seq_lm_input,
@@ -41,64 +42,6 @@ class BaseLmInputTest(test_utils.TestCase):
 
     newlines_replaced_with = "<n>"
 
-    def _lm_training_processor_config(
-        self,
-        *,
-        vocab_cfg: InstantiableConfig,
-        max_len: int,
-        window_size: int,
-        max_padding_fraction: float,
-    ):
-        return config_for_function(text_to_lm_training_input).set(
-            vocab_cfg=vocab_cfg,
-            max_len=max_len,
-            replace_newlines_with=self.newlines_replaced_with,
-            window_size=window_size,
-            max_padding_fraction=max_padding_fraction,
-        )
-
-    def _test_fake_text_lm_training_data(
-        self, *, vocab_cfg: InstantiableConfig, expected_batches: list[dict[str, Any]]
-    ):
-        batch_size, max_len = 3, 6
-        cfg = input_tf_data.Input.default_config().set(
-            name="test_input",
-            is_training=True,
-            source=config_for_function(make_ds_fn).set(
-                texts=[
-                    "hello world\n",
-                    "hello moon\n",
-                    "hello tiger\n",
-                    "hello dog\n",
-                    "hello cat\n",
-                ],
-            ),
-            processor=self._lm_training_processor_config(
-                vocab_cfg=vocab_cfg,
-                max_len=max_len,
-                window_size=10,
-                max_padding_fraction=0.5,
-            ),
-            batcher=config_for_function(input_tf_data.batch).set(
-                global_batch_size=batch_size,
-                prefetch_buffer_size=2,
-                pad_example_fn=input_tf_data.default_pad_example_fn,
-            ),
-        )
-        # Set TensorFlow seed.
-        tf.random.set_seed(123)
-        dataset = cfg.instantiate(parent=None)
-        for ix, batch in enumerate(dataset):
-            self.assertIsNotNone(batch)
-            if ix < len(expected_batches):
-                # Check for equality for provided batches.
-                batch = {k: v.tolist() for k, v in batch.items()}
-                print(batch)
-                self.assertNestedAllClose(expected_batches[ix], batch)
-            if ix >= 10 * len(expected_batches):
-                # Expect to be able to repeat forever.
-                break
-
     def _lm_eval_processor_config(
         self,
         *,
@@ -116,19 +59,18 @@ class BaseLmInputTest(test_utils.TestCase):
         )
 
     def _test_fake_text_lm_eval_data(
-        self, *, vocab_cfg: InstantiableConfig, expected_batches: list[dict[str, Any]]
+        self,
+        *,
+        texts=list[str],
+        vocab_cfg: InstantiableConfig,
+        expected_batches: list[dict[str, Any]],
     ):
         batch_size, max_len = 3, 12
 
         cfg = input_tf_data.Input.default_config().set(
             name="test_input",
             is_training=False,
-            source=config_for_function(make_ds_fn).set(
-                texts=[
-                    "Lorem ipsum dolor sit amet, consectetur adipiscing elit\n",
-                    "sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
-                ]
-            ),
+            source=config_for_function(make_ds_fn).set(texts=texts),
             processor=self._lm_eval_processor_config(
                 vocab_cfg=vocab_cfg, max_len=max_len, stride=2
             ),
@@ -144,7 +86,6 @@ class BaseLmInputTest(test_utils.TestCase):
         dataset = cfg.instantiate(parent=None)
         for ix, batch in enumerate(dataset):
             batch = {k: v.tolist() for k, v in batch.items()}
-            print(batch)
             self.assertNestedAllClose(expected_batches[ix], batch)
             if ix > 0:
                 # Check the first two batches.
@@ -164,9 +105,17 @@ class LmTrainingInputTest(BaseLmInputTest):
     )
     def test_training_lm_processor_single_example(self, text: str):
         max_len = 32
-        processor = self._lm_training_processor_config(
-            vocab_cfg=self.vocab_cfg, max_len=max_len, window_size=3, max_padding_fraction=0.0
-        ).instantiate()
+        processor = (
+            config_for_function(text_to_lm_training_input)
+            .set(
+                vocab_cfg=self.vocab_cfg,
+                max_len=max_len,
+                window_size=3,
+                max_padding_fraction=0.0,
+                packing_method=PackingMethodType.EOS_DELIM_NO_MASK,
+            )
+            .instantiate()
+        )
         ds_fn = (
             config_for_function(make_ds_fn)
             .set(is_training=False, texts=[text] * 10, repeat=1)
@@ -185,63 +134,168 @@ class LmTrainingInputTest(BaseLmInputTest):
         # The inputs should be one-off the labels.
         self.assertNestedAllClose(target_labels[:-1], input_ids[1:])
 
+    @parameterized.parameters(
+        dict(
+            packing_method=PackingMethodType.EOS_DELIM_MASK,
+            expected_batches=[
+                {
+                    "input_ids": [
+                        [1, 21820, 296, 2, 29],
+                        [3155, 1, 21820, 8114, 2],
+                    ],
+                    "target_labels": [
+                        [21820, 296, 2, 29, 3155],
+                        [1, 21820, 8114, 2, 29],
+                    ],
+                    "input_segment_ids": [
+                        [1, 1, 1, 1, 1],
+                        [1, 2, 2, 2, 2],
+                    ],
+                    "input_positions": [
+                        [0, 1, 2, 3, 4],
+                        [0, 0, 1, 2, 3],
+                    ],
+                    "target_num_bytes": [18, 17],
+                },
+                {
+                    "input_ids": [
+                        [29, 3155, 1, 21820, 296],
+                        [2, 29, 3155, 0, 0],
+                    ],
+                    "target_labels": [
+                        [3155, 1, 21820, 296, 2],
+                        [29, 3155, 1, 0, 0],
+                    ],
+                    "input_segment_ids": [
+                        [1, 1, 2, 2, 2],
+                        [1, 1, 1, 0, 0],
+                    ],
+                    "input_positions": [
+                        [0, 1, 0, 1, 2],
+                        [0, 1, 2, 0, 0],
+                    ],
+                    "target_num_bytes": [19, 3],
+                },
+            ],
+            max_padding_fraction=1.0,  # Always pad
+        ),
+        dict(
+            packing_method=PackingMethodType.EOS_DELIM_NO_MASK,
+            expected_batches=[
+                {
+                    "input_ids": [
+                        [1, 21820, 296, 2, 29],
+                        [3155, 1, 21820, 8114, 2],
+                    ],
+                    "target_labels": [
+                        [21820, 296, 2, 29, 3155],
+                        [1, 21820, 8114, 2, 29],
+                    ],
+                    "target_num_bytes": [18, 17],
+                },
+                {
+                    "input_ids": [
+                        [29, 3155, 1, 21820, 296],
+                        [2, 29, 3155, 0, 0],
+                    ],
+                    "target_labels": [
+                        [3155, 1, 21820, 296, 2],
+                        [29, 3155, 1, 0, 0],
+                    ],
+                    "target_num_bytes": [19, 3],
+                },
+            ],
+            max_padding_fraction=1.0,  # Always pad
+        ),
+        dict(
+            packing_method=PackingMethodType.EOS_DELIM_MASK,
+            expected_batches=[
+                {
+                    "input_ids": [
+                        [1, 21820, 296, 2, 29],
+                        [3155, 1, 21820, 8114, 2],
+                    ],
+                    "target_labels": [
+                        [21820, 296, 2, 29, 3155],
+                        [1, 21820, 8114, 2, 29],
+                    ],
+                    "input_segment_ids": [
+                        [1, 1, 1, 1, 1],
+                        [1, 2, 2, 2, 2],
+                    ],
+                    "input_positions": [
+                        [0, 1, 2, 3, 4],
+                        [0, 0, 1, 2, 3],
+                    ],
+                    "target_num_bytes": [18, 17],
+                },
+                {
+                    "input_ids": [
+                        [29, 3155, 1, 21820, 296],
+                        [1, 21820, 8114, 2, 29],
+                    ],
+                    "target_labels": [
+                        [3155, 1, 21820, 296, 2],
+                        [21820, 8114, 2, 29, 3155],
+                    ],
+                    "input_segment_ids": [
+                        [1, 1, 2, 2, 2],
+                        [1, 1, 1, 1, 1],
+                    ],
+                    "input_positions": [
+                        [0, 1, 0, 1, 2],
+                        [0, 1, 2, 3, 4],
+                    ],
+                    "target_num_bytes": [19, 17],
+                },
+            ],
+            max_padding_fraction=0.0,  # Do not pad
+        ),
+    )
     @pytest.mark.skipif(
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
-    def test_fake_text_lm_training_data(self):
-        expected_batches = [
-            {
-                "input_ids": [
-                    [1, 21820, 296, 2, 29, 3155],
-                    [29, 3155, 1, 21820, 1782, 2],
-                    [1782, 2, 29, 3155, 1, 21820],
-                ],
-                "target_labels": [
-                    [21820, 296, 2, 29, 3155, 1],
-                    [3155, 1, 21820, 1782, 2, 29],
-                    [2, 29, 3155, 1, 21820, 1712],
-                ],
-                "target_num_bytes": [19, 18, 18],
-            },
-            {
-                "input_ids": [
-                    [1, 21820, 296, 2, 29, 3155],
-                    [29, 3155, 1, 21820, 296, 2],
-                    [29, 3155, 1, 21820, 1712, 2],
-                ],
-                "target_labels": [
-                    [21820, 296, 2, 29, 3155, 1],
-                    [3155, 1, 21820, 296, 2, 29],
-                    [3155, 1, 21820, 1712, 2, 29],
-                ],
-                "target_num_bytes": [19, 20, 18],
-            },
+    def test_fake_text_lm_training_data(
+        self,
+        packing_method: PackingMethodType,
+        expected_batches: list[dict[str, Any]],
+        max_padding_fraction: float,
+    ):
+        texts = [
+            "hello world\n",
+            "hello moon\n",
         ]
-        self._test_fake_text_lm_training_data(
-            vocab_cfg=self.vocab_cfg, expected_batches=expected_batches
-        )
 
-        # Test lm_text_preprocessor. Expect same results.
-        batch_size, max_len = 3, 6
+        # window_size > len(texts) to repeat the sentence. 18 tokens in total.
+        # [    1,  21820,   296,     2,    29,  3155,     1, 21820,  8114,
+        #      2,     29,  3155,     1, 21820,   296,     2,    29,  3155]
+        window_size = 3
+
+        # Pad the concatenated sequence to 20 tokens:
+        # [    1,  21820,   296,     2,    29,  3155,     1, 21820,  8114,    2
+        #     29,  3155,     1, 21820,   296,     2,    29,  3155,      0,    0]
+        #
+        # Or, trim the sequence to 15 tokens:
+        # [    1,  21820,   296,     2,    29,  3155,     1, 21820,  8114,    2
+        #     29,  3155,     1, 21820,   296]
+        batch_size, max_len = 2, 5
+
+        # Disable shuffling to make results interpretable.
+        shuffle_buffer_size = 0
+
+        # Test text_to_lm_training_input.
         cfg = input_tf_data.Input.default_config().set(
             name="test_input",
             is_training=True,
-            source=config_for_function(make_ds_fn).set(
-                texts=[
-                    "hello world\n",
-                    "hello moon\n",
-                    "hello tiger\n",
-                    "hello dog\n",
-                    "hello cat\n",
-                ],
-            ),
-            processor=config_for_function(lm_text_preprocessor).set(
+            source=config_for_function(make_ds_fn).set(texts=texts),
+            processor=config_for_function(text_to_lm_training_input).set(
                 vocab_cfg=self.vocab_cfg,
-                max_sequence_length=max_len,
+                max_len=max_len,
                 replace_newlines_with=self.newlines_replaced_with,
-                window_size=10,
-                max_padding_fraction=0.5,
-                shuffle_buffer_size=1024,
+                window_size=window_size,
+                max_padding_fraction=max_padding_fraction,
+                shuffle_buffer_size=shuffle_buffer_size,
+                packing_method=packing_method,
             ),
             batcher=config_for_function(input_tf_data.batch).set(
                 global_batch_size=batch_size,
@@ -249,14 +303,50 @@ class LmTrainingInputTest(BaseLmInputTest):
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
         )
+
         # Set TensorFlow seed.
+        tf.random.set_seed(123)
+        dataset = cfg.instantiate(parent=None)
+        for ix, batch in enumerate(dataset):
+            self.assertIsNotNone(batch)
+            if ix < len(expected_batches):
+                # Check for equality for provided batches.
+                batch = {k: v.tolist() for k, v in batch.items()}
+                self.assertNestedAllClose(expected_batches[ix], batch)
+            if ix >= 10 * len(expected_batches):
+                # Expect to be able to repeat forever.
+                break
+
+        # Test lm_text_preprocessor. Expect same results.
+        cfg = input_tf_data.Input.default_config().set(
+            name="test_input",
+            is_training=True,
+            source=config_for_function(make_ds_fn).set(
+                texts=texts,
+            ),
+            processor=config_for_function(lm_text_preprocessor).set(
+                vocab_cfg=self.vocab_cfg,
+                max_sequence_length=max_len,
+                replace_newlines_with=self.newlines_replaced_with,
+                window_size=window_size,
+                max_padding_fraction=max_padding_fraction,
+                shuffle_buffer_size=shuffle_buffer_size,
+                packing_method=packing_method,
+            ),
+            batcher=config_for_function(input_tf_data.batch).set(
+                global_batch_size=batch_size,
+                prefetch_buffer_size=2,
+                pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+        )
+
+        # Reset TensorFlow seed.
         tf.random.set_seed(123)
         dataset = cfg.instantiate(parent=None)
         for ix, batch in enumerate(dataset):
             if ix >= len(expected_batches):
                 break
             batch = {k: v.tolist() for k, v in batch.items()}
-            print(batch)
             self.assertNestedAllClose(expected_batches[ix], batch)
 
     @pytest.mark.skipif(
@@ -265,6 +355,13 @@ class LmTrainingInputTest(BaseLmInputTest):
     def test_fake_text_lm_training_data_eval(self):
         # N.B. we do not typically expect users to run the training data pipeline in eval mode.
         # Instead we expect them to prefer `text_to_lm_eval_input`.
+        texts = [
+            "hello world\n",
+            "hello moon\n",
+            "hello tiger\n",
+            "hello dog\n",
+            "hello cat\n",
+        ]
         expected_first_and_last_batch = [
             {
                 "input_ids": [
@@ -292,15 +389,7 @@ class LmTrainingInputTest(BaseLmInputTest):
         cfg = input_tf_data.Input.default_config().set(
             name="test_input",
             is_training=False,
-            source=config_for_function(make_ds_fn).set(
-                texts=[
-                    "hello world\n",
-                    "hello moon\n",
-                    "hello tiger\n",
-                    "hello dog\n",
-                    "hello cat\n",
-                ],
-            ),
+            source=config_for_function(make_ds_fn).set(texts=texts),
             processor=config_for_function(lm_text_preprocessor).set(
                 vocab_cfg=self.vocab_cfg,
                 max_sequence_length=max_len,
@@ -581,7 +670,6 @@ class LmTrainingInputTest(BaseLmInputTest):
         tf.random.set_seed(123)
         dataset = cfg.instantiate(parent=None)
         for batch in dataset:
-            print(batch)
             for k in ["input_ids", "target_labels"]:
                 self.assertEqual(batch[k].tolist(), expected_inputs[k])
             break
@@ -731,7 +819,6 @@ class LmTrainingInputTest(BaseLmInputTest):
         tf.random.set_seed(123)
         dataset = cfg.instantiate(parent=None)
         for batch in dataset:
-            print(batch)
             standard_keys = ["prefix", "input_ids", "target_labels"]
 
             # Ensure standard keys equal expected.
@@ -859,6 +946,10 @@ class LmEvalInputTest(BaseLmInputTest):
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_fake_text_lm_eval_data(self):
+        texts = [
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit\n",
+            "sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+        ]
         expected_batches = [
             {
                 "input_ids": [
@@ -888,7 +979,7 @@ class LmEvalInputTest(BaseLmInputTest):
             },
         ]
         self._test_fake_text_lm_eval_data(
-            vocab_cfg=self.vocab_cfg, expected_batches=expected_batches
+            texts=texts, vocab_cfg=self.vocab_cfg, expected_batches=expected_batches
         )
 
 

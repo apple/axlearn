@@ -26,10 +26,6 @@ Due to the caveats mentioned in the above link, we make several simplifying assu
 """
 # pylint: disable=wrong-import-position,missing-param-doc,differing-param-doc
 import functools
-import os
-
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5"
-
 from collections.abc import Sequence
 from typing import Any, Optional
 
@@ -38,25 +34,35 @@ import jax.numpy as jnp
 
 # pytype: disable=import-error  # pylint: disable=import-error
 from jax import lax
+from jax._src.cudnn.fused_attention_stablehlo import (
+    MaskType,
+    _dot_product_attention,
+    _normalize_layout,
+    check_cudnn_version,
+)
+from jax._src.lib import cuda_versions
 from jax.experimental import pallas as pl
 
 from axlearn.common.attention import NEG_INF
 
-# pytype: enable=import-error  # pylint: enable=import-error
-
 Tensor = jax.Array
 
 
-def _bias_mask(
-    q_bias_ids: Tensor,
-    kv_bias_ids: Tensor,
+def _segment_mask(
+    q_segment_ids: Tensor,
+    kv_segment_ids: Tensor,
 ):
-    """Build the segment mask for the given query and key bias ids."""
+    """
+    Build the segment mask for the given query and key bias ids.
+
+    If mask[..., i, j] == True, query position i and key position j
+    are in the same segment.
+    """
     # [B, T, 1] or [T, 1]
-    q_bias_ids = jnp.expand_dims(q_bias_ids, axis=-1)
+    q_segment_ids = jnp.expand_dims(q_segment_ids, axis=-1)
     # [B, 1, S] or [1, S]
-    kv_bias_ids = jnp.expand_dims(kv_bias_ids, axis=-2)
-    return jnp.equal(q_bias_ids, kv_bias_ids).astype(jnp.bool_)
+    kv_segment_ids = jnp.expand_dims(kv_segment_ids, axis=-2)
+    return jnp.equal(q_segment_ids, kv_segment_ids).astype(jnp.bool_)
 
 
 def _mha_forward_kernel(
@@ -65,12 +71,12 @@ def _mha_forward_kernel(
     k_ref,
     v_ref,
     b_ref,
+    s_ref,
     # Outputs.
     o_ref,
     # Residual outputs.
     *residual_refs,
     softmax_scale: float,
-    bias_type: str,
     causal: bool,
     block_q: int,
     block_d: int,
@@ -89,10 +95,10 @@ def _mha_forward_kernel(
         k_ref: Input key ref.
         v_ref: Input value ref.
         b_ref: Input bias ref.
+        s_ref: Input segment_ids ref.
         o_ref: Output ref.
         *residual_refs: Residual output refs, e.g. softmax statistics.
         softmax_scale: Softmax scale.
-        bias_type: Type of bias matrix.
         causal: Whether to apply causal mask.
         block_q: Block size for query seq dim.
         block_d: Block size for head dim.
@@ -115,8 +121,8 @@ def _mha_forward_kernel(
     q = pl.load(q_ref, (curr_q_slice, pl.dslice(None)))
 
     # Effectively a segment id for padding mask.
-    if bias_type == "vector":
-        q_bias_ids = pl.load(b_ref, (curr_q_slice,))
+    if s_ref is not None:
+        q_segment_ids = pl.load(s_ref, (curr_q_slice,))
 
     # In FlashAttention algorithm 1 there are 2 loops: slow over tiles of kv (size
     # Bc == block_k here), and fast over blocks of q (size Br == block_q here).
@@ -131,25 +137,22 @@ def _mha_forward_kernel(
         if softmax_scale != 1.0:
             qk *= softmax_scale  # [block_q, block_k].
 
-        if bias_type == "matrix":
+        if b_ref is not None:
             b = pl.load(
                 b_ref,
                 (curr_q_slice, curr_k_slice),
             )
             qk += b
-        elif bias_type == "vector":
-            kv_bias_ids = pl.load(b_ref, (curr_k_slice,))
 
-        if causal or bias_type == "vector":
-            mask = None
-            if bias_type == "vector":
-                mask = _bias_mask(q_bias_ids, kv_bias_ids)
-            if causal:
-                span_q = start_q * block_q + jnp.arange(block_q)
-                span_k = start_k * block_k + jnp.arange(block_k)
-                causal_mask = span_q[:, None] >= span_k[None, :]
-                mask = causal_mask if mask is None else jnp.logical_and(mask, causal_mask)
-            # Apply mask to qk.
+        if s_ref is not None:
+            kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
+            mask = _segment_mask(q_segment_ids, kv_segment_ids)
+            qk = jnp.where(mask, qk, NEG_INF)
+
+        if causal:
+            span_q = start_q * block_q + jnp.arange(block_q)
+            span_k = start_k * block_k + jnp.arange(block_k)
+            mask = span_q[:, None] >= span_k[None, :]
             qk = jnp.where(mask, qk, NEG_INF)
 
         # Bring closer to XLA:GPU numerics.
@@ -185,7 +188,9 @@ def _mha_forward_kernel(
     pl.store(o_ref, (curr_q_slice, pl.dslice(None)), acc)
 
 
-@functools.partial(jax.custom_vjp, nondiff_argnums=[4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+# TODO(kelvin-zou): may decide to deprecate the triton backend if we can fully move to
+# more low-level CUDA kernels.
+@functools.partial(jax.custom_vjp, nondiff_argnums=[5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
 @functools.partial(
     jax.jit,
     static_argnames=[
@@ -206,6 +211,7 @@ def flash_attention(
     key: Tensor,
     value: Tensor,
     bias: Optional[Tensor] = None,
+    segment_ids: Optional[Tensor] = None,
     softmax_scale: float = 1.0,
     causal: bool = False,
     block_q: int = 128,
@@ -224,7 +230,8 @@ def flash_attention(
         key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
         value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
         bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
-        softmax_scale: Optional scale to apply to softmax. Defaults to 1/sqrt(per_head_dim).
+        segment_ids: Optional segment ids of shape [batch_size, target_length].
+        softmax_scale: Optional scale to apply to softmax. Defaults to 1.
         causal: Whether to apply causal mask.
         **kwargs: Pallas/triton kwargs.
 
@@ -240,22 +247,20 @@ def flash_attention(
     grid_ = grid
     if grid_ is None:
         grid_ = (pl.cdiv(seq_len, block_q), batch_size, num_heads)
-
     # Bias.
-    bias_type = "none"
     bias_block_spec = None
     if bias is not None:
-        # If we have explicitly defined the bias type as a vector (segment ids).
-        if bias.ndim == 2:
-            bias_type = "vector"
-            bias_block_spec = pl.BlockSpec(lambda _, j, k: (j, 0), (None, seq_len))
-        elif bias.ndim == 4:
-            bias_type = "matrix"
-            bias_block_spec = pl.BlockSpec(
-                lambda _, j, k: (j, k, 0, 0), (None, None, seq_len, seq_len)
-            )
-        else:
-            raise ValueError(f"Invalid bias shape: {bias.shape}")
+        assert bias.ndim == 4
+
+        def bias_index_map(j, k):
+            return (j if bias.shape[0] != 1 else 0, k if bias.shape[1] != 1 else 0, 0, 0)
+
+        bias_block_spec = pl.BlockSpec(bias_index_map, (None, None, seq_len, seq_len))
+    # Segment Ids
+    segment_ids_block_spec = None
+    if segment_ids is not None:
+        assert segment_ids.ndim == 2
+        segment_ids_block_spec = pl.BlockSpec(lambda _, j, k: (j, 0), (None, seq_len))
 
     num_warps_ = num_warps
     if num_warps_ is None:
@@ -266,7 +271,6 @@ def flash_attention(
     kernel = functools.partial(
         _mha_forward_kernel,
         softmax_scale=softmax_scale,
-        bias_type=bias_type,
         causal=causal,
         block_q=block_q,
         block_k=block_k,
@@ -282,6 +286,7 @@ def flash_attention(
             pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # key
             pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # value
             bias_block_spec,  # bias
+            segment_ids_block_spec,  # segment_ids
         ],
         out_specs=pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
         compiler_params=dict(triton=dict(num_warps=num_warps_, num_stages=num_stages_)),
@@ -289,7 +294,7 @@ def flash_attention(
         debug=debug,
         interpret=interpret,
         name="mha_forward",
-    )(query, key, value, bias)
+    )(query, key, value, bias, segment_ids)
 
 
 def _mha_forward(
@@ -297,6 +302,7 @@ def _mha_forward(
     key: Tensor,
     value: Tensor,
     bias: Optional[Tensor],
+    segment_ids: Optional[Tensor],
     softmax_scale: float,
     causal: bool,
     block_q: int,
@@ -320,20 +326,20 @@ def _mha_forward(
         grid_ = (pl.cdiv(seq_len, block_q), batch_size, num_heads)
 
     # Bias.
-    bias_type = "none"
     bias_block_spec = None
     if bias is not None:
-        # If we have explicitly defined the bias type as a vector (segment ids).
-        if bias.ndim == 2:
-            bias_type = "vector"
-            bias_block_spec = pl.BlockSpec(lambda _, j, k: (j, 0), (None, seq_len))
-        elif bias.ndim == 4:
-            bias_type = "matrix"
-            bias_block_spec = pl.BlockSpec(
-                lambda _, j, k: (j, k, 0, 0), (None, None, seq_len, seq_len)
-            )
-        else:
-            raise ValueError(f"Invalid bias shape: {bias.shape}")
+        assert bias.ndim == 4
+
+        def bias_index_map(j, k):
+            return (j if bias.shape[0] != 1 else 0, k if bias.shape[1] != 1 else 0, 0, 0)
+
+        bias_block_spec = pl.BlockSpec(bias_index_map, (None, None, seq_len, seq_len))
+
+    # Segment Ids.
+    segment_ids_block_spec = None
+    if segment_ids is not None:
+        assert segment_ids.ndim == 2
+        segment_ids_block_spec = pl.BlockSpec(lambda _, j, k: (j, 0), (None, seq_len))
 
     num_warps_ = num_warps
     if num_warps_ is None:
@@ -344,7 +350,6 @@ def _mha_forward(
     kernel = functools.partial(
         _mha_forward_kernel,
         softmax_scale=softmax_scale,
-        bias_type=bias_type,
         causal=causal,
         block_q=block_q,
         block_k=block_k,
@@ -364,6 +369,7 @@ def _mha_forward(
             pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # key
             pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # value
             bias_block_spec,  # bias
+            segment_ids_block_spec,  # segment_ids
         ],
         out_specs=[
             pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
@@ -375,8 +381,8 @@ def _mha_forward(
         debug=debug,
         interpret=interpret,
         name="mha_forward",
-    )(query, key, value, bias)
-    return out, (query, key, value, bias, out, l, m)
+    )(query, key, value, bias, segment_ids)
+    return out, (query, key, value, bias, segment_ids, out, l, m)
 
 
 def _preprocess_backward_kernel(
@@ -449,6 +455,7 @@ def _mha_backward_kernel(
     k_ref,
     v_ref,
     b_ref,
+    s_ref,
     out_ref,
     do_scaled_ref,
     l_ref,
@@ -461,7 +468,6 @@ def _mha_backward_kernel(
     dv_ref,
     *,
     softmax_scale: float,
-    bias_type: str,
     causal: bool,
     block_q: int,
     block_d: int,
@@ -478,6 +484,7 @@ def _mha_backward_kernel(
         k_ref: Input key ref.
         v_ref: Input value ref.
         b_ref: Input bias ref.
+        s_ref: Input segment_ids ref.
         out_ref: Input forward output ref.
         do_scaled_ref: Preprocessed dOut ref. See `_preprocess_backward_kernel`.
         l_ref: Input l ref.
@@ -503,7 +510,7 @@ def _mha_backward_kernel(
         k = pl.load(k_ref, (slice_k, slice(None)))
         v = pl.load(v_ref, (slice_k, slice(None)))
         span_k = start_k * block_k + jnp.arange(block_k)
-        kv_bias_ids = None if bias_type != "vector" else pl.load(b_ref, (slice_k))
+        kv_segment_ids = None if s_ref is None else pl.load(s_ref, (slice_k))
 
         def inner_loop(start_q, carry):
             dv, dk = carry
@@ -516,7 +523,7 @@ def _mha_backward_kernel(
 
             if softmax_scale != 1.0:
                 qk *= softmax_scale
-            if bias_type == "matrix":
+            if b_ref is not None:
                 # Load bias in transposed order, for hopefully better cache efficiency.
                 b = pl.load(
                     b_ref,
@@ -524,18 +531,14 @@ def _mha_backward_kernel(
                 )
                 b = b.astype(jnp.float32)
                 qk += b.T  # Transpose back.
-            elif bias_type == "vector":
-                q_bias_ids = pl.load(b_ref, (slice_q))
-            if causal or bias_type == "vector":
-                mask = None
-                if bias_type == "vector":
-                    mask = _bias_mask(q_bias_ids, kv_bias_ids)
-                if causal:
-                    span_q = start_q * block_q + jnp.arange(block_q)
-                    causal_mask = span_q[:, None] >= span_k[None, :]
-                    mask = causal_mask if mask is None else jnp.logical_and(mask, causal_mask)
+            if s_ref is not None:
+                q_segment_ids = pl.load(s_ref, (slice_q))
+                mask = _segment_mask(q_segment_ids, kv_segment_ids)
                 qk = jnp.where(mask, qk, NEG_INF)
-
+            if causal:
+                span_q = start_q * block_q + jnp.arange(block_q)
+                mask = span_q[:, None] >= span_k[None, :]
+                qk = jnp.where(mask, qk, NEG_INF)
             m = pl.load(m_ref, (slice_q,))
             p = jnp.exp(qk - m[:, None])
             do = pl.load(do_scaled_ref, (slice_q, slice(None)))
@@ -583,7 +586,7 @@ def _mha_backward(
 ):
     """Calls `_mha_backward_kernel`."""
     del num_warps, num_stages, grid
-    q, k, v, b, out, l, m = res
+    q, k, v, b, s, out, l, m = res
 
     # NOTE: temporarily removed the "xla" branch, which seems unused.
     if backward_pass_impl == "triton":
@@ -601,25 +604,28 @@ def _mha_backward(
             jax.ShapeDtypeStruct(v.shape, v.dtype),
         ]
 
+        num_input = 8
+
         # Bias.
-        bias_type = "none"
         bias_block_spec = None
-        input_output_aliases = {8: 0}
         if b is not None:
-            if b.ndim == 2:
-                bias_type = "vector"
-                bias_block_spec = pl.BlockSpec(lambda j, k: (j, 0), (None, seq_len))
-            elif b.ndim == 4:
-                bias_type = "matrix"
-                # Transpose seq dims for cache efficiency.
-                b = jnp.moveaxis(b, -1, -2)
-                bias_block_spec = pl.BlockSpec(
-                    lambda j, k: (j, k, 0, 0), (None, None, seq_len, seq_len)
-                )
-            else:
-                raise ValueError(f"Invalid bias shape: {b.shape}")
-            # We have one more non-None input (i.e., in_specs has another tree_leaf).
-            input_output_aliases = {9: 0}
+            assert b.ndim == 4
+            b = jnp.moveaxis(b, -1, -2)
+
+            def bias_index_map(j, k):
+                return (j if b.shape[0] != 1 else 0, k if b.shape[1] != 1 else 0, 0, 0)
+
+            bias_block_spec = pl.BlockSpec(bias_index_map, (None, None, seq_len, seq_len))
+            num_input += 1
+
+        # Segment Ids.
+        segment_ids_block_spec = None
+        if s is not None:
+            assert s.ndim == 2
+            segment_ids_block_spec = pl.BlockSpec(lambda j, k: (j, 0), (None, seq_len))
+            num_input += 1
+
+        input_output_aliases = {num_input: 0}
 
         grid = (batch_size, num_heads)
         # TODO(markblee): num_warps=8 seems to work from basic testing, confirm the below comment.
@@ -629,7 +635,6 @@ def _mha_backward(
             functools.partial(
                 _mha_backward_kernel,
                 softmax_scale=softmax_scale,
-                bias_type=bias_type,
                 causal=causal,
                 block_q=block_q,
                 block_d=head_dim,
@@ -642,6 +647,7 @@ def _mha_backward(
                 pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # key
                 pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # value
                 bias_block_spec,  # bias
+                segment_ids_block_spec,  # segment_ids
                 pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
                 pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
                 pl.BlockSpec(lambda j, k: (j, k, 0), (None, None, seq_len)),
@@ -659,10 +665,113 @@ def _mha_backward(
             interpret=interpret,
             compiler_params=dict(triton=dict(num_warps=num_warps, num_stages=1)),
             input_output_aliases=input_output_aliases,
-        )(q, k, v, b, out, do_scaled, l, m, delta, dq)
+        )(q, k, v, b, s, out, do_scaled, l, m, delta, dq)
     else:
         raise ValueError(f"Invalid backward pass implementation: {backward_pass_impl}")
-    return dq.astype(q.dtype), dk, dv, None
+    return dq.astype(q.dtype), dk, dv, None, None
 
 
 flash_attention.defvjp(_mha_forward, _mha_backward)
+
+
+def _check_local_compute_capability(cc: Any):
+    """Check if the local devices meet the required compute capability.
+
+    Args:
+        cc: Required compute capability.
+
+    Raises:
+        RuntimeError: cuDNN is not detected.
+        RuntimeError: compute capability does not match the target.
+    """
+    if cuda_versions is None:
+        raise RuntimeError("cuDNN is not detected.")
+    for i in range(jax.local_device_count()):
+        compute_cap = cuda_versions.cuda_compute_capability(i)
+        if compute_cap not in cc:
+            raise RuntimeError("Require compute capability in " + str(cc))
+
+
+# Interface to cuDNN's dot product attention.
+# TODO(kelvin-zou): Verify dropout rate functions.
+# TODO(kelvin-zou): Add support for segment IDs.
+def cudnn_dot_product_attention(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    bias: Optional[Tensor] = None,
+    mask: Optional[Tensor] = None,
+    causal: bool = False,
+    *,
+    softmax_scale: float = 1.0,
+    seed: int = 42,
+    dropout_rate: float = 0.0,
+    qkv_layout: str = "BTNH",
+):
+    """Computes dot-product attention given query (Q), key (K), and value (V).
+
+    Reference implementation:
+    https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/cudnn/fused_attention_stablehlo.py#L927.
+    https://github.com/openxla/xla/blob/536ba0b7d74f6637a7a772471a99ecf4f578aef2/xla/service/gpu/cublas_cudnn.cc#L77.
+
+    We override the Jax fused multihead attention(fMHA) interface in axlearn
+    due to following reasons:
+    1. Original Jax implementation has a bug to support multi-node training (fixed in jax 0.4.32).
+    2. We may want to leverage more lower level CuDNN capabilities from xla and expose to users.
+
+    Args:
+        query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
+        key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
+        value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
+        bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
+        mask: Optional logit mask of shape [batch_size, num_heads, target_length, source_length].
+        softmax_scale: Optional scale to apply to softmax. Defaults to 1.
+        seed: Random seed for dropout.
+        dropout_rate: Dropout rate.
+        qkv_layout: Layout string, with supported formats being BTNH, BNTH, BSNH,
+                    BNSH. Now it only supports BTNH.
+
+    Returns:
+        Output of the same shape as the query.
+
+    Raises:
+        NotImplementedError: If qkv_layout is not supported.
+    """
+
+    if qkv_layout != "BTNH":
+        raise NotImplementedError(f"Unsupported qkv_layout: {qkv_layout}")
+    # Check if cuDNN is installed.
+    cudnn_version = check_cudnn_version()
+    # Support Ampere and Hopper only for now.
+    _check_local_compute_capability((80, 90))
+    mask_type = MaskType.NO_MASK if not causal else MaskType.CAUSAL
+    layout = _normalize_layout(qkv_layout)
+
+    has_bias = bias is not None
+    has_mask = mask is not None
+    has_dbias = False
+    variadic_args = (has_bias, has_mask, has_dbias)
+    if bias is None:
+        bias = jnp.zeros(0, dtype=query.dtype)
+    if mask is None:
+        mask = jnp.zeros(0, dtype=query.dtype)
+    q_seqlen = jnp.zeros(0, dtype=query.dtype)
+    kv_seqlen = jnp.zeros(0, dtype=query.dtype)
+    # pylint: disable-next=too-many-function-args
+    output = _dot_product_attention(
+        query,
+        key,
+        value,
+        bias,
+        mask,
+        q_seqlen,
+        kv_seqlen,
+        softmax_scale,
+        seed,
+        dropout_rate,
+        variadic_args,
+        mask_type,
+        layout.value,
+        cudnn_version,
+    )
+    return output

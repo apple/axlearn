@@ -48,6 +48,7 @@ import seqio
 import tensorflow as tf
 from absl import app, flags, logging
 
+from axlearn.common import file_system as fs
 from axlearn.common import input_tf_data
 
 
@@ -187,10 +188,10 @@ def main(_):
         logging.info("Decoded: %s", vocab.decode(ids))
     # Copy the files to the output dir.
     output_dir = FLAGS.output_dir or os.path.join(FLAGS.data_dir, "tokenizers", "sentencepiece")
-    for vocab_file in tf.io.gfile.glob(f"{model_name}*"):
+    for vocab_file in fs.glob(f"{model_name}*"):
         output_file = os.path.join(output_dir, os.path.basename(vocab_file))
         logging.info("Copying %s to %s", vocab_file, output_file)
-        tf.io.gfile.copy(vocab_file, output_file, overwrite=True)
+        fs.copy(vocab_file, output_file, overwrite=True)
 
 
 if __name__ == "__main__":
