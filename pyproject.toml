@@ -92,7 +92,6 @@ gcp = [
     "google-cloud-build==3.24.1",
     "ml_goodput_measurement==0.0.2",
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
-    "pathwaysutils@git+https://github.com/google/pathways-utils", # for JAX+Pathways single-controller accelerator coordinator
 ]
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
@@ -142,6 +141,11 @@ mmau = [
 orbax = [
     "humanize==4.10.0",
     "orbax-checkpoint==0.5.23",
+]
+
+# Pathways utilities.
+pathways = [
+    "pathwaysutils@git+https://github.com/google/pathways-utils@v0.0.5", # for JAX+Pathways single-controller accelerator coordinator
 ]
 
 [tool.flit.module]
