@@ -596,7 +596,7 @@ class AlignmentTest(TestWithTemporaryCWD, tf.test.TestCase):
             loss += loss_i
 
             # Batch forward with padded length is the same as forward with exact length.
-            jax.tree_util.tree_map(
+            jax.tree.map(
                 lambda x, y, n=i: compare_fn(x, y[n : n + 1]), log_probs_i, log_probs_batch
             )
             # Batch backward with padded length is the same as backward with exact length.

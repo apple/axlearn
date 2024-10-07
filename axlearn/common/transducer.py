@@ -249,7 +249,7 @@ class Transducer(BaseLayer):
             # of transducer training.
             def map_fn(am_t: Seq) -> tuple[Tensor, Tensor]:
                 # [1, ...].
-                am_t = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, 0), am_t)
+                am_t = jax.tree.map(lambda x: jnp.expand_dims(x, 0), am_t)
                 # [1, lm_max_len, ...].
                 prediction_t = self.predict(am_t.data, lm_i.data)
                 # [1, lm_max_len].

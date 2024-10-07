@@ -416,7 +416,7 @@ class RandomVectorQuantizerTest(TestCase):
         _, (grad_params, grad_inputs) = jax.value_and_grad(_loss, argnums=(0, 1), has_aux=False)(
             layer_params, jnp.asarray(inputs), jnp.asarray(paddings)
         )
-        self.assertNestedAllClose(grad_params, jax.tree_util.tree_map(jnp.zeros_like, layer_params))
+        self.assertNestedAllClose(grad_params, jax.tree.map(jnp.zeros_like, layer_params))
         assert_allclose(grad_inputs, jnp.zeros_like(inputs), atol=1e-6, rtol=1e-6)
 
 

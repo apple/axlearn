@@ -80,7 +80,7 @@ def _compute_metrics(
         jax.experimental.mesh_utils.create_device_mesh((1, 1)), ("data", "model")
     ):
         model = DummyRetrievalModel.default_config().set(name="model").instantiate(parent=None)
-        model_param_partition_specs = jax.tree_util.tree_map(
+        model_param_partition_specs = jax.tree.map(
             lambda spec: spec.mesh_axes, model.create_parameter_specs_recursively()
         )
         calculator = calculator_cfg.set(name="calculator").instantiate(

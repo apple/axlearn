@@ -175,7 +175,7 @@ def propagate_repeated_output_collections(
         for i in range(num_children):
             child_i_output = target_output_collection.add_child(f"{child_name_prefix}{i}")
             child_i_output.summaries.update(
-                jax.tree_util.tree_map(lambda x, i=i: x[i], repeated_output_collection.summaries)
+                jax.tree.map(lambda x, i=i: x[i], repeated_output_collection.summaries)
             )
 
 
@@ -301,7 +301,7 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
             if isinstance(leaf, Summary):
                 leaf.validate()
 
-        jax.tree_util.tree_map(validate, value, is_leaf=lambda x: isinstance(x, Summary))
+        jax.tree.map(validate, value, is_leaf=lambda x: isinstance(x, Summary))
 
         self.output_collection.summaries[name] = value
 
@@ -922,7 +922,7 @@ class _Functional:
         # This results in a cryptic error that doesn't make the root cause obvious.
         # So we raise a clearer error explicitly.
         raise_for_cycles(dict(context=self.context, args=args, kwargs=kwargs))
-        context, args, kwargs = jax.tree_util.tree_map(lambda x: x, (self.context, args, kwargs))
+        context, args, kwargs = jax.tree.map(lambda x: x, (self.context, args, kwargs))
 
         with set_current_context(context, require_parent=self.require_parent):
             # pylint: disable-next=not-an-iterable,not-a-mapping,not-callable

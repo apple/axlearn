@@ -113,7 +113,7 @@ class FactorizedRMSTest(TestCase):
                     count=count_spec,
                     v_row=dict(w=dummy_spec, b=dummy_spec),
                     v_col=dict(w=dummy_spec, b=dummy_spec),
-                    v=jax.tree_util.tree_map(
+                    v=jax.tree.map(
                         lambda param_spec: OptStateSpec(
                             dtype=dtype, shape=param_spec.shape, mesh_axes=param_spec.mesh_axes
                         ),
@@ -166,7 +166,7 @@ class FactorizedRMSTest(TestCase):
 
         # update() behaves the same between ref and exp.
         for step in range(10):
-            updates = jax.tree_util.tree_map(
+            updates = jax.tree.map(
                 lambda x, seed=100 + step: jax.random.normal(jax.random.PRNGKey(seed), x.shape),
                 opt_params,
             )

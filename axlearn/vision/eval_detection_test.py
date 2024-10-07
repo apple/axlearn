@@ -91,7 +91,7 @@ class COCOMetricCalculatorTest(TestCase, parameterized.TestCase):
                 .set(name="model", need_rescale_bboxes=need_rescale_bboxes, input_cfg=input_cfg)
                 .instantiate(parent=None)
             )
-            model_param_partition_specs = jax.tree_util.tree_map(
+            model_param_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, model.create_parameter_specs_recursively()
             )
             calculator: COCOMetricCalculator = (

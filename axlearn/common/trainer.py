@@ -256,7 +256,7 @@ class SpmdTrainer(Module):
                 self._add_child("init_state_builder", cfg.init_state_builder)
 
             self._model_param_specs = self.model.create_parameter_specs_recursively()
-            model_param_partition_specs = jax.tree_util.tree_map(
+            model_param_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._model_param_specs
             )
             for name, spec in utils.flatten_items(self._model_param_specs):
@@ -271,7 +271,7 @@ class SpmdTrainer(Module):
                 model=self._model_param_specs,
                 learner=self._learner_state_partition_specs,
             )
-            self._trainer_state_partition_specs = jax.tree_util.tree_map(
+            self._trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._trainer_state_specs
             )
             # Create evalers, which depend on model_param_partition_specs.
@@ -508,7 +508,7 @@ class SpmdTrainer(Module):
         specs = utils.complete_partition_spec_tree(
             jax.tree_util.tree_structure(model_params), self._model_param_specs
         )
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda param, spec: OptParam(
                 value=param,
                 factorization_spec=spec.factorization if spec is not None else None,
@@ -591,7 +591,7 @@ class SpmdTrainer(Module):
 
         # A tree where a leaf is a ParameterSpec for a prebuilt param, None otherwise.
         # This is used for `initialize_parameters_recursively` inside `_init_state`.
-        prebuilt_model_param_specs = jax.tree_util.tree_map(
+        prebuilt_model_param_specs = jax.tree.map(
             lambda value, spec: spec if isinstance(value, Tensor) else None,
             prebuilt_state.trainer_state.model,
             self._trainer_state_specs.model,
@@ -602,7 +602,7 @@ class SpmdTrainer(Module):
         # While `prebuilt_state.trainer_state.model` also contain ParameterSpec's, we use
         # `self._trainer_state_partition_specs.model` to ensure that the partition spec matches
         # the model's partition config (rather than coming from `init_state_builder`).
-        model_initialization_partition_specs = jax.tree_util.tree_map(
+        model_initialization_partition_specs = jax.tree.map(
             lambda value, spec: None if isinstance(value, Tensor) else spec,
             prebuilt_state.trainer_state.model,
             self._trainer_state_partition_specs.model,
@@ -619,7 +619,7 @@ class SpmdTrainer(Module):
             """Merges prebuilt and initialized params to a single tree."""
             if prebuilt_model_params is None:
                 return initialized_model_params
-            return jax.tree_util.tree_map(
+            return jax.tree.map(
                 lambda prebuilt, initialized: (
                     prebuilt if isinstance(prebuilt, Tensor) else initialized
                 ),
@@ -870,9 +870,7 @@ class SpmdTrainer(Module):
             self._step_log(
                 "loss=%s aux=%s",
                 outputs["loss"],
-                jax.tree_util.tree_map(
-                    lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]
-                ),
+                jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
             )
 
         self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
@@ -937,11 +935,11 @@ class SpmdTrainer(Module):
     ) -> jax.stages.Compiled:
         with self.mesh(), self._context_manager():
             # Do not run init(), which require real devices.
-            trainer_state_specs = jax.tree_util.tree_map(
+            trainer_state_specs = jax.tree.map(
                 lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
                 self.trainer_state_specs,
             )
-            input_batch_specs = jax.tree_util.tree_map(
+            input_batch_specs = jax.tree.map(
                 lambda tf_spec: jax.ShapeDtypeStruct(
                     shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
                 ),
@@ -1042,7 +1040,7 @@ class SpmdTrainer(Module):
         # Check if we should stop tracing.
         if self.step == stop_trace_step:
             assert output is not None
-            jax.tree_util.tree_map(lambda x: x.block_until_ready(), output)
+            jax.tree.map(lambda x: x.block_until_ready(), output)
             jax.profiler.stop_trace()
             self._step_log("Stopped profiler tracing")
             updated_stop_trace_step = None

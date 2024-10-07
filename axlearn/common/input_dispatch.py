@@ -180,7 +180,7 @@ class InputDispatcher(Module):
             padding = jnp.zeros([pad_size] + list(x.shape[1:]), dtype=x.dtype)
             return jnp.concatenate([x, padding], axis=0)
 
-        physical_feed_batch = jax.tree_util.tree_map(pad_to_physical_batch_size, logical_feed_batch)
+        physical_feed_batch = jax.tree.map(pad_to_physical_batch_size, logical_feed_batch)
 
         if cfg.physical_feed_index not in cfg.logical_feed_indices:
             logical_example_indices = -1 + jnp.zeros([feed_physical_batch_size], dtype=jnp.int32)
@@ -233,9 +233,7 @@ class InputDispatcher(Module):
                         f"{dispatch.shape} vs. "
                         f"{(cfg.global_physical_batch_size, cfg.global_logical_batch_size)}"
                     )
-                    return jax.tree_util.tree_map(
-                        lambda x: jnp.einsum("p...,pl->l...", x, dispatch), data
-                    )
+                    return jax.tree.map(lambda x: jnp.einsum("p...,pl->l...", x, dispatch), data)
                 for key, value in data.items():
                     data[key] = traverse_and_dispatch(value)
             return data

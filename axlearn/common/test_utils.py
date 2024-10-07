@@ -348,7 +348,7 @@ def prng_impl(new_prng_impl: str):
     switch(old_prng_impl)
 
 
-# Use dataclass so that jax.tree_util.tree_map does not expand it.
+# Use dataclass so that jax.tree.map does not expand it.
 @dataclasses.dataclass
 class ParamInitSpec:
     shape: Optional[Sequence[int]]
@@ -560,7 +560,7 @@ def read_per_param_settings(
         model_specs = complete_partition_spec_tree(
             jax.tree_util.tree_structure(model_params), model_specs
         )
-        opt_params = jax.tree_util.tree_map(
+        opt_params = jax.tree.map(
             lambda param, spec: OptParam(
                 value=param,
                 # Disable factored second moment since we use a dummy weight value.
@@ -571,10 +571,10 @@ def read_per_param_settings(
             model_specs,
         )
         # Sets gradients to dummy values.
-        zero_grads = jax.tree_util.tree_map(lambda p: jnp.zeros(1), opt_param_values(opt_params))
+        zero_grads = jax.tree.map(lambda p: jnp.zeros(1), opt_param_values(opt_params))
         learner = trainer_cfg.learner.set(name="learner").instantiate(parent=None)
         learner_state = learner.init(opt_params)
-        zero_grads = jax.tree_util.tree_map(
+        zero_grads = jax.tree.map(
             lambda use_opt, g: g if use_opt else None,
             learner.should_update_with_optimizers(opt_params),
             zero_grads,
@@ -873,7 +873,7 @@ def initialize_parameters_with_prebuilt(
         return layer.initialize_parameters_recursively(prng_key)
     # A tree where a leaf is a ParameterSpec for a prebuilt param, None otherwise.
     # This is used for `initialize_parameters_recursively`.
-    prebuilt_param_specs = jax.tree_util.tree_map(
+    prebuilt_param_specs = jax.tree.map(
         lambda value: (
             ParameterSpec(
                 shape=value.shape,
@@ -890,7 +890,7 @@ def initialize_parameters_with_prebuilt(
     # Merge `prebuilt` and `initialized`.
     logging.info("prebuilt params: %s", shapes(prebuilt))
     logging.info("initialized params: %s", shapes(initialized))
-    return jax.tree_util.tree_map(
+    return jax.tree.map(
         lambda prebuilt, initialized: (prebuilt if isinstance(prebuilt, Tensor) else initialized),
         prebuilt,
         initialized,
