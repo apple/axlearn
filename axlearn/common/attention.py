@@ -903,8 +903,16 @@ class BaseQKVLinear(BaseLayer):
             # [B, 1, 1, T] to broadcast.
             oh_indices = oh_indices[:, None, None, :]
             # Ensure that we accumulate in original dtype.
-            new_k_proj = cached_key + (k_proj * oh_indices).astype(cached_key.dtype)
-            new_v_proj = cached_value + (v_proj * oh_indices).astype(cached_value.dtype)
+            new_k_proj = (
+                cached_key
+                - (cached_key * oh_indices).astype(cached_key.dtype)
+                + (k_proj * oh_indices).astype(cached_key.dtype)
+            )
+            new_v_proj = (
+                cached_value
+                - (cached_value * oh_indices).astype(cached_value.dtype)
+                + (v_proj * oh_indices).astype(cached_value.dtype)
+            )
 
             # Move back to original [B, T, N, H] layout.
             k_proj = jnp.moveaxis(new_k_proj, -1, -3)
@@ -1957,6 +1965,7 @@ class MultiheadAttention(BaseLayer):
         """
         # Merge segment ids into attention_logit_biases.
         if segment_ids is not None:
+            assert q_proj.shape[1] == k_proj.shape[1]
             attention_logit_biases = apply_attention_logit_biases(
                 make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
                 attention_logit_biases,
@@ -2218,6 +2227,7 @@ class SigmoidAttention(MultiheadAttention):
         """See `MultiheadAttention._compute_attention` for details."""
         # Merge segment ids into attention_logit_biases.
         if segment_ids is not None:
+            assert q_proj.shape[1] == k_proj.shape[1]
             attention_logit_biases = apply_attention_logit_biases(
                 make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
                 attention_logit_biases,
