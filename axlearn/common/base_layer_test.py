@@ -4,6 +4,7 @@
 
 import dataclasses
 import math
+import traceback
 from functools import partial
 from typing import Any, Optional
 
@@ -29,6 +30,7 @@ from axlearn.common.base_layer import (
     no_remat,
 )
 from axlearn.common.config import config_class
+from axlearn.common.layers_test import ParentLayer
 from axlearn.common.module import Module, OutputCollection
 from axlearn.common.module import functional as F
 from axlearn.common.param_init import (
@@ -234,6 +236,50 @@ class BaseLayerTest(TestCase):
                 module_outputs={},
             ),
             output_collection,
+        )
+
+    def test_not_too_many_stack_frames(self):
+        """Tests that we don't add a very large number of stack frames when we do a wrapped to a
+        child layer method.
+        """
+        outer_self = self
+
+        class CountStackFrames(BaseLayer):
+            """Counts stack frames until the parent layer and asserts it is less than the specified
+            value.
+            """
+
+            def forward(self, *args, **kwargs):
+                del args, kwargs
+                try:
+                    raise RuntimeError
+                except RuntimeError as e:
+                    tb = e.__traceback__
+                    # Walk the stack to count the number of stack frames between this (exclusive)
+                    # and the parent layer (inclusive).
+                    i = 0
+                    parent_frame = tb.tb_frame.f_back
+                    for frame, _ in traceback.walk_stack(parent_frame):
+                        name = frame.f_code.co_name
+                        print(name)
+                        i += 1
+                        if name == "forward":
+                            break
+                    print("Total frames:", i)
+                    outer_self.assertLessEqual(i, 8)
+
+        cfg = ParentLayer.default_config().set(
+            name="root", children=dict(child=CountStackFrames.default_config())
+        )
+        root: ParentLayer = cfg.instantiate(parent=None)
+        # Call 'root.forward'.
+        root_state = {"child": {}}
+        F(
+            root,
+            state=root_state,
+            prng_key=jax.random.PRNGKey(1),
+            is_training=True,
+            inputs=dict(path=["child"]),
         )
 
     def test_remat_name(self):

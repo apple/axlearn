@@ -3,6 +3,7 @@
 """Defines BaseLayer, the base class for layer implementations."""
 
 import dataclasses
+import functools
 import math
 from collections.abc import Sequence
 from typing import Any, Callable, Optional, Union
@@ -17,6 +18,7 @@ from axlearn.common.config import ConfigOr, Configurable, config_class, maybe_in
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, child_context, current_context, new_output_collection
 from axlearn.common.param_init import DefaultInitializer, FanAxes
+from axlearn.common.traceback_util import no_stack_summary
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
@@ -267,6 +269,84 @@ class BaseLayer(Module):
             if not hasattr(BaseLayer, method)
         }
 
+    def _wrap_methods_with_auto_child_context(
+        self, methods: dict[str, Callable]
+    ) -> dict[str, Callable]:
+        cfg: Module.Config = self.config
+
+        if cfg.remat_spec is not None:
+            for method_name, method_fn in dict(methods).items():
+                methods[method_name] = self._maybe_wrap_with_remat(method_fn)
+
+        return super()._wrap_methods_with_auto_child_context(methods)
+
+    def _maybe_wrap_with_remat(self, method_fn: Callable) -> Callable:
+        """Maybe wrap `method_fn` with jax remat.
+
+        This is called from `BaseLayer._wrap_methods_with_auto_child_context`.
+
+        Args:
+            method_fn: A function that takes a module as its first argument.
+
+        Returns:
+            A possibly wrapped version of `method_fn`.
+        """
+        cfg: Module.Config = self.config
+        if getattr(method_fn, "_no_remat", False):
+            return method_fn
+
+        @no_stack_summary
+        @functools.wraps(method_fn)
+        def maybe_call_with_remat(module: Module, *args, **kwargs):
+            if current_context() is None or not module.is_training:
+                return method_fn(module, *args, **kwargs)
+
+            static_kwargs = {}
+            tracer_kwargs = {}
+            for k, v in kwargs.items():
+                if isinstance(v, Tensor):
+                    tracer_kwargs[k] = v
+                else:
+                    static_kwargs[k] = v
+            module.vlog(
+                3,
+                "BaseLayer.maybe_call_with_remat %s.%s: static_kwargs=%s",
+                module.path(),
+                method_fn,
+                set(static_kwargs.keys()),
+            )
+
+            # Remat always uses abstract tracers even if concrete information is available.
+            # This means that all inputs and outputs to a remat function need to be JAX types.
+            # We print a nice error if the inputs are not.
+            check_jax_type(
+                args=args,
+                kwargs=tracer_kwargs,
+                msg=f"Attempt to use remat on {module}.{method_fn} "
+                "failed. Consider decorating with @no_remat.",
+            )
+
+            def fn(*args, **kwargs):
+                """Unlike module.method, fn returns (outputs, output_collection)."""
+                output_collection = new_output_collection()
+                # We override output_collection to avoid leaking tracers.
+                with child_context("remat", module=module, output_collection=output_collection):
+                    outputs = method_fn(module, *args, **kwargs, **static_kwargs)
+                return outputs, output_collection
+
+            logging.info("Applying remat on %s.%s: %s", module.path(), method_fn, cfg.remat_spec)
+            # pylint: disable-next=protected-access
+            module._remat_methods.append(method_fn.__name__)
+            # Pass both outputs and output_collection through remat(...) to avoid leaking tracers.
+            outputs, output_collection = jax.ad_checkpoint.remat(
+                fn,
+                **{k: maybe_instantiate(v) for k, v in dataclasses.asdict(cfg.remat_spec).items()},
+            )(*args, **tracer_kwargs)
+            module.get_invocation_context().output_collection.update(output_collection)
+            return outputs
+
+        return maybe_call_with_remat
+
     def dtype(self):
         if self.config.dtype is not None:
             return self.config.dtype
@@ -284,67 +364,6 @@ class BaseLayer(Module):
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         """Subclasses can override this method to add layer parameters."""
         return {}
-
-    def _call_thunk(self, *args, method_fn, **kwargs) -> Callable[[], Any]:
-        cfg: Module.Config = self.config
-        self.vlog(
-            3, "BaseLayer._call_thunk %s.%s: remat=%s", self.path(), method_fn, cfg.remat_spec
-        )
-
-        nullary = super()._call_thunk(*args, method_fn=method_fn, **kwargs)
-        if (
-            current_context() is None
-            or cfg.remat_spec is None
-            or not self.is_training
-            or getattr(method_fn, "_no_remat", False)
-        ):
-            return nullary
-
-        static_kwargs = {}
-        tracer_kwargs = {}
-        for k, v in kwargs.items():
-            if isinstance(v, Tensor):
-                tracer_kwargs[k] = v
-            else:
-                static_kwargs[k] = v
-        self.vlog(
-            3,
-            "BaseLayer.nullary_with_remat %s.%s: static_kwargs=%s",
-            self.path(),
-            method_fn,
-            set(static_kwargs.keys()),
-        )
-
-        # Remat always uses abstract tracers even if concrete information is available.
-        # This means that all inputs and outputs to a remat function need to be JAX types.
-        # We print a nice error if the inputs are not.
-        check_jax_type(
-            args=args,
-            kwargs=tracer_kwargs,
-            msg=f"Attempt to use remat on {self}.{method_fn} "
-            "failed. Consider decorating with @no_remat.",
-        )
-
-        def nullary_with_remat():
-            def fn(*args, **kwargs):
-                """Unlike self.method, fn returns (outputs, output_collection)."""
-                output_collection = new_output_collection()
-                # We override output_collection to avoid leaking tracers.
-                with child_context("remat", module=self, output_collection=output_collection):
-                    outputs = method_fn(self, *args, **kwargs, **static_kwargs)
-                return outputs, output_collection
-
-            logging.info("Applying remat on %s.%s: %s", self.path(), method_fn, cfg.remat_spec)
-            self._remat_methods.append(method_fn.__name__)
-            # Pass both outputs and output_collection through remat(...) to avoid leaking tracers.
-            outputs, output_collection = jax.ad_checkpoint.remat(
-                fn,
-                **{k: maybe_instantiate(v) for k, v in dataclasses.asdict(cfg.remat_spec).items()},
-            )(*args, **tracer_kwargs)
-            self.get_invocation_context().output_collection.update(output_collection)
-            return outputs
-
-        return nullary_with_remat
 
     def create_parameter_specs_recursively(self) -> NestedParameterSpec:
         specs: dict[str, NestedParameterSpec] = {}
