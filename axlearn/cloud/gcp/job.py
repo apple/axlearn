@@ -447,7 +447,7 @@ class TPUGKEJob(GKEJob):
                 ),
             )
 
-        volume_mounts.append(dict(name="shared-ouput", mountPath="/output"))
+        volume_mounts.append(dict(name="shared-output", mountPath="/output"))
 
         env_vars = {**cfg.env_vars}
         if cfg.enable_tpu_ici_resiliency is not None:
@@ -501,7 +501,8 @@ class TPUGKEJob(GKEJob):
         """
 
         volume_mounts = [
-            dict(name="shared-logs", mountPath="/app/logs")  # Same as in the main container
+            # This should be same as in the worker container
+            dict(name="shared-output", mountPath="/output")
         ]
 
         resources = {
@@ -510,9 +511,10 @@ class TPUGKEJob(GKEJob):
         }
 
         return dict(
-            name="log-sync-sidecar",
+            name="output-uploader",
             image="google/cloud-sdk:alpine",
-            command=["/bin/sh", "-c", sync_command],
+            command=["/bin/sh", "-c"],
+            args=[sync_command],
             resources=resources,
             volumeMounts=volume_mounts,
         )
@@ -529,6 +531,7 @@ class TPUGKEJob(GKEJob):
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
 
+        volumes.append(dict(name="shared-logs", emptyDir={}))
         if cfg.gcsfuse_mount:
             # Mount a GCS bucket as a volume.
             annotations.update(
