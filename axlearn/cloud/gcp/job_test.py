@@ -374,7 +374,7 @@ class TPUGKEJobTest(TestCase):
                 )
                 self.assertEqual("spot", labels.get("bastion-tier", None))
 
-            self.assertEqual(len(pod_spec["containers"]), 1)
+            self.assertEqual(len(pod_spec["containers"]), 2)
             container = pod_spec["containers"][0]
             # Check memory request.
             resources = container["resources"]

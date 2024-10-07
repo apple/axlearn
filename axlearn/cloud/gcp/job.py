@@ -325,6 +325,8 @@ class GKEJob(GCPJob):
         # This config is made Optional for backwards compatibility. Default is False.
         enable_pre_provisioner: Optional[bool] = None
         queue: Optional[str] = None
+        # Output directory. Must be compatible with tf_io.
+        output_dir: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
