@@ -915,7 +915,9 @@ class Checkpointer(BaseCheckpointer):
         remaining_dirs, gc_dirs = [], []
 
         try:
-            step_dirs = [step for step in fs.listdir(cfg.dir) if step.startswith(STEP_PREFIX)]
+            step_dirs = [
+                step.rstrip("/") for step in fs.listdir(cfg.dir) if step.startswith(STEP_PREFIX)
+            ]
         except fs.NotFoundError:
             step_dirs = []
 
