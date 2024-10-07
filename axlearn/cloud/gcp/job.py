@@ -531,7 +531,7 @@ class TPUGKEJob(GKEJob):
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
 
-        volumes.append(dict(name="shared-logs", emptyDir={}))
+        volumes.append(dict(name="shared-output", emptyDir={}))
         if cfg.gcsfuse_mount:
             # Mount a GCS bucket as a volume.
             annotations.update(
