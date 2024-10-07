@@ -40,7 +40,7 @@ core = [
     "typing-extensions==4.11.0",
     "scipy==1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
     "seqio==0.0.18",  # used for inputs
-    "aqtp==0.4.0", # aqtp>=0.5.0 requires python>=3.10 due to the use of Union shorthand "|" in type hints.
+    "aqtp==0.8.1"  # Updated from 0.4.0; compatible with Python 3.10
     "flax==0.8.5", # for AQT, param converter and adapter.
     "prefixed==0.7.1", # For formatting file sizes, param counts, etc.
 ]
