@@ -490,15 +490,10 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
 
-        dst = (f"{cfg.output_dir}/output/$HOSTNAME/",)
+        dst = f"{cfg.output_dir}/output/$HOSTNAME/"
         interval_s = 60
 
-        sync_command = f"""
-        while true; do
-            gsutil -m rsync -r /output {dst}
-            sleep {interval_s}
-        done
-        """
+        sync_command = f"while true; do gsutil -m rsync -r /output {dst}; sleep {interval_s}; done"
 
         volume_mounts = [
             # This should be same as in the worker container
