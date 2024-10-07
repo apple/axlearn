@@ -45,15 +45,16 @@ conda activate axlearn
 # Install tensorflow following https://developer.apple.com/metal/tensorflow-plugin.
 conda install -c apple tensorflow-deps
 
+# If you do NOT have bazel installed.
+# Note that the default ./oss_scripts/install_bazel.sh installs the x86 version.
+brew install bazelisk
+
 # Manually build tensorflow-text until a collaborator build is available.
 # This was tested using clang version 15 - you may get non-working wheels with earlier versions of clang.
 mkdir ~/builds && git clone https://github.com/tensorflow/text.git ~/builds/text
 # Install tensorflow prior to building.
 pip install 'tensorflow==2.16.1'
 cd ~/builds/text && git checkout 0f9f6df5b4da19bc7a734ba05fc4fa12bccbedbe
-
-# If you do NOT have bazel installed, run the following and ensure that $HOME/bin is in $PATH:
-# ./oss_scripts/install_bazel.sh
 
 # Build tensorflow-text.
 ./oss_scripts/run_build.sh
@@ -74,7 +75,7 @@ pip install 'axlearn[core]'
 
 To install on Apple Silicon machines, make sure you have followed the required [pre-requisites](#pre-requisites) above. Then, install using:
 ```shell
-pip install 'axlearn[apple-silicon]'
+pip install 'axlearn[core,apple-silicon]'
 ```
 
 By default, AXLearn comes with tooling to launch jobs to Google Cloud Platform (GCP). To install them, run:
