@@ -445,6 +445,8 @@ class TPUGKEJob(GKEJob):
                 ),
             )
 
+        volume_mounts.append(dict(name="shared-ouput", mountPath="/output"))
+
         env_vars = {**cfg.env_vars}
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
@@ -475,6 +477,41 @@ class TPUGKEJob(GKEJob):
             resources=resources,
             # Env var values should always be strings.
             env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
+            volumeMounts=volume_mounts,
+        )
+
+    def _build_uploader_container(self) -> Nested[Any]:
+        """Builds a config for the uploader container which sync logs to the output dir.
+
+        Returns:
+            A nested dict corresponding to a k8s Container config.
+        """
+        cfg: TPUGKEJob.Config = self.config
+
+        dst = (f"{cfg.output_dir}/output/$HOSTNAME/",)
+        interval_s = 60
+
+        sync_command = f"""
+        while true; do
+            gsutil -m rsync -r /output {dst}
+            sleep {interval_s}
+        done
+        """
+
+        volume_mounts = [
+            dict(name="shared-logs", mountPath="/app/logs")  # Same as in the main container
+        ]
+
+        resources = {
+            "requests": {"cpu": "100m", "memory": "128Mi"},
+            "limits": {"cpu": "500m", "memory": "256Mi"},
+        }
+
+        return dict(
+            name="log-sync-sidecar",
+            image="google/cloud-sdk:alpine",
+            command=["/bin/sh", "-c", sync_command],
+            resources=resources,
             volumeMounts=volume_mounts,
         )
 
@@ -617,7 +654,7 @@ class TPUGKEJob(GKEJob):
                     **selector,
                 },
                 tolerations=tolerations,
-                containers=[self._build_container()],
+                containers=[self._build_container(), self._build_uploader_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
             ),
