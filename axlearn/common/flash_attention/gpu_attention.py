@@ -252,7 +252,7 @@ def flash_attention(
     if bias is not None:
         assert bias.ndim == 4
 
-        def bias_index_map(j, k):
+        def bias_index_map(_, j, k):
             return (j if bias.shape[0] != 1 else 0, k if bias.shape[1] != 1 else 0, 0, 0)
 
         bias_block_spec = pl.BlockSpec(bias_index_map, (None, None, seq_len, seq_len))
@@ -330,7 +330,7 @@ def _mha_forward(
     if bias is not None:
         assert bias.ndim == 4
 
-        def bias_index_map(j, k):
+        def bias_index_map(_, j, k):
             return (j if bias.shape[0] != 1 else 0, k if bias.shape[1] != 1 else 0, 0, 0)
 
         bias_block_spec = pl.BlockSpec(bias_index_map, (None, None, seq_len, seq_len))
