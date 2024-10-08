@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests optimization modules."""
+
 # pylint: disable=no-self-use,too-many-lines
 import itertools
 import tempfile
@@ -101,7 +102,7 @@ def _mesh(mesh_shape: Sequence[int]):
 
 
 def _checkpointer_config():
-    return Checkpointer.default_config().set(name="test", dir=tempfile.mkdtemp())
+    return Checkpointer.default_config().set(dir=tempfile.mkdtemp())
 
 
 class OldSkipClipState(NamedTuple):
@@ -861,7 +862,7 @@ class OptimizerTest(TestCase):
         with _mesh(mesh_shape):
             cfg = _checkpointer_config()
             cfg.save_policy.min_step = 0
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ckpt: Checkpointer = cfg.instantiate()
             # Save the older version of state.
             ckpt.save(step=0, state=prev_state)
             ckpt.wait_until_finished()

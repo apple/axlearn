@@ -63,7 +63,6 @@ def _checkpointer_config(
 ) -> BaseCheckpointer.Config:
     # TODO(markblee): Use context manager instead of mkdtemp.
     return checkpointer_cls.default_config().set(
-        name="test",
         dir=tempfile.mkdtemp(),
         keep_last_n=1,
     )
@@ -78,7 +77,7 @@ class CheckpointerTest(test_utils.TestCase):
         with _mesh(mesh_shape):
             cfg = _checkpointer_config(checkpointer_cls)
             cfg.save_policy.min_step = 0
-            ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
+            ckpt: BaseCheckpointer = cfg.instantiate()
             state0 = dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32))
             state1 = dict(x=jnp.ones([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32) + 1)
 
@@ -155,7 +154,7 @@ class CheckpointerTest(test_utils.TestCase):
             return
 
         cfg = _checkpointer_config(checkpointer_cls)
-        ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
+        ckpt: BaseCheckpointer = cfg.instantiate()
         state = dict(
             x=jax.random.uniform(jax.random.PRNGKey(123), shape=[8, 4], dtype=jnp.float32),
         )
@@ -203,7 +202,7 @@ class CheckpointerTest(test_utils.TestCase):
             return
         with _mesh(mesh_shape):
             cfg = _checkpointer_config(checkpointer_cls)
-            ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
+            ckpt: BaseCheckpointer = cfg.instantiate()
             state0 = dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32))
 
             # Restoring from an empty dir returns the input state if step=None.
@@ -251,7 +250,7 @@ class CheckpointerTest(test_utils.TestCase):
             return
         with _mesh(mesh_shape):
             cfg = _checkpointer_config(checkpointer_cls)
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ckpt: Checkpointer = cfg.instantiate()
             state = dict(x=jnp.arange(16).reshape((4, 4)))
             ckpt.save(step=10, state=state)
             ckpt.wait_until_finished()
@@ -282,7 +281,7 @@ class CheckpointerTest(test_utils.TestCase):
             return
         with _mesh(mesh_shape):
             cfg = _checkpointer_config(checkpointer_cls)
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ckpt: Checkpointer = cfg.instantiate()
             state0 = custom_dict_type(
                 x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32)
             )
@@ -307,7 +306,7 @@ class CheckpointerTest(test_utils.TestCase):
             return
         with _mesh(mesh_shape):
             cfg = _checkpointer_config(checkpointer_cls)
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ckpt: Checkpointer = cfg.instantiate()
             input_iter = iter(tf.data.Dataset.from_tensor_slices([1, 2, 3]))
             # Move the input_iter.
             self.assertEqual(next(input_iter), 1)
@@ -409,11 +408,14 @@ class CheckpointerTest(test_utils.TestCase):
             return [x + "/" for x in out if not x.endswith("/")]
 
         # pylint: disable=line-too-long
-        with _mesh(mesh_shape), mock.patch(
-            "tensorflow.io.gfile.listdir", patch_tf_io_behavior
-        ) if listdir_add_trailing_slash else nullcontext(), tempfile.TemporaryDirectory() as temp_dir:
+        with (
+            _mesh(mesh_shape),
+            mock.patch("tensorflow.io.gfile.listdir", patch_tf_io_behavior)
+            if listdir_add_trailing_slash
+            else nullcontext(),
+            tempfile.TemporaryDirectory() as temp_dir,
+        ):
             cfg = Checkpointer.default_config().set(
-                name="test",
                 dir=temp_dir,
                 keep_last_n=3,
                 keep_every_n_steps=2,
@@ -422,10 +424,10 @@ class CheckpointerTest(test_utils.TestCase):
             cfg.save_policy.min_step = 0
 
             # Running gc for non-existent dir shouldn't fail.
-            ckpt_fake = cfg.clone(dir=os.path.join(temp_dir, "fake_dir")).instantiate(parent=None)
+            ckpt_fake = cfg.clone(dir=os.path.join(temp_dir, "fake_dir")).instantiate()
             ckpt_fake._run_garbage_collection()
 
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ckpt: Checkpointer = cfg.instantiate()
             state = dict(x=jnp.zeros([], dtype=jnp.int32))
 
             for step in range(10):
@@ -532,7 +534,7 @@ class CheckpointerTest(test_utils.TestCase):
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
         cfg = _checkpointer_config()
-        ckpt: Checkpointer = cfg.instantiate(parent=None)
+        ckpt: Checkpointer = cfg.instantiate()
         # GC thread is not started until the start_gc_thread() call.
         self.assertIsNone(ckpt._gc_thread)
 
@@ -550,7 +552,7 @@ class CheckpointerTest(test_utils.TestCase):
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
     def test_context(self, checkpointer_cls):
-        ckpt = _checkpointer_config(checkpointer_cls).instantiate(parent=None)
+        ckpt = _checkpointer_config(checkpointer_cls).instantiate()
 
         if checkpointer_cls is Checkpointer:
             with ckpt:
@@ -568,7 +570,7 @@ class CheckpointerTest(test_utils.TestCase):
 
     def test_stop_on_exception(self):
         # Ensure that checkpointer gc thread terminates if there's an exception.
-        ckpt = _checkpointer_config().instantiate(parent=None)
+        ckpt = _checkpointer_config().instantiate()
 
         def run():
             ckpt._start_gc_thread()
@@ -598,7 +600,7 @@ class CheckpointerTest(test_utils.TestCase):
         with _mesh(mesh_shape):
             cfg = _checkpointer_config()
             cfg.summary_writer = SummaryWriter.default_config()
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ckpt: Checkpointer = cfg.instantiate()
             self.assertIsNotNone(ckpt.summary_writer)
 
             ckpt.summary_writer.log_checkpoint = mock.Mock()
@@ -634,7 +636,7 @@ class CheckpointerTest(test_utils.TestCase):
                     metric=EvalMetric(evaler_name="evaler", metric_name="metric"), mode=mode
                 )
             )
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ckpt: Checkpointer = cfg.instantiate()
             state0 = dict(x=jnp.zeros([], dtype=jnp.int32))
             state2 = dict(x=jnp.ones([], dtype=jnp.int32) * 2)
             state4 = dict(x=jnp.ones([], dtype=jnp.int32) * 4)
@@ -677,7 +679,7 @@ class CheckpointerTest(test_utils.TestCase):
                     metric=EvalMetric(evaler_name="evaler", metric_name="metric"), mode="max"
                 )
             )
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ckpt: Checkpointer = cfg.instantiate()
             state0 = dict(x=jnp.zeros([], dtype=jnp.int32))
 
             with pytest.raises(ValueError, match=re.escape("evaler_summaries is empty")):
@@ -766,7 +768,7 @@ class CheckpointerTest(test_utils.TestCase):
         with _mesh(mesh_shape):
             cfg = _checkpointer_config(checkpointer_cls)
             cfg.save_policy.min_step = 0
-            ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
+            ckpt: BaseCheckpointer = cfg.instantiate()
             state0 = dict(
                 **{
                     f"v_{str(dtype.dtype)}": jnp.zeros([], dtype=dtype)
@@ -826,7 +828,7 @@ class CheckpointerTest(test_utils.TestCase):
             with unittest.mock.patch.dict(globals(), {"SWITCHABLE_VDICT_IMPL": OldVDict}):
                 cfg = _checkpointer_config()
                 cfg.save_policy.min_step = 0
-                ckpt: Checkpointer = cfg.instantiate(parent=None)
+                ckpt: Checkpointer = cfg.instantiate()
                 # VDict with out of order keys.
                 state0 = dict(a=3, b=SwitchableVDict(d=6, b=5))
                 state0 = jax.tree.map(jnp.asarray, state0)

@@ -40,7 +40,13 @@ from axlearn.common.checkpointer import (
     every_n_steps_and_last_policy,
     every_n_steps_policy,
 )
-from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
+from axlearn.common.config import (
+    REQUIRED,
+    Configurable,
+    Required,
+    config_class,
+    config_for_function,
+)
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import UpdateType, should_update_with_optimizers
@@ -278,7 +284,7 @@ class DummyStateBuilder(TrainerStateBuilder):
     """A dummy builder that "builds" state from fixed values."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(Configurable.Config):
         step: Required[int] = REQUIRED
         model_state: Required[Callable[[], NestedTensor]] = REQUIRED
         input_state_type: Required[TrainerStateBuilder.StateType] = REQUIRED
@@ -387,10 +393,8 @@ class TrainerTest(test_utils.TestCase):
             input=DummyInput.default_config().set(total_num_batches=2),
             eval_dtype=step_dtype,
         )
-        evaler_cfg.summary_writer.vlog = 5
         cfg.evalers = dict(eval_dummy=evaler_cfg)
         cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(n=5)
-        cfg.summary_writer.vlog = 5
         cfg.max_step = 12
         cfg.watchdog_timeout_seconds = 0.1
         cfg.vlog = 2
@@ -473,10 +477,8 @@ class TrainerTest(test_utils.TestCase):
             eval_dtype=step_dtype,
             eval_policy=config_for_function(eval_every_n_steps_policy).set(n=10),
         )
-        evaler_cfg.summary_writer.vlog = 5
         cfg.evalers = dict(eval_dummy=evaler_cfg, eval_dummy2=evaler_cfg.clone())
         cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(n=5)
-        cfg.summary_writer.vlog = 5
         cfg.max_step = 3
         cfg.watchdog_timeout_seconds = 0.1
         cfg.vlog = 2
@@ -650,10 +652,8 @@ class TrainerTest(test_utils.TestCase):
         evaler_cfg = SpmdEvaler.default_config().set(
             input=DummyInput.default_config().set(total_num_batches=2),
         )
-        evaler_cfg.summary_writer.vlog = 5
         cfg.evalers = dict(eval_dummy=evaler_cfg)
         cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(n=5)
-        cfg.summary_writer.vlog = 5
         cfg.max_step = 12
         trainer: SpmdTrainer = cfg.instantiate(parent=None)
         with trainer.mesh():
@@ -878,10 +878,8 @@ class TrainerTest(test_utils.TestCase):
         evaler_cfg = SpmdEvaler.default_config().set(
             input=DummyInput.default_config().set(total_num_batches=2),
         )
-        evaler_cfg.summary_writer.vlog = 5
         cfg.evalers = dict(eval_dummy=evaler_cfg)
         cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(n=5)
-        cfg.summary_writer.vlog = 5
         cfg.max_step = 12
         trainer: SpmdTrainer = cfg.instantiate(parent=None)
         with trainer.mesh():

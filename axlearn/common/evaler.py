@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Evaler and base metric calculators."""
+
 import functools
 import graphlib
 import os.path
@@ -15,7 +16,7 @@ from absl import logging
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 
-from axlearn.common import struct, summary_writer, utils
+from axlearn.common import struct, utils
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import (
     REQUIRED,
@@ -23,11 +24,13 @@ from axlearn.common.config import (
     Required,
     config_class,
     config_for_function,
+    maybe_instantiate,
 )
 from axlearn.common.inference_output import BaseOutputWriter
 from axlearn.common.metrics import MetricAccumulator, WeightedScalar
 from axlearn.common.module import Module, OutputCollection
 from axlearn.common.module import functional as F
+from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.utils import (
     NestedPartitionSpec,
     NestedTensor,
@@ -558,7 +561,7 @@ class SpmdEvaler(Module):
         # The input source.
         input: Required[InstantiableConfig] = REQUIRED
         # A summary writer to log tagged summary values.
-        summary_writer: InstantiableConfig = summary_writer.SummaryWriter.default_config()
+        summary_writer: BaseWriter.Config = SummaryWriter.default_config()
         # Run this evaler according to this policy.
         eval_policy: InstantiableConfig = config_for_function(every_n_steps_policy)
         # Which evaluation iters to trace with the profiler each time the evaler is run.
@@ -597,10 +600,8 @@ class SpmdEvaler(Module):
             model=model,
             model_param_partition_specs=model_param_partition_specs,
         )
-        self._add_child("summary_writer", cfg.summary_writer)
-        if cfg.output_writer is not None:
-            self._add_child("output_writer", cfg.output_writer)
-
+        self.output_writer: Optional[BaseOutputWriter] = maybe_instantiate(cfg.output_writer)
+        self.summary_writer: BaseWriter = cfg.summary_writer.instantiate()
         self._trace_steps = set()
         self._eval_policy: EvalPolicy = cfg.eval_policy.instantiate()
 
@@ -696,7 +697,7 @@ class SpmdEvaler(Module):
                     )
                 metric_calculator_state = forward_outputs["state"]
                 all_metric_calculator_outputs.append(forward_outputs["output"])
-                if "output_writer" in self.children:
+                if self.output_writer is not None:
                     self.output_writer.write(
                         input_batch=global_input_batch, output_batch=forward_outputs["output"]
                     )

@@ -87,14 +87,13 @@ class MergeStateConverterTest(TestCase):
                 )
 
         cfg = RestoreAndConvertBuilder.default_config().set(
-            name="test",
             builder=DummyBuilder.default_config().set(),
             # Tests both string and enum arguments
             converter=MergeStateConverter.default_config().set(
                 selection_regexes=[(r"b/a", MergeStateSelection.SOURCE), (r".*", "TARGET")]
             ),
         )
-        builder = cfg.instantiate(parent=None)
+        builder = cfg.instantiate()
 
         state = Builder.State(
             step=0, trainer_state={"a": jnp.array(0), "b": {"a": jnp.array(0)}}, built_keys=set()
@@ -117,11 +116,10 @@ class MergeStateConverterTest(TestCase):
                 )
 
         cfg = RestoreAndConvertBuilder.default_config().set(
-            name="test",
             builder=DummyBuilder.default_config().set(),
             converter=MergeStateConverter.default_config(),
         )
-        builder = cfg.instantiate(parent=None)
+        builder = cfg.instantiate()
 
         state = Builder.State(
             step=0, trainer_state={"a": jnp.array(0), "b": {"a": jnp.array(0)}}, built_keys=set()
@@ -166,7 +164,6 @@ class ConverterTest(TestCase):
 
         num_converters = 5
         cfg = RestoreAndConvertBuilder.default_config().set(
-            name="test",
             converter=ChainConverter.default_config().set(
                 converters=[
                     DummyConverter.default_config().set(id=i) for i in range(num_converters)
@@ -174,7 +171,7 @@ class ConverterTest(TestCase):
             ),
             builder=DummyBuilder.default_config().set(expected_step=num_converters),
         )
-        builder = cfg.instantiate(parent=None)
+        builder = cfg.instantiate()
 
         state = Builder.State(step=0, trainer_state={}, built_keys=set())
         state = builder(state)
@@ -229,7 +226,7 @@ class ChainBuilderTest(TestCase):
 
         model = (
             Linear.default_config()
-            .set(name="model", input_dim=1, output_dim=1)
+            .set(name="test", input_dim=1, output_dim=1)
             .instantiate(parent=None)
         )
         prng_key = jax.random.PRNGKey(0)
@@ -241,10 +238,9 @@ class ChainBuilderTest(TestCase):
         builder = (
             ChainBuilder.default_config()
             .set(
-                name="builder",
                 builders=[BiasPlusOneBuilder.default_config(), BiasPlusOneBuilder.default_config()],
             )
-            .instantiate(parent=None)
+            .instantiate()
         )
         new_trainer_state = builder(
             Builder.State(step=0, trainer_state=init_trainer_state, built_keys=set())
@@ -265,7 +261,7 @@ class ChainBuilderTest(TestCase):
 
         model = (
             Linear.default_config()
-            .set(name="model", input_dim=1, output_dim=1)
+            .set(name="test", input_dim=1, output_dim=1)
             .instantiate(parent=None)
         )
         prng_key = jax.random.PRNGKey(0)
@@ -276,8 +272,8 @@ class ChainBuilderTest(TestCase):
         )
         builder = (
             ChainBuilder.default_config()
-            .set(name="builder", builders=[RemoveBiasBuilder.default_config()])
-            .instantiate(parent=None)
+            .set(builders=[RemoveBiasBuilder.default_config()])
+            .instantiate()
         )
         with self.assertRaises(ValueError):
             builder(Builder.State(step=0, trainer_state=init_trainer_state, built_keys=set()))
@@ -318,11 +314,10 @@ class PosEmbeddingConverterTest(TestCase):
         _, target_state = self._mock_bert_trainer_config_and_state(max_len=64)
 
         cfg = PosEmbeddingConverter.default_config().set(
-            name="pos_emb_tester",
             source_trainer_config=source_trainer_config,
             strategy=strategy,
         )
-        converter: PosEmbeddingConverter = cfg.instantiate(parent=None)
+        converter: PosEmbeddingConverter = cfg.instantiate()
 
         converted_state = converter.source_to_target(source_state, target_state)
         self.assertEqual(
@@ -351,7 +346,6 @@ class PosEmbeddingConverterTest(TestCase):
         source_trainer_config, source_state = self._mock_bert_trainer_config_and_state(max_len=32)
         _, target_state = self._mock_bert_trainer_config_and_state(max_len=64)
         cfg = PosEmbeddingConverter.default_config().set(
-            name="pos_emb_tester",
             source_trainer_config=source_trainer_config,
             strategy=strategy,
         )
@@ -359,7 +353,7 @@ class PosEmbeddingConverterTest(TestCase):
         with self.assertRaisesWithLiteralMatch(
             ValueError, "Target length 64 must be <= source len 32."
         ):
-            converter: PosEmbeddingConverter = cfg.instantiate(parent=None)
+            converter: PosEmbeddingConverter = cfg.instantiate()
             converter.source_to_target(source_state, target_state)
 
     @parameterized.parameters(
@@ -371,7 +365,6 @@ class PosEmbeddingConverterTest(TestCase):
         )
         _, target_state = self._mock_bert_trainer_config_and_state(max_len=64, hidden_dim=256)
         cfg = PosEmbeddingConverter.default_config().set(
-            name="pos_emb_tester",
             source_trainer_config=source_trainer_config,
             strategy=strategy,
         )
@@ -379,7 +372,7 @@ class PosEmbeddingConverterTest(TestCase):
         with self.assertRaisesWithLiteralMatch(
             ValueError, "Incompatible shapes: source (1, 512, 128) vs. target (1, 64, 256)."
         ):
-            converter: PosEmbeddingConverter = cfg.instantiate(parent=None)
+            converter: PosEmbeddingConverter = cfg.instantiate()
             converter.source_to_target(source_state, target_state)
 
     def test_replace_target_prefix_with_source(self):
@@ -387,11 +380,10 @@ class PosEmbeddingConverterTest(TestCase):
         _, target_state = self._mock_bert_trainer_config_and_state(max_len=64)
 
         cfg = PosEmbeddingConverter.default_config().set(
-            name="pos_emb_tester",
             source_trainer_config=source_trainer_config,
             strategy="replace_target_prefix_with_source",
         )
-        converter: PosEmbeddingConverter = cfg.instantiate(parent=None)
+        converter: PosEmbeddingConverter = cfg.instantiate()
 
         converted_state = converter.source_to_target(source_state, target_state)
         self.assertEqual(
@@ -422,11 +414,10 @@ class PosEmbeddingConverterTest(TestCase):
         _, target_state = self._mock_bert_trainer_config_and_state(max_len=64)
 
         cfg = PosEmbeddingConverter.default_config().set(
-            name="pos_emb_tester",
             source_trainer_config=source_trainer_config,
             strategy="keep_target",
         )
-        converter: PosEmbeddingConverter = cfg.instantiate(parent=None)
+        converter: PosEmbeddingConverter = cfg.instantiate()
 
         converted_state = converter.source_to_target(source_state, target_state)
         target_weight = replicate_to_local_data(
@@ -442,7 +433,6 @@ class PosEmbeddingConverterTest(TestCase):
         source_trainer_config, source_state = self._mock_bert_trainer_config_and_state(max_len=512)
         _, target_state = self._mock_bert_trainer_config_and_state(max_len=64)
         cfg = PosEmbeddingConverter.default_config().set(
-            name="pos_emb_tester",
             source_trainer_config=source_trainer_config,
             strategy="nonexistent",
         )
@@ -451,7 +441,7 @@ class PosEmbeddingConverterTest(TestCase):
             NotImplementedError,
             "Strategy nonexistent is not implemented for PosEmbeddingConverter.",
         ):
-            converter: PosEmbeddingConverter = cfg.instantiate(parent=None)
+            converter: PosEmbeddingConverter = cfg.instantiate()
             converter.source_to_target(source_state, target_state)
 
 
@@ -673,10 +663,9 @@ class TestConv2DStateBuilders(TestCase):
         builder = (
             builder_cls.default_config()
             .set(
-                name="builder",
                 **extra_converter_config_kwargs,
             )
-            .instantiate(parent=None)
+            .instantiate()
         )
 
         source_model = source_state.trainer_state.model
@@ -747,7 +736,7 @@ class BaseConverterFromPretrainedModelTest(TestCase):
             mesh_shape=(-1, 1),
         )
         # Ensure that we're able to instantiate mock_trainer_cfg with -1 in the mesh.
-        converter = cfg.set(name="test_converter").instantiate(parent=None)
+        converter = cfg.instantiate()
         converter.target_to_source(mock_state)
 
 
@@ -826,11 +815,10 @@ class DiffusersPretrainedBuilderTest(TestCase):
                 return source_params
 
             builder_config = FlaxPretrainedBuilder.default_config().set(
-                name="builder",
                 flax_state_supplier_config=config_for_function(flax_state_supplier),
                 target_scope=[],
             )
-            builder = builder_config.instantiate(parent=None)
+            builder = builder_config.instantiate()
 
             restored_state = builder(builder_state)
 
@@ -1001,13 +989,12 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             return x
 
         cfg = HuggingFacePreTrainedBuilder.default_config().set(
-            name="test",
             hf_layer_config=config_for_function(dummy_layer),
         )
         if dst_layer is not None:
             cfg.converter.dst_layer = dst_layer
 
-        builder = cfg.instantiate(parent=None)
+        builder = cfg.instantiate()
         init_state = TrainerState(
             model=dict(weight=jnp.zeros([5, 2]), bias=jnp.zeros([2])), prng_key=None, learner=None
         )
@@ -1055,8 +1042,8 @@ class ModelStateScopeConverterTest(TestCase):
         _, target_state = _create_dummy_state(jax.random.PRNGKey(1))
         converter: ModelStateScopeConverter = (
             ModelStateScopeConverter.default_config()
-            .set(name="test", source_trainer_config=source_cfg)
-            .instantiate(parent=None)
+            .set(source_trainer_config=source_cfg)
+            .instantiate()
         )
         # The pruned state has no learner entries.
         pruned_source_state, _ = converter.target_to_source(target_state)
@@ -1093,8 +1080,8 @@ class ModelStateScopeConverterTest(TestCase):
         _, target_state = _create_dummy_state(jax.random.PRNGKey(1), target_model_cfg)
         converter = (
             ModelStateScopeConverter.default_config()
-            .set(name="test", source_trainer_config=source_cfg, scope="nested")
-            .instantiate(parent=None)
+            .set(source_trainer_config=source_cfg, scope="nested")
+            .instantiate()
         )
         converted_state = converter.source_to_target(source_state, target_state)
         self.assertNestedAllClose(
@@ -1109,8 +1096,8 @@ class ModelStateScopeConverterTest(TestCase):
         )
         converter = (
             ModelStateScopeConverter.default_config()
-            .set(name="test", source_trainer_config=source_cfg, scope={"linear2": "linear"})
-            .instantiate(parent=None)
+            .set(source_trainer_config=source_cfg, scope={"linear2": "linear"})
+            .instantiate()
         )
         converted_state = converter.source_to_target(source_state, target_state)
         self.assertNestedAllClose(
@@ -1126,11 +1113,10 @@ class ModelStateScopeConverterTest(TestCase):
         converter = (
             ModelStateScopeConverter.default_config()
             .set(
-                name="test",
                 source_trainer_config=source_cfg,
                 scope={"linear2/bias": "linear/bias", "linear2/weight": "linear/weight"},
             )
-            .instantiate(parent=None)
+            .instantiate()
         )
         converted_state = converter.source_to_target(source_state, target_state)
         self.assertNestedAllClose(
@@ -1146,11 +1132,10 @@ class ModelStateScopeConverterTest(TestCase):
         converter = (
             ModelStateScopeConverter.default_config()
             .set(
-                name="test",
                 source_trainer_config=source_cfg,
                 scope={"linear2/weight": "linear/weight"},
             )
-            .instantiate(parent=None)
+            .instantiate()
         )
         # The pruned state has only 'linear/weight' under 'model'.
         pruned_source_state, _ = converter.target_to_source(target_state)
@@ -1185,11 +1170,10 @@ class ModelStateScopeConverterTest(TestCase):
         converter = (
             ModelStateScopeConverter.default_config()
             .set(
-                name="test",
                 source_trainer_config=source_cfg,
                 scope=scope_mapping,
             )
-            .instantiate(parent=None)
+            .instantiate()
         )
         converted_state = converter.source_to_target(source_state, target_state)
         return source_state, converted_state
@@ -1308,8 +1292,8 @@ class ModelStateScopeConverterTest(TestCase):
         _, target_state = _create_dummy_state(jax.random.PRNGKey(1))
         converter: ModelStateScopeConverter = (
             ModelStateScopeConverter.default_config()
-            .set(name="test", source_trainer_config=source_cfg, source_data_dir=source_data_dir)
-            .instantiate(parent=None)
+            .set(source_trainer_config=source_cfg, source_data_dir=source_data_dir)
+            .instantiate()
         )
         converted_state = converter.source_to_target(source_state, target_state)
         self.assertNestedAllClose(
@@ -1330,13 +1314,7 @@ class EmaParamsConverterTest(TestCase):
         elif target_ema == "with_learner_no_ema":
             del target_state.trainer_state.learner["ema"]
 
-        converter = (
-            EmaParamsConverter.default_config()
-            .set(
-                name="test",
-            )
-            .instantiate(parent=None)
-        )
+        converter = EmaParamsConverter.default_config().instantiate()
         convert_state, _ = converter.target_to_source(target_state)
         # Test that model is empty.
         self.assertNestedAllClose(

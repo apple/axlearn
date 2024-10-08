@@ -7,6 +7,7 @@ To run tests with Weights & Biases writers, run this file with:
 
     WANDB_API_KEY="..." pytest summary_writer_test.py
 """
+
 import os
 import tempfile
 from unittest import mock
@@ -39,8 +40,8 @@ class SummaryWriterTest(absltest.TestCase):
 
     def test_add_summary(self):
         with tempfile.TemporaryDirectory() as tempdir:
-            cfg: SummaryWriter.Config = SummaryWriter.default_config().set(name="test", dir=tempdir)
-            writer = cfg.instantiate(parent=None)
+            cfg: SummaryWriter.Config = SummaryWriter.default_config().set(dir=tempdir)
+            writer = cfg.instantiate()
             writer(
                 step=100,
                 values={
@@ -67,8 +68,8 @@ class SummaryWriterTest(absltest.TestCase):
 
     def test_log_config(self):
         with tempfile.TemporaryDirectory() as tempdir:
-            cfg: SummaryWriter.Config = SummaryWriter.default_config().set(name="test", dir=tempdir)
-            writer = cfg.instantiate(parent=None)
+            cfg: SummaryWriter.Config = SummaryWriter.default_config().set(dir=tempdir)
+            writer = cfg.instantiate()
             writer.log_config(DummyModel.default_config())
             event_acc = EventAccumulator(tempdir, size_guidance={"tensors": 0})
             event_acc.Reload()
@@ -106,14 +107,13 @@ class CompositeWriterTest(absltest.TestCase):
             writer = (
                 CompositeWriter.default_config()
                 .set(
-                    name="test_multi_writer",
                     dir=tempdir,
                     writers={
                         "writer1": SummaryWriter.default_config(),
                         "writer2": SummaryWriter.default_config(),
                     },
                 )
-                .instantiate(parent=None)
+                .instantiate()
             )
             writer(
                 step=100,
@@ -129,14 +129,13 @@ class CompositeWriterTest(absltest.TestCase):
             writer = (
                 CompositeWriter.default_config()
                 .set(
-                    name="test_multi_writer",
                     dir=tempdir,
                     writers={
                         "writer1": SummaryWriter.default_config(),
                         "writer2": SummaryWriter.default_config(),
                     },
                 )
-                .instantiate(parent=None)
+                .instantiate()
             )
             for sub_writer in writer.writers:
                 sub_writer.log_checkpoint = mock.Mock()
@@ -173,8 +172,8 @@ class WandBWriterTest(absltest.TestCase):
             try:
                 writer: WandBWriter = (
                     WandBWriter.default_config()
-                    .set(name="test", exp_name="wandb-testAddSummary", dir=tempdir, mode="offline")
-                    .instantiate(parent=None)
+                    .set(exp_name="wandb-testAddSummary", dir=tempdir, mode="offline")
+                    .instantiate()
                 )
                 for step in [10, 20, 30, 40]:
                     self._write_per_step(writer, step)
@@ -194,8 +193,8 @@ class WandBWriterTest(absltest.TestCase):
             try:
                 writer: WandBWriter = (
                     WandBWriter.default_config()
-                    .set(name="test", exp_name="wandb-testResume", dir=tempdir)
-                    .instantiate(parent=None)
+                    .set(exp_name="wandb-testResume", dir=tempdir)
+                    .instantiate()
                 )
                 exp_id = wandb.run.id
 
@@ -205,8 +204,8 @@ class WandBWriterTest(absltest.TestCase):
 
                 writer: WandBWriter = (
                     WandBWriter.default_config()
-                    .set(name="test", exp_name="wandb-testResume", dir=tempdir)
-                    .instantiate(parent=None)
+                    .set(exp_name="wandb-testResume", dir=tempdir)
+                    .instantiate()
                 )
                 assert wandb.run.id == exp_id
                 # Because we resume from checkpoints, we may compute metrics

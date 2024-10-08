@@ -35,14 +35,10 @@ from axlearn.common.config import (
     Required,
     config_class,
     config_for_function,
+    maybe_instantiate,
 )
 from axlearn.common.metrics import WeightedScalar
-from axlearn.common.module import (
-    InvocationContext,
-    Module,
-    clone_context_stack,
-    install_context_stack,
-)
+from axlearn.common.module import InvocationContext, clone_context_stack, install_context_stack
 from axlearn.common.summary_writer import CheckpointerAction, SummaryWriter
 from axlearn.common.utils import (
     Nested,
@@ -630,7 +626,7 @@ def every_n_steps_and_last_policy(
     return fn
 
 
-class BaseCheckpointer(Module):
+class BaseCheckpointer(Configurable):
     """A base checkpointer interface.
 
     Checkpointers are required to implement `save`, `restore`, `stop`, and `checkpoint_paths`.
@@ -641,7 +637,7 @@ class BaseCheckpointer(Module):
     """
 
     @config_class
-    class Config(Module.Config):
+    class Config(Configurable.Config):
         """Configures BaseCheckpointer.
 
         Attributes:
@@ -680,8 +676,8 @@ class BaseCheckpointer(Module):
         # Note: checkpoint_paths should already filter incomplete checkpoints.
         return sorted(cls.checkpoint_paths(base_dir)).pop()
 
-    def __init__(self, cfg: Module.Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Configurable.Config):
+        super().__init__(cfg)
         self._within_context = False
 
     def __enter__(self):
@@ -824,8 +820,8 @@ class Checkpointer(BaseCheckpointer):
             # Wait for cleanup to complete.
             multihost_utils.sync_global_devices(f"{ckpt_dir}_cleanup")
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         cfg: Checkpointer.Config = self.config
 
         self._storage: StateStorage = cfg.storage.instantiate()
@@ -834,7 +830,7 @@ class Checkpointer(BaseCheckpointer):
         self._save_policy: CheckpointPolicy = cfg.save_policy.instantiate()
         if cfg.summary_writer is not None:
             cfg.summary_writer.dir = cfg.summary_writer.dir or cfg.dir
-            self._add_child("summary_writer", cfg.summary_writer)
+        self.summary_writer: Optional[SummaryWriter] = maybe_instantiate(cfg.summary_writer)
 
     def __enter__(self):
         super().__enter__()
@@ -845,7 +841,7 @@ class Checkpointer(BaseCheckpointer):
         if self._gc_thread is None and jax.process_index() == 0:
             self._gc_stopping = threading.Event()
             self._gc_thread = threading.Thread(
-                name=f"{self.path()}.gc_loop",
+                name=f"{self.__class__.__name__}.gc_loop",
                 target=self._gc_loop,
                 kwargs=dict(context_stack=clone_context_stack()),
             )
@@ -894,7 +890,7 @@ class Checkpointer(BaseCheckpointer):
         self._storage.save_to_dir(
             step=step, state=state, ckpt_dir=ckpt_dir, on_commit_callback=write_index_file
         )
-        if "summary_writer" in self.children:
+        if self.summary_writer is not None:
             self.summary_writer.log_checkpoint(
                 step=step,
                 state=state,
@@ -1009,7 +1005,7 @@ class Checkpointer(BaseCheckpointer):
                 step=step, state=state, ckpt_dir=ckpt_dir
             )
             logging.info("Restored state from ckpt at step %s", step)
-            if "summary_writer" in self.children:
+            if self.summary_writer is not None:
                 self.summary_writer.log_checkpoint(
                     step=step,
                     state=state,

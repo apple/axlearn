@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests tf.data inputs."""
+
 # pylint: disable=no-self-use,too-many-lines
 import os
 import tempfile
@@ -561,11 +562,7 @@ class PadTest(test_utils.TestCase):
         with tempfile.TemporaryDirectory() as td:
             save_dir = os.path.join(td, "ckpt")
             step = 100
-            ckptr = (
-                Checkpointer.default_config()
-                .set(name="ckptr", dir=save_dir)
-                .instantiate(parent=None)
-            )
+            ckptr = Checkpointer.default_config().set(dir=save_dir).instantiate()
             with Mesh(jax.devices(), "data"):
                 ckptr.save(step=step, state={"iterator": iterator}, evaler_summaries=None)
                 ckptr.wait_until_finished()

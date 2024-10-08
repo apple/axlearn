@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """An inference pipeline consists of an input, a runner, and an output writer."""
+
 import time
 from typing import Optional
 
@@ -105,11 +106,11 @@ class InferencePipeline(Module):
         cfg = self.config
         self._add_child("input", cfg.input)
         self._add_child("runner", cfg.runner)
-        self._add_child(
-            "output_writer",
-            cfg.output_writer.set(batch_partition_spec=cfg.runner.input_batch_partition_spec),
-        )
-        self._add_child("summary_writer", cfg.summary_writer)
+
+        self.output_writer = cfg.output_writer.set(
+            batch_partition_spec=cfg.runner.input_batch_partition_spec
+        ).instantiate()
+        self.summary_writer = cfg.summary_writer.instantiate()
 
     def run(self, **kwargs):
         cfg = self.config

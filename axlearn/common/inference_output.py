@@ -4,7 +4,7 @@
 
 import json
 import os.path
-from typing import Optional, Union
+from typing import Union
 
 import jax
 import numpy as np
@@ -12,8 +12,7 @@ import tensorflow as tf
 from jax import numpy as jnp
 
 from axlearn.common import file_system as fs
-from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.module import Module
+from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 from axlearn.common.utils import (
     DataPartitionType,
     NestedTensor,
@@ -23,11 +22,11 @@ from axlearn.common.utils import (
 )
 
 
-class BaseOutputWriter(Module):
+class BaseOutputWriter(Configurable):
     """Base class for OutputWriter, which writes records for inference outputs."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(Configurable.Config):
         # How input and output batches are partitioned.
         batch_partition_spec: Required[DataPartitionType] = REQUIRED
 
@@ -45,7 +44,7 @@ class BaseOutputWriter(Module):
         raise NotImplementedError(type(self))
 
 
-class BaseRecordSink(Module):
+class BaseRecordSink(Configurable):
     def write(self, record: NestedTensor):
         """Writes `record` to the sink."""
         raise NotImplementedError(type(self))
@@ -91,7 +90,7 @@ class TfExampleRecordSink(BaseRecordSink):
     """A sink that writes each example as a record to a TF record file."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(Configurable.Config):
         # The path should commonly contain substitution patterns for:
         #
         # - `data_dir`: The data directory name from `get_data_dir()`
@@ -101,13 +100,8 @@ class TfExampleRecordSink(BaseRecordSink):
         # E.g., output_path = "{data_dir}/out-records-{process_index:05d}-of-{process_count:05d}".
         output_path: Required[str] = REQUIRED
 
-    def __init__(
-        self,
-        cfg: Config,
-        *,
-        parent: Optional[Module],
-    ):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         cfg = self.config
         output_path = cfg.output_path.format(
             data_dir=get_data_dir(),
@@ -132,7 +126,7 @@ class JsonlExampleRecordSink(BaseRecordSink):
     """A sink that writes each example as a record to a JSON Lines file."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(Configurable.Config):
         # The path should commonly contain substitution patterns for:
         #
         # - `data_dir`: The data directory name from `get_data_dir()`
@@ -143,13 +137,8 @@ class JsonlExampleRecordSink(BaseRecordSink):
         # process_count:05d}.jsonl".
         output_path: Required[str] = REQUIRED
 
-    def __init__(
-        self,
-        cfg: Config,
-        *,
-        parent: Optional[Module],
-    ):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         cfg = self.config
         output_path = cfg.output_path.format(
             data_dir=get_data_dir(),
@@ -181,15 +170,10 @@ class OutputRecordWriter(BaseOutputWriter):
     class Config(BaseOutputWriter.Config):
         sink: BaseRecordSink.Config = TfExampleRecordSink.default_config()
 
-    def __init__(
-        self,
-        cfg: Config,
-        *,
-        parent: Optional[Module],
-    ):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         cfg = self.config
-        self._add_child("sink", cfg.sink)
+        self.sink = cfg.sink.instantiate()
 
     def write(self, *, input_batch: NestedTensor, output_batch: NestedTensor):
         """Writes records extracted from the given input/output batch pair.

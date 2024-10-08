@@ -247,13 +247,16 @@ class SpmdTrainer(Module):
             cfg.summary_writer.dir = cfg.summary_writer.dir or os.path.join(
                 cfg.dir, "summaries", "train_train"
             )
-            self._add_child("summary_writer", cfg.summary_writer)
             self._add_child("model", cfg.model)
             self._add_child("learner", cfg.learner)
+
+            # Instantiate non-Module children.
             cfg.checkpointer.dir = cfg.checkpointer.dir or os.path.join(cfg.dir, "checkpoints")
-            self._add_child("checkpointer", cfg.checkpointer)
-            if cfg.init_state_builder is not None:
-                self._add_child("init_state_builder", cfg.init_state_builder)
+            self.checkpointer = cfg.checkpointer.instantiate()
+            self.summary_writer = cfg.summary_writer.instantiate()
+            self.init_state_builder: Optional[TrainerStateBuilder] = maybe_instantiate(
+                cfg.init_state_builder
+            )
 
             self._model_param_specs = self.model.create_parameter_specs_recursively()
             model_param_partition_specs = jax.tree.map(
@@ -524,7 +527,7 @@ class SpmdTrainer(Module):
         Args:
             prng_key: The initialization key.
         """
-        if "init_state_builder" not in self.children:
+        if self.init_state_builder is None:
             self._init_with_prebuilt_state(prng_key, prebuilt_state=None)
             return
         input_state_type = self.init_state_builder.input_state_type()
