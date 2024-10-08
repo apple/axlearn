@@ -44,7 +44,6 @@ core = [
     "flax==0.8.5", # for AQT, param converter and adapter.
     "prefixed==0.7.1", # For formatting file sizes, param counts, etc.
 ]
-
 # Apple Silicon dependencies.
 # Need to run `conda install -c apple tensorflow-deps` separately.
 apple-silicon = [
@@ -52,11 +51,9 @@ apple-silicon = [
     # As of Nov 15, 2023, tensorflow_text has no arm64 build.
     # We need to manually build the wheel and install it, following instructions at https://github.com/tensorflow/text/tree/2.14#build-from-source-steps.
 ]
-
 # Requirements for testing and development.
 dev = [
     "axlearn[audio]",  # audio tests
-    "axlearn[grain]",  # grain input tests
     "axlearn[orbax]",  # checkpointer tests
     "black==23.1a1",  # formatting
     "einops",
