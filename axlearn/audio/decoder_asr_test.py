@@ -13,7 +13,7 @@ import torch
 from absl.testing import parameterized
 from jax import numpy as jnp
 
-from axlearn.audio.asr_decoder import (
+from axlearn.audio.decoder_asr import (
     CTCDecoderModel,
     CTCPrefixMerger,
     DecodeOutputs,

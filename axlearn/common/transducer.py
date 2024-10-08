@@ -34,7 +34,6 @@ where
 * log_prob_y = log_prob_vocab[:T + 1, :U, y], where y = A/B, for u = 0/1, respectively.
 """
 
-
 import jax
 from chex import dataclass
 from jax import numpy as jnp
@@ -632,7 +631,7 @@ def apply_paddings(
         jnp.arange(am_max_seq_len) < am_eos_index - 1, axis=-1
     ) * jnp.expand_dims(jnp.arange(lm_max_seq_len) <= lm_eos_index, axis=0)
     # The terminal state reached by a blank step.
-    log_prob_blank_mask = log_prob_blank_mask.at[am_eos_index - 1, lm_eos_index].set(1)
+    log_prob_blank_mask = log_prob_blank_mask.at[am_eos_index - 1, lm_eos_index].set(True)
     # Set to NEG_INF if mask==0.
     log_prob_blank = log_prob_blank * log_prob_blank_mask + _NEG_INF * (1 - log_prob_blank_mask)
 
