@@ -57,6 +57,7 @@ f()
 import builtins
 import functools
 import linecache
+import os
 import sys
 import traceback
 import types
@@ -65,6 +66,24 @@ from typing import Any, Callable, Optional
 
 import jax._src.traceback_util
 from absl import logging
+
+
+def is_stack_summary_enabled() -> bool:
+    """Check AXLEARN_ENABLE_STACK_SUMMARY env variable enabled.
+
+    AXLEARN_ENABLE_STACK_SUMMARY env variable controls the wrapping mechanism. By default,
+    it's enabled, which wraps functions such as traceback, remat, and exception handling.
+
+    Returns:
+        Boolean indicating whether stack summary is enabled or not.
+
+    Raises:
+        ValueError: if the env variable is not "true" or "false"
+    """
+    enable = os.getenv("AXLEARN_ENABLE_STACK_SUMMARY", "true")
+    if enable not in ["true", "false"]:
+        raise ValueError("AXLEARN_ENABLE_STACK_SUMMARY must be 'true', 'false' or unset.")
+    return enable == "true"
 
 
 def wrap(fn: Callable) -> Callable:
@@ -85,6 +104,9 @@ def wrap(fn: Callable) -> Callable:
     Returns:
         The wrapped function.
     """
+    if not is_stack_summary_enabled():
+        return fn
+
     return _InContextException.wrap(fn)
 
 
@@ -259,6 +281,9 @@ def annotate_stack(**aux) -> Callable:
     Returns:
         A wrapped function that calls `fn` after annotating the call with `aux`.
     """
+
+    if not is_stack_summary_enabled():
+        return lambda fn: fn
 
     def decorator(fn: Callable) -> Callable:
         @functools.wraps(fn)
