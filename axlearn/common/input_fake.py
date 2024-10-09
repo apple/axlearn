@@ -219,6 +219,16 @@ class FakeExtractiveQuestionAnsweringInput(FakeTextInput):
         )
 
 
+class EmptyInput(FakeTextInput):
+    """An Empty input to be used as placeholder."""
+
+    @config_class
+    class Config(Module.Config):
+        """Configures EmptyInput."""
+
+        is_training: Required[bool] = REQUIRED
+
+
 def fake_source(
     is_training: bool,
     examples: Sequence[dict[str, tf.Tensor]],
