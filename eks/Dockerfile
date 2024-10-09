@@ -8,6 +8,7 @@ WORKDIR /neuron
 COPY ./neuron_binaries /neuron/packages
 COPY ./assets/nodelist_helper.py /neuron/scripts/
 COPY ./assets/run_trainer_singlenode.sh /neuron/
+COPY ./assets/run_trainer_multinode.sh /neuron/
 ADD https://pip.repos.neuron.amazonaws.com/aws-neuronx-runtime-discovery/aws-neuronx-runtime-discovery-2.9.tar.gz /neuron/packages
 
 # Install dependencies, common utils
@@ -48,20 +49,20 @@ RUN apt-get update \
 
 # EFA Installer - required for multi-node jobs - This installs libfabric (but no EFA driver) inside the container
 # EFA driver must also be installed on the EKS host
-# RUN apt-get update \
-#     && cd $HOME \
-#     && curl -O https://efa-installer.amazonaws.com/aws-efa-installer-latest.tar.gz \
-#     && wget https://efa-installer.amazonaws.com/aws-efa-installer.key && gpg --import aws-efa-installer.key \
-#     && cat aws-efa-installer.key | gpg --fingerprint \
-#     && wget https://efa-installer.amazonaws.com/aws-efa-installer-latest.tar.gz.sig && gpg --verify ./aws-efa-installer-latest.tar.gz.sig \
-#     && tar -xf aws-efa-installer-latest.tar.gz \
-#     && cd aws-efa-installer \
-#     && ./efa_installer.sh -y -g -d --skip-kmod --skip-limit-conf --no-verify \
-#     && rm -fr /root/aws-efa-installer* \
-#     && cd $HOME \
-#     && rm -rf /var/lib/apt/lists/* \
-#     && rm -rf /tmp/tmp* \
-#     && apt-get clean
+RUN apt-get update \
+    && cd $HOME \
+    && curl -O https://efa-installer.amazonaws.com/aws-efa-installer-latest.tar.gz \
+    && wget https://efa-installer.amazonaws.com/aws-efa-installer.key && gpg --import aws-efa-installer.key \
+    && cat aws-efa-installer.key | gpg --fingerprint \
+    && wget https://efa-installer.amazonaws.com/aws-efa-installer-latest.tar.gz.sig && gpg --verify ./aws-efa-installer-latest.tar.gz.sig \
+    && tar -xf aws-efa-installer-latest.tar.gz \
+    && cd aws-efa-installer \
+    && ./efa_installer.sh -y -g -d --skip-kmod --skip-limit-conf --no-verify \
+    && rm -fr /root/aws-efa-installer* \
+    && cd $HOME \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /tmp/tmp* \
+    && apt-get clean
 
 # Install req'd packages and configure SSH for MPI operator in k8s
 RUN apt-get update && apt-get install -y openmpi-bin openssh-server \
@@ -85,14 +86,14 @@ RUN cd packages \
 RUN cd packages \
   && tar xzf aws-neuronx-runtime-discovery-2.9.tar.gz \
   && $PIP install ./aws-neuronx-runtime-discovery-2.9 \
-  && $PIP install ./libneuronxla-2*.whl ./neuronx_cc-2.*-cp310-*linux_x86_64.whl neuron_jax-*.whl \
+  && $PIP install ./libneuronxla-2*.whl ./neuronx_cc-2.*-cp310-*linux_x86_64.whl jax_neuronx-*.whl \
   && rm -fr /root/.cache \
   && rm -fr /neuron/packages
 
 # Install axlearn
 RUN git clone https://github.com/ptoulme-aws/axlearn.git \
   && cd axlearn \
-  && git checkout 70b_drop1 \
+  && git checkout 70b_drop2 \
   && cd .. \
   && $PIP install -U pip \
   && $PIP install -e ./axlearn

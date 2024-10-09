@@ -34,6 +34,21 @@ export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
 export NEURON_RT_IO_RING_CACHE_SIZE=0
 export NEURON_RT_ENABLE_MEMORY_METRICS=0
 
+# Neuron env vars for distributed training
+nodes=`/neuron/scripts/nodelist_helper.py`
+devices_per_node=32
+export COORDINATOR_ADDRESS=$(echo "$nodes" | head -n 1):64272
+export NEURON_RT_ROOT_COMM_ID=$(echo "$nodes" | head -n 1):5552
+export NEURON_PJRT_PROCESSES_NUM_DEVICES=$(printf '%s,' $(seq 1 $OMPI_COMM_WORLD_SIZE | xargs -I {} echo $devices_per_node) | sed 's/,$//')
+export NEURON_PJRT_PROCESS_INDEX=$OMPI_COMM_WORLD_RANK
+export LD_LIBRARY_PATH="/opt/amazon/efa/lib/"
+export FI_LOG_LEVEL="warn"
+export FI_EFA_USE_DEVICE_RDMA="1"
+export FI_PROVIDER="efa"
+export FI_EFA_FORK_SAFE=1
+export CCOM_SOCKET_IFNAME=eth0
+unset OMPI_MCA_orte_hnp_uri
+
 OUTPUT_DIR="${TEST_ARTIFACTS_PATH}/axlearn_out"
 mkdir -p ${OUTPUT_DIR}
 DATA_DIR="gs://axlearn-public/tensorflow_datasets"
