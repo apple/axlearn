@@ -314,6 +314,7 @@ class BaseTransformerLayer(BaseLayer):
         raise NotImplementedError(type(self))
 
 
+# TODO(c_lan): Rename `..._mask` functions to "..._biases".
 def make_causal_mask(seq_len: int) -> Tensor:
     """Generates attention logit biases for causal masking.
 
@@ -326,6 +327,20 @@ def make_causal_mask(seq_len: int) -> Tensor:
     """
     # TODO(sneha): support batching
     return _bool_to_bias(causal_mask(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
+
+
+def make_sliding_window_causal_mask(seq_len: int, sliding_window_size: int) -> Tensor:
+    """Generates attention logit biases for sliding window attention.
+
+    Args:
+        seq_len: Sequence length.
+
+    Returns:
+        A float tensor of shape [seq_len, seq_len] where the value at [i, j] = -inf
+        if i - j > sliding_window_size or i < j, 0 otherwise.
+    """
+    mask_fn = sliding_window_causal_mask(sliding_window_size)
+    return _bool_to_bias(mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
 
 
 def _bool_to_bias(mask: Tensor) -> Tensor:
@@ -1621,6 +1636,30 @@ class MaskFn(Protocol):
         """
 
 
+def _composite_masks(op: Callable[[Tensor, Tensor], Tensor], *mask_fns: ConfigOr[MaskFn]):
+    if len(mask_fns) == 0:
+        raise RuntimeError(f"Input must not be empty: {mask_fns}")
+
+    def mask(query_position: Tensor, key_position: Tensor):
+        fns = [maybe_instantiate(arg) for arg in mask_fns]
+        result = fns[0](query_position, key_position)
+        for mask in fns[1:]:
+            result = op(result, mask(query_position, key_position))
+        return result
+
+    return mask
+
+
+def or_masks(*mask_fns: ConfigOr[MaskFn]) -> MaskFn:
+    """Returns a MaskFn that's the union of provided MaskFn's."""
+    return _composite_masks(jnp.logical_or, *mask_fns)
+
+
+def and_masks(*mask_fns: ConfigOr[MaskFn]) -> MaskFn:
+    """Returns a MaskFn that's the intersection of provided MaskFn's."""
+    return _composite_masks(jnp.logical_and, *mask_fns)
+
+
 def causal_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
     """Returns the given entry of a causal attention mask.
 
@@ -1628,6 +1667,18 @@ def causal_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
     See that and `MultiheadAttention.Config.mask`.
     """
     return query_position >= key_position
+
+
+def sliding_window_causal_mask(sliding_window_size: int):
+    """Returns a causal MaskFn for sliding window attentions of a given window size.
+
+    Implements the `MaskFn` protocol.
+    """
+
+    def mask(query_position: Tensor, key_position: Tensor):
+        return query_position - key_position <= sliding_window_size
+
+    return and_masks(causal_mask, mask)
 
 
 class MultiheadAttention(BaseLayer):
@@ -1781,8 +1832,6 @@ class MultiheadAttention(BaseLayer):
                 "key and value must be both None or both set, "
                 f"key:{type(key)}, value:{type(value)}"
             )
-        if self._mask_fn and (key is not None or value is not None):
-            raise ValueError("key and value are not expected when using an attention mask.")
         if kv_state is not None:
             if key is not None or value is not None:
                 raise ValueError("kv_state should not be specified together with key/value")
@@ -1836,7 +1885,6 @@ class MultiheadAttention(BaseLayer):
                     mask.astype(q_proj.dtype),
                     attention_logit_biases,
                 )
-
         context, probs = self._compute_attention(
             q_proj=q_proj,
             k_proj=k_proj,
@@ -1875,7 +1923,7 @@ class MultiheadAttention(BaseLayer):
         if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
             mask = self._mask_fn(kv_pos[:, None], kv_pos[None, :])[
                 None, None
-            ]  # Query and key have saem seq lengths.
+            ]  # Query and key have same seq lengths.
         elif mode == ForwardMode.EXTEND_STEP:
             # [batch, 1, 1, kv_len].
             # Ex: for a causal mask, mask[b, :, :, kv_pos] = 0 if time_step[b] > kv_pos else 1.

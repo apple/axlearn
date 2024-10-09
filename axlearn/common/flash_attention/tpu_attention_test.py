@@ -9,10 +9,11 @@ import jax
 import jax.numpy as jnp
 import pytest
 from absl.testing import parameterized
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 
-from axlearn.common.attention import causal_mask
+from axlearn.common.attention import causal_mask, sliding_window_causal_mask
 from axlearn.common.flash_attention import tpu_attention
-from axlearn.common.flash_attention.tpu_attention import tpu_flash_attention
+from axlearn.common.flash_attention.tpu_attention import ComputableMask, tpu_flash_attention
 from axlearn.common.flash_attention.utils import mha_reference
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils import Tensor
@@ -48,6 +49,19 @@ class TestFlashAttention(TestCase):
             num_heads=4,
         ),
     ]
+
+    @parameterized.product(seq_len=[8, 16, 32, 128], sliding_window_size=[4, 8, 16])
+    def test_sliding_window_mask(self, seq_len, sliding_window_size):
+        shape = (seq_len, seq_len)
+        ref_mask = splash_attention_mask.LocalMask(
+            shape=shape, window_size=(sliding_window_size, None), offset=0
+        )
+
+        mask_fn = sliding_window_causal_mask(sliding_window_size=sliding_window_size)
+        test_mask = ComputableMask(shape=shape, mask_function=mask_fn)
+
+        for i in range(seq_len):
+            self.assertNestedAllClose(ref_mask[i:, i:], test_mask[i:, i:])
 
     @parameterized.product(
         _TEST_CONFIGS,
