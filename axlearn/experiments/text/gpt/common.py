@@ -268,7 +268,7 @@ def model_config(
         batch_axis_names=batch_axis_names,
         seq_axis_names="seq",
     )
-    cfg.dtype = jnp.bfloat16
+    cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(
         cfg.decoder.transformer.layer,
