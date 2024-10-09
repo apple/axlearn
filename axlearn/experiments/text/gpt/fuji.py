@@ -37,6 +37,7 @@ from axlearn.common.learner import GeometricMeanStrategy, AddStrategy
 import jax
 import os
 
+jax._src.interpreters.mlir._platforms_with_donation.append('neuron')
 MODEL_SIZES = ("test", "7B", "70B")
 
 
@@ -198,7 +199,7 @@ def get_trainer_kwargs(
                 rope_theta=rope_theta,
                 flash_attention=flash_attention,
             ),
-            learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
+            learner_kwargs=dict(peak_lr=1.5e-5, weight_decay=6e-6),
             max_sequence_length=max_sequence_length,
             input_partition_type=DataPartitionType.DATA,
             train_batch_size=int((jax.device_count()/TRN_MODEL_AXIS_SIZE)*GRADIENT_ACCUMULATION_MICROBATCHES),

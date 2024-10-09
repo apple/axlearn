@@ -252,7 +252,6 @@ def model_config(
         vocab_size=vocab_size,
         emb=emb_cfg,
         dropout_rate=dropout_rate,
-        lm_head=LmHead.default_config()
     )
     # Model.
     model_param_init = DefaultInitializer.default_config().set(
@@ -282,7 +281,6 @@ def model_config(
     tp_axis_names='model'
     fsdp_axis_names='data'
     cfg.decoder.emb.token_emb.param_partition_spec = (tp_axis_names, fsdp_axis_names) # shard vocab
-    cfg.decoder.lm_head.param_partition_spec = (tp_axis_names, fsdp_axis_names) # shard vocab
 
     set_bias_recursively(cfg, False)
     set_norm_recursively(cfg, normalization)

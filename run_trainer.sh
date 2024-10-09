@@ -46,7 +46,7 @@ mkdir -p ${OUTPUT_DIR}
 DATA_DIR="gs://axlearn-public/tensorflow_datasets"
 # Run the training script
 python -m axlearn.common.launch_trainer_main \
-    --module=text.gpt.c4_trainer --config=fuji-70B-v3 \
+    --module=text.gpt.c4_trainer --config=fuji-70B-v2 \
     --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR \
     --jax_backend=neuron --mesh_selector=trn2 
 

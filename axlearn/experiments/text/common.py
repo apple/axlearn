@@ -84,7 +84,9 @@ def vocab(
     """
     data_dir = get_data_dir()
     sentence_piece_vocab_file = os.path.join(
-        os.path.join(os.path.dirname(__file__), "..", "..", "data"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "data")
+        if data_dir is None or data_dir == "FAKE"
+        else data_dir,
         f"tokenizers/sentencepiece/{sentencepiece_model_name}",
     )
     return seqio.SentencePieceVocabulary(
