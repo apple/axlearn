@@ -14,6 +14,7 @@ import time
 import unittest
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from typing import Optional, Type, cast
 from unittest import mock
 
@@ -161,7 +162,7 @@ class CheckpointerTest(test_utils.TestCase):
         step = 1
 
         def state_specs(state, partition_spec):
-            return jax.tree_util.tree_map(
+            return jax.tree.map(
                 lambda x: utils.TensorSpec(shape=x.shape, dtype=x.dtype, mesh_axes=partition_spec),
                 state,
             )
@@ -171,7 +172,7 @@ class CheckpointerTest(test_utils.TestCase):
             sharding = jax.sharding.NamedSharding(
                 mesh, spec=jax.sharding.PartitionSpec("data", "model")
             )
-            state = jax.tree_util.tree_map(lambda x: jax.device_put(x, device=sharding), state)
+            state = jax.tree.map(lambda x: jax.device_put(x, device=sharding), state)
             ckpt.save(step=step, state=state)
             ckpt.wait_until_finished()
 
@@ -363,40 +364,54 @@ class CheckpointerTest(test_utils.TestCase):
             # Ensure that the last ckpt is considered invalid.
             self.assertEqual(Checkpointer.latest_checkpoint_path(temp_dir), ckpt_paths[0])
 
-    @parameterized.parameters(
+    @parameterized.product(
         # By default, we restore from the latest ckpt, keep the last 3 steps, and every 2 after.
-        dict(
-            ckpt_paths=None,
-            expect_restore_step=9,
-            expect_saved_steps=[0, 2, 4, 6, 7, 8, 9],
+        (
+            dict(
+                ckpt_paths=None,
+                expect_restore_step=9,
+                expect_saved_steps=[0, 2, 4, 6, 7, 8, 9],
+            ),
+            # If we pretend that the first 2 ckpt paths failed, they should be retained.
+            # We then keep the next 3 steps and every 2 afterwards.
+            dict(
+                ckpt_paths=range(8),
+                expect_restore_step=7,
+                expect_saved_steps=[0, 2, 4, 5, 6, 7, 8, 9],
+            ),
+            # Test a case where committed dirs are not consecutive.
+            # In this case, we keep 9 due to possible in-progress write;
+            # we keep 8, 6, 3, which are the last 3 checkpoints;
+            # And we keep 0 (but not 1, since it doesn't respect keep_every_n=2).
+            dict(
+                ckpt_paths=[0, 1, 3, 6, 8],
+                expect_restore_step=8,
+                expect_saved_steps=[0, 3, 6, 8, 9],
+            ),
         ),
-        # If we pretend that the first 2 ckpt paths failed, they should be retained.
-        # We then keep the next 3 steps and every 2 afterwards.
-        dict(
-            ckpt_paths=range(8),
-            expect_restore_step=7,
-            expect_saved_steps=[0, 2, 4, 5, 6, 7, 8, 9],
-        ),
-        # Test a case where committed dirs are not consecutive.
-        # In this case, we keep 9 due to possible in-progress write;
-        # we keep 8, 6, 3, which are the last 3 checkpoints;
-        # And we keep 0 (but not 1, since it doesn't respect keep_every_n=2).
-        dict(
-            ckpt_paths=[0, 1, 3, 6, 8],
-            expect_restore_step=8,
-            expect_saved_steps=[0, 3, 6, 8, 9],
-        ),
+        listdir_add_trailing_slash=[True, False],
     )
     def test_garbage_collection(
         self,
         ckpt_paths: Optional[Sequence[str]],
         expect_restore_step: int,
         expect_saved_steps: Sequence[int],
+        listdir_add_trailing_slash: bool,
     ):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
-        with _mesh(mesh_shape), tempfile.TemporaryDirectory() as temp_dir:
+
+        orig_tf_listdir = tf.io.gfile.listdir
+
+        def patch_tf_io_behavior(*args):
+            out = orig_tf_listdir(*args)
+            return [x + "/" for x in out if not x.endswith("/")]
+
+        # pylint: disable=line-too-long
+        with _mesh(mesh_shape), mock.patch(
+            "tensorflow.io.gfile.listdir", patch_tf_io_behavior
+        ) if listdir_add_trailing_slash else nullcontext(), tempfile.TemporaryDirectory() as temp_dir:
             cfg = Checkpointer.default_config().set(
                 name="test",
                 dir=temp_dir,
@@ -772,9 +787,7 @@ class CheckpointerTest(test_utils.TestCase):
             state_spec = read_state_spec(checkpointer_cls.latest_checkpoint_path(cfg.dir))
             self.assertNestedEqual(
                 state_spec,
-                jax.tree_util.tree_map(
-                    lambda t: utils.TensorSpec(shape=t.shape, dtype=t.dtype), state0
-                ),
+                jax.tree.map(lambda t: utils.TensorSpec(shape=t.shape, dtype=t.dtype), state0),
             )
             step, state1 = ckpt.restore(state=state_spec)
             self.assertNestedEqual(0, step)
@@ -816,7 +829,7 @@ class CheckpointerTest(test_utils.TestCase):
                 ckpt: Checkpointer = cfg.instantiate(parent=None)
                 # VDict with out of order keys.
                 state0 = dict(a=3, b=SwitchableVDict(d=6, b=5))
-                state0 = jax.tree_util.tree_map(jnp.asarray, state0)
+                state0 = jax.tree.map(jnp.asarray, state0)
                 self.assertEqual(list(state0["b"].keys()), ["d", "b"])
                 ckpt.save(step=0, state=state0)
                 ckpt.wait_until_finished()
@@ -829,7 +842,7 @@ class CheckpointerTest(test_utils.TestCase):
                 self.assertNestedEqual(state0, result)
                 self.assertEqual(list(result["b"].keys()), ["b", "d"])
 
-                after_tree_map = jax.tree_util.tree_map(lambda x: x, result)
+                after_tree_map = jax.tree.map(lambda x: x, result)
                 self.assertEqual(list(after_tree_map["b"].keys()), ["b", "d"])
 
                 _, result = ckpt.restore(step=0, state=after_tree_map)

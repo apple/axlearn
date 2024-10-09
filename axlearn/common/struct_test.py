@@ -60,7 +60,7 @@ class StructTest(absltest.TestCase):
         p = _Point(x=1, y=2, meta={"abc": True})
         leaves = jax.tree_util.tree_leaves(p)
         self.assertEqual(leaves, [1, 2])
-        new_p = jax.tree_util.tree_map(lambda x: x + x, p)
+        new_p = jax.tree.map(lambda x: x + x, p)
         self.assertEqual(new_p, _Point(x=2, y=4, meta={"abc": True}))
 
     def test_keypath_error(self):

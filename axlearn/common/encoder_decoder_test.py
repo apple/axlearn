@@ -269,6 +269,38 @@ class TestEncoderDecoder(TestCase):
                     jnp.all(sequences * (1 - prefix_mask) == (vocab_size - 1) * (1 - prefix_mask))
                 )
 
+    def test_forward_key_conflict(self):
+        # pylint: disable=unused-argument
+        class DummyEncoderDecoderModel(EncoderDecoderModel):
+            def _validate_input_batch(self, *args, **kwargs):
+                pass
+
+            def predict(self, *args, **kwargs):
+                return dict(x=1)
+
+            def _metrics(self, *args, **kwargs):
+                return 0.1, dict(x=2)
+
+        cfg = _model_config(vocab_size=1, source_len=1, target_len=1)
+        cfg = DummyEncoderDecoderModel.default_config().set(
+            encoder=cfg.encoder, decoder=cfg.decoder
+        )
+        model = cfg.set(name="test").instantiate(parent=None)
+        with self.assertRaisesRegex(KeyError, "conflict"):
+            F(
+                model,
+                inputs=dict(
+                    input_batch=dict(
+                        source=dict(input_ids=jnp.empty([1, 1], dtype=jnp.int32)),
+                        target=dict(input_ids=jnp.empty([1, 1], dtype=jnp.int32)),
+                        target_labels=jnp.empty([1, 1], dtype=jnp.int32),
+                    )
+                ),
+                state=model.initialize_parameters_recursively(jax.random.PRNGKey(123)),
+                is_training=False,
+                prng_key=None,
+            )
+
 
 def _gpt2_decoder_config_from_hf(
     hf_cfg: GPT2Config,

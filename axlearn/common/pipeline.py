@@ -145,7 +145,7 @@ def _mask_invalid_gradients(state: Nested[Tensor], *, is_valid: Tensor) -> Neste
     """Uses stop_gradient to mask invalid (bubble) microbatch iterations."""
 
     # The jnp.where will be optimized away by XLA, but in the backward pass it will mask with zeros.
-    return jax.tree_util.tree_map(
+    return jax.tree.map(
         lambda x: jnp.where(
             jnp.reshape(is_valid, (-1,) + (1,) * (x.ndim - 1)), x, jax.lax.stop_gradient(x)
         ),
@@ -346,7 +346,7 @@ class GPipeSchedule(BaseSchedule):
         # any meaningful last-stage outputs yet.
         # Use lax.slice to guarantee the gradient is a pad.
         n = self.num_stages
-        scan_ys["carry"] = jax.tree_util.tree_map(
+        scan_ys["carry"] = jax.tree.map(
             lambda x: jnp.squeeze(
                 jax.lax.slice(x, [n - 1, x.shape[1] - 1] + [0] * (x.ndim - 2), x.shape), 1
             ),
@@ -384,11 +384,11 @@ class GPipeSchedule(BaseSchedule):
             # Current loop iteration.
             t=jnp.array(0, dtype=jnp.int32),
             # [N, microbatch_size, ...].
-            carry_output_t_1=jax.tree_util.tree_map(
+            carry_output_t_1=jax.tree.map(
                 lambda x: jnp.zeros((n,) + x.shape[1:], dtype=x.dtype), carry
             ),
             # [M, N, microbatch_size, ...].
-            per_stage_inputs=jax.tree_util.tree_map(pad_carry, carry),
+            per_stage_inputs=jax.tree.map(pad_carry, carry),
         )
 
     def _process_carry_in(self, carry_in: Nested[Tensor]) -> Nested[Tensor]:
@@ -411,7 +411,7 @@ class GPipeSchedule(BaseSchedule):
         def compute_carry_input(v_input_t: Tensor, v_carry_output_t_1: Tensor) -> Tensor:
             return _select_input_or_previous_outputs(v_input_t[idx], v_carry_output_t_1)
 
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             compute_carry_input,
             carry_in["per_stage_inputs"],
             carry_in["carry_output_t_1"],
@@ -546,7 +546,7 @@ class StreamSchedule(BaseSchedule):
             microbatch_idx = t % (m // n)
 
             # [N, M // N, microbatch_size, ...] --> [N, microbatch_size, ...].
-            buf_col_t = jax.tree_util.tree_map(lambda x: x[:, microbatch_idx], buffer)
+            buf_col_t = jax.tree.map(lambda x: x[:, microbatch_idx], buffer)
 
             def compute_carry_input(v_input_t: Tensor, v_carry_output_t_1: Tensor) -> Tensor:
                 v_input_t = _select_input_or_previous_outputs(v_input_t, v_carry_output_t_1)
@@ -554,7 +554,7 @@ class StreamSchedule(BaseSchedule):
 
             # Compute vmap inputs.
             # Leaves are of shape [N, microbatch_size, ...] representing per-stage inputs.
-            vmap_in = jax.tree_util.tree_map(compute_carry_input, buf_col_t, carry_output_t_1)
+            vmap_in = jax.tree.map(compute_carry_input, buf_col_t, carry_output_t_1)
 
             # Use stop_gradient for invalid (bubble) microbatch iterations. This jnp.where will
             # be optimized away by XLA, but in the backward pass it will be masking with zeros.
@@ -602,7 +602,7 @@ class StreamSchedule(BaseSchedule):
             carry_out = dict(
                 t=t + 1,
                 carry_output_t_1=vmap_out["carry"],
-                buffer=jax.tree_util.tree_map(
+                buffer=jax.tree.map(
                     update_buffer,
                     buffer,
                     buf_col_t,
@@ -624,7 +624,7 @@ class StreamSchedule(BaseSchedule):
             return jnp.reshape(x, (m,) + x.shape[2:])
 
         # The buffer is also used for storing last-stage outputs.
-        scan_ys["carry"] = jax.tree_util.tree_map(rotate_out, carry_out["buffer"])
+        scan_ys["carry"] = jax.tree.map(rotate_out, carry_out["buffer"])
         return scan_ys
 
     def _init_carry_in(self, carry: Nested[Tensor]) -> Nested[Tensor]:
@@ -653,11 +653,11 @@ class StreamSchedule(BaseSchedule):
             # Current loop iteration.
             t=jnp.array(0, dtype=jnp.int32),
             # [N, microbatch_size, ...]. Equivalent to the "shift" buffer in praxis.
-            carry_output_t_1=jax.tree_util.tree_map(
+            carry_output_t_1=jax.tree.map(
                 lambda x: jnp.zeros((n,) + x.shape[1:], dtype=x.dtype), carry
             ),
             # [N, M // N, microbatch_size, ...]. Equivalent to the "stream" buffer in praxis.
-            buffer=jax.tree_util.tree_map(reshape_carry, carry),
+            buffer=jax.tree.map(reshape_carry, carry),
         )
 
 
@@ -696,7 +696,7 @@ class Pipeline(BaseLayer):
                 return None
             return FactorizationSpec(axes=[None] + list(spec.axes))
 
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda spec: dataclasses.replace(
                 spec,
                 shape=(cfg.num_layers, *spec.shape),
@@ -784,14 +784,14 @@ class Pipeline(BaseLayer):
             carry = {}
             carry_partition_spec = {}
         if carry_partition_spec is None:
-            carry_partition_spec = jax.tree_util.tree_map(
+            carry_partition_spec = jax.tree.map(
                 lambda x: PartitionSpec(*[PartitionSpec.UNCONSTRAINED for _ in x.shape]), carry
             )
         if xs is None:
             xs = {}
             xs_partition_spec = {}
         if xs_partition_spec is None:
-            xs_partition_spec = jax.tree_util.tree_map(
+            xs_partition_spec = jax.tree.map(
                 lambda x: PartitionSpec(
                     "pipeline", *[PartitionSpec.UNCONSTRAINED for _ in x.shape[1:]]
                 ),
@@ -804,9 +804,7 @@ class Pipeline(BaseLayer):
         # the "pipeline-major" form (i.e., in the shape of [N + M - 1, N, ...]).
         #
         # To be investigated in the future.
-        padded_xs = jax.tree_util.tree_map(
-            transpose_to_pipeline_stage_inputs, xs, xs_partition_spec
-        )
+        padded_xs = jax.tree.map(transpose_to_pipeline_stage_inputs, xs, xs_partition_spec)
         self.vlog(2, "padded_xs=%s", shapes(padded_xs))
 
         def stack_and_reshape(*keys):
@@ -814,7 +812,7 @@ class Pipeline(BaseLayer):
             return jnp.reshape(keys, [m + n - 1, n] + list(keys.shape[1:]))
 
         prng_keys = jax.random.split(self.prng_key, (m + n - 1) * n)
-        prng_keys = jax.tree_util.tree_map(stack_and_reshape, *prng_keys)
+        prng_keys = jax.tree.map(stack_and_reshape, *prng_keys)
 
         layer_output_collection = new_output_collection()
         with child_context("layer", output_collection=layer_output_collection) as layer_context:
@@ -835,31 +833,27 @@ class Pipeline(BaseLayer):
                 self.vlog(3, "output_collection_tn=%s", shapes(output_collection_tn))
                 return dict(carry=carry_tn, y=y_tn, output_collection=output_collection_tn)
 
-            carry = jax.tree_util.tree_map(with_sharding_constraint, carry, carry_partition_spec)
+            carry = jax.tree.map(with_sharding_constraint, carry, carry_partition_spec)
             scan_ys = self._schedule.scan(
                 vmap_fn, carry=carry, state=layer_context.state, xs=(prng_keys, padded_xs)
             )
-            final_carry = jax.tree_util.tree_map(
+            final_carry = jax.tree.map(
                 with_sharding_constraint, scan_ys.pop("carry"), carry_partition_spec
             )
 
             ys = scan_ys["y"]
             if ys_partition_spec is None:
-                ys_partition_spec = jax.tree_util.tree_map(
+                ys_partition_spec = jax.tree.map(
                     lambda x: PartitionSpec(
                         "pipeline", *[PartitionSpec.UNCONSTRAINED for _ in x.shape[1:]]
                     ),
                     ys,
                 )
             # Transpose from pipeline-major [N + M - 1, N, ...] back to layer-major [N, M, ...].
-            ys = jax.tree_util.tree_map(
-                transpose_from_pipeline_stage_outputs, ys, ys_partition_spec
-            )
+            ys = jax.tree.map(transpose_from_pipeline_stage_outputs, ys, ys_partition_spec)
             self.vlog(3, "scan_ys.output_collection=%s", shapes(scan_ys["output_collection"]))
             layer_output_collection.update(
-                jax.tree_util.tree_map(
-                    transpose_from_pipeline_stage_outputs, scan_ys["output_collection"]
-                )
+                jax.tree.map(transpose_from_pipeline_stage_outputs, scan_ys["output_collection"])
             )
             self.vlog(3, "layer_output_collection=%s", shapes(layer_output_collection))
 
@@ -878,9 +872,7 @@ class Pipeline(BaseLayer):
             for j in range(m):
                 microbatch_j_output = layer_i_output.add_child(f"microbatch{j}")
                 microbatch_j_output.summaries.update(
-                    **jax.tree_util.tree_map(
-                        lambda x, i=i, j=j: x[i, j], layer_output_collection.summaries
-                    )
+                    **jax.tree.map(lambda x, i=i, j=j: x[i, j], layer_output_collection.summaries)
                 )
         return self.Output(carry=final_carry, ys=ys)
 
@@ -893,7 +885,7 @@ class Pipeline(BaseLayer):
             x = jnp.reshape(x, [-1, cfg.num_microbatches] + list(x.shape[1:]))
             return jnp.transpose(x, [1, 0] + list(range(2, x.ndim)))
 
-        return jax.tree_util.tree_map(reshape_and_transpose, inputs)
+        return jax.tree.map(reshape_and_transpose, inputs)
 
     # pylint: disable-next=no-self-use
     def _from_microbatches(self, inputs):
@@ -901,4 +893,4 @@ class Pipeline(BaseLayer):
             x = jnp.transpose(x, [1, 0] + list(range(2, x.ndim)))
             return jnp.reshape(x, [-1] + list(x.shape[2:]))
 
-        return jax.tree_util.tree_map(transpose_and_reshape, inputs)
+        return jax.tree.map(transpose_and_reshape, inputs)

@@ -148,7 +148,7 @@ class FlaxLayerTest(TestCase):
             self.assertSequenceEqual(spec.shape, param.shape)
             self.assertEqual(spec.mesh_axes, None)
 
-        jax.tree_util.tree_map(check_spec_and_param, param_specs, layer_params)
+        jax.tree.map(check_spec_and_param, param_specs, layer_params)
 
         self.assertEqual(
             {
@@ -215,7 +215,7 @@ class FlaxLayerTest(TestCase):
             self.assertSequenceEqual(spec.shape, param.shape)
             self.assertEqual(spec.mesh_axes, None)
 
-        jax.tree_util.tree_map(check_spec_and_param, param_specs, layer_params)
+        jax.tree.map(check_spec_and_param, param_specs, layer_params)
 
         self.assertEqual(
             {
@@ -251,7 +251,7 @@ class FlaxLayerTest(TestCase):
             )
             layer = cfg.set(name="test").instantiate(parent=None)
             param_specs = layer.create_parameter_specs_recursively()
-            partition_specs = jax.tree_util.tree_map(lambda spec: spec.mesh_axes, param_specs)
+            partition_specs = jax.tree.map(lambda spec: spec.mesh_axes, param_specs)
 
             jit_init_state = pjit(
                 layer.initialize_parameters_recursively,

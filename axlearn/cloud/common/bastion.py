@@ -212,6 +212,12 @@ class JobLifecycleEvent(Event):
         }
         return json.dumps(job_event)
 
+    def __repr__(self) -> str:
+        """Custom string representation for logging."""
+        return (
+            f"JobLifecycleEvent(job_id={self.job_id}, job_name={self.job_name}, state={self.state})"
+        )
+
 
 class ValidationError(ValueError):
     """Validation failure (e.g. JobSpec deserialization)."""

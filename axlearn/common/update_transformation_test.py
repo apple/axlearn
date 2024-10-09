@@ -169,7 +169,7 @@ def mock_params() -> Nested[Tensor]:
 def mock_updates() -> axlearn.common.update_transformation.Updates:
     """Create an updates object with various semi-reasonable values."""
     model_params = mock_params()
-    opt_params = jax.tree_util.tree_map(
+    opt_params = jax.tree.map(
         lambda p: OptParam(
             value=p,
             factorization_spec=FactorizationSpec([None] * p.ndim),
@@ -177,7 +177,7 @@ def mock_updates() -> axlearn.common.update_transformation.Updates:
         ),
         model_params,
     )
-    delta_updates = jax.tree_util.tree_map(lambda p: p * -0.1, model_params)
+    delta_updates = jax.tree.map(lambda p: p * -0.1, model_params)
     delta_updates["state"] = None
     inplace_updates = dict(
         state=jnp.arange(2, dtype=jnp.int32),

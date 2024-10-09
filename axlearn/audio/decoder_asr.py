@@ -16,14 +16,7 @@ from axlearn.common import decoding, struct
 from axlearn.common.attention import TransformerAttentionLayer
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
-from axlearn.common.config import (
-    REQUIRED,
-    ConfigOr,
-    InstantiableConfig,
-    Required,
-    config_class,
-    maybe_instantiate,
-)
+from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.decoder import Decoder
 from axlearn.common.decoding import (
     NEG_INF,
@@ -158,8 +151,20 @@ class DecodeOutputs(struct.PyTreeNode):
     scores: Tensor
 
 
+def _compute_target_paddings(target_labels: Tensor, *, vocab_size: int) -> Tensor:
+    """Infers paddings from out-of-range targets.
+
+    Args:
+        target_labels: An int Tensor of any shape; commonly of shape [batch_size, seq_len].
+
+    Returns:
+        A 0/1 Tensor of same shape as `target_labels`.
+    """
+    return jnp.logical_or(vocab_size <= target_labels, target_labels < 0)
+
+
 class BaseASRDecoderModel(BaseModel):
-    """ASR decoder model base."""
+    """Base ASR decoder model interface."""
 
     @config_class
     class Config(BaseModel.Config):
@@ -170,10 +175,20 @@ class BaseASRDecoderModel(BaseModel):
         # The vocab size.
         vocab_size: Required[int] = REQUIRED
 
-    def forward(
-        self,
-        input_batch: Nested[Tensor],
-    ) -> tuple[Tensor, Nested[Tensor]]:
+    def predict(self, input_batch: Nested[Tensor]) -> Tensor:
+        """Computes logits.
+
+        Args:
+            input_batch: A dict containing:
+                inputs: A Tensor of shape [batch_size, num_frames, dim].
+                paddings: A 0/1 Tensor of shape [batch_size, num_frames]. 1's represent paddings.
+
+        Returns:
+            A dict containing logits. The shape of logits depend on the decoder.
+        """
+        raise NotImplementedError(type(self))
+
+    def forward(self, input_batch: Nested[Tensor]) -> tuple[Tensor, Nested[Tensor]]:
         """Computes decoder loss.
 
         Args:
@@ -197,23 +212,22 @@ class BaseASRDecoderModel(BaseModel):
         """
         raise NotImplementedError(type(self))
 
-    def _compute_target_paddings(
-        self,
-        input_batch: Nested[Tensor],
-    ) -> Tensor:
-        """Computes target paddings and other input statistics.
+    def beam_search_decode(
+        self, input_batch: Nested[Tensor], num_decodes: int, **kwargs
+    ) -> DecodeOutputs:
+        """Beam search decoding.
 
         Args:
-            input_batch: See forward method signature.
+            input_batch: A dict containing:
+                inputs: A Tensor of shape [batch_size, num_frames, dim].
+                paddings: A 0/1 Tensor of shape [batch_size, num_frames]. 1's represent paddings.
+            num_decodes: Beam size.
+            kwargs: Additional kwargs. See corresponding subclass for details.
 
         Returns:
-            target_paddings: A 0/1 Tensor of shape [batch_size, num_labels].
+            Beam search decode outputs. See `DecodeOutputs` for details.
         """
-        cfg = self.config
-        target_labels: Tensor = input_batch["target_labels"]
-        # Infer target_paddings from out-of-range labels.
-        target_paddings = jnp.logical_or(cfg.vocab_size <= target_labels, target_labels < 0)
-        return target_paddings
+        raise NotImplementedError(type(self))
 
     def _input_stats_summaries(
         self, input_batch: Nested[Tensor], *, target_paddings: Tensor, is_valid_example: Tensor
@@ -354,7 +368,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         cfg: CTCDecoderModel.Config = self.config
         paddings: Tensor = input_batch["paddings"]
         target_labels: Tensor = input_batch["target_labels"]
-        target_paddings: Tensor = self._compute_target_paddings(input_batch)
+        target_paddings: Tensor = _compute_target_paddings(target_labels, vocab_size=cfg.vocab_size)
 
         # Compute CTC loss.
         logits = self.predict(input_batch)
@@ -746,7 +760,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
         # LM projection.
         lm_proj: Linear.Config = Linear.default_config()
         # Transducer that maps the hidden state to vocab logits.
-        transducer: InstantiableConfig = Transducer.default_config()
+        transducer: Transducer.Config = Transducer.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -807,11 +821,13 @@ class TransducerDecoderModel(BaseASRDecoderModel):
                         per-example loss.
                     loss: A tensor of shape [batch_size] representing per-example loss.
         """
+        cfg: TransducerDecoderModel.Config = self.config
+
         # [batch, src_max_len, joint_dim].
         am_data = self.am_proj(input_batch["inputs"])
         am_paddings: Tensor = input_batch["paddings"]
         target_labels: Tensor = input_batch["target_labels"]
-        target_paddings: Tensor = self._compute_target_paddings(input_batch)
+        target_paddings: Tensor = _compute_target_paddings(target_labels, vocab_size=cfg.vocab_size)
 
         # [batch, tgt_max_len, joint_dim].
         lm_data = self.lm_proj(self.prediction_network(inputs=input_batch["target"]["input_ids"]))
@@ -993,7 +1009,8 @@ class TransducerDecoderModel(BaseASRDecoderModel):
         Raises:
             ValueError: If max_decode_len <= src_max_len.
         """
-        batch_size, src_max_len = input_batch["paddings"].shape  # pytype: disable=attribute-error
+        paddings: Tensor = input_batch["paddings"]
+        batch_size, src_max_len = paddings.shape
         if max_decode_len <= src_max_len:
             raise ValueError(f"{max_decode_len=} is smaller than {src_max_len=}.")
 
@@ -1001,7 +1018,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
         blank_id, eos_id, bos_id = cfg.blank_id, cfg.eos_id, cfg.bos_id
 
         # Starts decoding with [BOS] token.
-        inputs = jnp.zeros((batch_size, max_decode_len))
+        inputs = jnp.zeros((batch_size, max_decode_len), dtype=jnp.int32)
         inputs = inputs.at[:, 0].set(bos_id)
 
         init_states = {
@@ -1105,9 +1122,9 @@ class LASDecoderModel(BaseASRDecoderModel):
 
         See BaseASRDecoderModel.forward docstring for details.
         """
-        cfg = self.config
+        cfg: LASDecoderModel.Config = self.config
         target_labels: Tensor = input_batch["target_labels"]
-        target_paddings: Tensor = self._compute_target_paddings(input_batch)
+        target_paddings: Tensor = _compute_target_paddings(target_labels, vocab_size=cfg.vocab_size)
 
         # Cross-attention logit biases: [batch_size, 1, 1, source_len].
         cross_attention_logit_biases = self._compute_attention_logit_biases(
@@ -1256,8 +1273,8 @@ class LASDecoderModel(BaseASRDecoderModel):
         Returns:
             See `beam_search_decode`.
         """
-        dec_cfg = self.config.decoder
-        eos_id = dec_cfg.eos_token_id
+        cfg: LASDecoderModel.Config = self.config
+        eos_id = cfg.decoder.eos_token_id
         self._validate_decode_batch(input_batch)
 
         cross_attention_logit_biases = self._compute_attention_logit_biases(

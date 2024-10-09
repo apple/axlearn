@@ -1064,7 +1064,7 @@ class FusedQKVLinear(BaseQKVLinear):
                 return None
             return FactorizationSpec(axes=[None] + list(spec.axes))
 
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda spec: ParameterSpec(
                 dtype=spec.dtype,
                 shape=(3, *spec.shape),
@@ -1081,7 +1081,7 @@ class FusedQKVLinear(BaseQKVLinear):
         self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
-            return jax.tree_util.tree_map(lambda _: None, prebuilt)
+            return jax.tree.map(lambda _: None, prebuilt)
 
         def init(prng_key_i):
             return VDict(qkv_proj=self.qkv_proj.initialize_parameters_recursively(prng_key_i))
@@ -3539,7 +3539,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         state = {}
         for i in range(cfg.num_layers):
             layer = self._layers[i]
-            key = jax.tree_util.tree_map(lambda x, index=i: x[index], prng_key.keys)
+            key = jax.tree.map(lambda x, index=i: x[index], prng_key.keys)
             state[layer.name] = layer.initialize_parameters_recursively(
                 key, prebuilt=get_or_none(prebuilt, layer.name)
             )
@@ -3651,7 +3651,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             output._replace(data=None, self_attention_kv_state=None) for output in layer_outputs
         ]
         # Stack auxiliary outputs along axis 0.
-        outputs = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *aux_outputs)
+        outputs = jax.tree.map(lambda *xs: jnp.stack(xs, axis=0), *aux_outputs)
         return outputs._replace(data=data, self_attention_kv_state=self_attention_kv_state)
 
     def forward(

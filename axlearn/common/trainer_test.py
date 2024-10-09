@@ -1016,7 +1016,7 @@ class CompatibilityTest(test_utils.TestCase):
                 shape_dtype = jax.eval_shape(
                     lambda: self.initialize_parameters_recursively(jax.random.PRNGKey(0))
                 )
-                return jax.tree_util.tree_map(
+                return jax.tree.map(
                     lambda x: ParameterSpec(shape=x.shape, dtype=x.dtype), shape_dtype
                 )
 

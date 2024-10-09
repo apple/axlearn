@@ -121,7 +121,7 @@ def as_torch_tensor(x: Union[np.ndarray, Tensor, NestedTorchTensor]) -> NestedTo
     if hasattr(x, "numpy"):
         return torch.as_tensor(x.numpy())
     if isinstance(x, (Mapping, Sequence)):
-        return jax.tree_util.tree_map(as_torch_tensor, x)
+        return jax.tree.map(as_torch_tensor, x)
     raise NotImplementedError(f"{type(x)}: {x}")
 
 
@@ -430,7 +430,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
                 assert isinstance(layer, RepeatedTransformerLayer)
                 axlearn_to_torch(
                     layer.repeat.layer,
-                    jax.tree_util.tree_map(lambda x, idx=i: x[idx], src["repeat"]["layer"]),
+                    jax.tree.map(lambda x, idx=i: x[idx], src["repeat"]["layer"]),
                     dst_layer,
                 )
     elif isinstance(dst, (hf_bert.BertPooler, hf_roberta.RobertaPooler)):
@@ -493,7 +493,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
                 assert isinstance(layer, RepeatedTransformerLayer)
                 axlearn_to_torch(
                     layer.repeat.layer,
-                    jax.tree_util.tree_map(lambda x, idx=i: x[idx], src["repeat"]["layer"]),
+                    jax.tree.map(lambda x, idx=i: x[idx], src["repeat"]["layer"]),
                     dst_layer,
                 )
     elif isinstance(dst, hf_deberta_v2.DebertaV2Attention):
@@ -560,7 +560,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
         for i, t5_block in enumerate(dst.block):
             if isinstance(layer.transformer, RepeatedTransformerLayer):
                 transformer_layer = layer.transformer.repeat.layer
-                src_layer = jax.tree_util.tree_map(
+                src_layer = jax.tree.map(
                     lambda x, idx=i: x[idx], src["transformer"]["repeat"]["layer"]
                 )
             else:
@@ -867,7 +867,7 @@ def _parameters_from_deberta_encoder(
         # we do not know the dst ahead of time.
         dst["transformer"]["repeat"] = VDict(
             # pylint: disable-next=no-value-for-parameter
-            layer=jax.tree_util.tree_map(
+            layer=jax.tree.map(
                 lambda *inputs: jnp.stack(inputs),
                 *[transformer_layers[i] for i in range(num_layers)],
             )
@@ -1067,10 +1067,10 @@ def _parameters_from_opt_decoder(
     # By default, assume RepeatedTransformerLayer.
     if transformer is None:
         layers = [_parameters_from_opt_decoder_layer(layer) for layer in src.layers]
-        layers = jax.tree_util.tree_map(as_tensor, layers)
+        layers = jax.tree.map(as_tensor, layers)
         transformer = dict(
             repeat=dict(
-                layer=jax.tree_util.tree_map(lambda *inputs: jnp.stack(inputs), *layers),
+                layer=jax.tree.map(lambda *inputs: jnp.stack(inputs), *layers),
             ),
         )
 
@@ -1432,7 +1432,7 @@ def _parameters_from_bert_encoder(
         return dict(
             repeat=VDict(
                 # pylint: disable-next=no-value-for-parameter
-                layer=jax.tree_util.tree_map(
+                layer=jax.tree.map(
                     lambda *inputs: jnp.stack(inputs),
                     *[transformer_layers[i] for i in range(num_layers)],
                 )
@@ -1545,7 +1545,7 @@ def _parameters_from_t5_attention(src: hf_t5.T5Attention, *, dst_layer: Transfor
     if isinstance(dst_layer.attention.i_proj, FusedQKVLinear):
         i_proj = VDict(
             qkv_proj=dict(
-                jax.tree_util.tree_map(
+                jax.tree.map(
                     lambda *inputs: jnp.stack(inputs),
                     *[i_proj[proj_key] for proj_key in ("q_proj", "k_proj", "v_proj")],
                 )
@@ -1637,7 +1637,7 @@ def _parameters_from_t5_stack(src: hf_t5.T5Stack, *, dst_layer: Optional[BaseLay
     elif isinstance(dst_layer, RepeatedTransformerLayer):
         params = dict(
             repeat=VDict(
-                layer=jax.tree_util.tree_map(
+                layer=jax.tree.map(
                     lambda *inputs: jnp.stack(inputs),
                     *[
                         _parameters_from_t5_block(src.block[i], dst_layer=dst_layer.repeat.layer)
@@ -2061,7 +2061,7 @@ def _parameters_from_t5x_attention(
     elif isinstance(dst_layer.attention.i_proj, FusedQKVLinear):
         dst["attention"]["i_proj"] = VDict(
             qkv_proj=dict(
-                jax.tree_util.tree_map(
+                jax.tree.map(
                     lambda *inputs: jnp.stack(inputs),
                     *[i_proj[proj_key] for proj_key in ("q_proj", "k_proj", "v_proj")],
                 )
@@ -2175,7 +2175,7 @@ def _parameters_from_t5x_decoder(src: NestedTensor, dst_layer: T5Decoder) -> Nes
     elif isinstance(dst_layer.transformer, RepeatedTransformerLayer):
         dst["transformer"]["repeat"] = VDict(
             # pylint: disable-next=no-value-for-parameter
-            layer=jax.tree_util.tree_map(
+            layer=jax.tree.map(
                 lambda *inputs: jnp.stack(inputs),
                 *[transformer_layers[i] for i in range(num_axlearn_decoder_layers)],
             ),
@@ -2239,7 +2239,7 @@ def _parameters_from_t5x_encoder(src: NestedTensor, dst_layer: T5Encoder) -> Nes
     elif isinstance(dst_layer.transformer, RepeatedTransformerLayer):
         dst["transformer"]["repeat"] = VDict(
             # pylint: disable-next=no-value-for-parameter
-            layer=jax.tree_util.tree_map(
+            layer=jax.tree.map(
                 lambda *inputs: jnp.stack(inputs),
                 *[transformer_layers[i] for i in range(num_axlearn_encoder_layers)],
             ),

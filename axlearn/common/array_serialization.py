@@ -272,7 +272,7 @@ async def _run_serializer(
         else None
     )
     # pylint: enable=protected-access
-    future_writer = jax.tree_util.tree_map(
+    future_writer = jax.tree.map(
         functools.partial(
             _async_serialize, limiter=limiter, max_data_shard_degree=max_data_shard_degree
         ),
@@ -350,7 +350,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
         # pylint: disable-next=redefined-outer-name
         async def _run_serializer():
-            future_writer = jax.tree_util.tree_map(
+            future_writer = jax.tree.map(
                 serialization.async_serialize, arrays, tensorstore_specs, commit_futures
             )
             return await asyncio.gather(*future_writer)

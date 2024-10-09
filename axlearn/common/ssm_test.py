@@ -764,7 +764,7 @@ class StackedMambaTest(TestCase):
         # Make params in the format a stacked model expects.
         stacked_params = {}
         for i in range(num_layers):
-            stacked_params[f"layer{i}"] = jax.tree_util.tree_map(
+            stacked_params[f"layer{i}"] = jax.tree.map(
                 # pylint: disable-next=cell-var-from-loop
                 lambda x: x[i],
                 layer_params["repeat"]["layer"],

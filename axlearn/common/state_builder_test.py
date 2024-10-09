@@ -803,7 +803,7 @@ class DiffusersPretrainedBuilderTest(TestCase):
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
             )
-            trainer_state_partition_specs = jax.tree_util.tree_map(
+            trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, trainer_state_specs
             )
 
@@ -883,7 +883,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
             )
-            trainer_state_partition_specs = jax.tree_util.tree_map(
+            trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, trainer_state_specs
             )
 
@@ -944,7 +944,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
             )
-            trainer_state_partition_specs = jax.tree_util.tree_map(
+            trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, trainer_state_specs
             )
 
@@ -1040,9 +1040,7 @@ def _create_dummy_state(prng_key, model_config=DummyModel.default_config(), use_
     trainer_state = trainer.trainer_state
     if use_ema:
         trainer_state.learner["ema"] = trainer_state.learner["ema"]._replace(
-            ema=jax.tree_util.tree_map(
-                lambda p: -jnp.ones_like(p), trainer.trainer_state.learner["ema"].ema
-            )
+            ema=jax.tree.map(lambda p: -jnp.ones_like(p), trainer.trainer_state.learner["ema"].ema)
         )
     return config_for_function(trainer_cfg_fn), Builder.State(
         step=0, trainer_state=trainer_state, built_keys=set()
