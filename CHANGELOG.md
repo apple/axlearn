@@ -4,7 +4,7 @@
 
 * Changes
     * Upgrade Python to 3.10
-    * Fall back triton backend for fp32 or with bias on gpu flash attention. 
+    * Fall back to triton backend for qkv in fp32 or with bias on gpu flash attention. 
 
 ## 0.1.1
 
