@@ -221,7 +221,7 @@ class InferenceRunner(Module):
                 prng_key=TensorSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=self._model_param_specs,
             )
-            self._inference_runner_state_partition_specs = jax.tree_util.tree_map(
+            self._inference_runner_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._inference_runner_state_specs
             )
             logging.info("Building ckpt state from %s", cfg.init_state_builder.klass.__name__)

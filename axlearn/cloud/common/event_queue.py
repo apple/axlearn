@@ -213,7 +213,7 @@ class RabbitMQClient(BaseQueueClient):
                         correlation_id=str(uuid.uuid4()),
                     ),
                 )
-                logging.info("Published event in queue: %s. message: %s", self._queue_id, message)
+                logging.debug("Published event in queue: %s. message: %s", self._queue_id, message)
                 return
             except EventQueueInvalidCredentialsError as e:
                 # Throws for un-recoverable errors.

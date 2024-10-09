@@ -202,7 +202,7 @@ class OutputRecordWriter(BaseOutputWriter):
         local_batch_size = jax.tree_util.tree_leaves(local_data)[0].shape[0]
 
         for i in range(local_batch_size):
-            example = jax.tree_util.tree_map(lambda x, index=i: x[index], local_data)
+            example = jax.tree.map(lambda x, index=i: x[index], local_data)
             self.sink.write(
                 self._build_record(input_example=example["input"], output_example=example["output"])
             )

@@ -244,7 +244,7 @@ class COCOEvaluator:
     def _convert_to_numpy(self, groundtruths, predictions):
         """Converts tensors to numpy arrays."""
         if groundtruths:
-            labels = jax.tree_util.tree_map(np.array, groundtruths)
+            labels = jax.tree.map(np.array, groundtruths)
             numpy_groundtruths = {}
             for key, val in labels.items():
                 if isinstance(val, tuple):
@@ -254,7 +254,7 @@ class COCOEvaluator:
             numpy_groundtruths = groundtruths
 
         if predictions:
-            outputs = jax.tree_util.tree_map(np.array, predictions)
+            outputs = jax.tree.map(np.array, predictions)
             numpy_predictions = {}
             for key, val in outputs.items():
                 if isinstance(val, tuple):

@@ -1827,7 +1827,7 @@ class VariationalNoise(ParameterNoise):
         cfg = self.config
         if cfg.vn_std <= 0:
             return params
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda x: x + jax.random.normal(prng_key, x.shape, dtype=x.dtype) * cfg.vn_std, params
         )
 

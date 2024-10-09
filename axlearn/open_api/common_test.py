@@ -2,6 +2,7 @@
 
 """Unit tests for common.py."""
 import json
+import os
 import unittest
 from datetime import timedelta
 from unittest.mock import mock_open, patch
@@ -17,6 +18,7 @@ from axlearn.open_api.common import (
     load_requests,
     parse_decode_parameters,
     repeat_requests,
+    write_metrics,
     write_responses,
 )
 
@@ -122,3 +124,25 @@ class TestLoadRequests(unittest.TestCase):
         with patch("builtins.open", mock_open(read_data=json_data)):
             with self.assertRaises(json.JSONDecodeError):
                 load_requests("dummy_path", max_instances=10)
+
+
+class TestWriteMetrics(unittest.TestCase):
+    """Unit tests for write_metrics."""
+
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("os.makedirs")
+    @patch("os.path.exists", return_value=False)
+    @patch("logging.info")
+    def test_write_metrics(self, mock_logging_info, _, mock_makedirs, mock_builtin_open):
+        metrics = {"accuracy": 0.95, "loss": 0.05}
+        file_path = "test_output/metrics.json"
+        write_metrics(metrics, file_path=file_path)
+
+        # Check that os.makedirs was called to create the directory.
+        mock_makedirs.assert_called_once_with(os.path.dirname(file_path), exist_ok=True)
+        # Check that open() was called with the right file path.
+        mock_builtin_open.assert_called_once_with(file_path, "w", encoding="utf-8")
+        # Check that write was called.
+        self.assertTrue(mock_builtin_open().write.called)
+        # Check that logging was called with the correct arguments.
+        mock_logging_info.assert_called_once_with("Writing metrics %s to %s", metrics, file_path)

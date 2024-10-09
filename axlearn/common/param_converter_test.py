@@ -120,7 +120,7 @@ class BaseParamConverterTest(TestCase):
             ref_layer(**ref_inputs) if isinstance(ref_inputs, dict) else ref_layer(ref_inputs)
         )
         ref_outputs = torch_output_to_dict(ref_outputs)
-        return test_outputs, jax.tree_util.tree_map(as_tensor, ref_outputs)
+        return test_outputs, jax.tree.map(as_tensor, ref_outputs)
 
 
 class ParameterTest(BaseParamConverterTest):
@@ -545,7 +545,7 @@ class ParameterTest(BaseParamConverterTest):
             token_type_ids=hf_inputs["token_type_ids"],
             return_dict=False,
         )
-        expected, actual = jax.tree_util.tree_map(
+        expected, actual = jax.tree.map(
             as_tensor, (hf_layer(**hf_inputs), hf_layer_copy(**hf_inputs))
         )
         self.assertNestedAllClose(expected, actual)
@@ -630,7 +630,7 @@ class T5ModelConverterTest(TestCase):
             target_ids=t5_inputs["target"]["input_ids"],
             target_labels=t5_inputs["target_labels"],
         )
-        expected, actual = jax.tree_util.tree_map(
+        expected, actual = jax.tree.map(
             as_tensor,
             (
                 hf_layer(**hf_inputs).logits,
@@ -698,7 +698,7 @@ class HFGPT2ModelConverterTest(TestCase):
             input_ids=as_torch_tensor(input_ids),
             labels=as_torch_tensor(labels).type(torch.LongTensor),
         )
-        expected, actual = jax.tree_util.tree_map(
+        expected, actual = jax.tree.map(
             as_tensor,
             (
                 hf_layer(**hf_inputs).logits,
@@ -742,7 +742,7 @@ class DeBERTaModelConverterTest(TestCase):
         layer_params = parameters_from_torch_layer(hf_layer, dst_layer=layer)
         axlearn_to_torch(layer=layer, src=layer_params, dst=hf_layer_copy)
 
-        expected, actual = jax.tree_util.tree_map(
+        expected, actual = jax.tree.map(
             as_tensor, (hf_layer.state_dict(), hf_layer_copy.state_dict())
         )
         self.assertNestedAllClose(expected, actual)
@@ -778,7 +778,7 @@ class DeBERTaModelConverterTest(TestCase):
         axlearn_to_torch(layer=layer, src=params, dst=hf_layer_copy)
 
         # Test parameters are identical.
-        expected, actual = jax.tree_util.tree_map(
+        expected, actual = jax.tree.map(
             as_tensor, (hf_layer.state_dict(), hf_layer_copy.state_dict())
         )
         self.assertNestedAllClose(expected, actual)
@@ -796,7 +796,7 @@ class DeBERTaModelConverterTest(TestCase):
         )
 
         # Test we get same outputs.
-        expected, actual = jax.tree_util.tree_map(
+        expected, actual = jax.tree.map(
             as_tensor, (hf_layer(**hf_inputs), hf_layer_copy(**hf_inputs))
         )
         self.assertNestedAllClose(expected, actual)

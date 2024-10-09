@@ -120,45 +120,63 @@ class RegistryTest(TestCase):
 class CloudBuildBundlerTest(TestCase):
     """Tests CloudBuildBundler."""
 
-    def test_wait_until_finished(self):
-        cfg = CloudBuildBundler.default_config().set(
+    @contextlib.contextmanager
+    def _mock_status(self, *side_effect: tuple[CloudBuildStatus]):
+        with (
+            mock.patch("time.sleep"),
+            mock.patch(
+                f"{bundler.__name__}.get_cloud_build_status", side_effect=side_effect
+            ) as mock_status,
+        ):
+            yield mock_status
+
+    def _get_test_cloud_build_bundler(self) -> CloudBuildBundler.Config:
+        return CloudBuildBundler.default_config().set(
             image="test-image",
             repo="test-repo",
             dockerfile="test-dockerfile",
             project="test-project",
         )
 
-        @contextlib.contextmanager
-        def _mock(*side_effect):
-            with (
-                mock.patch("time.sleep"),
-                mock.patch(
-                    f"{bundler.__name__}.get_cloud_build_status", side_effect=side_effect
-                ) as mock_status,
-            ):
-                yield mock_status
+    def test_wait_until_finished_is_no_op_if_async_false(self):
+        # Should be a no-op if is_async=False.
+        cfg = self._get_test_cloud_build_bundler()
 
-        with _mock(None) as mock_status:
-            # Should be a no-op if is_async=False.
+        with self._mock_status(None) as mock_status:
             b = cfg.set(is_async=False).instantiate()
             b.wait_until_finished("test-name")
             self.assertFalse(mock_status.called)
 
-        # Happy path: transitions from no status -> pending -> success.
-        with _mock(None, CloudBuildStatus.PENDING, CloudBuildStatus.SUCCESS) as mock_status:
+    def test_wait_until_finished_is_called_with_happy_status_path(self):
+        # Tests happy path: transitions from no status -> pending -> success.
+        cfg = self._get_test_cloud_build_bundler()
+
+        with self._mock_status(
+            None, CloudBuildStatus.PENDING, CloudBuildStatus.SUCCESS
+        ) as mock_status:
             b = cfg.set(is_async=True).instantiate()
             b.wait_until_finished("test-name")
             self.assertEqual(3, mock_status.call_count)
 
-        # Test that we retry if retrieving status failed.
-        with _mock(RuntimeError("fake error"), CloudBuildStatus.SUCCESS) as mock_status:
+    def test_wait_until_finished_raises_runtime_error_with_cloud_build_status_failure(self):
+        # Tests that we raise a runtime error if CloudBuildStatus.FAILURE status is returned.
+        cfg = self._get_test_cloud_build_bundler()
+
+        with self._mock_status(
+            None, CloudBuildStatus.PENDING, CloudBuildStatus.FAILURE
+        ) as mock_status:
+            b = cfg.set(is_async=True).instantiate()
+            with self.assertRaisesRegex(
+                RuntimeError, "CloudBuild for test-name failed: CloudBuildStatus.FAILURE"
+            ):
+                b.wait_until_finished("test-name")
+                self.assertEqual(3, mock_status.call_count)
+
+    def test_wait_until_finished_retries_with_runtime_error(self):
+        # Tests that the query is retried if retrieving status fails with a RuntimeError.
+        cfg = self._get_test_cloud_build_bundler()
+
+        with self._mock_status(RuntimeError("fake error"), CloudBuildStatus.SUCCESS) as mock_status:
             b = cfg.set(is_async=True).instantiate()
             b.wait_until_finished("test-name")
             self.assertEqual(2, mock_status.call_count)
-
-        # Test that we raise if failed.
-        with _mock(None, CloudBuildStatus.PENDING, CloudBuildStatus.FAILURE) as mock_status:
-            b = cfg.set(is_async=True).instantiate()
-            with self.assertRaisesRegex(RuntimeError, "failed"):
-                b.wait_until_finished("test-name")
-            self.assertEqual(3, mock_status.call_count)

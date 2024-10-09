@@ -121,7 +121,7 @@ class MobileNetsTest(parameterized.TestCase):
             is_training=is_training,
             prng_key=jax.random.PRNGKey(123),
             state=init_params,
-            inputs=dict(input_batch=jax.tree_util.tree_map(jnp.asarray, inputs)),
+            inputs=dict(input_batch=jax.tree.map(jnp.asarray, inputs)),
         )
         self.assertListEqual(
             sorted(outputs.keys()),
@@ -155,7 +155,7 @@ class MobileNetsTest(parameterized.TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(123),
             state=init_params,
-            inputs=dict(input_batch=jax.tree_util.tree_map(jnp.asarray, inputs)),
+            inputs=dict(input_batch=jax.tree.map(jnp.asarray, inputs)),
         )
         expected_feature_dims = {
             (ModelNames.MOBILENETV3, "small-minimal-100", None): {

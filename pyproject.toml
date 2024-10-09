@@ -4,10 +4,10 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "axlearn"
-version = "0.1.1"
+version = "0.1.2"
 description = "AXLearn"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 
 # Production dependencies.
 # Minimal requirments for axlearn/common/config.py.
@@ -44,7 +44,6 @@ core = [
     "flax==0.8.5", # for AQT, param converter and adapter.
     "prefixed==0.7.1", # For formatting file sizes, param counts, etc.
 ]
-
 # Apple Silicon dependencies.
 # Need to run `conda install -c apple tensorflow-deps` separately.
 apple-silicon = [
@@ -52,9 +51,9 @@ apple-silicon = [
     # As of Nov 15, 2023, tensorflow_text has no arm64 build.
     # We need to manually build the wheel and install it, following instructions at https://github.com/tensorflow/text/tree/2.14#build-from-source-steps.
 ]
-
 # Requirements for testing and development.
 dev = [
+    "axlearn[audio]",  # audio tests
     "axlearn[orbax]",  # checkpointer tests
     "black==23.1a1",  # formatting
     "einops",
@@ -89,6 +88,7 @@ gcp = [
     "google-auth==2.29.0",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
     "google-cloud-storage==2.16.0",
+    "google-cloud-compute==1.19.2", # Needed for region discovery for CloudBuild API access.
     "google-cloud-core==2.3.3",
     "google-cloud-build==3.24.1",
     "ml_goodput_measurement==0.0.2",
@@ -101,7 +101,7 @@ tpu = [
     "axlearn[gcp]",
     "jax[tpu]==0.4.30",  # must be >=0.4.19 for compat with v5p.
 ]
-# Vertex AI tensorboard.
+# Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
 vertexai_tensorboard = [
     # Required to fix a `distro-info` bug we run into when using `tb_gcp_tensorboard` from
     # `google_cloud_aiplatform[tensorboard]`. See:
@@ -138,11 +138,20 @@ mmau = [
     "nbconvert==7.16.4",
     "google-cloud-aiplatform==1.50.0",
     "transformers==4.44.1",
+    "huggingface-hub==0.24.6",
 ]
 # Orbax checkpointing.
 orbax = [
     "humanize==4.10.0",
     "orbax-checkpoint==0.5.23",
+]
+# Grain input processing. Currently does not support macos.
+grain = [
+    "grain==0.2.1; platform_machine == 'x86_64'",
+]
+# Audio dependencies.
+audio = [
+    "levenshtein==0.25.1",
 ]
 
 [tool.flit.module]

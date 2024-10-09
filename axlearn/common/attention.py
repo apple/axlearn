@@ -33,8 +33,10 @@
 """Attention layers with pjit partition specs.
 
 On `attention_logit_biases`:
-* A biases tensor can have shape [batch, target_length, source_length] or
-  [batch, num_heads, target_length, source_length].
+* A biases tensor can have one of the following shapes:
+  * [target_length, source_length]
+  * [batch, target_length, source_length]
+  * [batch, num_heads, target_length, source_length].
 * Each value represents a bias to be added to the attention logits
   (therefore a -inf represents a disconnected position pair).
 * biases=None represents an all-zero tensor, i.e., all position pairs are connected.
@@ -53,7 +55,7 @@ import functools
 import math
 from collections.abc import Sequence
 from enum import Enum, unique
-from typing import Any, Callable, Literal, NamedTuple, Optional, Union
+from typing import Any, Callable, Literal, NamedTuple, Optional, Protocol, Union
 
 import jax
 from jax import numpy as jnp
@@ -69,11 +71,13 @@ from axlearn.common.base_layer import (
 )
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     FunctionConfigBase,
     InstantiableConfig,
     Required,
     config_class,
     config_for_function,
+    maybe_instantiate,
 )
 from axlearn.common.layers import (
     Dropout,
@@ -321,8 +325,17 @@ def make_causal_mask(seq_len: int) -> Tensor:
         0 otherwise.
     """
     # TODO(sneha): support batching
-    indexes = jnp.arange(seq_len)
-    return jax.lax.lt(indexes[:, None], indexes[None, :]) * NEG_INF
+    return _bool_to_bias(causal_mask(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
+
+
+def _bool_to_bias(mask: Tensor) -> Tensor:
+    """Converts a bool mask tensor to a bias mask tensor.
+
+    Maps:
+    0 -> -NEG_INF
+    1 -> 0.
+    """
+    return (~mask) * NEG_INF
 
 
 def make_segment_mask(*, source_segments: Tensor, target_segments: Tensor) -> Tensor:
@@ -1051,7 +1064,7 @@ class FusedQKVLinear(BaseQKVLinear):
                 return None
             return FactorizationSpec(axes=[None] + list(spec.axes))
 
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda spec: ParameterSpec(
                 dtype=spec.dtype,
                 shape=(3, *spec.shape),
@@ -1068,7 +1081,7 @@ class FusedQKVLinear(BaseQKVLinear):
         self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
-            return jax.tree_util.tree_map(lambda _: None, prebuilt)
+            return jax.tree.map(lambda _: None, prebuilt)
 
         def init(prng_key_i):
             return VDict(qkv_proj=self.qkv_proj.initialize_parameters_recursively(prng_key_i))
@@ -1576,6 +1589,47 @@ class ScaleKey(BaseScaleQK):
         return config_for_function(constant_scale_fn).set(value=1)
 
 
+class MaskFn(Protocol):
+    """A broadcastable function for computing a boolean logit mask."""
+
+    def __call__(self, query_position: Tensor, key_position: Tensor) -> Tensor:
+        """Returns a bool Tensor of whether the query token at `query_position` should attend
+        to the key token at `key_position`.
+
+        Implementations have the following contract:
+        * Must support scalar arguments.
+        * If given non-scalar arguments of the same shape, the result must be the same as
+          applying the function elementwise over these arugments. I.e.,
+          ```
+          x = f(jnp.asarray([1,2]), jnp.asarray([3,4]))
+          assert x[0] == f(jnp.asarray(1), jnp.asarray(3))[None]
+          ```
+        * If given non-scalar arguments of different shapes, the result must be the same if we
+          first broadcast the arguments against each other to make them have the same shape.
+        * Beyond requiring broadcastability, must not impose any constraints on the shapes of its
+          arguments.
+
+        Args:
+            query_position: The index in the sequence of query vectors.
+            key_position: The index in the sequence of key vectors.
+
+        Returns:
+            Whether the query and key vectors with the given index should attend to one another.
+            True means they should attend. False means they should not.
+            The shape is the same as the shape obtained after broadcasting the inputs against each
+            other.
+        """
+
+
+def causal_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
+    """Returns the given entry of a causal attention mask.
+
+    Implements the `MaskFn` protocol.
+    See that and `MultiheadAttention.Config.mask`.
+    """
+    return query_position >= key_position
+
+
 class MultiheadAttention(BaseLayer):
     """A basic multi-head attention layer.
 
@@ -1608,13 +1662,30 @@ class MultiheadAttention(BaseLayer):
         key_scale: BaseScaleQK.Config = ScaleKey.default_config()
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = None
-        # If True, applies causal masking. If `attention_logit_biases` is given, causal masking
-        # will be applied on top of the biases. `key` and `value` must be None.
+        # A function to compute the boolean mask to apply when computing the attention
+        # where True means "attend" and False means "do not attend".
+        # Set to `causal_mask` for causal masking.
+        # When used with certain flash attention implementations, more efficient
+        # code paths may be used. (See the FlashAttention docstring for more details.)
+        # This field may not be specified if `causal` (deprecated) is specified.
+        # If `attention_logit_biases` argument is also specified, both masks are combined with AND.
+        mask: ConfigOr[Optional[MaskFn]] = None
+        # Deprecated. Use `mask=causal_mask` instead.
+        # If True, applies causal masking. `key` and `value` must be None.
+        # May not be specified if `mask` is already specified.
+        # If `attention_logit_biases` argument is also specified, both masks are combined with AND.
+        # TODO (apghml) Eliminate this field in favor of `mask`.
         causal: Optional[bool] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+        if cfg.causal and cfg.mask is not None:
+            raise NotImplementedError("Cannot specify `causal` when using `mask`.")
+        if cfg.causal:
+            self._mask_fn = causal_mask
+        else:
+            self._mask_fn = maybe_instantiate(cfg.mask)
         # Configure inputs to multi-headed QKV projection.
         i_proj_cfg = cfg.input_linear
         i_proj_cfg.query_dim = cfg.query_dim
@@ -1704,15 +1775,14 @@ class MultiheadAttention(BaseLayer):
             ValueError: If key & value are an invalid combination.
             ValueError: If `mode` is unsupported.
         """
-        cfg = self.config
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
                 "key and value must be both None or both set, "
                 f"key:{type(key)}, value:{type(value)}"
             )
-        if cfg.causal and (key is not None or value is not None):
-            raise ValueError("key and value are not expected when causal=True")
+        if self._mask_fn and (key is not None or value is not None):
+            raise ValueError("key and value are not expected when using an attention mask.")
         if kv_state is not None:
             if key is not None or value is not None:
                 raise ValueError("kv_state should not be specified together with key/value")
@@ -1742,21 +1812,28 @@ class MultiheadAttention(BaseLayer):
         self.vlog(3, "atten.q_proj=%s", q_proj.sum())
         self.vlog(3, "atten.k_proj=%s", k_proj.sum())
         self.vlog(3, "atten.v_proj=%s", v_proj.sum())
-        if attention_logit_biases is not None and attention_logit_biases.ndim == 3:
-            # [batch, 1, target_length, source_length].
-            attention_logit_biases = attention_logit_biases[:, None, :, :]
-        if cfg.causal:
+        if attention_logit_biases is not None:
+            if attention_logit_biases.ndim == 3:
+                # [batch, 1, target_length, source_length].
+                attention_logit_biases = attention_logit_biases[:, None, :, :]
+            elif attention_logit_biases.ndim == 2:
+                # [1, 1, target_length, source_length].
+                attention_logit_biases = attention_logit_biases[None, None, :, :]
+            elif attention_logit_biases.ndim != 4:
+                raise ValueError(
+                    f"Invalid attention_logit_biases shape: {attention_logit_biases.shape}."
+                )
+        if self._mask_fn is not None:
             if mode == ForwardMode.EXTEND_STEP:
                 seq_len = k_proj.shape[1]
                 time_step = cached_states["i_proj"]["time_step"]
             else:
                 seq_len = q_proj.shape[1]
                 time_step = None
-            causal_mask = self._causal_mask(mode=mode, seq_len=seq_len, time_step=time_step)
-
-            if causal_mask is not None:
+            mask = self._logit_biases_for_mask(mode=mode, seq_len=seq_len, time_step=time_step)
+            if mask is not None:
                 attention_logit_biases = apply_attention_logit_biases(
-                    causal_mask.astype(q_proj.dtype),
+                    mask.astype(q_proj.dtype),
                     attention_logit_biases,
                 )
 
@@ -1782,29 +1859,32 @@ class MultiheadAttention(BaseLayer):
         )
         return dict(i_proj=i_proj_state), output
 
-    def _causal_mask(
+    def _logit_biases_for_mask(
         self, *, mode: ForwardMode, seq_len: int, time_step: Optional[Tensor] = None
     ) -> Optional[Tensor]:
-        """Returns a causal mask.
+        """Returns the configured attention mask in the form of logit biases.
 
-        ... or None if the implementation of _compute_attention supports the causal mode natively.
+        ... or None if the implementation of _compute_attention supports applying masks natively.
 
         For (ForwardMode.FORWARD, ForwardMode.INIT_STATES), the mask can be broadcast to
         [batch, num_heads, seq_len, seq_len].
 
         For ForwardMode.EXTEND_STEP, the mask can be broadcast to [batch, num_heads, 1, seq_len].
         """
+        kv_pos = jnp.arange(seq_len)
         if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
-            return make_causal_mask(seq_len)[None, None, :, :]
+            mask = self._mask_fn(kv_pos[:, None], kv_pos[None, :])[
+                None, None
+            ]  # Query and key have saem seq lengths.
         elif mode == ForwardMode.EXTEND_STEP:
-            indexes = jnp.arange(seq_len)
             # [batch, 1, 1, kv_len].
-            # causal_mask[b, :, :, kv_pos] = 0 if kv_pos <= time_step[b] else NEG_INF.
-            return (
-                jax.lax.lt(time_step[:, None, None, None], indexes[None, None, None, :]) * NEG_INF
-            )
+            # Ex: for a causal mask, mask[b, :, :, kv_pos] = 0 if time_step[b] > kv_pos else 1.
+            mask = self._mask_fn(time_step[:, None], kv_pos[None, :])
+            mask = mask[:, None, None, :]
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
+        mask = _bool_to_bias(mask)
+        return mask
 
     def _compute_attention(
         self,
@@ -3459,7 +3539,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         state = {}
         for i in range(cfg.num_layers):
             layer = self._layers[i]
-            key = jax.tree_util.tree_map(lambda x, index=i: x[index], prng_key.keys)
+            key = jax.tree.map(lambda x, index=i: x[index], prng_key.keys)
             state[layer.name] = layer.initialize_parameters_recursively(
                 key, prebuilt=get_or_none(prebuilt, layer.name)
             )
@@ -3493,6 +3573,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         all_layer_states = []
         for i, layer in enumerate(self._layers):
             # Prepare inputs to the current layer.
+            data = self._update_data(data, all_layer_outputs=all_layer_outputs)
             self._update_layer_kwargs(layer_kwargs, all_layer_outputs=all_layer_outputs)
 
             if mode == ForwardMode.FORWARD:
@@ -3518,6 +3599,28 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             data = layer_outputs.data
 
         return all_layer_states, self._aggregate_layer_outputs(all_layer_outputs)
+
+    def _update_data(
+        self,
+        data: Tensor,
+        *,
+        all_layer_outputs: list[BaseTransformerLayer.Output],
+    ):
+        """Updates `data` using other args.
+
+        This method is called before we invoke each layer in `self._layers`.
+        The updated data will be passed to the layer invocation.
+
+        Args:
+            data: A Tensor denoting the input data to the upcoming layer.
+            all_layer_outputs: A list of BaseTransformerLayer.Output that is appended with
+                the output of each constituent layer in the stack.
+
+        Returns:
+            A new Tensor.
+        """
+        del all_layer_outputs
+        return data
 
     def _update_layer_kwargs(
         self,
@@ -3548,7 +3651,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             output._replace(data=None, self_attention_kv_state=None) for output in layer_outputs
         ]
         # Stack auxiliary outputs along axis 0.
-        outputs = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *aux_outputs)
+        outputs = jax.tree.map(lambda *xs: jnp.stack(xs, axis=0), *aux_outputs)
         return outputs._replace(data=data, self_attention_kv_state=self_attention_kv_state)
 
     def forward(

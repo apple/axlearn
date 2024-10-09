@@ -62,7 +62,7 @@ def _factored_dims(
 
 @dataclasses.dataclass
 class _UpdateResult:
-    """Opaque container that is not traversed by jax.tree_util.tree_map."""
+    """Opaque container that is not traversed by jax.tree.map."""
 
     update: Tensor  # the update to apply to params.
     v_row: Tensor  # used for factored params.
@@ -98,9 +98,9 @@ def scale_by_factored_rms(
         """Maps from a tree of (factored) values to separate trees of values."""
         return FactoredState(
             count=count,
-            v_row=jax.tree_util.tree_map(lambda o: o.v_row, result_tree),
-            v_col=jax.tree_util.tree_map(lambda o: o.v_col, result_tree),
-            v=jax.tree_util.tree_map(lambda o: o.v, result_tree),
+            v_row=jax.tree.map(lambda o: o.v_row, result_tree),
+            v_col=jax.tree.map(lambda o: o.v_col, result_tree),
+            v=jax.tree.map(lambda o: o.v, result_tree),
         )
 
     def init_fn(params):
@@ -127,7 +127,7 @@ def scale_by_factored_rms(
                     v=jnp.zeros(param.shape),
                 )
 
-        return _to_state(jnp.zeros([], jnp.int32), jax.tree_util.tree_map(_init, params))
+        return _to_state(jnp.zeros([], jnp.int32), jax.tree.map(_init, params))
 
     def update_fn(grads, state, params):
         """Apply gradient transformation."""
@@ -169,7 +169,7 @@ def scale_by_factored_rms(
             return _UpdateResult(update, new_v_row, new_v_col, new_v)
 
         # Transform grad and compute new per-parameter stats.
-        output = jax.tree_util.tree_map(
+        output = jax.tree.map(
             lambda *args: _update(*args, state.count),
             grads,
             state.v_row,
@@ -179,7 +179,7 @@ def scale_by_factored_rms(
         )
 
         # Unpack updates / stats and return.
-        updates = jax.tree_util.tree_map(lambda o: o.update, output)
+        updates = jax.tree.map(lambda o: o.update, output)
         return updates, _to_state(optax.safe_int32_increment(state.count), output)
 
     @dataclasses.dataclass
@@ -228,12 +228,12 @@ def scale_by_factored_rms(
         return VxSpec(v_row=vr_spec, v_col=vc_spec, v=dummy_spec)
 
     def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
-        vx_specs = jax.tree_util.tree_map(get_vx_spec, param_specs)
+        vx_specs = jax.tree.map(get_vx_spec, param_specs)
         return optax.FactoredState(
             count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
-            v_row=jax.tree_util.tree_map(lambda vx: vx.v_row, vx_specs),
-            v_col=jax.tree_util.tree_map(lambda vx: vx.v_col, vx_specs),
-            v=jax.tree_util.tree_map(lambda vx: vx.v, vx_specs),
+            v_row=jax.tree.map(lambda vx: vx.v_row, vx_specs),
+            v_col=jax.tree.map(lambda vx: vx.v_col, vx_specs),
+            v=jax.tree.map(lambda vx: vx.v, vx_specs),
         )
 
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)

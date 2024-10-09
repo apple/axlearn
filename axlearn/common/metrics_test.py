@@ -40,7 +40,7 @@ class TestMetricAccumulator(test_utils.TestCase):
             ),
         ]
 
-        summaries_copy = jax.tree_util.tree_map(lambda x: x, summaries)
+        summaries_copy = jax.tree.map(lambda x: x, summaries)
         for s in summaries_copy:
             acc.update(s)
         result = acc.summaries()
@@ -71,7 +71,7 @@ class TestMetricAccumulator(test_utils.TestCase):
                 loss=metrics.WeightedScalar(100, 0),
             ),
         ]
-        summaries_copy = jax.tree_util.tree_map(lambda x: x, summaries)
+        summaries_copy = jax.tree.map(lambda x: x, summaries)
         for s in summaries_copy:
             acc.update(s)
 

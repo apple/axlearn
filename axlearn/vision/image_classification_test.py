@@ -50,7 +50,7 @@ class ClassificationModelTest(parameterized.TestCase):
         for name, param in ref.named_parameters():
             logging.info("ref param: %s=%s", name, list(param.shape))
 
-        model_params = jax.tree_util.tree_map(utils.as_tensor, params_from_model(ref=ref))
+        model_params = jax.tree.map(utils.as_tensor, params_from_model(ref=ref))
         model_param_strs = [
             f"{name}={list(param.shape)}" for name, param in utils.flatten_items(model_params)
         ]
@@ -69,7 +69,7 @@ class ClassificationModelTest(parameterized.TestCase):
             is_training=is_training,
             prng_key=jax.random.PRNGKey(123),
             state=model_params,
-            inputs=dict(input_batch=jax.tree_util.tree_map(jnp.asarray, inputs)),
+            inputs=dict(input_batch=jax.tree.map(jnp.asarray, inputs)),
         )
         if not is_training:
             ref.eval()

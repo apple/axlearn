@@ -110,7 +110,7 @@ class ParameterScaler(ParameterNoise):
 
     def apply(self, prng_key: utils.Tensor, params: NestedTensor) -> NestedTensor:
         cfg = self.config
-        return jax.tree_util.tree_map(lambda x: x * cfg.scale, params)
+        return jax.tree.map(lambda x: x * cfg.scale, params)
 
 
 def _callback_primitive(forward, backward):

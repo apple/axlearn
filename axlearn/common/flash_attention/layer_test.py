@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests FlashAttention layers."""
+import math
 from unittest import mock
 
 import jax
@@ -140,6 +141,14 @@ class TestFlashAttention(TestCase):
             seq_len=2048,
             num_heads=4,
             per_head_dim=64,
+            mesh=(2, 2),
+            mesh_axis_names=("data", "fsdp"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
             mesh=(8, 1),
             mesh_axis_names=("data", "model"),
         ),
@@ -149,6 +158,14 @@ class TestFlashAttention(TestCase):
             num_heads=4,
             per_head_dim=64,
             mesh=(4, 1),
+            mesh_axis_names=("data", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
+            mesh=(2, 2),
             mesh_axis_names=("data", "model"),
         ),
         dict(
@@ -204,6 +221,14 @@ class TestFlashAttention(TestCase):
             seq_len=2048,
             num_heads=4,
             per_head_dim=64,
+            mesh=(1, 1, 2, 2),
+            mesh_axis_names=("data", "expert", "fsdp", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=4,
+            per_head_dim=64,
             mesh=(1, 2, 1, 2, 1),
             mesh_axis_names=("data", "seq", "expert", "fsdp", "model"),
         ),
@@ -225,7 +250,9 @@ class TestFlashAttention(TestCase):
         ),
     ]
 
-    @parameterized.parameters(_TEST_CONFIGS)
+    @parameterized.parameters(
+        [kwargs for kwargs in _TEST_CONFIGS if math.prod(kwargs["mesh"]) == 1]
+    )
     def test_backend(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names):
         del batch, seq_len
         mock_device = mock.Mock(spec=jax.Device)
@@ -233,9 +260,6 @@ class TestFlashAttention(TestCase):
         mock_device.coords = (0, 0, 0)
         mock_device.core_on_chip = 0
         devices = [mock_device]
-
-        if not is_supported_mesh_shape(mesh, devices):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
         with Mesh(mesh_utils.create_device_mesh(mesh, devices), mesh_axis_names):
             test_layer, _, _, _ = _prepare_layers(
@@ -246,6 +270,30 @@ class TestFlashAttention(TestCase):
             )
             backend = test_layer._backend()  # pylint: disable=protected-access
             self.assertEqual(backend, "tpu")
+
+    @parameterized.parameters(_TEST_CONFIGS)
+    def test_shard_biases(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names):
+        if not is_supported_mesh_shape(mesh):
+            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            test_layer, _, _, _ = _prepare_layers(
+                num_heads=num_heads,
+                per_head_dim=per_head_dim,
+                mesh_axis_names=mesh_axis_names,
+                causal=True,
+            )
+            bias = jnp.ones((batch, num_heads, seq_len, seq_len))
+            spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            self.assertEqual(spec, test_layer.config.mha_dim_to_partition_spec["bnts"])
+
+            bias = jnp.ones((batch, 1, seq_len, seq_len))
+            spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            self.assertEqual(spec[1], None)
+
+            bias = jnp.ones((1, 1, seq_len, seq_len))
+            spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            self.assertEqual(spec[0], None)
+            self.assertEqual(spec[1], None)
 
     @parameterized.product(
         _TEST_CONFIGS, causal=[False, True], use_bias=[False, True], use_segment_ids=[False, True]
@@ -436,6 +484,15 @@ class TestFlashAttention(TestCase):
                 causal=causal,
                 inference=True,
             )
+            tpu_block_size = test_layer.config.tpu_block_size
+            # pylint: disable-next=protected-access
+            if test_layer._backend() == "tpu" and seq_len % tpu_block_size != 0:
+                pytest.skip(
+                    f"Sequence length  {seq_len} is not divisible by configured block size for "
+                    f"tpu {test_layer.config.tpu_block_size }. "
+                    "This was unsupported (and the test failed) even prior to adding "
+                    "this skip statement."
+                )
 
             # Prepare inputs
             query = jax.random.normal(

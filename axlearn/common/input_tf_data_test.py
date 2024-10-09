@@ -669,13 +669,13 @@ class PadTest(test_utils.TestCase):
             # For each step, assemble global logical batches from `manual_feeds` and
             # `input_feeds` and check that they are equal.
             manual_global_batch = utils.dispatch_input_batch(
-                jax.tree_util.tree_map(
+                jax.tree.map(
                     lambda *xs: jnp.concatenate(as_numpy_array(xs), axis=0),
                     *[batches[step] for batches in manual_feeds.values()],
                 )
             )
             input_global_batch = input_generator.input_dispatcher.physical_to_logical_batch(
-                jax.tree_util.tree_map(
+                jax.tree.map(
                     lambda *xs: jnp.concatenate(as_numpy_array(xs), axis=0),
                     *[batches[step] for batches in input_feeds.values()],
                 )

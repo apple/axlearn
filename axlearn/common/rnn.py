@@ -279,7 +279,7 @@ class StackedRNNLayer(BaseRNNCell):
         prng_key = split_prng_key(prng_key, len(cfg.layers))
         state = {}
         for i, layer in enumerate(self._layers):
-            key = jax.tree_util.tree_map(lambda x, index=i: x[index], prng_key.keys)
+            key = jax.tree.map(lambda x, index=i: x[index], prng_key.keys)
             state[layer.name] = layer.initialize_parameters_recursively(
                 key, prebuilt=get_or_none(prebuilt, layer.name)
             )

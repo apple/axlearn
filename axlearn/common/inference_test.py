@@ -269,7 +269,7 @@ class InferenceTest(test_utils.TestCase):
                         ema=ParamEmaState(
                             count=0,
                             # pylint: disable-next=unnecessary-lambda
-                            ema=jax.tree_util.tree_map(lambda p: jnp.ones_like(p), params),
+                            ema=jax.tree.map(lambda p: jnp.ones_like(p), params),
                         ),
                     )
                 else:

@@ -236,7 +236,7 @@ class Learner(BaseLearner):
 
     def _update_types(self, tree: dict) -> dict:
         cfg = self.config
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda path: match_regex_rules(
                 path, rules=cfg.update_rules, default_value=UpdateType.ALL_UPDATES
             ),
@@ -252,9 +252,7 @@ class Learner(BaseLearner):
         Returns:
             A nested dict with the same structure as `model_params` with boolean leaf values.
         """
-        return jax.tree_util.tree_map(
-            should_update_with_optimizers, self._update_types(model_params)
-        )
+        return jax.tree.map(should_update_with_optimizers, self._update_types(model_params))
 
     def update(self, updates: Updates) -> Nested[Tensor]:
         """Computes `model_params` updates from `update`.
@@ -287,19 +285,19 @@ class Learner(BaseLearner):
     ) -> Nested[Tensor]:
         cfg = self.config
         if cfg.enable_per_variable_summaries:
-            param_rms = jax.tree_util.tree_map(
+            param_rms = jax.tree.map(
                 lambda p: optax.safe_root_mean_squares(p.value, min_rms=1e-3), opt_params
             )
             for p, p_n in flatten_items(param_rms):
                 self.add_summary(f"param_rms/{p}", p_n)
-            grad_rms = jax.tree_util.tree_map(
+            grad_rms = jax.tree.map(
                 lambda p: optax.safe_root_mean_squares(p, min_rms=1e-3), gradients
             )
             for p, g_n in flatten_items(grad_rms):
                 self.add_summary(f"grad_rms/{p}", g_n)
 
         # Set `parameter_updates` to 0 if the param is not updated by the optimizer.
-        parameter_updates = jax.tree_util.tree_map(
+        parameter_updates = jax.tree.map(
             lambda should_update_with_optimizers, param, update: (
                 update if should_update_with_optimizers else jnp.zeros_like(param.value)
             ),
@@ -309,10 +307,10 @@ class Learner(BaseLearner):
         )
 
         updated_model_params = optax.apply_updates(
-            jax.tree_util.tree_map(lambda op: op.value, opt_params), parameter_updates
+            jax.tree.map(lambda op: op.value, opt_params), parameter_updates
         )
         state_updates = _prune_empty(state_updates)
-        apply_state_updates = jax.tree_util.tree_map(
+        apply_state_updates = jax.tree.map(
             should_apply_state_updates,
             self._update_types(state_updates),
         )
@@ -327,7 +325,7 @@ class Learner(BaseLearner):
             _, ema_state = self.ema.update(
                 updates={},
                 state=self.state["ema"],
-                params=jax.tree_util.tree_map(
+                params=jax.tree.map(
                     lambda opt_param, value: dataclasses.replace(opt_param, value=value),
                     opt_params,
                     updated_model_params,
@@ -435,7 +433,7 @@ class CompositeLearner(BaseLearner):
         sublearner to apply.
         """
         cfg = self.config
-        learner_name_tree = jax.tree_util.tree_map(
+        learner_name_tree = jax.tree.map(
             lambda path: match_regex_rules(
                 path,
                 rules=cfg.rules,
@@ -456,7 +454,7 @@ class CompositeLearner(BaseLearner):
         learner_state = {}
         for name in cfg.learners.keys():
             # Whether each parameter should apply the sub learner.
-            should_apply = jax.tree_util.tree_map(
+            should_apply = jax.tree.map(
                 lambda learner_name, n=name: learner_name == n,
                 learner_tree,
             )
@@ -482,7 +480,7 @@ class CompositeLearner(BaseLearner):
         learner_state = {}
         for name in cfg.learners.keys():
             # Whether each parameter should apply the sub learner.
-            should_apply = jax.tree_util.tree_map(
+            should_apply = jax.tree.map(
                 lambda learner_name, n=name: learner_name == n,
                 learner_tree,
             )
@@ -510,12 +508,12 @@ class CompositeLearner(BaseLearner):
         """
         cfg = self.config
 
-        updated_model_params = jax.tree_util.tree_map(jnp.zeros_like, updates.param_values())
+        updated_model_params = jax.tree.map(jnp.zeros_like, updates.param_values())
 
         for name in cfg.learners.keys():
             # Whether each parameter/state should apply the sub learner.
             def should_apply(tree: Nested[Any]) -> Nested[bool]:
-                return jax.tree_util.tree_map(
+                return jax.tree.map(
                     # pylint: disable-next=cell-var-from-loop
                     lambda learner_name, n=name: learner_name == n,
                     self._learner_tree(tree),
@@ -534,7 +532,7 @@ class CompositeLearner(BaseLearner):
                 ),
             )
             sub_learner_updated_model_params = getattr(self, name).update(sub_learner_updates)
-            updated_model_params = jax.tree_util.tree_map(
+            updated_model_params = jax.tree.map(
                 lambda apply, new_v, old_v: new_v if apply else old_v,
                 should_apply(updates.param_values()),
                 sub_learner_updated_model_params,
@@ -544,7 +542,7 @@ class CompositeLearner(BaseLearner):
             _, ema_state = self.ema.update(
                 updates={},
                 state=self.state["ema"],
-                params=jax.tree_util.tree_map(
+                params=jax.tree.map(
                     lambda opt_param, value: dataclasses.replace(opt_param, value=value),
                     updates.opt_params,
                     updated_model_params,
@@ -584,17 +582,17 @@ class CompositeLearner(BaseLearner):
         """
         cfg = self.config
         learner_tree = self._learner_tree(params=model_params)
-        should_update = jax.tree_util.tree_map(lambda p: False, model_params)
+        should_update = jax.tree.map(lambda p: False, model_params)
         for name in cfg.learners.keys():
             # Whether each parameter should apply the sub learner.
-            should_apply = jax.tree_util.tree_map(
+            should_apply = jax.tree.map(
                 lambda learner_name, n=name: learner_name == n,
                 learner_tree,
             )
             sub_learner_should_update_with_optimizers = getattr(
                 self, name
             ).should_update_with_optimizers(model_params=model_params)
-            should_update = jax.tree_util.tree_map(
+            should_update = jax.tree.map(
                 lambda apply, new_update, old_update: new_update if apply else old_update,
                 should_apply,
                 sub_learner_should_update_with_optimizers,
@@ -632,7 +630,7 @@ def _split_gradients(
     def filtered_forward(model_params: Nested[Tensor], *, inputs: Any) -> ForwardOutputs:
         model_params_grad = model_params
         model_params_nograd, inputs = inputs
-        model_params = jax.tree_util.tree_map(
+        model_params = jax.tree.map(
             lambda compute_grad, pg, png: pg if compute_grad else png,
             should_compute_gradients,
             model_params_grad,
@@ -642,12 +640,12 @@ def _split_gradients(
 
     def split_params_fn(model_params: Nested) -> tuple[Nested, Nested]:
         dummy_value = None
-        model_parameters_grad = jax.tree_util.tree_map(
+        model_parameters_grad = jax.tree.map(
             lambda compute_gradients, v: v if compute_gradients else dummy_value,
             should_compute_gradients,
             model_params,
         )
-        model_parameters_no_grad = jax.tree_util.tree_map(
+        model_parameters_no_grad = jax.tree.map(
             lambda compute_gradients, v: dummy_value if compute_gradients else v,
             should_compute_gradients,
             model_params,
@@ -713,7 +711,7 @@ def _value_and_grad(
     loss_fun = _as_loss_fn(fun)
 
     split_params = split_params_fn(opt_params)
-    model_params_grad, model_params_nograd = jax.tree_util.tree_map(lambda p: p.value, split_params)
+    model_params_grad, model_params_nograd = jax.tree.map(lambda p: p.value, split_params)
     (_, forward_pass), grads = jax.value_and_grad(loss_fun, has_aux=True)(
         model_params_grad, inputs=(model_params_nograd, inputs)
     )

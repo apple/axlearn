@@ -252,7 +252,7 @@ class SummaryWriter(BaseWriter):
                 return isinstance(x, Summary)
 
             paths = tree_paths(values, separator="/", is_leaf=is_leaf)
-            jax.tree_util.tree_map(write, paths, values, is_leaf=is_leaf)
+            jax.tree.map(write, paths, values, is_leaf=is_leaf)
             self.summary_writer.flush()
 
 
@@ -401,7 +401,7 @@ class WandBWriter(BaseWriter):
             return isinstance(x, Summary)
 
         paths = tree_paths(values, separator="/", is_leaf=is_leaf)
-        values = jax.tree_util.tree_map(convert, paths, values, is_leaf=is_leaf)
+        values = jax.tree.map(convert, paths, values, is_leaf=is_leaf)
 
         if cfg.prefix:
             values = {f"{cfg.prefix}/{k}": v for k, v in values.items()}
