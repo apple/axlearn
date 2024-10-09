@@ -2,7 +2,6 @@
 
 """Main function for launching the trainer."""
 
-import pathwaysutils  # pylint: disable=unused-import
 from absl import app, flags
 
 from axlearn.common import launch, launch_trainer, measurement
