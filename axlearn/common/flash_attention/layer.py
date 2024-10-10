@@ -6,6 +6,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
@@ -14,6 +15,7 @@ from axlearn.common.attention import (
     ForwardMode,
     GroupedQueryAttention,
     apply_attention_logit_biases,
+    causal_mask,
     make_segment_mask,
 )
 from axlearn.common.base_layer import BaseLayer
@@ -110,13 +112,36 @@ class FlashAttention(GroupedQueryAttention):
         }
         return cfg
 
+    def _is_mask_fn_used(self):
+        backend = self._backend()
+        # bias and segment_ids should also be None to use mask_fn (cf. _tpu_splash_attention in
+        # tpu_attention.py).
+
+        return (
+            backend == "tpu"
+            and self.per_head_dim() % splash_attention_kernel.NUM_LANES == 0
+            # TODO(c_lan): sliding_window_mask fails layer_test with seq_len = 2048. Need to fix.
+            and self._mask_fn is causal_mask
+        )
+
     def _logit_biases_for_mask(
         self, *, mode: ForwardMode, seq_len: int, time_step: Optional[Tensor] = None
     ) -> Optional[Tensor]:
-        if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
-            # No need for mask because flash attention supports the causal mode natively.
+        if self._mask_fn is None:
             return None
-        return super()._logit_biases_for_mask(mode=mode, seq_len=seq_len, time_step=time_step)
+        elif mode == ForwardMode.EXTEND_STEP:
+            # Use biases for decoding.
+            return super()._logit_biases_for_mask(mode=mode, seq_len=seq_len, time_step=time_step)
+        elif self._is_mask_fn_used():
+            # Biases are not needed in favor of mask_fn, which is supported in Splash Attention.
+            return None
+        elif self._mask_fn is causal_mask:
+            # Causal mode is supported natively in Flash Attention.
+            return None
+        else:
+            # Fall back to biases. In the subsequent _compute_attention calls, _mask_fn should not
+            # be used.
+            return super()._logit_biases_for_mask(mode=mode, seq_len=seq_len, time_step=time_step)
 
     def _backend(self):
         # For compatibility with AOT compilation, we obtain the backend type from physical_mesh.
@@ -164,16 +189,6 @@ class FlashAttention(GroupedQueryAttention):
             )
             segment_ids = None
 
-        if backend == "tpu":
-            assert q_proj.shape[1] % cfg.tpu_block_size == 0, (
-                f"Target seq len {q_proj.shape[1]} must be "
-                f"divisible by block size {cfg.tpu_block_size}."
-            )
-            assert k_proj.shape[1] % cfg.tpu_block_size == 0, (
-                f"Source seq len {k_proj.shape[1]} must be "
-                f"divisible by block size {cfg.tpu_block_size}."
-            )
-
         if attention_logit_biases is not None:
             if attention_logit_biases.ndim != 4:
                 raise ValueError(
@@ -190,11 +205,14 @@ class FlashAttention(GroupedQueryAttention):
                 )
             attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
-        mask_fn = self._mask_fn
+        if attention_logit_biases is None or self._mask_fn is causal_mask:
+            mask_fn = self._mask_fn
+        else:
+            mask_fn = None
 
         # During GPU decoding, fall back to plain MHA implementation
         # since the seq_len will not be divisible by block size.
-        # For prefilling, seq_len can be > 1 and logit biases may not always be provided,
+        # For prefill, seq_len can be > 1 and logit biases may not always be provided,
         # so we retain `mask_fn`.
         # For decoding, seq_len = 1 and logit biases are always provided,
         # so we set `mask_fn` to None.
@@ -203,6 +221,16 @@ class FlashAttention(GroupedQueryAttention):
             # TODO(senyut): Implement FlashDecoding kernel and support TPU decoding.
             if q_proj.shape[1] == 1:
                 mask_fn = None
+
+        if backend == "tpu":
+            assert q_proj.shape[1] % cfg.tpu_block_size == 0, (
+                f"Target seq len {q_proj.shape[1]} must be "
+                f"divisible by block size {cfg.tpu_block_size}."
+            )
+            assert k_proj.shape[1] % cfg.tpu_block_size == 0, (
+                f"Source seq len {k_proj.shape[1]} must be "
+                f"divisible by block size {cfg.tpu_block_size}."
+            )
 
         jit_attn: MultiHeadAttentionImpl = flash_attention_implementation(
             backend=backend,
