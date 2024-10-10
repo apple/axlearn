@@ -33,6 +33,7 @@ export TRN2=1
 export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
 export NEURON_RT_IO_RING_CACHE_SIZE=0
 export NEURON_RT_ENABLE_MEMORY_METRICS=0
+export OFI_NCCL_MR_CACHE_DISABLE=1
 
 # Neuron env vars for distributed training
 nodes=`/neuron/scripts/nodelist_helper.py`
