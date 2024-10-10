@@ -35,18 +35,19 @@ from axlearn.common.flash_attention.utils import mha_reference
     [
         (1, 384, 1, 64),
         (2, 384, 2, 64),
-        (1, 384, 1, 64),
-        (2, 384, 2, 64),
-        (1, 384, 8, 64),
-        (2, 384, 8, 64),
+        (1, 384, 1, 128),
+        (2, 384, 2, 128),
+        (1, 384, 8, 128),
+        (2, 384, 8, 128),
     ],
 )
-@pytest.mark.parametrize("block_size", [128, 64])
+@pytest.mark.parametrize("block_size", [64, 128])
 @pytest.mark.parametrize("use_fwd", [True, False])
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("sm_scale", [1.0, 0.123])
 @pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
 @pytest.mark.parametrize("use_segment_ids", [True, False])
+@pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
 @pytest.mark.skipif(jax.devices()[0].platform != "gpu", reason="Test only runs on GPU.")
 def test_fwd_against_ref(
     batch_size: int,
@@ -59,16 +60,17 @@ def test_fwd_against_ref(
     sm_scale: float,
     attention_bias_type: Literal["2d", "4d", None],
     use_segment_ids: bool,
+    input_dtype: jnp.dtype,
 ):
     k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(0), 4)
-    q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16)
-    k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16)
-    v = jax.random.normal(k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16)
+    q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
+    k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
+    v = jax.random.normal(k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
 
     if attention_bias_type == "4d":
-        bias = jax.random.normal(k4, (batch_size, num_heads, seq_len, seq_len), dtype=jnp.float16)
+        bias = jax.random.normal(k4, (batch_size, num_heads, seq_len, seq_len), dtype=input_dtype)
     elif attention_bias_type == "2d":
-        bias = jax.random.normal(k4, (1, 1, seq_len, seq_len), dtype=jnp.float16)
+        bias = jax.random.normal(k4, (1, 1, seq_len, seq_len), dtype=input_dtype)
     else:
         bias = None
 
@@ -114,16 +116,17 @@ def test_fwd_against_ref(
     [
         (1, 1, 384, 64),
         (2, 2, 384, 64),
-        (1, 1, 384, 64),
-        (2, 2, 384, 64),
-        (1, 8, 384, 64),
-        (2, 8, 384, 64),
+        (1, 1, 384, 128),
+        (2, 2, 384, 128),
+        (1, 8, 384, 128),
+        (2, 8, 384, 128),
     ],
 )
 @pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
 @pytest.mark.parametrize("use_segment_ids", [True, False])
-@pytest.mark.parametrize("block_size", [128, 64])
+@pytest.mark.parametrize("block_size", [64, 128])
 @pytest.mark.parametrize("causal", [True, False])
+@pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
 @pytest.mark.skipif(jax.devices()[0].platform != "gpu", reason="Test only runs on GPU.")
 def test_bwd_against_ref(
     batch_size: int,
@@ -134,23 +137,24 @@ def test_bwd_against_ref(
     use_segment_ids: bool,
     block_size: int,
     causal: bool,
+    input_dtype: jnp.dtype,
 ):
     q = jax.random.normal(
-        jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
+        jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype
     )
     k = jax.random.normal(
-        jax.random.PRNGKey(1), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
+        jax.random.PRNGKey(1), (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype
     )
     v = jax.random.normal(
-        jax.random.PRNGKey(2), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
+        jax.random.PRNGKey(2), (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype
     )
 
     if attention_bias_type == "4d":
         bias = jax.random.normal(
-            jax.random.PRNGKey(3), (batch_size, num_heads, seq_len, seq_len), dtype=jnp.float16
+            jax.random.PRNGKey(3), (batch_size, num_heads, seq_len, seq_len), dtype=input_dtype
         )
     elif attention_bias_type == "2d":
-        bias = jax.random.normal(jax.random.PRNGKey(3), (1, 1, seq_len, seq_len), dtype=jnp.float16)
+        bias = jax.random.normal(jax.random.PRNGKey(3), (1, 1, seq_len, seq_len), dtype=input_dtype)
     else:
         bias = None
 
@@ -166,9 +170,24 @@ def test_bwd_against_ref(
     sm_scale = q.shape[-1] ** -0.5
 
     # Compare outputs.
-    jax_out = flash_attention(q, k, v, bias, segment_ids, causal=causal, softmax_scale=sm_scale)
+    jax_out = flash_attention(
+        q,
+        k,
+        v,
+        bias,
+        segment_ids,
+        causal=causal,
+        softmax_scale=sm_scale,
+        block_q=block_size,
+        block_k=block_size,
+    )
     jax_ref_out = mha_reference(q, k, v, bias, segment_ids, causal=causal, softmax_scale=sm_scale)
-    chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005)
+    if input_dtype == jnp.float16:
+        chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005)
+    elif input_dtype == jnp.float32:
+        chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.05)
+    else:
+        raise ValueError(f"Unsupported dtype: {input_dtype}")
 
     def fn(q, k, v, bias, segment_ids):
         return flash_attention(
