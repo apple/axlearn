@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-sudo dpkg -i /home/apoorvgu/collectives-10-06/aws-neuronx-collectives-2.x.x.x-4c5c17928.deb
-sudo dpkg -i /home/apoorvgu/collectives-10-06/aws-neuronx-runtime-lib-2.x.x.x-f34ea55fd.deb
+sudo dpkg -i /home/apoorvgu/axlearn/drop2_final/aws-neuronx-collectives-2.x.18916.0-41121280a.deb
+sudo dpkg -i /home/apoorvgu/axlearn/drop2_final/aws-neuronx-runtime-lib-2.x.17742.0-83ba134d4.deb
 PY_VENV_PATH="/home/apoorvgu/axlearn_pvenv/bin/activate"
 source ${PY_VENV_PATH}
 
@@ -40,6 +40,7 @@ export TRN2=1
 export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
 export NEURON_RT_IO_RING_CACHE_SIZE=0
 export NEURON_RT_ENABLE_MEMORY_METRICS=0
+export OFI_NCCL_MR_CACHE_DISABLE=1
 
 OUTPUT_DIR="${TEST_ARTIFACTS_PATH}/axlearn_out"
 mkdir -p ${OUTPUT_DIR}
