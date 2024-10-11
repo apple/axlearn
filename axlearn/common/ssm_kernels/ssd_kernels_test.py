@@ -24,7 +24,16 @@ if jax.default_backend() != "tpu":
 
 
 def _ssd_reference(q, k, v, log_alpha, h0):
-    # only return the output, emitting the final state
+    """
+    Args:
+        q/k: [batch_size, num_heads, seq_len, dk]
+        v: [batch_size, num_heads, seq_len, dv]
+        log_alpha: [batch_size, num_heads, seq_len]
+        h0: [batch_size, num_heads, dk, dv]
+
+    Returns:
+        o: [batch_size, num_heads, seq_len, dv]
+    """
     return ssd_linear_scan(q, k, v, log_alpha, h0)[0]
 
 
@@ -34,15 +43,14 @@ def _ssd_naive_reference(q, k, v, log_alpha, h0=None):
     numerical stability than the vmap version above.
 
     Args:
-        q: batch_size x num_heads x seq_len x dk
-        k: batch_size x num_heads x seq_len x dk
-        v: batch_size x num_heads x seq_len x dv
-        log_alpha: batch_size x num_heads x seq_len
-        h0: batch_size x num_heads x dk x dv
+        q/k: [batch_size, num_heads, seq_len, dk]
+        v: [batch_size, num_heads, seq_len, dv]
+        log_alpha: [batch_size, num_heads, seq_len]
+        h0: [batch_size, num_heads, dk, dv]
 
     Returns:
-        output: batch_size x num_heads x seq_len x dv
-        final_state: batch_size x num_heads x dk x dv
+        o: [batch_size, num_heads, seq_len, dv]
+        h: [batch_size, num_heads, dk, dv]
     """
     '''
     bs, ng, l, dk = q.shape
@@ -75,6 +83,7 @@ def _ssd_naive_reference(q, k, v, log_alpha, h0=None):
     o = jnp.stack(o_list, axis=2)
     return o, h
 
+# disable some pylint checks to allow copied code to pass checks
 
 # pylint: disable=line-too-long
 # pylint: disable=invalid-name
@@ -159,7 +168,7 @@ def _ssd_reference_vjp(
 def _generate_ssd_inputs(shape, dtype, seed, paramn="gla", zero_h0=True):
     """
     Args:
-        shape: (bs, ng, nh, l, dk, dv)
+        shape: [bs, ng, nh, l, dk, dv]
         dtype: float32, bfloat16
         seed: random seed
         paramn: "mamba" or "gla"
