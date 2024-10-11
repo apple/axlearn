@@ -326,6 +326,7 @@ class GKEJob(GCPJob):
         enable_pre_provisioner: Optional[bool] = None
         queue: Optional[str] = None
         # Output directory. Must be compatible with tf_io.
+        # Each host's output will be placed in f"{cfg.output_dir}/output/$HOSTNAME/".
         output_dir: Optional[str] = None
 
     @classmethod
@@ -426,6 +427,7 @@ class TPUGKEJob(GKEJob):
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         super().__init__(cfg)
         self._gcsfuse_volume = "gcs-fuse-csi-ephemeral"
+        self._output_volume_mount = dict(name="shared-output", mountPath="/output")
 
     def _build_container(self) -> Nested[Any]:
         """Builds a config for a single container.
@@ -447,7 +449,7 @@ class TPUGKEJob(GKEJob):
                 ),
             )
 
-        volume_mounts.append(dict(name="shared-output", mountPath="/output"))
+        volume_mounts.append(self._output_volume_mount)
 
         env_vars = {**cfg.env_vars}
         if cfg.enable_tpu_ici_resiliency is not None:
@@ -495,10 +497,7 @@ class TPUGKEJob(GKEJob):
 
         sync_command = f"while true; do gsutil -m rsync -r /output {dst}; sleep {interval_s}; done"
 
-        volume_mounts = [
-            # This should be same as in the worker container
-            dict(name="shared-output", mountPath="/output")
-        ]
+        volume_mounts = [self._output_volume_mount]
 
         resources = {
             "requests": {"cpu": "100m", "memory": "128Mi"},
