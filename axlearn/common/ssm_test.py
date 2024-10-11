@@ -14,15 +14,19 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 
-"""Tests Mamba and Jamba implementations."""
+"""Tests Mamba/Mamba2 and Jamba implementations."""
 import math
 from typing import Optional
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import torch
 from absl.testing import parameterized
+from jax._src.mesh import ResourceEnv, thread_resources
+from jax.experimental import mesh_utils
+from jax.sharding import Mesh, PartitionSpec
 from transformers.activations import ACT2FN
 from transformers.configuration_utils import PretrainedConfig
 
@@ -34,12 +38,16 @@ from axlearn.common.ssm import (
     BlockResidualMode,
     JambaMambaBlock,
     LinearScanMambaRecurrence,
+    Mamba2Block,
+    Mamba2MixerLayer,
     MambaBlock,
     MambaMixerLayer,
+    PallasSSDRecurrence,
     RepeatedSSMLayer,
     StackedMixedSSMTransformerLayer,
     StackedSSMLayer,
 )
+from axlearn.common.ssm_kernels.ssd_kernels import ssd
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import Nested, Tensor, cast_floats
 
@@ -927,3 +935,461 @@ class StackedMixedSSMTransformerTest(TestCase):
         cfg.layer.self_attention.attention.num_heads = num_heads
         cfg.layer.self_attention.attention.input_linear.set(dtype=dtype, cache_dtype=None)
         _test_prefill_states(cfg, model_dim=model_dim, dtype=dtype)
+
+
+@pytest.mark.skipif(
+    jax.default_backend() != "tpu" or jax.device_count() != 4, reason="Test requires one v5p-8"
+)
+class Mamba2RecurrenceTest(TestCase):
+    """Test the correctness of the Mamba2 recurrence for decoding."""
+
+    @classmethod
+    def setup_class(cls):
+        devices = mesh_utils.create_device_mesh((2, 1, 1, 1, 2))
+        global_mesh = Mesh(devices, axis_names=("data", "expert", "fsdp", "seq", "model"))
+        new_env = ResourceEnv(physical_mesh=global_mesh, loops=())
+        thread_resources.env = new_env
+
+    @classmethod
+    def teardown_class(cls):
+        init_env = ResourceEnv(physical_mesh=(), loops=())
+        thread_resources.env = init_env
+
+    def test_ssd_parameterization(self):
+        batch_size, num_heads, seq_len, state_dim, head_dim = 2, 4, 1024, 128, 256
+        key = jax.random.PRNGKey(0)
+        dtype = jnp.float32
+
+        # note that construct random params requires that log_a <= 0 and delta > 0.
+        x = jax.random.normal(key, (batch_size, num_heads, seq_len, head_dim), dtype=dtype)
+        llog_a = jax.random.uniform(key, (num_heads,), dtype=dtype)
+        log_a = -jnp.exp(llog_a)
+        b = jax.random.normal(key, (batch_size, num_heads, seq_len, state_dim), dtype=dtype)
+        c = jax.random.normal(key, (batch_size, num_heads, seq_len, state_dim), dtype=dtype)
+        delta = jax.nn.softplus(
+            jax.random.uniform(key, (batch_size, num_heads, seq_len), dtype=dtype) - 4.0
+        )
+        d = jax.random.normal(key, (head_dim,), dtype=dtype)
+
+        mamba2_dim_to_partition_spec = {
+            "bhtd": PartitionSpec(("data", "expert", "fsdp"), ("seq", "model"), None, None),
+            "bht": PartitionSpec(("data", "expert", "fsdp"), ("seq", "model"), None),
+        }
+        output_partition_spec = PartitionSpec(("data", "expert", "fsdp"), "model", "seq", None)
+
+        cfg = PallasSSDRecurrence.default_config().set(
+            name="test",
+            mamba2_dim_to_partition_spec=mamba2_dim_to_partition_spec,
+            output_partition_spec=output_partition_spec,
+        )
+        layer = cfg.instantiate(parent=None)
+        o_module, _ = F(
+            layer,
+            inputs=dict(x=x, log_a=log_a, b=b, c=c, delta=delta, d=d),
+            state=None,
+            is_training=False,
+            prng_key=key,
+        )
+
+        # alternative input to the kernel; delta by default is applied to x to get x_bar, here we can
+        # also apply it to b to get b_bar first.
+        b_bar = b * jnp.expand_dims(delta, axis=-1)
+        loga_bar = jnp.expand_dims(log_a, axis=(0, 2)) * delta
+        o_alternative = ssd(c, b_bar, x, loga_bar) + jnp.expand_dims(d, axis=(0, 1, 2)) * x
+        assert_allclose(o_module.data, o_alternative, atol=1e-1, rtol=1e-1)
+
+
+@pytest.mark.skipif(
+    jax.default_backend() != "tpu" or jax.device_count() != 4, reason="Test requires one v5p-8"
+)
+class Mamba2MixerLayerTest(TestCase):
+    @classmethod
+    def setup_class(cls):
+        devices = mesh_utils.create_device_mesh((2, 1, 1, 1, 2))
+        global_mesh = Mesh(devices, axis_names=("data", "expert", "fsdp", "seq", "model"))
+        new_env = ResourceEnv(physical_mesh=global_mesh, loops=())
+        thread_resources.env = new_env
+
+    @classmethod
+    def teardown_class(cls):
+        init_env = ResourceEnv(physical_mesh=(), loops=())
+        thread_resources.env = init_env
+
+    @parameterized.product(
+        dtype=(jnp.float32, jnp.bfloat16),
+        inference_mode=(True, False),
+    )
+    def test_extend_step(self, dtype: jnp.dtype, inference_mode: bool):
+        batch_size = 2
+        input_dim = 512
+        state_dim = 128
+        num_heads = 2
+        seq_len = 1024
+        num_groups = 2
+        expansion_factor = 1
+        output_dim = input_dim
+        cache_dtype = dtype
+        bc_norm = True
+
+        cfg = Mamba2MixerLayer.default_config().set(
+            input_dim=input_dim,
+            state_dim=state_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            expansion_factor=expansion_factor,
+            dtype=dtype,
+            bc_norm=bc_norm,
+            cache_dtype=cache_dtype,
+        )
+
+        layer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        layer_params = cast_floats(layer_params, to_dtype=dtype)
+
+        if inference_mode:
+            # inference recurrence can return the ssd states for testing
+            layer.recurrence = layer.inference_recurrence
+
+        inputs_data = jax.random.uniform(
+            jax.random.PRNGKey(1), [batch_size, seq_len, input_dim], dtype=dtype
+        )
+        inputs = dict(data=inputs_data)
+        forward_outputs, _ = F(
+            layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            inputs=inputs,
+        )
+
+        mamba2_cache = layer.init_states(target_batch_size=batch_size, target_max_len=seq_len)
+        self.assertEqual(mamba2_cache.x_conv_state.dtype, cache_dtype)
+        self.assertEqual(mamba2_cache.b_conv_state.dtype, cache_dtype)
+        self.assertEqual(mamba2_cache.c_conv_state.dtype, cache_dtype)
+        self.assertEqual(mamba2_cache.ssd_state.dtype, cache_dtype)
+        self.assertEqual(forward_outputs.data.dtype, dtype)
+
+        inputs = dict(cache=mamba2_cache)
+        decoder_output = jnp.zeros(shape=[seq_len, batch_size, output_dim], dtype=dtype)
+        for t in range(seq_len):
+            inputs["data"] = inputs_data[:, t : t + 1, :]
+            (mamba2_cache, mamba2output), _ = F(
+                layer,
+                state=layer_params,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(3),
+                inputs=inputs,
+                method="extend_step",
+            )
+            inputs["cache"] = mamba2_cache
+            decoder_output = decoder_output.at[t].set(jnp.squeeze(mamba2output.data, axis=1))
+
+        decoder_output_transposed = jnp.transpose(decoder_output, [1, 0, 2])
+
+        if dtype == jnp.float32:
+            final_state_diff_tol = 1e-2
+            output_tol = 1e-1
+        else:
+            final_state_diff_tol = 1e-1
+            output_tol = 2e0
+
+        if inference_mode:
+            forward_final_state = forward_outputs.ssd_state[:, :, -1]
+            final_state_diff = jnp.abs((forward_final_state - mamba2_cache.ssd_state)).max()
+            self.assertTrue(final_state_diff < final_state_diff_tol)
+
+        # ssm output diff will get a bit amplified by the ffn layer
+        assert_allclose(
+            decoder_output_transposed, forward_outputs.data, atol=output_tol, rtol=output_tol
+        )
+
+    @parameterized.product(dtype=(jnp.float32, jnp.bfloat16))
+    def test_prefill_states(self, dtype: jnp.dtype):
+        batch_size = 2
+        input_dim = 512
+        state_dim = 256
+        num_heads = 4
+        seq_len = 1024
+        num_groups = 2
+        expansion_factor = 2
+        cache_dtype = jnp.float32
+        bc_norm = True
+
+        cfg = Mamba2MixerLayer.default_config().set(
+            input_dim=input_dim,
+            state_dim=state_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            expansion_factor=expansion_factor,
+            dtype=dtype,
+            bc_norm=bc_norm,
+            cache_dtype=cache_dtype,
+        )
+
+        layer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        layer_params = cast_floats(layer_params, to_dtype=dtype)
+
+        # full forward pass as reference
+        inputs_data = jax.random.uniform(
+            jax.random.PRNGKey(1), [batch_size, seq_len, input_dim], dtype=dtype
+        )
+        inputs = dict(data=inputs_data)
+        forward_outputs, _ = F(
+            layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            inputs=inputs,
+        )
+
+        # prefill stage
+        time_step = jnp.arange(batch_size)
+        (initial_state, initial_output), _ = F(
+            layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(3),
+            inputs=dict(time_step=time_step, data=inputs_data),
+            method="prefill_states",
+        )
+        self.assertTrue(initial_state.x_conv_state.dtype, cache_dtype)
+        self.assertTrue(initial_state.b_conv_state.dtype, cache_dtype)
+        self.assertTrue(initial_state.c_conv_state.dtype, cache_dtype)
+        self.assertTrue(initial_state.ssd_state.dtype, cache_dtype)
+        self.assertTrue(initial_output.data.dtype, dtype)
+
+        time_step_mask = (jnp.arange(seq_len) < time_step[:, None]).astype(dtype)
+        decoder_output = initial_output.data * time_step_mask[..., None]
+
+        inputs = dict(cache=initial_state)
+        while jnp.any(time_step < seq_len):
+            inputs["data"] = jnp.take_along_axis(
+                inputs_data, time_step[:, None, None], axis=1, mode="clip"
+            )
+            (updated_state, outputs), _ = F(
+                layer,
+                state=layer_params,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(4),
+                inputs=inputs,
+                method="extend_step",
+            )
+            inputs["cache"] = updated_state
+
+            # [batch_size, 1, output_dim]
+            cur_outputs = outputs.data
+
+            # [batch_size, seq_len, 1]
+            oh_indices = jax.nn.one_hot(time_step, seq_len, dtype=dtype)[..., None]
+            decoder_output = decoder_output + cur_outputs * oh_indices
+
+            time_step = time_step + 1
+
+        assert_allclose(decoder_output, forward_outputs.data, atol=1e-1, rtol=1e-1)
+
+
+@pytest.mark.skipif(
+    jax.default_backend() != "tpu" or jax.device_count() != 4, reason="Test requires one v5p-8"
+)
+class Mamba2BlockTest(TestCase):
+    @classmethod
+    def setup_class(cls):
+        devices = mesh_utils.create_device_mesh((2, 1, 1, 1, 2))
+        global_mesh = Mesh(devices, axis_names=("data", "expert", "fsdp", "seq", "model"))
+        new_env = ResourceEnv(physical_mesh=global_mesh, loops=())
+        thread_resources.env = new_env
+
+    @classmethod
+    def teardown_class(cls):
+        init_env = ResourceEnv(physical_mesh=(), loops=())
+        thread_resources.env = init_env
+
+    @parameterized.product(
+        input_dim=[1024, 2048],
+        state_dim=[128, 256],
+        num_heads=[2, 4],
+        num_groups=[2, 4],
+        dtype=[jnp.float32, jnp.bfloat16],
+    )
+    def forward(
+        self, input_dim: int, state_dim: int, num_heads: int, num_groups: int, dtype: jnp.dtype
+    ):
+        mamba2block_cfg = Mamba2Block.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            state_dim=state_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            dtype=dtype,
+        )
+        mamba2block_cfg.feed_forward = mamba2block_cfg.feed_forward.set(hidden_dim=2 * input_dim)
+        mamba2block = mamba2block_cfg.instantiate(parent=None)
+        mamba2block_params = mamba2block.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(0)
+        )
+
+        batch_size, tgt_len = 2, 1024
+        x = jax.random.uniform(jax.random.PRNGKey(1), [batch_size, tgt_len, input_dim], dtype=dtype)
+
+        outputs, _ = F(
+            mamba2block,
+            inputs=(x,),
+            state=mamba2block_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(2),
+        )
+
+        self.assertEqual(outputs.data.shape, x.shape)
+        self.assertEqual(outputs.data.dtype, x.dtype)
+
+    @parameterized.product(
+        batch_size=[2, 4],
+        input_dim=[1024, 2048],
+        seq_len=[1024, 2048],
+        state_dim=[128, 256],
+        num_heads=[2, 4],
+        num_groups=[2, 4],
+        dtype=[jnp.float32, jnp.bfloat16],
+    )
+    def extend_step(
+        self,
+        batch_size: int,
+        input_dim: int,
+        seq_len: int,
+        state_dim: int,
+        num_heads: int,
+        num_groups: int,
+        dtype: jnp.dtype,
+    ):
+        cfg = Mamba2Block.default_config().set(
+            input_dim=input_dim,
+            state_dim=state_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            dtype=dtype,
+        )
+        cfg.feed_forward = cfg.feed_forward.set(hidden_dim=2 * input_dim)
+        layer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        layer_params = cast_floats(layer_params, to_dtype=dtype)
+
+        inputs_data = jax.random.normal(
+            jax.random.PRNGKey(1), [batch_size, seq_len, input_dim], dtype=dtype
+        )
+        inputs = dict(data=inputs_data)
+        forward_outputs, _ = F(
+            layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            inputs=inputs,
+        )
+
+        init_state = layer.init_states(target_batch_size=batch_size, target_max_len=seq_len)
+        self.assertEqual(init_state["mamba_block"].x_conv_state.dtype, dtype)
+        self.assertEqual(init_state["mamba_block"].b_conv_state.dtype, dtype)
+        self.assertEqual(init_state["mamba_block"].c_conv_state.dtype, dtype)
+        self.assertEqual(init_state["mamba_block"].ssd_state.dtype, dtype)
+
+        inputs = dict(cached_states=init_state)
+        decoder_output = jnp.zeros(shape=[seq_len, batch_size, input_dim])
+        for t in range(seq_len):
+            inputs["data"] = inputs_data[:, t : t + 1, :]
+            extend_step_output, _ = F(
+                layer,
+                state=layer_params,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(3),
+                inputs=inputs,
+                method="extend_step",
+            )
+            inputs["cached_states"] = extend_step_output[0]
+            decoder_output = decoder_output.at[t].set(
+                jnp.squeeze(extend_step_output[1].data, axis=1)
+            )
+
+        decoder_output_transposed = jnp.transpose(decoder_output, [1, 0, 2])
+        assert_allclose(decoder_output_transposed, forward_outputs.data, atol=1e-1, rtol=1e-1)
+
+    @parameterized.product(
+        batch_size=[2],
+        input_dim=[1024],
+        state_dim=[256],
+        num_heads=[2],
+        seq_len=[1024],
+        num_groups=[2],
+        dtype=[jnp.float32, jnp.bfloat16],
+    )
+    def test_prefill_states(
+        self,
+        batch_size: int,
+        input_dim: int,
+        seq_len: int,
+        state_dim: int,
+        num_heads: int,
+        num_groups: int,
+        dtype: jnp.dtype,
+    ):
+        cfg = Mamba2Block.default_config().set(
+            input_dim=input_dim,
+            state_dim=state_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            dtype=dtype,
+        )
+        cfg.feed_forward = cfg.feed_forward.set(hidden_dim=2 * input_dim)
+        layer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        layer_params = cast_floats(layer_params, to_dtype=dtype)
+
+        inputs_data = jax.random.normal(
+            jax.random.PRNGKey(1), [batch_size, seq_len, input_dim], dtype=dtype
+        )
+        inputs = dict(data=inputs_data)
+        forward_outputs, _ = F(
+            layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            inputs=inputs,
+        )
+
+        time_step = jnp.arange(batch_size)
+        (initial_state, initial_output), _ = F(
+            layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(3),
+            inputs=dict(time_step=time_step, data=inputs_data),
+            method="prefill_states",
+        )
+
+        time_step_mask = (jnp.arange(seq_len) < time_step[:, None]).astype(dtype)
+        decoder_output = initial_output.data * time_step_mask[..., None]
+
+        inputs = dict(cached_states=initial_state)
+        for _ in range(seq_len):
+            inputs["data"] = jnp.take_along_axis(
+                inputs_data, time_step[:, None, None], axis=1, mode="clip"
+            )
+            (updated_state, outputs), _ = F(
+                layer,
+                state=layer_params,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(3),
+                inputs=inputs,
+                method="extend_step",
+            )
+            inputs["cached_states"] = updated_state
+
+            # [batch_size, 1, output_dim]
+            cur_outputs = outputs.data
+
+            # [batch_size, seq_len, 1]
+            oh_indices = jax.nn.one_hot(time_step, seq_len, dtype=dtype)[..., None]
+            decoder_output = decoder_output + cur_outputs * oh_indices
+
+            time_step = time_step + 1
+
+        assert_allclose(decoder_output, forward_outputs.data, atol=1e-1, rtol=1e-1)
