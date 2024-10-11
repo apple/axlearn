@@ -3,10 +3,16 @@
 """
 Pallas kernels for Mamba2
 
+High-level idea: this kernel implements a two-level chunking algorithm to 
+balance memory consumption and running speed. Intuitively, we store chunk-level 
+hidden states to avoid recomputation, and subchunk-level states are recomputed based 
+on the chunk-level states.
+    
+
 Notations:
-    C: chunk size
-    nb: number of blocks
-    bl: block/chunk size
+    nb: number of chunks
+    ns: number of subchunks
+    bl: subchunk size
     dkn: number of tiles in the dk dim
     dvn: number of tiles in the dv dim
     dk: state_dim
@@ -17,6 +23,7 @@ see section 7.2 https://arxiv.org/pdf/2405.21060. Accordingly, dk/dv is used ins
 of state_dim/head_dim.  This notation is also used in linear attention models.
 However, state_dim/head_dim is used in the model file to be consistent with Mamba1
 and the original implementation.
+
 """
 
 from typing import Optional, Tuple, Union
@@ -63,6 +70,19 @@ def _ssd_forward_kernel(
     mutable_o_ref: Tensor,
 ):
     """
+    Args:
+        q_ref: tensor reference of shape [ns, bl, singleton_dim]
+        k_ref: tensor reference of shape [ns, bl, singleton_dim]
+        v_ref: tensor reference of shape [ns, bl, singleton_dim]
+        cum_log_alpha_ref: tensor reference of shape [ns, bl]
+        initial_state_ref: tensor reference of shape [singleton_dim, singleton_dim]
+        gamma_ref: tensor reference of shape [ns, bl, singleton_dim]
+    
+    Output via mutable tensors:
+        mutable_ch_ref: tensor reference of shape [ns, singleton_dim, singleton_dim]
+        mutable_final_state_ref: tensor reference of shape [singleton_dim, singleton_dim]
+        mutable_o_ref: tensor reference of shape [ns, bl, singleton_dim]
+
     Note on intial_state and final_state:
         * initial_state is at seq-level and not updated during the forward pass
         * final_state is used to pass chunk-level states across different chunks
@@ -91,10 +111,10 @@ def _ssd_forward_kernel(
         lambda_block = cum_log_alpha_ref[subchunk_idx, :]
         gamma_block = gamma_ref[subchunk_idx]
 
-        lambda_block = jnp.expand_dims(lambda_block, axis=-1)  # C x 1
+        lambda_block = jnp.expand_dims(lambda_block, axis=-1)  # [bl, 1]
         beta_block = (
             jnp.expand_dims(gamma_block, axis=0) - lambda_block
-        )  # [C, d_k], with smart broadcasting
+        )  # [bl, singleton_dim] after broadcasting
         ssd_mask_block = lambda_block - jnp.transpose(lambda_block, [1, 0])
         ssd_mask_block = ssd_mask_block * casual_mask
 
@@ -248,6 +268,21 @@ def _ssd_backward_kernel(
     mutable_dh_carry_ref: Tensor,
 ):
     """
+    Args:
+        q_ref: tensor reference of shape [ns, bl, singleton_dim]
+        k_ref: tensor reference of shape [ns, bl, singleton_dim]
+        v_ref: tensor reference of shape [ns, bl, singleton_dim]
+        cum_log_alpha_ref: tensor reference of shape [ns, bl]
+        gamma_ref: tensor reference of shape [ns, bl, singleton_dim]
+        ch_ref: tensor reference of shape [ns, singleton_dim, singleton_dim]
+    
+    Output via mutable tensors:
+        mutable_do_ref: tensor reference of shape [ns, bl, singleton_dim]
+        mutable_dq_ref: tensor reference of shape [ns, bl, singleton_dim]
+        mutable_dk_ref: tensor reference of shape [ns, bl, singleton_dim]
+        mutable_dv_ref: tensor reference of shape [ns, bl, singleton_dim]
+        mutable_dh_carry_ref: tensor reference of shape [ns, singleton_dim, singleton_dim]
+
     Note: similar to final_state in the forward pass, dh_carry is used to pass gradients wrt.
     hidden states across different chunks. It will be initalized to zero at the last chunk.
     The final gradient wrt. hidden states will be returned as the gradient wrt. initial_state.
@@ -270,8 +305,8 @@ def _ssd_backward_kernel(
         lambda_block = cum_log_alpha_ref[subchunk_idx, :]
         gamma_block = gamma_ref[subchunk_idx]
 
-        lambda_block = jnp.expand_dims(lambda_block, axis=-1)  # [C, 1]
-        beta_block = gamma_block - lambda_block  # [C, d_k]
+        lambda_block = jnp.expand_dims(lambda_block, axis=-1)  # [nb, 1]
+        beta_block = gamma_block - lambda_block  # [nb, d_k]
         ssd_mask_block = lambda_block - jnp.transpose(lambda_block, [1, 0])
         ssd_mask_block = ssd_mask_block * causal_mask
 
@@ -308,8 +343,8 @@ def _ssd_backward_kernel(
         lambda_block = cum_log_alpha_ref[subchunk_idx, :]
         gamma_block = gamma_ref[subchunk_idx]
 
-        lambda_block = jnp.expand_dims(lambda_block, axis=-1)  # [C, 1]
-        beta_block = gamma_block - lambda_block  # [C, d_k]
+        lambda_block = jnp.expand_dims(lambda_block, axis=-1)  # [nb, 1]
+        beta_block = gamma_block - lambda_block  # [nb, d_k]
         ssd_mask_block = lambda_block - jnp.transpose(lambda_block, [1, 0])
         ssd_mask_block = ssd_mask_block * causal_mask
 
