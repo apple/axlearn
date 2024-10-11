@@ -3,11 +3,11 @@
 """
 Pallas kernels for Mamba2
 
-High-level idea: this kernel implements a two-level chunking algorithm to 
-balance memory consumption and running speed. Intuitively, we store chunk-level 
-hidden states to avoid recomputation, and subchunk-level states are recomputed based 
+High-level idea: this kernel implements a two-level chunking algorithm to
+balance memory consumption and running speed. Intuitively, we store chunk-level
+hidden states to avoid recomputation, and subchunk-level states are recomputed based
 on the chunk-level states.
-    
+
 
 Notations:
     nb: number of chunks
@@ -15,8 +15,8 @@ Notations:
     bl: subchunk size
     dkn: number of tiles in the dk dim
     dvn: number of tiles in the dv dim
-    dk: state_dim
-    dv: head_dim
+    dk: state_dim (corresponds to dim of qk heads)
+    dv: head_dim (corresponds to dim of v heads)
 
 q/k/v is used as it's more intuitive than b/c/x of SSD in the orginal implementation,
 see section 7.2 https://arxiv.org/pdf/2405.21060. Accordingly, dk/dv is used instead
@@ -51,6 +51,18 @@ def _reverse_block_spec(spec: pl.BlockSpec, num_seq_blocks: int) -> pl.BlockSpec
 
 @jax.custom_vjp
 def _ssd(q: Tensor, k: Tensor, v: Tensor, log_alpha: Tensor, h0: Tensor) -> Tensor:
+    """A differentiable function that computes the output of SSD.
+
+    Args:
+        q: [bs, num_heads, seq_len, dk]
+        k: [bs, num_heads, seq_len, dk]
+        v: [bs, num_heads, seq_len, dv]
+        log_alpha: [bs, num_heads, seq_len]
+        h0: [bs, num_heads, dk, dv]
+
+    Returns:
+        o: [bs, num_heads, seq_len, dv]
+    """
     (
         o,
         _,
@@ -77,7 +89,7 @@ def _ssd_forward_kernel(
         cum_log_alpha_ref: tensor reference of shape [ns, bl]
         initial_state_ref: tensor reference of shape [singleton_dim, singleton_dim]
         gamma_ref: tensor reference of shape [ns, bl, singleton_dim]
-    
+
     Output via mutable tensors:
         mutable_ch_ref: tensor reference of shape [ns, singleton_dim, singleton_dim]
         mutable_final_state_ref: tensor reference of shape [singleton_dim, singleton_dim]
@@ -150,7 +162,20 @@ def _ssd_forward_kernel(
 
 
 @jax.jit
-def _ssd_forward(q: Tensor, k: Tensor, v: Tensor, log_alpha: Tensor, initial_state: Tensor):
+def _ssd_forward(
+    q: Tensor, k: Tensor, v: Tensor, log_alpha: Tensor, initial_state: Tensor
+) -> Tuple:
+    """
+    Args:
+        q, k: [bs, num_heads, seq_len, dk]
+        v: [bs, num_heads, seq_len, dv]
+        log_alpha: [bs, num_heads, seq_len]
+        initial_state: [singleton_dim, singleton_dim]
+
+    Returns:
+        o: [bs, num_heads, seq_len, dv]
+        residuals: Tuple of tensors to be used in the backward
+    """
     bs, num_qk_heads, seq_len, k_head_dim = q.shape
     _, num_v_heads, _, v_head_dim = v.shape
     # TODO (bailin-wang): the following defaults works best for v5p, may not be optimal for others
@@ -275,7 +300,7 @@ def _ssd_backward_kernel(
         cum_log_alpha_ref: tensor reference of shape [ns, bl]
         gamma_ref: tensor reference of shape [ns, bl, singleton_dim]
         ch_ref: tensor reference of shape [ns, singleton_dim, singleton_dim]
-    
+
     Output via mutable tensors:
         mutable_do_ref: tensor reference of shape [ns, bl, singleton_dim]
         mutable_dq_ref: tensor reference of shape [ns, bl, singleton_dim]
@@ -388,6 +413,17 @@ def _ssd_backward_kernel(
 
 @jax.jit
 def _ssd_backward(residuals: Tuple, do: Tensor) -> Tuple:
+    """
+    Args:
+        residuals: Tuple of tensors returned from the forward pass
+        do: [bs, num_heads, seq_len, dv]
+
+    Returns:
+        dq/dk: [bs, num_heads, seq_len, dk]
+        dv: [bs, num_heads, seq_len, dv]
+        dlog_alpha: [bs, num_heads, seq_len]
+        dinitial_state: [bs, num_heads, dk, dv]
+    """
     q, k, v, cum_log_alpha, gamma_expanded, chunk_states, final_state = residuals
 
     # final_state preserves the original dtype (e.g., bfloat16)
@@ -513,17 +549,18 @@ _ssd.defvjp(_ssd_forward, _ssd_backward)
 def ssd(q: Tensor, k: Tensor, v: Tensor, log_alpha: Tensor, h0: Optional[Tensor] = None) -> Tensor:
     """
     Args:
-        q, k: [batch x num_groups x seqlen x dk]
-        v: [batch x num_groups x seqlen x dv]
-        log_alpha: [batch x num_heads x seqlen]
-        h0: [batch x num_heads x dk x dv]
+        q, k: [batch_size, num_groups, seq_len, dk]
+        v: [batch_size, num_groups, seq_len, dv]
+        log_alpha: [batch_size, num_heads, seq_len]
+        h0: [batch_size, num_heads, dk, dv]
 
     Returns:
-        output: [batch x num_heads x seqlen x dv]
+        output: [batch_size, num_heads, seq_len, dv]
 
 
-    The notion of groups is similar to in multi-group attention --
-    one group of q/k corresponds to multiple v heads.
+    The notion of groups is similar to in multi-group attention (or more
+    preciesly multi-value attention) -- one group of q/k corresponds to
+    multiple v heads.
     """
 
     bs, ng, _, dk = q.shape
@@ -543,17 +580,17 @@ def ssd_linear_scan(
     q: Tensor, k: Tensor, v: Tensor, log_alpha: Tensor, h0: Union[Tensor, None] = None
 ) -> Tensor:
     """
-    LinearScan based reference implementations for testing SSD kernels.
+     LinearScan based reference implementations for testing SSD kernels.
 
     Args:
-        q, k: [batch x num_groups x seqlen x dk]
-        v: [batch x num_groups x seqlen x dv]
-        log_alpha: [batch x num_heads x seqlen]
-        h0: [batch x num_heads x dk x dv]
+         q, k: [batch_size, num_groups, seqlen, dk]
+         v: [batch_size, num_groups, seqlen, dv]
+         log_alpha: [batch_size, num_heads, seqlen]
+         h0: [batch_size, num_heads, dk, dv]
 
-    Returns:
-        output: [batch_size x num_heads x seq_len x dv]
-        final_state: [batch_size x num_heads x dk x dv]
+     Returns:
+         output: [batch_size, num_heads, seq_len, dv]
+
     """
     bs, ng, _, dk = q.shape
     bs, nh, _, dv = v.shape
@@ -617,18 +654,18 @@ def ssd_linear_scan_w_hidden_states(
     q: Tensor, k: Tensor, v: Tensor, log_alpha: Tensor, h0: Union[Tensor, None] = None
 ) -> Tensor:
     """
-    LinearScan based reference implementations for testing SSD kernels.
-    This version only computes and returns the hidden states
+     LinearScan based reference implementations for testing SSD kernels.
+     This version additionally returns the hidden states of all tokens.
 
     Args:
-        q: [batch_size x num_heads x seq_len x dk]
-        k: [batch_size x num_heads x seq_len x dk]
-        v: [batch_size x num_heads x seq_len x dv]
-        log_alpha: [batch_size x num_heads x seq_len]
+         q, k: [batch_size, num_groups, seqlen, dk]
+         v: [batch_size, num_groups, seqlen, dv]
+         log_alpha: [batch_size, num_heads, seqlen]
+         h0: [batch_size, num_heads, dk, dv]
 
-    Returns:
-        output: [batch_size x num_heads x seq_len x dv]
-        hidden_states: [batch_size x num_heads x seq_len x dk x dv]
+     Returns:
+         output: [batch_size, num_heads, seq_len, dv]
+
     """
     bs, ng, _, dk = q.shape
     bs, nh, _, dv = v.shape
@@ -690,17 +727,19 @@ def ssd_linear_scan_w_timestep(
     q: Tensor, k: Tensor, v: Tensor, log_alpha: Tensor, timestep: Tensor, h0=None
 ) -> Tensor:
     """
-    LinearScan based reference implementations for testing SSD kernels.
+     LinearScan that takes timestep as input and masks k/v based on timestep. This function
+     is used for inference where decoding might start from different positions/timesteps.
 
     Args:
-        q, k: [batch x num_groups x seqlen x dk]
-        v: [batch x num_groups x seqlen x dv]
-        log_alpha: [batch x num_heads x seqlen]
-        h0: [batch x num_heads x dk x dv]
+         q, k: [batch_size, num_groups, seqlen, dk]
+         v: [batch_size, num_groups, seqlen, dv]
+         log_alpha: [batch_size, num_heads, seqlen]
+         h0: [batch_size, num_heads, dk, dv]
+         timestep: [batch_size, seqlen]
 
-    Returns:
-        output: [batch_size x num_heads x seq_len x dv]
-        final_state: [batch_size x num_heads x dk x dv]
+     Returns:
+         output: [batch_size, num_heads, seq_len, dv]
+
     """
     bs, ng, l, dk = q.shape
     bs, nh, l, dv = v.shape
@@ -760,8 +799,5 @@ def ssd_linear_scan_w_timestep(
 
     if dtype == jnp.bfloat16:
         output = output.astype(jnp.bfloat16)
-
-        # the final_state should be decided on whether downcasting later based on cached dtype
-        # final_state = final_state.astype(jnp.bfloat16)
 
     return output, final_state
