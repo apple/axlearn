@@ -15,7 +15,7 @@ from axlearn.common.attention import (
     GroupedQueryAttention,
     _bool_to_bias,
     apply_attention_logit_biases,
-    make_causal_mask,
+    make_causal_biases,
     sliding_window_causal_mask,
 )
 from axlearn.common.base_layer import BaseLayer
@@ -558,7 +558,7 @@ class TestFlashAttention(TestCase):
                 dtype=dtype,
             )
             # Note: We need to use causal bias for flash attention input in case of decoding.
-            causal_bias = apply_attention_logit_biases(bias, make_causal_mask(seq_len)).astype(
+            causal_bias = apply_attention_logit_biases(bias, make_causal_biases(seq_len)).astype(
                 dtype
             )
             kv_state = None

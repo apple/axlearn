@@ -314,8 +314,7 @@ class BaseTransformerLayer(BaseLayer):
         raise NotImplementedError(type(self))
 
 
-# TODO(c_lan): Rename `..._mask` functions to "..._biases".
-def make_causal_mask(seq_len: int) -> Tensor:
+def make_causal_biases(seq_len: int) -> Tensor:
     """Generates attention logit biases for causal masking.
 
     Args:
@@ -329,7 +328,7 @@ def make_causal_mask(seq_len: int) -> Tensor:
     return _bool_to_bias(causal_mask(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
 
 
-def make_sliding_window_causal_mask(seq_len: int, sliding_window_size: int) -> Tensor:
+def make_sliding_window_causal_biases(seq_len: int, sliding_window_size: int) -> Tensor:
     """Generates attention logit biases for sliding window attention.
 
     Args:

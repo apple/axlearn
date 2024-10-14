@@ -67,8 +67,8 @@ from axlearn.common.attention import (
     apply_rotary_position_embeddings,
     build_remat_spec,
     compute_padding_biases,
-    make_causal_mask,
-    make_sliding_window_causal_mask,
+    make_causal_biases,
+    make_sliding_window_causal_biases,
     rel_pos_to_abs_pos,
     scaled_hidden_dim,
     set_double_shard_weights_config,
@@ -144,7 +144,7 @@ class MaskTest(absltest.TestCase):
 
     def test_causal_mask(self):
         expected = jnp.array([[0.0, NEG_INF, NEG_INF], [0.0, 0.0, NEG_INF], [0.0, 0.0, 0.0]])
-        actual = attention.make_causal_mask(3)
+        actual = attention.make_causal_biases(3)
         self.assertTrue(jnp.all(actual <= expected))
 
     def test_segment_mask(self):
@@ -653,7 +653,9 @@ class ALiBiAttentionLogitBiasLayerTest(TestCase):
                 # Construct the ref_alibi for the current segment.
                 # [num_heads, segment_len].
                 ref_alibi = self.ref_alibi_implementation(1, num_heads, segment_len).squeeze(0)
-                ref_causal_mask = jnp.repeat(make_causal_mask(segment_len)[None, ...], num_heads, 0)
+                ref_causal_mask = jnp.repeat(
+                    make_causal_biases(segment_len)[None, ...], num_heads, 0
+                )
                 ref_alibi = attention.apply_attention_logit_biases(ref_alibi, ref_causal_mask)
                 ref_alibi = jax.nn.softmax(ref_alibi, axis=-1)
 
@@ -2044,7 +2046,7 @@ class MultiheadAttentionTest(TestCase):
             attention_logit_biases = attention_logit_biases_fn(seq_len)
             if layer is ref_layer:
                 # Apply causal mask on top of the logit biases for `ref_layer`.
-                causal_biases = make_causal_mask(seq_len)
+                causal_biases = make_causal_biases(seq_len)
                 if attention_logit_biases is None:
                     attention_logit_biases = causal_biases
                 else:
@@ -2129,7 +2131,7 @@ class MultiheadAttentionTest(TestCase):
             if layer is ref_layer:
                 # Apply causal and sliding window mask on top of the logit biases for `ref_layer`.
                 attention_logit_biases = apply_attention_logit_biases(
-                    make_sliding_window_causal_mask(seq_len, sliding_window_size),
+                    make_sliding_window_causal_biases(seq_len, sliding_window_size),
                     attention_logit_biases,
                 )
             inputs = dict(query=query, attention_logit_biases=attention_logit_biases)
@@ -2233,7 +2235,7 @@ class MultiheadAttentionTest(TestCase):
             ),
             key=None,
             value=None,
-            attention_logit_biases=attention.make_causal_mask(tgt_len),
+            attention_logit_biases=attention.make_causal_biases(tgt_len),
         )
         # Get outputs.
         forward_key = jax.random.PRNGKey(456)
@@ -2293,7 +2295,7 @@ class MultiheadAttentionTest(TestCase):
             )
         else:
             key = value = query
-        attention_logit_biases = attention.make_causal_mask(tgt_len)
+        attention_logit_biases = attention.make_causal_biases(tgt_len)
         return_aux = {"probs"}
         inputs = dict(
             query=query,
@@ -2441,7 +2443,7 @@ class MultiheadAttentionTest(TestCase):
         query = jax.random.normal(
             jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
         )
-        attention_logit_biases = attention.make_causal_mask(tgt_len)
+        attention_logit_biases = attention.make_causal_biases(tgt_len)
         return_aux = {"probs"}
 
         forward_outputs, _ = F(
@@ -2769,7 +2771,7 @@ class MultiheadAttentionTest(TestCase):
             q_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             k_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             v_proj=jnp.full(qkv_shape, fill_value=qkv_value),
-            attention_logit_biases=attention.make_causal_mask(seq_len),
+            attention_logit_biases=attention.make_causal_biases(seq_len),
         )
 
         # Get outputs.
@@ -3463,7 +3465,7 @@ class ParallelTransformerTest(TestCase):
         batch_size, tgt_len = 2, 6
         rng = np.random.default_rng(seed=123)
         target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
-        mask = attention.make_causal_mask(tgt_len)
+        mask = attention.make_causal_biases(tgt_len)
         mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
         layer_outputs, _ = F(
             layer,
@@ -3666,7 +3668,7 @@ class StackedTransformerTest(BaseTransformerTest):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = attention.make_causal_mask(tgt_len)
+        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
@@ -3790,7 +3792,7 @@ class StackedTransformerTest(BaseTransformerTest):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = attention.make_causal_mask(tgt_len)
+        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
@@ -4782,7 +4784,7 @@ class BottleNeckAdapterTransformerLayerTest(TestCase):
         state = adapter.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
 
         data = jax.random.normal(jax.random.PRNGKey(1), [batch_size, tgt_len, model_dim])
-        self_attention_logit_biases = attention.make_causal_mask(tgt_len)
+        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
 
         outputs, _ = F(
             adapter,
