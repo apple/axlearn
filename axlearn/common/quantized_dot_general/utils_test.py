@@ -22,7 +22,11 @@ class TestUtils(TestCase):
         # Make sure key configs are as expected
         cfg: DotGeneral = lhs_activation_aqt_config()
         # Int 8 for forward and dlhs, bf16 for drhs
-        self.assertTrue(isinstance(cfg.fwd.lhs.numerics, int_numerics.IntSymmetric))
+        # Check if cfg.fwd.lhs is of the expected type or has the expected attribute
+        self.assertTrue(
+            hasattr(cfg.fwd.lhs, "numerics")
+            and isinstance(cfg.fwd.lhs.numerics, int_numerics.IntSymmetric)
+        )
         self.assertTrue(isinstance(cfg.fwd.rhs.numerics, int_numerics.IntSymmetric))
         self.assertTrue(isinstance(cfg.dlhs.lhs.numerics, int_numerics.IntSymmetric))
         self.assertTrue(isinstance(cfg.dlhs.rhs.numerics, int_numerics.IntSymmetric))
@@ -43,7 +47,11 @@ class TestUtils(TestCase):
         # Make sure key configs are as expected
         cfg: DotGeneral = rhs_activation_aqt_config()
         # Int 8 for forward and drhs, bf16 for dlhs
-        self.assertTrue(isinstance(cfg.fwd.lhs.numerics, int_numerics.IntSymmetric))
+        # Check if cfg.fwd.lhs is of the expected type or has the expected attribute
+        self.assertTrue(
+            hasattr(cfg.fwd.lhs, "numerics")
+            and isinstance(cfg.fwd.lhs.numerics, int_numerics.IntSymmetric)
+        )
         self.assertTrue(isinstance(cfg.fwd.rhs.numerics, int_numerics.IntSymmetric))
         self.assertTrue(isinstance(cfg.dlhs.lhs.numerics, no_numerics.NoNumerics))
         self.assertTrue(isinstance(cfg.dlhs.rhs.numerics, no_numerics.NoNumerics))
