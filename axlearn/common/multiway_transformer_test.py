@@ -14,7 +14,7 @@ from axlearn.common.attention import (
     TransformerFeedForwardLayer,
     TransformerLayer,
     build_remat_spec,
-    make_causal_mask,
+    make_causal_biases,
 )
 from axlearn.common.module import functional as F
 from axlearn.common.multiway_transformer import (
@@ -126,7 +126,7 @@ class ModelTest(parameterized.TestCase):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = make_causal_mask(tgt_len)
+        self_attention_logit_biases = make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
@@ -228,7 +228,7 @@ class ModelTest(parameterized.TestCase):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = make_causal_mask(tgt_len)
+        self_attention_logit_biases = make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
