@@ -68,10 +68,12 @@ from axlearn.common.attention import (
     build_remat_spec,
     compute_padding_biases,
     make_causal_mask,
+    make_sliding_window_causal_mask,
     rel_pos_to_abs_pos,
     scaled_hidden_dim,
     set_double_shard_weights_config,
     sinusoidal_positional_embeddings,
+    sliding_window_causal_mask,
     xl_attention_logits,
 )
 from axlearn.common.base_layer import (
@@ -2042,13 +2044,94 @@ class MultiheadAttentionTest(TestCase):
             attention_logit_biases = attention_logit_biases_fn(seq_len)
             if layer is ref_layer:
                 # Apply causal mask on top of the logit biases for `ref_layer`.
-                causal_mask = make_causal_mask(seq_len)
+                causal_biases = make_causal_mask(seq_len)
                 if attention_logit_biases is None:
-                    attention_logit_biases = causal_mask
+                    attention_logit_biases = causal_biases
                 else:
                     attention_logit_biases = apply_attention_logit_biases(
-                        attention_logit_biases, causal_mask
+                        attention_logit_biases, causal_biases
                     )
+            inputs = dict(query=query, attention_logit_biases=attention_logit_biases)
+            layer_outputs, _ = F(
+                layer,
+                state=layer_params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(456),
+                inputs=inputs,
+            )
+            outputs.append(layer_outputs)
+        # The outputs are equivalent.
+        self.assertNestedAllClose(outputs[0], outputs[1])
+
+    @parameterized.product(
+        base_cfg=(
+            attention.MultiheadAttention.default_config(),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.GroupedQKVLinear.default_config().set(num_kv_heads=2)
+            ),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.FusedGroupedQKVLinear.default_config().set(num_kv_heads=2)
+            ),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.RoFormerQKVLinear.default_config().set(rotary_value=False)
+            ),
+            attention.SigmoidAttention.default_config().set(
+                input_linear=attention.RoFormerQKVLinear.default_config().set(rotary_value=False),
+                seq_len=4,
+            ),
+            attention.SigmoidAttention.default_config().set(
+                # Used in ALiBi position encoding.
+                input_linear=FusedQKVLinear.default_config(),
+                seq_len=4,
+            ),
+        ),
+        attention_logit_biases_fn=(
+            lambda seq_len: None,
+            lambda seq_len: _random_mask(jax.random.PRNGKey(1), seq_len, seq_len),
+        ),
+    )
+    def test_sliding_window(
+        self,
+        base_cfg: attention.MultiheadAttention.Config,
+        attention_logit_biases_fn: Callable[[int], Tensor],
+    ):
+        """
+        Tests that base_cfg with sliding window causal mask fns is equivalent to applying a
+        causal sliding window mask.
+        """
+        model_dim = 16
+        num_heads = 4
+        ref_cfg = base_cfg.clone(
+            name="test",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+        )
+        self.assertFalse(ref_cfg.causal)
+        ref_layer = ref_cfg.instantiate(parent=None)
+        layer_params = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        sliding_window_size = 2
+        test_cfg = ref_cfg.clone(
+            causal=False,
+            mask=config_for_function(sliding_window_causal_mask).set(
+                sliding_window_size=sliding_window_size
+            ),
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        batch_size, seq_len = 2, 4
+        query = jnp.zeros([batch_size, seq_len, model_dim], dtype=jnp.float32)
+        outputs = []
+        for layer in (ref_layer, test_layer):
+            attention_logit_biases = attention_logit_biases_fn(seq_len)
+            if layer is ref_layer:
+                # Apply causal and sliding window mask on top of the logit biases for `ref_layer`.
+                attention_logit_biases = apply_attention_logit_biases(
+                    make_sliding_window_causal_mask(seq_len, sliding_window_size),
+                    attention_logit_biases,
+                )
             inputs = dict(query=query, attention_logit_biases=attention_logit_biases)
             layer_outputs, _ = F(
                 layer,
@@ -2704,8 +2787,8 @@ class MultiheadAttentionTest(TestCase):
         output_shape = [batch_size, num_heads, seq_len, seq_len]
         indexes = jnp.arange(seq_len)
         # Zeros outside of the causal triangle.
-        causal_mask = jax.lax.ge(indexes[:, None], indexes[None, :])
-        expected_output = jnp.full(output_shape, fill_value=expected_value) * causal_mask
+        causal_biases = jax.lax.ge(indexes[:, None], indexes[None, :])
+        expected_output = jnp.full(output_shape, fill_value=expected_value) * causal_biases
 
         self.assertNestedAllClose(probs, expected_output)
 
