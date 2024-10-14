@@ -317,6 +317,10 @@ class GKEJob(GCPJob):
                 See `GCSFuseMount` for details.
             enable_pre_provisioner: Whether to enable pre-provisioner.
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
+            output_dir: Optional; The output directory of the GKE job outputs.
+                Each host's output will be placed in `"{output_dir}/output/$HOSTNAME/"`.
+                This directory is used by the sidecar container to sync outputs to GCS using gsutil.
+                Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
         """
 
         env_vars: dict[str, str] = {}
@@ -325,8 +329,6 @@ class GKEJob(GCPJob):
         # This config is made Optional for backwards compatibility. Default is False.
         enable_pre_provisioner: Optional[bool] = None
         queue: Optional[str] = None
-        # Output directory. Must be compatible with tf_io.
-        # Each host's output will be placed in f"{cfg.output_dir}/output/$HOSTNAME/".
         output_dir: Optional[str] = None
 
     @classmethod
@@ -437,7 +439,7 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        volume_mounts = []
+        volume_mounts = [self._output_volume_mount]
 
         if cfg.gcsfuse_mount:
             # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
@@ -448,8 +450,6 @@ class TPUGKEJob(GKEJob):
                     readOnly=cfg.gcsfuse_mount.read_only,
                 ),
             )
-
-        volume_mounts.append(self._output_volume_mount)
 
         env_vars = {**cfg.env_vars}
         if cfg.enable_tpu_ici_resiliency is not None:
@@ -486,6 +486,11 @@ class TPUGKEJob(GKEJob):
 
     def _build_uploader_container(self) -> Nested[Any]:
         """Builds a config for the uploader container which sync logs to the output dir.
+
+        The sidecar container runs an loop to periodically sync outputs to GCS until the Pod is
+        terminated.
+        When the main container exits, Kubernetes will then send a termination signal (SIGTERM)
+        to the uploader container, allowing it to exit gracefully.
 
         Returns:
             A nested dict corresponding to a k8s Container config.
