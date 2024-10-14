@@ -4,8 +4,8 @@
 import jax
 import jax.numpy as jnp
 from absl.testing import parameterized
-from aqt.jax.v2.config import DotGeneral, NoNumerics
-from aqt.jax.v2.int_numerics import IntNumerics
+from aqt.jax.v2.config import DotGeneral
+from aqt.jax.v2.numerics import int_numerics, no_numerics
 
 from axlearn.common.quantized_dot_general.utils import (
     is_einsum_swapped_operands,
@@ -22,12 +22,12 @@ class TestUtils(TestCase):
         # Make sure key configs are as expected
         cfg: DotGeneral = lhs_activation_aqt_config()
         # Int 8 for forward and dlhs, bf16 for drhs
-        self.assertTrue(isinstance(cfg.fwd.lhs.numerics, IntNumerics))
-        self.assertTrue(isinstance(cfg.fwd.rhs.numerics, IntNumerics))
-        self.assertTrue(isinstance(cfg.dlhs.lhs.numerics, IntNumerics))
-        self.assertTrue(isinstance(cfg.dlhs.rhs.numerics, IntNumerics))
-        self.assertTrue(isinstance(cfg.drhs.lhs.numerics, NoNumerics))
-        self.assertTrue(isinstance(cfg.drhs.rhs.numerics, NoNumerics))
+        self.assertTrue(isinstance(cfg.fwd.lhs.numerics, int_numerics.IntSymmetric))
+        self.assertTrue(isinstance(cfg.fwd.rhs.numerics, int_numerics.IntSymmetric))
+        self.assertTrue(isinstance(cfg.dlhs.lhs.numerics, int_numerics.IntSymmetric))
+        self.assertTrue(isinstance(cfg.dlhs.rhs.numerics, int_numerics.IntSymmetric))
+        self.assertTrue(isinstance(cfg.drhs.lhs.numerics, no_numerics.NoNumerics))
+        self.assertTrue(isinstance(cfg.drhs.rhs.numerics, no_numerics.NoNumerics))
         self.assertEqual(cfg.fwd.lhs.numerics.bits, 8)
         self.assertEqual(cfg.fwd.rhs.numerics.bits, 8)
         self.assertEqual(cfg.dlhs.lhs.numerics.bits, 8)
@@ -43,12 +43,12 @@ class TestUtils(TestCase):
         # Make sure key configs are as expected
         cfg: DotGeneral = rhs_activation_aqt_config()
         # Int 8 for forward and drhs, bf16 for dlhs
-        self.assertTrue(isinstance(cfg.fwd.lhs.numerics, IntNumerics))
-        self.assertTrue(isinstance(cfg.fwd.rhs.numerics, IntNumerics))
-        self.assertTrue(isinstance(cfg.dlhs.lhs.numerics, NoNumerics))
-        self.assertTrue(isinstance(cfg.dlhs.rhs.numerics, NoNumerics))
-        self.assertTrue(isinstance(cfg.drhs.lhs.numerics, IntNumerics))
-        self.assertTrue(isinstance(cfg.drhs.rhs.numerics, IntNumerics))
+        self.assertTrue(isinstance(cfg.fwd.lhs.numerics, int_numerics.IntSymmetric))
+        self.assertTrue(isinstance(cfg.fwd.rhs.numerics, int_numerics.IntSymmetric))
+        self.assertTrue(isinstance(cfg.dlhs.lhs.numerics, no_numerics.NoNumerics))
+        self.assertTrue(isinstance(cfg.dlhs.rhs.numerics, no_numerics.NoNumerics))
+        self.assertTrue(isinstance(cfg.drhs.lhs.numerics, int_numerics.IntSymmetric))
+        self.assertTrue(isinstance(cfg.drhs.rhs.numerics, int_numerics.IntSymmetric))
         self.assertEqual(cfg.fwd.lhs.numerics.bits, 8)
         self.assertEqual(cfg.fwd.rhs.numerics.bits, 8)
         self.assertEqual(cfg.drhs.lhs.numerics.bits, 8)
