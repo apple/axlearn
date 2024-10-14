@@ -109,12 +109,16 @@ def flash_attention_implementation(
         # shard_map-decorated function needs to be jitted.
         @jax.jit
         def jit_attn(query, key, value, bias, segment_ids):
-            batch, target_len, num_heads, _ = query.shape
-            _, source_len, _, _ = key.shape
-            if segment_ids is not None or (
-                bias is not None and bias.shape != (batch, num_heads, target_len, source_len)
+            # Fall back to triton gpu kernel if:
+            # - segment_ids is not None,
+            # - bias is not None,
+            # - query/key/value are in float32.
+            if (
+                segment_ids is not None
+                or bias is not None
+                or jnp.float32 in (query.dtype, key.dtype, value.dtype)
             ):
-                # Fall back to triton kernel.
+                logging.warning("Flash attention falling back to Triton GPU kernel.")
                 return gpu_flash_attention(
                     query,
                     key,

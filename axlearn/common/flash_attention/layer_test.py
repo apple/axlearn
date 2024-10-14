@@ -2,7 +2,15 @@
 
 """Tests FlashAttention layers."""
 import math
+import os
 from unittest import mock
+
+# Due to reference layer using XLA,
+# set the following environment variables to avoid OOM in GPU tests.
+# pylint: disable=wrong-import-position
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+# pylint: enable=wrong-import-position
 
 import jax
 import jax.numpy as jnp
@@ -40,11 +48,12 @@ def _fake_inputs(
     causal: bool,
     use_bias: bool,
     use_segment_ids: bool,
+    input_dtype: jnp.dtype = jnp.bfloat16,
 ):
     query = jax.random.normal(
         jax.random.PRNGKey(0),
         [batch, seq_len, hidden_dim],
-        dtype=jnp.bfloat16,
+        dtype=input_dtype,
     )
     if causal:
         key = value = None
@@ -52,12 +61,12 @@ def _fake_inputs(
         key = jax.random.normal(
             jax.random.PRNGKey(1),
             [batch, seq_len, hidden_dim],
-            dtype=jnp.bfloat16,
+            dtype=input_dtype,
         )
         value = jax.random.normal(
             jax.random.PRNGKey(2),
             [batch, seq_len, hidden_dim],
-            dtype=jnp.bfloat16,
+            dtype=input_dtype,
         )
     if use_bias:
         bias = jax.random.bernoulli(
@@ -267,7 +276,7 @@ class TestFlashAttention(TestCase):
             batch=8,
             seq_len=2048,
             num_heads=4,
-            per_head_dim=64,
+            per_head_dim=128,
             mesh=(1, 2, 1, 2, 2),
             mesh_axis_names=("data", "seq", "expert", "fsdp", "model"),
         ),
@@ -326,6 +335,7 @@ class TestFlashAttention(TestCase):
         sliding_window_size=[None, 4],
         use_bias=[False, True],
         use_segment_ids=[False, True],
+        input_dtype=[jnp.bfloat16, jnp.float32],
     )
     def test_forward(
         self,
@@ -339,11 +349,16 @@ class TestFlashAttention(TestCase):
         sliding_window_size,
         use_bias,
         use_segment_ids,
+        input_dtype,
     ):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
         if not causal and sliding_window_size is not None:
             pytest.skip(reason="Sliding window attention must be causal.")
+
+        # Data=1 with bias matrix in all fp32 format would OOM the H100 SRAM.
+        if use_bias and mesh[mesh_axis_names.index("data")] == 1 and input_dtype == jnp.float32:
+            pytest.skip(reason="Unsupported large bias matrix in fp32 format.")
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             test_layer, ref_layer, params, hidden_dim = _prepare_layers(
@@ -362,6 +377,7 @@ class TestFlashAttention(TestCase):
                 causal=causal,
                 use_bias=use_bias,
                 use_segment_ids=use_segment_ids,
+                input_dtype=input_dtype,
             )
 
             ref_inputs = dict(inputs)
