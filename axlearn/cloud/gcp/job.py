@@ -6,6 +6,7 @@ Note that these utilities do not handle resource management.
 """
 
 import atexit
+import importlib
 import io
 import logging
 import math
@@ -387,6 +388,7 @@ class TPUGKEJob(GKEJob):
         enable_tpu_ici_resiliency: Optional[bool] = None
         location_hint: Optional[str] = None
         enable_tpu_smart_repair: bool = False
+        use_pathways: Optional[bool] = False
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -400,6 +402,9 @@ class TPUGKEJob(GKEJob):
             "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
             "not all TPU types support this flag.",
             **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "use_pathways", False, "Wether the workload is pathways-enabled.", **common_kwargs
         )
 
     @classmethod
@@ -424,8 +429,16 @@ class TPUGKEJob(GKEJob):
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         super().__init__(cfg)
         self._gcsfuse_volume = "gcs-fuse-csi-ephemeral"
+        if cfg.use_pathways:
+            self._import_pathways()
 
-    def _build_container(self) -> Nested[Any]:
+    def _import_pathways(self):
+        try:
+            importlib.import_module("pathwaysutils")
+        except ModuleNotFoundError:
+            logging.error("An error occurred while importing pathways-utils.")
+
+    def _build_container(self, job_type: str = None) -> Nested[Any]:
         """Builds a config for a single container.
 
         Returns:
@@ -459,26 +472,125 @@ class TPUGKEJob(GKEJob):
             resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
             resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
 
+        container_name = cfg.name
+        args = []
+        image = self._bundler.id(cfg.name)
+        ports = [
+            dict(containerPort=8471),  # Port using which TPU VMs communicate.
+            dict(containerPort=8080),  # Port for MXLA coordinator.
+            dict(containerPort=8431),  # Port to export TPU runtime metrics.
+        ]
+
+        if cfg.use_pathways:
+            container_name = f"{cfg.name}-'{job_type}"
+            volume_mounts.append(
+                dict(
+                    name="shared-tmp",
+                    mountPath="/tmp",
+                ),
+            )
+            staging_location = "gs://cloud-pathways-staging/tmp"
+            cluster = gcp_settings("gke_cluster")
+            rm_address = f"{cfg.name}-rm-0-0.{cfg.name}.default.svc.{cluster}-domain.:38677"
+
+            if job_type == "worker":
+                args.extend(
+                    [
+                        "--server_port=38677",
+                        f"--resource_manager_address={rm_address}",
+                        f"--gcs_scratch_location={staging_location}",
+                    ]
+                )
+                image = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:latest"
+                ports.append(dict(containerPort=38677))
+
+            elif job_type == "rm":
+                args.extend(
+                    [
+                        "--server_port=38677",
+                        "--node_type=resource_manager",
+                        f"--gcs_scratch_location={staging_location}",
+                        f"--instance_count={system.vms_per_slice}",
+                        f"--instance_type={system.device_type}:{system.topology}",
+                    ]
+                )
+                env_vars.update(
+                    TPU_SKIP_MDS_QUERY="true",
+                    HOST_ADDRESS="$(JOBSET_NAME)-$(REPLICATED_JOB_NAME)-0-0.$(JOBSET_NAME)",
+                    REPLICATED_JOB_NAME={
+                        "valueFrom": {
+                            "fieldRef": {
+                                "fieldPath": """
+                                metadata.annotations['jobset.sigs.k8s.io/replicatedjob-name']"""
+                            }
+                        }
+                    },
+                    JOBSET_NAME={
+                        "valueFrom": {
+                            "fieldRef": {
+                                "fieldPath": """
+                                metadata.annotations['jobset.sigs.k8s.io/jobset-name']"""
+                            }
+                        }
+                    },
+                )
+                image = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:latest"
+                resources["limits"]["memory"] = "8Gi"
+                resources["limits"]["cpu"] = "4"
+                ports.append(dict(containerPort=38677))
+
+            elif job_type == "proxy":
+                args.extend(
+                    [
+                        "--server_port=38676",
+                        f"--resource_manager_address={rm_address}",
+                        f"--gcs_scratch_location={staging_location}",
+                    ]
+                )
+                image = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:latest"
+                resources["limits"]["memory"] = "100Gi"
+                resources["limits"]["cpu"] = "24"
+                ports.append(dict(containerPort=38676))
+
+            elif job_type == "user":
+                resources["limits"]["memory"] = "100Gi"
+                resources["limits"]["cpu"] = "24"
+                proxy = (
+                    f"grpc://{cfg.name}-proxy-0-0.{cfg.name}.default.svc.{cluster}-domain.:38676"
+                )
+                env_vars.update(
+                    JAX_BACKEND_TARGET=proxy,
+                    JAX_PLATFORMS="proxy",
+                    XCLOUD_ENVIRONMENT="GCP",
+                    JOBSET_NAME={
+                        "valueFrom": {
+                            "fieldRef": {
+                                "fieldPath": """
+                                metadata.annotations['jobset.sigs.k8s.io/jobset-name']"""
+                            }
+                        }
+                    },
+                )
+
         return dict(
-            name=cfg.name,
-            image=self._bundler.id(cfg.name),
+            name=container_name,
+            image=image,
             # https://cloud.google.com/kubernetes-engine/docs/how-to/tpus#tpu-chips-node-pool
             # https://cloud.google.com/kubernetes-engine/docs/how-to/tpu-multislice#run_workload
-            ports=[
-                dict(containerPort=8471),  # Port using which TPU VMs communicate.
-                dict(containerPort=8080),  # Port for MXLA coordinator.
-                dict(containerPort=8431),  # Port to export TPU runtime metrics.
-            ],
+            ports=ports,
             securityContext=dict(privileged=True),
             # TODO(markblee): Improve SIGTERM behavior for command.
-            command=["bash", "-c", cfg.command],
+            command=["bash", "-c", cfg.command]
+            if not cfg.use_pathways or job_type == "user"
+            else None,
             resources=resources,
             # Env var values should always be strings.
             env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
             volumeMounts=volume_mounts,
+            args=args,
         )
 
-    def _build_pod(self) -> Nested[Any]:
+    def _build_pod(self, job_type: str = None) -> Nested[Any]:
         """Builds a config for a single Pod, which is a set of containers.
 
         https://kubernetes.io/docs/concepts/workloads/pods
@@ -557,7 +669,7 @@ class TPUGKEJob(GKEJob):
                     PRE_PROVISIONER_LABEL: cfg.name,
                 }
             )
-        else:
+        elif not cfg.use_pathways:
             # Used by GCP auto-provisioner.
             selector.update(
                 {
@@ -604,6 +716,27 @@ class TPUGKEJob(GKEJob):
                 }
             )
 
+        if cfg.use_pathways:
+            volumes.append(
+                dict(
+                    hostPath=dict(
+                        path="/tmp",
+                        type="DirectoryOrCreate",
+                    ),
+                    name="shared-tmp",
+                )
+            )
+
+        if job_type in ("rm", "proxy", "user"):
+            selector.update({"cloud.google.com/gke-nodepool": f"cpu-{job_type}-np"})
+        else:
+            selector.update(
+                {
+                    "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
+                    "cloud.google.com/gke-tpu-topology": system.topology,
+                }
+            )
+
         return dict(
             metadata=dict(annotations=annotations, labels=labels),
             spec=dict(
@@ -612,18 +745,17 @@ class TPUGKEJob(GKEJob):
                 # Fail if any pod fails, and allow retries to happen at JobSet level.
                 restartPolicy="Never",
                 nodeSelector={
-                    "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                    "cloud.google.com/gke-tpu-topology": system.topology,
                     **selector,
                 },
                 tolerations=tolerations,
-                containers=[self._build_container()],
+                containers=[self._build_container(job_type)],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
+                priorityClassName="medium",
             ),
         )
 
-    def _build_job(self) -> Nested[Any]:
+    def _build_job(self, job_type: str = None) -> Nested[Any]:
         """Builds a config for a single Job, which is a set of Pods.
 
         https://kubernetes.io/docs/concepts/workloads/controllers/job/
@@ -632,6 +764,32 @@ class TPUGKEJob(GKEJob):
             A nested dict corresponding to a k8s Job config, including the job metadata and spec.
         """
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+
+        if job_type == "worker":
+            return dict(
+                metadata=dict(
+                    annotations={
+                        "alpha.jobset.sigs.k8s.io/exclusive-topology": """
+                        cloud.google.com/gke-nodepool"""
+                    }
+                ),
+                spec=dict(
+                    parallelism=system.vms_per_slice,
+                    completions=system.vms_per_slice,
+                    backoffLimit=system.vms_per_slice * 4,
+                    template=self._build_pod(job_type),
+                ),
+            )
+        elif job_type in ("rm", "proxy", "user"):
+            return dict(
+                spec=dict(
+                    parallelism=1,
+                    completions=1,
+                    backoffLimit=0,
+                    template=self._build_pod(job_type),
+                ),
+            )
+
         return dict(
             spec=dict(
                 parallelism=system.vms_per_slice,
@@ -660,22 +818,53 @@ class TPUGKEJob(GKEJob):
         if cfg.queue:
             annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
 
+        spec = dict(
+            failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
+            replicatedJobs=[
+                # NOTE: the suffix here impacts how long job names can be.
+                dict(
+                    name="job",
+                    replicas=cfg.accelerator.num_replicas,
+                    template=self._build_job(),
+                ),
+            ],
+        )
+
+        if cfg.use_pathways:
+            logging.info("Building pathways jobset.")
+            spec = dict(
+                failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
+                successPolicy=dict(operator="All", targetReplicatedJobs=["main"]),
+                replicatedJobs=[
+                    dict(
+                        name="worker",
+                        replicas=cfg.accelerator.num_replicas,
+                        template=self._build_job("worker"),
+                    ),
+                    dict(
+                        name="rm",
+                        replicas=1,
+                        template=self._build_job("rm"),
+                    ),
+                    dict(
+                        name="proxy",
+                        replicas=1,
+                        template=self._build_job("proxy"),
+                    ),
+                    dict(
+                        name="main",
+                        replicas=1,
+                        template=self._build_job("user"),
+                    ),
+                ],
+            )
+
         return dict(
             metadata=dict(
                 name=cfg.name,
                 annotations=annotations,
             ),
-            spec=dict(
-                failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
-                replicatedJobs=[
-                    # NOTE: the suffix here impacts how long job names can be.
-                    dict(
-                        name="job",
-                        replicas=cfg.accelerator.num_replicas,
-                        template=self._build_job(),
-                    ),
-                ],
-            ),
+            spec=spec,
         )
 
     def _delete(self):
