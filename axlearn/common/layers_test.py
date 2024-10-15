@@ -28,7 +28,7 @@ from jax import numpy as jnp
 from sklearn.metrics import precision_score as sklearn_precision_score
 from sklearn.metrics import recall_score as sklearn_recall_score
 
-from axlearn.common import module, utils
+from axlearn.common import layers, module, utils
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import config_class
 from axlearn.common.decoder import Decoder
@@ -806,10 +806,13 @@ class LayerTest(TestCase, tf.test.TestCase):
     @parameterized.parameters(
         (3, 1, ((1, 1),), "SAME"),
         (3, 1, ((0, 0),), "VALID"),
+        (3, 1, ((2, 0),), "CAUSAL"),
         (3, 2, ((1, 1),), "SAME"),
         (3, 2, ((0, 0),), "VALID"),
+        (3, 2, ((2, 0),), "CAUSAL"),
         (5, 2, ((2, 2),), "SAME"),
         (5, 2, ((0, 0),), "VALID"),
+        (5, 2, ((4, 0),), "CAUSAL"),
     )
     def test_conv_output_1d_padding(
         self, window: int, stride: int, padding: ConvPaddingType, ref_padding: ConvPaddingType
@@ -818,6 +821,10 @@ class LayerTest(TestCase, tf.test.TestCase):
         batch_size = 5
         seq_len = 5
         paddings = jnp.triu(jnp.ones((batch_size, seq_len)), k=1)
+
+        explicit_padding = layers.conv_explicit_padding(window=(window,), padding=ref_padding)
+        self.assertAllEqual(explicit_padding, padding[:1])
+
         out_paddings = _compute_conv_output_1d_padding(
             paddings, window=window, stride=stride, conv_padding=padding
         )
@@ -843,10 +850,10 @@ class LayerTest(TestCase, tf.test.TestCase):
         (5, "VALID", 2, [0, 1]),
         (5, "VALID", 3, [1, 1]),
         (5, "VALID", 4, [1, 1]),
-        (5, ((4, 0),), None, [0, 0, 0, 1, 1, 1]),
-        (5, ((4, 0),), 3, ValueError),
-        (5, ((4, 0),), 4, [0, 0, 0, 1, 1, 1]),
-        (5, ((4, 0),), 5, ValueError),
+        (5, "CAUSAL", None, [0, 0, 0, 1, 1, 1]),
+        (5, "CAUSAL", 3, ValueError),
+        (5, "CAUSAL", 4, [0, 0, 0, 1, 1, 1]),
+        (5, "CAUSAL", 5, ValueError),
     )
     def test_conv_output_1d_padding_with_anchor(self, window, padding, anchor, expected_paddings):
         input_paddings = [0, 0, 0, 1, 1, 1]
@@ -866,13 +873,17 @@ class LayerTest(TestCase, tf.test.TestCase):
         ("1x1", (1, 1), (1, 1), "VALID", None),
         ("2x2_VALID", (2, 2), (1, 1), "VALID", None),
         ("2x2_SAME", (2, 2), (1, 1), "SAME", None),
+        ("2x2_CAUSAL", (2, 2), (1, 1), "CAUSAL", None),
         ("2x2_S2_VALID", (2, 2), (2, 2), "VALID", None),
+        ("2x2_S2_CAUSAL", (2, 2), (2, 2), "CAUSAL", None),
         ("3x3_VALID", (3, 3), (1, 1), "VALID", None),
         ("3x3_VALID_A0", (3, 3), (1, 1), "VALID", 0),
         ("3x3_VALID_A1", (3, 3), (1, 1), "VALID", 1),
         ("3x3_VALID_A2", (3, 3), (1, 1), "VALID", 2),
         ("3x3_SAME", (3, 3), (1, 1), "SAME", None),
+        ("3x3_CAUSAL", (3, 3), (1, 1), "CAUSAL", None),
         ("3x3_S2_VALID", (3, 3), (2, 2), "VALID", None),
+        ("3x3_S2_CAUSAL", (3, 3), (2, 2), "CAUSAL", None),
         ("3x3_S2_PADDING1", (3, 3), (2, 2), (1, 1), None),
     )
     def test_conv2d_with_1d_padding(
