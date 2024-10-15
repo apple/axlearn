@@ -534,6 +534,12 @@ def _wrap_method_with_auto_child_context(*, method_fn: Callable, method_name: st
     Callers of this function should either bind the returned function to an instance, e.g. using
     `partial(method_fn, instance)`, or supply an instance explicitly as the first arg.
     """
+    method_fn_in_context = functools.partial(
+        _call_method_in_context, method_fn=method_fn, method_name=method_name
+    )
+    if not traceback_util.is_stack_summary_enabled():
+        method_fn = functools.wraps(method_fn)(method_fn_in_context)
+        return method_fn
 
     @no_stack_summary
     @functools.wraps(method_fn)
@@ -542,9 +548,7 @@ def _wrap_method_with_auto_child_context(*, method_fn: Callable, method_name: st
         # TypeErrors to make it easier to see issues where a wrapped method is called
         # by the user with the wrong signature.
         try:
-            return _call_method_in_context(
-                self, *args, method_fn=method_fn, method_name=method_name, **kwargs
-            )
+            return method_fn_in_context(self, *args, **kwargs)
         except TypeError as e:
             # Make it easier to see what call triggered the error in CI.
             # When running in an environment like TPUs where stack summaries are available,
