@@ -221,12 +221,6 @@ class FlashAttention(GroupedQueryAttention):
             # TODO(senyut): Implement FlashDecoding kernel and support TPU decoding.
             if q_proj.shape[1] == 1:
                 mask_fn = None
-        elif backend == "gpu" and q_proj.shape[1] != k_proj.shape[1]:
-            # TODO(xuan-zou): Generalize GPU Flash Attention for q_len != kv_len.
-            raise NotImplementedError(
-                f"Query length {q_proj.shape[1]} must be equal to KV length "
-                f"{k_proj.shape[1]} for correctly supported GPU flash attention usage."
-            )
 
         if backend == "tpu":
             assert q_proj.shape[1] % cfg.tpu_block_size == 0, (
