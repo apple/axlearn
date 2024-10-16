@@ -438,6 +438,16 @@ class TPUGKEJob(GKEJob):
         except ModuleNotFoundError:
             logging.error("An error occurred while importing pathways-utils.")
 
+    def _get_pathways_tpu_type(self, device: str) -> str:
+        pathways_tpu_devices = {
+            "v6e": "tpuv6e",
+            "v5p": "tpuv5",
+            "v5litepod": "tpuv5e",
+            "v4": "tpuv4",
+            "v3": "tpuv3",
+        }
+        return pathways_tpu_devices[device.split("-")[0].lower()]
+
     def _build_container(self, job_type: str = None) -> Nested[Any]:
         """Builds a config for a single container.
 
@@ -447,6 +457,7 @@ class TPUGKEJob(GKEJob):
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         volume_mounts = []
+        resources = {"limits": {}}
 
         if cfg.gcsfuse_mount:
             # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
@@ -462,15 +473,16 @@ class TPUGKEJob(GKEJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
-        resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
-        # Set request memory by host machine type.
-        machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
-            system.gce_machine_type, None
-        )
-        if machine_memory_gi is not None:
-            request_memory_gi = machine_memory_gi * _MEMORY_REQUEST_PERCENTAGE
-            resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
-            resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
+        if not cfg.use_pathways:
+            resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
+            # Set request memory by host machine type.
+            machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
+                system.gce_machine_type, None
+            )
+            if machine_memory_gi is not None:
+                request_memory_gi = machine_memory_gi * _MEMORY_REQUEST_PERCENTAGE
+                resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
+                resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
 
         container_name = cfg.name
         args = []
@@ -482,7 +494,7 @@ class TPUGKEJob(GKEJob):
         ]
 
         if cfg.use_pathways:
-            container_name = f"{cfg.name}-'{job_type}"
+            container_name = f"{cfg.name}-{job_type}"
             volume_mounts.append(
                 dict(
                     name="shared-tmp",
@@ -503,36 +515,24 @@ class TPUGKEJob(GKEJob):
                 )
                 image = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:latest"
                 ports.append(dict(containerPort=38677))
+                resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
 
             elif job_type == "rm":
+                tpu_type = self._get_pathways_tpu_type(system.device_type)
                 args.extend(
                     [
                         "--server_port=38677",
                         "--node_type=resource_manager",
                         f"--gcs_scratch_location={staging_location}",
                         f"--instance_count={system.vms_per_slice}",
-                        f"--instance_type={system.device_type}:{system.topology}",
+                        f"--instance_type={tpu_type}:{system.topology}",
                     ]
                 )
                 env_vars.update(
                     TPU_SKIP_MDS_QUERY="true",
                     HOST_ADDRESS="$(JOBSET_NAME)-$(REPLICATED_JOB_NAME)-0-0.$(JOBSET_NAME)",
-                    REPLICATED_JOB_NAME={
-                        "valueFrom": {
-                            "fieldRef": {
-                                "fieldPath": """
-                                metadata.annotations['jobset.sigs.k8s.io/replicatedjob-name']"""
-                            }
-                        }
-                    },
-                    JOBSET_NAME={
-                        "valueFrom": {
-                            "fieldRef": {
-                                "fieldPath": """
-                                metadata.annotations['jobset.sigs.k8s.io/jobset-name']"""
-                            }
-                        }
-                    },
+                    REPLICATED_JOB_NAME=job_type,
+                    JOBSET_NAME=cfg.name,
                 )
                 image = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:latest"
                 resources["limits"]["memory"] = "8Gi"
@@ -560,16 +560,8 @@ class TPUGKEJob(GKEJob):
                 )
                 env_vars.update(
                     JAX_BACKEND_TARGET=proxy,
-                    JAX_PLATFORMS="proxy",
                     XCLOUD_ENVIRONMENT="GCP",
-                    JOBSET_NAME={
-                        "valueFrom": {
-                            "fieldRef": {
-                                "fieldPath": """
-                                metadata.annotations['jobset.sigs.k8s.io/jobset-name']"""
-                            }
-                        }
-                    },
+                    JOBSET_NAME=cfg.name,
                 )
 
         return dict(
@@ -633,22 +625,24 @@ class TPUGKEJob(GKEJob):
         # Tier "0" corresponds to reserved; otherwise we use preemptible.
         tier = os.environ.get("BASTION_TIER", None)
 
-        if tier == "0" and cfg.reservation is not None:
-            logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
-            selector.update({"cloud.google.com/reservation-name": cfg.reservation})
-            labels.update({"bastion-tier": "reserved"})
-        else:
-            logging.info("Found tier=%s in env. Using spot quota", tier)
-            selector.update({"cloud.google.com/gke-spot": "true"})
-            tolerations.append(
-                {
-                    "key": "cloud.google.com/gke-spot",
-                    "operator": "Equal",
-                    "value": "true",
-                    "effect": "NoSchedule",
-                }
-            )
-            labels.update({"bastion-tier": "spot"})
+        # skip reservation/spot flags for Pathways CPU jobs.
+        if job_type not in ("rm", "proxy", "user"):
+            if tier == "0" and cfg.reservation is not None:
+                logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
+                selector.update({"cloud.google.com/reservation-name": cfg.reservation})
+                labels.update({"bastion-tier": "reserved"})
+            else:
+                logging.info("Found tier=%s in env. Using spot quota", tier)
+                selector.update({"cloud.google.com/gke-spot": "true"})
+                tolerations.append(
+                    {
+                        "key": "cloud.google.com/gke-spot",
+                        "operator": "Equal",
+                        "value": "true",
+                        "effect": "NoSchedule",
+                    }
+                )
+                labels.update({"bastion-tier": "spot"})
 
         if cfg.enable_tpu_ici_resiliency is not None:
             selector.update(
@@ -769,8 +763,8 @@ class TPUGKEJob(GKEJob):
             return dict(
                 metadata=dict(
                     annotations={
-                        "alpha.jobset.sigs.k8s.io/exclusive-topology": """
-                        cloud.google.com/gke-nodepool"""
+                        # pylint: disable=line-too-long
+                        "alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool"
                     }
                 ),
                 spec=dict(
@@ -809,14 +803,23 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
 
-        annotations = {
-            # The exclusive topology annotation will ensure that all Pods will have affinity
-            # rules added that will ensure that they are fully scheduled on the same
-            # pod-slice node-pools.
-            "alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
-        }
+        annotations, labels = {}, {}
+
+        if not cfg.use_pathways:
+            annotations.update(
+                {
+                    # The exclusive topology annotation will ensure that all Pods will have affinity
+                    # rules added that will ensure that they are fully scheduled on the same
+                    # pod-slice node-pools.
+                    "alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+                }
+            )
+
         if cfg.queue:
-            annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
+            if cfg.use_pathways:
+                labels["kueue.x-k8s.io/queue-name"] = cfg.queue
+            else:
+                annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
 
         spec = dict(
             failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
@@ -834,7 +837,7 @@ class TPUGKEJob(GKEJob):
             logging.info("Building pathways jobset.")
             spec = dict(
                 failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
-                successPolicy=dict(operator="All", targetReplicatedJobs=["main"]),
+                successPolicy=dict(operator="All", targetReplicatedJobs=["user"]),
                 replicatedJobs=[
                     dict(
                         name="worker",
@@ -852,7 +855,7 @@ class TPUGKEJob(GKEJob):
                         template=self._build_job("proxy"),
                     ),
                     dict(
-                        name="main",
+                        name="user",
                         replicas=1,
                         template=self._build_job("user"),
                     ),
@@ -863,6 +866,7 @@ class TPUGKEJob(GKEJob):
             metadata=dict(
                 name=cfg.name,
                 annotations=annotations,
+                labels=labels,
             ),
             spec=spec,
         )
