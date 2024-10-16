@@ -81,16 +81,18 @@ def _is_valid_ctc_seq(
     return is_valid
 
 
-class CTCPrefixMerger(PrefixMerger):
+class CommonPrefixMerger(PrefixMerger):
     """Merges equivalent lower-ranked beams into higher-ranked ones.
 
-    Beams are compared after removing repeats and blanks following CTC.
+    Beams are compared after removing repeats and blanks.
 
     See Section 3.1 of https://dl.acm.org/doi/10.1145/1143844.1143891.
     """
 
-    def __init__(self, blank_id: int):
+    def __init__(self, blank_id: int, pad_id: int = -1, remove_repeats: bool = True):
         self._blank_id = blank_id
+        self._pad_id = pad_id
+        self._remove_repeats = remove_repeats
 
     def init_state(self, *, tokens: Tensor) -> Nested[Tensor]:
         """Initializes the prefix merger state from the initial prefix `tokens`.
@@ -99,7 +101,10 @@ class CTCPrefixMerger(PrefixMerger):
         empty prefix and invoking `update` token-by-token until the end of the initial prefix.
         """
         outputs = _map_label_sequences(
-            tokens, remove_repeats=True, blank_id=self._blank_id, pad_id=-1
+            tokens,
+            remove_repeats=self._remove_repeats,
+            blank_id=self._blank_id,
+            pad_id=self._pad_id,
         )
         # Compute last tokens.
         last_token = jnp.take_along_axis(outputs["sequences"], outputs["lengths"] - 1, axis=-1)
@@ -984,6 +989,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
         input_batch: Nested[Tensor],
         num_decodes: int,
         max_decode_len: int,
+        prefix_merger: Optional[PrefixMerger] = None,
     ) -> DecodeOutputs:
         """Transducer label-synchronous search.
 
@@ -998,6 +1004,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
             max_decode_len: maximum number of decode steps to run beam search.
                 Decoding terminates if an eos token is not emitted after max_decode_steps
                 steps. This value can depend on the tokenization.
+            prefix_merger: An optional PrefixMerger to apply during decoding.
 
         Returns:
             DecodeOutputs, containing
@@ -1038,6 +1045,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
             eos_id=eos_id,
             num_decodes=num_decodes,
             max_decode_len=max_decode_len,
+            prefix_merger=prefix_merger,
         )
         # We drop eos token in the decoded sequence.
         decode_paddings = jnp.logical_or(
