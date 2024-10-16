@@ -902,9 +902,14 @@ class BaseQKVLinear(BaseLayer):
             oh_indices = jax.nn.one_hot(time_step, target_len, dtype=k_proj.dtype)
             # [B, 1, 1, T] to broadcast.
             oh_indices = oh_indices[:, None, None, :]
-            # Ensure that we accumulate in original dtype.
-            new_k_proj = cached_key + (k_proj * oh_indices).astype(cached_key.dtype)
-            new_v_proj = cached_value + (v_proj * oh_indices).astype(cached_value.dtype)
+            negated_oh_indices = (1 - oh_indices).astype(cached_key.dtype)
+            # Ensure that we accumulate using the original dtype.
+            new_k_proj = (cached_key * negated_oh_indices) + (k_proj * oh_indices).astype(
+                cached_key.dtype
+            )
+            new_v_proj = (cached_value * negated_oh_indices) + (v_proj * oh_indices).astype(
+                cached_value.dtype
+            )
 
             # Move back to original [B, T, N, H] layout.
             k_proj = jnp.moveaxis(new_k_proj, -1, -3)
