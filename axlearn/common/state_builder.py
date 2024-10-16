@@ -448,7 +448,7 @@ class BaseConverterFromPretrainedModel(Converter):
             trainer_cfg.mesh_shape = infer_mesh_shape(
                 cfg.mesh_shape or trainer_cfg.mesh_shape or (len(jax.devices()), 1)
             )
-            # Reset datasets and evalers for the pretrained model config
+            # Reset datasets and evalers for the pretrained model config.
             trainer_cfg.input = EmptyInput.default_config()
             trainer_cfg.evalers = {}
 
