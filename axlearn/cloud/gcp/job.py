@@ -317,6 +317,10 @@ class GKEJob(GCPJob):
                 See `GCSFuseMount` for details.
             enable_pre_provisioner: Whether to enable pre-provisioner.
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
+            output_dir: Optional; The output directory of the GKE job outputs.
+                Each host's output will be placed in `"{output_dir}/output/$HOSTNAME/"`.
+                This directory is used by the sidecar container to sync outputs to GCS using gsutil.
+                Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
         """
 
         env_vars: dict[str, str] = {}
@@ -325,6 +329,7 @@ class GKEJob(GCPJob):
         # This config is made Optional for backwards compatibility. Default is False.
         enable_pre_provisioner: Optional[bool] = None
         queue: Optional[str] = None
+        output_dir: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -424,6 +429,7 @@ class TPUGKEJob(GKEJob):
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         super().__init__(cfg)
         self._gcsfuse_volume = "gcs-fuse-csi-ephemeral"
+        self._output_volume_mount = dict(name="shared-output", mountPath="/output")
 
     def _build_container(self) -> Nested[Any]:
         """Builds a config for a single container.
@@ -433,7 +439,7 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        volume_mounts = []
+        volume_mounts = [self._output_volume_mount]
 
         if cfg.gcsfuse_mount:
             # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
@@ -478,6 +484,40 @@ class TPUGKEJob(GKEJob):
             volumeMounts=volume_mounts,
         )
 
+    def _build_uploader_container(self) -> Nested[Any]:
+        """Builds a config for the uploader container which sync logs to the output dir.
+
+        The sidecar container runs an loop to periodically sync outputs to GCS until the Pod is
+        terminated.
+        When the main container exits, Kubernetes will then send a termination signal (SIGTERM)
+        to the uploader container, allowing it to exit gracefully.
+
+        Returns:
+            A nested dict corresponding to a k8s Container config.
+        """
+        cfg: TPUGKEJob.Config = self.config
+
+        dst = f"{cfg.output_dir}/output/$HOSTNAME/"
+        interval_s = 60
+
+        sync_command = f"while true; do gsutil -m rsync -r /output {dst}; sleep {interval_s}; done"
+
+        volume_mounts = [self._output_volume_mount]
+
+        resources = {
+            "requests": {"cpu": "100m", "memory": "128Mi"},
+            "limits": {"cpu": "500m", "memory": "256Mi"},
+        }
+
+        return dict(
+            name="output-uploader",
+            image="google/cloud-sdk:alpine",
+            command=["/bin/sh", "-c"],
+            args=[sync_command],
+            resources=resources,
+            volumeMounts=volume_mounts,
+        )
+
     def _build_pod(self) -> Nested[Any]:
         """Builds a config for a single Pod, which is a set of containers.
 
@@ -490,6 +530,7 @@ class TPUGKEJob(GKEJob):
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
 
+        volumes.append(dict(name="shared-output", emptyDir={}))
         if cfg.gcsfuse_mount:
             # Mount a GCS bucket as a volume.
             annotations.update(
@@ -617,7 +658,7 @@ class TPUGKEJob(GKEJob):
                     **selector,
                 },
                 tolerations=tolerations,
-                containers=[self._build_container()],
+                containers=[self._build_container(), self._build_uploader_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
             ),
