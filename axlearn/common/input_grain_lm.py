@@ -3,6 +3,7 @@
 """Input processing for language modeling using Grain."""
 
 import functools
+import sys
 from typing import Protocol, Sequence
 
 import numpy as np
@@ -120,7 +121,9 @@ def text_to_lm_training_input(
     split_fn = functools.partial(
         _trim_or_pad_and_batch, max_padding_fraction=max_padding_fraction, pad_id=vocab.pad_id
     )
-    ds = ds.repeat(num_epochs=None)
+    # Only repeat if not already infinite.
+    if len(ds) != sys.maxsize:
+        ds = ds.repeat(num_epochs=None)
     ds = input_grain_text.tokenize(ds, vocab={"text": vocab}, with_eos=True)
     ds = input_grain.rekey(ds, key_map={"target_labels": "text"})
     # Flatten, roll, split.

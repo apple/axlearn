@@ -181,6 +181,24 @@ class LmTrainingInputTest(TestCase):
         # The inputs should be one-off the labels.
         self.assertNestedAllClose(target_labels[:-1], input_ids[1:])
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_training_lm_processor_infinite_dataset(self):
+        max_len = 32
+        vocab = seqio.SentencePieceVocabulary(
+            sentencepiece_model_file=t5_sentence_piece_vocab_file,
+        )
+        examples = [{"text": f"test_str_#{i}", "index": i} for i in range(10)]
+        ds = fake_grain_source(examples)
+        ds = text_to_lm_training_input(
+            ds.repeat(),  # check if infinite dataset breaks the pipeline
+            vocab=vocab,
+            max_len=max_len,
+            window_size=3,
+            max_padding_fraction=0.0,
+        )
+
     @parameterized.parameters(
         dict(
             expected_batches=[
