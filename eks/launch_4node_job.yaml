@@ -68,10 +68,10 @@ spec:
             resources:
               limits:
                 aws.amazon.com/neuron: "16"
-                vpc.amazonaws.com/efa: "16"
+                vpc.amazonaws.com/efa: "64"
               requests:
                 aws.amazon.com/neuron: "16"
-                vpc.amazonaws.com/efa: "16"
+                vpc.amazonaws.com/efa: "64"
             volumeMounts:
             - name: dshm
               mountPath: /dev/shm

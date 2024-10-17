@@ -33,11 +33,13 @@ export TRN2=1
 export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
 export NEURON_RT_IO_RING_CACHE_SIZE=0
 export NEURON_RT_ENABLE_MEMORY_METRICS=0
+export NEURON_RT_EXEC_TIMEOUT=300
 export OFI_NCCL_MR_CACHE_DISABLE=1
+export OFI_NCCL_PROTOCOL=RDMA
 
 # Neuron env vars for distributed training
 nodes=`/neuron/scripts/nodelist_helper.py`
-devices_per_node=32
+devices_per_node=$((128/$NEURON_RT_VIRTUAL_CORE_SIZE))
 export COORDINATOR_ADDRESS=$(echo "$nodes" | head -n 1):64272
 export NEURON_RT_ROOT_COMM_ID=$(echo "$nodes" | head -n 1):5552
 export NEURON_PJRT_PROCESSES_NUM_DEVICES=$(printf '%s,' $(seq 1 $OMPI_COMM_WORLD_SIZE | xargs -I {} echo $devices_per_node) | sed 's/,$//')
@@ -58,4 +60,7 @@ DATA_DIR="gs://axlearn-public/tensorflow_datasets"
 python3 -m axlearn.common.launch_trainer_main \
     --module=text.gpt.c4_trainer --config=fuji-70B-v2 \
     --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR \
-    --jax_backend=neuron --mesh_selector=trn2
+    --jax_backend=neuron --mesh_selector=trn2 \
+    --distributed_coordinator=$COORDINATOR_ADDRESS \
+    --num_processes=$OMPI_COMM_WORLD_SIZE \
+    --process_id=$OMPI_COMM_WORLD_RANK 2>&1 | tee ${OUTPUT_DIR}/${PMIX_HOSTNAME}.log
