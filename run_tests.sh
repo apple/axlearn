@@ -56,7 +56,7 @@ pytest --durations=100 -v -n auto \
   --dist worksteal &
 TEST_PIDS[$!]=1
 
-JAX_ENABLE_X64=1 pytest --duration=100 -v \
+JAX_ENABLE_X64=1 pytest --durations=100 -v \
     -n auto -v -m "fp64" ${UNQUOTED_PYTEST_FILES} --dist worksteal &
 TEST_PIDS[$!]=1
 
