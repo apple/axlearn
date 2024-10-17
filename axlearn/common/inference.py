@@ -225,9 +225,7 @@ class InferenceRunner(Module):
                 lambda spec: spec.mesh_axes, self._inference_runner_state_specs
             )
             logging.info("Building ckpt state from %s", cfg.init_state_builder.klass.__name__)
-            builder = cfg.init_state_builder.set(
-                name="init_state_builder",
-            ).instantiate(parent=None)
+            builder: Builder = cfg.init_state_builder.instantiate()
 
             # Check that builder should expect tensor specs.
             if builder.input_state_type() != Builder.StateType.TENSOR_SPECS:

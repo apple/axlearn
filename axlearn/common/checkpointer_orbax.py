@@ -28,7 +28,6 @@ from axlearn.common.checkpointer import (
     restore_tf_savables,
 )
 from axlearn.common.config import config_class
-from axlearn.common.module import Module
 from axlearn.common.utils import Nested, Tensor, TensorSpec
 
 
@@ -123,8 +122,8 @@ class OrbaxCheckpointer(BaseCheckpointer):
         """See `BaseCheckpointer.checkpointer_paths`."""
         return [str(path) for path in ocp.utils.checkpoint_steps_paths(base_dir)]
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
 
         cfg: OrbaxCheckpointer.Config = self.config
         save_policy = cfg.save_policy.instantiate()

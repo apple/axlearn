@@ -35,9 +35,7 @@ class SummaryTest(TestCase):
 
     def test_add_summary_image(self):
         tempdir = tempfile.mkdtemp()
-        writer: SummaryWriter = (
-            SummaryWriter.default_config().set(name="test", dir=tempdir).instantiate(parent=None)
-        )
+        writer: SummaryWriter = SummaryWriter.default_config().set(dir=tempdir).instantiate()
         color_image = jax.numpy.ones((2, 5, 5, 3))
         grayscale_image = jax.numpy.zeros((2, 5, 5))
         writer(
@@ -269,8 +267,8 @@ class SummaryTest(TestCase):
             try:
                 writer: WandBWriter = (
                     WandBWriter.default_config()
-                    .set(name="test", exp_name="wandb-testAddSummary", dir=tempdir, mode="offline")
-                    .instantiate(parent=None)
+                    .set(exp_name="wandb-testAddSummary", dir=tempdir, mode="offline")
+                    .instantiate()
                 )
 
                 output_collection = _test()

@@ -32,13 +32,13 @@ from axlearn.common.checkpointer import (
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
+    Configurable,
     InstantiableConfig,
     Required,
     config_class,
     config_for_function,
     maybe_instantiate,
 )
-from axlearn.common.module import Module
 from axlearn.common.optimizer_base import OptStateSpec
 from axlearn.common.optimizers import ParamEmaState
 from axlearn.common.utils import (
@@ -56,7 +56,7 @@ from axlearn.common.utils import (
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 
-class Builder(Module):
+class Builder(Configurable):
     """An abstract class for building trainer states."""
 
     class StateType(enum.Enum):
@@ -64,7 +64,7 @@ class Builder(Module):
         TENSOR_SPECS = "tensor_specs"
 
     @config_class
-    class Config(Module.Config):
+    class Config(Configurable.Config):
         pass
 
     @dataclass
@@ -110,13 +110,13 @@ class ChainBuilder(Builder):
         # If validation is None, no structure check will be enforced.
         validation: Optional[CheckpointValidationType] = CheckpointValidationType.EXACT
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         cfg = self.config
         self._builders = []
 
-        for i, builder_cfg in enumerate(cfg.builders):
-            self._builders.append(self._add_child(f"builder{i:03d}", builder_cfg))
+        for builder_cfg in cfg.builders:
+            self._builders.append(builder_cfg.instantiate())
 
     def input_state_type(self) -> Builder.StateType:
         return self._builders[0].input_state_type()
@@ -140,7 +140,7 @@ class ChainBuilder(Builder):
         return state
 
 
-class Converter(Module):
+class Converter(Configurable):
     """Converts builder state from one version to another.
 
     This can be used to migrate legacy trainer state structures to updated structures in the case
@@ -148,7 +148,7 @@ class Converter(Module):
     """
 
     @config_class
-    class Config(Module.Config):
+    class Config(Configurable.Config):
         pass
 
     def target_state_type(self) -> Builder.StateType:
@@ -192,12 +192,12 @@ class ChainConverter(Converter):
     class Config(Converter.Config):
         converters: Required[Sequence[Converter.Config]] = REQUIRED
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         cfg = self.config
         self._converters = []
-        for i, converter_cfg in enumerate(cfg.converters):
-            self._converters.append(self._add_child(f"converter{i:03d}", converter_cfg))
+        for converter_cfg in cfg.converters:
+            self._converters.append(converter_cfg.instantiate())
 
     def target_state_type(self) -> Builder.StateType:
         for converter in self._converters:
@@ -265,8 +265,8 @@ class MergeStateConverter(Converter):
     class Config(Converter.Config):
         selection_regexes: list[tuple[str, Union[str, MergeStateSelection]]] = []
 
-    def __init__(self, cfg: "MergeStateConverter.Config", *, parent: Optional[Module] = None):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: "MergeStateConverter.Config"):
+        super().__init__(cfg)
 
         self.selection_regexes = [
             (re.compile(r), MergeStateSelection(s)) for r, s in cfg.selection_regexes
@@ -322,11 +322,11 @@ class RestoreAndConvertBuilder(Builder):
         cfg.builder = cfg.builder.klass.spec_to_config(spec)
         return cfg
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         cfg = self.config
-        self._add_child("builder", cfg.builder)
-        self._add_child("converter", cfg.converter)
+        self.builder = cfg.builder.instantiate()
+        self.converter = cfg.converter.instantiate()
 
     def input_state_type(self) -> Builder.StateType:
         return self.converter.target_state_type()
@@ -669,8 +669,8 @@ class HuggingFacePreTrainedBuilder(Builder):
         # axlearn model params.
         converter: InstantiableConfig = config_for_function(torch_to_axlearn_converter)
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         cfg = self.config
         self._converter = cfg.converter.instantiate()
 
@@ -1200,5 +1200,4 @@ def get_builder(spec: Union[str, Builder]) -> Builder:
     if isinstance(spec, Builder):
         return spec
     builder_cfg = get_builder_config(spec, builders=_BUILDERS)
-    builder = builder_cfg.set(name="builder").instantiate(parent=None)
-    return builder
+    return builder_cfg.instantiate()

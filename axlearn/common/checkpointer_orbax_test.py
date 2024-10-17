@@ -31,11 +31,7 @@ class OrbaxCheckpointerTest(test_utils.TestCase):
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
         with _mesh(mesh_shape), tempfile.TemporaryDirectory() as temp_dir:
-            ckpt = (
-                OrbaxCheckpointer.default_config()
-                .set(name="test", dir=temp_dir)
-                .instantiate(parent=None)
-            )
+            ckpt = OrbaxCheckpointer.default_config().set(dir=temp_dir).instantiate()
             step = 123
             state = dict(x=jnp.ones([3, 2]))
             ckpt.save(step=step, state=state)

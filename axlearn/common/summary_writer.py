@@ -17,8 +17,14 @@ from jax import numpy as jnp
 from tensorflow import summary as tf_summary
 
 from axlearn.common import file_system as fs
-from axlearn.common.config import REQUIRED, ConfigBase, Required, RequiredFieldValue, config_class
-from axlearn.common.module import Module
+from axlearn.common.config import (
+    REQUIRED,
+    ConfigBase,
+    Configurable,
+    Required,
+    RequiredFieldValue,
+    config_class,
+)
 from axlearn.common.summary import AudioSummary, ImageSummary, Summary
 from axlearn.common.utils import NestedTensor, Tensor, tree_paths
 
@@ -57,11 +63,11 @@ def processor_zero_only(fn: Callable) -> Callable:
     return wrapper
 
 
-class BaseWriter(Module):
+class BaseWriter(Configurable):
     """Base summary writer."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(Configurable.Config):
         """Configures BaseWriter."""
 
         dir: Required[str] = REQUIRED  # The output directory.
@@ -115,14 +121,14 @@ class CompositeWriter(BaseWriter):
     class Config(BaseWriter.Config):
         writers: Required[dict[str, BaseWriter.Config]] = REQUIRED
 
-    def __init__(self, cfg: Config, *, parent: Optional["Module"]):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         cfg = self.config
 
         self._writers: list[BaseWriter] = []
         for writer_name, writer_cfg in cfg.writers.items():
             self._writers.append(
-                self._add_child(writer_name, writer_cfg.set(dir=os.path.join(cfg.dir, writer_name)))
+                writer_cfg.set(dir=os.path.join(cfg.dir, writer_name)).instantiate()
             )
 
     @property
@@ -183,8 +189,8 @@ class SummaryWriter(BaseWriter):
         max_queue: Optional[int] = None
         flush_ms: Optional[float] = None
 
-    def __init__(self, cfg: BaseWriter.Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
+    def __init__(self, cfg: BaseWriter.Config):
+        super().__init__(cfg)
         cfg: SummaryWriter.Config = self.config
         self.summary_writer: tf_summary.SummaryWriter = (
             tf_summary.create_file_writer(
@@ -209,7 +215,7 @@ class SummaryWriter(BaseWriter):
                     tf_summary.text(f"trainer_config/{parts[0]}", parts[1], step=step)
 
     def __call__(self, step: int, values: dict[str, Any]):
-        cfg = self.config
+        cfg: SummaryWriter.Config = self.config
         if step % cfg.write_every_n_steps != 0:
             return
 
@@ -221,7 +227,7 @@ class SummaryWriter(BaseWriter):
                 else:
                     raw_value = value
 
-                self.vlog(3, "SummaryWriter %s: %s=%s", self.path(), path, raw_value)
+                logging.debug("SummaryWriter %s: %s=%s", self.__class__.__name__, path, raw_value)
 
                 if isinstance(raw_value, Tensor) and not raw_value.is_fully_replicated:
                     logging.warning(
@@ -306,7 +312,7 @@ class WandBWriter(BaseWriter):
         convert_2d_to_image: bool = False
 
     @classmethod
-    def default_config(cls: Config) -> Config:
+    def default_config(cls) -> Config:
         cfg = super().default_config()
         cfg.exp_name = os.environ.get("WANDB_NAME")
         cfg.project = os.environ.get("WANDB_PROJECT")
@@ -318,13 +324,13 @@ class WandBWriter(BaseWriter):
         cfg.dir = os.environ.get("WANDB_DIR")
         return cfg
 
-    def __init__(self, cfg: SummaryWriter.Config, *, parent: Optional[Module]):
+    def __init__(self, cfg: SummaryWriter.Config):
         if wandb is None:
             raise ModuleNotFoundError(
                 "To use the Weights & Biases logger, please install wandb "
                 "with `pip install wandb`."
             )
-        super().__init__(cfg, parent=parent)
+        super().__init__(cfg)
 
         if wandb.run is None:
             self._initialize_run()
@@ -386,7 +392,7 @@ class WandBWriter(BaseWriter):
             else:
                 raw_value = value
 
-            self.vlog(3, "WandbWriter %s: %s=%s", self.path(), path, raw_value)
+            logging.debug("WandbWriter %s: %s=%s", self.__class__.__name__, path, raw_value)
 
             # Ensure all arrays are cast to numpy.
             # Wandb will crash if jax.Array is present.
