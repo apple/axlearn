@@ -56,8 +56,7 @@ pytest --durations=100 -v -n auto \
   --dist worksteal &
 TEST_PIDS[$!]=1
 
-JAX_ENABLE_X64=1 pytest --durations=100 -v \
-    -n auto -v -m "fp64" ${UNQUOTED_PYTEST_FILES} --dist worksteal &
+JAX_ENABLE_X64=1 pytest --durations=100 -v -n auto -v -m "fp64" --dist worksteal &
 TEST_PIDS[$!]=1
 
 # Use Bash 5.1's new wait -p feature to quit immediately if any subprocess fails to make error
