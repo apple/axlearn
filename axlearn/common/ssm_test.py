@@ -26,7 +26,7 @@ from absl.testing import parameterized
 from transformers.activations import ACT2FN
 from transformers.configuration_utils import PretrainedConfig
 
-from axlearn.common.attention import make_causal_mask
+from axlearn.common.attention import make_causal_biases
 from axlearn.common.config import InstantiableConfig
 from axlearn.common.module import functional as F
 from axlearn.common.ssm import (
@@ -521,7 +521,9 @@ def _test_extend_step(layer_cfg: InstantiableConfig, *, model_dim: int, dtype: j
         [batch_size, tgt_len, model_dim],
         dtype=dtype,
     )
-    self_attention_logit_biases = make_causal_mask(tgt_len)  # Only necessary for self-attn layers.
+    self_attention_logit_biases = make_causal_biases(
+        tgt_len
+    )  # Only necessary for self-attn layers.
     inputs = dict(data=query, self_attention_logit_biases=self_attention_logit_biases)
     forward_outputs, _ = F(
         layer,
@@ -564,7 +566,9 @@ def _test_prefill_states(layer_cfg: InstantiableConfig, *, model_dim: int, dtype
         [batch_size, tgt_len, model_dim],
         dtype=dtype,
     )
-    self_attention_logit_biases = make_causal_mask(tgt_len)  # Only necessary for self-attn layers.
+    self_attention_logit_biases = make_causal_biases(
+        tgt_len
+    )  # Only necessary for self-attn layers.
     inputs = dict(data=query, self_attention_logit_biases=self_attention_logit_biases)
     forward_outputs, _ = F(
         layer,
@@ -862,7 +866,7 @@ class StackedMixedSSMTransformerTest(TestCase):
 
         batch_size, tgt_len = 2, 6
         x = jax.random.uniform(jax.random.PRNGKey(1), [batch_size, tgt_len, model_dim])
-        self_attention_logit_biases = make_causal_mask(tgt_len)
+        self_attention_logit_biases = make_causal_biases(tgt_len)
         stacked_outputs, _ = F(
             test_layer,
             inputs=dict(data=x, self_attention_logit_biases=self_attention_logit_biases),

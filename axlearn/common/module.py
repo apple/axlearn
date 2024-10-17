@@ -461,19 +461,20 @@ def child_context(name: str, **kwargs):
 def _call_method_in_context(
     module: "Module", *args, method_fn: Callable, method_name: str, **kwargs
 ):
-    @no_stack_summary
-    # Save call information on the stack so we can get this information from the traceback object.
-    @annotate_stack(
-        module_call=True,
-        module_type=type(module),
-        method_name=method_name,
-        arg_types=[type(a) for a in args],
-        kwarg_types={k: type(v) for k, v in kwargs.items()},
-    )
-    def thunk():
-        # pylint: disable-next=protected-access
-        return module._call_thunk(*args, method_fn=method_fn, **kwargs)()
+    """Call the given method within the invocation context corresponding to `module` and passing
+    it `args` and `kwargs`.
 
+    Args:
+        module: The module whose context the mnethod should be called in.
+        *args: Positional arguments to `method_fn`.
+        method_fn: The method to call.
+        method_name: The name of the method to call.
+        **kwargs: Keyword arguments to `method_fn`.
+
+    Returns:
+        The output of `method_fn(*args, **kwawrgs)` when called from within the invocation context
+        of `module`.
+    """
     if len(args) > 1:
         logging.log_first_n(
             logging.WARNING,
@@ -483,18 +484,33 @@ def _call_method_in_context(
             method_name,
         )
 
-    context = current_context()
-    if context is None:
-        return thunk()
+    # Use ExitStack since we need to repeatedly enter a context in a loop.
+    # This cannot be done with a parenthesized context manager since, confusingly,
+    # even though you can do something like `with (mgr1, mgr2)`,
+    # it is not allowed to do `z = (mgr1, mgr2)` and then `with z`.
+    # We prefer the ExitStack() approach over recursion since it does not add unnecessary frames to
+    # the stack, which can make it harder to use a debugger with AXLearn.
+    with contextlib.ExitStack() as stack:
+        context = current_context()
+        if context is not None:
+            # Enter context for descendant module if not already in it.
+            reversed_path_to_descendant = list(
+                reversed(context.module.path_to_descendant_module(module))
+            )
+            while reversed_path_to_descendant:
+                stack.enter_context(child_context(reversed_path_to_descendant.pop()))
 
-    @no_stack_summary
-    def call_thunk_in_context(reversed_path):
-        if not reversed_path:
-            return thunk()
-        with child_context(reversed_path.pop()):
-            return call_thunk_in_context(reversed_path)
-
-    return call_thunk_in_context(list(reversed(context.module.path_to_descendant_module(module))))
+        # pylint: disable-next=protected-access
+        # Save call information on the stack so we can get this information from the traceback
+        # object.
+        method_fn = annotate_stack(
+            module_call=True,
+            module_type=type(module),
+            method_name=method_name,
+            arg_types=[type(a) for a in args],
+            kwarg_types={k: type(v) for k, v in kwargs.items()},
+        )(method_fn)
+        return method_fn(module, *args, **kwargs)
 
 
 class _PostInitMeta(type):
@@ -518,12 +534,35 @@ def _wrap_method_with_auto_child_context(*, method_fn: Callable, method_name: st
     Callers of this function should either bind the returned function to an instance, e.g. using
     `partial(method_fn, instance)`, or supply an instance explicitly as the first arg.
     """
+    method_fn_in_context = functools.partial(
+        _call_method_in_context, method_fn=method_fn, method_name=method_name
+    )
+    if not traceback_util.is_stack_summary_enabled():
+        method_fn = functools.wraps(method_fn)(method_fn_in_context)
+        return method_fn
 
     @no_stack_summary
-    def wrap_method_fn(self, *args, method_fn=method_fn, **kwargs):
-        return _call_method_in_context(
-            self, *args, method_fn=method_fn, method_name=method_name, **kwargs
-        )
+    @functools.wraps(method_fn)
+    def wrap_method_fn(self, *args, **kwargs):
+        # Wrap method so it is called in a child context and add special handling of
+        # TypeErrors to make it easier to see issues where a wrapped method is called
+        # by the user with the wrong signature.
+        try:
+            return method_fn_in_context(self, *args, **kwargs)
+        except TypeError as e:
+            # Make it easier to see what call triggered the error in CI.
+            # When running in an environment like TPUs where stack summaries are available,
+            # this is unecessary and we would have slightly cleaner summaries without it.
+            if getattr(e, "_handled", False):
+                raise
+            args_types = [type(arg) for arg in args]
+            kwargs_types = {k: type(v) for k, v in kwargs.items()}
+            new_exc = TypeError(
+                f"Type error when calling {self}.{method_fn} "
+                f"with args={args_types} and kwargs={kwargs_types}"
+            )
+            setattr(new_exc, "_handled", True)
+            raise new_exc from e
 
     return wrap_method_fn
 
@@ -572,9 +611,26 @@ class Module(Configurable, metaclass=_PostInitMeta):
         methods of `self.child`. Subclasses will typically override this method to control which
         methods of the subclass to wrap.
         """
+        methods = self._methods_to_wrap_for_auto_child_context()
+        return self._wrap_methods_with_auto_child_context(methods)
+
+    def _wrap_methods_with_auto_child_context(
+        self, methods: dict[str, Callable]
+    ) -> dict[str, Callable]:
+        """Wrap each method in `methods` with an auto child context.
+
+        See `_wrapped_methods_for_auto_child_context()` for more details.
+
+        Args:
+            methods: The methods to wrap. Each key is the method name and each value is the
+                method itself.
+
+        Returns:
+            The wrapped methods.
+        """
         wrapped = {}
 
-        for method_name, method_fn in self._methods_to_wrap_for_auto_child_context().items():
+        for method_name, method_fn in methods.items():
             # method_fn is not bound to any instance.
             self.vlog(1, "Wrapping method %s of %s with auto child context", method_name, self)
             # Wrap method with automatic child context.
@@ -865,22 +921,6 @@ class Module(Configurable, metaclass=_PostInitMeta):
                 module path.
         """
         return self.forward(*args, **kwargs)
-
-    def _call_thunk(self, *args, method_fn, **kwargs) -> Callable[[], Any]:
-        # Build nullary that that evaluates <method_fn(self, *args, **kwargs)> when called.
-        @no_stack_summary
-        def nullary():
-            try:
-                return method_fn(self, *args, **kwargs)
-            except TypeError as e:
-                args_types = [type(arg) for arg in args]
-                kwargs_types = {k: type(v) for k, v in kwargs.items()}
-                raise TypeError(
-                    f"Type error when calling {self}.{method_fn} "
-                    f"with args={args_types} and kwargs={kwargs_types}"
-                ) from e
-
-        return nullary
 
 
 @functools.partial(struct.dataclass, frozen=False)

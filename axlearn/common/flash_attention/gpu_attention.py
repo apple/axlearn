@@ -590,6 +590,9 @@ def _mha_backward(
 
     # NOTE: temporarily removed the "xla" branch, which seems unused.
     if backward_pass_impl == "triton":
+        # We must shrink the block size for float32 inputs to avoid OOM during bwd pass.
+        if jnp.float32 in (q.dtype, k.dtype, v.dtype):
+            block_q = block_k = 64
         batch_size, seq_len, num_heads, head_dim = q.shape
         # Backward heuristics, using the same block size for block q and block k.
         block_q = min(block_q, seq_len)
@@ -611,6 +614,9 @@ def _mha_backward(
         if b is not None:
             assert b.ndim == 4
             b = jnp.moveaxis(b, -1, -2)
+            # We must shrink the block size for float32 inputs to avoid OOM during bwd pass.
+            if b.dtype == jnp.float32:
+                block_q = block_k = 64
 
             def bias_index_map(j, k):
                 return (j if b.shape[0] != 1 else 0, k if b.shape[1] != 1 else 0, 0, 0)

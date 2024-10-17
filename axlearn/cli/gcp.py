@@ -83,6 +83,11 @@ def add_cmd_group(*, parent: CommandGroup):
         module="axlearn.cloud.gcp.jobs.gke_runner",
         help="Run jobs on GKE.",
     )
+    gcp_cmd.add_cmd_from_module(
+        "logs",
+        module="axlearn.cloud.gcp.jobs.logs",
+        help="View job Cloud Logging logs.",
+    )
 
     # Auth command.
     docker_repo = get_path(gcp_configs, f"{active_config}.docker_repo", None)

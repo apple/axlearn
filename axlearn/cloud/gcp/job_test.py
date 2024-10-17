@@ -374,7 +374,9 @@ class TPUGKEJobTest(TestCase):
                 )
                 self.assertEqual("spot", labels.get("bastion-tier", None))
 
-            self.assertEqual(len(pod_spec["containers"]), 1)
+            self.assertEqual(len(pod_spec["containers"]), 2)
+
+            # Verify worker container specs
             container = pod_spec["containers"][0]
             # Check memory request.
             resources = container["resources"]
@@ -407,6 +409,26 @@ class TPUGKEJobTest(TestCase):
             else:
                 self.assertNotIn("cloud.google.com/gke-tpu-ici-resiliency", node_selector)
                 self.assertNotIn("ENABLE_ICI_RESILIENCY", container_env)
+
+            # Verify uploader container specs
+            uploader_container = pod_spec["containers"][1]
+            self.assertEqual(uploader_container["name"], "output-uploader")
+            self.assertEqual(uploader_container["image"], "google/cloud-sdk:alpine")
+            self.assertIn("volumeMounts", uploader_container)
+
+            volume_mounts = uploader_container["volumeMounts"]
+            shared_output_mount = next(
+                (vm for vm in volume_mounts if vm["name"] == "shared-output"), None
+            )
+            self.assertIsNotNone(shared_output_mount)
+            self.assertEqual(shared_output_mount["mountPath"], "/output")
+
+            command = uploader_container["command"]
+            self.assertEqual(command, ["/bin/sh", "-c"])
+            sync_command = uploader_container["args"][0]
+            self.assertIn("gsutil -m rsync -r /output", sync_command)
+            self.assertIn("$HOSTNAME", sync_command)
+            self.assertIn("sleep", sync_command)
 
             if enable_pre_provisioner:
                 self.assertIn(PRE_PROVISIONER_LABEL, node_selector)

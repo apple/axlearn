@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 from absl import logging
 
-from axlearn.common.attention import NEG_INF, MaskFn, causal_mask
+from axlearn.common.attention import NEG_INF, MaskFn, causal_mask, softmax_with_biases
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
 from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
 from axlearn.common.flash_attention.tpu_attention import tpu_flash_attention
@@ -48,11 +48,6 @@ def mha_reference(
     logits = jnp.einsum("btnh,bsnh->bnts", q, k)
 
     # Check if we need to build a segment id mask.
-    if bias is not None:
-        # bias should broadcast to [batch_size, num_heads, seq_len, seq_len].
-        assert bias.ndim >= 2
-        logits += bias.astype(logits.dtype)
-
     if segment_ids is not None:
         assert segment_ids.ndim == 2  # shape [batch_size, seq_len]
         target_segment_ids = jnp.expand_dims(segment_ids, -1)
@@ -70,11 +65,9 @@ def mha_reference(
         mask = (row_ids < col_ids)[None, None, :, :]  # Causal mask.
         logits = jnp.where(mask, NEG_INF, logits)
 
-    logits_dtype = logits.dtype
-    logits = logits.astype(jnp.float32)
-
-    probs = jax.nn.softmax(logits, axis=-1).astype(logits_dtype)
-    return jnp.einsum("bnts,bsnh->btnh", probs, v).astype(v.dtype)
+    probs = softmax_with_biases(logits, bias)
+    context = jnp.einsum("bnts,bsnh->btnh", probs, v).astype(v.dtype)
+    return context
 
 
 # Accepts [query, key, value, attention_bias, segment_ids] tensors and returns the context Tensor.
@@ -112,17 +105,20 @@ def flash_attention_implementation(
             "You can use NEG_INF biases instead, but it won't "
             "have the sparsity optimizations."
         )
-
     if backend == "gpu":
         # shard_map-decorated function needs to be jitted.
         @jax.jit
         def jit_attn(query, key, value, bias, segment_ids):
-            batch, target_len, num_heads, _ = query.shape
-            _, source_len, _, _ = key.shape
-            if segment_ids is not None or (
-                bias is not None and bias.shape != (batch, num_heads, target_len, source_len)
+            # Fall back to triton gpu kernel if:
+            # - segment_ids is not None,
+            # - bias is not None,
+            # - query/key/value are in float32.
+            if (
+                segment_ids is not None
+                or bias is not None
+                or jnp.float32 in (query.dtype, key.dtype, value.dtype)
             ):
-                # Fall back to triton kernel.
+                logging.warning("Flash attention falling back to Triton GPU kernel.")
                 return gpu_flash_attention(
                     query,
                     key,
