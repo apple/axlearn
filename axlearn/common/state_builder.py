@@ -366,9 +366,7 @@ def clone_tree(in_tree: NestedTensor) -> NestedTensor:
     # Tensors are not pickleable, so deepcopy isn't possible.
     # They should be immutable and exist beyond the lifetime of this fn, however,
     # so we copy by reference.
-    return jax.tree_util.tree_map(
-        lambda x: x if isinstance(x, Tensor) else copy.deepcopy(x), in_tree
-    )
+    return jax.tree.map(lambda x: x if isinstance(x, Tensor) else copy.deepcopy(x), in_tree)
 
 
 class TensorStoreStateStorageBuilder(Builder):
@@ -400,7 +398,8 @@ class TensorStoreStateStorageBuilder(Builder):
         Returns:
             The restored state.
         """
-        cfg = self.config
+        cfg: Builder.Config = self.config
+        cfg.storage.max_concurrent_restore_gb = cfg.concurrent_gb
         storage = cfg.storage.instantiate()
         step = parse_step_from_dir(cfg.dir)
         restored_state = storage.restore_from_dir(
@@ -408,7 +407,6 @@ class TensorStoreStateStorageBuilder(Builder):
             state=state.trainer_state,
             ckpt_dir=cfg.dir,
             validation=cfg.validation,
-            concurrent_gb=cfg.concurrent_gb,
         )
         built_keys = state.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=step, trainer_state=restored_state, built_keys=built_keys)
@@ -469,7 +467,7 @@ class BertSequenceClassificationHeadConverter(BaseConverterFromPretrainedModel):
 
     def source_to_target(self, source: Builder.State, aux: Any) -> Builder.State:
         """Produces state compatible with the new classification head."""
-        restored_model = jax.tree_util.tree_map(
+        restored_model = jax.tree.map(
             lambda s, t: self._swap_heads(s, t) if self._is_bert_lm_head(s) else s,
             source.trainer_state.model,
             aux.trainer_state.model,
@@ -536,7 +534,7 @@ def traverse_and_set_target_state_parameters(
                 data_callback=lambda index: src[index],
             )
 
-        target_state = jax.tree_util.tree_map(_to_target_sharding, source_params, target_state)
+        target_state = jax.tree.map(_to_target_sharding, source_params, target_state)
     else:
         scope = target_scope.pop(0)  # The item should be popped from the bottom of the list.
         target_state[scope] = traverse_and_set_target_state_parameters(
@@ -872,7 +870,7 @@ class PosEmbeddingConverter(BaseConverterFromPretrainedModel):
                 return self._derive_compat_source_pos_emb(src, tgt)
             return src if isinstance(src, Tensor) else tgt
 
-        restored_state = jax.tree_util.tree_map(
+        restored_state = jax.tree.map(
             restored_state,
             source.trainer_state,
             aux.trainer_state,
@@ -1065,7 +1063,7 @@ class SimpleWeightModifierBuilder(Builder):
             else:
                 return x
 
-        modified_trainer_state = jax.tree_util.tree_map(
+        modified_trainer_state = jax.tree.map(
             maybe_modify,
             state.trainer_state,
             is_leaf=self._should_modify,

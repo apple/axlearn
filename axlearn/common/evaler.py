@@ -664,7 +664,7 @@ class SpmdEvaler(Module):
                 assert (
                     forward_outputs is not None
                 ), "output was None at the end of a trace, not expected."
-                jax.tree_util.tree_map(lambda x: x.block_until_ready(), forward_outputs)
+                jax.tree.map(lambda x: x.block_until_ready(), forward_outputs)
                 jax.profiler.stop_trace()
                 self.vlog(2, "Stopped profiler tracing for evaler %s.", cfg.name)
                 stop_trace_iter = None
@@ -854,11 +854,11 @@ class GlobalMetricCalculator(BaseMetricCalculator):
 
         # WARNING: Directly concatenating leads to incorrect XLA sharding.
         # A nested tree where each leaf tensor has shape [num_eval_batches, batch_size, ...]
-        stacked_outputs = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *outputs)
+        stacked_outputs = jax.tree.map(lambda *xs: jnp.stack(xs, axis=0), *outputs)
         # Each concatenated leaf tensor has shape [num_eval_batches * batch_size, ...] when all
         # other dimensions of the stacked output are positive. Otherwise, that concatenated leaf
         # node will be set as None.
-        concatenated_outputs = jax.tree_util.tree_map(
+        concatenated_outputs = jax.tree.map(
             lambda xs: (
                 with_sharding_constraint(
                     jnp.reshape(xs, (-1, *xs.shape[2:])), input_partition_spec()
@@ -890,7 +890,5 @@ class GlobalMetricCalculator(BaseMetricCalculator):
             return metrics
 
         outputs = replicate_to_local_data(all_forward_outputs)
-        concatenated_outputs = jax.tree_util.tree_map(
-            lambda *xs: jnp.concatenate(xs, axis=0), *outputs
-        )
+        concatenated_outputs = jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *outputs)
         return self._calculate_metrics(concatenated_outputs)

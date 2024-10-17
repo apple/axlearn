@@ -272,7 +272,7 @@ async def _run_serializer(
         else None
     )
     # pylint: enable=protected-access
-    future_writer = jax.tree_util.tree_map(
+    future_writer = jax.tree.map(
         functools.partial(
             _async_serialize, limiter=limiter, max_data_shard_degree=max_data_shard_degree
         ),
@@ -328,6 +328,42 @@ class _CommitFuture:
 
     def result(self, timeout: Optional[int] = None) -> Any:
         return self._t.join(timeout=timeout)
+
+
+class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
+    """Similar to GlobalAsyncCheckpointManager but allows passing additional futures to be awaited
+    while asynchronously serializing tensors.
+    """
+
+    def serialize(
+        self,
+        arrays: list[Tensor],
+        tensorstore_specs: list[dict],
+        *,
+        on_commit_callback: Callable[[], None],
+        additional_futures: Optional[list[futures.Future]] = None,
+    ):
+        logging.info("Waiting for previous serialization to finish.")
+        self.wait_until_finished()
+
+        commit_futures = [[] for _ in range(len(tensorstore_specs))]
+
+        # pylint: disable-next=redefined-outer-name
+        async def _run_serializer():
+            future_writer = jax.tree.map(
+                serialization.async_serialize, arrays, tensorstore_specs, commit_futures
+            )
+            return await asyncio.gather(*future_writer)
+
+        asyncio.run(_run_serializer())
+
+        self._add_futures(
+            jax.tree_util.tree_flatten(commit_futures)[0] + (additional_futures or [])
+        )
+
+        # Used in wait_until_finished to check on process != 0, if the checkpoint
+        # has finished writing.
+        self._start_async_commit(on_commit_callback)
 
 
 class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
@@ -387,6 +423,7 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
         tensorstore_specs: list[dict],
         *,
         on_commit_callback: Callable[[], None],
+        additional_futures: Optional[list[futures.Future]] = None,
     ):
         """See JAX `GlobalAsyncCheckpointManager` docstring."""
 
@@ -428,6 +465,7 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
                     )
                 )
             ]
+            + (additional_futures or [])
         )
 
         # Block until D2H is complete and get shard_info for logging.

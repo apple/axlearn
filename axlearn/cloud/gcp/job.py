@@ -318,6 +318,10 @@ class GKEJob(GCPJob):
                 See `GCSFuseMount` for details.
             enable_pre_provisioner: Whether to enable pre-provisioner.
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
+            output_dir: Optional; The output directory of the GKE job outputs.
+                Each host's output will be placed in `"{output_dir}/output/$HOSTNAME/"`.
+                This directory is used by the sidecar container to sync outputs to GCS using gsutil.
+                Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
         """
 
         env_vars: dict[str, str] = {}
@@ -326,6 +330,7 @@ class GKEJob(GCPJob):
         # This config is made Optional for backwards compatibility. Default is False.
         enable_pre_provisioner: Optional[bool] = None
         queue: Optional[str] = None
+        output_dir: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -379,12 +384,15 @@ class TPUGKEJob(GKEJob):
                 TPU topology.
             location_hint: If set, the job will be scheduled to run on this TPU location.
                 If None, we leave it to GCP to determine where the TPUs are located.
+            enable_tpu_smart_repair: Whether to enable TPU smart repair.
+                GKE 1.29.3-gke.1154000 or above is required.
         """
 
         accelerator: AcceleratorConfig = AcceleratorConfig()
         reservation: Optional[str] = None
         enable_tpu_ici_resiliency: Optional[bool] = None
         location_hint: Optional[str] = None
+        enable_tpu_smart_repair: bool = False
         use_pathways: Optional[bool] = False
 
     @classmethod
@@ -411,6 +419,9 @@ class TPUGKEJob(GKEJob):
         cfg.reservation = cfg.reservation or gcp_settings("gke_reservation", required=False, fv=fv)
         # Only read from the config file since users shouldn't need to configure this.
         cfg.location_hint = gcp_settings("location_hint", required=False, fv=fv)
+        cfg.enable_tpu_smart_repair = bool(
+            gcp_settings("enable_tpu_smart_repair", required=False, fv=fv)
+        )
         return cfg
 
     def __init__(self, cfg: Config):
@@ -423,6 +434,7 @@ class TPUGKEJob(GKEJob):
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         super().__init__(cfg)
         self._gcsfuse_volume = "gcs-fuse-csi-ephemeral"
+        self._output_volume_mount = dict(name="shared-output", mountPath="/output")
         if cfg.use_pathways:
             self._import_pathways()
 
@@ -440,7 +452,7 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        volume_mounts = []
+        volume_mounts = [self._output_volume_mount]
 
         if cfg.gcsfuse_mount:
             # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
@@ -485,6 +497,40 @@ class TPUGKEJob(GKEJob):
             volumeMounts=volume_mounts,
         )
 
+    def _build_uploader_container(self) -> Nested[Any]:
+        """Builds a config for the uploader container which sync logs to the output dir.
+
+        The sidecar container runs an loop to periodically sync outputs to GCS until the Pod is
+        terminated.
+        When the main container exits, Kubernetes will then send a termination signal (SIGTERM)
+        to the uploader container, allowing it to exit gracefully.
+
+        Returns:
+            A nested dict corresponding to a k8s Container config.
+        """
+        cfg: TPUGKEJob.Config = self.config
+
+        dst = f"{cfg.output_dir}/output/$HOSTNAME/"
+        interval_s = 60
+
+        sync_command = f"while true; do gsutil -m rsync -r /output {dst}; sleep {interval_s}; done"
+
+        volume_mounts = [self._output_volume_mount]
+
+        resources = {
+            "requests": {"cpu": "100m", "memory": "128Mi"},
+            "limits": {"cpu": "500m", "memory": "256Mi"},
+        }
+
+        return dict(
+            name="output-uploader",
+            image="google/cloud-sdk:alpine",
+            command=["/bin/sh", "-c"],
+            args=[sync_command],
+            resources=resources,
+            volumeMounts=volume_mounts,
+        )
+
     def _build_pod(self) -> Nested[Any]:
         """Builds a config for a single Pod, which is a set of containers.
 
@@ -497,6 +543,7 @@ class TPUGKEJob(GKEJob):
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
 
+        volumes.append(dict(name="shared-output", emptyDir={}))
         if cfg.gcsfuse_mount:
             # Mount a GCS bucket as a volume.
             annotations.update(
@@ -600,6 +647,17 @@ class TPUGKEJob(GKEJob):
             }
         )
 
+        if cfg.enable_tpu_smart_repair:
+            labels.update({"cloud.google.com/gke-tpu-auto-restart": "true"})
+            annotations.update(
+                {
+                    # The list of labels to be copied to node pools by tpu-provisioner.
+                    # https://github.com/GoogleCloudPlatform/ai-on-gke/blob/main/tpu-provisioner/internal/cloud/common.go#L27-L28
+                    # pylint: disable=line-too-long
+                    "tpu-provisioner.cloud.google.com/copy-labels": "cloud.google.com/gke-tpu-auto-restart"
+                }
+            )
+
         return dict(
             metadata=dict(annotations=annotations, labels=labels),
             spec=dict(
@@ -613,7 +671,7 @@ class TPUGKEJob(GKEJob):
                     **selector,
                 },
                 tolerations=tolerations,
-                containers=[self._build_container()],
+                containers=[self._build_container(), self._build_uploader_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
             ),

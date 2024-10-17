@@ -7,7 +7,7 @@ import pytest
 from absl.testing import parameterized
 from jax import numpy as jnp
 
-from axlearn.audio.asr_encoder import ASREncoder, SpeechContextNetwork, SpeechFeatureLayer
+from axlearn.audio.encoder_asr import ASREncoder, SpeechContextNetwork, SpeechFeatureLayer
 from axlearn.audio.test_utils import fake_audio
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase

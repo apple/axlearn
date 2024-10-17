@@ -67,11 +67,13 @@ from axlearn.common.attention import (
     apply_rotary_position_embeddings,
     build_remat_spec,
     compute_padding_biases,
-    make_causal_mask,
+    make_causal_biases,
+    make_sliding_window_causal_biases,
     rel_pos_to_abs_pos,
     scaled_hidden_dim,
     set_double_shard_weights_config,
     sinusoidal_positional_embeddings,
+    sliding_window_causal_mask,
     xl_attention_logits,
 )
 from axlearn.common.base_layer import (
@@ -142,7 +144,7 @@ class MaskTest(absltest.TestCase):
 
     def test_causal_mask(self):
         expected = jnp.array([[0.0, NEG_INF, NEG_INF], [0.0, 0.0, NEG_INF], [0.0, 0.0, 0.0]])
-        actual = attention.make_causal_mask(3)
+        actual = attention.make_causal_biases(3)
         self.assertTrue(jnp.all(actual <= expected))
 
     def test_segment_mask(self):
@@ -651,7 +653,9 @@ class ALiBiAttentionLogitBiasLayerTest(TestCase):
                 # Construct the ref_alibi for the current segment.
                 # [num_heads, segment_len].
                 ref_alibi = self.ref_alibi_implementation(1, num_heads, segment_len).squeeze(0)
-                ref_causal_mask = jnp.repeat(make_causal_mask(segment_len)[None, ...], num_heads, 0)
+                ref_causal_mask = jnp.repeat(
+                    make_causal_biases(segment_len)[None, ...], num_heads, 0
+                )
                 ref_alibi = attention.apply_attention_logit_biases(ref_alibi, ref_causal_mask)
                 ref_alibi = jax.nn.softmax(ref_alibi, axis=-1)
 
@@ -780,7 +784,7 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         ref_rope_emb,
     ):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
-        layer_param_shapes = jax.tree_util.tree_map(lambda x: x.shape, layer_params)
+        layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
         print(f"layer state={layer_param_shapes}")
         layer_params = parameters_from_torch_layer(ref)
         model_dim, num_heads = layer.config.target_dim, layer.config.attention.num_heads
@@ -1399,6 +1403,146 @@ class QKVLinearTest(TestCase):
                 # Check that the outputs are close for all pairs.
                 self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
 
+    @parameterized.parameters(
+        attention.QKVLinear,
+        attention.FusedQKVLinear,
+        attention.GroupedQKVLinear,
+        attention.FusedGroupedQKVLinear,
+        attention.RoFormerQKVLinear,
+    )
+    def test_repeated_extend_step(self, layer_cls: type[attention.BaseQKVLinear]):
+        """Tests that calling QKVLinear.extend_step() multiple times with the
+        same time_step results in the same output."""
+
+        model_dim = 8
+        num_heads = 2
+        per_head_dim = model_dim // num_heads
+        layer_kwargs = dict(
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            per_head_dim=per_head_dim,
+        )
+        cfg = layer_cls.default_config().set(**layer_kwargs)
+        maybe_set_config(cfg, num_kv_heads=num_heads, rotary_value=False)
+        layer = cfg.set(name="test").instantiate(parent=None)
+
+        # Construct base layer state.
+        layer_state = layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        # Construct test inputs.
+        batch_size, tgt_len = 2, 4
+        query = jax.random.uniform(jax.random.PRNGKey(0), [batch_size, tgt_len, model_dim])
+
+        extend_step_state, _ = F(
+            layer,
+            state=layer_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=dict(target_batch_size=batch_size, target_max_len=tgt_len),
+            method="init_states",
+        )
+        for t in range(tgt_len):
+            (first_call_state, first_call_output), _ = F(
+                layer,
+                state=layer_state,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(456),
+                inputs=dict(cached_states=extend_step_state, query=query[:, t : t + 1]),
+                method="extend_step",
+            )
+            # Rewind the time_step.
+            first_call_state["time_step"] -= 1
+            (extend_step_state, second_call_output), _ = F(
+                layer,
+                state=layer_state,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(456),
+                inputs=dict(cached_states=first_call_state, query=query[:, t : t + 1]),
+                method="extend_step",
+            )
+            self.assertNestedAllClose(first_call_output, second_call_output)
+
+    @parameterized.parameters(jnp.float32, jnp.float16, jnp.bfloat16)
+    def test_dtypes_inherited_from_parent(self, dtype: jnp.dtype):
+        """Test that the dtype is inherited from the parent.
+
+        When neither `Config.cache_dtype` nor `BaseLayer.Config.dtype` are set the dtype should
+        be inherited from the parent, and the dtype should be preserved in values in the
+        cached states and outputs.
+        """
+
+        target_batch_size = 3
+        target_max_len = 6
+        model_dim = 12
+        num_heads = 4
+        per_head_dim = model_dim // num_heads
+        layer_kwargs = dict(
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            per_head_dim=per_head_dim,
+        )
+
+        class Parent(BaseLayer):
+            @config_class
+            class Config(BaseLayer.Config):
+                qkv_linear: InstantiableConfig = QKVLinear.default_config().set(**layer_kwargs)
+
+            def __init__(self, cfg: Config, *, parent: Module):
+                super().__init__(cfg, parent=parent)
+                cfg = self.config
+                self._add_child("qkv_linear", cfg.qkv_linear)
+
+        parent_cfg = Parent.default_config().set(name="parent", dtype=dtype)
+        # Test assumes that dtype is not set in test_cfg.
+        self.assertIs(parent_cfg.qkv_linear.dtype, None)
+        parent = parent_cfg.instantiate(parent=None)
+        qkv_linear = parent.qkv_linear
+        state = qkv_linear.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        # Check dtypes from init_states
+        cache, _ = F(
+            qkv_linear,
+            prng_key=jax.random.PRNGKey(0),
+            state=state,
+            inputs=dict(
+                target_batch_size=target_batch_size,
+                target_max_len=target_max_len,
+            ),
+            method="init_states",
+            is_training=False,
+        )
+        self.assertEqual(cache["key"].dtype, dtype)
+        self.assertEqual(cache["value"].dtype, dtype)
+
+        query = jax.random.uniform(
+            jax.random.PRNGKey(0),
+            shape=(target_batch_size, target_max_len, model_dim),
+            dtype=dtype,
+        )
+        # Time step in the middle, so that some of the init_state is masked.
+        time_step = jnp.full(
+            shape=target_batch_size,
+            fill_value=target_max_len // 2,
+            dtype=jnp.int32,
+        )
+        (init_state, output), _ = F(
+            qkv_linear,
+            prng_key=jax.random.PRNGKey(0),
+            state=state,
+            inputs=dict(time_step=time_step, query=query),
+            method="prefill_states",
+            is_training=False,
+        )
+        self.assertEqual(init_state["key"].dtype, dtype)
+        self.assertEqual(init_state["value"].dtype, dtype)
+        self.assertEqual(output.query.dtype, dtype)
+        self.assertEqual(output.key.dtype, dtype)
+        self.assertEqual(output.value.dtype, dtype)
+
 
 class PerDimScaleTest(TestCase):
     """Tests PerDimScale."""
@@ -1499,7 +1643,7 @@ class ScaleQueryTest(TestCase):
         layer = cfg.instantiate(parent=None)
 
         param_specs = layer.create_parameter_specs_recursively()
-        layer_params = jax.tree_util.tree_map(
+        layer_params = jax.tree.map(
             lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
         )
 
@@ -1573,7 +1717,7 @@ class ScaleKeyTest(TestCase):
         layer = cfg.instantiate(parent=None)
 
         param_specs = layer.create_parameter_specs_recursively()
-        layer_params = jax.tree_util.tree_map(
+        layer_params = jax.tree.map(
             lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
         )
 
@@ -1963,13 +2107,94 @@ class MultiheadAttentionTest(TestCase):
             attention_logit_biases = attention_logit_biases_fn(seq_len)
             if layer is ref_layer:
                 # Apply causal mask on top of the logit biases for `ref_layer`.
-                causal_mask = make_causal_mask(seq_len)
+                causal_biases = make_causal_biases(seq_len)
                 if attention_logit_biases is None:
-                    attention_logit_biases = causal_mask
+                    attention_logit_biases = causal_biases
                 else:
                     attention_logit_biases = apply_attention_logit_biases(
-                        attention_logit_biases, causal_mask
+                        attention_logit_biases, causal_biases
                     )
+            inputs = dict(query=query, attention_logit_biases=attention_logit_biases)
+            layer_outputs, _ = F(
+                layer,
+                state=layer_params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(456),
+                inputs=inputs,
+            )
+            outputs.append(layer_outputs)
+        # The outputs are equivalent.
+        self.assertNestedAllClose(outputs[0], outputs[1])
+
+    @parameterized.product(
+        base_cfg=(
+            attention.MultiheadAttention.default_config(),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.GroupedQKVLinear.default_config().set(num_kv_heads=2)
+            ),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.FusedGroupedQKVLinear.default_config().set(num_kv_heads=2)
+            ),
+            attention.GroupedQueryAttention.default_config().set(
+                input_linear=attention.RoFormerQKVLinear.default_config().set(rotary_value=False)
+            ),
+            attention.SigmoidAttention.default_config().set(
+                input_linear=attention.RoFormerQKVLinear.default_config().set(rotary_value=False),
+                seq_len=4,
+            ),
+            attention.SigmoidAttention.default_config().set(
+                # Used in ALiBi position encoding.
+                input_linear=FusedQKVLinear.default_config(),
+                seq_len=4,
+            ),
+        ),
+        attention_logit_biases_fn=(
+            lambda seq_len: None,
+            lambda seq_len: _random_mask(jax.random.PRNGKey(1), seq_len, seq_len),
+        ),
+    )
+    def test_sliding_window(
+        self,
+        base_cfg: attention.MultiheadAttention.Config,
+        attention_logit_biases_fn: Callable[[int], Tensor],
+    ):
+        """
+        Tests that base_cfg with sliding window causal mask fns is equivalent to applying a
+        causal sliding window mask.
+        """
+        model_dim = 16
+        num_heads = 4
+        ref_cfg = base_cfg.clone(
+            name="test",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+        )
+        self.assertFalse(ref_cfg.causal)
+        ref_layer = ref_cfg.instantiate(parent=None)
+        layer_params = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        sliding_window_size = 2
+        test_cfg = ref_cfg.clone(
+            causal=False,
+            mask=config_for_function(sliding_window_causal_mask).set(
+                sliding_window_size=sliding_window_size
+            ),
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        batch_size, seq_len = 2, 4
+        query = jnp.zeros([batch_size, seq_len, model_dim], dtype=jnp.float32)
+        outputs = []
+        for layer in (ref_layer, test_layer):
+            attention_logit_biases = attention_logit_biases_fn(seq_len)
+            if layer is ref_layer:
+                # Apply causal and sliding window mask on top of the logit biases for `ref_layer`.
+                attention_logit_biases = apply_attention_logit_biases(
+                    make_sliding_window_causal_biases(seq_len, sliding_window_size),
+                    attention_logit_biases,
+                )
             inputs = dict(query=query, attention_logit_biases=attention_logit_biases)
             layer_outputs, _ = F(
                 layer,
@@ -2071,7 +2296,7 @@ class MultiheadAttentionTest(TestCase):
             ),
             key=None,
             value=None,
-            attention_logit_biases=attention.make_causal_mask(tgt_len),
+            attention_logit_biases=attention.make_causal_biases(tgt_len),
         )
         # Get outputs.
         forward_key = jax.random.PRNGKey(456)
@@ -2131,7 +2356,7 @@ class MultiheadAttentionTest(TestCase):
             )
         else:
             key = value = query
-        attention_logit_biases = attention.make_causal_mask(tgt_len)
+        attention_logit_biases = attention.make_causal_biases(tgt_len)
         return_aux = {"probs"}
         inputs = dict(
             query=query,
@@ -2279,7 +2504,7 @@ class MultiheadAttentionTest(TestCase):
         query = jax.random.normal(
             jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
         )
-        attention_logit_biases = attention.make_causal_mask(tgt_len)
+        attention_logit_biases = attention.make_causal_biases(tgt_len)
         return_aux = {"probs"}
 
         forward_outputs, _ = F(
@@ -2472,7 +2697,7 @@ class MultiheadAttentionTest(TestCase):
         layer = cfg.instantiate(parent=None)
 
         param_specs = layer.create_parameter_specs_recursively()
-        layer_params = jax.tree_util.tree_map(
+        layer_params = jax.tree.map(
             lambda spec: jnp.ones(spec.shape, dtype=spec.dtype), param_specs
         )
 
@@ -2607,7 +2832,7 @@ class MultiheadAttentionTest(TestCase):
             q_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             k_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             v_proj=jnp.full(qkv_shape, fill_value=qkv_value),
-            attention_logit_biases=attention.make_causal_mask(seq_len),
+            attention_logit_biases=attention.make_causal_biases(seq_len),
         )
 
         # Get outputs.
@@ -2625,8 +2850,8 @@ class MultiheadAttentionTest(TestCase):
         output_shape = [batch_size, num_heads, seq_len, seq_len]
         indexes = jnp.arange(seq_len)
         # Zeros outside of the causal triangle.
-        causal_mask = jax.lax.ge(indexes[:, None], indexes[None, :])
-        expected_output = jnp.full(output_shape, fill_value=expected_value) * causal_mask
+        causal_biases = jax.lax.ge(indexes[:, None], indexes[None, :])
+        expected_output = jnp.full(output_shape, fill_value=expected_value) * causal_biases
 
         self.assertNestedAllClose(probs, expected_output)
 
@@ -3073,7 +3298,7 @@ class TransformerTest(BaseTransformerTest):
         self, ref: hf_roberta.RobertaAttention, layer: TransformerAttentionLayer
     ):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
-        layer_param_shapes = jax.tree_util.tree_map(lambda x: x.shape, layer_params)
+        layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
         print(f"layer state={layer_param_shapes}")
         layer_params = parameters_from_torch_layer(ref)
         batch_size, tgt_len = 2, 6
@@ -3301,7 +3526,7 @@ class ParallelTransformerTest(TestCase):
         batch_size, tgt_len = 2, 6
         rng = np.random.default_rng(seed=123)
         target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
-        mask = attention.make_causal_mask(tgt_len)
+        mask = attention.make_causal_biases(tgt_len)
         mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
         layer_outputs, _ = F(
             layer,
@@ -3366,7 +3591,7 @@ def _convert_from_stacked_params(
             x_shape = list(x.shape)
             return jnp.reshape(x, [target_stack_cfg.num_stages, num_layers_per_stage] + x_shape[1:])
 
-        pipeline_params = jax.tree_util.tree_map(reshape, layer_params["stack"].pop("repeat"))
+        pipeline_params = jax.tree.map(reshape, layer_params["stack"].pop("repeat"))
 
         if pipeline_stage_cfg.klass == RepeatedTransformerLayer:
             layer_params["stack"]["pipeline"] = VDict({"layer": {"repeat": pipeline_params}})
@@ -3374,9 +3599,7 @@ def _convert_from_stacked_params(
             layer_params["stack"]["pipeline"] = VDict(
                 {
                     "layer": {
-                        f"layer{i}": jax.tree_util.tree_map(
-                            lambda x, i=i: x[:, i], pipeline_params["layer"]
-                        )
+                        f"layer{i}": jax.tree.map(lambda x, i=i: x[:, i], pipeline_params["layer"])
                         for i in range(num_layers_per_stage)
                     }
                 }
@@ -3400,6 +3623,22 @@ class NonUniformStack(StackedTransformerLayer):
             self_attention_probs=None,
             cross_attention_probs=None,
         )
+
+
+class TestStackedTransformerLayerWithDataOverride(NonUniformStack):
+    """A class with a simple override of _update_data for unit testing."""
+
+    @property
+    def forced_input(self):
+        return jnp.ones((2, 3, 4))
+
+    def _update_data(
+        self,
+        data: Tensor,
+        *,
+        all_layer_outputs: list[BaseTransformerLayer.Output],
+    ):
+        return self.forced_input
 
 
 class TestStackedTransformerLayerWithKVState(NonUniformStack):
@@ -3490,7 +3729,7 @@ class StackedTransformerTest(BaseTransformerTest):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = attention.make_causal_mask(tgt_len)
+        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
@@ -3547,7 +3786,7 @@ class StackedTransformerTest(BaseTransformerTest):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                jax.tree_util.tree_map(
+                jax.tree.map(
                     lambda v: self.assertIsInstance(v, utils.VDict),
                     updated_states,
                     is_leaf=lambda v: isinstance(v, dict),
@@ -3614,7 +3853,7 @@ class StackedTransformerTest(BaseTransformerTest):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = attention.make_causal_mask(tgt_len)
+        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
@@ -3705,7 +3944,7 @@ class StackedTransformerTest(BaseTransformerTest):
             )
             # Check that updated_states are VDicts for the Repeated layer.
             if transformer_type is RepeatedTransformerLayer:
-                jax.tree_util.tree_map(
+                jax.tree.map(
                     lambda v: self.assertIsInstance(v, utils.VDict),
                     updated_states,
                     is_leaf=lambda v: isinstance(v, dict),
@@ -3741,6 +3980,47 @@ class StackedTransformerTest(BaseTransformerTest):
         assert_allclose(decoder_output, forward_outputs.data)
         assert_allclose(decoder_self_attention_probs, forward_outputs.self_attention_probs)
         assert_allclose(decoder_cross_attention_probs, forward_outputs.cross_attention_probs)
+
+    def test_update_data(self):
+        batch_size = 2
+        seq_len = 6
+        num_heads = 2
+        input_dim = 4
+        hidden_dim = 8
+
+        # Create a StackedTransformerLayer by specifying a sequence of non-uniform layer configs.
+        cfg = TestStackedTransformerLayerWithDataOverride.default_config().set(name="test")
+        cfg.input_dim = input_dim
+        cfg.num_layers = 2
+
+        transformer_cfg = TransformerLayer.default_config()
+        transformer_cfg.self_attention.attention.num_heads = num_heads
+        transformer_cfg.feed_forward.hidden_dim = hidden_dim
+        cfg.layer = transformer_cfg
+
+        layer: StackedTransformerLayer = cfg.instantiate(parent=None)
+        random_inputs = jax.random.uniform(
+            jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim)
+        )
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        outputs_with_random_input, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(data=random_inputs),
+        )
+        outputs_with_forced_input, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(data=layer.forced_input),
+        )
+        self.assertNestedAllClose(
+            outputs_with_random_input.data,
+            outputs_with_forced_input.data,
+        )
 
     def test_update_layer_kwargs(self):
         batch_size = 2
@@ -3886,7 +4166,7 @@ class StackedTransformerTest(BaseTransformerTest):
                 logging.info(
                     "%s.factorization_specs=%s",
                     cls,
-                    jax.tree_util.tree_map(lambda x: x.factorization, param_specs),
+                    jax.tree.map(lambda x: x.factorization, param_specs),
                 )
                 layer_params = layer.initialize_parameters_recursively(
                     prng_key=jax.random.PRNGKey(123)
@@ -3917,7 +4197,9 @@ class StackedTransformerTest(BaseTransformerTest):
                 def _loss(layer_params, data, mask, layer=layer):
                     layer_outputs, layer_output_collection = F(
                         layer,
-                        inputs=dict(data=data, self_attention_logit_biases=mask),
+                        inputs=dict(
+                            data=data, self_attention_logit_biases=mask, target_segment_ids=None
+                        ),
                         state=layer_params,
                         is_training=True,
                         prng_key=jax.random.PRNGKey(0),
@@ -3955,7 +4237,7 @@ class StackedTransformerTest(BaseTransformerTest):
                     clipping_threshold=1.0,
                     eps=1e-2,
                 )
-                opt_params = jax.tree_util.tree_map(
+                opt_params = jax.tree.map(
                     lambda spec, p: OptParam(
                         value=p,
                         factorization_spec=spec.factorization,
@@ -3972,11 +4254,9 @@ class StackedTransformerTest(BaseTransformerTest):
                     return jnp.sqrt(jnp.mean(x**2))
 
                 if cls == StackedTransformerLayer:
-                    update_norms = jax.tree_util.tree_map(rms_norm, updates)
+                    update_norms = jax.tree.map(rms_norm, updates)
                 else:
-                    update_norms = jax.vmap(
-                        lambda x, norm=rms_norm: jax.tree_util.tree_map(norm, x)
-                    )(updates)
+                    update_norms = jax.vmap(lambda x, norm=rms_norm: jax.tree.map(norm, x))(updates)
                 logging.info(
                     "global_update_norm=%s update_norms=%s",
                     optax.global_norm(updates),
@@ -4008,7 +4288,7 @@ class StackedTransformerTest(BaseTransformerTest):
                             raise NotImplementedError(cfg.stack.stage.klass)
 
                         # Then reshape across stages.
-                        x["stack"] = jax.tree_util.tree_map(
+                        x["stack"] = jax.tree.map(
                             lambda x: x.reshape([num_layers] + list(x.shape[2:])),
                             x["stack"]["pipeline"]["layer"],
                         )
@@ -4565,7 +4845,7 @@ class BottleNeckAdapterTransformerLayerTest(TestCase):
         state = adapter.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
 
         data = jax.random.normal(jax.random.PRNGKey(1), [batch_size, tgt_len, model_dim])
-        self_attention_logit_biases = attention.make_causal_mask(tgt_len)
+        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
 
         outputs, _ = F(
             adapter,

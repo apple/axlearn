@@ -5,15 +5,21 @@ https://github.com/openai/openai-python
 
 This would work for both ChatGPT and vLLM based open source models.
 """
+import copy
 import json
 import logging
 import os
 import re
 from typing import Any
 
-# isort: off
-from axlearn.open_api.common import BaseClient, ClientRateLimitError, ValidationError
+from axlearn.open_api.common import (
+    BaseClient,
+    ClientRateLimitError,
+    EvalGeneratorType,
+    ValidationError,
+)
 
+# isort: off
 # pylint: disable=import-error
 # pytype: disable=import-error
 from openai import AsyncOpenAI, RateLimitError
@@ -38,8 +44,15 @@ class OpenAIClient(BaseClient):
         default_headers = None
         if os.environ.get("COOKIE") is not None:
             default_headers = {"Cookie": os.environ["COOKIE"]}
+        api_key = os.environ.get("OPENAI_API_KEY", "EMPTY")
+        base_url = None
+        if cfg.generator_type == EvalGeneratorType.GRADER:
+            api_key = os.environ.get("GRADER_OPENAI_API_KEY", api_key)
+            base_url = os.environ.get("GRADER_OPENAI_BASE_URL", "https://api.openai.com/v1")
+
         return AsyncOpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY", "EMPTY"),
+            api_key=api_key,
+            base_url=base_url,
             default_headers=default_headers,
             timeout=cfg.timeout,
         )
@@ -77,11 +90,13 @@ class OpenAIClient(BaseClient):
                     **kwargs,
                 )
             else:
+                req_kwargs = copy.deepcopy(kwargs)
+                if "tools" in request:
+                    req_kwargs.update({"tools": request["tools"]})
                 response: ChatCompletion = await client.chat.completions.create(
                     messages=messages,
-                    tools=request.get("tools", None),
                     extra_body=cfg.extra_body,
-                    **kwargs,
+                    **req_kwargs,
                 )
         except RateLimitError as e:
             raise ClientRateLimitError("Rate limiting") from e

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Retrieval evaluation pipeline."""
+
 import csv
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -9,11 +10,11 @@ from typing import Any, Callable, Optional
 
 import jax
 import numpy as np
-import tensorflow as tf
 from absl import logging
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
+from axlearn.common import file_system as fs
 from axlearn.common import utils
 from axlearn.common.attention import NEG_INF
 from axlearn.common.base_model import BaseModel
@@ -361,7 +362,7 @@ class EmbeddingRetrievalMetricCalculator(GlobalMetricCalculator):
             categories = jnp.concatenate(categories_chunked)
         else:
             categories = None
-        per_query_metrics = jax.tree_util.tree_map(  # pylint: disable=no-value-for-parameter
+        per_query_metrics = jax.tree.map(  # pylint: disable=no-value-for-parameter
             lambda *xs: jnp.concatenate(xs), *metrics_chunked
         )
 
@@ -528,7 +529,7 @@ class CxcImageRetrievalMetricCalculator(EmbeddingRetrievalMetricCalculator):
 
 
 def _load_cxc_relevance(path: str) -> tuple[Tensor, dict[str, int]]:
-    with tf.io.gfile.GFile(path) as fin:
+    with fs.open(path) as fin:
         rows = list(csv.DictReader(fin))
     image_ids = sorted({row[k] for row in rows for k in ["image1", "image2"]})
     image_id_to_pos = {k: i for i, k in enumerate(image_ids)}

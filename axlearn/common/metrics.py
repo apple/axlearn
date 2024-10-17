@@ -2,7 +2,6 @@
 
 """Metrics."""
 
-import typing
 from typing import Any, Optional, Union
 
 import jax
@@ -10,7 +9,6 @@ import jax.numpy as jnp
 from absl import logging
 
 from axlearn.common.config import Configurable
-from axlearn.common.module import Summable
 from axlearn.common.summary import Summary
 from axlearn.common.utils import NestedTensor, Tensor
 
@@ -25,8 +23,7 @@ class WeightedScalarValue(Summary):
         return self.mean
 
 
-@typing.runtime_checkable  # Needed for isinstance checks to work.
-class WeightedScalar(WeightedScalarValue, Summable):
+class WeightedScalar(WeightedScalarValue):
     """A weighted scalar represents a weighted Summable value.
 
     Weight should be a scalar and is assumed to be non-negative.
@@ -86,7 +83,7 @@ class MetricAccumulator(Configurable):
     @staticmethod
     def _tree_map(*args, **kwargs):
         is_leaf = lambda x: isinstance(x, Summary)
-        return jax.tree_util.tree_map(*args, **kwargs, is_leaf=is_leaf)
+        return jax.tree.map(*args, **kwargs, is_leaf=is_leaf)
 
 
 def _metric_accumulator_flatten(v: MetricAccumulator) -> tuple[tuple, tuple]:

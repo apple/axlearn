@@ -110,12 +110,12 @@ class ScheduleTest(parameterized.TestCase):
                 self.assertAlmostEqual(1 / math.sqrt(step), value)
 
     @parameterized.product(
+        warmup_steps=(0, 100),
         decay_begin_step=(None, 50, 200),
     )
-    def test_cosine_with_linear_warmup(self, decay_begin_step):
+    def test_cosine_with_linear_warmup(self, warmup_steps, decay_begin_step):
         peak_lr = 0.1
         max_step = 300
-        warmup_steps = 100
         s = jax.jit(
             schedule.cosine_with_linear_warmup(
                 peak_lr=peak_lr,
@@ -127,10 +127,10 @@ class ScheduleTest(parameterized.TestCase):
         decay_begin_step = max(warmup_steps, decay_begin_step or 0)
         for step in range(0, 301, 50):
             value = s(step)
-            if step < 100:
+            if step < warmup_steps:
                 # Test linear warmup.
                 self.assertEqual(peak_lr * step / warmup_steps, value)
-            elif 100 <= step <= decay_begin_step:
+            elif warmup_steps <= step <= decay_begin_step:
                 # Test constant
                 self.assertEqual(peak_lr, value)
             else:
@@ -145,7 +145,7 @@ class ScheduleTest(parameterized.TestCase):
                         )
                     )
                 )
-                self.assertEqual(cosine_rate, value)
+                self.assertAlmostEqual(cosine_rate, value)
 
     def test_constant_with_linear_warmup(self):
         peak_lr = 0.1

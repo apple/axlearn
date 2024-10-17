@@ -17,13 +17,14 @@ python -m axlearn.experiments.run_aot_compilation \
 
 Reference: https://jax.readthedocs.io/en/latest/aot.html
 """
-
 import pickle
 from typing import Optional
 
+import prefixed
 from absl import app, flags, logging
 from jax.experimental.serialize_executable import serialize
 
+from axlearn.common import compiler_options
 from axlearn.common.aot_compilation import compile_trainer_programs
 from axlearn.common.trainer import SpmdTrainer, select_mesh_config
 from axlearn.common.utils import set_data_dir
@@ -34,6 +35,9 @@ flags.DEFINE_string("module", None, "The trainer config module.", required=True)
 flags.DEFINE_string("config", None, "The trainer config name.", required=True)
 flags.DEFINE_string("topology", None, "The TPU topology.")
 flags.DEFINE_integer("topology_num_slices", 1, "The number of TPU slices.")
+flags.DEFINE_string(
+    "data_dir", "FAKE", "Sets the environment variable `DATA_DIR` to the given `data_dir`."
+)
 
 FLAGS = flags.FLAGS
 
@@ -49,19 +53,33 @@ def _compile_and_dump_programs(
     compile_topology: Optional[str],
     compile_topology_num_slices: int = 1,
 ):
-    with set_data_dir("FAKE"):
-        programs = compile_trainer_programs(
-            trainer_config,
-            topology=compile_topology,
-            topology_num_slices=compile_topology_num_slices,
-        )
+    programs = compile_trainer_programs(
+        trainer_config,
+        topology=compile_topology,
+        topology_num_slices=compile_topology_num_slices,
+        compiler_options=compiler_options.default_xla_options(
+            instance_type=f"tpu-{compile_topology}",
+            num_slices=compile_topology_num_slices,
+            backend="tpu",
+        ),
+    )
     for program_name, program in programs.items():
         print(f"== Text: {program_name} ==")
         print(program.as_text())
+        print()
         print(f"== Cost analysis {program_name} ==")
         print(program.cost_analysis())
+        print()
         print(f"== Memory analysis {program_name} ==")
-        print(program.memory_analysis())
+        memory_analysis = program.memory_analysis()
+        for k in dir(memory_analysis):
+            v = getattr(memory_analysis, k)
+            if k.startswith("_"):
+                continue
+            if "bytes" in k:
+                v = f"{prefixed.Float(v):!.3K}B"
+            print(f"\t{k}: {v}")
+        print()
 
         # Serialization does not work for CPU devices:
         #     UNIMPLEMENTED: Not an XLA Runtime executable
@@ -74,18 +92,19 @@ def _compile_and_dump_programs(
 
 
 def main(_):
-    setup(jax_backend="cpu")
-    trainer_config_fn: TrainerConfigFn = get_named_trainer_config(
-        FLAGS.config,
-        config_module=FLAGS.module,
-    )
-    cfg = trainer_config_fn()
-    select_mesh_config(cfg, mesh_selector=_mesh_selector(FLAGS.topology))
-    _compile_and_dump_programs(
-        cfg,
-        compile_topology=FLAGS.topology,
-        compile_topology_num_slices=FLAGS.topology_num_slices,
-    )
+    with set_data_dir(FLAGS.data_dir):
+        setup(jax_backend="cpu")
+        trainer_config_fn: TrainerConfigFn = get_named_trainer_config(
+            FLAGS.config,
+            config_module=FLAGS.module,
+        )
+        cfg: SpmdTrainer.Config = trainer_config_fn()
+        select_mesh_config(cfg, mesh_selector=_mesh_selector(FLAGS.topology))
+        _compile_and_dump_programs(
+            cfg,
+            compile_topology=FLAGS.topology,
+            compile_topology_num_slices=FLAGS.topology_num_slices,
+        )
 
 
 if __name__ == "__main__":

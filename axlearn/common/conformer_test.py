@@ -3,6 +3,7 @@
 """Tests Conformer layers."""
 
 import os
+from unittest.mock import patch
 
 import jax
 import numpy as np
@@ -15,6 +16,7 @@ from axlearn.common import utils
 from axlearn.common.attention import build_remat_spec
 from axlearn.common.conformer import (
     ConformerLayer,
+    LConvLayer,
     RepeatedConformerLayer,
     compute_attention_logit_biases,
 )
@@ -23,6 +25,39 @@ from axlearn.common.t5 import T5RelativePositionalEmbedding
 from axlearn.common.test_utils import TestCase, assert_allclose
 
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
+
+
+class LConvLayerTest(TestCase):
+    """Tests Lconv layer."""
+
+    def test_conv_norm_padding(self):
+        dim = 2
+        cfg = LConvLayer.default_config().set(name="lconv", input_dim=dim)
+        layer = cfg.instantiate(parent=None)
+
+        # Generate synthetic inputs.
+        batch_size, seq_len, min_num_tokens = 4, 10, 5
+        inputs = jax.random.normal(jax.random.PRNGKey(123), [batch_size, seq_len, dim]) * 10e6
+        num_tokens = jax.random.randint(
+            jax.random.PRNGKey(101),
+            minval=min_num_tokens,
+            maxval=seq_len + 1,
+            shape=[batch_size],
+        )
+        # [batch_size, seq_len].
+        paddings = jnp.arange(seq_len)[None, :] >= num_tokens[:, None]
+
+        # Forward
+        state = layer.initialize_parameters_recursively(jax.random.PRNGKey(100))
+        with patch.object(layer.conv_norm, "forward", wraps=layer.conv_norm.forward) as mock:
+            _ = F(
+                layer,
+                inputs=dict(inputs=inputs, paddings=paddings),
+                is_training=True,
+                prng_key=jax.random.PRNGKey(100),
+                state=state,
+            )
+            self.assertIn("paddings", mock.call_args.kwargs)
 
 
 class ConformerLayerTest(TestCase):
@@ -178,9 +213,7 @@ class ConformerLayerTest(TestCase):
         outputs = inputs
         for ll in range(num_layers):
             # Run a stack of layers by loop
-            state_i = jax.tree_util.tree_map(lambda param, i=ll: param[i], repeat_state)["repeat"][
-                "layer"
-            ]
+            state_i = jax.tree.map(lambda param, i=ll: param[i], repeat_state)["repeat"]["layer"]
             outputs, _ = F(
                 layer,
                 inputs=dict(inputs=outputs, paddings=paddings),

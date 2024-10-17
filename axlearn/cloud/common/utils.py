@@ -140,6 +140,7 @@ def running_from_source() -> bool:
 
 def get_pyproject_version() -> str:
     """Returns the project version, e.g. X.Y.Z."""
+    # TODO(markblee): Fix for nightly
     return pkg_resources.get_distribution(ROOT_MODULE_NAME).version
 
 
@@ -292,25 +293,26 @@ def send_signal(popen: subprocess.Popen, sig: int = signal.SIGKILL):
 
 
 def copy_blobs(from_prefix: str, *, to_prefix: str):
-    """Uses tf.io.gfile to replicate blobs with the from_prefix to the to_prefix."""
+    """Replicates blobs with the from_prefix to the to_prefix."""
 
-    # tf.io import increases import time significantly, which hurts CLI experience.
+    # tf.io, which `fs` uses for some APIs, increases import time significantly, which hurts CLI
+    # experience.
     # pylint: disable-next=import-outside-toplevel
-    from tensorflow import io as tf_io
+    from axlearn.common import file_system as fs
 
     # As tf_io.gfile.copy requires a path to a file when reading from cloud storage,
     # we traverse the `from_prefix` to find and copy all suffixes.
-    if not tf_io.gfile.isdir(from_prefix):
+    if not fs.isdir(from_prefix):
         # Copy the file.
         logging.debug("Copying file %s", from_prefix)
-        tf_io.gfile.copy(from_prefix, to_prefix, overwrite=True)
+        fs.copy(from_prefix, to_prefix, overwrite=True)
         return
-    for blob in tf_io.gfile.glob(os.path.join(from_prefix, "*")):
-        if tf_io.gfile.isdir(blob):
+    for blob in fs.glob(os.path.join(from_prefix, "*")):
+        if fs.isdir(blob):
             sub_directory = os.path.basename(blob)
             logging.info("Copying sub-directory %s", sub_directory)
             to_prefix = os.path.join(to_prefix, sub_directory)
-            os.makedirs(to_prefix, exist_ok=True)
+            fs.makedirs(to_prefix)
         copy_blobs(blob, to_prefix=to_prefix)
 
 

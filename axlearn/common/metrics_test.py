@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from absl.testing import parameterized
 
 from axlearn.common import metrics, summary, test_utils, utils
+from axlearn.common.module import Summable
 
 
 class TestMetricAccumulator(test_utils.TestCase):
@@ -39,7 +40,7 @@ class TestMetricAccumulator(test_utils.TestCase):
             ),
         ]
 
-        summaries_copy = jax.tree_util.tree_map(lambda x: x, summaries)
+        summaries_copy = jax.tree.map(lambda x: x, summaries)
         for s in summaries_copy:
             acc.update(s)
         result = acc.summaries()
@@ -70,7 +71,7 @@ class TestMetricAccumulator(test_utils.TestCase):
                 loss=metrics.WeightedScalar(100, 0),
             ),
         ]
-        summaries_copy = jax.tree_util.tree_map(lambda x: x, summaries)
+        summaries_copy = jax.tree.map(lambda x: x, summaries)
         for s in summaries_copy:
             acc.update(s)
 
@@ -124,3 +125,6 @@ class TestMetricAccumulator(test_utils.TestCase):
         # Test with and without jit.
         self.assertNestedAllClose(expected, add(weight))
         self.assertNestedAllClose(expected, jax.jit(add)(weight))
+
+        # Test isinstance check.
+        self.assertIsInstance(metrics.WeightedScalar(1.0, 1.0), Summable)

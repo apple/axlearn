@@ -1,5 +1,4 @@
 # Copyright © 2024 Apple Inc.
-
 """Unit test for tool_use_execution.py."""
 
 import json
@@ -64,18 +63,33 @@ class TestToolUseExecution(parameterized.TestCase):
             target_message_match_rules=[{"arguments": {"date": {"date_match": True}}}],
             target_arguments=json.dumps({"date": "4/2/2024"}),
             accuracy=1,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=0,
+            bow_accuracy=0,
+            number_of_expected_tool_calls=1,
         ),
         # Date normalization but incorrect argument.
         dict(
             target_message_match_rules=[{"arguments": {"date": {"date_match": True}}}],
             target_arguments=json.dumps({"date": "4/2024"}),
             accuracy=0,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=0,
+            bow_accuracy=0,
+            number_of_expected_tool_calls=1,
         ),
         # No date normalization.
         dict(
             target_message_match_rules=[{"arguments": {"date": {"date_match": False}}}],
             target_arguments=json.dumps({"date": "4/2/2024"}),
             accuracy=0,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=0,
+            bow_accuracy=0,
+            number_of_expected_tool_calls=1,
         ),
         # Mutiple choices.
         dict(
@@ -84,6 +98,11 @@ class TestToolUseExecution(parameterized.TestCase):
             ],
             target_arguments=json.dumps({"date": "4/2/2024"}),
             accuracy=1,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=0,
+            bow_accuracy=0,
+            number_of_expected_tool_calls=1,
         ),
         # Mutiple choices.
         dict(
@@ -92,6 +111,11 @@ class TestToolUseExecution(parameterized.TestCase):
             ],
             target_arguments=json.dumps({"date": "4/2/2024"}),
             accuracy=0,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=0,
+            bow_accuracy=0,
+            number_of_expected_tool_calls=1,
         ),
         # Regex match.
         dict(
@@ -100,6 +124,11 @@ class TestToolUseExecution(parameterized.TestCase):
             ],
             target_arguments=json.dumps({"location": "cupertino."}),
             accuracy=1,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=0,
+            bow_accuracy=1,
+            number_of_expected_tool_calls=1,
             pred_arguments=json.dumps({"location": "Cupertino, CA"}),
         ),
         # Regex match.
@@ -107,6 +136,11 @@ class TestToolUseExecution(parameterized.TestCase):
             target_message_match_rules=[{"arguments": {"location": {"regex_match": r"^san jose"}}}],
             target_arguments=json.dumps({"location": "cupertino."}),
             accuracy=0,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=0,
+            bow_accuracy=1,
+            number_of_expected_tool_calls=1,
             pred_arguments=json.dumps({"location": "Cupertino, CA"}),
         ),
         # Partial match.
@@ -114,6 +148,11 @@ class TestToolUseExecution(parameterized.TestCase):
             target_message_match_rules=None,
             target_arguments=json.dumps({"location": "cupertino", "unit": "celcius"}),
             accuracy=0,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=0,
+            bow_accuracy=0,
+            number_of_expected_tool_calls=1,
             pred_arguments=json.dumps({"location": "cupertino"}),
         ),
         # String match.
@@ -121,6 +160,11 @@ class TestToolUseExecution(parameterized.TestCase):
             target_message_match_rules=None,
             target_arguments=json.dumps({"location": "cupertino"}),
             accuracy=1,
+            func_name_accuracy=1,
+            strict_accuracy=1,
+            lenient_accuracy=1,
+            bow_accuracy=1,
+            number_of_expected_tool_calls=1,
             pred_arguments=json.dumps({"location": "cupertino"}),
         ),
         # Punctuation normalization match.
@@ -128,6 +172,11 @@ class TestToolUseExecution(parameterized.TestCase):
             target_message_match_rules=None,
             target_arguments=json.dumps({"location": "cupertino"}),
             accuracy=1,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=1,
+            bow_accuracy=1,
+            number_of_expected_tool_calls=1,
             pred_arguments=json.dumps({"location": "cupertino."}),
         ),
         # Invalid arguments json format.
@@ -135,12 +184,50 @@ class TestToolUseExecution(parameterized.TestCase):
             target_message_match_rules=None,
             target_arguments=json.dumps({"location": "cupertino"}),
             accuracy=0,
+            func_name_accuracy=0,
+            strict_accuracy=0,
+            lenient_accuracy=0,
+            bow_accuracy=0,
+            number_of_expected_tool_calls=1,
             pred_arguments='{"location": "cupertino"',
+        ),
+        # Lenient match.
+        dict(
+            target_message_match_rules=None,
+            target_arguments=json.dumps({"location": "cupertino"}),
+            accuracy=0,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=1,
+            bow_accuracy=1,
+            number_of_expected_tool_calls=1,
+            pred_arguments='{"location": "my cupertino"}',
+        ),
+        # BOW match.
+        dict(
+            target_message_match_rules=None,
+            target_arguments=json.dumps({"location": "cupertino"}),
+            accuracy=0,
+            func_name_accuracy=1,
+            strict_accuracy=0,
+            lenient_accuracy=0,
+            bow_accuracy=1,
+            number_of_expected_tool_calls=1,
+            pred_arguments='{"location": "cupertino CA"}',
         ),
     )
     @pytest.mark.skip(reason="Flaky in CI. TODO(gyin94): Fix and re-enable.")
     def test_match_rules(
-        self, target_arguments, accuracy, target_message_match_rules=None, pred_arguments=None
+        self,
+        target_arguments,
+        accuracy,
+        func_name_accuracy,
+        strict_accuracy,
+        lenient_accuracy,
+        bow_accuracy,
+        number_of_expected_tool_calls,
+        target_message_match_rules=None,
+        pred_arguments=None,
     ):
         """Tests where responses match the targets"""
         pred_message = {
@@ -196,3 +283,54 @@ class TestToolUseExecution(parameterized.TestCase):
                 },
             )
             self.assertEqual(metrics["accuracy"], accuracy)
+            self.assertEqual(metrics["func_name_accuracy"], func_name_accuracy)
+            self.assertEqual(metrics["strict_accuracy"], strict_accuracy)
+            self.assertEqual(metrics["lenient_accuracy"], lenient_accuracy)
+            self.assertEqual(metrics["bow_accuracy"], bow_accuracy)
+            self.assertEqual(
+                metrics["number_of_expected_tool_calls"], number_of_expected_tool_calls
+            )
+
+    def test_empty_pred(self):
+        pred_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": None,
+        }
+        target_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "arguments": {"location": "cupertino"},
+                        "name": "get_weather",
+                    },
+                }
+            ],
+        }
+        responses = [
+            {
+                "response": json.dumps({"choices": [{"message": pred_message}]}),
+                "target_message": target_message,
+            }
+        ]
+        mock_target_message = Mock(**target_message)
+        mock_target_message.model_dump.return_value = target_message
+        mock_pred_message = Mock(**pred_message)
+        mock_pred_message.model_dump.return_value = pred_message
+        self.generator.config.client.klass.parse_generation.return_value = [mock_pred_message]
+
+        with patch(
+            "axlearn.open_api.openai.OpenAIClient.format_message", return_value=mock_target_message
+        ):
+            metrics = metric_fn(
+                responses=responses,
+                generators={
+                    EvalGeneratorType.RESPONSE: self.generator,
+                    EvalGeneratorType.GRADER: self.generator,
+                },
+            )
+            self.assertEqual(metrics["accuracy"], 0.0)

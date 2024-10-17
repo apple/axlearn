@@ -169,9 +169,9 @@ class StackedRNNTest(TestCase):
         final_states_list = []
         outputs = inputs
         for ll in range(num_layers):
-            layer_params_ll = jax.tree_util.tree_map(lambda param, i=ll: param[i], layer_params)[
-                "repeat"
-            ]["layer"]
+            layer_params_ll = jax.tree.map(lambda param, i=ll: param[i], layer_params)["repeat"][
+                "layer"
+            ]
             outputs, output_collections = F(
                 layer.repeat.layer,  # LSTMCell.
                 is_training=True,
@@ -385,7 +385,7 @@ class StackedRNNTest(TestCase):
         repeat_params = {
             "repeat": VDict(
                 {
-                    "layer": jax.tree_util.tree_map(
+                    "layer": jax.tree.map(
                         lambda *xs: jnp.stack(xs),
                         *stack_params.values(),
                     )

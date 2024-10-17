@@ -33,7 +33,7 @@ def _compute_minibatch_size(input_batch: Nested[Tensor], *, steps: int) -> int:
     if steps <= 0:
         raise ValueError("Accumulation steps need to be a positive integer.")
 
-    input_batch_sizes = jax.tree_leaves(jax.tree_util.tree_map(lambda x: x.shape[0], input_batch))
+    input_batch_sizes = jax.tree_leaves(jax.tree.map(lambda x: x.shape[0], input_batch))
 
     if len(input_batch_sizes) == 0:
         raise ValueError("Input batch is empty.")
@@ -79,7 +79,7 @@ def _make_scan_minibatch_inputs(
         and new (carry) forward_key and param_noise_key.
     """
     minibatch_input = with_sharding_constraint(
-        jax.tree_util.tree_map(
+        jax.tree.map(
             lambda x: jax.lax.dynamic_slice_in_dim(
                 x,
                 start_index=minibatch_index * minibatch_size,
@@ -179,15 +179,13 @@ def with_minibatch_steps(
             _, primal_output_shape = jax.eval_shape(
                 original_func_positional_args, model_params, inputs
             )
-            init_primal_out = jax.tree_util.tree_map(jnp.zeros_like, primal_output_shape)
+            init_primal_out = jax.tree.map(jnp.zeros_like, primal_output_shape)
             init_accumulator = maybe_instantiate(metric_accumulator)
             init_accumulator.update(init_primal_out.output_collection.summaries)
             # Init carry here with: primal_output, grads (optional), prngkeys, metric_accumulator.
             if compute_grad:
                 # Accumulate gradients with fp32.
-                init_grads = jax.tree_util.tree_map(
-                    lambda x: jnp.zeros(x.shape, jnp.float32), model_params
-                )
+                init_grads = jax.tree.map(lambda x: jnp.zeros(x.shape, jnp.float32), model_params)
             else:
                 init_grads = None
 
@@ -225,7 +223,7 @@ def with_minibatch_steps(
                     )(
                         *minibatch_args,
                     )
-                    grads = jax.tree_util.tree_map(jnp.add, grads, grads_minibatch)
+                    grads = jax.tree.map(jnp.add, grads, grads_minibatch)
                 else:
                     _, primal_out_minibatch = original_func_positional_args(
                         *minibatch_args,
@@ -234,7 +232,7 @@ def with_minibatch_steps(
                 # Update the metric accumulator with minibatch output summaries
                 accumulator.update(primal_out_minibatch.output_collection.summaries)
                 # Accumulate the primal output and grads and pass them into carry.
-                primal_out = jax.tree_util.tree_map(jnp.add, primal_out, primal_out_minibatch)
+                primal_out = jax.tree.map(jnp.add, primal_out, primal_out_minibatch)
                 return (
                     primal_out,
                     grads,
@@ -249,8 +247,8 @@ def with_minibatch_steps(
                 xs=jnp.arange(steps),
             )
             # Since we summed during accumulation we take the average here to rescale.
-            grads = jax.tree_util.tree_map(lambda x: x / steps, grads)
-            primal_out = jax.tree_util.tree_map(lambda x: x / steps, primal_out)
+            grads = jax.tree.map(lambda x: x / steps, grads)
+            primal_out = jax.tree.map(lambda x: x / steps, primal_out)
             primal_out.output_collection.summaries.update(accumulator.summaries())
             return primal_out, grads
 

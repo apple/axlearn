@@ -60,7 +60,7 @@ class FlaxLayer(BaseLayer):
                 mesh_axes=mesh_axes,
             )
 
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             get_param_spec,
             param_specs,
             is_leaf=lambda x: isinstance(x, Partitioned),
@@ -78,7 +78,7 @@ class FlaxLayer(BaseLayer):
         self, prng_key: utils.Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> Nested[Tensor]:
         if self._use_prebuilt_params(prebuilt):
-            return jax.tree_util.tree_map(lambda _: None, prebuilt)
+            return jax.tree.map(lambda _: None, prebuilt)
         args, kwargs = self._dummy_inputs
         return self._module.init(prng_key, *args, **kwargs)
 

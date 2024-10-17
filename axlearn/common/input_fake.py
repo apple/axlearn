@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Fake input modules."""
+
 import json
 from collections.abc import Iterable, Sequence
 from typing import Any, Optional, Union
@@ -445,3 +446,26 @@ def fake_speech_source(
         shuffle_buffer_size=shuffle_buffer_size,
         spec={speech_key: tf.TensorSpec(shape=(None,), dtype=tf.int16)},
     )
+
+
+def fake_grain_source(
+    examples: Sequence[Any],
+    *,
+    repeat: Optional[int] = 1,
+    shuffle_seed: Optional[int] = None,
+):
+    """Returns a fake grain input source."""
+
+    if len(examples) == 0:
+        raise ValueError("Input examples cannot be empty.")
+
+    # Lazy import to avoid introducing a global dependency.
+    # pylint: disable-next=import-outside-toplevel
+    from grain._src.python.dataset.transformations import source
+
+    ds = source.SourceMapDataset(examples)
+    if shuffle_seed is not None:
+        ds = ds.seed(shuffle_seed)
+        ds = ds.shuffle()  # Uses the configured seed, if provided.
+    ds = ds.repeat(num_epochs=repeat)
+    return ds

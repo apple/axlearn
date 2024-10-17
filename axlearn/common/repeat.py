@@ -125,7 +125,7 @@ class Repeat(BaseLayer):
                 return None
             return FactorizationSpec(axes=[None] + list(spec.axes))
 
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda spec: dataclasses.replace(
                 spec,
                 shape=(cfg.num_layers, *spec.shape),

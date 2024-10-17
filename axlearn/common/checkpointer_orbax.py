@@ -244,7 +244,7 @@ class OrbaxCheckpointer(BaseCheckpointer):
             else:
                 return None
 
-        restore_args = jax.tree_util.tree_map(_restore_args, state)
+        restore_args = jax.tree.map(_restore_args, state)
 
         try:
             composite_state = self._manager.restore(

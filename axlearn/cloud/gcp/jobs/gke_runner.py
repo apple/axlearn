@@ -32,7 +32,9 @@ from typing import Optional, cast
 import kubernetes as k8s
 from absl import app, flags, logging
 
+from axlearn.cloud.common.bastion import JobLifecycleEvent, JobLifecycleState
 from axlearn.cloud.common.bundler import get_bundler_config
+from axlearn.cloud.common.event_queue import BaseQueueClient
 from axlearn.cloud.common.utils import (
     configure_logging,
     generate_job_name,
@@ -41,6 +43,7 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.jobs.tpu_runner import with_tpu_training_defaults
@@ -60,7 +63,7 @@ from axlearn.cloud.gcp.utils import (
     running_from_vm,
 )
 from axlearn.cloud.gcp.vertexai_tensorboard import VertexAITensorboardUploader
-from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.config import REQUIRED, Required, config_class, maybe_instantiate
 
 FLAGS = flags.FLAGS
 
@@ -99,6 +102,7 @@ class GKERunnerJob(GCPJob):
             vertexai_tb_uploader: Optional VertexAI Tensorboard Uploader.
             enable_pre_provisioner: Whether to enable pre-provisioner.
             pre_provisioner: Optional pre-provisioner configuration.
+            event_publisher: Optional event publisher configuration.
         """
 
         inner: Required[GKEJob.Config] = REQUIRED
@@ -111,6 +115,8 @@ class GKERunnerJob(GCPJob):
         # This config is made Optional for backwards compatibility. Default is False.
         enable_pre_provisioner: Optional[bool] = None
         pre_provisioner: Optional[NodePoolProvisioner.Config] = None
+        # The event publisher sends events into queue.
+        event_publisher: Optional[BaseQueueClient.Config] = None
 
     @classmethod
     def validate_inner(cls):
@@ -166,6 +172,9 @@ class GKERunnerJob(GCPJob):
         )
         if cfg.enable_pre_provisioner:
             cfg.pre_provisioner = cast(NodePoolProvisioner, cls.pre_provisioner).from_flags(fv)
+
+        cfg.event_publisher = event_queue_from_config(flag_values=fv)
+
         return cfg
 
     @property
@@ -186,6 +195,7 @@ class GKERunnerJob(GCPJob):
             max_tries=cfg.max_tries,
             retry_interval=cfg.retry_interval,
             enable_pre_provisioner=cfg.enable_pre_provisioner,
+            output_dir=cfg.output_dir,
         ).instantiate()
         # Use the bundler configured on inner.
         self._bundler = None
@@ -201,6 +211,8 @@ class GKERunnerJob(GCPJob):
             self._pre_provisioner: NodePoolProvisioner = cfg.pre_provisioner.set(
                 name=cfg.name,
             ).instantiate()
+
+        self._event_publisher = maybe_instantiate(cfg.event_publisher)
 
     class Status(enum.Enum):
         """GKE JobSet status.
@@ -392,16 +404,25 @@ class GKERunnerJob(GCPJob):
     def _execute(self):
         cfg: GKERunnerJob.Config = self.config
 
+        # Keep track of last status to prevent duplicate events.
+        last_job_status = None
+
         while True:
             status = self._get_status()
 
             # Don't retry if FAILED, since we ask GKE to handle retries.
             # Note that job remains ACTIVE until all retries are exhausted.
-            if status in {
-                GKERunnerJob.Status.FAILED,
+            if status == GKERunnerJob.Status.FAILED:
+                self._maybe_publish(
+                    cfg.name, msg="Job failed with error", state=JobLifecycleState.FAILED
+                )
+                logging.info("Task %s exited with status: %s.", cfg.name, status)
+                return
+            elif status in {
                 GKERunnerJob.Status.SUCCEEDED,
                 GKERunnerJob.Status.COMPLETED,
             }:
+                self._maybe_publish(cfg.name, msg="Job succeeds", state=JobLifecycleState.SUCCEEDED)
                 logging.info("Task %s exited with status: %s.", cfg.name, status)
                 return
             elif status == GKERunnerJob.Status.RESCHEDULED:
@@ -432,7 +453,20 @@ class GKERunnerJob(GCPJob):
                 if self._tb_uploader:
                     self._tb_uploader.upload()
                 logging.info("Task %s has status: %s", cfg.name, status)
+                # Only emit events when status changes.
+                if status == GKERunnerJob.Status.READY and status != last_job_status:
+                    self._maybe_publish(
+                        cfg.name, msg="Job is running", state=JobLifecycleState.RUNNING
+                    )
+                    last_job_status = status
             time.sleep(cfg.status_interval_seconds)
+
+    def _maybe_publish(self, job_name: str, *, msg: str, state: JobLifecycleState):
+        # Publish events to event queue.
+        if not self._event_publisher:
+            return
+
+        self._event_publisher.publish(JobLifecycleEvent(job_name, state, msg))
 
 
 class TPUGKERunnerJob(GKERunnerJob):

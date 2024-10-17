@@ -379,6 +379,28 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
         AcceleratorType["TPU"],
         "v5litepod-256",
     ),
+    # v6e
+    "v6e-4": _SystemCharacteristics(
+        "2x2", 1, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-4"
+    ),
+    "v6e-8": _SystemCharacteristics(
+        "2x4", 2, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-8"
+    ),
+    "v6e-16": _SystemCharacteristics(
+        "4x4", 4, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-16"
+    ),
+    "v6e-32": _SystemCharacteristics(
+        "4x8", 8, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-32"
+    ),
+    "v6e-64": _SystemCharacteristics(
+        "8x8", 16, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-64"
+    ),
+    "v6e-128": _SystemCharacteristics(
+        "8x16", 32, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-128"
+    ),
+    "v6e-256": _SystemCharacteristics(
+        "16x16", 64, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-256"
+    ),
     # v4
     "v4-8": _SystemCharacteristics(
         "2x2x1", 1, "tpu-v4-podslice", "ct4p-hightpu-4t", 4, AcceleratorType["TPU"], "v4-8"

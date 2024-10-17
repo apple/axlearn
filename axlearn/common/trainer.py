@@ -12,12 +12,13 @@ from collections.abc import Sequence
 from typing import Any, Callable, ContextManager, Literal, NamedTuple, Optional, Union
 
 import jax
-import tensorflow as tf
+import numpy as np
 from absl import logging
 from jax import numpy as jnp
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
 
+from axlearn.common import file_system as fs
 from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
@@ -180,7 +181,7 @@ class SpmdTrainer(Module):
         cfg: Config,
         *,
         parent: Optional[Module],
-        devices: Optional[Sequence[jax.Device]] = None,
+        devices: Optional[np.ndarray] = None,
     ):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -211,12 +212,21 @@ class SpmdTrainer(Module):
             utils.validate_float_dtype(cfg.train_dtype)
 
         # Create the device mesh.
-        self._step_log(
-            "Devices: global=%s local=%s %s",
-            jax.device_count(),
-            jax.local_device_count(),
-            [device.platform for device in jax.local_devices()],
-        )
+        if devices is None:
+            self._step_log(
+                "Devices: global=%s local=%s %s",
+                jax.device_count(),
+                jax.local_device_count(),
+                [device.platform for device in jax.local_devices()],
+            )
+        else:
+            local_devices = [d for d in devices.flatten() if d.process_index == jax.process_index()]
+            self._step_log(
+                "Devices: global=%s local=%s %s",
+                len(devices),
+                len(local_devices),
+                [device.platform for device in local_devices],
+            )
         self._step_log("Mesh shape: %s", cfg.mesh_shape)
         devices = (
             utils.create_device_mesh(mesh_shape=cfg.mesh_shape) if devices is None else devices
@@ -246,7 +256,7 @@ class SpmdTrainer(Module):
                 self._add_child("init_state_builder", cfg.init_state_builder)
 
             self._model_param_specs = self.model.create_parameter_specs_recursively()
-            model_param_partition_specs = jax.tree_util.tree_map(
+            model_param_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._model_param_specs
             )
             for name, spec in utils.flatten_items(self._model_param_specs):
@@ -261,7 +271,7 @@ class SpmdTrainer(Module):
                 model=self._model_param_specs,
                 learner=self._learner_state_partition_specs,
             )
-            self._trainer_state_partition_specs = jax.tree_util.tree_map(
+            self._trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._trainer_state_specs
             )
             # Create evalers, which depend on model_param_partition_specs.
@@ -498,7 +508,7 @@ class SpmdTrainer(Module):
         specs = utils.complete_partition_spec_tree(
             jax.tree_util.tree_structure(model_params), self._model_param_specs
         )
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda param, spec: OptParam(
                 value=param,
                 factorization_spec=spec.factorization if spec is not None else None,
@@ -581,7 +591,7 @@ class SpmdTrainer(Module):
 
         # A tree where a leaf is a ParameterSpec for a prebuilt param, None otherwise.
         # This is used for `initialize_parameters_recursively` inside `_init_state`.
-        prebuilt_model_param_specs = jax.tree_util.tree_map(
+        prebuilt_model_param_specs = jax.tree.map(
             lambda value, spec: spec if isinstance(value, Tensor) else None,
             prebuilt_state.trainer_state.model,
             self._trainer_state_specs.model,
@@ -592,7 +602,7 @@ class SpmdTrainer(Module):
         # While `prebuilt_state.trainer_state.model` also contain ParameterSpec's, we use
         # `self._trainer_state_partition_specs.model` to ensure that the partition spec matches
         # the model's partition config (rather than coming from `init_state_builder`).
-        model_initialization_partition_specs = jax.tree_util.tree_map(
+        model_initialization_partition_specs = jax.tree.map(
             lambda value, spec: None if isinstance(value, Tensor) else spec,
             prebuilt_state.trainer_state.model,
             self._trainer_state_partition_specs.model,
@@ -609,7 +619,7 @@ class SpmdTrainer(Module):
             """Merges prebuilt and initialized params to a single tree."""
             if prebuilt_model_params is None:
                 return initialized_model_params
-            return jax.tree_util.tree_map(
+            return jax.tree.map(
                 lambda prebuilt, initialized: (
                     prebuilt if isinstance(prebuilt, Tensor) else initialized
                 ),
@@ -719,7 +729,7 @@ class SpmdTrainer(Module):
 
             # Log trainer state tree.
             if jax.process_index() == 0:
-                with tf.io.gfile.GFile(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
+                with fs.open(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
                     f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
 
         self._log_trainer_state_stats()
@@ -860,9 +870,7 @@ class SpmdTrainer(Module):
             self._step_log(
                 "loss=%s aux=%s",
                 outputs["loss"],
-                jax.tree_util.tree_map(
-                    lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]
-                ),
+                jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
             )
 
         self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
@@ -922,14 +930,16 @@ class SpmdTrainer(Module):
             donate_argnums=(0,),  # donate the state
         )
 
-    def compile_train_step(self) -> jax.stages.Compiled:
+    def compile_train_step(
+        self, compiler_options: Optional[dict[str, Union[str, bool]]] = None
+    ) -> jax.stages.Compiled:
         with self.mesh(), self._context_manager():
             # Do not run init(), which require real devices.
-            trainer_state_specs = jax.tree_util.tree_map(
+            trainer_state_specs = jax.tree.map(
                 lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
                 self.trainer_state_specs,
             )
-            input_batch_specs = jax.tree_util.tree_map(
+            input_batch_specs = jax.tree.map(
                 lambda tf_spec: jax.ShapeDtypeStruct(
                     shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
                 ),
@@ -937,7 +947,7 @@ class SpmdTrainer(Module):
             )
             jit_train_step = self._pjit_train_step()
             lowered_train_step = jit_train_step.lower(trainer_state_specs, input_batch_specs)
-            return lowered_train_step.compile()
+            return lowered_train_step.compile(compiler_options=compiler_options)
 
     def _train_step(
         self,
@@ -1030,7 +1040,7 @@ class SpmdTrainer(Module):
         # Check if we should stop tracing.
         if self.step == stop_trace_step:
             assert output is not None
-            jax.tree_util.tree_map(lambda x: x.block_until_ready(), output)
+            jax.tree.map(lambda x: x.block_until_ready(), output)
             jax.profiler.stop_trace()
             self._step_log("Stopped profiler tracing")
             updated_stop_trace_step = None
@@ -1069,9 +1079,15 @@ def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str
         mesh_selector: A string used to select the mesh rule to apply.
     """
     if trainer_config.mesh_rules:
-        mesh = match_regex_rules(
+        mesh_rule = match_regex_rules(
             mesh_selector, rules=trainer_config.mesh_rules, default_value=REQUIRED
         )
-        logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh)
-        if mesh is not REQUIRED:
-            trainer_config.mesh_shape = mesh
+        logging.info("Mesh selector %s matches mesh rule %s", mesh_selector, mesh_rule)
+        if mesh_rule is not REQUIRED:
+            # Mesh config is just mesh rule or hybrid mesh rule.
+            if isinstance(mesh_rule, (tuple, HybridMeshShape)) or mesh_rule is None:
+                trainer_config.mesh_shape = mesh_rule
+            else:
+                # Override configs from ConfigModifier.
+                mesh_rule_fn = maybe_instantiate(mesh_rule)
+                trainer_config = mesh_rule_fn(trainer_config)

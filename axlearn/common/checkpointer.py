@@ -22,8 +22,12 @@ from jax._src.mesh import thread_resources
 from jax.experimental import multihost_utils
 from jax.experimental.array_serialization import serialization as array_serialization
 
+from axlearn.common import file_system as fs
 from axlearn.common import utils
-from axlearn.common.array_serialization import BoundedDataShardedAsyncCheckpointManager
+from axlearn.common.array_serialization import (
+    BoundedDataShardedAsyncCheckpointManager,
+    GlobalAsyncCheckpointManager,
+)
 from axlearn.common.config import (
     REQUIRED,
     Configurable,
@@ -141,12 +145,12 @@ def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str):
     Temporary dir will be deleted after the upload is complete.
     """
     src_dir = src_dir_handle.name
-    tf.io.gfile.makedirs(dst_dir)
-    for item in tf.io.gfile.listdir(src_dir):
-        src_file = tf.io.gfile.join(src_dir, item)
-        dst_file = tf.io.gfile.join(dst_dir, item)
-        assert not tf.io.gfile.isdir(src_file)
-        tf.io.gfile.copy(src_file, dst_file, overwrite=True)
+    fs.makedirs(dst_dir)
+    for item in fs.listdir(src_dir):
+        src_file = os.path.join(src_dir, item)
+        dst_file = os.path.join(dst_dir, item)
+        assert not fs.isdir(src_file)
+        fs.copy(src_file, dst_file, overwrite=True)
     src_dir_handle.cleanup()
 
 
@@ -227,13 +231,13 @@ def write_index_file(*, ckpt_dir: str, index: Any):
     """An on_commit_callback that writes an index file to ckpt_dir."""
     index_path = os.path.join(ckpt_dir, "index")
     logging.info("Writing index file to %s", index_path)
-    with tf.io.gfile.GFile(index_path, "w") as f:
+    with fs.open(index_path, "w") as f:
         f.write(json.dumps(index))
 
 
 def read_index_file(ckpt_dir: str) -> Nested[Any]:
     """Reads index files written with `write_index_file`."""
-    with tf.io.gfile.GFile(os.path.join(ckpt_dir, "index"), "r") as f:
+    with fs.open(os.path.join(ckpt_dir, "index"), "r") as f:
         return json.loads(f.read())
 
 
@@ -282,7 +286,7 @@ def read_state_spec(ckpt_dir: str) -> NestedTensorSpec:
     state = {}
     # Look for index file under `<base_dir>/<step_dir>` or `<base_dir>/<step_dir>/index/`.
     # TODO(markblee): Move this fn into corresponding checkpointer class instead.
-    if tf.io.gfile.isdir(os.path.join(ckpt_dir, "index")):
+    if fs.isdir(os.path.join(ckpt_dir, "index")):
         ckpt_dir = os.path.join(ckpt_dir, "index")
     for path, value in read_index_file(ckpt_dir):
         if isinstance(value, dict):
@@ -311,11 +315,15 @@ class TensorStoreStateStorage(StateStorage):
                 `None` and `1` means no sharding. `-1` means fully shard along data-parallel
                 replicas. `>1` means custom sharding degree (currently not implemented).
             max_concurrent_gb: Max concurrent shards (in GB) to write.
+            max_concurrent_restore_gb: Max concurrent shards (in GB) to read during checkpoint
+                restore. `None` or `0` means using a default value of 32GB.
         """
 
         timeout_secs: float = 3600
         max_data_shard_degree: Optional[int] = None
+        # TODO(hanzhi-zhou): rename this to max_concurrent_save_gb.
         max_concurrent_gb: Optional[int] = None
+        max_concurrent_restore_gb: Optional[int] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -329,9 +337,13 @@ class TensorStoreStateStorage(StateStorage):
                 max_data_shard_degree=cfg.max_data_shard_degree,
             )
         else:
-            self._manager = array_serialization.GlobalAsyncCheckpointManager(
-                timeout_secs=cfg.timeout_secs
+            self._manager = GlobalAsyncCheckpointManager(timeout_secs=cfg.timeout_secs)
+        if cfg.max_concurrent_restore_gb is not None and cfg.max_concurrent_restore_gb <= 0:
+            raise ValueError(
+                f"max_concurrent_restore_gb must be strictly positive. "
+                f"Got {cfg.max_concurrent_restore_gb}"
             )
+        self._max_concurrent_restore_gb = cfg.max_concurrent_restore_gb or 32
         self._executor = futures.ThreadPoolExecutor()
 
     @dataclasses.dataclass
@@ -409,7 +421,7 @@ class TensorStoreStateStorage(StateStorage):
             if not ckpt_dir.startswith("gs://"):
                 dirs = sorted(list(set(os.path.dirname(path) for path in spec.storage_paths)))
                 logging.info("Creating directories: %s", dirs)
-                list(self._executor.map(tf.io.gfile.makedirs, dirs))
+                list(self._executor.map(fs.makedirs, dirs))
                 logging.info("All directories created")
         # Wait for directory and index creation.
         multihost_utils.sync_global_devices(ckpt_dir)
@@ -421,7 +433,6 @@ class TensorStoreStateStorage(StateStorage):
         )
 
         def commit():
-            save_tf_future.result()
             on_commit_callback(ckpt_dir=ckpt_dir, index=spec.index)
             logging.info(
                 "Serialization of %s completed in %s seconds.",
@@ -433,7 +444,12 @@ class TensorStoreStateStorage(StateStorage):
         logging.debug(
             "array_values=%s tensorstore=%s", utils.shapes(spec.gda_values), spec.tensorstore_specs
         )
-        self._manager.serialize(spec.gda_values, spec.tensorstore_specs, on_commit_callback=commit)
+        self._manager.serialize(
+            spec.gda_values,
+            spec.tensorstore_specs,
+            on_commit_callback=commit,
+            additional_futures=[save_tf_future],
+        )
 
     def wait_until_finished(self):
         self._manager.wait_until_finished()
@@ -445,7 +461,6 @@ class TensorStoreStateStorage(StateStorage):
         *,
         ckpt_dir: str,
         validation: CheckpointValidationType = CheckpointValidationType.EXACT,
-        concurrent_gb: int = 32,
     ) -> NestedTensor:
         spec = self._get_spec(step, state, ckpt_dir)
         logging.info("Restoring checkpoint from directory %s", ckpt_dir)
@@ -461,7 +476,7 @@ class TensorStoreStateStorage(StateStorage):
             tensorstore_specs=spec.tensorstore_specs,
             global_shapes=spec.shapes,
             dtypes=spec.dtypes,
-            concurrent_gb=concurrent_gb,
+            concurrent_gb=self._max_concurrent_restore_gb,
         )
         state_leaves = []
         for path, value in spec.index:
@@ -771,8 +786,22 @@ class Checkpointer(BaseCheckpointer):
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> list[str]:
         """See `BaseCheckpointer.checkpointer_paths`."""
-        index_paths = tf.io.gfile.glob(os.path.join(base_dir, f"{STEP_PREFIX}_*", "index"))
-        return [os.path.dirname(path) for path in index_paths]
+
+        # The default checkpointer commits under "<base_dir>/<step_prefix>_<step>/index". Using a
+        # concurrent `exists` check for the index file can be several times faster than `glob` on
+        # gcs when there are many checkpoint files, even if using a "native" solution like
+        # `google-cloud-python` SDK.
+        try:
+            paths = fs.listdir(base_dir)
+        except fs.NotFoundError:
+            return []
+
+        paths = [
+            os.path.join(base_dir, path, "index") for path in paths if path.startswith(STEP_PREFIX)
+        ]
+        with futures.ThreadPoolExecutor() as pool:
+            index_exists = pool.map(fs.exists, paths)
+        return [os.path.dirname(path) for path, committed in zip(paths, index_exists) if committed]
 
     @classmethod
     def cleanup_checkpoint(cls, ckpt_dir: str, *, sync: bool = True):
@@ -787,10 +816,10 @@ class Checkpointer(BaseCheckpointer):
             # We always remove the index file as the first step -- otherwise, the partially-removed
             # dir can still be considered a valid checkpoint if rmtree is interrupted.
             index_path = os.path.join(ckpt_dir, "index")
-            if tf.io.gfile.exists(index_path):
-                tf.io.gfile.remove(index_path)
-            if tf.io.gfile.exists(ckpt_dir):
-                tf.io.gfile.rmtree(ckpt_dir)
+            if fs.exists(index_path):
+                fs.remove(index_path)
+            if fs.exists(ckpt_dir):
+                fs.rmtree(ckpt_dir)
         if sync:
             # Wait for cleanup to complete.
             multihost_utils.sync_global_devices(f"{ckpt_dir}_cleanup")
@@ -885,8 +914,15 @@ class Checkpointer(BaseCheckpointer):
         cfg: Checkpointer.Config = self.config
         remaining_dirs, gc_dirs = [], []
 
+        try:
+            step_dirs = [
+                step.rstrip("/") for step in fs.listdir(cfg.dir) if step.startswith(STEP_PREFIX)
+            ]
+        except fs.NotFoundError:
+            step_dirs = []
+
         # Gather all candidate checkpoint dirs, as well as all committed checkpoint dirs.
-        dirs = sorted(tf.io.gfile.glob(os.path.join(cfg.dir, f"{STEP_PREFIX}_*")), reverse=True)
+        dirs = sorted([os.path.join(cfg.dir, step) for step in step_dirs], reverse=True)
         committed_dirs = set(self.checkpoint_paths(cfg.dir))
 
         # Collect the recent non-committed checkpoints, since any of them could be in-progress.
@@ -965,7 +1001,7 @@ class Checkpointer(BaseCheckpointer):
 
         def validate_and_restore(*, step: int, ckpt_dir: str):
             ckpt_index = os.path.join(ckpt_dir, "index")
-            if not tf.io.gfile.exists(ckpt_index):
+            if not fs.exists(ckpt_index):
                 raise ValueError(
                     f"Checkpoint {ckpt_dir} is incomplete -- expected {ckpt_index} to be present."
                 )

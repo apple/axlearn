@@ -12,11 +12,11 @@ from typing import Any, Callable, Optional
 
 import jax
 import numpy as np
-import tensorflow as tf
 from absl import logging
 from jax import numpy as jnp
 from tensorflow import summary as tf_summary
 
+from axlearn.common import file_system as fs
 from axlearn.common.config import REQUIRED, ConfigBase, Required, RequiredFieldValue, config_class
 from axlearn.common.module import Module
 from axlearn.common.summary import AudioSummary, ImageSummary, Summary
@@ -252,7 +252,7 @@ class SummaryWriter(BaseWriter):
                 return isinstance(x, Summary)
 
             paths = tree_paths(values, separator="/", is_leaf=is_leaf)
-            jax.tree_util.tree_map(write, paths, values, is_leaf=is_leaf)
+            jax.tree.map(write, paths, values, is_leaf=is_leaf)
             self.summary_writer.flush()
 
 
@@ -336,13 +336,13 @@ class WandBWriter(BaseWriter):
         wandb_file = os.path.join(cfg.dir, "wandb_id")
         if cfg.resume == "never":
             exp_id = None
-        elif tf.io.gfile.exists(wandb_file):  # pytype: disable=module-attr
-            with tf.io.gfile.GFile(wandb_file, "r") as f:  # pytype: disable=module-attr
+        elif fs.exists(wandb_file):  # pytype: disable=module-attr
+            with fs.open(wandb_file, "r") as f:  # pytype: disable=module-attr
                 exp_id = f.read().strip()
         else:
             exp_id = wandb.util.generate_id()
-            tf.io.gfile.makedirs(cfg.dir)  # pytype: disable=module-attr
-            with tf.io.gfile.GFile(wandb_file, "w") as f:  # pytype: disable=module-attr
+            fs.makedirs(cfg.dir)  # pytype: disable=module-attr
+            with fs.open(wandb_file, "w") as f:  # pytype: disable=module-attr
                 f.write(exp_id)
 
         wandb.init(
@@ -401,7 +401,7 @@ class WandBWriter(BaseWriter):
             return isinstance(x, Summary)
 
         paths = tree_paths(values, separator="/", is_leaf=is_leaf)
-        values = jax.tree_util.tree_map(convert, paths, values, is_leaf=is_leaf)
+        values = jax.tree.map(convert, paths, values, is_leaf=is_leaf)
 
         if cfg.prefix:
             values = {f"{cfg.prefix}/{k}": v for k, v in values.items()}

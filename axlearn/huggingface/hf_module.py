@@ -1,20 +1,20 @@
 # Copyright © 2023 Apple Inc.
 
 """HuggingFace module wrappers."""
+
 import json
 import os
-from abc import ABC
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 import jax.numpy as jnp
 import jax.random
-import tensorflow as tf
 from absl import logging
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_flax_utils import FlaxPreTrainedModel
 
+from axlearn.common import file_system as fs
 from axlearn.common.adapter_flax import config_for_flax_module
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
@@ -55,20 +55,20 @@ def download_hf_models_from_remote(remote_path: str) -> str:
     local_pretrained_model_path = cache_dir / model_name
     if not local_pretrained_model_path.exists():
         local_pretrained_model_path.mkdir(parents=True)
-        for filename in tf.io.gfile.listdir(remote_path):
+        for filename in fs.listdir(remote_path):
             logging.info(
                 "Downloading %s to %s",
                 os.path.join(remote_path, filename),
                 local_pretrained_model_path / filename,
             )
-            tf.io.gfile.copy(
+            fs.copy(
                 os.path.join(remote_path, filename),
                 str(local_pretrained_model_path / filename),
             )
     return str(local_pretrained_model_path)
 
 
-class HfModuleWrapper(BaseModel, ABC):
+class HfModuleWrapper(BaseModel):
     """A wrapper for Hugging Face Flax modules so that they can be used within AXLearn.
 
     This is the super class for all Hugging Face Flax module wrappers, such as
@@ -159,7 +159,7 @@ class HfModuleWrapper(BaseModel, ABC):
         self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
-            return jax.tree_util.tree_map(lambda _: None, prebuilt)
+            return jax.tree.map(lambda _: None, prebuilt)
         params = super().initialize_parameters_recursively(prng_key, prebuilt=prebuilt)
         cfg = self.config
         if self._local_pretrained_model_path is not None:

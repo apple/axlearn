@@ -11,7 +11,8 @@ import importlib
 import logging
 from typing import Optional
 
-from axlearn.open_api.common import BaseClient, MetricFn
+from axlearn.open_api import eval_set
+from axlearn.open_api.common import BaseClient, EvalSet, MetricFn
 
 # The dict of {client_name: (module, class)}.
 _OPEN_API_CLIENTS_MODULE_CLASS = {
@@ -111,3 +112,51 @@ class MetricRegistry:
                 metric_name,
             )
         _METRIC_FUNC[metric_name] = metric_func
+
+
+# The dict of {eval_set_name: (module, class)}.
+_EVAL_SET_MODULE_CLASS = {
+    "mmau_tool_use_plan": ("mmau", "ToolUsePlan"),
+    "mmau_tool_use_execution": ("mmau", "ToolUseExecution"),
+    "mmau_math": ("mmau", "Math"),
+    "mmau_code_contests": ("mmau", "CodeContests"),
+    "mmau": ("mmau", "MMAU"),
+}
+
+# The dict of {eval_set_name: class}.
+_EVAL_SET_CLASS: dict[str, type[EvalSet]] = {}
+
+
+class EvalSetRegistry:
+    """A registry of eval sets."""
+
+    @staticmethod
+    def load(name: str) -> Optional[type[EvalSet]]:
+        """Loads a eval set."""
+        if name in _EVAL_SET_CLASS:
+            return _EVAL_SET_CLASS[name]
+        if name not in _EVAL_SET_MODULE_CLASS:
+            return None
+        module_name, metric_func_name = _EVAL_SET_MODULE_CLASS[name]
+        module = importlib.import_module(f"{eval_set.__name__}.{module_name}")
+        return getattr(module, metric_func_name, None)
+
+    @staticmethod
+    def get_supported() -> list[str]:
+        """Gets supported."""
+        return list(_EVAL_SET_CLASS.keys()) + list(_EVAL_SET_MODULE_CLASS.keys())
+
+    @staticmethod
+    def register(name: str, eval_set_type: type[EvalSet]):
+        """Registers a new eval set.
+
+        Args:
+           name: A string of eval set name.
+           eval_set_type: A customized eval set.
+        """
+        if name in _EVAL_SET_CLASS:
+            logging.warning(
+                "Eval set %s will be overwritten by the new eval set loader.",
+                name,
+            )
+        _EVAL_SET_CLASS[name] = eval_set_type

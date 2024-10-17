@@ -286,7 +286,7 @@ class HFClipTest(BaseParamConverterTest):
             "input_ids": as_torch_tensor(inputs),
             "pixel_values": as_torch_tensor(image_inputs),
         }
-        expected, actual = jax.tree_util.tree_map(
+        expected, actual = jax.tree.map(
             as_tensor,
             (
                 torch_output_to_dict(hf_layer(**hf_inputs)),
