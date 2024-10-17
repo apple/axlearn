@@ -6,6 +6,7 @@ Note that these utilities do not handle resource management.
 """
 
 import atexit
+import importlib
 import io
 import logging
 import math
@@ -392,6 +393,7 @@ class TPUGKEJob(GKEJob):
         enable_tpu_ici_resiliency: Optional[bool] = None
         location_hint: Optional[str] = None
         enable_tpu_smart_repair: bool = False
+        use_pathways: Optional[bool] = False
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -405,6 +407,9 @@ class TPUGKEJob(GKEJob):
             "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
             "not all TPU types support this flag.",
             **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "use_pathways", False, "Wether the workload is pathways-enabled.", **common_kwargs
         )
 
     @classmethod
@@ -430,6 +435,14 @@ class TPUGKEJob(GKEJob):
         super().__init__(cfg)
         self._gcsfuse_volume = "gcs-fuse-csi-ephemeral"
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
+        if cfg.use_pathways:
+            self._import_pathways()
+
+    def _import_pathways(self):
+        try:
+            importlib.import_module("pathwaysutils")
+        except ModuleNotFoundError:
+            logging.error("An error occurred while importing pathways-utils.")
 
     def _build_container(self) -> Nested[Any]:
         """Builds a config for a single container.
