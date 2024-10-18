@@ -141,7 +141,6 @@ class TestFlashAttention(TestCase):
 
         # Trigger compilation.
         fn(q, k, v)
-        # Compare grads.
         jax.grad(lambda q, k, v: fn(q, k, v).mean(), argnums=(0, 1, 2))(q, k, v)
 
     @parameterized.product(
