@@ -32,7 +32,7 @@ from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import (
     BatchNorm,
-    DepthwiseConv1D,
+    Conv1D,
     Dropout,
     GroupNorm,
     LayerNorm,
@@ -72,7 +72,7 @@ class LConvLayer(BaseLayer):
         linear1_norm: LayerNorm.Config = LayerNorm.default_config()
         linear1_activation: tuple[str, str] = ("linear", "nn.sigmoid")
         linear1: Linear.Config = Linear.default_config().set(bias=True)
-        conv: DepthwiseConv1D.Config = DepthwiseConv1D.default_config().set(
+        conv: Conv1D.Config = Conv1D.default_config().set(
             # See Table 2 and 7.
             window=32,
             bias=False,
@@ -96,7 +96,15 @@ class LConvLayer(BaseLayer):
                 cfg.linear1.set(input_dim=cfg.input_dim, output_dim=cfg.input_dim),
             )
 
-        self._add_child("conv", cfg.conv.set(input_dim=cfg.input_dim))
+        # Setup Depthwise Convolution (3 dims are same).
+        self._add_child(
+            "conv",
+            cfg.conv.set(
+                input_dim=cfg.input_dim,
+                output_dim=cfg.input_dim,
+                num_input_dim_groups=cfg.input_dim,
+            ),
+        )
         self._add_child("conv_norm", cfg.conv_norm.set(input_dim=cfg.input_dim))
         self._add_child(
             "linear2",

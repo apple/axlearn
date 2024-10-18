@@ -46,7 +46,6 @@ from axlearn.common.layers import (
     Conv2DWith1DPadding,
     Conv3D,
     ConvPaddingType,
-    DepthwiseConv1D,
     DropToken,
     Embedding,
     GroupNorm,
@@ -1052,7 +1051,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         stride = 6
         padding = "CAUSAL"
         explicit_padding = layers.conv_explicit_padding(
-            window=(window,), strides=(stride,), padding=padding
+            window=(window,), strides=(stride,), padding=padding, dilation=(1,)
         )
         self.assertAllEqual(explicit_padding[0], (9, 5))
 
@@ -1082,7 +1081,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         paddings = jnp.triu(jnp.ones((batch_size, seq_len)), k=1)
 
         explicit_padding = layers.conv_explicit_padding(
-            window=(window,), strides=(stride,), padding=ref_padding
+            window=(window,), strides=(stride,), padding=ref_padding, dilation=(1,)
         )
         self.assertAllEqual(explicit_padding, padding[:1])
 
@@ -1224,6 +1223,9 @@ class LayerTest(TestCase, tf.test.TestCase):
             state=layer_params,
             prng_key=prng_key,
         )
+        output_shape = layer.output_shape(input_shape=inputs.shape)
+        self.assertAllEqual(ref_outputs.shape, output_shape)
+
         random_keys = jax.random.split(input_key, num=2 * max_seq_len)
         for seq_len in range(1, max_seq_len):
             # We create a new batch. The time axis of the new batch is of length seq_len.
@@ -1336,6 +1338,8 @@ class LayerTest(TestCase, tf.test.TestCase):
             state=test_state,
             prng_key=prng_key,
         )
+        output_shape = test_layer.output_shape(input_shape=inputs.shape)
+        self.assertAllEqual(test_outputs.shape, output_shape)
 
         inputs = einops.rearrange(inputs, "b t i -> b t 1 i")
         (ref_outputs, ref_paddings), _ = F(
@@ -1345,6 +1349,8 @@ class LayerTest(TestCase, tf.test.TestCase):
             state=state,
             prng_key=prng_key,
         )
+        output_shape = ref_layer.output_shape(input_shape=inputs.shape)
+        self.assertAllEqual(ref_outputs.shape, output_shape)
         ref_outputs = einops.rearrange(ref_outputs, "b t 1 o -> b t o")
 
         assert_allclose(ref_paddings, test_paddings)
@@ -1370,7 +1376,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             "padding": "VALID",
         },
     )
-    def test_deconv2d(
+    def test_conv2d_transpose_against_pytorch(
         self,
         window: tuple[int, int],
         strides: tuple[int, int],
@@ -1388,6 +1394,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             window=window,
             strides=strides,
             padding=deconv_padding,
+            transpose_kernel=True,
         )
         layer: Conv2DTranspose = cfg.instantiate(parent=None)
 
@@ -1610,7 +1617,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         window: int,
         strides: int,
         padding: ConvPaddingType,
-        dilation: Optional[int] = None,
+        dilation: Optional[int],
     ):
         input_dim, output_dim = 4, 6
         cfg = Conv1D.default_config().set(
@@ -1620,7 +1627,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             window=window,
             strides=strides,
             padding=padding,
-            rhs_dilation=dilation,
+            dilation=dilation,
         )
         layer: Conv1D = cfg.instantiate(parent=None)
         # Initialize layer parameters.
@@ -1649,6 +1656,8 @@ class LayerTest(TestCase, tf.test.TestCase):
             state=layer_params,
             prng_key=prng_key,
         )
+        output_shape = layer.output_shape(input_shape=inputs.shape)
+        self.assertAllEqual(outputs.shape, output_shape)
 
         # Compute ref outputs.
         if isinstance(padding, str):
@@ -1674,70 +1683,6 @@ class LayerTest(TestCase, tf.test.TestCase):
         assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 1))
 
     @parameterized.named_parameters(
-        ("w3s1d3_pad1", 3, 1, (1, 1), 3),
-        ("w3s1d3_pad1_causal", 3, 1, (1, 0), 3),
-        ("w3s2d3_pad1", 3, 2, (1, 1), 3),
-        ("w3s2d1_pad1", 3, 2, (1, 1), None),
-    )
-    def test_lhs_dilation_conv1d(
-        self,
-        window: int,
-        strides: int,
-        padding: tuple[int, int],
-        dilation: Optional[int],
-    ):
-        input_dim, output_dim = 4, 6
-        cfg = Conv1D.default_config().set(
-            name="test",
-            input_dim=input_dim,
-            output_dim=output_dim,
-            window=window,
-            strides=strides,
-            padding=(padding,),
-            lhs_dilation=dilation,
-        )
-        layer: Conv1D = cfg.instantiate(parent=None)
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(weight=(window, input_dim, output_dim), bias=(output_dim,)),
-            shapes(layer_params),
-        )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
-        )
-
-        prng_key, input_key = jax.random.split(prng_key)
-        input_length = 7
-        inputs = jax.random.normal(input_key, [2, input_length, input_dim])
-        outputs, _ = F(
-            layer, inputs=(inputs,), is_training=True, state=layer_params, prng_key=prng_key
-        )
-        expected_length = input_length + padding[0] + padding[1] - int((window + 1) / 2)
-        if dilation is not None:
-            expected_length = expected_length + (input_length - 1) * (dilation - 1)
-        expected_length = math.floor((expected_length - 1) / strides + 1)
-        self.assertNestedEqual(outputs.shape, (2, expected_length, output_dim))
-
-    def test_lhs_dilation_not_using_string_padding_conv1d(self):
-        input_dim, output_dim = 4, 6
-        cfg = Conv1D.default_config().set(
-            name="test",
-            input_dim=input_dim,
-            output_dim=output_dim,
-            window=3,
-            strides=1,
-            padding="SAME",
-            lhs_dilation=2,
-        )
-        with self.assertRaises(ValueError):
-            cfg.instantiate(parent=None)
-
-    @parameterized.named_parameters(
         ("w3s1_VALID", 3, 1, "VALID"),
         ("w3s1_SAME", 3, 1, "SAME"),
         ("w4s1_SAME", 4, 1, "SAME"),
@@ -1750,14 +1695,16 @@ class LayerTest(TestCase, tf.test.TestCase):
         padding: ConvPaddingType,
     ):
         input_dim = 4
-        cfg = DepthwiseConv1D.default_config().set(
+        cfg = Conv1D.default_config().set(
             name="test",
             input_dim=input_dim,
+            output_dim=input_dim,
+            num_input_dim_groups=input_dim,
             window=window,
             strides=strides,
             padding=padding,
         )
-        layer: DepthwiseConv1D = cfg.instantiate(parent=None)
+        layer: Conv1D = cfg.instantiate(parent=None)
 
         # Initialize layer parameters.
         prng_key = jax.random.PRNGKey(123)
@@ -1786,6 +1733,8 @@ class LayerTest(TestCase, tf.test.TestCase):
             state=layer_params,
             prng_key=prng_key,
         )
+        output_shape = layer.output_shape(input_shape=inputs.shape)
+        self.assertAllEqual(outputs.shape, output_shape)
 
         # Compute ref outputs.
         if isinstance(padding, str):
@@ -1808,6 +1757,699 @@ class LayerTest(TestCase, tf.test.TestCase):
         _copy(layer_params["bias"], ref.bias)
         ref_outputs = ref(as_torch_tensor(ref_inputs.transpose(0, 2, 1)))
         assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 1))
+
+    ############################## Transposed Convolution ##########################################
+
+    CONVT_EXPLICIT_PADDING_PARAMS = [
+        (3, 1, "SAME", 1, (1, 1)),
+        (3, 2, "SAME", 1, (2, 1)),
+        (3, 3, "SAME", 1, (2, 2)),
+        (3, 4, "SAME", 1, (2, 3)),
+        (3, 1, "SAME", 2, (2, 2)),
+        (3, 2, "SAME", 2, (3, 2)),
+        (3, 3, "SAME", 2, (3, 3)),
+        (3, 1, "VALID", 1, (2, 2)),
+        (3, 2, "VALID", 1, (2, 2)),
+        (3, 3, "VALID", 1, (2, 2)),
+        (3, 4, "VALID", 1, (2, 3)),
+        (3, 1, "VALID", 2, (4, 4)),
+        (3, 2, "VALID", 2, (4, 4)),
+        (3, 3, "VALID", 2, (4, 4)),
+        (3, 1, "CAUSAL", 1, (2, 0)),
+        (3, 2, "CAUSAL", 1, (2, 1)),
+        (3, 3, "CAUSAL", 1, (2, 2)),
+        (3, 4, "CAUSAL", 1, (2, 3)),
+        (3, 1, "CAUSAL", 2, (4, 0)),
+        (3, 2, "CAUSAL", 2, (4, 1)),
+        (3, 3, "CAUSAL", 2, (4, 2)),
+    ]
+
+    @parameterized.parameters(*CONVT_EXPLICIT_PADDING_PARAMS)
+    def test_conv_transpose_explicit_padding(self, window, strides, padding, dilation, expected):
+        """Tests the cases in conv_transpose_explicit_padding() description."""
+        explicit_padding = layers.conv_transpose_explicit_padding(
+            window=(window,),
+            strides=(strides,),
+            padding=padding,
+            dilation=(dilation,),
+        )
+        self.assertAllEqual(explicit_padding[0], expected)
+
+    @parameterized.parameters(*CONVT_EXPLICIT_PADDING_PARAMS)
+    def test_conv_transpose_explicit_padding_against_jax(
+        self, window, strides, padding, dilation, expected
+    ):
+        """Compare with jax.lax.convolution._conv_transpose_padding()."""
+        if padding == "CAUSAL":
+            self.skipTest("Causal padding is not supported in JAX.")
+
+        # Copied from jax.lax.convolution._conv_transpose_padding.
+        def _conv_transpose_padding(k, s, padding):
+            if padding == "SAME":
+                pad_len = k + s - 2
+                if s > k - 1:
+                    pad_a = k - 1
+                else:
+                    pad_a = int(np.ceil(pad_len / 2))
+            elif padding == "VALID":
+                pad_len = k + s - 2 + max(k - s, 0)
+                pad_a = k - 1
+            else:
+                raise ValueError("Padding mode must be `SAME` or `VALID`.")
+            pad_b = pad_len - pad_a
+            return pad_a, pad_b
+
+        dilate_window = layers.conv_dilate_window(window=(window,), dilation=(dilation,))[0]
+        ref_padding = _conv_transpose_padding(dilate_window, strides, padding)
+
+        explicit_padding = layers.conv_transpose_explicit_padding(
+            window=(window,),
+            strides=(strides,),
+            padding=padding,
+            dilation=(dilation,),
+        )
+
+        self.assertAllEqual(explicit_padding[0], ref_padding)
+        self.assertAllEqual(expected, ref_padding)
+
+    @parameterized.parameters(
+        (3, 1, "SAME", 1, 4),
+        (3, 2, "SAME", 1, 8),
+        (3, 3, "SAME", 1, 12),
+        (3, 4, "SAME", 1, 16),
+        (3, 1, "SAME", 2, 4),
+        (3, 2, "SAME", 2, 8),
+        (3, 3, "SAME", 2, 12),
+        (3, 1, "VALID", 1, 6),
+        (3, 2, "VALID", 1, 9),
+        (3, 3, "VALID", 1, 12),
+        (3, 4, "VALID", 1, 16),
+        (3, 1, "VALID", 2, 8),
+        (3, 2, "VALID", 2, 11),
+        (3, 3, "VALID", 2, 14),
+        (3, 1, "CAUSAL", 1, 4),
+        (3, 2, "CAUSAL", 1, 8),
+        (3, 3, "CAUSAL", 1, 12),
+        (3, 4, "CAUSAL", 1, 16),
+        (3, 1, "CAUSAL", 2, 4),
+        (3, 2, "CAUSAL", 2, 8),
+        (3, 3, "CAUSAL", 2, 12),
+    )
+    def test_conv_transpose_output_shape(self, window, strides, padding, dilation, expected):
+        """Tests the cases in conv_transpose_explicit_padding() description."""
+        out_shape = layers.conv_transpose_output_shape(
+            in_shape=(4,),
+            window=(window,),
+            strides=(strides,),
+            padding=padding,
+            dilation=(dilation,),
+        )
+        self.assertAllEqual(out_shape[0], expected)
+
+    @parameterized.parameters(
+        (3, 1, "SAME", 1, [0, 0, 1, 1]),
+        (3, 2, "SAME", 1, [0, 0, 0, 0, 1, 1, 1, 1]),
+        (3, 3, "SAME", 1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]),
+        (3, 4, "SAME", 1, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]),
+        (3, 1, "SAME", 2, [0, 0, 1, 1]),
+        (3, 2, "SAME", 2, [0, 0, 0, 0, 1, 1, 1, 1]),
+        (3, 3, "SAME", 2, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]),
+        (3, 1, "VALID", 1, [0, 0, 1, 1, 1, 1]),
+        (3, 2, "VALID", 1, [0, 0, 0, 0, 1, 1, 1, 1, 1]),
+        (3, 3, "VALID", 1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]),
+        (3, 4, "VALID", 1, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]),
+        (3, 1, "VALID", 2, [0, 0, 1, 1, 1, 1, 1, 1]),
+        (3, 2, "VALID", 2, [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]),
+        (3, 3, "VALID", 2, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]),
+        (3, 1, "CAUSAL", 1, [0, 0, 1, 1]),
+        (3, 2, "CAUSAL", 1, [0, 0, 0, 0, 1, 1, 1, 1]),
+        (3, 3, "CAUSAL", 1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]),
+        (3, 4, "CAUSAL", 1, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]),
+        (3, 1, "CAUSAL", 2, [0, 0, 1, 1]),
+        (3, 2, "CAUSAL", 2, [0, 0, 0, 0, 1, 1, 1, 1]),
+        (3, 3, "CAUSAL", 2, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]),
+    )
+    def test_compute_conv_transpose_paddings(self, window, strides, padding, dilation, expected):
+        """Tests the cases in conv_transpose_explicit_padding() description."""
+        in_paddings = jnp.array([0, 0, 1, 1], dtype=jnp.float32)[None, :]
+        out_paddings = layers.compute_conv_transpose_paddings(
+            in_paddings, window=window, stride=strides, conv_padding=padding, dilation=dilation
+        )
+        expected = jnp.array(expected).astype(out_paddings.dtype)
+        self.assertNestedEqual(out_paddings[0], expected)
+
+    @parameterized.product(
+        window=[1, 3],
+        strides=[1, 2, 3],
+        padding=["SAME", "VALID", "CAUSAL"],
+        dilation=[1, 2],
+        value=[0, 1],
+    )
+    def test_compute_conv_transpose_paddings_all0or1(
+        self, window, strides, padding, dilation, value
+    ):
+        """If in_paddings is all valid or invalid, out_paddings must be all valid or invalid."""
+        in_paddings = jnp.full([1, 4], fill_value=value)
+        out_paddings = layers.compute_conv_transpose_paddings(
+            in_paddings, window=window, stride=strides, conv_padding=padding, dilation=dilation
+        )
+        expected = jnp.ones_like(out_paddings) * value
+        self.assertNestedEqual(out_paddings, expected)
+
+    CONVT_PADDINGS_PARAMS = dict(
+        in_paddings=[
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 1],
+            [1, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1],
+            [0, 0, 0, 1, 1, 1, 0, 0, 1, 1],
+            [1, 1, 0, 1, 1, 1, 1, 0, 0, 0],
+        ],
+        window=[1, 3],
+        padding=["SAME", "VALID", "CAUSAL"],
+        dilation=[1, 2],
+    )
+
+    @parameterized.product(**CONVT_PADDINGS_PARAMS, strides=[1, 2, 3])
+    def test_compute_conv_transpose_paddings_with_conv_paddings(
+        self, in_paddings, window, strides, padding, dilation
+    ):
+        """Check if ConvT -> Conv preserves information."""
+        in_paddings = jnp.array(in_paddings, dtype=jnp.float32)[None, :]
+        out_paddings = layers.compute_conv_transpose_paddings(
+            in_paddings, window=window, stride=strides, conv_padding=padding, dilation=dilation
+        )
+
+        recon_paddings = layers.compute_conv_paddings(
+            out_paddings, window=window, stride=strides, conv_padding=padding, dilation=dilation
+        )
+        self.assertNestedEqual(recon_paddings[0], in_paddings[0])
+
+    @parameterized.product(**CONVT_PADDINGS_PARAMS)
+    def test_compute_conv_transpose_paddings_against_conv_paddings(
+        self, in_paddings, window, padding, dilation
+    ):
+        # compute_conv_transpose_paddings and compute_conv_paddings are same when window_stride=1
+        # (stride of Conv2D) and lhs_dilation=1 (stride of Conv2DTranspose).
+        strides = 1
+        if padding == "VALID":
+            # TODO(dhwang2,ruoming): Currently, anchor is pad_left but it should be the midpoint
+            # between [pad_left, pad_right). Otherwise, the consistency of VALID padding is broken.
+            # For reference, the midpoint in SAME and CAUSAL is left_pad.
+            dilate_window = layers.conv_dilate_window(window=(window,), dilation=(dilation,))[0]
+            conv_padding = layers.conv_explicit_padding(
+                window=(window,), strides=(strides,), padding=padding, dilation=(dilation,)
+            )[0]
+            pad_left, pad_right = conv_padding
+            anchor_range = dilate_window - pad_left - pad_right
+            mid_point = anchor_range // 2
+            anchor = pad_left + mid_point
+        else:
+            anchor = None
+
+        in_paddings = jnp.array(in_paddings, dtype=jnp.float32)[None, :]
+        ref_paddings = layers.compute_conv_paddings(
+            in_paddings,
+            window=window,
+            stride=strides,
+            conv_padding=padding,
+            dilation=dilation,
+            anchor=anchor,
+        )
+
+        test_paddings = layers.compute_conv_transpose_paddings(
+            in_paddings,
+            window=window,
+            stride=strides,
+            conv_padding=padding,
+            dilation=dilation,
+            anchor=anchor,
+        )
+
+        if ref_paddings.shape != test_paddings.shape:
+            self.assertEqual(padding, "VALID")
+            dilate_window = layers.conv_dilate_window(window=(window,), dilation=(dilation,))[0]
+            pad_left = dilate_window - 1
+            test_paddings = test_paddings[:, pad_left:-pad_left]
+
+        assert_allclose(ref_paddings, test_paddings)
+
+    CONVT_PARAMS = [
+        (3, 1, "SAME", 1, [0, 1, 2, 2]),
+        (3, 2, "SAME", 1, [0, 0, 0, 0, 1, 1, 2, 1]),
+        (3, 3, "SAME", 1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]),
+        (3, 4, "SAME", 1, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0]),
+        (3, 1, "SAME", 2, [1, 1, 1, 1]),
+        (3, 2, "SAME", 2, [0, 0, 0, 1, 0, 2, 0, 2]),
+        (3, 3, "SAME", 2, [0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0]),
+        (3, 1, "VALID", 1, [0, 0, 1, 2, 2, 1]),
+        (3, 2, "VALID", 1, [0, 0, 0, 0, 1, 1, 2, 1, 1]),
+        (3, 3, "VALID", 1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]),
+        (3, 4, "VALID", 1, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0]),
+        (3, 1, "VALID", 2, [0, 0, 1, 1, 1, 1, 1, 1]),
+        (3, 2, "VALID", 2, [0, 0, 0, 0, 1, 0, 2, 0, 2, 0, 1]),
+        (3, 3, "VALID", 2, [0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1]),
+        (3, 1, "CAUSAL", 1, [0, 0, 1, 2]),
+        (3, 2, "CAUSAL", 1, [0, 0, 0, 0, 1, 1, 2, 1]),
+        (3, 3, "CAUSAL", 1, [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]),
+        (3, 4, "CAUSAL", 1, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0]),
+        (3, 1, "CAUSAL", 2, [0, 0, 1, 1]),
+        (3, 2, "CAUSAL", 2, [0, 0, 0, 0, 1, 0, 2, 0]),
+        (3, 3, "CAUSAL", 2, [0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1]),
+    ]
+
+    @parameterized.parameters(*CONVT_PARAMS)
+    def test_conv1d_transpose_simple(self, window, strides, padding, dilation, expected):
+        """Tests the cases in conv_transpose_explicit_padding() description."""
+        input_dim, output_dim = 1, 1
+        inputs = jnp.array([0, 0, 1, 1], dtype=jnp.float32)[None, :, None]
+        cfg = layers.Conv1DTranspose.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            strides=strides,
+            padding=padding,
+            dilation=dilation,
+            bias=False,
+        )
+        layer = cfg.instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        self.assertEqual(dict(weight=(window, input_dim, output_dim)), shapes(layer_params))
+        layer_params["weight"] = jnp.ones_like(layer_params["weight"])
+
+        (outputs, paddings), _ = F(
+            layer, inputs=dict(x=inputs), is_training=True, state=layer_params, prng_key=prng_key
+        )
+        out_shape = layer.output_shape(input_shape=inputs.shape)
+        self.assertAllEqual(outputs.shape, out_shape)
+        self.assertIsNone(paddings)
+        expected = jnp.array(expected).astype(outputs.dtype)
+        self.assertNestedEqual(outputs[0, :, 0], expected)
+
+    @parameterized.parameters(*CONVT_PARAMS)
+    def test_conv2d_transpose_simple(self, window, strides, padding, dilation, expected):
+        """Tests the cases in conv_transpose_explicit_padding() description."""
+        window = (window, 1)
+        strides = (strides, 1)
+        dilation = (dilation, 1)
+        input_dim, output_dim = 1, 1
+        inputs = jnp.array([0, 0, 1, 1], dtype=jnp.float32)[None, :, None, None]
+        cfg = layers.Conv2DTranspose.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            strides=strides,
+            padding=padding,
+            dilation=dilation,
+            bias=False,
+        )
+        layer = cfg.instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        self.assertEqual(dict(weight=(*window, input_dim, output_dim)), shapes(layer_params))
+        layer_params["weight"] = jnp.ones_like(layer_params["weight"])
+
+        outputs, _ = F(
+            layer, inputs=dict(x=inputs), is_training=True, state=layer_params, prng_key=prng_key
+        )
+        out_shape = layer.output_shape(input_shape=inputs.shape)
+        self.assertAllEqual(outputs.shape, out_shape)
+        expected = jnp.array(expected).astype(outputs.dtype)
+        self.assertNestedEqual(outputs[0, :, 0, 0], expected)
+
+    @parameterized.parameters(*CONVT_PARAMS)
+    def test_conv3d_transpose_simple(self, window, strides, padding, dilation, expected):
+        """Tests the cases in conv_transpose_explicit_padding() description."""
+        window = (window, 1, 1)
+        strides = (strides, 1, 1)
+        dilation = (dilation, 1, 1)
+        input_dim, output_dim = 1, 1
+        inputs = jnp.array([0, 0, 1, 1], dtype=jnp.float32)[None, :, None, None, None]
+        cfg = layers.Conv3DTranspose.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            strides=strides,
+            padding=padding,
+            dilation=dilation,
+            bias=False,
+        )
+        layer = cfg.instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        self.assertEqual(dict(weight=(*window, input_dim, output_dim)), shapes(layer_params))
+        layer_params["weight"] = jnp.ones_like(layer_params["weight"])
+
+        outputs, _ = F(
+            layer, inputs=dict(x=inputs), is_training=True, state=layer_params, prng_key=prng_key
+        )
+        out_shape = layer.output_shape(input_shape=inputs.shape)
+        self.assertAllEqual(outputs.shape, out_shape)
+        expected = jnp.array(expected).astype(outputs.dtype)
+        self.assertNestedEqual(outputs[0, :, 0, 0, 0], expected)
+
+    @parameterized.product(window=(1, 3, 5), padding=("SAME", "VALID", "CAUSAL"), dilation=(1, 2))
+    def test_conv1d_transpose_against_conv1d(self, window, padding, dilation):
+        # Conv1D and Conv1DTranspose are same when window_stride=1
+        # (stride of Conv1D) and lhs_dilation=1 (stride of Conv1DTranspose).
+        input_dim, output_dim = 4, 6
+        ref_cfg = Conv1D.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            padding=padding,
+            dilation=dilation,
+        )
+        ref_layer = ref_cfg.instantiate(parent=None)
+
+        test_cfg = layers.Conv1DTranspose.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            padding=padding,
+            dilation=dilation,
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        ref_states = ref_layer.initialize_parameters_recursively(init_key)
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [2, 17, input_dim])
+        # Compute layer outputs.
+        ref_outputs, _ = F(
+            ref_layer, inputs=dict(x=inputs), is_training=True, state=ref_states, prng_key=prng_key
+        )
+
+        (test_outputs, _), _ = F(
+            test_layer, inputs=dict(x=inputs), is_training=True, state=ref_states, prng_key=prng_key
+        )
+        if ref_outputs.shape != test_outputs.shape:
+            self.assertEqual(padding, "VALID")
+            dilate_window = layers.conv_dilate_window(window=(window,), dilation=(dilation,))[0]
+            pad_left = dilate_window - 1
+            test_outputs = test_outputs[:, pad_left:-pad_left]
+        assert_allclose(ref_outputs, test_outputs)
+
+    @parameterized.product(window=(1, 3, 5), padding=("SAME", "VALID", "CAUSAL"), dilation=(1, 2))
+    def test_conv2d_transpose_against_conv2d(self, window, padding, dilation):
+        # Conv2D and Conv2DTranspose are same when window_stride=1
+        # (stride of Conv2D) and lhs_dilation=1 (stride of Conv2DTranspose).
+        window = (window, window)
+        dilation = (dilation, dilation)
+        input_dim, output_dim = 4, 6
+        ref_cfg = Conv2D.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            padding=padding,
+            dilation=dilation,
+        )
+        ref_layer = ref_cfg.instantiate(parent=None)
+
+        test_cfg = layers.Conv2DTranspose.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            padding=padding,
+            dilation=dilation,
+            transpose_kernel=False,
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        ref_states = ref_layer.initialize_parameters_recursively(init_key)
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        width, height = 12, 13
+        inputs = jax.random.normal(input_key, [2, width, height, input_dim])
+        # Compute layer outputs.
+        ref_outputs, _ = F(
+            ref_layer,
+            inputs=dict(x=inputs),
+            is_training=True,
+            state=ref_states,
+            prng_key=prng_key,
+        )
+
+        test_outputs, _ = F(
+            test_layer,
+            inputs=dict(x=inputs),
+            is_training=True,
+            state=ref_states,
+            prng_key=prng_key,
+        )
+        if ref_outputs.shape != test_outputs.shape:
+            self.assertEqual(padding, "VALID")
+            dilate_window = layers.conv_dilate_window(window=window, dilation=dilation)
+            pad_left = tuple(w - 1 for w in dilate_window)
+            test_outputs = test_outputs[:, pad_left[0] : -pad_left[0], pad_left[1] : -pad_left[1]]
+
+        assert_allclose(ref_outputs, test_outputs)
+
+    @parameterized.product(window=(1, 3, 5), padding=("SAME", "VALID", "CAUSAL"), dilation=(1, 2))
+    def test_conv2d_transpose_against_conv2d_with_paddings(self, window, padding, dilation):
+        # Conv2DWith1DPadding and Conv2DTransposeWith1DPadding are same when window_stride=1
+        # (stride of Conv2D) and lhs_dilation=1 (stride of Conv2DTranspose).
+        window = (window, window)
+        dilation = (dilation, dilation)
+        input_dim, output_dim = 4, 6
+        if padding == "VALID":
+            # TODO(dhwang2,ruoming): Currently, anchor is pad_left but it should be the midpoint
+            # between [pad_left, pad_right). Otherwise, the consistency of VALID padding is broken.
+            # For reference, the midpoint in SAME and CAUSAL is left_pad.
+            strides = (1, 1)
+            dilate_window = layers.conv_dilate_window(window=window, dilation=dilation)[0]
+            conv_padding = layers.conv_explicit_padding(
+                window=window, strides=strides, padding=padding, dilation=dilation
+            )
+            pad_left, pad_right = conv_padding[0]
+            anchor_range = dilate_window - pad_left - pad_right
+            mid_point = anchor_range // 2
+            anchor = pad_left + mid_point
+        else:
+            anchor = None
+
+        ref_cfg = Conv2DWith1DPadding.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            padding=padding,
+            dilation=dilation,
+            anchor=anchor,
+        )
+        ref_layer = ref_cfg.instantiate(parent=None)
+
+        test_cfg = layers.Conv2DTransposeWith1DPadding.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            padding=padding,
+            dilation=dilation,
+            anchor=anchor,
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        ref_states = ref_layer.initialize_parameters_recursively(init_key)
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        width, height = 12, 13
+        inputs = jax.random.normal(input_key, [2, width, height, input_dim])
+        paddings = jnp.zeros([2, width], dtype=inputs.dtype).at[:, -2:].set(1)
+        # Compute layer outputs.
+        (ref_outputs, ref_paddings), _ = F(
+            ref_layer,
+            inputs=dict(x=inputs, paddings=paddings),
+            is_training=True,
+            state=ref_states,
+            prng_key=prng_key,
+        )
+
+        (test_outputs, test_paddings), _ = F(
+            test_layer,
+            inputs=dict(x=inputs, paddings=paddings),
+            is_training=True,
+            state=ref_states,
+            prng_key=prng_key,
+        )
+        if ref_outputs.shape != test_outputs.shape:
+            self.assertEqual(padding, "VALID")
+            dilate_window = layers.conv_dilate_window(window=window, dilation=dilation)
+            pad_left = tuple(w - 1 for w in dilate_window)
+            test_outputs = test_outputs[:, pad_left[0] : -pad_left[0], pad_left[1] : -pad_left[1]]
+            test_paddings = test_paddings[:, pad_left[0] : -pad_left[0]]
+
+        assert_allclose(ref_outputs, test_outputs)
+        assert_allclose(ref_paddings, test_paddings)
+
+    @parameterized.product(window=(1, 3, 5), padding=("SAME", "VALID", "CAUSAL"), dilation=(1, 2))
+    def test_conv3d_transpose_against_conv3d(self, window, padding, dilation):
+        # Conv3D and Conv3DTranspose are same when window_stride=1
+        # (stride of Conv3D) and lhs_dilation=1 (stride of Conv3DTranspose).
+        window = (window, window, window)
+        dilation = (dilation, dilation, dilation)
+        input_dim, output_dim = 4, 6
+        ref_cfg = Conv3D.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            padding=padding,
+            dilation=dilation,
+        )
+        ref_layer = ref_cfg.instantiate(parent=None)
+
+        test_cfg = layers.Conv3DTranspose.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            padding=padding,
+            dilation=dilation,
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        ref_states = ref_layer.initialize_parameters_recursively(init_key)
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        width, height, depth = 9, 8, 7
+        inputs = jax.random.normal(input_key, [2, width, height, depth, input_dim])
+        # Compute layer outputs.
+        ref_outputs, _ = F(
+            ref_layer,
+            inputs=dict(x=inputs),
+            is_training=True,
+            state=ref_states,
+            prng_key=prng_key,
+        )
+
+        test_outputs, _ = F(
+            test_layer,
+            inputs=dict(x=inputs),
+            is_training=True,
+            state=ref_states,
+            prng_key=prng_key,
+        )
+        if ref_outputs.shape != test_outputs.shape:
+            self.assertEqual(padding, "VALID")
+            dilate_window = layers.conv_dilate_window(window=window, dilation=dilation)
+            pad_left = tuple(w - 1 for w in dilate_window)
+            test_outputs = test_outputs[
+                :,
+                pad_left[0] : -pad_left[0],
+                pad_left[1] : -pad_left[1],
+                pad_left[2] : -pad_left[2],
+            ]
+
+        assert_allclose(ref_outputs, test_outputs)
+
+    @parameterized.product(
+        window=(1, 3, 5),
+        strides=(1, 2),
+        padding=("SAME", "VALID", "CAUSAL"),
+        dilation=(1, 2),
+        anchor=(None, 1),
+    )
+    def test_conv1d_transpose_against_conv2d_transpose_with_1d_padding(
+        self,
+        window,
+        strides,
+        padding: ConvPaddingType,
+        dilation,
+        anchor,
+    ):
+        if anchor is not None:
+            dilate_window = layers.conv_dilate_window(window=(window,), dilation=(dilation,))[0]
+            anchor = dilate_window - 1
+
+        input_dim, output_dim = 4, 6
+        ref_cfg = layers.Conv2DTransposeWith1DPadding.default_config().set(
+            name="ref",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=(window, 1),
+            strides=(strides, 1),
+            padding=padding,
+            dilation=(dilation, 1),
+            anchor=anchor,
+        )
+        ref_layer = ref_cfg.instantiate(parent=None)
+
+        test_cfg = layers.Conv1DTranspose.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            strides=strides,
+            padding=padding,
+            dilation=dilation,
+            anchor=anchor,
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        state = ref_layer.initialize_parameters_recursively(init_key)
+        test_state = dict(
+            bias=state["bias"], weight=einops.rearrange(state["weight"], "t 1 i o -> t i o")
+        )
+
+        # Generate a batch of 10 input sequences.
+        batch_size, max_seq_len = 10, 10
+
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, input_dim])
+        # The 10 sequences have length 1 to 10.
+        paddings = jnp.triu(jnp.ones((batch_size, max_seq_len)), k=1)
+
+        (test_outputs, test_paddings), _ = F(
+            test_layer,
+            inputs=dict(x=inputs, paddings=paddings),
+            is_training=True,
+            state=test_state,
+            prng_key=prng_key,
+        )
+
+        inputs = einops.rearrange(inputs, "b t i -> b t 1 i")
+        (ref_outputs, ref_paddings), _ = F(
+            ref_layer,
+            inputs=dict(x=inputs, paddings=paddings),
+            is_training=True,
+            state=state,
+            prng_key=prng_key,
+        )
+        ref_outputs = einops.rearrange(ref_outputs, "b t 1 o -> b t o")
+
+        assert_allclose(ref_paddings, test_paddings)
+        assert_allclose(ref_outputs, test_outputs)
 
     @parameterized.parameters(
         itertools.product(
