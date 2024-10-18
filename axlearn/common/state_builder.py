@@ -449,7 +449,8 @@ class BaseConverterFromPretrainedModel(Converter):
                 cfg.mesh_shape or trainer_cfg.mesh_shape or (len(jax.devices()), 1)
             )
             # Reset datasets and evalers for the pretrained model config.
-            trainer_cfg.input = EmptyInput.default_config()
+            # This input is not used. Set global_batch_size to 0 by default.
+            trainer_cfg.input = EmptyInput.default_config().set(global_batch_size=0)
             trainer_cfg.evalers = {}
 
             trainer = trainer_cfg.instantiate(parent=None)

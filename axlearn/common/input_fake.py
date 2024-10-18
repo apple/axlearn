@@ -24,7 +24,7 @@ class EmptyInput(Module):
         """Configures EmptyInput."""
 
         is_training: Required[bool] = REQUIRED
-        global_batch_size: Required[int] = 256  # The global batch size.
+        global_batch_size: Required[int] = REQUIRED  # The global batch size.
         total_num_batches: Optional[int] = None  # The total number of batches. If None, unlimited.
         source_length: int = 1024  # The length of a sequence (in tokens).
         max_token_id: int = 2048  # The maximum value a token-ID can take.
