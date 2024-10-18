@@ -32,7 +32,11 @@ from typing import Optional, cast
 import kubernetes as k8s
 from absl import app, flags, logging
 
-from axlearn.cloud.common.bastion import JobLifecycleEvent, JobLifecycleState
+from axlearn.cloud.common.bastion import (
+    BASTION_JOB_VERSION_ENV_VAR,
+    JobLifecycleEvent,
+    JobLifecycleState,
+)
 from axlearn.cloud.common.bundler import get_bundler_config
 from axlearn.cloud.common.event_queue import BaseQueueClient
 from axlearn.cloud.common.utils import (
@@ -44,7 +48,7 @@ from axlearn.cloud.common.utils import (
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
-from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import BASTION_JOB_VERSION_LABEL, GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.jobs.tpu_runner import with_tpu_training_defaults
 from axlearn.cloud.gcp.node_pool import (
@@ -79,6 +83,21 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
                 return reservation
     except (TypeError, KeyError):
         logging.warning("Failed to infer reservation.")
+    return None
+
+
+def _infer_job_version(jobset_spec: dict) -> Optional[int]:
+    """Infers job version given a jobset spec."""
+    try:
+        for job in jobset_spec["replicatedJobs"]:
+            labels = job["template"]["spec"]["template"]["metadata"]["labels"]
+            # If any job has a job version label, return it.
+            job_version = labels.get(BASTION_JOB_VERSION_LABEL, None)
+
+            if job_version is not None:
+                return int(job_version)
+    except (TypeError, KeyError) as e:
+        logging.warning("Failed to infer job version: %s.", e)
     return None
 
 
@@ -231,6 +250,7 @@ class GKERunnerJob(GCPJob):
             STARTUPPOLICYCOMPLETED: JobSet completed StartupPolicy.
             READY: JobSet is ready (all Jobs are ready).
             SUCCEEDED: JobSet succeeded (all Jobs succeeded). Typically also manifests as COMPLETED.
+            UPDATING: Job will be relaunched with new specs.
             RESCHEDULED: Job was rescheduled onto a different tier.
         """
 
@@ -243,6 +263,7 @@ class GKERunnerJob(GCPJob):
         STARTUPPOLICYCOMPLETED = "STARTUPPOLICYCOMPLETED"
         READY = "READY"
         SUCCEEDED = "SUCCEEDED"
+        UPDATING = "UPDATING"
         RESCHEDULED = "RESCHEDULED"
 
     # TODO(markblee): Consider moving some of the logic here into the inner impl.
@@ -260,6 +281,20 @@ class GKERunnerJob(GCPJob):
             reservation = _infer_reservation(resp["spec"])
             if runner_utils.should_recreate_job(tier, reservation):
                 return GKERunnerJob.Status.RESCHEDULED
+
+            expected_job_version = os.environ.get(BASTION_JOB_VERSION_ENV_VAR, None)
+            current_job_version = _infer_job_version(resp["spec"])
+
+            # If the job is expected to run with a newer version, relaunch it.
+            if expected_job_version is not None and (
+                current_job_version is None or int(expected_job_version) > current_job_version
+            ):
+                logging.info(
+                    "Current job version is %s; expected job version is %s",
+                    current_job_version,
+                    expected_job_version,
+                )
+                return GKERunnerJob.Status.UPDATING
 
             # According to stogner@google.com, it's possible for "conditions" to be missing until
             # the overall jobset has completed. However, if the jobset does complete, "conditions"
@@ -428,6 +463,9 @@ class GKERunnerJob(GCPJob):
             elif status == GKERunnerJob.Status.RESCHEDULED:
                 logging.info("Jobset does not match scheduling tier. Rescheduling the jobset...")
                 self._reschedule()
+            elif status == GKERunnerJob.Status.UPDATING:
+                logging.info("Newer job version is available. Relaunching the jobset...")
+                self._inner._delete()  # pylint: disable=protected-access
             elif status == GKERunnerJob.Status.NOT_STARTED:
                 logging.info("Task does not exist. Submitting it now...")
                 # Only bundle on first start, not if we're resuming monitoring.
@@ -546,7 +584,7 @@ def _delete_k8s_jobset_and_node_pools(
 
 @catch_auth
 def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
-    action = parse_action(argv, options=["start", "list", "stop"])
+    action = parse_action(argv, options=["start", "update", "list", "stop"])
 
     project = gcp_settings("project", fv=flag_values)
     zone = gcp_settings("zone", fv=flag_values)
@@ -554,7 +592,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
 
     load_kube_config(project=project, zone=zone, cluster=cluster)
 
-    if action == "start":
+    if action in ("start", "update"):
         command = " ".join(argv[2:])
         if not command:
             raise app.UsageError("Command is required.")

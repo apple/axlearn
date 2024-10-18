@@ -10,9 +10,10 @@ The launch flow depends on the launcher being used. Each launcher must define a 
 that decides, for a given CLI action (e.g. 'start') and instance type (e.g. 'tpu-v4-8'), whether the
 launcher can be used. See `_LAUNCHERS` for a full list, and `BastionManagedTPUJob` for an example.
 
-Possible actions: [start|stop|list]
+Possible actions: [start|update|stop|list]
 
     Start: submits a job to the queue.
+    Update: updates a job without resubmission.
     Stop: stops the job or removes a job from the queue.
     List: lists jobs and their statuses.
 
@@ -41,8 +42,26 @@ Examples:
         --bundler_spec=dockerfile=Dockerfile \
         --bundler_spec=build_arg1=my-build-arg ...
 
+    # Update an existing job without resubmission.
+    axlearn gcp launch update --instance_type=tpu-v4-32 ... -- python3 my_script2.py
+
     # To stop a job.
     axlearn gcp launch stop --name=... --instance_type=tpu
+
+More on the Update command:
+
+    The update command allows updating bundles and job command of an existing job
+    without resubmission. It currently only works with axlearn.cloud.gcp.jobs.gke_runner.
+
+    Resource related flags including instance_type, num_replicas and enable_pre_provisioner
+    are not allowed to change.
+
+    When bundles are updated before the job update, job will run with new bundles.
+    If bundle update is not desired, use `--bundler_spec=skip_bundle=True` flag
+    to skip bundle update.
+
+    To be able to update the job without re-provisioning the resources (e.g. TPU node pools),
+    use `--enable_pre_provisioner` to submit the job.
 
 """
 # pylint: disable=redefined-outer-name,protected-access
@@ -83,6 +102,7 @@ from axlearn.cloud.gcp.jobs.launch_utils import (
     project_usage_table,
     serialized_flags_for_job,
     user_usage_table,
+    validate_resource_flags,
     with_k8s_jobset_state,
     with_qrm_tpu_state,
 )
@@ -256,8 +276,8 @@ class BaseBastionManagedJob(Job):
         # We use the bundler defined by the runner impl, ensuring that bundling is consistent
         # between local and bastion.
         cfg.bundler = None
-        # Construct runner only for start.
-        if action == "start":
+        # Construct runner only for start and update.
+        if action in ("start", "update"):
             cfg.runner = cls.runner.from_flags(fv, command=command)
             runner_flags = " ".join(serialized_flags_for_job(fv, cls.runner))
             cfg.command = f"python3 -m {cls.runner.__module__} {action} {runner_flags} -- {command}"
@@ -351,6 +371,41 @@ class BaseBastionManagedJob(Job):
             f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
             f"{cfg.project_id or ''}"
         )
+        return jobspec
+
+    def _update(self) -> JobSpec:
+        """Update an existing job without resubmission.
+
+        This will fetch the existing job from Bastion, change
+        the trainer command, increment the version in metadata, and then update the job on Bastion.
+
+        The resource related flags including instance_type, num_replicas and enable_pre_provisioner
+        are not allowed to change.
+        """
+        cfg: BaseBastionManagedJob.Config = self.config
+
+        # Get current job spec.
+        job_spec = self._bastion_dir.get_job(job_name=cfg.name)
+
+        if self._runner and self._runner.bundler:
+            self._runner.bundler.bundle(cfg.name)
+
+        logging.info("Starting update for job name %s", cfg.name)
+        logging.info("Command: %s", cfg.command)
+
+        # Update the job version.
+        job_version = job_spec.metadata.version or 0
+        job_spec.metadata.version = job_version + 1
+
+        # The resource related flags are not allowed to change.
+        validate_resource_flags(job_spec.command, cfg.command)
+
+        job_spec.command = cfg.command
+
+        logging.info("Updated jobspec: %s", job_spec)
+
+        jobspec = self._bastion_dir.update_job(cfg.name, job_spec=job_spec)
+
         return jobspec
 
 
@@ -451,7 +506,7 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, *, command: str, action: str, **kwargs) -> Config:
         # Set default docker flags. These will automatically propagate to the runner on the bastion.
-        if action == "start":
+        if action in ("start", "update"):
             fv.set_default("bundler_type", CloudBuildBundler.TYPE)
         cfg: BastionManagedGKEJob.Config = super().from_flags(
             fv, command=command, action=action, **kwargs
@@ -523,12 +578,12 @@ _LAUNCHERS = [
     Launcher(
         job_cls=BastionManagedGKEJob.with_runner(gke_runner.TPUGKERunnerJob),
         matcher=config_for_function(match_by_regex).set(
-            match_regex=dict(start=r"tpu-v.+-(\d)+", list=r"tpu.*", stop=r"tpu.*"),
+            match_regex=dict(start=r"tpu-v.+-(\d)+", update=r"tpu.*", list=r"tpu.*", stop=r"tpu.*"),
             gcp_api=GCPAPI.GKE.value,
         ),
         description=(
             "Supports launching TPU jobs via GKE. "
-            "For 'start', provide --gcp_api=gke, as well as the full instance type, "
+            "For 'start' or 'update', provide --gcp_api=gke, as well as the full instance type, "
             "e.g. --instance_type=tpu-v4-8. "
             "For 'list' or 'stop', provide --gcp_api=gke as well as the accelerator type, "
             "e.g. --instance_type=tpu."
@@ -576,7 +631,7 @@ def main(_):
     if FLAGS.instance_type is None:
         raise app.UsageError("--instance_type is required.")
 
-    action = parse_action(sys.argv, options=["start", "stop", "list"], default="start")
+    action = parse_action(sys.argv, options=["start", "stop", "update", "list"], default="start")
     launcher = _get_launcher_or_exit(
         action=action,
         instance_type=FLAGS.instance_type,
@@ -604,6 +659,8 @@ def main(_):
         job._list()
     elif action == "stop":
         job._delete()
+    elif action == "update":
+        job._update()
     else:
         raise app.UsageError(f"Unsupported action {action}")
 
@@ -635,7 +692,9 @@ def _private_flags():
     # Allow instance_type to be None when running --help without any flags. On the other hand, if
     # instance_type is provided when running --help, we show additional help info.
     if FLAGS.instance_type:
-        action = parse_action(sys.argv, options=["start", "stop", "list"], default="start")
+        action = parse_action(
+            sys.argv, options=["start", "update", "stop", "list"], default="start"
+        )
         launcher = _get_launcher_or_exit(
             action=action,
             instance_type=FLAGS.instance_type,
