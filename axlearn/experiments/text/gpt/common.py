@@ -382,17 +382,63 @@ def adamw_decoupled_learner_config(
         # Decay to this fraction of the peak_lr.
         alpha=alpha,
     )
-    optimizer = config_for_function(optimizers.adamw_decoupled_optimizer).set(
-        learning_rate=peak_lr,
-        b1=b1,
-        b2=b2,
-        eps=eps,
-        update_schedule=update_schedule,
-        weight_decay=weight_decay,
-        weight_decay_per_param_scale=None,
-        adam_update_transformation=adam_update_transformation,
-    )
-    USE_SKIP = True
+    """Experiment results (using jnp.where as skip implementation):
+    jax/jaxlib: 0.4.35.dev20241017 libtpu-nightly: 0.1.dev20241017+nightly
+    accelerator: v5p-8
+
+    USE_ADASTAR = True, USE_SKIP = False
+    INTERNAL: RET_CHECK failure (third_party/tensorflow/compiler/xla/hlo/ir/hlo_input_output_alias_config.cc:56) !alias_.element(output_index)
+    Trying to set up output alias for param 23 at {} but failed: output index {1} is already aliased with param 2 at {}
+
+    USE_ADASTAR = True, USE_SKIP = True
+    hlo_host_device_type_call_wrapper.cc:187] Check failed: instr->called_computations().size() == 1 (0 vs. 1)
+
+    USE_ADASTAR = True, USE_SKIP = *, USE_SHARD_MAP = False (see axlearn/common/optimizers.py:1964)
+    tfrt_tpu_pjrt_client.cc:8491] Failed to execute host offloading executable: FAILED_PRECONDITION:
+    Host offloaded collective custom call 'MegaScaleCollectiveInputStart' only works in multi slice environment.
+    Note: @Yash Katariya suggested using shard_map as a workaround, which can indeed fixed this problem of compiler
+    generating Megascale collectives in host computation.
+
+    USE_ADASTAR = False, USE_SKIP = *
+    Around 5.5s ~ 6s step time with this PR (fuji 7b with 16 layers = ~3.5b model). Looks like where is working expected in this case with no
+    performance penalty compared to the baseline. Performance is bad due to no overlapping with TPU computation.
+
+    Summary: Adastar optimizer is not working. Adam optimizer offloading is working but we need to improve its performance.
+    """
+    USE_ADASTAR = True
+    USE_SKIP = False
+    if USE_ADASTAR:
+        optimizer = config_for_function(optimizers.adastar_optimizer).set(
+            learning_rate=peak_lr,
+            # adafactor does not apply smoothing on gradients (but on raw updates).
+            gradient_ema_decay=None,
+            gradient_ema_debias=None,
+            gradient_square_ema_decay=b2,
+            gradient_square_ema_debias=True,
+            eps=0,
+            # adafactor eps is applied on the square.
+            eps_square=1e-30,
+            # Clipping is applied on raw updates by per-param norm (not global norm).
+            raw_update_clipping_threshold=1.0,
+            # Smoothing is applied on raw updates.
+            update_ema_decay=b1,
+            # ... but without debiasing (!).
+            update_ema_debias=False,
+            weight_decay=weight_decay,
+            update_schedule=update_schedule,
+            adam_update_transformation=adam_update_transformation,
+        )
+    else:
+        optimizer = config_for_function(optimizers.adamw_decoupled_optimizer).set(
+            learning_rate=peak_lr,
+            b1=b1,
+            b2=b2,
+            eps=eps,
+            update_schedule=update_schedule,
+            weight_decay=weight_decay,
+            weight_decay_per_param_scale=None,
+            adam_update_transformation=adam_update_transformation,
+        )
     if USE_SKIP:
         optimizer_cfg = config_for_function(optimizers.skip_and_clip_by_global_norm).set(
             inner=optimizer, drop_norm=100, max_norm=1

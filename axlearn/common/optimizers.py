@@ -1432,7 +1432,7 @@ def skip_and_clip_by_global_norm(
         # Apply subsequent gradient transformation.
         new_updates, new_inner_state = inner.update(clipped_updates, inner_state, params)
         # Discard the updates and states in a nonvalid step.
-        final_updates = jax.tree_util.tree_map(
+        final_updates = jax.tree.map(
             lambda x, y: jnp.where(is_valid_step, x, jnp.zeros_like(y)),
             new_updates,
             updates,
@@ -1442,19 +1442,19 @@ def skip_and_clip_by_global_norm(
         @compute_on("device_host")
         @partial(jax.jit, donate_argnums=(1, 2))
         def replace_fn(is_valid_step, new_inner_state, inner_state):
-            return jax.tree_util.tree_map(
+            return jax.tree.map(
                 lambda x, y: jnp.where(is_valid_step, x, y),
                 new_inner_state,
                 inner_state,
             )
 
-        new_inner_state = replace_fn(is_valid_step, new_inner_state, inner_state)
+        final_inner_state = replace_fn(is_valid_step, new_inner_state, inner_state)
         return final_updates, SkipClipState(
             count=inc_count,
             nonvalid_count=nonvalid_count,
             grad_norm_ema=new_norm_ema,
             grad_norm_square_ema=new_norm_square_ema,
-            inner_state=new_inner_state,
+            inner_state=final_inner_state,
             drop_stats=new_drop_stats,
         )
 
@@ -1952,7 +1952,7 @@ def adastar_optimizer(
         # Do not return raw_updates when it's no needed to reduce D2H transfers when offloading is active.
         if verbosity <= 0:
             raw_updates = None
-        return smoothed_updates, _AdastarState(count=incremented_count, pps=pps_tree)
+        return raw_updates, smoothed_updates, _AdastarState(count=incremented_count, pps=pps_tree)
 
     def update_fn(grads: NestedTensor, state: _AdastarState, params: NestedOptParam):
         if params is None:
@@ -1961,12 +1961,18 @@ def adastar_optimizer(
         if not offload:
             raw_updates, smoothed_updates, updated_state = core_computation(grads, state)
         else:
-            smoothed_updates, updated_state = shard_map(
-                compute_on("device_host")(jax.jit(core_computation)),
-                mesh=thread_resources.env.physical_mesh,
-                in_specs=(update_specs, state_specs),
-                out_specs=(update_specs, state_specs),
-            )(grads, state)
+            USE_SHARD_MAP = True
+            if USE_SHARD_MAP:
+                _, smoothed_updates, updated_state = shard_map(
+                    compute_on("device_host")(jax.jit(core_computation)),
+                    mesh=thread_resources.env.physical_mesh,
+                    in_specs=(update_specs, state_specs),
+                    out_specs=(None, update_specs, state_specs),
+                )(grads, state)
+            else:
+                _, smoothed_updates, updated_state = compute_on("device_host")(
+                    jax.jit(core_computation)
+                )(grads, state)
         # Add param and update stats to summaries.
         # _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
         # Computing extra stats increases step time. Only adds them to summaries in verbose mode.
