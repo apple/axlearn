@@ -278,7 +278,9 @@ def _tpu_splash_attention(
         cols = np.arange(target_len)
         with jax.ensure_compile_time_eval():
             mask_array = np.asarray(mask(rows[:, None], cols[None, :]))
-        # NumpyMask may consume a large amount of host memory for long sequences at compile time.
+
+        # NumpyMask is backed by a dense [source_len, target_len] numpy array.
+        # May consume a large amount of host memory for long sequences at compile time.
         mask = splash_attention_mask.NumpyMask(array=mask_array)
 
     kernel = splash_attention_kernel.make_splash_mha(
