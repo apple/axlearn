@@ -95,11 +95,12 @@ class TensorSpec:
     shape: Sequence[int]
     dtype: Optional[jnp.dtype] = None
     mesh_axes: Optional[PartitionSpec] = None
+    memory_kind: Optional[str] = None
 
     @property
     def sharding(self) -> jax.sharding.Sharding:
         mesh = thread_resources.env.physical_mesh
-        return jax.sharding.NamedSharding(mesh, self.mesh_axes)
+        return jax.sharding.NamedSharding(mesh, self.mesh_axes, memory_kind=self.memory_kind)
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
