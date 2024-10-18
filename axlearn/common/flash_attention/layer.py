@@ -120,8 +120,7 @@ class FlashAttention(GroupedQueryAttention):
         return (
             backend == "tpu"
             and self.per_head_dim() % splash_attention_kernel.NUM_LANES == 0
-            # TODO(c_lan): sliding_window_mask fails layer_test with seq_len = 2048. Need to fix.
-            and self._mask_fn is causal_mask
+            and self._mask_fn is not None
         )
 
     def _logit_biases_for_mask(
