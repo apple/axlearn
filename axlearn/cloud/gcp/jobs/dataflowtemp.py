@@ -1,56 +1,67 @@
 # Copyright © 2023 Apple Inc.
 
-"""Runs Dataflow jobs locally or in GCP ** without needing to submit the job from a VM **
-Users may encounter errors when they are trying to submit a job to the Dataflow runner using the primary dataflow.py script.
+"""Runs Dataflow jobs locally or in GCP.
 
-
-TO USE THIS MODULE, YOU MUST RENAME IT TO DATAFLOW.PY (and replace/rename the existing dataflow.py)
-
+If you are running into issues trying to submit a job to the DgitataflowRunner, use dataflow.alt.py instead.
 
 The flow is:
 1. Builds the dataflow worker image.
 2. Runs the dataflow job either on dataflow (if runner is 'DataflowRunner', the default) or locally
-   (if runner is 'DirectRunner').
-
+    (if runner is 'DirectRunner').
 
 Note: killing the script is not sufficient to stop a remote dataflow job; please use
 `axlearn gcp dataflow stop` to do so. See below for examples.
 
-
 Possible actions: [start|stop]
 
+    Start:
+        - If using DataflowRunner (default), builds the worker image, submits the job to Dataflow,
+            and monitors the status. To stop the job, use `axlearn gcp dataflow stop`.
+        - If using DirectRunner, builds the worker and runs the job locally. Exiting the script
+            terminates the job.
 
-   Start:
-       - If using DataflowRunner (default), builds the worker image, submits the job to Dataflow,
-           and monitors the status. To stop the job, use `axlearn gcp dataflow stop`.
-       - If using DirectRunner, builds the worker and runs the job locally. Exiting the script
-           terminates the job.
+    Stop:
+        - Attempts to stop any remote Dataflow job(s) matching job name. This is only useful if the
+        job was started with DataflowRunner; for DirectRunner, exiting the script stops the job.
 
+Examples:
 
-   Stop:
-       - Attempts to stop any remote Dataflow job(s) matching job name. This is only useful if the
-       job was started with DataflowRunner; for DirectRunner, exiting the script stops the job.
+    # Simple launch for the wordcount example[1], which implicitly uses DataflowRunner.
+    # Flags like project, region, and temp_location will be inferred from settings.
+    axlearn gcp dataflow start \
+        --name=$USER-dataflow \
+        --bundler_spec=dockerfile=Dockerfile \
+        --bundler_spec=base_image=apache/beam_python3.10_sdk:2.55.1 \
+        --bundler_spec=target=dataflow \
+        -- "'
+        python3 -m apache_beam.examples.wordcount \
+            --input=gs://dataflow-samples/shakespeare/kinglear.txt \
+            --output=gs://STORAGE_BUCKET/results/outputs \
+        '"
 
-
-Example:
-
-
-axlearn gcp dataflow start \
-  --name=$USER-dataflow \
-  --bundler_spec=extras=dataflow \
-  --bundler_spec=dockerfile=Dockerfile \
-  --bundler_spec=target=dataflow \
-  --bundler_spec=allow_dirty=True \
-  --bundler_spec=image=${DOCKER_IMAGE} \
-  --bundler_spec=repo=${DOCKER_REPO} \
-  --dataflow_spec=runner=DataflowRunner \
-  --dataflow_spec=region=us-central2 \
-  --dataflow_spec=machine_type=n2-standard-8 \
-  -- "'
-  python3 -m apache_beam.examples.wordcount \
-          --input=gs://dataflow-samples/shakespeare/kinglear.txt \
-      --output=gs://STORAGE_BUCKET/wordcount'"
-
+    # Launch from a VM. Note that /tmp/output_dir is on the VM. You can also point to gs://.
+    #
+    # A breakdown of the command:
+    # * `axlearn gcp vm` launches everything after `--` on a VM.
+    # * `--bundler_spec=extras=dataflow` installs necessary deps on the VM for launching dataflow.
+    # * `--dataflow_spec=runner=DirectRunner` runs locally on the VM, rather than in dataflow.
+    #
+    # Note: If running multiple commands, the quotes "'...'" are necessary to avoid splitting them.
+    # Note: To launch on Dataflow, simply remove `--dataflow_spec=runner=DirectRunner` flag.
+    #
+    axlearn gcp vm start --name=$USER-dataflow --bundler_spec=extras=dataflow --retain_vm -- \
+        axlearn gcp dataflow start \
+            --name=$USER-dataflow \
+            --dataflow_spec=runner=DirectRunner \
+            --bundler_spec=dockerfile=Dockerfile \
+            --bundler_spec=base_image=apache/beam_python3.10_sdk:2.55.1 \
+            --bundler_spec=target=dataflow \
+            -- "'
+            rm -r /tmp/output_dir; \
+            python3 -m apache_beam.examples.wordcount \
+                --input=gs://dataflow-samples/shakespeare/kinglear.txt \
+                --output=/tmp/output_dir/outputs
+            '"
 
     # Stop the VM (if running on VM).
     axlearn gcp vm stop --name=$USER-dataflow
@@ -169,7 +180,6 @@ class DataflowJob(GCPJob):
         )
         cfg.setup_command = f"{docker_setup_cmd} && {docker_auth_cmd} && {bundle_cmd}"
         cfg.command = f"{cfg.command} {dataflow_flags}"
-        logging.info(f"from_flags, full df command: {cfg.command}")
         return cfg
 
     @classmethod
@@ -242,10 +252,10 @@ class DataflowJob(GCPJob):
                 "docker run --rm "
                 "--mount type=bind,src=$HOME/.config/gcloud,dst=/root/.config/gcloud "
                 "--entrypoint /bin/bash "
-                f"{self._bundler.id(cfg.name)} -c '\"'\"'{cfg.command}'\"'\"'"
+                f"{self._bundler.id(cfg.name)} -c '{cfg.command}'"
             )
         cmd = f"{cfg.setup_command} && {cmd}"
-        cmd = f"bash -c '{cmd}'"
+        cmd = f"bash -c {shlex.quote(cmd)}"
         logging.info("Executing in subprocess: %s", cmd)
         with subprocess.Popen(cmd, shell=True, text=True) as proc:
             # Attempt to cleanup the process when exiting.
