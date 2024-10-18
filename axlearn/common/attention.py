@@ -325,7 +325,7 @@ def make_causal_biases(seq_len: int) -> Tensor:
         0 otherwise.
     """
     # TODO(sneha): support batching
-    return _bool_to_bias(causal_mask(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
+    return bool_to_bias(causal_mask(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
 
 
 def make_sliding_window_causal_biases(seq_len: int, sliding_window_size: int) -> Tensor:
@@ -339,10 +339,10 @@ def make_sliding_window_causal_biases(seq_len: int, sliding_window_size: int) ->
         if i - j > sliding_window_size or i < j, 0 otherwise.
     """
     mask_fn = sliding_window_causal_mask(sliding_window_size)
-    return _bool_to_bias(mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
+    return bool_to_bias(mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
 
 
-def _bool_to_bias(mask: Tensor) -> Tensor:
+def bool_to_bias(mask: Tensor) -> Tensor:
     """Converts a bool mask tensor to a bias mask tensor.
 
     Maps:
@@ -1965,7 +1965,7 @@ class MultiheadAttention(BaseLayer):
             mask = mask[:, None, None, :]
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
-        mask = _bool_to_bias(mask)
+        mask = bool_to_bias(mask)
         return mask
 
     def _compute_attention(
