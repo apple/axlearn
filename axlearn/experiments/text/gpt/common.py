@@ -386,6 +386,8 @@ def adamw_decoupled_learner_config(
     jax/jaxlib: 0.4.35.dev20241017 libtpu-nightly: 0.1.dev20241017+nightly
     accelerator: v5p-8
 
+    We currently focus on Adam and Adastar because they're most commonly used in axlearn.
+
     USE_ADASTAR = True, USE_SKIP = False
     INTERNAL: RET_CHECK failure (third_party/tensorflow/compiler/xla/hlo/ir/hlo_input_output_alias_config.cc:56) !alias_.element(output_index)
     Trying to set up output alias for param 23 at {} but failed: output index {1} is already aliased with param 2 at {}
