@@ -382,21 +382,25 @@ def adamw_decoupled_learner_config(
         # Decay to this fraction of the peak_lr.
         alpha=alpha,
     )
-    optimizer_cfg = config_for_function(optimizers.chain).set(
-        args=[
-            config_for_function(optimizers.clip_by_global_norm).set(max_norm=1),
-            config_for_function(optimizers.adamw_decoupled_optimizer).set(
-                learning_rate=peak_lr,
-                b1=b1,
-                b2=b2,
-                eps=eps,
-                update_schedule=update_schedule,
-                weight_decay=weight_decay,
-                weight_decay_per_param_scale=None,
-                adam_update_transformation=adam_update_transformation,
-            ),
-        ]
+    optimizer = config_for_function(optimizers.adamw_decoupled_optimizer).set(
+        learning_rate=peak_lr,
+        b1=b1,
+        b2=b2,
+        eps=eps,
+        update_schedule=update_schedule,
+        weight_decay=weight_decay,
+        weight_decay_per_param_scale=None,
+        adam_update_transformation=adam_update_transformation,
     )
+    USE_SKIP = True
+    if USE_SKIP:
+        optimizer_cfg = config_for_function(optimizers.skip_and_clip_by_global_norm).set(
+            inner=optimizer, drop_norm=100, max_norm=1
+        )
+    else:
+        optimizer_cfg = config_for_function(optimizers.chain).set(
+            args=[config_for_function(optimizers.clip_by_global_norm).set(max_norm=1), optimizer]
+        )
     return learner.Learner.default_config().set(optimizer=optimizer_cfg)
 
 

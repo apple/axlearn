@@ -871,7 +871,7 @@ class SpmdTrainer(Module):
             # pjit currently requires all parameters to be specified as positional args.
             self._trainer_state, outputs = self._jit_train_step(self._trainer_state, input_batch)
 
-        if self.step % 100 == 0 or 0 <= self.step <= 5:
+        if True:
             self._step_log(
                 "loss=%s aux=%s",
                 outputs["loss"],

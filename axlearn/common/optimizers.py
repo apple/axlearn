@@ -28,6 +28,7 @@ Despite this, there are no plans to stop supporting `PartitionedGradientTransfor
 import dataclasses
 import re
 from collections.abc import Sequence
+from functools import partial
 from typing import Any, Callable, NamedTuple, Optional, Union
 
 import chex
@@ -40,15 +41,12 @@ from jax._src.mesh import thread_resources
 from jax.experimental.compute_on import compute_on
 from jax.experimental.shard_map import shard_map
 from optax._src import numerics
-from functools import partial
 
 from axlearn.common import schedule, struct
 from axlearn.common.base_layer import NestedParameterSpec, ParameterSpec, PartitionSpec
 from axlearn.common.config import ConfigOr, maybe_instantiate
 from axlearn.common.factorized_rms import scale_by_factored_rms
 from axlearn.common.module import current_context
-from axlearn.common.module import Module, child_context, new_output_collection, functional as F, InvocationContext
-
 from axlearn.common.optimizer_base import (
     NestedOptParam,
     OptParam,
@@ -92,7 +90,7 @@ def chain(*args):
         init=base.init, update=base.update, partition=partition
     )
 
-import inspect
+
 def named_chain(**kwargs):
     kwargs = {k: _to_partitioned_transformation(v) for k, v in kwargs.items()}
 
@@ -100,14 +98,11 @@ def named_chain(**kwargs):
         return {k: v.init(params) for k, v in kwargs.items()}
 
     def update_fn(
-        updates: NestedTensor, state: dict[str, Any], params: NestedOptParam, is_valid_step
+        updates: NestedTensor, state: dict[str, Any], params: NestedOptParam
     ) -> tuple[NestedTensor, optax.EmptyState]:
         new_state = {}
         for k, v in kwargs.items():
-            if "is_valid_step" in inspect.signature(v.update).parameters:
-                updates, new_state[k] = v.update(updates, state[k], params, is_valid_step)
-            else:
-                updates, new_state[k] = v.update(updates, state[k], params)
+            updates, new_state[k] = v.update(updates, state[k], params)
         return updates, new_state
 
     def partition_fn(param_spec):
@@ -1435,41 +1430,25 @@ def skip_and_clip_by_global_norm(
             if context is not None:
                 context.add_summary("gradient_scale", g_scale)
         # Apply subsequent gradient transformation.
-        new_updates, new_inner_state = inner.update(clipped_updates, inner_state, params, is_valid_step)
+        new_updates, new_inner_state = inner.update(clipped_updates, inner_state, params)
         # Discard the updates and states in a nonvalid step.
-        # final_updates = jax.tree_util.tree_map(
-        #     lambda x, y: jnp.where(is_valid_step, x, jnp.zeros_like(y)),
-        #     new_updates,
-        #     updates,
-        # )
+        final_updates = jax.tree_util.tree_map(
+            lambda x, y: jnp.where(is_valid_step, x, jnp.zeros_like(y)),
+            new_updates,
+            updates,
+        )
 
-        # @compute_on("device_host")
-        # @partial(jax.jit, donate_argnums=(1,))
-        # def replace_fn(is_valid_step, new_inner_state, inner_state):
-        #     return jax.tree_util.tree_map(
-        #         lambda x, y: jnp.where(is_valid_step, x, y),
-        #         new_inner_state,
-        #         inner_state,
-        #     )
-        # new_inner_state = replace_fn(is_valid_step, new_inner_state, inner_state)
-        
-        # fact_spec = jax.tree.map(lambda p: (p.factorization_spec, None), params)
+        # new_inner_state is optimizer state on CPU.
+        @compute_on("device_host")
+        @partial(jax.jit, donate_argnums=(1, 2))
+        def replace_fn(is_valid_step, new_inner_state, inner_state):
+            return jax.tree_util.tree_map(
+                lambda x, y: jnp.where(is_valid_step, x, y),
+                new_inner_state,
+                inner_state,
+            )
 
-        # @compute_on("device_host")
-        # @jax.jit
-        # def host_fn(is_valid_step, args):
-        #     def true_fun(clipped_updates, inner_state, params):
-        #         params = jax.tree_map(lambda p, f: OptParam(p[0], f[0], p[1]), params, fact_spec, is_leaf=lambda x: isinstance(x, tuple) and len(x) == 2)
-        #         return inner.update(clipped_updates, inner_state, params)
-
-        #     def false_fun(clipped_updates, inner_state, params):
-        #         return jax.tree_map(lambda x: jnp.zeros_like(x), clipped_updates), inner_state
-
-        #     return jax.lax.cond(is_valid_step, true_fun, false_fun, *args)
-
-        # final_updates, new_inner_state = host_fn(is_valid_step, (clipped_updates, inner_state, jax.tree.map(lambda p: (p.value, p.weight_decay_scale), params)))
-
-        final_updates = new_updates
+        new_inner_state = replace_fn(is_valid_step, new_inner_state, inner_state)
         return final_updates, SkipClipState(
             count=inc_count,
             nonvalid_count=nonvalid_count,
@@ -1975,50 +1954,19 @@ def adastar_optimizer(
             raw_updates = None
         return smoothed_updates, _AdastarState(count=incremented_count, pps=pps_tree)
 
-    def update_fn(grads: NestedTensor, state: _AdastarState, params: NestedOptParam, is_valid_step):
+    def update_fn(grads: NestedTensor, state: _AdastarState, params: NestedOptParam):
         if params is None:
             raise ValueError("param is None")
 
         if not offload:
             raw_updates, smoothed_updates, updated_state = core_computation(grads, state)
         else:
-            # @compute_on("device_host")
-            # @jax.jit
-            # def false_fn(grads, state):
-            #     return grads, state
-            
-            # @compute_on("device_host")
-            # @jax.jit
-            # def cond_fn(is_valid_step, grads, state):
-            #     return jax.lax.cond(is_valid_step, core_computation, false_fn, grads, state)
-            
-            # smoothed_updates, updated_state = cond_fn(is_valid_step, grads, state)
-
-
-            def true_fn(grads, state):
-                return shard_map(
-                    core_computation,
-                    mesh=thread_resources.env.physical_mesh,
-                    in_specs=(update_specs, state_specs),
-                    out_specs=(update_specs, state_specs),
-                )(grads, state)
-
-            def false_fn(grads, state):
-                return grads, state
-            
-            @compute_on("device_host")
-            @partial(jax.jit, donate_argnums=(1, 2))
-            def cond_fn(is_valid_step, grads, state):
-                return jax.lax.cond(is_valid_step, true_fn, false_fn, grads, state)
-            
-            smoothed_updates, updated_state = cond_fn(is_valid_step, grads, state)
-        
-            # smoothed_updates, updated_state = shard_map(
-            #     compute_on("device_host")(jax.jit(core_computation)),
-            #     mesh=thread_resources.env.physical_mesh,
-            #     in_specs=(update_specs, state_specs),
-            #     out_specs=(update_specs, state_specs),
-            # )(grads, state)
+            smoothed_updates, updated_state = shard_map(
+                compute_on("device_host")(jax.jit(core_computation)),
+                mesh=thread_resources.env.physical_mesh,
+                in_specs=(update_specs, state_specs),
+                out_specs=(update_specs, state_specs),
+            )(grads, state)
         # Add param and update stats to summaries.
         # _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
         # Computing extra stats increases step time. Only adds them to summaries in verbose mode.
