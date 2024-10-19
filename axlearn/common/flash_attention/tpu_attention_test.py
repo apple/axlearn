@@ -40,12 +40,12 @@ class TestFlashAttention(TestCase):
     _TEST_CONFIGS = [
         dict(
             batch_size=2,
-            seq_len=384,
+            kv_len=256,
             num_heads=4,
         ),
         dict(
             batch_size=8,
-            seq_len=2048,
+            kv_len=2048,
             num_heads=4,
         ),
     ]
@@ -65,6 +65,7 @@ class TestFlashAttention(TestCase):
 
     @parameterized.product(
         _TEST_CONFIGS,
+        query_length_multiplier=[0.5, 1, 2],
         mask=[None, causal_mask, jax_fn_mask],
         attention_bias_type=[None, "2d", "4d"],
         with_segment_ids=[False, True],
@@ -73,9 +74,10 @@ class TestFlashAttention(TestCase):
     def test_forward_and_backward(
         self,
         batch_size,
-        seq_len,
+        kv_len,
         num_heads,
         per_head_dim,
+        query_length_multiplier,
         mask,
         attention_bias_type,
         with_segment_ids,
@@ -89,27 +91,26 @@ class TestFlashAttention(TestCase):
 
         if fallback_to_legacy and mask is jax_fn_mask:
             pytest.skip("Custom masks are not supported by legacy attention.")
+        if with_segment_ids and query_length_multiplier != 1:
+            pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
 
         k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
+        query_len = int(kv_len * query_length_multiplier)
         q = jax.random.normal(
-            k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16
+            k1, (batch_size, query_len, num_heads, per_head_dim), dtype=jnp.bfloat16
         )
-        k = jax.random.normal(
-            k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16
-        )
-        v = jax.random.normal(
-            k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16
-        )
+        k = jax.random.normal(k2, (batch_size, kv_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
+        v = jax.random.normal(k3, (batch_size, kv_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
         attention_bias = None
         if attention_bias_type == "2d":
-            attention_bias = jax.random.normal(k4, (1, 1, seq_len, seq_len), dtype=jnp.bfloat16)
+            attention_bias = jax.random.normal(k4, (1, 1, query_len, kv_len), dtype=jnp.bfloat16)
         elif attention_bias_type == "4d":
             attention_bias = jax.random.normal(
-                k4, (batch_size, num_heads, seq_len, seq_len), dtype=jnp.bfloat16
+                k4, (batch_size, num_heads, query_len, kv_len), dtype=jnp.bfloat16
             )
         segment_ids = None
         if with_segment_ids:
-            segment_ids = jax.random.bernoulli(k5, shape=(batch_size, seq_len)).astype(jnp.int32)
+            segment_ids = jax.random.bernoulli(k5, shape=(batch_size, kv_len)).astype(jnp.int32)
             segment_ids = jnp.cumsum(segment_ids, axis=1)
 
         softmax_scale = q.shape[-1] ** -0.5
@@ -142,7 +143,7 @@ class TestFlashAttention(TestCase):
         )(q, k, v, attention_bias, segment_ids)
         self.assertNestedAllClose(grad_out, ref_grad_out, atol=0.05)
 
-        # Check splash attention is was used when it should be.
+        # Check splash attention is used when it should be.
         if fallback_to_legacy:
             legacy_flash_wrapper.assert_called()
         else:
