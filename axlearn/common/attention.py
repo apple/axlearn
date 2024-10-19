@@ -1936,6 +1936,7 @@ class MultiheadAttention(BaseLayer):
                 this is equal to the KV cache size.
             query_len: Only used for (ForwardMode.FORWARD, ForwardMode.INIT_STATES).
                 If set, this is the query length. Otherwise, it uses kv_len as the query length.
+                Must be None for ForwardMode.EXTEND_STEP.
             time_step: Only used for (ForwardMode.EXTEND_STEP). A tensor of size [batch] denoting
                 the 0-indexed position of the current input token.
 
