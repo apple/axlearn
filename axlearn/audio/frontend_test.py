@@ -17,10 +17,11 @@ from absl.testing import parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
-from axlearn.audio.frontend import LogMelFrontend, _ms_to_samples, normalize_by_mean_std
+from axlearn.audio.frontend import LogMelFrontend, normalize_by_mean_std
 from axlearn.audio.frontend_utils import (
     linear_to_log_spectrogram,
     magnitude_spectrogram,
+    ms_to_samples,
     sharded_fft,
 )
 from axlearn.audio.frontend_utils_test import (
@@ -321,15 +322,17 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
         )
         layer: LogMelFrontend = cfg.set(name="test").instantiate(parent=None)
         test_outputs = self._jit_forward(layer, inputs, paddings)
+        test_outputs, test_paddings = test_outputs["outputs"], test_outputs["paddings"]
 
         # Only compare the non-padding outputs.
         ref_outputs = ref_outputs * (1 - tf.cast(ref_paddings, ref_outputs.dtype))[..., None]
-        self.assertAllClose(ref_outputs[..., None], test_outputs["outputs"])
-        self.assertAllClose(ref_paddings, test_outputs["paddings"])
+        test_outputs = test_outputs * (1 - test_paddings[..., None, None])
+        self.assertAllClose(ref_outputs[..., None], test_outputs)
+        self.assertAllClose(ref_paddings, test_paddings)
 
         # Check that output shape is consistent.
         output_shape = layer.output_shape(input_shape=inputs.shape)
-        self.assertSequenceEqual(test_outputs["outputs"].shape, output_shape)
+        self.assertSequenceEqual(test_outputs.shape, output_shape)
 
 
 def _ref_frontend(
@@ -351,8 +354,8 @@ def _ref_frontend(
     Reference:
     https://github.com/tensorflow/lingvo/blob/4a9097a212622d99d7f8e2379804dbffdc44a97f/lingvo/tasks/asr/frontend.py#L330
     """
-    frame_size = int(round(_ms_to_samples(frame_size_ms, sample_rate=sample_rate)))
-    frame_step = int(round(_ms_to_samples(hop_size_ms, sample_rate=sample_rate)))
+    frame_size = ms_to_samples(frame_size_ms, sample_rate=sample_rate)
+    frame_step = ms_to_samples(hop_size_ms, sample_rate=sample_rate)
     fft_size = int(max(512.0, math.pow(2, math.ceil(math.log(frame_size, 2)))))
     inputs, output_paddings = _ref_framer(
         inputs=inputs,
@@ -386,8 +389,8 @@ def _ref_stft_frontend(
     num_filters: int,
 ):
     """Tensorflow STFT."""
-    frame_size = int(round(_ms_to_samples(frame_size_ms, sample_rate=sample_rate)))
-    frame_step = int(round(_ms_to_samples(hop_size_ms, sample_rate=sample_rate)))
+    frame_size = ms_to_samples(frame_size_ms, sample_rate=sample_rate)
+    frame_step = ms_to_samples(hop_size_ms, sample_rate=sample_rate)
 
     _, output_paddings = _ref_framer(
         inputs=inputs, paddings=paddings, frame_size=frame_size, frame_step=frame_step
@@ -398,7 +401,10 @@ def _ref_stft_frontend(
         frame_step=frame_step,
         fft_length=(num_filters - 1) * 2,
         window_fn=tf.signal.hann_window,
+        pad_end=True,
     )
+    # Note: tf.signal.stft appends more padding than necessary.
+    outputs = outputs[:, : output_paddings.shape[1]]
     outputs = tf.math.log(
         tf.maximum(tf.math.abs(outputs), tf.experimental.numpy.finfo(outputs.dtype).tiny)
     )
