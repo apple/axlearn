@@ -513,6 +513,18 @@ class TPUGKEJob(GKEJob):
             resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
             resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
 
+        k8s_env_vars = [dict(name=k, value=str(v)) for k, v in env_vars.items()]
+        k8s_env_vars.append(
+            {
+                "name": "NODE_IP",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": "status.hostIP",
+                    }
+                },
+            },
+        )
+
         return dict(
             name=cfg.name,
             image=self._bundler.id(cfg.name),
@@ -528,7 +540,7 @@ class TPUGKEJob(GKEJob):
             command=["bash", "-c", cfg.command],
             resources=resources,
             # Env var values should always be strings.
-            env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
+            env=k8s_env_vars,
             volumeMounts=volume_mounts,
         )
 

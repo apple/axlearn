@@ -436,7 +436,8 @@ class TPUGKEJobTest(TestCase):
             self.assertIn("google.com/tpu", resources["limits"])
 
             container_env = container["env"]
-            container_env = {kv["name"]: kv["value"] for kv in container_env}
+            container_env = {kv["name"]: kv for kv in container_env}
+
             if enable_ici_resiliency is not None:
                 expected = "true" if enable_ici_resiliency else "false"
                 self.assertEqual(
@@ -445,11 +446,17 @@ class TPUGKEJobTest(TestCase):
                 )
                 self.assertEqual(
                     expected,
-                    container_env.get("ENABLE_ICI_RESILIENCY"),
+                    container_env["ENABLE_ICI_RESILIENCY"]["value"],
                 )
             else:
                 self.assertNotIn("cloud.google.com/gke-tpu-ici-resiliency", node_selector)
                 self.assertNotIn("ENABLE_ICI_RESILIENCY", container_env)
+
+            # Verify NODE_IP in container env.
+            self.assertEqual(
+                "status.hostIP",
+                container_env["NODE_IP"]["valueFrom"]["fieldRef"]["fieldPath"],
+            )
 
             # Verify uploader container specs
             uploader_container = pod_spec["containers"][1]
