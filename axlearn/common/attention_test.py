@@ -64,10 +64,10 @@ from axlearn.common.attention import (
     TransformerAttentionLayer,
     TransformerFeedForwardLayer,
     TransformerLayer,
-    _bool_to_bias,
     _next_power_of_two,
     apply_attention_logit_biases,
     apply_rotary_position_embeddings,
+    bool_to_bias,
     build_remat_spec,
     causal_mask,
     compute_padding_biases,
@@ -96,9 +96,13 @@ from axlearn.common.config import (
 )
 from axlearn.common.decoder import Decoder, TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm, set_bias_recursively
-from axlearn.common.module import InvocationContext, Module
+from axlearn.common.module import (
+    InvocationContext,
+    Module,
+    new_output_collection,
+    set_current_context,
+)
 from axlearn.common.module import functional as F
-from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import adafactor_optimizer
 from axlearn.common.param_converter import as_torch_tensor
@@ -142,7 +146,7 @@ def make_index_position_biases(query_len: int, kv_len: int) -> Tensor:
         [i, j] = -inf if i < j, 0 otherwise.
     """
 
-    return _bool_to_bias(
+    return bool_to_bias(
         causal_mask(
             jnp.arange(query_len)[:, None],
             jnp.arange(kv_len)[None, :],
@@ -2194,7 +2198,7 @@ class MultiheadAttentionTest(TestCase):
         )
         self.assertNestedAllClose(
             layer_outputs,
-            _bool_to_bias(jnp.array([[1, 0, 0], [1, 1, 0]], dtype=jnp.bool))[None, None],
+            bool_to_bias(jnp.array([[1, 0, 0], [1, 1, 0]], dtype=jnp.bool))[None, None],
         )
 
         inputs = dict(mode=ForwardMode.FORWARD, kv_len=3, query_len=2, time_step=jnp.array([3, 4]))
@@ -2234,9 +2238,7 @@ class MultiheadAttentionTest(TestCase):
         )
         self.assertNestedAllClose(
             layer_outputs,
-            _bool_to_bias(jnp.array([[1, 1, 0, 0], [1, 1, 1, 0]], dtype=jnp.bool))[
-                :, None, None, :
-            ],
+            bool_to_bias(jnp.array([[1, 1, 0, 0], [1, 1, 1, 0]], dtype=jnp.bool))[:, None, None, :],
         )
 
     @parameterized.product(
