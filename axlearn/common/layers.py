@@ -784,7 +784,7 @@ class Embedding(BaseLayer):
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
-        cfg.param_partition_spec = (None, "model")
+        cfg.param_partition_spec = ("fsdp", "model")
         # By default, initialize to Gaussian with std=1/sqrt(dim), e.g., 0.036 when dim=768.
         #
         # This is the same as:
