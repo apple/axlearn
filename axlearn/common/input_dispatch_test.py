@@ -77,7 +77,7 @@ class DispatcherTest(TestCase):
         random.shuffle(all_physical_batches)
         # Form the global batch by concatenating the tensors.
         # pylint: disable-next=no-value-for-parameter
-        global_physical_batch = jax.tree_util.tree_map(
+        global_physical_batch = jax.tree.map(
             lambda *xs: jnp.concatenate(xs, axis=0),
             *all_physical_batches,
         )

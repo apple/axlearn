@@ -23,6 +23,7 @@ from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import BaseCheckpointer, Checkpointer
+from axlearn.common.compiler_options import infer_xsc_compiler_options
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -130,6 +131,7 @@ class SpmdTrainer(Module):
         # The model config.
         model: Required[BaseModel.Config] = REQUIRED
         # The learner config.
+
         learner: Required[Learner.Config] = REQUIRED
         # The checkpointer config.
         checkpointer: BaseCheckpointer.Config = Checkpointer.default_config()
@@ -153,6 +155,12 @@ class SpmdTrainer(Module):
         start_trace_steps: Sequence[int] = []
         # By default, only trace on host 0.
         start_trace_process_indices: Union[Literal["all"], Sequence[int]] = [0]
+
+        # Determines whether to run the XLA Silent-data-corruption Checker (XSC) for a given step.
+        # If None, never run the checker.
+        # N.B. if provided on backends other than TPU this will be a no-op with warning logs.
+        # N.B. XSC will not detect repeatable defects in TPU SparseCores.
+        xsc_check_policy: Optional[ConfigOr[Callable[[int], bool]]] = None
 
         # Prune empty state updates.
         # Must be set to True.
@@ -238,6 +246,16 @@ class SpmdTrainer(Module):
         self._context_manager: Callable[[], ContextManager] = (
             maybe_instantiate(cfg.context_manager) or contextlib.nullcontext
         )
+        xsc_check_policy = None
+        if cfg.xsc_check_policy:
+            if jax.default_backend() != "tpu":
+                # XSC is currently only supported on TPU XLA backend.
+                logging.warning(
+                    "xsc_check_policy was set for non-TPU XLA backend. Running without XSC."
+                )
+            else:
+                xsc_check_policy = maybe_instantiate(cfg.xsc_check_policy)
+        self._xsc_check_policy: Optional[Callable[[int], bool]] = xsc_check_policy
 
         # Create all children within the mesh context so that utils.input_partition_spec() works
         # properly.
@@ -257,7 +275,7 @@ class SpmdTrainer(Module):
                 self._add_child("init_state_builder", cfg.init_state_builder)
 
             self._model_param_specs = self.model.create_parameter_specs_recursively()
-            model_param_partition_specs = jax.tree_util.tree_map(
+            model_param_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._model_param_specs
             )
             for name, spec in utils.flatten_items(self._model_param_specs):
@@ -272,7 +290,7 @@ class SpmdTrainer(Module):
                 model=self._model_param_specs,
                 learner=self._learner_state_partition_specs,
             )
-            self._trainer_state_partition_specs = jax.tree_util.tree_map(
+            self._trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._trainer_state_specs
             )
             # Create evalers, which depend on model_param_partition_specs.
@@ -510,7 +528,7 @@ class SpmdTrainer(Module):
         specs = utils.complete_partition_spec_tree(
             jax.tree_util.tree_structure(model_params), self._model_param_specs
         )
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda param, spec: OptParam(
                 value=param,
                 factorization_spec=spec.factorization if spec is not None else None,
@@ -593,7 +611,7 @@ class SpmdTrainer(Module):
 
         # A tree where a leaf is a ParameterSpec for a prebuilt param, None otherwise.
         # This is used for `initialize_parameters_recursively` inside `_init_state`.
-        prebuilt_model_param_specs = jax.tree_util.tree_map(
+        prebuilt_model_param_specs = jax.tree.map(
             lambda value, spec: spec if isinstance(value, Tensor) else None,
             prebuilt_state.trainer_state.model,
             self._trainer_state_specs.model,
@@ -604,7 +622,7 @@ class SpmdTrainer(Module):
         # While `prebuilt_state.trainer_state.model` also contain ParameterSpec's, we use
         # `self._trainer_state_partition_specs.model` to ensure that the partition spec matches
         # the model's partition config (rather than coming from `init_state_builder`).
-        model_initialization_partition_specs = jax.tree_util.tree_map(
+        model_initialization_partition_specs = jax.tree.map(
             lambda value, spec: None if isinstance(value, Tensor) else spec,
             prebuilt_state.trainer_state.model,
             self._trainer_state_partition_specs.model,
@@ -621,7 +639,7 @@ class SpmdTrainer(Module):
             """Merges prebuilt and initialized params to a single tree."""
             if prebuilt_model_params is None:
                 return initialized_model_params
-            return jax.tree_util.tree_map(
+            return jax.tree.map(
                 lambda prebuilt, initialized: (
                     prebuilt if isinstance(prebuilt, Tensor) else initialized
                 ),
@@ -853,6 +871,43 @@ class SpmdTrainer(Module):
         )
         return built_state
 
+    def _get_compiled_train_step_fn(
+        self, *, trainer_state: TrainerState, input_batch: NestedTensor, with_xsc: bool = False
+    ) -> Callable[[TrainerState, NestedTensor], tuple[TrainerState, NestedTensor]]:
+        """Build a fully compiled train step function.
+
+        Relies on the JAX pjit cache to avoid recompilation where possible.
+
+        Args:
+            train_state: A TrainerState instance.
+            input_batch: A NestedTensor containing global arrays.
+            with_xsc: Compile the train step with the XLA SDC Checker enabled.
+
+        Returns:
+            A train step function with signature matching that of self._jit_train_step's return.
+
+        Raises:
+            RuntimeError: If `with_xsc` is requested on heterogenous device kinds.
+        """
+        if not with_xsc:
+            return self.compile_train_step(trainer_state=trainer_state, input_batch=input_batch)
+        # Get device kinds and assert that they are homogenous.
+        device_kinds = set(d.device_kind for d in jax.devices())
+        if len(device_kinds) != 1:
+            raise RuntimeError(f"Heterogenous device kinds ({device_kinds}) are not supported.")
+        logging.log_first_n(logging.INFO, "Compiling XSC train step.", 1)
+        compiled_jit_train_step_fn = self.compile_train_step(
+            trainer_state=trainer_state,
+            input_batch=input_batch,
+            compiler_options=infer_xsc_compiler_options(
+                halt_on_detection=True,
+                repeat_count=1,
+                # Replicate LLO if running on single-core-per-chip device-kind.
+                replicate_llo=device_kinds.pop() in ["TPU v5e", "TPU v6e"],
+            ),
+        )
+        return compiled_jit_train_step_fn
+
     def _run_step(
         self, input_batch: NestedTensor, *, force_run_evals: Optional[set[str]] = None
     ) -> NestedTensor:
@@ -870,17 +925,18 @@ class SpmdTrainer(Module):
             force run the evalers in the set and return 'evaler_summaries' output.
         """
         with jax.profiler.StepTraceAnnotation("train", step_num=self.step):
-            # Note(Jan 2022):
-            # pjit currently requires all parameters to be specified as positional args.
-            self._trainer_state, outputs = self._jit_train_step(self._trainer_state, input_batch)
+            run_with_xsc = self._xsc_check_policy and self._xsc_check_policy(self.step)
+            compiled_train_step_fn = self._get_compiled_train_step_fn(
+                trainer_state=self.trainer_state, input_batch=input_batch, with_xsc=run_with_xsc
+            )
+            # Run the compiled function.
+            self._trainer_state, outputs = compiled_train_step_fn(self.trainer_state, input_batch)
 
         if self.step % 100 == 0 or 0 <= self.step <= 5:
             self._step_log(
                 "loss=%s aux=%s",
                 outputs["loss"],
-                jax.tree_util.tree_map(
-                    lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]
-                ),
+                jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
             )
 
         self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
@@ -941,22 +997,47 @@ class SpmdTrainer(Module):
         )
 
     def compile_train_step(
-        self, compiler_options: Optional[dict[str, Union[str, bool]]] = None
+        self,
+        *,
+        trainer_state: Optional[TrainerState] = None,
+        input_batch: Optional[dict[str, Any]] = None,
+        compiler_options: Optional[dict[str, Union[str, bool]]] = None,
     ) -> jax.stages.Compiled:
+        """Produce a lowered and compiled training step.
+
+        Args:
+            trainer_state: The global trainer state (or state specs).
+                If None, infer from self.trainer_state_specs.
+            input_batch: An input batch (or specs for the global input batch).
+                If None, attempt to infer from the (host-local) input element spec.
+            compiler_options: Options passed to the XLA compiler, selectively overwriting
+                any settings already provided by environment variables for this compilation.
+
+        Returns:
+            A compiled training step, with signature matching self._pjit_train_step's return.
+        """
+
         with self.mesh(), self._context_manager():
-            # Do not run init(), which require real devices.
-            trainer_state_specs = jax.tree_util.tree_map(
-                lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
-                self.trainer_state_specs,
-            )
-            input_batch_specs = jax.tree_util.tree_map(
-                lambda tf_spec: jax.ShapeDtypeStruct(
-                    shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
-                ),
-                self.input.dataset().element_spec,
-            )
-            jit_train_step = self._pjit_train_step()
-            lowered_train_step = jit_train_step.lower(trainer_state_specs, input_batch_specs)
+            if trainer_state is None:
+                # Do not run init(), which requires real devices.
+                trainer_state = jax.tree.map(
+                    lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
+                    self.trainer_state_specs,
+                )
+            if input_batch is None:
+                # Infer input batch shapes from input element spec.
+                # N.B. in a multi-process setting these will be host-local (per process).
+                input_batch = jax.tree.map(
+                    lambda tf_spec: jax.ShapeDtypeStruct(
+                        shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
+                    ),
+                    self.input.dataset().element_spec,
+                )
+            # Rely on the instance handle to ensure that we hit the compilation cache if possible.
+            jit_train_step = self._jit_train_step or self._pjit_train_step()
+            # Note(Jan 2022):
+            # pjit currently requires all parameters to be specified as positional args.
+            lowered_train_step = jit_train_step.lower(trainer_state, input_batch)
             return lowered_train_step.compile(compiler_options=compiler_options)
 
     def _train_step(
@@ -1050,7 +1131,7 @@ class SpmdTrainer(Module):
         # Check if we should stop tracing.
         if self.step == stop_trace_step:
             assert output is not None
-            jax.tree_util.tree_map(lambda x: x.block_until_ready(), output)
+            jax.tree.map(lambda x: x.block_until_ready(), output)
             jax.profiler.stop_trace()
             self._step_log("Stopped profiler tracing")
             updated_stop_trace_step = None

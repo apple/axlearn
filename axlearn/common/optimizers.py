@@ -122,7 +122,7 @@ def _no_op():
 
 
 def opt_param_values(params: NestedOptParam) -> NestedTensor:
-    return jax.tree_util.tree_map(lambda opt_param: opt_param.value, params)
+    return jax.tree.map(lambda opt_param: opt_param.value, params)
 
 
 def with_partition_fn(
@@ -140,7 +140,7 @@ def with_partition_fn(
 
 
 def copy_partition(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
-    return jax.tree_util.tree_map(
+    return jax.tree.map(
         lambda param_spec: OptStateSpec(
             dtype=param_spec.dtype, shape=param_spec.shape, mesh_axes=param_spec.mesh_axes
         ),
@@ -264,7 +264,7 @@ def per_param_scale_by_path(
             )
             return default_scale
 
-        return jax.tree_util.tree_map(per_param_fn, tree_paths(params, separator="/"))
+        return jax.tree.map(per_param_fn, tree_paths(params, separator="/"))
 
     return fn
 
@@ -282,9 +282,7 @@ def per_param_scale_by_rms(*, min_scale: float = 1e-4) -> Callable[[NestedOptPar
     """
 
     def fn(params: NestedOptParam) -> Any:
-        return jax.tree_util.tree_map(
-            lambda p: optax.safe_root_mean_squares(p.value, min_scale), params
-        )
+        return jax.tree.map(lambda p: optax.safe_root_mean_squares(p.value, min_scale), params)
 
     return fn
 
@@ -330,7 +328,7 @@ def scale_by_trust_ratio(
             return update * safe_trust_ratio
 
         # The only difference from the optax implementation:
-        # vectorized_tree_map vs. jax.tree_util.tree_map.
+        # vectorized_tree_map vs. jax.tree.map.
         updates = vectorized_tree_map(_scale_update, updates, params)
         return updates, state
 
@@ -467,7 +465,7 @@ def _weight_decay_scales(
 ) -> NestedTree:
     """Returns a nested tree with float leaf nodes."""
     if per_param_scale is None:
-        param_scales = jax.tree_util.tree_map(lambda _: 1, params)
+        param_scales = jax.tree.map(lambda _: 1, params)
     else:
         param_scales = maybe_instantiate(per_param_scale)(params)
 
@@ -484,7 +482,7 @@ def _weight_decay_scales(
             return param.weight_decay_scale
         return curr_scale
 
-    scales = jax.tree_util.tree_map(maybe_override_scale, tree_paths(params), params, param_scales)
+    scales = jax.tree.map(maybe_override_scale, tree_paths(params), params, param_scales)
     context = current_context()
     return register_per_param_settings(
         scales,
@@ -546,7 +544,7 @@ def add_decayed_weights(
             lr_scale = lr**learning_rate_exponent
 
         param_scales = _weight_decay_scales(params, per_param_scale=per_param_scale)
-        updates = jax.tree_util.tree_map(
+        updates = jax.tree.map(
             lambda g, p, s: g + weight_decay * lr_scale * p.value * s,
             updates,
             params,
@@ -606,7 +604,7 @@ def l2_regularizer(
             if params is None:
                 raise ValueError(optax.NO_PARAMS_MSG)  # pylint: disable=no-member
             param_scales = _weight_decay_scales(params, per_param_scale=per_param_scale)
-            updates = jax.tree_util.tree_map(
+            updates = jax.tree.map(
                 lambda g, p, s: g + regularizer_weight * p.value * s,
                 updates,
                 params,
@@ -871,8 +869,8 @@ def ema(
     def _to_state(count: Tensor, ema_tree: NestedTree):
         return EmaState(
             count=count,
-            ema=jax.tree_util.tree_map(lambda ema: ema.value, ema_tree),
-            scale=jax.tree_util.tree_map(lambda ema: ema.qstep_size, ema_tree),
+            ema=jax.tree.map(lambda ema: ema.value, ema_tree),
+            scale=jax.tree.map(lambda ema: ema.qstep_size, ema_tree),
         )
 
     def init_fn(params):
@@ -890,7 +888,7 @@ def ema(
                 qstep_size = jnp.zeros((1,), dtype=jnp.float32)
             return _TensorEma(value=value, qstep_size=qstep_size)
 
-        return _to_state(jnp.zeros([], jnp.int32), jax.tree_util.tree_map(_init, params))
+        return _to_state(jnp.zeros([], jnp.int32), jax.tree.map(_init, params))
 
     @dataclasses.dataclass
     class _UpdateResult:
@@ -935,7 +933,7 @@ def ema(
 
         # Transform updates and compute new per-tensor EMA.
         count_inc = optax.safe_int32_increment(state.count)
-        update_results = jax.tree_util.tree_map(
+        update_results = jax.tree.map(
             lambda update, ema, scale: _update(update, ema=ema, qstep_size=scale, count=count_inc),
             updates,
             state.ema,
@@ -943,10 +941,10 @@ def ema(
         )
 
         # Unpack update, and pack state into EmaState.
-        updates = jax.tree_util.tree_map(lambda ur: ur.update, update_results)
+        updates = jax.tree.map(lambda ur: ur.update, update_results)
         new_state = _to_state(
             count=count_inc,
-            ema_tree=jax.tree_util.tree_map(lambda ur: ur.tensor_ema, update_results),
+            ema_tree=jax.tree.map(lambda ur: ur.tensor_ema, update_results),
         )
         return updates, new_state
 
@@ -988,8 +986,8 @@ def ema(
 
         return EmaState(
             count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
-            ema=jax.tree_util.tree_map(get_ema_partition, param_specs),
-            scale=jax.tree_util.tree_map(get_scale_partition, param_specs),
+            ema=jax.tree.map(get_ema_partition, param_specs),
+            scale=jax.tree.map(get_scale_partition, param_specs),
         )
 
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
@@ -1116,7 +1114,7 @@ def clip_by_global_norm(
         if max_norm is not None or drop_norm is not None:
             if context is not None:
                 context.add_summary("gradient_scale", g_scale)
-            updates = jax.tree_util.tree_map(lambda t: t * g_scale, updates)
+            updates = jax.tree.map(lambda t: t * g_scale, updates)
         return updates, state
 
     return PartitionedGradientTransformation(
@@ -1386,18 +1384,18 @@ def skip_and_clip_by_global_norm(
         clipped_updates = updates
         if max_norm is not None:
             g_scale = jnp.minimum(1.0, max_norm / (g_norm + eps))
-            clipped_updates = jax.tree_util.tree_map(lambda t: t * g_scale, updates)
+            clipped_updates = jax.tree.map(lambda t: t * g_scale, updates)
             if context is not None:
                 context.add_summary("gradient_scale", g_scale)
         # Apply subsequent gradient transformation.
         new_updates, new_inner_state = inner.update(clipped_updates, inner_state, params)
         # Discard the updates and states in a nonvalid step.
-        final_updates = jax.tree_util.tree_map(
+        final_updates = jax.tree.map(
             lambda x, y: jnp.where(is_valid_step, x, jnp.zeros_like(y)),
             new_updates,
             updates,
         )
-        final_inner_state = jax.tree_util.tree_map(
+        final_inner_state = jax.tree.map(
             lambda x, y: jnp.where(is_valid_step, x, y),
             new_inner_state,
             inner_state,
@@ -1482,7 +1480,7 @@ def clip_by_block_rms(
 
         norms = _compute_rms_norms(updates, summary_suffix=summary_suffix)
         # The only difference from the optax implementation:
-        # vectorized_tree_map vs. jax.tree_util.tree_map.
+        # vectorized_tree_map vs. jax.tree.map.
         updates = vectorized_tree_map(_clip_fn, updates, norms)
         return updates, state
 
@@ -1553,7 +1551,7 @@ def param_ema(
     def init_fn(params):
         return ParamEmaState(
             count=jnp.zeros([], jnp.int32),
-            ema=jax.tree_util.tree_map(lambda p: jnp.zeros_like(p.value), params),
+            ema=jax.tree.map(lambda p: jnp.zeros_like(p.value), params),
         )
 
     def update_fn(updates, state, params):
@@ -1564,7 +1562,7 @@ def param_ema(
 
         # Transform updates and compute new per-tensor EMA.
         count_inc = optax.safe_int32_increment(state.count)
-        new_ema = jax.tree_util.tree_map(
+        new_ema = jax.tree.map(
             lambda param, ema: (1 - decay_t) * param.value + decay_t * ema,
             params,
             state.ema,
@@ -1605,9 +1603,7 @@ def scale_by_lion(
     """
 
     def init_fn(params):
-        mu = jax.tree_util.tree_map(
-            lambda t: jnp.zeros_like(t, dtype=mu_dtype or t.dtype), params
-        )  # moment
+        mu = jax.tree.map(lambda t: jnp.zeros_like(t, dtype=mu_dtype or t.dtype), params)  # moment
         return ScaleByLionState(count=jnp.zeros([], jnp.int32), mu=mu)
 
     def update_fn(updates, state, params=None):
@@ -1616,15 +1612,13 @@ def scale_by_lion(
         if mu_dtype is not None:
             mu = jax.tree_map(lambda x: x.astype(mu_dtype), mu)
         count_inc = optax.safe_int32_increment(state.count)
-        updates = jax.tree_util.tree_map(
-            lambda g, m: jnp.sign((1.0 - b1) * g + b1 * m), updates, state.mu
-        )
+        updates = jax.tree.map(lambda g, m: jnp.sign((1.0 - b1) * g + b1 * m), updates, state.mu)
         return updates, ScaleByLionState(count=count_inc, mu=mu)
 
     def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
         mu_specs = param_specs
         if mu_dtype is not None:
-            mu_specs = jax.tree_util.tree_map(
+            mu_specs = jax.tree.map(
                 lambda param_spec: dataclasses.replace(param_spec, dtype=mu_dtype),
                 mu_specs,
             )
@@ -1790,7 +1784,7 @@ def adastar_optimizer(
         pps: Nested[_AdastarPerParamState]
 
     class _AdastarUpdateResult(struct.PyTreeNode):
-        """Opaque container that is not traversed by jax.tree_util.tree_map."""
+        """Opaque container that is not traversed by jax.tree.map."""
 
         updates: Tensor  # the update to apply to params.
         pps: _AdastarPerParamState
@@ -1808,9 +1802,7 @@ def adastar_optimizer(
                 update_ema=None if update_ema_decay is None else jnp.zeros_like(v),
             )
 
-        return _AdastarState(
-            count=jnp.zeros([], jnp.int32), pps=jax.tree_util.tree_map(_init, params)
-        )
+        return _AdastarState(count=jnp.zeros([], jnp.int32), pps=jax.tree.map(_init, params))
 
     def update_fn(grads: NestedTensor, state: _AdastarState, params: NestedOptParam):
         """Applies (stage 1) gradient transformation to compute raw_updates."""
@@ -1833,12 +1825,12 @@ def adastar_optimizer(
             update_results: Nested[_AdastarUpdateResult],
         ) -> tuple[NestedTensor, Nested[_AdastarPerParamState]]:
             """Splits a tree of _AdastarUpdateResult to (updates, state)."""
-            updates = jax.tree_util.tree_map(
+            updates = jax.tree.map(
                 lambda ur: ur.updates,
                 update_results,
                 is_leaf=lambda x: isinstance(x, _AdastarUpdateResult),
             )
-            pps_tree = jax.tree_util.tree_map(
+            pps_tree = jax.tree.map(
                 lambda ur: ur.pps,
                 update_results,
                 is_leaf=lambda x: isinstance(x, _AdastarUpdateResult),
@@ -1889,7 +1881,7 @@ def adastar_optimizer(
 
         # First compute raw updates.
         raw_updates, pps_tree = _split_update_results(
-            jax.tree_util.tree_map(
+            jax.tree.map(
                 lambda g, s: _raw_updates(grad=g, pps=s),
                 grads,
                 state.pps,
@@ -1902,7 +1894,7 @@ def adastar_optimizer(
         raw_updates, _ = clip_fn(raw_updates, None, params)
         # Compute smoothed updates.
         smoothed_updates, pps_tree = _split_update_results(
-            jax.tree_util.tree_map(
+            jax.tree.map(
                 lambda g, s: _smoothed_updates(raw_updates=g, pps=s),
                 raw_updates,
                 pps_tree,
@@ -1910,7 +1902,7 @@ def adastar_optimizer(
         )
         # Add param and update stats to summaries.
         _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
-        param_values = jax.tree_util.tree_map(lambda p: p.value, params)
+        param_values = jax.tree.map(lambda p: p.value, params)
         param_norm = _compute_rms_norms(param_values, summary_suffix="param_norm")
         # Computing extra stats increases step time. Only adds them to summaries in verbose mode.
         if verbosity > 0:
@@ -1956,7 +1948,7 @@ def adastar_optimizer(
 
         return _AdastarState(
             count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
-            pps=jax.tree_util.tree_map(_partition, param_specs),
+            pps=jax.tree.map(_partition, param_specs),
         )
 
     def update2_fn(updates, state: Tensor, params: NestedOptParam):
@@ -1974,7 +1966,7 @@ def adastar_optimizer(
                 context.add_summary("weight_decay_rate", weight_decay * schedule_scale)
             return -schedule_scale * updates_with_wd
 
-        updates2 = jax.tree_util.tree_map(lambda u, p: _update2(u, param=p), updates, params)
+        updates2 = jax.tree.map(lambda u, p: _update2(u, param=p), updates, params)
         return updates2, optax.safe_int32_increment(step)
 
     # Stage 1.

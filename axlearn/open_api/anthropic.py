@@ -60,21 +60,21 @@ class AnthropicClient(BaseClient):
         cfg: AnthropicClient.Config = self.config
         client: AsyncAnthropic = self._client
         request_kwargs = copy.deepcopy(kwargs)
+        extra_body = copy.deepcopy(cfg.extra_body)
         anthropic_tools = None
         if request.get("tools", None) is not None:
             anthropic_tools = _convert_openai_tools_to_anthropic(tools=request["tools"])
         anthropic_messages = _convert_openai_messages_to_anthropic(messages=request["messages"])
         try:
             # A temporary solution to encourage claude models to generate parallel tool calls.
-            if request_kwargs is not None and request_kwargs.get(
-                "add_system_parallel_tools", False
-            ):
+            if extra_body is not None and extra_body.get("add_system_parallel_tools", False):
                 request_kwargs.update({"system": _system_parallel_tools_prompt})
-                del request_kwargs["add_system_parallel_tools"]
+                extra_body.pop("add_system_parallel_tools", None)
+            if anthropic_tools is not None:
+                request_kwargs.update({"tools": anthropic_tools})
             response: Message = await client.messages.create(
                 messages=anthropic_messages,
-                tools=anthropic_tools,
-                extra_body=cfg.extra_body,
+                extra_body=extra_body,
                 **request_kwargs,
             )
             return response.model_dump_json()

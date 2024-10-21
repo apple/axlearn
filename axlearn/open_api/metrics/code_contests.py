@@ -328,14 +328,14 @@ def code_execution_metric_fn(
             if result["passed"]:
                 correct_candidates += 1
             errors[pid][f"candidate_{cand_id}"] = result["errors"]
-        if len(candidates) > 0:
+        if len(candidates) > 0 and resp_id % 10 == 0:
             logging.info(
                 "problem %d acceptance rate: %.4f.",
                 resp_id,
                 correct_candidates * 1.0 / len(candidates),
             )
         else:
-            logging.info("found no solution to problem %d.", resp_id)
+            logging.debug("found no solution to problem %d.", resp_id)
         if correct_candidates > 0:
             total_passed += 1
         avg_score = sum(scores) / len(scores) if len(scores) > 0 else 0
@@ -352,10 +352,9 @@ def code_execution_metric_fn(
         "average_score": sum(avg_scores) / len(responses),
         "candidates_per_example": sum(num_candidates) / len(responses),
         "number_of_examples": len(responses),
-        "global_stats": global_stats,
     }
     if debug:
-        metrics.update({"errors": errors})
+        metrics.update({"errors": errors, "global_stats": global_stats})
     return metrics
 
 

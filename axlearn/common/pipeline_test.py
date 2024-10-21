@@ -109,7 +109,7 @@ class TestPipeline(Pipeline):
         microbatch_size = batch_size // cfg.num_microbatches
         layer_state = self.layer.init_forward_state(microbatch_size)
         return dict(
-            layer=jax.tree_util.tree_map(
+            layer=jax.tree.map(
                 lambda x: jnp.tile(x[None, None, :], [cfg.num_layers, cfg.num_microbatches, 1]),
                 layer_state,
             )
@@ -199,7 +199,7 @@ class PipelineTest(TestCase):
         logging.info("module_outputs=%s", shapes(output_collection.module_outputs))
 
         # Ensure carry dtype matches input.
-        jax.tree_util.tree_map(lambda x: self.assertEqual(x.dtype, dtype), carry)
+        jax.tree.map(lambda x: self.assertEqual(x.dtype, dtype), carry)
 
         assert_allclose(carry, jnp.arange(num_layers, num_layers + batch_size))
         self.assertEqual(shapes(input_forward_state), shapes(output_forward_state))
@@ -375,7 +375,7 @@ class PipelineTest(TestCase):
                 def inject_nans(x):
                     return jnp.where(self._is_valid_stage(x, t=t), x, jnp.nan)
 
-                return jax.tree_util.tree_map(inject_nans, x)
+                return jax.tree.map(inject_nans, x)
 
         layer: TestPipeline = (
             TestPipeline.default_config()
@@ -424,9 +424,7 @@ class PipelineTest(TestCase):
 
         self.assertNestedAllClose(test_out, ref_out)
         self.assertNestedAllClose(test_grads, ref_grads)
-        jax.tree_util.tree_map(
-            lambda x: self.assertFalse(jnp.isnan(x).any().item()), output_collection
-        )
+        jax.tree.map(lambda x: self.assertFalse(jnp.isnan(x).any().item()), output_collection)
 
     @parameterized.product(
         schedule=[

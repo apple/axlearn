@@ -2,42 +2,43 @@
 
 """Benchmark TPU FlashAttention kernels.
 
-Sample outputs:
+Sample outputs: (v5p)
 
-Benchmarking attention representative of 1.2b model layer on TPU v4.
-ref_fwd:0.0030s, flash_fwd:0.0012s
-ref_bwd:0.0075s, flash_bwd:0.0054s
+Benchmarking attention representative of 1.2b model layer on TPU v5.
+ref_fwd:0.0008s, flash_fwd:0.0007s
+ref_bwd:0.0027s, flash_bwd:0.0026s
 
-Benchmarking attention representative of 12.6b model layer on TPU v4.
-ref_fwd:0.0043s, flash_fwd:0.0016s
-ref_bwd:0.0098s, flash_bwd:0.0071s
+ Benchmarking attention representative of 12.6b model layer on TPU v5.
+ref_fwd:0.0012s, flash_fwd:0.0010s
+ref_bwd:0.0037s, flash_bwd:0.0026s
 
-Benchmarking attention representative of 29.6b model layer on TPU v4.
-ref_fwd:0.0060s, flash_fwd:0.0022s
-ref_bwd:0.0135s, flash_bwd:0.0101s
+ Benchmarking attention representative of 29.6b model layer on TPU v5.
+ref_fwd:0.0017s, flash_fwd:0.0013s
+ref_bwd:0.0053s, flash_bwd:0.0034s
 
-Benchmarking attention representative of 65.2b model layer on TPU v4.
-ref_fwd:0.0077s, flash_fwd:0.0028s
-ref_bwd:0.0176s, flash_bwd:0.0130s
+ Benchmarking attention representative of 65.2b model layer on TPU v5.
+ref_fwd:0.0021s, flash_fwd:0.0015s
+ref_bwd:0.0067s, flash_bwd:0.0042s
 
-Benchmarking attention representative of 134b model layer on TPU v4.
-ref_fwd:0.0094s, flash_fwd:0.0035s
-ref_bwd:0.0216s, flash_bwd:0.0158s
+ Benchmarking attention representative of 134b model layer on TPU v5.
+ref_fwd:0.0024s, flash_fwd:0.0018s
+ref_bwd:0.0080s, flash_bwd:0.0050s
 
-Benchmarking attention representative of 261.7b model layer on TPU v4.
-ref_fwd:0.0105s, flash_fwd:0.0035s
-ref_bwd:0.0254s, flash_bwd:0.0182s
+ Benchmarking attention representative of 261.7b model layer on TPU v5.
+ref_fwd:0.0027s, flash_fwd:0.0019s
+ref_bwd:0.0092s, flash_bwd:0.0056s
 
-Benchmarking attention representative of 539.5b model layer on TPU v4.
-ref_fwd:0.0134s, flash_fwd:0.0047s
-ref_bwd:0.0324s, flash_bwd:0.0237s
+ Benchmarking attention representative of 539.5b model layer on TPU v5.
+ref_fwd:0.0034s, flash_fwd:0.0023s
+ref_bwd:0.0126s, flash_bwd:0.0070s
 """
 import time
-from typing import Callable
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
 
+from axlearn.common.attention import causal_mask, sliding_window_causal_mask
 from axlearn.common.flash_attention.utils import flash_attention_implementation, mha_reference
 
 _BENCHMARK_CONFIGS = {
@@ -90,16 +91,24 @@ def _benchmark(
     num_heads: int,
     per_head_dim: int,
     causal: bool = True,
+    use_bias: bool = False,
+    use_segment_ids: bool = False,
+    sliding_window_size: Optional[int] = None,
 ):
     """Benchmarks TPU FlashAttention vs reference impl."""
     k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
     q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
     k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
     v = jax.random.normal(k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
-    bias = jax.random.normal(k4, (batch_size, num_heads, seq_len, seq_len), dtype=jnp.bfloat16)
-    segment_ids = jnp.cumsum(
-        jax.random.bernoulli(k5, shape=(batch_size, seq_len)).astype(jnp.int32), axis=1
-    )
+
+    bias = None
+    if use_bias:
+        bias = jax.random.normal(k4, (batch_size, num_heads, seq_len, seq_len), dtype=jnp.bfloat16)
+    segment_ids = None
+    if use_segment_ids:
+        segment_ids = jnp.cumsum(
+            jax.random.bernoulli(k5, shape=(batch_size, seq_len)).astype(jnp.int32), axis=1
+        )
 
     softmax_scale = per_head_dim**-0.5
     ref_fwd_time = _time_call(
@@ -118,9 +127,15 @@ def _benchmark(
     )
     ref_bwd_time = _time_call(lambda: grad_fn(q, k, v, bias, segment_ids)[0])
 
+    mask = None
+    if causal and sliding_window_size is None:
+        mask = causal_mask
+    elif causal:
+        mask = sliding_window_causal_mask(sliding_window_size)
+
     # Get fwd & bwd timing information when softmax scaling applied before calling the kernel.
     mha_impl = flash_attention_implementation(
-        "tpu", causal=causal, softmax_scale=softmax_scale, block_size=block_size
+        "tpu", mask=mask, softmax_scale=softmax_scale, block_size=block_size
     )
 
     flash_fwd_time = _time_call(lambda: mha_impl(q, k, v, bias, segment_ids))

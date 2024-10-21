@@ -3,8 +3,7 @@
 ## Coding Style
 
 We follow [the Google Python Style Guide](https://google.github.io/styleguide/pyguide.html)
-and [ML API Styles](https://tinyurl.com/ml-api-styles)
-unless otherwise stated.
+and [ML API Styles](docs/ml_api_style.md) unless otherwise stated.
 
 Respect code consistency in the repo, including but not limited to naming conventions and code structure.
 

@@ -4,7 +4,6 @@
 
 Note that these utilities do not handle resource management.
 """
-
 import atexit
 import io
 import logging
@@ -278,8 +277,18 @@ class TPUQRMJob(GCPJob):
         return super().execute()
 
 
-@dataclass
-class GCSFuseMount:
+# Use kw_only=True so that subclasses can have a mix of default and non-default attributes.
+@dataclass(kw_only=True)
+class VolumeMount:
+    """Generic volume mount."""
+
+    name: str
+    mount_path: str
+    read_only: bool = False
+
+
+@dataclass(kw_only=True)
+class GCSFuseMount(VolumeMount):
     """Configures the GCS FUSE mount.
 
     https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#sidecar-container
@@ -295,11 +304,26 @@ class GCSFuseMount:
     """
 
     gcs_path: str
+    name: str = "gcs-fuse-csi-ephemeral"
     mount_path: str = "/output"
     cpu: str = "250m"
     memory: str = "256Mi"
     ephemeral_gb: str = "5Gi"
-    read_only: bool = False
+
+
+@dataclass(kw_only=True)
+class HostMount(VolumeMount):
+    """Configures the hostPath mount.
+
+    https://kubernetes.io/docs/concepts/storage/volumes/#hostpath
+
+    Attributes:
+        host_path: Host path to mount into the container.
+        type: Type of the host path.
+    """
+
+    host_path: str
+    type: str = "Directory"
 
 
 class GKEJob(GCPJob):
@@ -317,6 +341,12 @@ class GKEJob(GCPJob):
                 See `GCSFuseMount` for details.
             enable_pre_provisioner: Whether to enable pre-provisioner.
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
+            output_dir: Optional; The output directory of the GKE job outputs.
+                Each host's output will be placed in `"{output_dir}/output/$HOSTNAME/"`.
+                This directory is used by the sidecar container to sync outputs to GCS using gsutil.
+                Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
+            host_mounts: List of volumes from host to mount into the container.
+                See `HostMount` for details.
         """
 
         env_vars: dict[str, str] = {}
@@ -325,6 +355,8 @@ class GKEJob(GCPJob):
         # This config is made Optional for backwards compatibility. Default is False.
         enable_pre_provisioner: Optional[bool] = None
         queue: Optional[str] = None
+        output_dir: Optional[str] = None
+        host_mounts: Optional[list[HostMount]] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -344,6 +376,15 @@ class GKEJob(GCPJob):
             "The name of the Kueue LocalQueue to use. If not set, no queue is used.",
             flag_values=fv,
         )
+        flags.DEFINE_multi_string(
+            "host_mount_spec",
+            None,
+            "Host mount spec in the format key=value, separated by comma. You can specify multiple "
+            "host mounts by using this flag repeatedly. Example: "
+            "--host_mount_spec=name=tmp,host_path=/tmp,mount_path=/host-tmp "
+            "--host_mount_spec=name=home,host_path=/home,mount_path=/host-home",
+            flag_values=fv,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
@@ -351,8 +392,16 @@ class GKEJob(GCPJob):
         cfg.service_account = cfg.service_account or gcp_settings(
             "k8s_service_account", default="default", fv=fv
         )
+        # pylint: disable=missing-kwoa
+        # pytype: disable=missing-parameter
         if fv.gcsfuse_mount_spec:
             cfg.gcsfuse_mount = GCSFuseMount(**parse_kv_flags(fv.gcsfuse_mount_spec, delimiter="="))
+        if fv.host_mount_spec:
+            cfg.host_mounts = [
+                HostMount(**parse_kv_flags(item.split(","), delimiter="="))
+                for item in fv.host_mount_spec
+            ]
+        # pytype: enable=missing-parameter
         return cfg
 
 
@@ -423,7 +472,17 @@ class TPUGKEJob(GKEJob):
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         super().__init__(cfg)
-        self._gcsfuse_volume = "gcs-fuse-csi-ephemeral"
+        self._output_volume_mount = dict(name="shared-output", mountPath="/output")
+
+    def _maybe_add_volume_mount(self, volume_mounts: list[dict], *, spec: Optional[VolumeMount]):
+        if spec:
+            volume_mounts.append(
+                dict(
+                    name=spec.name,
+                    mountPath=spec.mount_path,
+                    readOnly=spec.read_only,
+                ),
+            )
 
     def _build_container(self) -> Nested[Any]:
         """Builds a config for a single container.
@@ -433,17 +492,12 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        volume_mounts = []
+        volume_mounts = [self._output_volume_mount]
 
-        if cfg.gcsfuse_mount:
-            # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
-            volume_mounts.append(
-                dict(
-                    name=self._gcsfuse_volume,
-                    mountPath=cfg.gcsfuse_mount.mount_path,
-                    readOnly=cfg.gcsfuse_mount.read_only,
-                ),
-            )
+        self._maybe_add_volume_mount(volume_mounts, spec=cfg.gcsfuse_mount)
+        if cfg.host_mounts:
+            for mount in cfg.host_mounts:
+                self._maybe_add_volume_mount(volume_mounts, spec=mount)
 
         env_vars = {**cfg.env_vars}
         if cfg.enable_tpu_ici_resiliency is not None:
@@ -458,6 +512,18 @@ class TPUGKEJob(GKEJob):
             request_memory_gi = machine_memory_gi * _MEMORY_REQUEST_PERCENTAGE
             resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
             resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
+
+        k8s_env_vars = [dict(name=k, value=str(v)) for k, v in env_vars.items()]
+        k8s_env_vars.append(
+            {
+                "name": "NODE_IP",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": "status.hostIP",
+                    }
+                },
+            },
+        )
 
         return dict(
             name=cfg.name,
@@ -474,7 +540,41 @@ class TPUGKEJob(GKEJob):
             command=["bash", "-c", cfg.command],
             resources=resources,
             # Env var values should always be strings.
-            env=[dict(name=k, value=str(v)) for k, v in env_vars.items()],
+            env=k8s_env_vars,
+            volumeMounts=volume_mounts,
+        )
+
+    def _build_uploader_container(self) -> Nested[Any]:
+        """Builds a config for the uploader container which sync logs to the output dir.
+
+        The sidecar container runs an loop to periodically sync outputs to GCS until the Pod is
+        terminated.
+        When the main container exits, Kubernetes will then send a termination signal (SIGTERM)
+        to the uploader container, allowing it to exit gracefully.
+
+        Returns:
+            A nested dict corresponding to a k8s Container config.
+        """
+        cfg: TPUGKEJob.Config = self.config
+
+        dst = f"{cfg.output_dir}/output/$HOSTNAME/"
+        interval_s = 60
+
+        sync_command = f"while true; do gsutil -m rsync -r /output {dst}; sleep {interval_s}; done"
+
+        volume_mounts = [self._output_volume_mount]
+
+        resources = {
+            "requests": {"cpu": "100m", "memory": "128Mi"},
+            "limits": {"cpu": "500m", "memory": "256Mi"},
+        }
+
+        return dict(
+            name="output-uploader",
+            image="google/cloud-sdk:alpine",
+            command=["/bin/sh", "-c"],
+            args=[sync_command],
+            resources=resources,
             volumeMounts=volume_mounts,
         )
 
@@ -490,6 +590,7 @@ class TPUGKEJob(GKEJob):
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
 
+        volumes.append(dict(name="shared-output", emptyDir={}))
         if cfg.gcsfuse_mount:
             # Mount a GCS bucket as a volume.
             annotations.update(
@@ -505,7 +606,7 @@ class TPUGKEJob(GKEJob):
             # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
             volumes.append(
                 dict(
-                    name=self._gcsfuse_volume,
+                    name=cfg.gcsfuse_mount.name,
                     csi=dict(
                         driver="gcsfuse.csi.storage.gke.io",
                         readOnly=cfg.gcsfuse_mount.read_only,
@@ -516,6 +617,14 @@ class TPUGKEJob(GKEJob):
                     ),
                 )
             )
+        if cfg.host_mounts:
+            for mount in cfg.host_mounts:
+                volumes.append(
+                    dict(
+                        name=mount.name,
+                        hostPath=dict(path=mount.host_path, type=mount.type),
+                    )
+                )
 
         # If running from bastion, a scheduling tier will be specified in env.
         # Tier "0" corresponds to reserved; otherwise we use preemptible.
@@ -617,7 +726,7 @@ class TPUGKEJob(GKEJob):
                     **selector,
                 },
                 tolerations=tolerations,
-                containers=[self._build_container()],
+                containers=[self._build_container(), self._build_uploader_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
             ),

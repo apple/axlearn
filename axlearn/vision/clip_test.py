@@ -223,7 +223,7 @@ class TestCLIPModel(parameterized.TestCase):
         tokenized_text_generator_params,
     ):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
-        layer_param_shapes = jax.tree_util.tree_map(lambda x: x.shape, layer_params)
+        layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
         print(f"layer state={layer_param_shapes}")
         layer_params = parameters_from_torch_layer(ref)
         images = (

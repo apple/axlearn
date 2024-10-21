@@ -20,7 +20,7 @@ The installation steps depend on your machine's hardware, and whether you plan t
 If you use an Intel (x86) machine, we recommend installing in a virtual environment, e.g. with [conda](https://conda.io).
 
 ```shell
-conda create -n axlearn python=3.9
+conda create -n axlearn python=3.10
 conda activate axlearn
 ```
 
@@ -34,16 +34,20 @@ For Apple Silicon machines, we will install native versions of Python and Python
 We need Xcode to build packages like `tensorstore`. Please install Xcode from the App Store if you haven't already.
 
 ```shell
-# Install the arm64 version of Miniforge3 + Python 3.9.
-curl -L -O https://github.com/conda-forge/miniforge/releases/download/4.12.0-2/Miniforge3-MacOSX-arm64.sh
-bash Miniforge3-MacOSX-arm64.sh
+# Install the arm64 version of Miniforge3 + Python 3.10.
+curl -L -o miniforge.sh https://github.com/conda-forge/miniforge/releases/download/24.7.1-0/Miniforge3-24.7.1-0-MacOSX-arm64.sh
+bash miniforge.sh -u
 
 # Create a conda environment.
-conda create -n axlearn python=3.9
+conda create -n axlearn python=3.10
 conda activate axlearn
 
 # Install tensorflow following https://developer.apple.com/metal/tensorflow-plugin.
 conda install -c apple tensorflow-deps
+
+# If you do NOT have bazel installed.
+# Note that the default ./oss_scripts/install_bazel.sh installs the x86 version.
+brew install bazelisk
 
 # Manually build tensorflow-text until a collaborator build is available.
 # This was tested using clang version 15 - you may get non-working wheels with earlier versions of clang.
@@ -52,12 +56,9 @@ mkdir ~/builds && git clone https://github.com/tensorflow/text.git ~/builds/text
 pip install 'tensorflow==2.16.1'
 cd ~/builds/text && git checkout 0f9f6df5b4da19bc7a734ba05fc4fa12bccbedbe
 
-# If you do NOT have bazel installed, run the following and ensure that $HOME/bin is in $PATH:
-# ./oss_scripts/install_bazel.sh
-
 # Build tensorflow-text.
 ./oss_scripts/run_build.sh
-pip install ./tensorflow_text-2.16.1-cp39-cp39-macosx_*_arm64.whl
+pip install ./tensorflow_text-2.16.1-cp310-cp310-macosx_*_arm64.whl
 ```
 </details>
 
@@ -74,7 +75,7 @@ pip install 'axlearn[core]'
 
 To install on Apple Silicon machines, make sure you have followed the required [pre-requisites](#pre-requisites) above. Then, install using:
 ```shell
-pip install 'axlearn[apple-silicon]'
+pip install 'axlearn[core,apple-silicon]'
 ```
 
 By default, AXLearn comes with tooling to launch jobs to Google Cloud Platform (GCP). To install them, run:
