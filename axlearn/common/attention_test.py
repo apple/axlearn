@@ -64,10 +64,10 @@ from axlearn.common.attention import (
     TransformerAttentionLayer,
     TransformerFeedForwardLayer,
     TransformerLayer,
-    _bool_to_bias,
     _next_power_of_two,
     apply_attention_logit_biases,
     apply_rotary_position_embeddings,
+    bool_to_bias,
     build_remat_spec,
     causal_mask,
     compute_padding_biases,
@@ -142,7 +142,7 @@ def make_index_position_biases(query_len: int, kv_len: int) -> Tensor:
         [i, j] = -inf if i < j, 0 otherwise.
     """
 
-    return _bool_to_bias(
+    return bool_to_bias(
         causal_mask(
             jnp.arange(query_len)[:, None],
             jnp.arange(kv_len)[None, :],
@@ -2194,7 +2194,7 @@ class MultiheadAttentionTest(TestCase):
         )
         self.assertNestedAllClose(
             layer_outputs,
-            _bool_to_bias(jnp.array([[1, 0, 0], [1, 1, 0]], dtype=jnp.bool))[None, None],
+            bool_to_bias(jnp.array([[1, 0, 0], [1, 1, 0]], dtype=jnp.bool))[None, None],
         )
 
         inputs = dict(mode=ForwardMode.FORWARD, kv_len=3, query_len=2, time_step=jnp.array([3, 4]))
@@ -2234,9 +2234,7 @@ class MultiheadAttentionTest(TestCase):
         )
         self.assertNestedAllClose(
             layer_outputs,
-            _bool_to_bias(jnp.array([[1, 1, 0, 0], [1, 1, 1, 0]], dtype=jnp.bool))[
-                :, None, None, :
-            ],
+            bool_to_bias(jnp.array([[1, 1, 0, 0], [1, 1, 1, 0]], dtype=jnp.bool))[:, None, None, :],
         )
 
     @parameterized.product(

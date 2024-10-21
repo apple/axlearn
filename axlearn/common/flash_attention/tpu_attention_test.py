@@ -7,15 +7,19 @@ import unittest
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from absl.testing import parameterized
+from jax.experimental import mesh_utils
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
+from jax.experimental.shard_map import shard_map
+from jax.interpreters.pxla import thread_resources
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from axlearn.common.attention import causal_mask, sliding_window_causal_mask
 from axlearn.common.flash_attention import tpu_attention
-from axlearn.common.flash_attention.tpu_attention import ComputableMask, tpu_flash_attention
 from axlearn.common.flash_attention.utils import mha_reference
-from axlearn.common.test_utils import TestCase
+from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 from axlearn.common.utils import Tensor
 
 if jax.default_backend() != "tpu":
@@ -51,17 +55,93 @@ class TestFlashAttention(TestCase):
     ]
 
     @parameterized.product(seq_len=[8, 16, 32, 128], sliding_window_size=[4, 8, 16])
-    def test_sliding_window_mask(self, seq_len, sliding_window_size):
+    def test_sliding_window_mask_equivalence(self, seq_len, sliding_window_size):
         shape = (seq_len, seq_len)
         ref_mask = splash_attention_mask.LocalMask(
-            shape=shape, window_size=(sliding_window_size, None), offset=0
+            shape=shape, window_size=(sliding_window_size, 0), offset=0
         )
 
         mask_fn = sliding_window_causal_mask(sliding_window_size=sliding_window_size)
-        test_mask = ComputableMask(shape=shape, mask_function=mask_fn)
+        mask_array = np.asarray(mask_fn(np.arange(seq_len)[:, None], np.arange(seq_len)[None, :]))
+
+        test_mask = splash_attention_mask.NumpyMask(array=mask_array)
 
         for i in range(seq_len):
             self.assertNestedAllClose(ref_mask[i:, i:], test_mask[i:, i:])
+
+    @parameterized.product(
+        batch_size=[4],
+        seq_len=[32768],
+        sliding_window_size=[1024],
+        num_heads=[4],
+        per_head_dim=[256],
+        mesh=[(4, 1)],
+        mesh_axis_names=[("data", "model")],
+    )
+    def test_sliding_window_mask(
+        self,
+        batch_size,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        sliding_window_size,
+        mesh,
+        mesh_axis_names,
+    ):
+        if not is_supported_mesh_shape(mesh):
+            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(0), 3)
+        q = jax.random.normal(
+            k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16
+        )
+        k = jax.random.normal(
+            k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16
+        )
+        v = jax.random.normal(
+            k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16
+        )
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            mesh = thread_resources.env.physical_mesh
+
+            def fn(q, k, v):
+                q = jax.lax.with_sharding_constraint(
+                    q, NamedSharding(mesh, PartitionSpec("data", None, "model", None))
+                )
+                k = jax.lax.with_sharding_constraint(
+                    k, NamedSharding(mesh, PartitionSpec("data", None, "model", None))
+                )
+                v = jax.lax.with_sharding_constraint(
+                    v, NamedSharding(mesh, PartitionSpec("data", None, "model", None))
+                )
+
+                softmax_scale = q.shape[-1] ** -0.5
+                mask = sliding_window_causal_mask(sliding_window_size)
+
+                attn = lambda q, k, v: tpu_attention.tpu_flash_attention(
+                    q, k, v, mask=mask, softmax_scale=softmax_scale
+                )
+
+                partitioned_mha = shard_map(
+                    attn,
+                    mesh=mesh,
+                    in_specs=(
+                        PartitionSpec("data", None, "model", None),
+                        PartitionSpec("data", None, "model", None),
+                        PartitionSpec("data", None, "model", None),
+                    ),
+                    out_specs=PartitionSpec("data", None, "model", None),
+                    check_rep=False,
+                )
+
+                return partitioned_mha(q, k, v)
+
+            fn = jax.jit(fn)
+
+        # Trigger compilation.
+        fn(q, k, v)
+        jax.grad(lambda q, k, v: fn(q, k, v).mean(), argnums=(0, 1, 2))(q, k, v)
 
     @parameterized.product(
         _TEST_CONFIGS,
@@ -86,7 +166,10 @@ class TestFlashAttention(TestCase):
         causal = mask in [causal_mask, jax_fn_mask]
 
         fallback_to_legacy = (
-            per_head_dim % 128 != 0 or (attention_bias_type is not None) or with_segment_ids
+            per_head_dim % 128 != 0
+            or (attention_bias_type is not None)
+            or with_segment_ids
+            or (query_length_multiplier != 1 and mask is not None)
         )
 
         if fallback_to_legacy and mask is jax_fn_mask:
@@ -125,7 +208,7 @@ class TestFlashAttention(TestCase):
                 tpu_attention, "_legacy_tpu_flash_attention", legacy_flash_wrapper
             )
             with record_legacy_call:
-                return tpu_flash_attention(
+                return tpu_attention.tpu_flash_attention(
                     q, k, v, bias, ids, mask=mask, softmax_scale=softmax_scale
                 )
 

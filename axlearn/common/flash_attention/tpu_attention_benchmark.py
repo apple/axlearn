@@ -33,12 +33,12 @@ ref_fwd:0.0034s, flash_fwd:0.0023s
 ref_bwd:0.0126s, flash_bwd:0.0070s
 """
 import time
-from typing import Callable
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
 
-from axlearn.common.attention import causal_mask
+from axlearn.common.attention import causal_mask, sliding_window_causal_mask
 from axlearn.common.flash_attention.utils import flash_attention_implementation, mha_reference
 
 _BENCHMARK_CONFIGS = {
@@ -92,6 +92,8 @@ def _benchmark(
     per_head_dim: int,
     causal: bool = True,
     use_bias: bool = False,
+    use_segment_ids: bool = False,
+    sliding_window_size: Optional[int] = None,
 ):
     """Benchmarks TPU FlashAttention vs reference impl."""
     k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
@@ -102,9 +104,11 @@ def _benchmark(
     bias = None
     if use_bias:
         bias = jax.random.normal(k4, (batch_size, num_heads, seq_len, seq_len), dtype=jnp.bfloat16)
-    segment_ids = jnp.cumsum(
-        jax.random.bernoulli(k5, shape=(batch_size, seq_len)).astype(jnp.int32), axis=1
-    )
+    segment_ids = None
+    if use_segment_ids:
+        segment_ids = jnp.cumsum(
+            jax.random.bernoulli(k5, shape=(batch_size, seq_len)).astype(jnp.int32), axis=1
+        )
 
     softmax_scale = per_head_dim**-0.5
     ref_fwd_time = _time_call(
@@ -124,8 +128,10 @@ def _benchmark(
     ref_bwd_time = _time_call(lambda: grad_fn(q, k, v, bias, segment_ids)[0])
 
     mask = None
-    if causal:
+    if causal and sliding_window_size is None:
         mask = causal_mask
+    elif causal:
+        mask = sliding_window_causal_mask(sliding_window_size)
 
     # Get fwd & bwd timing information when softmax scaling applied before calling the kernel.
     mha_impl = flash_attention_implementation(
