@@ -2,7 +2,7 @@
 
 """Runs Dataflow jobs locally or in GCP.
 
-If you're having issues when submitting jobs to the DataflowRunner, use dataflow.alt.py instead
+If you are running into issues trying to submit a job to the DgitataflowRunner, use dataflow.alt.py instead.
 
 The flow is:
 1. Builds the dataflow worker image.
