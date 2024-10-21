@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Utilities used for testing."""
+
 import contextlib
 import copy
 import dataclasses
@@ -542,11 +543,14 @@ def read_per_param_settings(
         all_param_settings[description][key] = pruned_settings
         return settings
 
-    with patch(
-        "axlearn.common.utils._register_per_param_settings",
-        side_effect=patched_register_per_param_settings,
-        autospec=True,
-    ), patch_init:
+    with (
+        patch(
+            "axlearn.common.utils._register_per_param_settings",
+            side_effect=patched_register_per_param_settings,
+            autospec=True,
+        ),
+        patch_init,
+    ):
         if trainer_config is not None:
             config_fn = trainer_config
         else:
