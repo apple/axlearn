@@ -70,7 +70,7 @@ class TestFlashAttention(TestCase):
             self.assertNestedAllClose(ref_mask[i:, i:], test_mask[i:, i:])
 
     @parameterized.product(
-        batch_size=[8],
+        batch_size=[4],
         seq_len=[32768],
         sliding_window_size=[1024],
         num_heads=[4],
