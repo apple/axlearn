@@ -17,6 +17,7 @@ from axlearn.common.input_grain import (
     Dataset,
     Input,
     maybe_to_iter_dataset,
+    pad_for_evaluation,
     prefetch_dataset,
     rekey,
     sample_from_datasets,
@@ -42,6 +43,35 @@ class _PlusOne(grain.MapTransform):
 
 class UtilsTest(TestCase):
     """Tests processor utils."""
+
+    def _test_checkpointing(self, ds: grain.DatasetIterator):
+        """Utility to test ds checkpointing."""
+
+        max_steps = 10
+        values_without_interruption: list[dict] = []
+        checkpoints = []
+
+        for _ in range(max_steps):
+            checkpoints.append(ds.get_state())
+            values_without_interruption.append(next(ds))
+
+        def check(starting_step, ds):
+            for i in range(starting_step, max_steps):
+                actual = next(ds)
+                expected = values_without_interruption[i]
+                for k, v in expected.items():
+                    self.assertEqual(v, actual[k], msg=f"expected={expected}, actual={actual}")
+
+        # Try resuming from an existing iterator, to ensure that entire state is reset.
+        for starting_step in range(max_steps):
+            ds.set_state(checkpoints[starting_step])  # Restore using the same iterator as above.
+            check(starting_step, ds)
+
+        # Try resuming from a fresh iterator from any step and validate that outcome is the same.
+        for starting_step in range(max_steps):
+            ds = iter(ds)
+            ds.set_state(checkpoints[starting_step])
+            check(starting_step, ds)
 
     @parameterized.parameters(
         dict(
@@ -223,32 +253,7 @@ class UtilsTest(TestCase):
         ds = ds.map(convert_examples, seed=123)
         ds = unbatch(maybe_to_iter_dataset(ds))
         ds = iter(ds)
-
-        max_steps = 10
-        values_without_interruption: list[dict] = []
-        checkpoints = []
-
-        for _ in range(max_steps):
-            checkpoints.append(ds.get_state())
-            values_without_interruption.append(next(ds))
-
-        def check(starting_step, ds):
-            for i in range(starting_step, max_steps):
-                actual = next(ds)
-                expected = values_without_interruption[i]
-                for k, v in expected.items():
-                    self.assertEqual(v, actual[k], msg=f"expected={expected}, actual={actual}")
-
-        # Try resuming from an existing iterator, to ensure that entire state is reset.
-        for starting_step in range(max_steps):
-            ds.set_state(checkpoints[starting_step])  # Restore using the same iterator as above.
-            check(starting_step, ds)
-
-        # Try resuming from a fresh iterator from any step and validate that outcome is the same.
-        for starting_step in range(max_steps):
-            ds = iter(ds)
-            ds.set_state(checkpoints[starting_step])
-            check(starting_step, ds)
+        self._test_checkpointing(ds)
 
     @parameterized.parameters(
         dict(
@@ -332,6 +337,40 @@ class UtilsTest(TestCase):
         )
         # Ensure that rekey does not modify original.
         self.assertEqual(orig_examples, examples)
+
+    @parameterized.parameters(False, True)
+    def test_pad_for_evaluation(self, to_iter_dataset: bool):
+        # Ensure that number of examples is a multiple of this batch size.
+        per_feed_batch_size = 3
+
+        ds = fake_grain_source(examples=list(range(7)))
+        if to_iter_dataset:
+            ds = maybe_to_iter_dataset(ds)
+        ds = pad_for_evaluation(ds, per_feed_batch_size=per_feed_batch_size)
+        examples = list(ds)
+
+        # Make sure length is expected.
+        self.assertEqual(9, len(examples))
+        # Make sure values are expected.
+        self.assertEqual(list(range(7)) + [0, 0], examples)
+
+        # Try batching.
+        ds = ds.batch(3)
+        self.assertNestedEqual(
+            [np.array([0, 1, 2]), np.array([3, 4, 5]), np.array([6, 0, 0])], list(ds)
+        )
+
+    def test_pad_for_evaluation_max(self):
+        ds = fake_grain_source(examples=list(range(7)))
+        ds = maybe_to_iter_dataset(ds)
+        # Test raising if count exceeds max.
+        with self.assertRaisesRegex(ValueError, "counting"):
+            pad_for_evaluation(ds, per_feed_batch_size=3, max_num_examples=3)
+
+    def test_pad_for_evaluation_checkpoint(self):
+        ds = fake_grain_source(examples=[{"x": i} for i in range(7)])
+        ds = pad_for_evaluation(ds, per_feed_batch_size=5)
+        self._test_checkpointing(iter(ds))
 
 
 class InputTest(parameterized.TestCase):

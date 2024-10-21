@@ -4,13 +4,13 @@
 
 import functools
 import sys
-from typing import Protocol, Sequence
+from typing import Optional, Protocol
 
 import numpy as np
 
 from axlearn.common import input_grain, input_grain_text
 from axlearn.common.config import ConfigOr, maybe_instantiate
-from axlearn.common.input_grain import Dataset, Tensor
+from axlearn.common.input_grain import Dataset, SequenceOr, Tensor
 
 
 class _SplitFn(Protocol):
@@ -26,8 +26,8 @@ def _make_autoregressive_inputs(
     ds: Dataset,
     *,
     max_len: int,
-    split_fn: ConfigOr[_SplitFn],
     input_key: str = "target_labels",
+    split_fn: Optional[ConfigOr[_SplitFn]] = None,
     window_size: int = 1,
 ) -> Dataset:
     """Produces `input_ids` autoregressively from `target_labels`.
@@ -39,8 +39,9 @@ def _make_autoregressive_inputs(
         ds: A Dataset where each input example contains:
             `input_key`: A flat int Tensor of shape [None], i.e., length can vary across examples.
         max_len: Max sequence length.
-        split_fn: A callable taking flat input IDs and producing batched IDs of shape [-1, max_len].
         input_key: Input key containing `target_labels`.
+        split_fn: A callable taking flat input IDs and producing batched IDs of shape [-1, max_len].
+            If None, returns the flat input IDs unchanged.
         window_size: Window size. If > 1, also packs.
 
     Returns:
@@ -50,8 +51,10 @@ def _make_autoregressive_inputs(
             "input_ids": An int Tensor with shape [max_len].
     """
     split_fn = maybe_instantiate(split_fn)
+    if split_fn is None:
+        split_fn = lambda ids, **_: ids[None]  # Passthrough ids.  # noqa: E731
 
-    def process_example_fn(example: Sequence[dict[str, Tensor]]) -> dict[str, Tensor]:
+    def process_example_fn(example: SequenceOr[dict[str, Tensor]]) -> dict[str, Tensor]:
         flat_target_labels = np.concatenate([x[input_key] for x in example], axis=-1)
         flat_input_ids = np.roll(flat_target_labels, 1, axis=0)
         return dict(
@@ -137,4 +140,78 @@ def text_to_lm_training_input(
     # document order. grain.IterDataset currently does not support shuffle, although it may be
     # doable with a shuffle-buffer style shuffling. Since shuffle buffers are memory intensive, we
     # skip the shuffle assuming sufficiently long context and source mixing.
+    return ds
+
+
+def _drop_empty_targets(example: dict[str, Tensor]) -> dict[str, Tensor]:
+    # Drop examples that have 0 target bytes.
+    mask = example["target_num_bytes"] > 0
+    return {k: v[mask] for k, v in example.items()}
+
+
+def text_to_lm_eval_input(
+    ds: Dataset,
+    *,
+    vocab: ConfigOr[input_grain_text.Vocabulary],
+    max_len: int,
+    stride: Optional[int] = None,
+) -> Dataset:
+    """Returns a function that generates eval inputs for language models from raw text.
+
+    The processing follows `input_lm.text_to_lm_eval_input`.
+
+    Args:
+        ds: A Dataset where each example contains:
+            "text": A string to be tokenized.
+        vocab: A vocab or a config instantiating to a vocab. Any text normalization (such as
+            `replace_newlines_with`) should be applied directly at the vocab.
+        max_len: The maximum number of tokens per sequence.
+        stride: The stride to use when slicing a tokenized document into examples.
+            If None, defaults to max length as stride.
+
+    Returns:
+        A `grain.IterDataset` with potentially different cardinality than the input dataset.
+        Each output example contains:
+            "input_ids": An int Tensor with shape [max_len].
+            "target_labels": An int Tensor with shape [max_len].
+            "target_num_bytes": A scalar int Tensor.
+    """
+    vocab = maybe_instantiate(vocab)
+    stride = max_len if stride is None else stride
+    if not 0 < stride <= max_len:
+        raise ValueError(f"Expected {stride=} to be in (0,{max_len}].")
+    mask: Tensor = np.broadcast_to(vocab.pad_id, [max_len - stride])
+
+    def strided_slice(example: dict[str, Tensor]) -> dict[str, Tensor]:
+        output = {}
+        for key, ids in example.items():
+            assert ids.ndim == 1, ids
+            # Pad to a multiple of `max_len`.
+            remainder = ids.shape[0] % max_len
+            ids = np.pad(ids, pad_width=((0, max_len - remainder)), constant_values=vocab.pad_id)
+            # Produce strided slices.
+            slices = [ids[:max_len]]
+            for i in range(stride, ids.shape[0] - max_len + 1, stride):
+                slice_ids = ids[i : i + max_len]
+                if key == "target_labels":
+                    slice_ids = np.concatenate([mask, slice_ids[mask.shape[-1] :]], axis=-1)
+                slices.append(slice_ids)  # Append to list to stack later.
+            output[key] = np.stack(slices)
+        return output
+
+    # Tokenize.
+    ds = input_grain_text.tokenize(ds, vocab={"text": vocab}, with_eos=True)
+    ds = input_grain.rekey(ds, key_map={"target_labels": "text"})
+
+    # Make autoregressive and produce strided slices.
+    ds = _make_autoregressive_inputs(ds, max_len=max_len, split_fn=None)
+    ds = ds.map(strided_slice)
+
+    # Produce batches.
+    ds = input_grain_text.count_num_bytes(
+        ds, input_key="target_labels", vocab=vocab, output_key="target_num_bytes"
+    )
+    ds = ds.map(_drop_empty_targets)
+    ds = input_grain.maybe_to_iter_dataset(ds)
+    ds = input_grain.unbatch(ds)
     return ds
