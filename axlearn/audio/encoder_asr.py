@@ -11,6 +11,7 @@ from math import prod
 from typing import Any, Optional
 
 import jax.numpy as jnp
+from einops import rearrange
 
 from axlearn.audio.frontend import LogMelFrontend
 from axlearn.audio.spectrum_augmenter import SpectrumAugmenter
@@ -225,9 +226,7 @@ class ASREncoder(BaseLayer):
         speech_features = self.feature(inputs=inputs, paddings=paddings)
         context_features = self.context(
             # Flatten features to [batch_size, num_frames, cfg.context.input_dim].
-            inputs=jnp.reshape(
-                speech_features["outputs"], speech_features["outputs"].shape[:2] + (-1,)
-            ),
+            inputs=rearrange(speech_features["outputs"], "b t f c -> b t (f c)"),
             paddings=speech_features["paddings"],
         )
         return context_features

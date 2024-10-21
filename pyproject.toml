@@ -56,7 +56,7 @@ dev = [
     "axlearn[audio]",  # audio tests
     "axlearn[orbax]",  # checkpointer tests
     "black==23.1a1",  # formatting
-    "einops",
+    "einops==0.8.0",
     "evaluate",
     "isort",  # formatting
     "pika==1.3.2",  # used by event queue
@@ -151,6 +151,7 @@ grain = [
 ]
 # Audio dependencies.
 audio = [
+    "einops==0.8.0",
     "levenshtein==0.25.1",
 ]
 
