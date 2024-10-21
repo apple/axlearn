@@ -398,7 +398,7 @@ class TPUGKEJobTest(TestCase):
                 )
                 self.assertEqual("spot", labels.get("bastion-tier", None))
 
-            self.assertEqual(len(pod_spec["containers"]), 2)
+            self.assertEqual(len(pod_spec["containers"]), 1)
 
             # Verify worker container specs
             container = pod_spec["containers"][0]
@@ -459,9 +459,12 @@ class TPUGKEJobTest(TestCase):
             )
 
             # Verify uploader container specs
-            uploader_container = pod_spec["containers"][1]
+            self.assertEqual(len(pod_spec["initContainers"]), 1)
+
+            uploader_container = pod_spec["initContainers"][0]
             self.assertEqual(uploader_container["name"], "output-uploader")
             self.assertEqual(uploader_container["image"], "google/cloud-sdk:alpine")
+            self.assertEqual(uploader_container["restartPolicy"], "Always")
             self.assertIn("volumeMounts", uploader_container)
 
             volume_mounts = uploader_container["volumeMounts"]

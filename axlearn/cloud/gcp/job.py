@@ -572,6 +572,9 @@ class TPUGKEJob(GKEJob):
         return dict(
             name="output-uploader",
             image="google/cloud-sdk:alpine",
+            # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
+            # SideCar container is an init container with restartPolicy as "Always".
+            restartPolicy="Always",
             command=["/bin/sh", "-c"],
             args=[sync_command],
             resources=resources,
@@ -726,7 +729,8 @@ class TPUGKEJob(GKEJob):
                     **selector,
                 },
                 tolerations=tolerations,
-                containers=[self._build_container(), self._build_uploader_container()],
+                containers=[self._build_container()],
+                initContainers=[self._build_uploader_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
             ),
