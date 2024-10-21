@@ -49,6 +49,18 @@ class GoodputRecorder(measurement.Recorder):
             self._recorder.record_job_end_time(*args, **kwargs)
         elif event == measurement.Event.START_STEP:
             self._recorder.record_step_start_time(*args, **kwargs)
+        elif event == measurement.Event.START_ACCELERATOR_INIT:
+            self._recorder.record_tpu_init_start_time(*args, **kwargs)
+        elif event == measurement.Event.END_ACCELERATOR_INIT:
+            self._recorder.record_tpu_init_end_time(*args, **kwargs)
+        elif event == measurement.Event.START_TRAINING_PREPARATION:
+            self._recorder.record_training_preparation_start_time(*args, **kwargs)
+        elif event == measurement.Event.END_TRAINING_PREPARATION:
+            self._recorder.record_training_preparation_end_time(*args, **kwargs)
+        elif event == measurement.Event.START_DATA_LOADING:
+            self._recorder.record_data_loading_start_time(*args, **kwargs)
+        elif event == measurement.Event.END_DATA_LOADING:
+            self._recorder.record_data_loading_end_time(*args, **kwargs)
         else:
             logging.log_first_n(
                 logging.WARNING,
