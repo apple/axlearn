@@ -96,13 +96,9 @@ from axlearn.common.config import (
 )
 from axlearn.common.decoder import Decoder, TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm, set_bias_recursively
-from axlearn.common.module import (
-    InvocationContext,
-    Module,
-    new_output_collection,
-    set_current_context,
-)
+from axlearn.common.module import InvocationContext, Module
 from axlearn.common.module import functional as F
+from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import adafactor_optimizer
 from axlearn.common.param_converter import as_torch_tensor

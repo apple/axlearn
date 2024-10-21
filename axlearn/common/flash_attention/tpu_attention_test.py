@@ -166,7 +166,10 @@ class TestFlashAttention(TestCase):
         causal = mask in [causal_mask, jax_fn_mask]
 
         fallback_to_legacy = (
-            per_head_dim % 128 != 0 or (attention_bias_type is not None) or with_segment_ids
+            per_head_dim % 128 != 0
+            or (attention_bias_type is not None)
+            or with_segment_ids
+            or (query_length_multiplier != 1 and mask is not None)
         )
 
         if fallback_to_legacy and mask is jax_fn_mask:

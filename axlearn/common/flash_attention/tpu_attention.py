@@ -16,6 +16,9 @@ from jax.experimental.pallas.ops.tpu.flash_attention import (
     MIN_BLOCK_SIZE,
     NUM_LANES,
     NUM_SUBLANES,
+)
+from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes as LegacyBlockSizes
+from jax.experimental.pallas.ops.tpu.flash_attention import (
     SegmentIds,
     _flash_attention_dkv_kernel,
     _flash_attention_dq_kernel,
@@ -23,7 +26,6 @@ from jax.experimental.pallas.ops.tpu.flash_attention import (
     _verify_block,
     below_or_on_diag,
 )
-from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes as LegacyBlockSizes
 from jax.experimental.pallas.ops.tpu.splash_attention import (
     splash_attention_kernel,
     splash_attention_mask,
