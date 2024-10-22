@@ -300,10 +300,12 @@ class AlignmentTest(TestWithTemporaryCWD, tf.test.TestCase):
         )
         log_prob_blank, log_prob_y = jnp.log(prob_blank), jnp.log(prob_y)
 
-        with self.assertRaisesRegex(
-            jaxlib.xla_extension.XlaRuntimeError,
-            "lm_paddings cannot be all 1s.",
-        ):
+        # TODO(mattjj): replace with jax.errors.JaxRuntimeError when minimum jax
+        # version is jax>=0.4.35
+        cls = getattr(jax.errors, 'JaxRuntimeError',
+                      jaxlib.xla_extension.XlaRuntimeError)
+
+        with self.assertRaisesRegex(cls, "lm_paddings cannot be all 1s."):
             with runtime_checks():
                 jax.jit(jax.vmap(apply_paddings))(
                     log_prob_blank=log_prob_blank,
