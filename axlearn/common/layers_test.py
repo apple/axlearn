@@ -45,7 +45,6 @@ from axlearn.common.layers import (
     DepthwiseConv1D,
     DropToken,
     Embedding,
-    NormType,
     GroupNorm,
     L2Norm,
     LayerNorm,
@@ -54,6 +53,7 @@ from axlearn.common.layers import (
     MaxPool2D,
     MovingAverage,
     MultiLinear,
+    NormType,
     RedirectToSharedModule,
     RMSNorm,
     SeparableSpaceTimePositionalEmbedding,
@@ -183,7 +183,6 @@ class LayerTest(TestCase, tf.test.TestCase):
         # forward() should not mutate 'inputs' in-place.
         assert_allclose(inputs, orig_inputs)
         assert_allclose(outputs, as_tensor(ref_ln(as_torch_tensor(orig_inputs))))
-
 
     @parameterized.parameters(
         [

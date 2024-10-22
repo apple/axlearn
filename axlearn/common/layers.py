@@ -371,7 +371,7 @@ def _compute_moments_with_paddings(
     x: Tensor,
     *,
     paddings: Tensor,
-    reduction_axis: list[int],
+    reduction_axis: Sequence[int],
     keepdims: bool = False,
 ) -> tuple[Tensor, Tensor]:
     """Computes mean and variance over sequence data.
@@ -396,6 +396,7 @@ def _compute_moments_with_paddings(
     sum_x2 = jnp.sum((x - mean) ** 2 * mask, axis=reduction_axis, keepdims=keepdims)
     variance = sum_x2 / denom_x
     return mean, variance
+
 
 def _compute_mean_square_with_paddings(
     x: Tensor,
@@ -566,7 +567,6 @@ class GroupNorm(BaseNormalizationLayer):
             x = x.astype(x_dtype)
             x = x * self.parameters["scale"]
         return x
-
 
 
 class BatchNorm(BaseNormalizationLayer):
