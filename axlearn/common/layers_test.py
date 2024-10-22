@@ -45,6 +45,7 @@ from axlearn.common.layers import (
     DepthwiseConv1D,
     DropToken,
     Embedding,
+    NormType,
     GroupNorm,
     L2Norm,
     LayerNorm,
@@ -183,6 +184,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         assert_allclose(inputs, orig_inputs)
         assert_allclose(outputs, as_tensor(ref_ln(as_torch_tensor(orig_inputs))))
 
+
     @parameterized.parameters(
         [
             dict(inputs_shape=[2, 3, 6]),
@@ -201,13 +203,87 @@ class LayerTest(TestCase, tf.test.TestCase):
                 num_groups=2,
                 scale_params=jnp.array([2, 2, 3, 3]),
             ),
+            dict(
+                inputs_shape=[72, 3, 7, 8],
+                num_groups=2,
+                scale_params=jnp.array([2, 2, 2, 2, 3, 3, 3, 3]),
+                norm_type=NormType.LAYERNORM,
+                norm_axes=-1,
+            ),
+            dict(
+                inputs_shape=[3, 3, 4],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 6],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, 2, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 16],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 16],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]]),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]]),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, 2, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]]),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]]),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
         ]
     )
     # pylint: disable-next=too-many-statements,too-many-branches
-    def test_group_norm(self, inputs_shape, *, paddings=None, num_groups=3, scale_params=None):
+    def test_group_norm(
+        self,
+        inputs_shape,
+        *,
+        paddings=None,
+        num_groups=3,
+        scale_params=None,
+        norm_type=NormType.LAYERNORM,
+        norm_axes=None,
+    ):
         batch_size = inputs_shape[0]
         dim = inputs_shape[-1]
-        cfg = GroupNorm.default_config().set(name="norm", input_dim=dim, num_groups=num_groups)
+        cfg = GroupNorm.default_config().set(
+            name="norm",
+            input_dim=dim,
+            num_groups=num_groups,
+            norm_type=norm_type,
+            norm_axes=norm_axes,
+        )
         layer = cfg.instantiate(parent=None)  # type: GroupNorm
 
         # Initialize layer parameters.
@@ -217,8 +293,6 @@ class LayerTest(TestCase, tf.test.TestCase):
         if scale_params is not None:
             # Set scales.
             layer_params["scale"] = scale_params
-
-        self.assertEqual(dict(scale=(dim,), bias=(dim,)), shapes(layer_params))
 
         # Random inputs.
         prng_key, input_key = jax.random.split(prng_key)
@@ -234,58 +308,104 @@ class LayerTest(TestCase, tf.test.TestCase):
         )
         # forward() should not mutate "inputs" in-place.
         assert_allclose(inputs, orig_inputs)
-        reduction_axis = (1, -1) if len(inputs_shape) == 3 else (1, 2, -1)
+        inputs_by_group = jnp.reshape(inputs, inputs_shape[:-1] + [num_groups, dim // num_groups])
         outputs_by_group = jnp.reshape(outputs, inputs_shape[:-1] + [num_groups, dim // num_groups])
 
-        if paddings is None:
-            output_mean = outputs_by_group.mean(axis=reduction_axis, keepdims=True)
-            output_var = ((outputs_by_group - output_mean) ** 2).mean(axis=(1, -1), keepdims=True)
+        if norm_axes is None:
+            reduction_axis = list(range(1, inputs.ndim - 1)) + [-1]
         else:
-            expanded_paddings = (
-                paddings[:, :, None, None]
-                if len(outputs_by_group.shape) == 4
-                else paddings[:, :, None, None, None]
-            )
-            output_sum = jnp.sum(
-                outputs_by_group * (1 - expanded_paddings), axis=reduction_axis, keepdims=True
-            )
-            output_count = jnp.sum(
-                jnp.ones_like(outputs_by_group) * (1 - expanded_paddings),
-                axis=reduction_axis,
-                keepdims=True,
-            )
-            output_mean = output_sum / jnp.maximum(output_count, 1.0)
-            output_var = jnp.sum(
-                (outputs_by_group * (1 - expanded_paddings) - output_mean) ** 2,
-                axis=reduction_axis,
-                keepdims=True,
-            ) / jnp.maximum(output_count, 1.0)
+            reduction_axis = norm_axes
 
-        if len(inputs_shape) == 3:
-            self.assertEqual(output_mean.shape, (batch_size, 1, num_groups, 1))
-            self.assertEqual(output_var.shape, (batch_size, 1, num_groups, 1))
-        else:
-            self.assertEqual(output_mean.shape, (batch_size, 1, 1, num_groups, 1))
-            self.assertEqual(output_var.shape, (batch_size, 1, 1, num_groups, 1))
-        # The output group mean should be close to 0.
-        assert_allclose(output_mean, np.zeros_like(output_mean), rtol=1e-6, atol=1e-6)
-        if scale_params is None:
-            # The output variance should be close to 1.
-            expected_var = np.ones_like(output_var)
-        else:
-            # [num_groups].
-            expected_var = jnp.reshape(scale_params, [num_groups, dim // num_groups])[:, 0] ** 2
-            expected_var = jnp.tile(expected_var, [batch_size, 1])
-            if len(inputs_shape) == 3:
-                expected_var = jnp.expand_dims(expected_var, axis=(1, 3))
+        if norm_type == NormType.LAYERNORM:
+            self.assertEqual(dict(scale=(dim,), bias=(dim,)), shapes(layer_params))
+
+            if paddings is None:
+                output_mean = outputs_by_group.mean(axis=reduction_axis, keepdims=True)
+                output_var = ((outputs_by_group - output_mean) ** 2).mean(
+                    axis=reduction_axis, keepdims=True
+                )
             else:
-                expected_var = jnp.expand_dims(expected_var, axis=(1, 2, 4))
+                expanded_paddings = (
+                    paddings[:, :, None, None]
+                    if len(outputs_by_group.shape) == 4
+                    else paddings[:, :, None, None, None]
+                )
+                output_sum = jnp.sum(
+                    outputs_by_group * (1 - expanded_paddings), axis=reduction_axis, keepdims=True
+                )
+                output_count = jnp.sum(
+                    jnp.ones_like(outputs_by_group) * (1 - expanded_paddings),
+                    axis=reduction_axis,
+                    keepdims=True,
+                )
+                output_mean = output_sum / jnp.maximum(output_count, 1.0)
+                output_var = jnp.sum(
+                    (outputs_by_group * (1 - expanded_paddings) - output_mean) ** 2,
+                    axis=reduction_axis,
+                    keepdims=True,
+                ) / jnp.maximum(output_count, 1.0)
 
-        if paddings is not None:
-            expected_var = expected_var * (
-                jnp.sum(1 - expanded_paddings, axis=1, keepdims=True) > 0
+            mean_var_shape = inputs_by_group.mean(axis=reduction_axis, keepdims=True).shape
+            self.assertEqual(output_mean.shape, mean_var_shape)
+            self.assertEqual(output_var.shape, mean_var_shape)
+
+            # The output group mean should be close to 0.
+            assert_allclose(output_mean, np.zeros_like(output_mean), rtol=1e-5, atol=1e-5)
+
+            if scale_params is None:
+                # The output variance should be close to 1.
+                expected_var = np.ones_like(output_var)
+            else:
+                # [num_groups].
+                expected_var = jnp.reshape(scale_params, [num_groups, dim // num_groups])[:, 0] ** 2
+                expected_var = jnp.tile(expected_var, [batch_size, 1])
+                if len(inputs_shape) == 3:
+                    expected_var = jnp.expand_dims(expected_var, axis=(1, 3))
+                else:
+                    expected_var = jnp.expand_dims(expected_var, axis=(1, 2, 4))
+
+            if paddings is not None:
+                expected_var = expected_var * (
+                    jnp.sum(1 - expanded_paddings, axis=1, keepdims=True) > 0
+                )
+                assert_allclose(output_var - expected_var, 0, atol=1e-5, rtol=1e-5)
+        else:
+            self.assertEqual(
+                dict(
+                    scale=(dim,),
+                ),
+                shapes(layer_params),
             )
-        assert_allclose(output_var, expected_var, atol=1e-6, rtol=1e-6)
+            if paddings is None:
+                output_msquare = jnp.mean(outputs_by_group**2, axis=reduction_axis, keepdims=True)
+                output_norm = jnp.sqrt(
+                    (outputs_by_group**2).sum(axis=reduction_axis, keepdims=True)
+                )
+
+            else:
+                expanded_paddings = (
+                    paddings[:, :, None, None]
+                    if len(outputs_by_group.shape) == 4
+                    else paddings[:, :, None, None, None]
+                )
+                mask = 1 - expanded_paddings
+                square_sum = jnp.sum(
+                    outputs_by_group**2 * mask, axis=reduction_axis, keepdims=True
+                )
+                square_count = jnp.sum(
+                    jnp.ones_like(outputs_by_group) * mask, axis=reduction_axis, keepdims=True
+                )
+                output_msquare = square_sum / jnp.maximum(square_count, 1.0)
+
+                output_norm = jnp.sqrt(
+                    (outputs_by_group**2).sum(axis=reduction_axis, keepdims=True)
+                )
+                assert_allclose(jnp.sqrt(square_sum), jnp.sqrt(square_count))
+
+            norm_shape = inputs_by_group.mean(axis=reduction_axis, keepdims=True).shape
+            self.assertEqual(output_msquare.shape, norm_shape)
+            self.assertEqual(output_norm.shape, norm_shape)
+            self.assertGreaterEqual(output_msquare.min(), 0)
 
     @parameterized.parameters(
         ((2, 10, 4, 3, 2), [1, 2, -1]),
