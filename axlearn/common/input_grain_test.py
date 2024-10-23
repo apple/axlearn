@@ -28,7 +28,7 @@ from axlearn.common.input_grain import (
 from axlearn.common.test_utils import TestCase
 
 
-def _range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
+def range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
     source = grain.RangeDataSource(start=start, stop=stop, step=step)
     ds = grain.MapDataset.source(source)
     if seed is not None:
@@ -102,7 +102,7 @@ class UtilsTest(TestCase):
     ):
         ds = sample_from_datasets(
             sources=[
-                _range_dataset(start=src.start, stop=src.stop, step=src.step) for src in sources
+                range_dataset(start=src.start, stop=src.stop, step=src.step) for src in sources
             ],
             weights=weights,
         )
@@ -110,7 +110,7 @@ class UtilsTest(TestCase):
         self.assertCountEqual(expected, list(ds))
 
     def test_sample_from_datasets_errors(self):
-        ds = _range_dataset(start=0, stop=2)
+        ds = range_dataset(start=0, stop=2)
         ds = ds.repeat()
         # Make sure that already-repeated datasets don't error.
         repeated_ds = sample_from_datasets(sources=[ds], weights=[1]).slice(slice(0, 4))
@@ -125,8 +125,8 @@ class UtilsTest(TestCase):
         # Test without repeat.
         ds = sample_from_datasets(
             sources=[
-                _range_dataset(start=0, stop=10, step=2),
-                _range_dataset(start=1, stop=5, step=2),
+                range_dataset(start=0, stop=10, step=2),
+                range_dataset(start=1, stop=5, step=2),
             ],
             weights=[2, 1],
         )
@@ -148,7 +148,7 @@ class UtilsTest(TestCase):
 
     def test_repeat_dataset(self):
         # Test repeat before shuffle.
-        ds = _range_dataset(start=0, stop=10)
+        ds = range_dataset(start=0, stop=10)
         ds = ds.repeat(num_epochs=2)
         ds = ds.shuffle(seed=123)
         ds = ds.slice(slice(0, 10))
@@ -161,12 +161,12 @@ class UtilsTest(TestCase):
         dict(s=slice(20, 24, 2), expected=[]),
     )
     def test_slice_dataset(self, s: slice, expected: list[int]):
-        ds = _range_dataset(start=0, stop=10).slice(s)
+        ds = range_dataset(start=0, stop=10).slice(s)
         self.assertCountEqual(expected, list(ds))
 
     def test_batch(self):
         # [0, 1, 2, 3, 4].
-        ds = _range_dataset(start=0, stop=5, seed=123)
+        ds = range_dataset(start=0, stop=5, seed=123)
         # [1, 2, 3, 4, 5].
         other_ds = ds.map(_PlusOne())
         # [0, 1, 2, 1, 3, 4, 2, 5, 1, 3, ...].
@@ -248,7 +248,7 @@ class UtilsTest(TestCase):
                 return {}
             return {"value": x}
 
-        ds = _range_dataset(start=1, stop=10)
+        ds = range_dataset(start=1, stop=10)
         ds = ds.repeat(None).batch(3)
         ds = ds.map(convert_examples, seed=123)
         ds = unbatch(maybe_to_iter_dataset(ds))
@@ -391,7 +391,7 @@ class InputTest(parameterized.TestCase):
     )
     def test_input(self, process_index: int, process_count: int):
         epoch_len, num_epochs = 10, 2
-        ds = _range_dataset(start=0, stop=epoch_len, seed=123)
+        ds = range_dataset(start=0, stop=epoch_len, seed=123)
 
         def source(ds) -> Dataset:
             ds = shard_dataset(ds, process_index=process_index, process_count=process_count)
