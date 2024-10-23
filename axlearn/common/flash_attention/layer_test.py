@@ -634,7 +634,7 @@ class TestFlashAttention(TestCase):
             initial_state = test_layer.init_states(
                 target_batch_size=batch, target_max_len=seq_len, kv_state=kv_state
             )
-            ref_initial_state = test_layer.init_states(
+            ref_initial_state = ref_layer.init_states(
                 target_batch_size=batch, target_max_len=seq_len, kv_state=kv_state
             )
             for k in ["key", "value"]:
