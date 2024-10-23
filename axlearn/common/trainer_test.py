@@ -58,6 +58,7 @@ from axlearn.common.utils import (
     Nested,
     NestedTensor,
     Tensor,
+    as_numpy_array,
     as_tensor,
     dispatch_input_batch,
     flatten_items,
@@ -153,7 +154,8 @@ class DummyInput(Module):
         return ds
 
     def batches(self, it: tf.data.Iterator) -> Iterable[NestedTensor]:
-        yield from it
+        for input_batch in it:
+            yield as_numpy_array(input_batch)
 
     def dispatch_global_batch(
         self,
