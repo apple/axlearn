@@ -219,6 +219,7 @@ class LogMelFrontend(BaseFrontend):
         # To identify padding frames, apply the framer to the input padding.
         # Consider a frame padded if it contains at least one padding sample.
         paddings = sliding_window(paddings, window_size=self._frame_size, stride=self._hop_size)
+        # TODO(dhwang2): Logically, a partial frame is a valid frame. Explore it later.
         paddings = jnp.max(paddings, axis=-1, keepdims=True)
         outputs = outputs * (1 - paddings)
         return dict(outputs=outputs[..., None], paddings=jnp.squeeze(paddings, axis=-1))
