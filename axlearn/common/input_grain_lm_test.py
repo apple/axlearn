@@ -13,8 +13,10 @@ from absl.testing import parameterized
 from axlearn.common.input_fake import fake_grain_source
 from axlearn.common.input_grain import Input, Tensor, maybe_to_iter_dataset, prefetch_dataset
 from axlearn.common.input_grain_lm import (
+    _drop_empty_targets,
     _make_autoregressive_inputs,
     _trim_or_pad_and_batch,
+    text_to_lm_eval_input,
     text_to_lm_training_input,
 )
 from axlearn.common.input_grain_text import with_regex_mapping
@@ -326,3 +328,111 @@ class LmTrainingInputTest(TestCase):
             if ix >= 10 * len(expected_batches):
                 # Expect to be able to repeat forever.
                 break
+
+
+class LmEvalInputTest(TestCase):
+    """Tests `text_to_lm_eval_input`."""
+
+    def _source(self, texts: list[str], max_len: int, batch_size: int = 1):
+        vocab_cls = with_regex_mapping(
+            seqio.SentencePieceVocabulary,
+            encode_mapping=[("\n", "<n>")],
+            decode_mapping=[("<n>", "\n")],
+        )
+        vocab = vocab_cls(
+            sentencepiece_model_file=t5_sentence_piece_vocab_file,
+        )
+        ds = fake_grain_source([{"text": text} for text in texts])
+        ds = text_to_lm_eval_input(ds, vocab=vocab, max_len=max_len, stride=2)
+        if batch_size > 1:
+            ds = ds.batch(batch_size=batch_size)
+        ds = maybe_to_iter_dataset(
+            ds,
+            read_options=grain.ReadOptions(num_threads=1, prefetch_buffer_size=2),
+        )
+        return ds
+
+    @parameterized.parameters(
+        "How long is a piece of string?",
+        "On the 20th of June",
+        "Here we stand united",
+    )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_eval_lm_processor_single_example(self, text):
+        max_len = 12
+        example = next(iter(self._source(texts=[text], max_len=max_len)))
+        for key in ["input_ids", "target_labels"]:
+            # Shape is as expected.
+            self.assertEqual((max_len,), example[key].shape)
+        self.assertTrue("target_num_bytes" in example)
+
+        input_ids, target_labels = example["input_ids"], example["target_labels"]
+        self.assertEqual(1, input_ids[0])  # Start of example.
+        non_padded_length = target_labels.argmin()
+        self.assertNotEqual(1, target_labels[0])  # No EOS at start.
+        self.assertEqual(1, target_labels[non_padded_length - 1])  # EOS.
+        # The inputs should be one-off the labels.
+        self.assertNestedAllClose(
+            target_labels[: non_padded_length - 1], input_ids[1:non_padded_length]
+        )
+
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_fake_text_lm_eval_data(self):
+        texts = [
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit\n",
+            "sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+        ]
+        expected_batches = [
+            {
+                "input_ids": [
+                    [1, 8410, 15, 51, 3, 15432, 440, 103, 322, 2561, 3, 9],
+                    [15, 51, 3, 15432, 440, 103, 322, 2561, 3, 9, 3493, 6],
+                    [3, 15432, 440, 103, 322, 2561, 3, 9, 3493, 6, 975, 7549],
+                ],
+                "target_labels": [
+                    [8410, 15, 51, 3, 15432, 440, 103, 322, 2561, 3, 9, 3493],
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 975],
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7549, 17],
+                ],
+                "target_num_bytes": [26, 5, 4],
+            },
+            {
+                "input_ids": [
+                    [440, 103, 322, 2561, 3, 9, 3493, 6, 975, 7549, 17, 15],
+                    [322, 2561, 3, 9, 3493, 6, 975, 7549, 17, 15, 2905, 3],
+                    [3, 9, 3493, 6, 975, 7549, 17, 15, 2905, 3, 9, 21981],
+                ],
+                "target_labels": [
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 2905],
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 9],
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21981, 159],
+                ],
+                "target_num_bytes": [4, 1, 5],
+            },
+        ]
+        ds = self._source(texts=texts, max_len=12, batch_size=3)
+        for ix, batch in enumerate(ds):
+            batch = {k: v.tolist() for k, v in batch.items()}
+            self.assertNestedAllClose(expected_batches[ix], batch)
+            if ix > 0:
+                # Check the first two batches.
+                break
+
+    def test_drop_empty_targets(self):
+        ds = fake_grain_source(
+            [
+                {
+                    "target_ids": np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
+                    "target_num_bytes": np.array([0, 1, 0]),
+                },
+            ]
+        )
+        ds = ds.map(_drop_empty_targets)
+        actual = list(ds)
+        self.assertNestedEqual(
+            [{"target_ids": np.array([[4, 5, 6]]), "target_num_bytes": np.array([1])}], actual
+        )

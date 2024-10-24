@@ -2,7 +2,7 @@
 
 """Wrappers for FlashAttention on TPU in JAX with logit bias support."""
 import functools
-from typing import Any, Callable, Hashable, Optional, Union
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -31,7 +31,7 @@ from jax.experimental.pallas.ops.tpu.splash_attention import (
     splash_attention_mask,
 )
 
-from axlearn.common.attention import MaskFn, causal_mask
+from axlearn.common.attention import MaskFn, apply_attention_logit_biases, bool_to_bias, causal_mask
 from axlearn.common.utils import Tensor
 
 
@@ -184,9 +184,14 @@ def _legacy_tpu_flash_attention(
     Raises:
         NotImplementedError: If a custom (non-causal, non-full) mask is specified.
     """
-    if mask is not None and mask is not causal_mask:
-        raise NotImplementedError("Custom masks are not supported by legacy attention.")
     causal = mask is causal_mask
+    if mask is not None and not causal:
+        rows = jnp.arange(0, query.shape[2])
+        cols = jnp.arange(0, key.shape[2])
+        bias = apply_attention_logit_biases(
+            bool_to_bias(mask(rows[:, None], cols[None, :]))[None, None, :, :], bias
+        )
+
     context = pallas_tpu_flash_attention(
         q=query,
         k=key,
@@ -264,29 +269,24 @@ def _tpu_splash_attention(
             "The public API for SplashAttention that we "
             "currently use does not support segment ids."
         )
+    if source_len != target_len and mask is not None:
+        raise SplashAttentionUnsupportedError(
+            "Query and key/value must have same length when mask is used."
+        )
 
     mask_shape = (source_len, target_len)
     if mask is None:
         mask = splash_attention_mask.FullMask(mask_shape)
     else:
+        # Use fewer bytes for the mask.
+        rows = np.arange(source_len, dtype=np.int32)
+        cols = np.arange(target_len, dtype=np.int32)
+        with jax.ensure_compile_time_eval():
+            mask_array = np.asarray(mask(rows[:, None], cols[None, :]))
 
-        def wrap_mask(mask: MaskFn) -> MaskFn:
-            """Wrap `mask` so that the return type is a numpy array
-            if the original input was, even if we are inside of jit.
-            """
-
-            def wrapped_mask(*args, **kwargs) -> Union[np.ndarray, Tensor]:
-                if all(
-                    isinstance(x, np.ndarray) for x in jax.tree_util.tree_leaves([args, kwargs])
-                ):
-                    with jax.ensure_compile_time_eval():
-                        result = mask(*args, **kwargs)
-                        return jax.tree.map(np.asarray, result)
-                return mask(*args, **kwargs)
-
-            return wrapped_mask
-
-        mask = ComputableMask(mask_shape, mask_function=wrap_mask(mask))
+        # NumpyMask is backed by a dense [source_len, target_len] numpy array.
+        # May consume a large amount of host memory for long sequences at compile time.
+        mask = splash_attention_mask.NumpyMask(array=mask_array)
 
     kernel = splash_attention_kernel.make_splash_mha(
         mask=splash_attention_mask.MultiHeadMask(masks=[mask] * num_heads),
@@ -297,90 +297,6 @@ def _tpu_splash_attention(
     kernel = jax.vmap(kernel)
     context = kernel(q=query, k=key, v=value)
     return context
-
-
-class ComputableMask(splash_attention_mask.Mask):
-    """A Mask that can be lazily computed using a callable.
-
-    This implementation is mostly copied from
-
-    `jax.experimental.pallas.ops.flash_attention.splash_attention_mask._ComputableMask`
-
-    in order to avoid relying on that private API.
-    """
-
-    # The shape of the mask.
-    _shape: tuple[int, int]
-    # The sequence of query indices that the mask covers.
-    q_sequence: np.ndarray
-    # A function compute the mask value given indices.
-    mask_function: MaskFn
-
-    def __init__(
-        self,
-        shape: tuple[int, int],
-        mask_function: Callable[..., Any],
-        shard_count: int = 1,
-    ):
-        self._shape = shape
-        self.mask_function = mask_function
-        source_len = self.shape[0]
-
-        if source_len % (shard_count * shard_count) != 0:
-            raise ValueError(
-                f"Shard count squared ({shard_count * shard_count}) must"
-                f" divide Q seq_len ({self.shape[0]}) evenly."
-            )
-
-        self.q_sequence = np.arange(source_len, dtype=np.int32)
-
-    @property
-    def shape(self) -> tuple[int, ...]:
-        return self._shape
-
-    def __getitem__(self, idx) -> np.ndarray:
-        """Return the entries of the mask specified by the row and column slice in idx."""
-        if len(idx) != 2:
-            raise NotImplementedError(f"Unsupported slice: {idx}")
-
-        q_slice, kv_slice = idx
-        if not isinstance(q_slice, slice) or not isinstance(kv_slice, slice):
-            raise NotImplementedError(f"Unsupported slice: {idx}")
-
-        def _fill_slice(inp_slice: slice, size: int) -> slice:
-            assert inp_slice.step is None or inp_slice.step == 1
-            start = 0 if inp_slice.start is None else inp_slice.start
-            stop = size if inp_slice.stop is None else inp_slice.stop
-            assert start >= 0
-            assert stop <= size
-            return slice(start, stop, None)
-
-        q_slice = _fill_slice(q_slice, self.shape[0])
-        kv_slice = _fill_slice(kv_slice, self.shape[1])
-
-        rows = self.q_sequence[q_slice]
-        cols = np.arange(kv_slice.start, kv_slice.stop)
-
-        return self.mask_function(rows[:, None], cols[None, :])
-
-    def _to_hashable(self) -> Hashable:
-        """Returns a hashable representation of this object that can be used for equality
-        comparisons.
-        """
-        return (
-            type(self),
-            self.shape,
-            self.q_sequence.tobytes() if self.q_sequence is not None else None,
-            self.mask_function,
-        )
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, ComputableMask):
-            raise NotImplementedError
-        return self._to_hashable() == other._to_hashable()
-
-    def __hash__(self) -> int:
-        return hash(self._to_hashable())
 
 
 # The following code is adapted from jax-ml/jax:

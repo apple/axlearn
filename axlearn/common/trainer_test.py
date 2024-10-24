@@ -21,6 +21,7 @@ import tensorflow as tf
 from absl import flags, logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
+from jax._src import pjit as pjit_lib
 from jax.experimental import checkify
 
 from axlearn.common import (
@@ -441,6 +442,127 @@ class TrainerTest(test_utils.TestCase):
         )
         # The prng_key per step is deterministic.
         np.testing.assert_array_equal(output_a["aux"]["prng_key"], output_b["aux"]["prng_key"])
+
+    @parameterized.parameters(
+        {"platform": "cpu", "mesh_shape": (1, 1)},
+        {"platform": "tpu", "mesh_shape": (4, 1)},
+    )
+    # pylint: enable=duplicate-code
+    def test_xsc_check_policy(
+        self,
+        *,
+        platform,
+        mesh_shape,
+    ):
+        if not test_utils.is_supported_platform(platform):
+            return
+        cfg = SpmdTrainer.default_config().set(name="test_trainer", train_dtype=jnp.bfloat16)
+        cfg.dir = tempfile.mkdtemp()
+        cfg.mesh_axis_names = ("data", "model")
+        cfg.mesh_shape = mesh_shape
+        cfg.model = DummyModel.default_config().set(dtype=jnp.float32)
+        cfg.input = DummyInput.default_config()
+        cfg.learner = learner.Learner.default_config().set(
+            optimizer=config_for_function(optimizers.sgd_optimizer).set(
+                learning_rate=0.1,
+                decouple_weight_decay=True,
+                momentum=0.9,
+                weight_decay=1e-4,
+            )
+        )
+        cfg.checkpointer.save_policy = config_for_function(every_n_steps_policy).set(n=100)
+        cfg.summary_writer.vlog = 5
+        cfg.max_step = 12
+        cfg.vlog = 2
+        # Set XSC policy.
+        cfg.xsc_check_policy = lambda step: (step in [7, 8])
+
+        # Test training run.
+        trainer: SpmdTrainer = cfg.set(max_step=12).instantiate(parent=None)
+
+        compiled_with_options_call_count = [0]
+
+        original_compile_train_step_fn = trainer.compile_train_step
+
+        def mock_compile_train_step(*args, compiler_options=None, **kwargs):
+            if compiler_options is not None:
+                compiled_with_options_call_count[0] += 1
+            return original_compile_train_step_fn(
+                *args, compiler_options=compiler_options, **kwargs
+            )
+
+        with unittest.mock.patch.object(
+            trainer, "compile_train_step", side_effect=mock_compile_train_step
+        ) as mocked_compile_fn:
+            # pylint: disable=protected-access
+            start_cache_hits = pjit_lib._pjit_lower_cached.cache_info().hits
+            output_a = trainer.run(prng_key=jax.random.PRNGKey(123))
+            end_cache_hits = pjit_lib._pjit_lower_cached.cache_info().hits
+            # pylint: enable=protected-access
+            # We expect to have hit the lowering cache on all but one step.
+            self.assertEqual(end_cache_hits - start_cache_hits, cfg.max_step - 1)
+            self.assertEqual(mocked_compile_fn.call_count, cfg.max_step)
+            if platform == "tpu":
+                # Should have been called with compile options on two steps.
+                self.assertEqual(compiled_with_options_call_count[0], 2)
+            else:
+                # XSC check should be disabled.
+                self.assertEqual(compiled_with_options_call_count[0], 0)
+
+        # Test with XSC check disabled.
+        cfg2 = cfg.clone().set(xsc_check_policy=None)
+        trainer2: SpmdTrainer = cfg2.instantiate(parent=None)
+        output_b = trainer2.run(prng_key=jax.random.PRNGKey(123))
+
+        # The prng_key per step is deterministic whether we run with XSC or not.
+        np.testing.assert_array_equal(output_a["aux"]["prng_key"], output_b["aux"]["prng_key"])
+
+    @parameterized.parameters(
+        {"platform": "cpu", "mesh_shape": (1, 1)},
+        {"platform": "tpu", "mesh_shape": (4, 1)},
+    )
+    # pylint: enable=duplicate-code
+    def test_compile_train_step(self, *, platform, mesh_shape):
+        if not test_utils.is_supported_platform(platform):
+            return
+        cfg = SpmdTrainer.default_config().set(name="test_trainer", train_dtype=jnp.bfloat16)
+        cfg.dir = tempfile.mkdtemp()
+        cfg.mesh_axis_names = ("data", "model")
+        cfg.mesh_shape = mesh_shape
+        cfg.model = DummyModel.default_config().set(dtype=jnp.float32)
+        cfg.input = DummyInput.default_config()
+        cfg.learner = learner.Learner.default_config().set(
+            optimizer=config_for_function(optimizers.sgd_optimizer).set(
+                learning_rate=0.1,
+                decouple_weight_decay=True,
+                momentum=0.9,
+                weight_decay=1e-4,
+            )
+        )
+        trainer: SpmdTrainer = cfg.instantiate(parent=None)
+        compiled_without_args = trainer.compile_train_step()
+        # pylint: disable=protected-access
+        input_batch = jax.tree_util.tree_map(
+            jnp.array, next(trainer.input.batches(trainer._input_iter))
+        )
+        # pylint: enable=protected-access
+        compiled_with_input_batch = trainer.compile_train_step(input_batch=input_batch)
+        # In a single-host environment, both compiled functions should match.
+        self.assertEqual(compiled_without_args.as_text(), compiled_with_input_batch.as_text())
+
+        # A version compiled with non-default compiled args should be different.
+        compiled_with_compiler_options = trainer.compile_train_step(
+            compiler_options=dict(xla_embed_ir_in_executable=True, xla_dump_max_hlo_modules=200)
+        )
+        self.assertNotEqual(compiled_without_args, compiled_with_compiler_options)
+
+        # Validate that passing full trainer state is the same as compiled without args.
+        compiled_with_trainer_state_and_input_batch = trainer.compile_train_step(
+            trainer_state=trainer.trainer_state, input_batch=input_batch
+        )
+        self.assertEqual(
+            compiled_without_args.as_text(), compiled_with_trainer_state_and_input_batch.as_text()
+        )
 
     @parameterized.parameters(
         {"return_evaler_summaries": None},

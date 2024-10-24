@@ -48,6 +48,7 @@ from axlearn.common.checkpointer import (
     restore_tf_savables,
 )
 from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
+from axlearn.common.input_grain_test import range_dataset
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.utils import VDict
@@ -341,6 +342,43 @@ class CheckpointerTest(test_utils.TestCase):
             self.assertEqual(next(restored_state["input_iter"]), 3)
             ckpt.stop()
 
+    @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
+    def test_grain(self, checkpointer_cls):
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+        with _mesh(mesh_shape):
+            cfg = _checkpointer_config(checkpointer_cls)
+            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            ds = iter(range_dataset(start=1, stop=4))
+            # Move the input_iter.
+            self.assertEqual(next(ds), 1)
+            state0 = dict(x=jnp.ones([3, 2]), y=ds)
+
+            ckpt.save(step=100, state=state0)
+            ckpt.wait_until_finished()
+
+            state0_specs = dict(
+                x=utils.TensorSpec(shape=[3, 2], dtype=jnp.float32),
+                # The same iterator, but with the position at 0.
+                y=iter(range_dataset(start=0, stop=4)),
+            )
+
+            def tensors_only(tree):
+                return (
+                    utils.prune_tree(
+                        tree, should_prune=lambda _, v: not isinstance(v, utils.Tensor)
+                    ),
+                )
+
+            step, restored_state = ckpt.restore(step=None, state=state0_specs)
+            self.assertEqual(100, step)
+            # The iterators will be different (despite pointing to the same values).
+            self.assertNestedEqual(tensors_only(state0), tensors_only(restored_state))
+            # The restored_state contains the input_iter pointing to the next value.
+            self.assertEqual(list(range(1, 4)), list(restored_state["y"]))
+            ckpt.stop()
+
     def test_cleanup_checkpoint(self):
         # Mock the rmtree s.t. it does nothing.
         with (
@@ -409,9 +447,13 @@ class CheckpointerTest(test_utils.TestCase):
             return [x + "/" for x in out if not x.endswith("/")]
 
         # pylint: disable=line-too-long
-        with _mesh(mesh_shape), mock.patch(
-            "tensorflow.io.gfile.listdir", patch_tf_io_behavior
-        ) if listdir_add_trailing_slash else nullcontext(), tempfile.TemporaryDirectory() as temp_dir:
+        with (
+            _mesh(mesh_shape),
+            mock.patch("tensorflow.io.gfile.listdir", patch_tf_io_behavior)
+            if listdir_add_trailing_slash
+            else nullcontext(),
+            tempfile.TemporaryDirectory() as temp_dir,
+        ):
             cfg = Checkpointer.default_config().set(
                 name="test",
                 dir=temp_dir,
@@ -948,6 +990,14 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                 q.put("test", block=True)
                 storage.wait_until_finished()
                 self.assertEqual("test", committed_value)
+
+    def test_check_state_structure_compat(self):
+        """Tests that empty dicts in state structure do not trigger validation errors."""
+
+        check_state_structure(
+            list(utils.flatten_items({"a": {"x": jnp.array(123)}})),
+            list(utils.flatten_items({"a": {"x": jnp.array(123)}, "b": {}})),
+        )
 
 
 def _write_shards(lines: Iterable[str], *, path_prefix, num_shards) -> list[str]:

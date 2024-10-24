@@ -17,6 +17,7 @@ from axlearn.common.input_grain import (
     Dataset,
     Input,
     maybe_to_iter_dataset,
+    pad_for_evaluation,
     prefetch_dataset,
     rekey,
     sample_from_datasets,
@@ -27,7 +28,7 @@ from axlearn.common.input_grain import (
 from axlearn.common.test_utils import TestCase
 
 
-def _range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
+def range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
     source = grain.RangeDataSource(start=start, stop=stop, step=step)
     ds = grain.MapDataset.source(source)
     if seed is not None:
@@ -42,6 +43,35 @@ class _PlusOne(grain.MapTransform):
 
 class UtilsTest(TestCase):
     """Tests processor utils."""
+
+    def _test_checkpointing(self, ds: grain.DatasetIterator):
+        """Utility to test ds checkpointing."""
+
+        max_steps = 10
+        values_without_interruption: list[dict] = []
+        checkpoints = []
+
+        for _ in range(max_steps):
+            checkpoints.append(ds.get_state())
+            values_without_interruption.append(next(ds))
+
+        def check(starting_step, ds):
+            for i in range(starting_step, max_steps):
+                actual = next(ds)
+                expected = values_without_interruption[i]
+                for k, v in expected.items():
+                    self.assertEqual(v, actual[k], msg=f"expected={expected}, actual={actual}")
+
+        # Try resuming from an existing iterator, to ensure that entire state is reset.
+        for starting_step in range(max_steps):
+            ds.set_state(checkpoints[starting_step])  # Restore using the same iterator as above.
+            check(starting_step, ds)
+
+        # Try resuming from a fresh iterator from any step and validate that outcome is the same.
+        for starting_step in range(max_steps):
+            ds = iter(ds)
+            ds.set_state(checkpoints[starting_step])
+            check(starting_step, ds)
 
     @parameterized.parameters(
         dict(
@@ -72,7 +102,7 @@ class UtilsTest(TestCase):
     ):
         ds = sample_from_datasets(
             sources=[
-                _range_dataset(start=src.start, stop=src.stop, step=src.step) for src in sources
+                range_dataset(start=src.start, stop=src.stop, step=src.step) for src in sources
             ],
             weights=weights,
         )
@@ -80,7 +110,7 @@ class UtilsTest(TestCase):
         self.assertCountEqual(expected, list(ds))
 
     def test_sample_from_datasets_errors(self):
-        ds = _range_dataset(start=0, stop=2)
+        ds = range_dataset(start=0, stop=2)
         ds = ds.repeat()
         # Make sure that already-repeated datasets don't error.
         repeated_ds = sample_from_datasets(sources=[ds], weights=[1]).slice(slice(0, 4))
@@ -95,8 +125,8 @@ class UtilsTest(TestCase):
         # Test without repeat.
         ds = sample_from_datasets(
             sources=[
-                _range_dataset(start=0, stop=10, step=2),
-                _range_dataset(start=1, stop=5, step=2),
+                range_dataset(start=0, stop=10, step=2),
+                range_dataset(start=1, stop=5, step=2),
             ],
             weights=[2, 1],
         )
@@ -118,7 +148,7 @@ class UtilsTest(TestCase):
 
     def test_repeat_dataset(self):
         # Test repeat before shuffle.
-        ds = _range_dataset(start=0, stop=10)
+        ds = range_dataset(start=0, stop=10)
         ds = ds.repeat(num_epochs=2)
         ds = ds.shuffle(seed=123)
         ds = ds.slice(slice(0, 10))
@@ -131,12 +161,12 @@ class UtilsTest(TestCase):
         dict(s=slice(20, 24, 2), expected=[]),
     )
     def test_slice_dataset(self, s: slice, expected: list[int]):
-        ds = _range_dataset(start=0, stop=10).slice(s)
+        ds = range_dataset(start=0, stop=10).slice(s)
         self.assertCountEqual(expected, list(ds))
 
     def test_batch(self):
         # [0, 1, 2, 3, 4].
-        ds = _range_dataset(start=0, stop=5, seed=123)
+        ds = range_dataset(start=0, stop=5, seed=123)
         # [1, 2, 3, 4, 5].
         other_ds = ds.map(_PlusOne())
         # [0, 1, 2, 1, 3, 4, 2, 5, 1, 3, ...].
@@ -218,37 +248,12 @@ class UtilsTest(TestCase):
                 return {}
             return {"value": x}
 
-        ds = _range_dataset(start=1, stop=10)
+        ds = range_dataset(start=1, stop=10)
         ds = ds.repeat(None).batch(3)
         ds = ds.map(convert_examples, seed=123)
         ds = unbatch(maybe_to_iter_dataset(ds))
         ds = iter(ds)
-
-        max_steps = 10
-        values_without_interruption: list[dict] = []
-        checkpoints = []
-
-        for _ in range(max_steps):
-            checkpoints.append(ds.get_state())
-            values_without_interruption.append(next(ds))
-
-        def check(starting_step, ds):
-            for i in range(starting_step, max_steps):
-                actual = next(ds)
-                expected = values_without_interruption[i]
-                for k, v in expected.items():
-                    self.assertEqual(v, actual[k], msg=f"expected={expected}, actual={actual}")
-
-        # Try resuming from an existing iterator, to ensure that entire state is reset.
-        for starting_step in range(max_steps):
-            ds.set_state(checkpoints[starting_step])  # Restore using the same iterator as above.
-            check(starting_step, ds)
-
-        # Try resuming from a fresh iterator from any step and validate that outcome is the same.
-        for starting_step in range(max_steps):
-            ds = iter(ds)
-            ds.set_state(checkpoints[starting_step])
-            check(starting_step, ds)
+        self._test_checkpointing(ds)
 
     @parameterized.parameters(
         dict(
@@ -333,6 +338,40 @@ class UtilsTest(TestCase):
         # Ensure that rekey does not modify original.
         self.assertEqual(orig_examples, examples)
 
+    @parameterized.parameters(False, True)
+    def test_pad_for_evaluation(self, to_iter_dataset: bool):
+        # Ensure that number of examples is a multiple of this batch size.
+        per_feed_batch_size = 3
+
+        ds = fake_grain_source(examples=list(range(7)))
+        if to_iter_dataset:
+            ds = maybe_to_iter_dataset(ds)
+        ds = pad_for_evaluation(ds, per_feed_batch_size=per_feed_batch_size)
+        examples = list(ds)
+
+        # Make sure length is expected.
+        self.assertEqual(9, len(examples))
+        # Make sure values are expected.
+        self.assertEqual(list(range(7)) + [0, 0], examples)
+
+        # Try batching.
+        ds = ds.batch(3)
+        self.assertNestedEqual(
+            [np.array([0, 1, 2]), np.array([3, 4, 5]), np.array([6, 0, 0])], list(ds)
+        )
+
+    def test_pad_for_evaluation_max(self):
+        ds = fake_grain_source(examples=list(range(7)))
+        ds = maybe_to_iter_dataset(ds)
+        # Test raising if count exceeds max.
+        with self.assertRaisesRegex(ValueError, "counting"):
+            pad_for_evaluation(ds, per_feed_batch_size=3, max_num_examples=3)
+
+    def test_pad_for_evaluation_checkpoint(self):
+        ds = fake_grain_source(examples=[{"x": i} for i in range(7)])
+        ds = pad_for_evaluation(ds, per_feed_batch_size=5)
+        self._test_checkpointing(iter(ds))
+
 
 class InputTest(parameterized.TestCase):
     """Tests Input module."""
@@ -352,7 +391,7 @@ class InputTest(parameterized.TestCase):
     )
     def test_input(self, process_index: int, process_count: int):
         epoch_len, num_epochs = 10, 2
-        ds = _range_dataset(start=0, stop=epoch_len, seed=123)
+        ds = range_dataset(start=0, stop=epoch_len, seed=123)
 
         def source(ds) -> Dataset:
             ds = shard_dataset(ds, process_index=process_index, process_count=process_count)

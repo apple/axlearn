@@ -120,18 +120,22 @@ class FlashAttention(GroupedQueryAttention):
         return (
             backend == "tpu"
             and self.per_head_dim() % splash_attention_kernel.NUM_LANES == 0
-            # TODO(c_lan): sliding_window_mask fails layer_test with seq_len = 2048. Need to fix.
-            and self._mask_fn is causal_mask
+            and self._mask_fn is not None
         )
 
     def _logit_biases_for_mask(
-        self, *, mode: ForwardMode, seq_len: int, time_step: Optional[Tensor] = None
+        self,
+        *,
+        mode: ForwardMode,
+        kv_len: int,
+        query_len: Optional[int] = None,
+        time_step: Optional[Tensor] = None,
     ) -> Optional[Tensor]:
         if self._mask_fn is None:
             return None
         elif mode == ForwardMode.EXTEND_STEP:
             # Use biases for decoding.
-            return super()._logit_biases_for_mask(mode=mode, seq_len=seq_len, time_step=time_step)
+            return super()._logit_biases_for_mask(mode=mode, kv_len=kv_len, time_step=time_step)
         elif self._is_mask_fn_used():
             # Biases are not needed in favor of mask_fn, which is supported in Splash Attention.
             return None
@@ -141,7 +145,9 @@ class FlashAttention(GroupedQueryAttention):
         else:
             # Fall back to biases. In the subsequent _compute_attention calls, _mask_fn should not
             # be used.
-            return super()._logit_biases_for_mask(mode=mode, seq_len=seq_len, time_step=time_step)
+            return super()._logit_biases_for_mask(
+                mode=mode, kv_len=kv_len, query_len=query_len, time_step=time_step
+            )
 
     def _backend(self):
         # For compatibility with AOT compilation, we obtain the backend type from physical_mesh.
@@ -183,6 +189,10 @@ class FlashAttention(GroupedQueryAttention):
 
         # Merge segment ids into attention_logit_biases.
         if segment_ids is not None and attention_logit_biases is not None:
+            if q_proj.shape[1] != k_proj.shape[1]:
+                raise ValueError(
+                    "segment_ids is only supported for query and key with identical lengths."
+                )
             attention_logit_biases = apply_attention_logit_biases(
                 make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
                 attention_logit_biases,
@@ -221,6 +231,12 @@ class FlashAttention(GroupedQueryAttention):
             # TODO(senyut): Implement FlashDecoding kernel and support TPU decoding.
             if q_proj.shape[1] == 1:
                 mask_fn = None
+        elif backend == "gpu" and q_proj.shape[1] != k_proj.shape[1]:
+            # TODO(xuan-zou): Generalize GPU Flash Attention for q_len != kv_len.
+            raise NotImplementedError(
+                f"Query length {q_proj.shape[1]} must be equal to KV length "
+                f"{k_proj.shape[1]} for correctly supported GPU flash attention usage."
+            )
 
         if backend == "tpu":
             assert q_proj.shape[1] % cfg.tpu_block_size == 0, (

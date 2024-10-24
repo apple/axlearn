@@ -325,7 +325,7 @@ def make_causal_biases(seq_len: int) -> Tensor:
         0 otherwise.
     """
     # TODO(sneha): support batching
-    return _bool_to_bias(causal_mask(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
+    return bool_to_bias(causal_mask(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
 
 
 def make_sliding_window_causal_biases(seq_len: int, sliding_window_size: int) -> Tensor:
@@ -339,16 +339,18 @@ def make_sliding_window_causal_biases(seq_len: int, sliding_window_size: int) ->
         if i - j > sliding_window_size or i < j, 0 otherwise.
     """
     mask_fn = sliding_window_causal_mask(sliding_window_size)
-    return _bool_to_bias(mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
+    return bool_to_bias(mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
 
 
-def _bool_to_bias(mask: Tensor) -> Tensor:
+def bool_to_bias(mask: Tensor) -> Tensor:
     """Converts a bool mask tensor to a bias mask tensor.
 
     Maps:
     0 -> -NEG_INF
     1 -> 0.
     """
+    if mask.dtype != jnp.bool:
+        raise ValueError("mask must be a Boolean tensor.")
     return (~mask) * NEG_INF
 
 
@@ -1877,13 +1879,17 @@ class MultiheadAttention(BaseLayer):
                     f"Invalid attention_logit_biases shape: {attention_logit_biases.shape}."
                 )
         if self._mask_fn is not None:
+            kv_len = k_proj.shape[1]
             if mode == ForwardMode.EXTEND_STEP:
-                seq_len = k_proj.shape[1]
+                # query_len is unused because extend_step assumes query to be length 1.
+                query_len = None
                 time_step = cached_states["i_proj"]["time_step"]
             else:
-                seq_len = q_proj.shape[1]
+                query_len = q_proj.shape[1]
                 time_step = None
-            mask = self._logit_biases_for_mask(mode=mode, seq_len=seq_len, time_step=time_step)
+            mask = self._logit_biases_for_mask(
+                mode=mode, kv_len=kv_len, query_len=query_len, time_step=time_step
+            )
             if mask is not None:
                 attention_logit_biases = apply_attention_logit_biases(
                     mask.astype(q_proj.dtype),
@@ -1912,30 +1918,54 @@ class MultiheadAttention(BaseLayer):
         return dict(i_proj=i_proj_state), output
 
     def _logit_biases_for_mask(
-        self, *, mode: ForwardMode, seq_len: int, time_step: Optional[Tensor] = None
+        self,
+        *,
+        mode: ForwardMode,
+        kv_len: int,
+        query_len: Optional[int] = None,
+        time_step: Optional[Tensor] = None,
     ) -> Optional[Tensor]:
         """Returns the configured attention mask in the form of logit biases.
 
         ... or None if the implementation of _compute_attention supports applying masks natively.
 
-        For (ForwardMode.FORWARD, ForwardMode.INIT_STATES), the mask can be broadcast to
-        [batch, num_heads, seq_len, seq_len].
+        Args:
+            mode: The forward propagation mode, chosen from
+                (ForwardMode.FORWARD, ForwardMode.INIT_STATES, ForwardMode.EXTEND_STEP).
+            kv_len: The sequence length. For (ForwardMode.INIT_STATES, ForwardMode.EXTEND_STEP),
+                this is equal to the KV cache size.
+            query_len: Only used for (ForwardMode.FORWARD, ForwardMode.INIT_STATES).
+                If set, this is the query length. Otherwise, it uses kv_len as the query length.
+                Must be None for ForwardMode.EXTEND_STEP.
+            time_step: Only used for (ForwardMode.EXTEND_STEP). A tensor of size [batch] denoting
+                the 0-indexed position of the current input token.
 
-        For ForwardMode.EXTEND_STEP, the mask can be broadcast to [batch, num_heads, 1, seq_len].
+        Returns:
+            For (ForwardMode.FORWARD, ForwardMode.INIT_STATES), a logit bias tensor that can be
+                broadcast to [batch, num_heads, query_len, kv_len].
+
+            For ForwardMode.EXTEND_STEP, a logit bias tensor that can be broadcast to
+                [batch, num_heads, 1, kv_len].
         """
-        kv_pos = jnp.arange(seq_len)
+        kv_pos = jnp.arange(kv_len)
+
         if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
-            mask = self._mask_fn(kv_pos[:, None], kv_pos[None, :])[
-                None, None
-            ]  # Query and key have same seq lengths.
+            if time_step is not None:
+                raise ValueError(
+                    "FORWARD or INIT_STATES modes do not expect `time_step` as an argument."
+                )
+            query_pos = jnp.arange(kv_len if query_len is None else query_len)
+            mask = self._mask_fn(query_pos[:, None], kv_pos[None, :])[None, None]
         elif mode == ForwardMode.EXTEND_STEP:
+            if query_len is not None:
+                raise ValueError("EXTEND_STEP mode does not expect `query_len` as an argument.")
             # [batch, 1, 1, kv_len].
             # Ex: for a causal mask, mask[b, :, :, kv_pos] = 0 if time_step[b] > kv_pos else 1.
             mask = self._mask_fn(time_step[:, None], kv_pos[None, :])
             mask = mask[:, None, None, :]
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
-        mask = _bool_to_bias(mask)
+        mask = bool_to_bias(mask)
         return mask
 
     def _compute_attention(
@@ -1962,6 +1992,10 @@ class MultiheadAttention(BaseLayer):
         """
         # Merge segment ids into attention_logit_biases.
         if segment_ids is not None:
+            if q_proj.shape[1] != k_proj.shape[1]:
+                raise ValueError(
+                    "segment_ids is only supported for query and key with identical lengths."
+                )
             attention_logit_biases = apply_attention_logit_biases(
                 make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
                 attention_logit_biases,
@@ -2223,6 +2257,10 @@ class SigmoidAttention(MultiheadAttention):
         """See `MultiheadAttention._compute_attention` for details."""
         # Merge segment ids into attention_logit_biases.
         if segment_ids is not None:
+            if q_proj.shape[1] != k_proj.shape[1]:
+                raise ValueError(
+                    "segment_ids is only supported for query and key with identical lengths."
+                )
             attention_logit_biases = apply_attention_logit_biases(
                 make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
                 attention_logit_biases,

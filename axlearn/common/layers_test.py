@@ -42,6 +42,7 @@ from axlearn.common.layers import (
     Conv2DTranspose,
     Conv2DWith1DPadding,
     Conv3D,
+    ConvPaddingType,
     DepthwiseConv1D,
     DropToken,
     Embedding,
@@ -774,76 +775,112 @@ class LayerTest(TestCase, tf.test.TestCase):
 
     @parameterized.parameters(
         ([0, 0, 0, 1], [0, 0, 0, 1], 1, "SAME"),
+        ([0], [], 1, "VALID"),
+        ([0, 0], [], 1, "VALID"),
+        ([0, 0, 0], [0], 1, "VALID"),
         ([0, 0, 0, 0], [0, 0], 1, "VALID"),
-        ([0, 0, 0, 1], [0, 1], 1, "VALID"),
+        ([0, 0, 0, 1], [0, 0], 1, "VALID"),
         ([0, 0, 0, 0], [0], 2, "VALID"),
         ([0, 0, 0, 1], [0], 2, "VALID"),
-        ([0, 0, 1, 1], [1], 2, "VALID"),
+        ([0, 0, 1, 1], [0], 2, "VALID"),
         ([0, 0, 0, 0, 0], [0, 0], 2, "VALID"),
-        ([0, 0, 0, 0, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 0, 1, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 1, 1, 1], [1, 1], 2, "VALID"),
+        ([0, 0, 0, 0, 1], [0, 0], 2, "VALID"),
+        ([0, 0, 0, 1, 1], [0, 0], 2, "VALID"),
+        ([0, 0, 1, 1, 1], [0, 1], 2, "VALID"),
         ([0, 0, 0, 0, 0, 0], [0, 0], 2, "VALID"),
         ([0, 0, 0, 0, 0, 1], [0, 0], 2, "VALID"),
-        ([0, 0, 0, 0, 1, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 0, 1, 1, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 1, 1, 1, 1], [1, 1], 2, "VALID"),
+        ([0, 0, 0, 0, 1, 1], [0, 0], 2, "VALID"),
+        ([0, 0, 0, 1, 1, 1], [0, 0], 2, "VALID"),
+        ([0, 0, 1, 1, 1, 1], [0, 1], 2, "VALID"),
     )
-    def test_conv_padding_lingvo(
-        self, input_paddings, expected_paddings, stride: int, padding_cfg: str
-    ):
+    def test_conv_padding(self, input_paddings, expected_paddings, stride: int, padding_cfg: str):
         """Tests _compute_conv_output_1d_padding() with SAME and VALID padding cfg."""
         # This test is from lingvo
         # https://github.com/tensorflow/lingvo/blob/master/lingvo/core/conv_layers_with_time_padding_test.py#L157.
         window = 3
         out_paddings = _compute_conv_output_1d_padding(
-            jnp.array([input_paddings]), window=window, stride=stride, conv_padding_cfg=padding_cfg
+            jnp.array([input_paddings]), window=window, stride=stride, conv_padding=padding_cfg
         )
         assert_allclose(out_paddings[0], expected_paddings)
 
     @parameterized.parameters(
-        (3, 2, (1, 1)),
-        (5, 2, (1, 1)),
-        (5, 2, (2, 2)),
+        (3, 1, ((1, 1),), "SAME"),
+        (3, 1, ((0, 0),), "VALID"),
+        (3, 2, ((1, 1),), "SAME"),
+        (3, 2, ((0, 0),), "VALID"),
+        (5, 2, ((2, 2),), "SAME"),
+        (5, 2, ((0, 0),), "VALID"),
     )
-    def test_conv_output_1d_padding(self, window: int, stride: int, padding_cfg: tuple[int, int]):
+    def test_conv_output_1d_padding(
+        self, window: int, stride: int, padding: ConvPaddingType, ref_padding: ConvPaddingType
+    ):
         """Tests _compute_conv_output_1d_padding() with explicit padding cfg."""
         batch_size = 5
         seq_len = 5
         paddings = jnp.triu(jnp.ones((batch_size, seq_len)), k=1)
         out_paddings = _compute_conv_output_1d_padding(
-            paddings, window=window, stride=stride, conv_padding_cfg=padding_cfg
+            paddings, window=window, stride=stride, conv_padding=padding
         )
-
-        # The reference is computed using 1d convolution.
-        # We first pad the padding sequence with 0 on the left, and 1 on the right.
-        paddings = jnp.pad(paddings, ((0, 0), (padding_cfg[0], 0)), constant_values=0)
-        paddings = jnp.pad(paddings, ((0, 0), (0, padding_cfg[1])), constant_values=1)
-        conv_paddings = jax.lax.conv_general_dilated(
-            lhs=jnp.expand_dims(paddings, -1),  # [batch, seq, 1]
-            rhs=jnp.ones([window, 1, 1], paddings.dtype),
-            window_strides=(stride,),
-            dimension_numbers=("NWC", "WIO", "NWC"),
-            padding="VALID",
+        ref_paddings = _compute_conv_output_1d_padding(
+            paddings, window=window, stride=stride, conv_padding=ref_padding
         )
-        ref_paddings = (jnp.squeeze(conv_paddings, axis=-1) > 0).astype(paddings.dtype)
         self.assertAllEqual(out_paddings, ref_paddings)
 
+    @parameterized.parameters(
+        (5, "SAME", None, [0, 0, 0, 1, 1, 1]),
+        (5, "SAME", 1, ValueError),
+        (5, "SAME", 2, [0, 0, 0, 1, 1, 1]),
+        (5, "SAME", 3, ValueError),
+        (5, ((1, 1),), None, [0, 0, 0, 1]),
+        (5, ((1, 1),), 0, ValueError),
+        (5, ((1, 1),), 1, [0, 0, 0, 1]),
+        (5, ((1, 1),), 2, [0, 0, 1, 1]),
+        (5, ((1, 1),), 3, [0, 1, 1, 1]),
+        (5, ((1, 1),), 4, ValueError),
+        (5, "VALID", None, [0, 0]),
+        (5, "VALID", 0, [0, 0]),
+        (5, "VALID", 1, [0, 0]),
+        (5, "VALID", 2, [0, 1]),
+        (5, "VALID", 3, [1, 1]),
+        (5, "VALID", 4, [1, 1]),
+        (5, ((4, 0),), None, [0, 0, 0, 1, 1, 1]),
+        (5, ((4, 0),), 3, ValueError),
+        (5, ((4, 0),), 4, [0, 0, 0, 1, 1, 1]),
+        (5, ((4, 0),), 5, ValueError),
+    )
+    def test_conv_output_1d_padding_with_anchor(self, window, padding, anchor, expected_paddings):
+        input_paddings = [0, 0, 0, 1, 1, 1]
+        try:
+            out_paddings = _compute_conv_output_1d_padding(
+                jnp.array([input_paddings]),
+                window=window,
+                stride=1,
+                conv_padding=padding,
+                anchor=anchor,
+            )
+            assert_allclose(out_paddings[0], expected_paddings)
+        except ValueError as e:
+            self.assertTrue(isinstance(e, expected_paddings))
+
     @parameterized.named_parameters(
-        ("1x1", (1, 1), (1, 1), "VALID"),
-        ("2x2_VALID", (2, 2), (1, 1), "VALID"),
-        ("2x2_SAME", (2, 2), (1, 1), "SAME"),
-        ("2x2_S2_VALID", (2, 2), (2, 2), "VALID"),
-        ("3x3_VALID", (3, 3), (1, 1), "VALID"),
-        ("3x3_SAME", (3, 3), (1, 1), "SAME"),
-        ("3x3_S2_VALID", (3, 3), (2, 2), "VALID"),
-        ("3x3_S2_PADDING1", (3, 3), (2, 2), (1, 1)),
+        ("1x1", (1, 1), (1, 1), "VALID", None),
+        ("2x2_VALID", (2, 2), (1, 1), "VALID", None),
+        ("2x2_SAME", (2, 2), (1, 1), "SAME", None),
+        ("2x2_S2_VALID", (2, 2), (2, 2), "VALID", None),
+        ("3x3_VALID", (3, 3), (1, 1), "VALID", None),
+        ("3x3_VALID_A0", (3, 3), (1, 1), "VALID", 0),
+        ("3x3_VALID_A1", (3, 3), (1, 1), "VALID", 1),
+        ("3x3_VALID_A2", (3, 3), (1, 1), "VALID", 2),
+        ("3x3_SAME", (3, 3), (1, 1), "SAME", None),
+        ("3x3_S2_VALID", (3, 3), (2, 2), "VALID", None),
+        ("3x3_S2_PADDING1", (3, 3), (2, 2), (1, 1), None),
     )
     def test_conv2d_with_1d_padding(
         self,
         window: tuple[int, int],
         strides: tuple[int, int],
         padding: Union[str, tuple[int, int]],
+        anchor: Optional[int],
     ):
         """Tests that Conv2DWith1DPadding has consistent outputs under different padding lengths.
 
@@ -862,6 +899,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             window=window,
             strides=strides,
             padding=conv_padding,
+            anchor=anchor,
         )
         layer: Conv2DWith1DPadding = cfg.instantiate(parent=None)
 
@@ -1187,14 +1225,14 @@ class LayerTest(TestCase, tf.test.TestCase):
         ("w3s1d1_SAME", 3, 1, "SAME", None),
         ("w4s1d1_SAME", 4, 1, "SAME", None),
         ("w4s1d3_SAME", 4, 1, "SAME", 3),
-        ("w4s1d1_CAUSAL", 4, 1, (3, 0), None),
-        ("w4s1d5_CAUSAL", 4, 1, (3, 0), 5),
+        ("w4s1d1_CAUSAL", 4, 1, ((3, 0),), None),
+        ("w4s1d5_CAUSAL", 4, 1, ((3, 0),), 5),
     )
     def test_conv1d(
         self,
         window: int,
         strides: int,
-        padding: Union[str, tuple[int, int]],
+        padding: ConvPaddingType,
         dilation: Optional[int] = None,
     ):
         input_dim, output_dim = 4, 6
@@ -1242,7 +1280,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         else:
             # torch.nn.Conv1d does not support asymmetric padding, so pad manually and use "valid".
             ref_padding = "valid"
-            ref_inputs = jnp.pad(inputs, ((0, 0), padding, (0, 0)))
+            ref_inputs = jnp.pad(inputs, ((0, 0), padding[0], (0, 0)))
         ref = torch.nn.Conv1d(
             in_channels=input_dim,
             out_channels=output_dim,
@@ -1278,7 +1316,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             output_dim=output_dim,
             window=window,
             strides=strides,
-            padding=padding,
+            padding=(padding,),
             lhs_dilation=dilation,
         )
         layer: Conv1D = cfg.instantiate(parent=None)
@@ -1326,13 +1364,13 @@ class LayerTest(TestCase, tf.test.TestCase):
         ("w3s1_VALID", 3, 1, "VALID"),
         ("w3s1_SAME", 3, 1, "SAME"),
         ("w4s1_SAME", 4, 1, "SAME"),
-        ("w4s1_CAUSAL", 4, 1, (3, 0)),
+        ("w4s1_CAUSAL", 4, 1, ((3, 0),)),
     )
     def test_depthwise_conv1d(
         self,
         window: int,
         strides: int,
-        padding: Union[str, tuple[int, int]],
+        padding: ConvPaddingType,
     ):
         input_dim = 4
         cfg = DepthwiseConv1D.default_config().set(
@@ -1379,7 +1417,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         else:
             # torch.nn.Conv1d does not support asymmetric padding, so pad manually and use "valid".
             ref_padding = "valid"
-            ref_inputs = jnp.pad(inputs, ((0, 0), padding, (0, 0)))
+            ref_inputs = jnp.pad(inputs, ((0, 0), padding[0], (0, 0)))
         ref = torch.nn.Conv1d(
             in_channels=input_dim,
             out_channels=input_dim,
