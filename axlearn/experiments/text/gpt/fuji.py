@@ -63,7 +63,7 @@ MAX_SEQUENCE_LENGTH = {
 }
 
 TRN_MODEL_AXIS_SIZE=64
-GRADIENT_ACCUMULATION_MICROBATCHES=4
+GRADIENT_ACCUMULATION_MICROBATCHES=16
 
 ROPE_THETA = {
     Version.V1: 5e5,
@@ -191,7 +191,7 @@ def get_trainer_kwargs(
     elif model_size == "70B":
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=10,
+                num_layers=8,
                 hidden_dim=128 * 64,
                 num_heads=64,
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
