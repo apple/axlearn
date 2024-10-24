@@ -53,7 +53,7 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-MODEL_SIZES = ("test", "7B", "70B")
+MODEL_SIZES = ("test", "7B", "70B", "405B")
 
 
 class Version(enum.Enum):
@@ -91,16 +91,19 @@ TOTAL_TOKENS = {
         "test": 1 * (1024**4),  # 1T tokens
         "7B": 1 * (1024**4),  # 1T tokens
         "70B": int(1.4 * (1024**4)),  # 1.4T tokens
+        "405B": int(1.4 * (1024**4)),  # 1.4T tokens
     },
     Version.V2: {
         "test": 2 * (1024**4),  # 2T tokens
         "7B": 2 * (1024**4),  # 2T tokens
         "70B": 2 * (1024**4),  # 2T tokens
+        "405B": 2 * (1024**4),  # 15T tokens
     },
     Version.V3: {
         "test": 15 * (1024**4),  # 15T tokens
         "7B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
+        "405B": 15 * (1024**4),  # 15T tokens
     },
 }
 
@@ -293,6 +296,45 @@ def get_trainer_kwargs(
                 ),
             ),
         )
+    elif model_size == "405B":
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=126,
+                hidden_dim=53248,
+                num_heads=128,
+                # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
+                num_kv_heads=None if version == Version.V1 else 8,
+                rope_theta=rope_theta,
+                flash_attention=flash_attention,
+            ),
+            learner_kwargs=dict(peak_lr=8e-5, weight_decay=0.1),
+            max_sequence_length=max_sequence_length,
+            train_batch_size=train_batch_size,
+            max_step=max_step,
+            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            mesh_rules=(
+                # tpu-v6e.
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        )
+
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
     model_kwargs = trainer_kwargs.pop("model_kwargs")
