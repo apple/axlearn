@@ -155,6 +155,11 @@ audio = [
     "levenshtein==0.25.1",
 ]
 
+# Pathways utilities.
+pathways = [
+    "pathwaysutils@git+https://github.com/google/pathways-utils@v0.0.5", # for JAX+Pathways single-controller accelerator coordinator
+]
+
 [tool.flit.module]
 # This defines the import name. https://flit.pypa.io/en/stable/pyproject_toml.html#module-section
 name = "axlearn"
