@@ -36,11 +36,11 @@ from axlearn.common.utils import Tensor
 
 
 def tpu_flash_attention(
-    query: Tensor,  # [batch_size, source_len, num_heads, head_dim]
-    key: Tensor,  # [batch_size, target_len, num_heads, head_dim]
-    value: Tensor,  # [batch_size, target_len, num_heads, head_dim]
-    bias: Tensor = None,  # [batch_size, num_heads, source_len, target_len]
-    segment_ids: Tensor = None,  # [batch_size, source_len]
+    query: Tensor,  # [batch_size, q_seq_len, num_heads, head_dim]
+    key: Tensor,  # [batch_size, kv_seq_len, num_heads, head_dim]
+    value: Tensor,  # [batch_size, kv_seq_len, num_heads, head_dim]
+    bias: Tensor = None,  # [batch_size, num_heads, q_seq_len, kv_seq_len]
+    segment_ids: Tensor = None,  # [batch_size, q_seq_len]
     *,
     mask: Optional[MaskFn] = None,
     softmax_scale: float = 1.0,
@@ -55,20 +55,20 @@ def tpu_flash_attention(
         2. it's more efficient to scale outside the kernel vs. fix order of ops in kernel.
 
     Args:
-        query: The query tensor, of shape [batch_size, source_len, num_heads, head_dim].
-        key: The key tensor, of shape [batch_size, target_len, num_heads, head_dim].
-        value: The value tensor, of shape [batch_size, target_len, num_heads, head_dim].
+        query: The query tensor, of shape [batch_size, q_seq_len, num_heads, head_dim].
+        key: The key tensor, of shape [batch_size, kv_seq_len, num_heads, head_dim].
+        value: The value tensor, of shape [batch_size, kv_seq_len, num_heads, head_dim].
         bias: The attention biases, can broadcast to shape
-            [batch_size, num_heads, source_len, target_len].
+            [batch_size, num_heads, q_seq_len, kv_seq_len].
         segment_ids: The id of which segment each token belongs to. Attention is not computed
              between tokens in different segments.
-             Shape:  [batch_size, source_len].
+             Shape:  [batch_size, q_seq_len].
         mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
         softmax_scale: A scaling factor applied to the query.
         block_size: The block size to use for chunking data in the kernel.
 
     Returns:
-        The context tensor, of shape [batch_size, source_len, num_heads, head_dim].
+        The context tensor, of shape [batch_size, q_seq_len, num_heads, head_dim].
 
     Raises:
         NotImplementedError: If no implementation with support for the arguments is found.
@@ -155,31 +155,31 @@ def tpu_flash_attention(
     ],
 )
 def _legacy_tpu_flash_attention(
-    query: Tensor,  # [batch_size, num_heads, source_len, head_dim]
-    key: Tensor,  # [batch_size, num_heads, target_len, head_dim]
-    value: Tensor,  # [batch_size, num_heads, target_len, head_dim]
-    bias: Tensor = None,  # [batch_size, num_heads, source_len, target_len]
-    segment_ids: Tensor = None,  # [batch_size, source_len]
+    query: Tensor,  # [batch_size, num_heads, q_seq_len, head_dim]
+    key: Tensor,  # [batch_size, num_heads, kv_seq_len, head_dim]
+    value: Tensor,  # [batch_size, num_heads, kv_seq_len, head_dim]
+    bias: Tensor = None,  # [batch_size, num_heads, q_seq_len, kv_seq_len]
+    segment_ids: Tensor = None,  # [batch_size, q_seq_len]
     *,
     mask: Optional[MaskFn] = None,
     block_sizes: Optional[LegacyBlockSizes] = None,
-) -> Tensor:  # [batch_size, num_heads, source_len, head_dim].
+) -> Tensor:  # [batch_size, num_heads, q_seq_len, head_dim].
     """Wraps JAX's legacy TPU flash-attention.
 
     Args:
-        query: The query tensor, of shape [batch_size, num_heads, source_len, head_dim].
-        key: The key tensor, of shape [batch_size, num_heads, target_len, head_dim].
-        value: The value tensor, of shape [batch_size, num_heads, source_len, head_dim].
-        bias: The attention biases, of shape [batch_size, num_heads, source_len, target_len].
+        query: The query tensor, of shape [batch_size, num_heads, q_seq_len, head_dim].
+        key: The key tensor, of shape [batch_size, num_heads, kv_seq_len, head_dim].
+        value: The value tensor, of shape [batch_size, num_heads, kv_seq_len, head_dim].
+        bias: The attention biases, of shape [batch_size, num_heads, q_seq_len, kv_seq_len].
         segment_ids: The id of which segment each token belongs to. Attention is not computed
              between tokens in different segments.
-             Shape:  [batch_size, source_len].
+             Shape:  [batch_size, q_seq_len].
         mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
         block_sizes: An object containing values that can be used to tune the performance
             such as the block size to chunk things into.
 
     Returns:
-        The context tensor, of shape [batch_size, num_heads, source_len, head_dim].
+        The context tensor, of shape [batch_size, num_heads, q_seq_len, head_dim].
 
     Raises:
         NotImplementedError: If a custom (non-causal, non-full) mask is specified.
@@ -220,39 +220,39 @@ class SplashAttentionUnsupportedError(NotImplementedError):
     ],
 )
 def _tpu_splash_attention(
-    query: Tensor,  # [batch_size, num_heads, source_len, head_dim]
-    key: Tensor,  # [batch_size, num_heads, target_len, head_dim]
-    value: Tensor,  # [batch_size, num_heads, target_len, head_dim]
-    bias: Tensor = None,  # [batch_size, num_heads, source_len, target_len]
-    segment_ids: Tensor = None,  # [batch_size, source_len]
+    query: Tensor,  # [batch_size, num_heads, q_seq_len, head_dim]
+    key: Tensor,  # [batch_size, num_heads, kv_seq_len, head_dim]
+    value: Tensor,  # [batch_size, num_heads, kv_seq_len, head_dim]
+    bias: Tensor = None,  # [batch_size, num_heads, q_seq_len, kv_seq_len]
+    segment_ids: Tensor = None,  # [batch_size, q_seq_len]
     *,
     mask: Optional[MaskFn] = None,
     block_sizes: Optional[splash_attention_kernel.BlockSizes] = None,
-) -> Tensor:  # [batch_size, num_heads, source_len, head_dim].
+) -> Tensor:  # [batch_size, num_heads, q_seq_len, head_dim].
     """Wraps JAX's sparse TPU flash-attention.
 
     Args:
-        query: The query tensor, of shape [batch_size, num_heads, source_len, head_dim].
-        key: The key tensor, of shape [batch_size, num_heads, target_len, head_dim].
-        value: The value tensor, of shape [batch_size, num_heads, source_len, head_dim].
-        bias: The attention biases, of shape [batch_size, num_heads, source_len, target_len].
+        query: The query tensor, of shape [batch_size, num_heads, q_seq_len, head_dim].
+        key: The key tensor, of shape [batch_size, num_heads, kv_seq_len, head_dim].
+        value: The value tensor, of shape [batch_size, num_heads, q_seq_len, head_dim].
+        bias: The attention biases, of shape [batch_size, num_heads, q_seq_len, kv_seq_len].
         segment_ids: The id of which segment each token belongs to. Attention is not computed
             between tokens in different segments.
-             Shape:  [batch_size, source_len].
+             Shape:  [batch_size, q_seq_len].
         mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
         block_sizes: An object containing values that can be used to tune the performance
             such as the block size to chunk things into.
 
     Returns:
-        The context tensor, of shape [batch_size, num_heads, source_len, head_dim].
+        The context tensor, of shape [batch_size, num_heads, q_seq_len, head_dim].
 
     Raises:
         NotImplementedError: If a bias is also specified or the head_dim is not divisible by
             128.
     """
 
-    source_len = query.shape[2]
-    target_len = key.shape[2]
+    q_seq_len = query.shape[2]
+    kv_seq_len = key.shape[2]
     num_heads = query.shape[1]
     head_dim = query.shape[3]
 
@@ -269,18 +269,18 @@ def _tpu_splash_attention(
             "The public API for SplashAttention that we "
             "currently use does not support segment ids."
         )
-    if source_len != target_len and mask is not None:
+    if q_seq_len != kv_seq_len and mask is not None:
         raise SplashAttentionUnsupportedError(
             "Query and key/value must have same length when mask is used."
         )
 
-    mask_shape = (source_len, target_len)
+    mask_shape = (q_seq_len, kv_seq_len)
     if mask is None:
         mask = splash_attention_mask.FullMask(mask_shape)
     else:
         # Use fewer bytes for the mask.
-        rows = np.arange(source_len, dtype=np.int32)
-        cols = np.arange(target_len, dtype=np.int32)
+        rows = np.arange(q_seq_len, dtype=np.int32)
+        cols = np.arange(kv_seq_len, dtype=np.int32)
         with jax.ensure_compile_time_eval():
             mask_array = np.asarray(mask(rows[:, None], cols[None, :]))
 
