@@ -29,6 +29,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
+from axlearn.common.decoder import LmHead
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
 from axlearn.common.trainer import SpmdTrainer
@@ -53,7 +54,7 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-MODEL_SIZES = ("test", "7B", "70B")
+MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
 
 class Version(enum.Enum):
@@ -66,7 +67,7 @@ class Version(enum.Enum):
 VOCAB_SIZE = {
     Version.V1: 32 * 1024,
     Version.V2: 32 * 1024,
-    Version.V3: 128 * 1024,
+    Version.V3: 128256,
 }
 
 
@@ -99,7 +100,9 @@ TOTAL_TOKENS = {
     },
     Version.V3: {
         "test": 15 * (1024**4),  # 15T tokens
-        "7B": 15 * (1024**4),  # 15T tokens
+        "1B": 15 * (1024**4),  # 15T tokens
+        "3B": 15 * (1024**4),  # 15T tokens
+        "8B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
     },
 }
@@ -114,6 +117,8 @@ def get_trainer_kwargs(
 ) -> dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 4 * (1024**2)  # 4M tokens.
+    if model_size not in TOTAL_TOKENS[version]:
+        return {}
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
@@ -140,6 +145,7 @@ def get_trainer_kwargs(
                 num_kv_heads=2,
                 vocab_size=32,
                 rope_theta=rope_theta,
+                shared_lm_head=True,
                 flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=6e-4, weight_decay=0.01),
@@ -151,6 +157,42 @@ def get_trainer_kwargs(
             save_every_n_steps=500,
             mesh_shape=mesh_shape_from_axes(data=-1),
         )
+    elif model_size == "1B":
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=16,
+                hidden_dim=2048,
+                num_heads=32,
+                num_kv_heads=num_kv_heads,
+                ffn_dim=8192,
+                rope_theta=rope_theta,
+                shared_lm_head=True,
+                flash_attention=flash_attention,
+            ),
+            learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
+            max_sequence_length=max_sequence_length,
+            train_batch_size=train_batch_size,
+            max_step=max_step,
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+        )
+    elif model_size == "3B":
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=28,
+                hidden_dim=3072,
+                num_heads=24,
+                num_kv_heads=num_kv_heads,
+                ffn_dim=8192,
+                rope_theta=rope_theta,
+                shared_lm_head=True,
+                flash_attention=flash_attention,
+            ),
+            learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
+            max_sequence_length=max_sequence_length,
+            train_batch_size=train_batch_size,
+            max_step=max_step,
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+        )
     elif model_size == "7B":
         trainer_kwargs = dict(
             model_kwargs=dict(
@@ -159,6 +201,7 @@ def get_trainer_kwargs(
                 num_heads=32,
                 num_kv_heads=num_kv_heads,
                 rope_theta=rope_theta,
+                shared_lm_head=True,
                 flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
@@ -246,6 +289,86 @@ def get_trainer_kwargs(
                 ),
             ),
         )
+    elif model_size == "8B":
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=32,
+                hidden_dim=128 * 32,
+                num_heads=32,
+                num_kv_heads=num_kv_heads,
+                ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
+                rope_theta=rope_theta,
+                shared_lm_head=False,
+                flash_attention=flash_attention,
+            ),
+            learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
+            max_sequence_length=max_sequence_length,
+            train_batch_size=train_batch_size,
+            max_step=max_step,
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+            mesh_rules=(
+                ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
+                (
+                    "tpu-v5litepod-256",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=offload_dots_saveable_policy,
+                                    ),
+                                }
+                            ),
+                            GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
+                        ],
+                    ),
+                ),
+                (
+                    "tpu-v5litepod-256-2",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=offload_dots_saveable_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+                (
+                    "tpu-v5litepod-256-4",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True, policy=jax_remat_policies.dots_saveable
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+                ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
+                (
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
+                    mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+            ),
+        )
     elif model_size == "70B":
         trainer_kwargs = dict(
             model_kwargs=dict(
@@ -254,7 +377,10 @@ def get_trainer_kwargs(
                 num_heads=64,
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
                 num_kv_heads=None if version == Version.V1 else 8,
+                # TODO(kelvin-zou): Remove the perf numbers for V5e (OOM).
+                ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
                 rope_theta=rope_theta,
+                shared_lm_head=False,
                 flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
@@ -314,6 +440,7 @@ def model_config(
     num_kv_heads: Optional[int],
     vocab_size: int,
     rope_theta: float,
+    shared_lm_head: bool,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
     flash_attention: bool = False,
@@ -328,6 +455,7 @@ def model_config(
         num_kv_heads: The optional number of KV heads. If not None, enables grouped query attention.
         vocab_size: The vocabulary size.
         rope_theta: The theta value used for RoPE positional embeddings.
+        shared_lm_head: Whether lm_head shares the parameters with emb.
         dropout_rate: The dropout rate applied throughout the model.
             Defaults to 0.0 (i.e. no dropout).
         ffn_dim: The feed-forward dimension or config function.
@@ -369,6 +497,7 @@ def model_config(
         normalization=RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),
         dropout_rate=dropout_rate,
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
+        lm_head_cfg=LmHead.default_config() if not shared_lm_head else None,
         attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
     )
@@ -399,6 +528,8 @@ def trainer_configs(
         kwargs = get_trainer_kwargs(
             model_size, vocab_size=vocab_size, version=version, flash_attention=flash_attention
         )
+        if len(kwargs) == 0:  # This combination does not exist
+            continue
         max_sequence_length = kwargs.pop("max_sequence_length")
         # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
         config_map[config_name] = get_trainer_config_fn(
@@ -427,7 +558,7 @@ def trainer_configs(
                     arch=arch, model_size="golden-run-test", version=f"v{version.value}"
                 )
             ] = wrapper
-        if model_size == "7B":
+        if model_size in ("1B", "3B", "7B", "8B"):
 
             def make_single_host_config(base_config_name: str) -> SpmdTrainer.Config:
                 """Make a single-host variant of the base config.

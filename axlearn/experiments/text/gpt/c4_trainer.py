@@ -53,7 +53,9 @@ from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 # See bpe_{32k,128k}.json for the sentencepiece settings.
 _SENTENCEPIECE_MODEL_NAME = {
     32 * 1024: "bpe_32k_c4.model",
-    128 * 1024: "bpe_128k_c4.model",  # TODO(ruoming): build the 128k vocab.
+    # TikToken is not yet supported, so we are using sentencepiece for now.
+    # Our new grain-based inputs can support TikToken in the future.
+    128256: "bpe_128k_c4.model",
 }
 _train_data_mixture_components = [
     DataMixtureComponent(
