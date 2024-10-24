@@ -556,7 +556,11 @@ class SpmdTrainer(Module):
             self._init_with_prebuilt_state(prng_key, prebuilt_state=None)
             built_state = self._restore_from_builder()
             self._step = built_state.step
-            self._trainer_state = built_state.trainer_state
+            self._trainer_state = jax.tree.map(
+                lambda state, spec: jax.device_put(state, spec.sharding),
+                built_state.trainer_state,
+                self._trainer_state_specs,
+            )
 
     def _init_with_prebuilt_state(
         self,
