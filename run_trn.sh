@@ -3,4 +3,6 @@
 #SBATCH --exclusive
 #SBATCH --nodes=1
 
-srun  --kill-on-bad-exit=1  run_trainer.sh
+#Usage : $1=training script $2=test_artifact_sub_directory
+#Example : run_trn.sh run_trainer.sh my_test_dir
+srun  --kill-on-bad-exit=1 "$@"
