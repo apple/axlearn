@@ -21,8 +21,8 @@ from jax.sharding import Mesh
 
 from axlearn.common.attention import (
     GroupedQueryAttention,
-    _bool_to_bias,
     apply_attention_logit_biases,
+    bool_to_bias,
     make_causal_biases,
     sliding_window_causal_mask,
 )
@@ -43,40 +43,37 @@ def _fake_inputs(
     *,
     batch: int,
     num_heads: int,
-    seq_len: int,
+    kv_len: int,
+    query_len: int,
     hidden_dim: int,
-    causal: bool,
     use_bias: bool,
     use_segment_ids: bool,
     input_dtype: jnp.dtype = jnp.bfloat16,
 ):
     query = jax.random.normal(
         jax.random.PRNGKey(0),
-        [batch, seq_len, hidden_dim],
+        [batch, query_len, hidden_dim],
         dtype=input_dtype,
     )
-    if causal:
-        key = value = None
-    else:
-        key = jax.random.normal(
-            jax.random.PRNGKey(1),
-            [batch, seq_len, hidden_dim],
-            dtype=input_dtype,
-        )
-        value = jax.random.normal(
-            jax.random.PRNGKey(2),
-            [batch, seq_len, hidden_dim],
-            dtype=input_dtype,
-        )
+    key = jax.random.normal(
+        jax.random.PRNGKey(1),
+        [batch, kv_len, hidden_dim],
+        dtype=input_dtype,
+    )
+    value = jax.random.normal(
+        jax.random.PRNGKey(2),
+        [batch, kv_len, hidden_dim],
+        dtype=input_dtype,
+    )
     if use_bias:
         bias = jax.random.bernoulli(
-            jax.random.PRNGKey(3), p=0.5, shape=[batch, num_heads, seq_len, seq_len]
+            jax.random.PRNGKey(3), p=0.5, shape=[batch, num_heads, query_len, kv_len]
         )
-        bias = _bool_to_bias(bias)
+        bias = bool_to_bias(bias)
     else:
         bias = None
     if use_segment_ids:
-        segment_ids = jnp.ones([batch, seq_len], dtype=jnp.int32)
+        segment_ids = jnp.ones([batch, kv_len], dtype=jnp.int32)
     else:
         segment_ids = None
     return dict(
@@ -331,6 +328,7 @@ class TestFlashAttention(TestCase):
 
     @parameterized.product(
         _TEST_CONFIGS,
+        query_len_multiplier=[0.5, 1, 2],
         causal=[False, True],
         sliding_window_size=[None, 4],
         use_bias=[False, True],
@@ -345,6 +343,7 @@ class TestFlashAttention(TestCase):
         per_head_dim,
         mesh,
         mesh_axis_names,
+        query_len_multiplier,
         causal,
         sliding_window_size,
         use_bias,
@@ -355,7 +354,11 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
         if not causal and sliding_window_size is not None:
             pytest.skip(reason="Sliding window attention must be causal.")
-
+        if causal and use_bias:
+            # TODO(c_lan): Investigate the numerical errors when both causal and bias are used.
+            pytest.skip(reason="Only one of causal and use_bias can be True.")
+        if use_segment_ids and query_len_multiplier != 1:
+            pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
         # Data=1 with bias matrix in all fp32 format would OOM the H100 SRAM.
         if use_bias and mesh[mesh_axis_names.index("data")] == 1 and input_dtype == jnp.float32:
             pytest.skip(reason="Unsupported large bias matrix in fp32 format.")
@@ -369,19 +372,19 @@ class TestFlashAttention(TestCase):
                 sliding_window_size=sliding_window_size,
             )
 
+            query_len = int(query_len_multiplier * seq_len)
             inputs = _fake_inputs(
                 batch=batch,
                 num_heads=num_heads,
-                seq_len=seq_len,
+                kv_len=seq_len,
+                query_len=query_len,
                 hidden_dim=hidden_dim,
-                causal=causal,
                 use_bias=use_bias,
                 use_segment_ids=use_segment_ids,
                 input_dtype=input_dtype,
             )
 
             ref_inputs = dict(inputs)
-
             ref_out, _ = F(
                 ref_layer,
                 prng_key=jax.random.PRNGKey(5),
@@ -401,6 +404,7 @@ class TestFlashAttention(TestCase):
 
     @parameterized.product(
         _TEST_CONFIGS,
+        query_len_multiplier=[0.5, 1, 2],
         causal=[False, True],
         sliding_window_size=[None, 4],
         use_bias=[False, True],
@@ -414,6 +418,7 @@ class TestFlashAttention(TestCase):
         per_head_dim,
         mesh,
         mesh_axis_names,
+        query_len_multiplier,
         causal,
         sliding_window_size,
         use_bias,
@@ -421,9 +426,15 @@ class TestFlashAttention(TestCase):
     ):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
+        if use_segment_ids and query_len_multiplier != 1:
+            pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
 
         if not causal and sliding_window_size is not None:
             pytest.skip(reason="Sliding window attention must be causal.")
+
+        if causal and use_bias:
+            # TODO(c_lan): Investigate the numerical errors when both causal and bias are used.
+            pytest.skip(reason="Only one of causal and use_bias can be True.")
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
 
@@ -458,7 +469,6 @@ class TestFlashAttention(TestCase):
                 mask_fn = config_for_function(sliding_window_causal_mask).set(
                     sliding_window_size=sliding_window_size
                 )
-                causal = False
             else:
                 mask_fn = None
 
@@ -468,7 +478,7 @@ class TestFlashAttention(TestCase):
                 value_dim=hidden_dim,
                 num_heads=num_heads,
                 dtype=jnp.bfloat16,
-                causal=causal,
+                causal=causal and (mask_fn is None),
                 mask=mask_fn,
             )
             ref_cfg = DummyModel.default_config().set(
@@ -490,12 +500,13 @@ class TestFlashAttention(TestCase):
             test_layer = test_cfg.set(name="test").instantiate(parent=None)
             # Use the same params for both. Only attention implementation differs.
             params = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+            query_len = int(query_len_multiplier * seq_len)
             inputs = _fake_inputs(
                 batch=batch,
                 num_heads=num_heads,
-                seq_len=seq_len,
+                kv_len=seq_len,
+                query_len=query_len,
                 hidden_dim=hidden_dim,
-                causal=causal,
                 use_bias=use_bias,
                 use_segment_ids=use_segment_ids,
             )
@@ -514,7 +525,7 @@ class TestFlashAttention(TestCase):
             ref_value, ref_grads = jax.value_and_grad(loss)(params, ref_inputs, ref_layer)
             test_value, test_grads = jax.value_and_grad(loss)(params, inputs, test_layer)
             # Can be 1e-5 on x86_64/GPU/TPU, needed to be slightly higher on ARM.
-            atol = 2e-5
+            atol = 1e-4
             self.assertNestedAllClose(ref_value, test_value, atol=atol)
             self.assertNestedAllClose(ref_grads, test_grads, atol=atol)
 

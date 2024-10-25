@@ -38,6 +38,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_instantiate,
 )
+from axlearn.common.input_fake import EmptyInput
 from axlearn.common.module import Module
 from axlearn.common.optimizer_base import OptStateSpec
 from axlearn.common.optimizers import ParamEmaState
@@ -434,8 +435,12 @@ class BaseConverterFromPretrainedModel(Converter):
         # Initialize the model and learner states for the pretrained model.
         # pytype: disable=attribute-error
         cfg_fn: TrainerConfigFn = cfg.source_trainer_config.instantiate()
+
         with set_data_dir(cfg.source_data_dir or get_data_dir()):
             trainer_cfg = cfg_fn()
+            logging.info(
+                "Initialize model and learner states for the pretrained model: %s", trainer_cfg.name
+            )
             trainer_cfg.dir = mkdtemp()
             trainer_cfg.mesh_axis_names = (
                 cfg.mesh_axis_names or trainer_cfg.mesh_axis_names or ("data", "model")
@@ -443,7 +448,11 @@ class BaseConverterFromPretrainedModel(Converter):
             trainer_cfg.mesh_shape = infer_mesh_shape(
                 cfg.mesh_shape or trainer_cfg.mesh_shape or (len(jax.devices()), 1)
             )
+            # Reset datasets and evalers for the pretrained model config.
+            # This input is not used. Set global_batch_size to 0 by default.
+            trainer_cfg.input = EmptyInput.default_config().set(global_batch_size=0)
             trainer_cfg.evalers = {}
+
             trainer = trainer_cfg.instantiate(parent=None)
             # pytype: enable=attribute-error
             source = Builder.State(

@@ -1,9 +1,10 @@
 # Copyright © 2024 Apple Inc.
 """Runtime and compiler options for JAX/XLA."""
+
 # This module must not depend on any jax/axlearn modules so that
 # importing this module does not result in initializing jax.
 import re
-from typing import Union
+from typing import Any, Union
 
 
 def default_xla_options(
@@ -102,6 +103,65 @@ def infer_tpu_version(tpu_type: str) -> str:
     if tpu_version not in _TPU_VERSIONS:
         raise ValueError(f"Unknown TPU version {tpu_version}. Expected one of {_TPU_VERSIONS}")
     return tpu_version
+
+
+def infer_xsc_compiler_options(
+    *,
+    halt_on_detection: bool = True,
+    repeat_count: int = 1,
+    replicate_llo: bool = False,
+) -> dict[str, Union[str, Any]]:
+    """Infers compiler options for running compiled function with XLA SDC check enabled.
+
+    Defaults are as advised by: <andig@google.com>.
+
+    To see additional XSC logging, enable the following environment variables at start time:
+    ```bash
+    export TPU_MIN_LOG_LEVEL=0
+    export TPU_VMODULE=tpu_configuration_ops_impl=3
+    export TF_CPP_MIN_LOG_LEVEL=0
+    ```
+
+    TODO(tom_gunter): Update with link to documentation once public.
+
+    Args:
+        halt_on_detection: Whether to halt the program and raise a Python exception on detection.
+        repeat_count: Number of times to repeatedly call the program and validate outputs.
+        replicate_llo: LLO sequence duplication, useful for single-core chips (e.g. v5e, v6e).
+
+    Returns:
+        A dictionary of compiler options that enable SDC checks.
+    """
+    options = dict(
+        # XLA SDC Checker flags:
+        # Enable the SDC checker.
+        xla_tpu_enable_sdc_checker=True,
+        # Number of times to repeat the function call.
+        xla_tpu_sdc_check_repeat_count=repeat_count,
+        # Raise Python exception on error.
+        xla_tpu_sdc_check_halt_on_detection=halt_on_detection,
+        # Duplicate LLO sequences.
+        xla_tpu_sdc_replicate_llo=replicate_llo,
+        # Alternate primary/secondary core for each re-run for platforms with 2 cores per device.
+        xla_tpu_sdc_checker_alternate_megacore_cores=True,
+        # XLA ICI SDC Checker flags:
+        # N.B. ICI checker only runs once after first program compilation.
+        # Enable the interconnect checker on first program call.
+        xla_tpu_ici_sdc_test_run_on_program_start=True,
+        # Max distance between send/recv neighbours.
+        xla_tpu_ici_sdc_test_max_distance=1,
+        # Number of repeated send/recv before checking for equivalence.
+        xla_tpu_ici_sdc_test_pipeline_depth=4,
+        # Size of the random+checksum buffer to send/recv in 4KiB chunks.
+        xla_tpu_ici_sdc_test_buffer_size_chunks=32,
+        # Number of packets to split buffer into.
+        xla_tpu_ici_sdc_test_packet_size_chunks=4,
+        # Number of times to repeat the create-buffer/send/recv/verify loop.
+        xla_tpu_ici_sdc_test_iterations=10,
+        # Enable LLO log recording which will print performance (bandwith/latency) stats.
+        xla_tpu_enable_log_recorder=False,
+    )
+    return options
 
 
 _TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p")
