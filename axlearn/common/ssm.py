@@ -600,7 +600,7 @@ class MambaMixerLayer(BaseLayer):
         self._add_child(
             "conv",
             cfg.conv.set(
-                padding=(cfg.conv.window - 1, 0),  # A causal convolution.
+                padding=((cfg.conv.window - 1, 0),),  # A causal convolution.
                 input_dim=self.inner_dim,
                 output_dim=self.inner_dim,
                 num_input_dim_groups=self.inner_dim,

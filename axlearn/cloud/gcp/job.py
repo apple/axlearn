@@ -607,6 +607,8 @@ class TPUGKEJob(GKEJob):
             # Parse GCSFuseMount path into bucket, prefix.
             parsed = urlparse(cfg.gcsfuse_mount.gcs_path)
             # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
+            # Caveat: --implicit-dirs might have negative impacts on i/o performance. See
+            # https://github.com/googlecloudplatform/gcsfuse/blob/master/docs/semantics.md .
             volumes.append(
                 dict(
                     name=cfg.gcsfuse_mount.name,
@@ -615,7 +617,7 @@ class TPUGKEJob(GKEJob):
                         readOnly=cfg.gcsfuse_mount.read_only,
                         volumeAttributes=dict(
                             bucketName=parsed.netloc,
-                            mountOptions=f"only-dir={parsed.path.lstrip('/')}",
+                            mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs",
                         ),
                     ),
                 )

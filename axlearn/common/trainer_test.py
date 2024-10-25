@@ -734,19 +734,21 @@ class TrainerTest(test_utils.TestCase):
 
         # Init without builder.
         trainer: SpmdTrainer = cfg.instantiate(parent=None)
-        trainer.init(jax.random.PRNGKey(0))
-        # Sanity check that the initial model state is not already equal.
-        with self.assertRaises(AssertionError):
-            # pylint: disable-next=protected-access
-            self.assertNestedAllClose(trainer._trainer_state.model, new_model_state)
+        with trainer.mesh():
+            trainer.init(jax.random.PRNGKey(0))
+            # Sanity check that the initial model state is not already equal.
+            with self.assertRaises(AssertionError):
+                # pylint: disable-next=protected-access
+                self.assertNestedAllClose(trainer._trainer_state.model, new_model_state)
 
         # Restore from builder, and check model state and step are now updated.
         cfg.set(init_state_builder=state_builder)
         trainer: SpmdTrainer = cfg.instantiate(parent=None)
-        trainer.init(jax.random.PRNGKey(0))
-        # pylint: disable-next=protected-access
-        self.assertNestedAllClose(trainer._trainer_state.model, new_model_state)
-        self.assertEqual(trainer.step, state_builder.step)
+        with trainer.mesh():
+            trainer.init(jax.random.PRNGKey(0))
+            # pylint: disable-next=protected-access
+            self.assertNestedAllClose(trainer._trainer_state.model, new_model_state)
+            self.assertEqual(trainer.step, state_builder.step)
 
     @parameterized.named_parameters(
         ("default", []),
