@@ -31,8 +31,10 @@ from axlearn.common.config import (
     Required,
     config_class,
     maybe_instantiate,
+    maybe_set_config,
 )
 from axlearn.common.evaler import SpmdEvaler
+from axlearn.common.input_base import Input
 from axlearn.common.learner import Learner
 from axlearn.common.module import InvocationContext, Module, child_context, clone_context_stack
 from axlearn.common.module import functional as F
@@ -73,7 +75,7 @@ class SpmdTrainer(Module):
         """Configures SpmdTrainer."""
 
         # The input source.
-        input: Required[InstantiableConfig] = REQUIRED
+        input: Required[Input.Config] = REQUIRED
 
         # A summary writer to log tagged summary values.
         summary_writer: BaseWriter.Config = SummaryWriter.default_config()
@@ -259,7 +261,9 @@ class SpmdTrainer(Module):
         # Create all children within the mesh context so that utils.input_partition_spec() works
         # properly.
         with self.mesh():
-            self._add_child("input", cfg.input.set(is_training=True))
+            self.input: Input = self._add_child(
+                "input", maybe_set_config(cfg.input, is_training=True)
+            )
             # Start from the beginning of the input dataset by default.
             self._input_iter = iter(self.input.dataset())
             cfg.summary_writer.dir = cfg.summary_writer.dir or os.path.join(
