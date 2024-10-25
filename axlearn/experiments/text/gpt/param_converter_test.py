@@ -5,7 +5,6 @@
 import os
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
@@ -75,16 +74,6 @@ def compute_llama_grad(llama, torch_ids, state):
     return parameters_from_llama_3(llama, state)
 
 
-def assert_allclose_in_nested_dict(item1, item2, atol):
-    if isinstance(item1, dict):
-        assert isinstance(item2, dict)
-        assert set(item1.keys()) == set(item2.keys())
-        for k in item1.keys():
-            assert_allclose_in_nested_dict(item1[k], item2[k], atol)
-    else:
-        assert jnp.allclose(item1, item2, atol=atol), f"{np.abs(item1 - item2).max()}"
-
-
 class FujiConvertStateTest(TestCase):
     def _test_weight_loading(self, fuji_model_name, llama_model_name):
         trainer_config_map = c4_trainer.named_trainer_configs()
@@ -145,7 +134,7 @@ class FujiConvertStateTest(TestCase):
         prng_key, grad_prng_key = jax.random.split(prng_key, 2)
         fuji_grad = compute_fuji_grad(grad_prng_key, fuji, state, input_batch)
         llama_grad = compute_llama_grad(llama, torch_ids, state)
-        assert_allclose_in_nested_dict(fuji_grad, llama_grad, atol * 1e-2)
+        self.assertNestedAllClose(fuji_grad, llama_grad, atol * 1e-2)
 
     @parameterized.parameters(
         dict(

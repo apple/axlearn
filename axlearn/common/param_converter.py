@@ -2360,7 +2360,7 @@ def parameters_from_llama_3(llama: LlamaForCausalLM, state: dict) -> dict:
         state: The state of a fuji model.
 
     Returns:
-        NestedTensor containing with the same structure as state,but the weights are from llama.
+        NestedTensor containing the same structure as state, but the weights are from llama.
     """
     # Copy the nested dict. No need to deep copy the data since it will be replaced.
     state = jax.tree.map(lambda x: x, state)
