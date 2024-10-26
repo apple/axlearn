@@ -75,7 +75,26 @@ def compute_llama_grad(llama, torch_ids, state):
 
 
 class FujiConvertStateTest(TestCase):
-    def _test_weight_loading(self, fuji_model_name, llama_model_name):
+    @parameterized.parameters(
+        dict(
+            fuji_model_name="fuji-1B-v3",
+            llama_model_name="Llama-3.2-1B",
+        ),
+        dict(
+            fuji_model_name="fuji-3B-v3",
+            llama_model_name="Llama-3.2-3B",
+        ),
+        dict(
+            fuji_model_name="fuji-8B-v3",
+            llama_model_name="Llama-3.1-8B",
+        ),
+        dict(
+            fuji_model_name="fuji-70B-v3",
+            llama_model_name="Llama-3.1-70B",
+        ),
+    )
+    @pytest.mark.high_cpu
+    def test_weight_loading(self, fuji_model_name, llama_model_name):
         trainer_config_map = c4_trainer.named_trainer_configs()
         trainer_config_fn = trainer_config_map[fuji_model_name]
         trainer_config = trainer_config_fn()
@@ -135,33 +154,6 @@ class FujiConvertStateTest(TestCase):
         fuji_grad = compute_fuji_grad(grad_prng_key, fuji, state, input_batch)
         llama_grad = compute_llama_grad(llama, torch_ids, state)
         self.assertNestedAllClose(fuji_grad, llama_grad, atol * 1e-2)
-
-    @parameterized.parameters(
-        dict(
-            fuji_model_name="fuji-1B-v3",
-            llama_model_name="Llama-3.2-1B",
-        ),
-    )
-    def test_weight_loading(self, fuji_model_name, llama_model_name):
-        self._test_weight_loading(fuji_model_name, llama_model_name)
-
-    @parameterized.parameters(
-        dict(
-            fuji_model_name="fuji-3B-v3",
-            llama_model_name="Llama-3.2-3B",
-        ),
-        dict(
-            fuji_model_name="fuji-8B-v3",
-            llama_model_name="Llama-3.1-8B",
-        ),
-        dict(
-            fuji_model_name="fuji-70B-v3",
-            llama_model_name="Llama-3.1-70B",
-        ),
-    )
-    @pytest.mark.high_cpu
-    def test_large_weight_loading(self, fuji_model_name, llama_model_name):
-        self._test_weight_loading(fuji_model_name, llama_model_name)
 
 
 if __name__ == "__main__":
