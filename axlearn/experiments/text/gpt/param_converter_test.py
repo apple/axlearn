@@ -145,17 +145,23 @@ class FujiConvertStateTest(TestCase):
             fuji_model_name="fuji-3B-v3",
             llama_model_name="Llama-3.2-3B",
         ),
-        dict(
-            fuji_model_name="fuji-8B-v3",
-            llama_model_name="Llama-3.1-8B",
-        ),
     )
     def test_weight_loading(self, fuji_model_name, llama_model_name):
         self._test_weight_loading(fuji_model_name, llama_model_name)
 
+    @parameterized.parameters(
+        dict(
+            fuji_model_name="fuji-8B-v3",
+            llama_model_name="Llama-3.1-8B",
+        ),
+        dict(
+            fuji_model_name="fuji-70B-v3",
+            llama_model_name="Llama-3.1-70B",
+        ),
+    )
     @pytest.mark.high_cpu
-    def test_70b_weight_loading(self):
-        self._test_weight_loading("fuji-70B-v3", "Llama-3.1-70B")
+    def test_large_weight_loading(self, fuji_model_name, llama_model_name):
+        self._test_weight_loading(fuji_model_name, llama_model_name)
 
 
 if __name__ == "__main__":
