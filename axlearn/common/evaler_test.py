@@ -81,7 +81,10 @@ class DummyInput(Module):
         cfg.shape = _EXAMPLE_SHAPE
         return cfg
 
-    def __iter__(self):
+    def batches(self, it: tf.data.Iterator):
+        yield from it
+
+    def dataset(self):
         cfg: DummyInput.Config = self.config
         num_batches = 0
         shape = [cfg.batch_size, *cfg.shape]
@@ -89,6 +92,9 @@ class DummyInput(Module):
             num_batches += 1
             inputs = jnp.ones(shape=shape, dtype=jnp.float32)
             yield dict(inputs=inputs)
+
+    def __iter__(self):
+        return self.dataset()
 
 
 class DummyModel(BaseModel):

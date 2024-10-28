@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Evaler and base metric calculators."""
+
 import functools
 import graphlib
 import os.path
@@ -657,7 +658,8 @@ class SpmdEvaler(Module):
 
         forward_outputs = None
         stop_trace_iter = None
-        for batch_ix, input_batch in enumerate(self.input):
+        eval_input_iter = iter(self.input.dataset())
+        for batch_ix, input_batch in enumerate(self.input.batches(eval_input_iter)):
             logging.log_first_n(logging.INFO, "Evaler input_batch=%s", 3, utils.shapes(input_batch))
 
             if batch_ix == stop_trace_iter:
