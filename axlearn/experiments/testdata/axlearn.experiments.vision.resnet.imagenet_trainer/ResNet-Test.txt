@@ -12,6 +12,7 @@ evalers['eval_train'].eval_dtype: 'jax.numpy.bfloat16'
 evalers['eval_train'].eval_policy.fn: 'axlearn.common.evaler.every_n_steps_policy'
 evalers['eval_train'].eval_policy.min_step: 1
 evalers['eval_train'].eval_policy.n: 6405830
+evalers['eval_train'].input.batcher.debug: False
 evalers['eval_train'].input.batcher.fn: 'axlearn.common.input_tf_data.batch'
 evalers['eval_train'].input.batcher.global_batch_size: 80
 evalers['eval_train'].input.batcher.pad_example_fn: 'axlearn.vision.input_image.pad_with_negative_labels'
@@ -43,6 +44,7 @@ evalers['eval_validation'].eval_dtype: 'jax.numpy.bfloat16'
 evalers['eval_validation'].eval_policy.fn: 'axlearn.common.evaler.every_n_steps_policy'
 evalers['eval_validation'].eval_policy.min_step: 1
 evalers['eval_validation'].eval_policy.n: 6405830
+evalers['eval_validation'].input.batcher.debug: False
 evalers['eval_validation'].input.batcher.fn: 'axlearn.common.input_tf_data.batch'
 evalers['eval_validation'].input.batcher.global_batch_size: 80
 evalers['eval_validation'].input.batcher.pad_example_fn: 'axlearn.vision.input_image.pad_with_negative_labels'
@@ -70,6 +72,7 @@ evalers['eval_validation'].metric_calculator.metric_accumulator.klass: 'axlearn.
 evalers['eval_validation'].metric_calculator.model_method: 'forward'
 evalers['eval_validation'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
 evalers['eval_validation'].summary_writer.write_every_n_steps: 1
+input.batcher.debug: False
 input.batcher.fn: 'axlearn.common.input_tf_data.batch'
 input.batcher.global_batch_size: 2
 input.batcher.pad_example_fn: 'axlearn.vision.input_image.pad_with_negative_labels'

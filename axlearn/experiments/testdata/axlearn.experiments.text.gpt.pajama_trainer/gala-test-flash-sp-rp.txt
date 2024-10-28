@@ -17,6 +17,7 @@ evalers['openwebtext_2'].eval_policy.fn: 'axlearn.common.evaler.every_n_steps_po
 evalers['openwebtext_2'].eval_policy.max_step: 3000
 evalers['openwebtext_2'].eval_policy.min_step: 1
 evalers['openwebtext_2'].eval_policy.n: 5000
+evalers['openwebtext_2'].input.batcher.debug: False
 evalers['openwebtext_2'].input.batcher.fn: 'axlearn.common.input_tf_data.batch'
 evalers['openwebtext_2'].input.batcher.global_batch_size: 16
 evalers['openwebtext_2'].input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
@@ -39,6 +40,7 @@ evalers['openwebtext_2'].metric_calculator.metric_accumulator.klass: 'axlearn.co
 evalers['openwebtext_2'].metric_calculator.model_method: 'forward'
 evalers['openwebtext_2'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
 evalers['openwebtext_2'].summary_writer.write_every_n_steps: 1
+input.batcher.debug: False
 input.batcher.fn: 'axlearn.common.input_tf_data.batch'
 input.batcher.global_batch_size: 16
 input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
