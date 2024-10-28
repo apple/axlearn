@@ -463,6 +463,7 @@ class TestDecoder(TestCase):
         # [batch, num_classes, tgt_len] --> [batch, tgt_len, num_classes].
         logits = jnp.moveaxis(logits, -1, -2)
         assert_allclose(logits, forward_outputs["logits"])
+        jax.clear_backends()
 
     @parameterized.product(
         stack_cfg=[
