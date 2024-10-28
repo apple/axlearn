@@ -159,6 +159,9 @@ model.decoder.emb.token_emb.param_partition_spec[0]: None
 model.decoder.emb.token_emb.param_partition_spec[1]: 'model'
 model.decoder.eos_token_id: 1
 model.decoder.klass: 'axlearn.common.decoder.Decoder'
+model.decoder.lm_head.klass: 'axlearn.common.decoder.LmHead'
+model.decoder.lm_head.param_partition_spec[0]: None
+model.decoder.lm_head.param_partition_spec[1]: 'model'
 model.decoder.logits_partition_spec[0][0]: 'data'
 model.decoder.logits_partition_spec[0][1]: 'expert'
 model.decoder.logits_partition_spec[0][2]: 'fsdp'
@@ -175,7 +178,7 @@ model.decoder.transformer.layer.feed_forward.activation[1]: 'linear'
 model.decoder.transformer.layer.feed_forward.dropout.klass: 'axlearn.common.layers.Dropout'
 model.decoder.transformer.layer.feed_forward.hidden_dim.fn: 'axlearn.experiments.text.gpt.common.scale_fn'
 model.decoder.transformer.layer.feed_forward.hidden_dim.round_up_to_multiples_of: 256
-model.decoder.transformer.layer.feed_forward.hidden_dim.scale: 2.6666666666666665
+model.decoder.transformer.layer.feed_forward.hidden_dim.scale: 3.5
 model.decoder.transformer.layer.feed_forward.klass: 'axlearn.common.attention.TransformerFeedForwardLayer'
 model.decoder.transformer.layer.feed_forward.linear1.bias: False
 model.decoder.transformer.layer.feed_forward.linear1.klass: 'axlearn.common.layers.Linear'
@@ -254,7 +257,7 @@ model.decoder.transformer.num_layers: 80
 model.decoder.transformer.repeat.drop_output.fn: 'axlearn.common.repeat._drop_by_regex'
 model.decoder.transformer.repeat.drop_output.rules[0]: 'module_outputs.*'
 model.decoder.transformer.repeat.klass: 'axlearn.common.attention._TransformerRepeat'
-model.decoder.vocab_size: 131072
+model.decoder.vocab_size: 128256
 model.dtype: 'jax.numpy.float32'
 model.klass: 'axlearn.common.causal_lm.Model'
 model.param_init.init_by_param_name['.*weight$'].distribution: 'normal'
