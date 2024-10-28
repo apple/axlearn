@@ -110,9 +110,7 @@ def parameters_to_hf_clip_encoder(*, src: Encoder, params: NestedTensor, dst: hf
             assert isinstance(src.transformer, RepeatedTransformerLayer)
             axlearn_to_torch(
                 src.transformer.repeat.layer,
-                jax.tree_util.tree_map(
-                    lambda x, idx=i: x[idx], params["transformer"]["repeat"]["layer"]
-                ),
+                jax.tree.map(lambda x, idx=i: x[idx], params["transformer"]["repeat"]["layer"]),
                 dst_layer,
             )
 

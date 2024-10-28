@@ -179,9 +179,7 @@ class CallbackSummary(Summary):
 
     def value(self) -> Tensor:
         args = tuple(np.asarray(x) for x in self.args)
-        kwargs = jax.tree_util.tree_map(
-            lambda x: np.asarray(x) if isinstance(x, Tensor) else x, self.kwargs
-        )
+        kwargs = jax.tree.map(lambda x: np.asarray(x) if isinstance(x, Tensor) else x, self.kwargs)
         return self.fn(*args, **kwargs)
 
     def accumulate(self, other: Summary) -> Summary:

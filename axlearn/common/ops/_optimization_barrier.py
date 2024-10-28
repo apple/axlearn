@@ -57,7 +57,7 @@ def forward_optimization_barrier(pytree: Any) -> Any:
 
 
         def print_result(msg: str, scalars: Tensor):
-            scalars = jax.tree_util.tree_map(lambda x: x.item(), scalars)
+            scalars = jax.tree.map(lambda x: x.item(), scalars)
             print(msg, scalars)
 
 

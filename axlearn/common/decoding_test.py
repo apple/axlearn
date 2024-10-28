@@ -337,7 +337,7 @@ class DecodeTest(parameterized.TestCase):
             }
         }
         np.testing.assert_array_equal(expected_seqs, gathered_seqs)
-        jax.tree_util.tree_map(np.testing.assert_array_equal, expected_cache, gathered_cache)
+        jax.tree.map(np.testing.assert_array_equal, expected_cache, gathered_cache)
 
     def test_beam_search_decode(self):
         # Toy problem, we have 4 states, A, B, START, END, (plus PAD).

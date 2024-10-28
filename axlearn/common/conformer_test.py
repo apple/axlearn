@@ -213,9 +213,7 @@ class ConformerLayerTest(TestCase):
         outputs = inputs
         for ll in range(num_layers):
             # Run a stack of layers by loop
-            state_i = jax.tree_util.tree_map(lambda param, i=ll: param[i], repeat_state)["repeat"][
-                "layer"
-            ]
+            state_i = jax.tree.map(lambda param, i=ll: param[i], repeat_state)["repeat"]["layer"]
             outputs, _ = F(
                 layer,
                 inputs=dict(inputs=outputs, paddings=paddings),

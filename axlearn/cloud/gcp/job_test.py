@@ -40,6 +40,8 @@ from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import (
     _MEMORY_REQUEST_PERCENTAGE,
     CPUJob,
+    GCSFuseMount,
+    HostMount,
     TPUQRMJob,
     _kill_ssh_agent,
     _start_ssh_agent,
@@ -241,6 +243,7 @@ class TPUGKEJobTest(TestCase):
         reservation: Optional[str] = None,
         service_account: Optional[str] = None,
         enable_pre_provisioner: Optional[bool] = None,
+        host_mount_spec: Optional[list[str]] = None,
     ):
         with mock_gcp_settings([job.__name__, bundler.__name__], self._mock_settings):
             fv = flags.FlagValues()
@@ -249,12 +252,29 @@ class TPUGKEJobTest(TestCase):
                 fv.set_default("reservation", reservation)
             if service_account:
                 fv.set_default("service_account", service_account)
+            if host_mount_spec:
+                fv.set_default("host_mount_spec", host_mount_spec)
             fv.mark_as_parsed()
             cfg = job.TPUGKEJob.from_flags(fv)
             cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             cfg.accelerator.instance_type = "tpu-v4-8"
             cfg.enable_pre_provisioner = enable_pre_provisioner
             yield cfg
+
+    def test_mount_dataclass(self):
+        # pylint: disable=missing-kwoa
+        # pytype: disable=missing-parameter
+        with self.assertRaises(TypeError):
+            m = GCSFuseMount()
+
+        m = GCSFuseMount(gcs_path="test")
+        self.assertEqual(m.name, "gcs-fuse-csi-ephemeral")
+        with self.assertRaises(TypeError):
+            m = HostMount(mount_path="test")
+
+        m = HostMount(mount_path="test", name="test", host_path="test")
+        # pytype: enable=missing-parameter
+        self.assertEqual(m.read_only, False)
 
     @parameterized.product(
         reservation=[None, "test"],
@@ -328,6 +348,7 @@ class TPUGKEJobTest(TestCase):
         enable_pre_provisioner=[None, True, False],
         location_hint=["test-location-hint", None],
         enable_tpu_smart_repair=[True, False],
+        host_mount_spec=[["name=host-mount,host_path=/tmp,mount_path=/host-tmp"], None],
     )
     def test_build_pod(
         self,
@@ -339,8 +360,11 @@ class TPUGKEJobTest(TestCase):
         enable_pre_provisioner: Optional[bool] = None,
         location_hint: Optional[str] = None,
         enable_tpu_smart_repair: bool = False,
+        host_mount_spec: Optional[list[str]] = None,
     ):
-        with mock.patch.dict("os.environ", env), self._job_config(bundler_cls) as cfg:
+        with mock.patch.dict("os.environ", env), self._job_config(
+            bundler_cls, host_mount_spec=host_mount_spec
+        ) as cfg:
             gke_job: job.TPUGKEJob = cfg.set(
                 reservation=reservation,
                 enable_tpu_ici_resiliency=enable_ici_resiliency,
@@ -375,9 +399,28 @@ class TPUGKEJobTest(TestCase):
                 self.assertEqual("spot", labels.get("bastion-tier", None))
 
             self.assertEqual(len(pod_spec["containers"]), 1)
+
+            # Verify worker container specs
             container = pod_spec["containers"][0]
             # Check memory request.
             resources = container["resources"]
+
+            if host_mount_spec:
+                for v in pod_spec["volumes"]:
+                    if v["name"] == "host-mount":
+                        self.assertEqual(v["hostPath"], {"path": "/tmp", "type": "Directory"})
+                        break
+                else:
+                    self.fail("host-mount not found!")
+
+                for v in container["volumeMounts"]:
+                    if v["name"] == "host-mount":
+                        self.assertEqual(v["mountPath"], "/host-tmp")
+                        self.assertEqual(v["readOnly"], False)
+                        break
+                else:
+                    self.fail("host-mount not found!")
+
             self.assertIn("limits", resources)
             tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
             tpu_characteristics = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
@@ -393,7 +436,8 @@ class TPUGKEJobTest(TestCase):
             self.assertIn("google.com/tpu", resources["limits"])
 
             container_env = container["env"]
-            container_env = {kv["name"]: kv["value"] for kv in container_env}
+            container_env = {kv["name"]: kv for kv in container_env}
+
             if enable_ici_resiliency is not None:
                 expected = "true" if enable_ici_resiliency else "false"
                 self.assertEqual(
@@ -402,11 +446,40 @@ class TPUGKEJobTest(TestCase):
                 )
                 self.assertEqual(
                     expected,
-                    container_env.get("ENABLE_ICI_RESILIENCY"),
+                    container_env["ENABLE_ICI_RESILIENCY"]["value"],
                 )
             else:
                 self.assertNotIn("cloud.google.com/gke-tpu-ici-resiliency", node_selector)
                 self.assertNotIn("ENABLE_ICI_RESILIENCY", container_env)
+
+            # Verify NODE_IP in container env.
+            self.assertEqual(
+                "status.hostIP",
+                container_env["NODE_IP"]["valueFrom"]["fieldRef"]["fieldPath"],
+            )
+
+            # Verify uploader container specs
+            self.assertEqual(len(pod_spec["initContainers"]), 1)
+
+            uploader_container = pod_spec["initContainers"][0]
+            self.assertEqual(uploader_container["name"], "output-uploader")
+            self.assertEqual(uploader_container["image"], "google/cloud-sdk:alpine")
+            self.assertEqual(uploader_container["restartPolicy"], "Always")
+            self.assertIn("volumeMounts", uploader_container)
+
+            volume_mounts = uploader_container["volumeMounts"]
+            shared_output_mount = next(
+                (vm for vm in volume_mounts if vm["name"] == "shared-output"), None
+            )
+            self.assertIsNotNone(shared_output_mount)
+            self.assertEqual(shared_output_mount["mountPath"], "/output")
+
+            command = uploader_container["command"]
+            self.assertEqual(command, ["/bin/sh", "-c"])
+            sync_command = uploader_container["args"][0]
+            self.assertIn("gsutil -m rsync -r /output", sync_command)
+            self.assertIn("$HOSTNAME", sync_command)
+            self.assertIn("sleep", sync_command)
 
             if enable_pre_provisioner:
                 self.assertIn(PRE_PROVISIONER_LABEL, node_selector)

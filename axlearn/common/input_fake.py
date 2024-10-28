@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Fake input modules."""
+
 import json
 from collections.abc import Iterable, Sequence
 from typing import Any, Optional, Union
@@ -15,12 +16,12 @@ from axlearn.common.module import Module
 from axlearn.common.utils import Nested, Tensor, as_numpy_array, as_tensor
 
 
-class FakeTextInput(Module):
-    """Produces fake text inputs."""
+class EmptyInput(Module):
+    """Produces empty inputs."""
 
     @config_class
     class Config(Module.Config):
-        """Configures FakeTextInput."""
+        """Configures EmptyInput."""
 
         is_training: Required[bool] = REQUIRED
         global_batch_size: Required[int] = REQUIRED  # The global batch size.
@@ -51,7 +52,7 @@ class FakeTextInput(Module):
             yield as_numpy_array(input_batch)
 
 
-class FakeLmInput(FakeTextInput):
+class FakeLmInput(EmptyInput):
     """Produces fake language modeling inputs."""
 
     def __next__(self):
@@ -82,11 +83,11 @@ class FakeLmInput(FakeTextInput):
         )
 
 
-class FakeSeq2SeqInput(FakeTextInput):
+class FakeSeq2SeqInput(EmptyInput):
     """Produces fake sequence-to-sequence inputs."""
 
     @config_class
-    class Config(FakeTextInput.Config):
+    class Config(EmptyInput.Config):
         target_length: int = 1024  # The length of a target sequence (in tokens).
 
     def __next__(self):
@@ -125,11 +126,11 @@ class FakeSeq2SeqInput(FakeTextInput):
         )
 
 
-class FakeSequenceClassificationInput(FakeTextInput):
+class FakeSequenceClassificationInput(EmptyInput):
     """Produces fake sequence classification inputs."""
 
     @config_class
-    class Config(FakeTextInput.Config):
+    class Config(EmptyInput.Config):
         """Configures FakeSequenceClassificationInput."""
 
         num_labels: int = 2  # The number of different classes.
@@ -168,7 +169,7 @@ class FakeSequenceClassificationInput(FakeTextInput):
         )
 
 
-class FakeExtractiveQuestionAnsweringInput(FakeTextInput):
+class FakeExtractiveQuestionAnsweringInput(EmptyInput):
     """Produces fake extractive QA inputs."""
 
     def __next__(self):
@@ -445,3 +446,26 @@ def fake_speech_source(
         shuffle_buffer_size=shuffle_buffer_size,
         spec={speech_key: tf.TensorSpec(shape=(None,), dtype=tf.int16)},
     )
+
+
+def fake_grain_source(
+    examples: Sequence[Any],
+    *,
+    repeat: Optional[int] = 1,
+    shuffle_seed: Optional[int] = None,
+):
+    """Returns a fake grain input source."""
+
+    if len(examples) == 0:
+        raise ValueError("Input examples cannot be empty.")
+
+    # Lazy import to avoid introducing a global dependency.
+    # pylint: disable-next=import-outside-toplevel
+    from grain._src.python.dataset.transformations import source
+
+    ds = source.SourceMapDataset(examples)
+    if shuffle_seed is not None:
+        ds = ds.seed(shuffle_seed)
+        ds = ds.shuffle()  # Uses the configured seed, if provided.
+    ds = ds.repeat(num_epochs=repeat)
+    return ds

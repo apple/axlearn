@@ -17,9 +17,9 @@
 # pylint: disable=too-many-lines
 """Basic layers."""
 
-from collections.abc import Sequence
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
+import chex
 import jax
 from absl import logging
 from jax import nn
@@ -54,6 +54,11 @@ from axlearn.common.utils import (
     partial_with_fn_metadata,
     with_sharding_constraint,
 )
+
+# The padding type for jax.lax.conv_general_dilated API. Either the strings ‘SAME’, or ‘VALID’, or
+# a sequence of n (low, high) integer pairs that give the padding to apply before and after each
+# spatial dimension. The number of tuple is 1 for NHC, 2 for NHWC and 3 for NHWDC.
+ConvPaddingType = Union[str, Sequence[tuple[int, int]]]
 
 
 def get_activation_fn(name) -> Callable[[Tensor], Tensor]:
@@ -598,6 +603,9 @@ class UnitNormLinear(Linear):
 
 
 def _check_conv_cfg(padding: Union[str, Sequence[tuple[int, int]]], strides: Sequence[int]):
+    if any(s < 1 for s in strides):
+        raise NotImplementedError(f"strides ({strides}) must be a positive integer.")
+
     if isinstance(padding, str):
         if padding in ("SAME", "VALID"):
             if padding == "SAME" and any(s > 1 for s in strides):
@@ -681,6 +689,102 @@ class BaseConv(BaseLayer):
         return FanAxes(in_axis=-2, out_axis=-1)
 
 
+# Copied from jax.lax._dilate_shape
+# https://github.com/jax-ml/jax/blob/2d78b172266870bd755b039f6faa2056a51930f9/jax/_src/lax/lax.py#L5763
+def _conv_dilate_window(*, window: Sequence[int], dilation: Optional[Sequence[int]] = None):
+    """Returns dilated effective window size.
+
+    Args:
+        window: convolution window.
+        dilation: convolution dilation.
+
+    Returns:
+        The dilated effective window size.
+    """
+    if dilation is None or all(d == 1 for d in dilation):
+        return window
+
+    return tuple(max(1 + d * (w - 1), 0) for w, d in zip(window, dilation))
+
+
+# Copied from subroutine in jax.lax.reduce_window.
+def _conv_explicit_padding(
+    *, window: Sequence[int], padding: ConvPaddingType, dilation: Optional[Sequence[int]] = None
+) -> ConvPaddingType:
+    """Convert str padding to tuple padding.
+
+    Args:
+        window: convolution window.
+        padding: convolution padding.
+        dilation: convolution dilation.
+
+    Returns:
+        The padding tuple.
+
+    Raises:
+        ValueError: If padding is not supported.
+    """
+    if padding == "SAME":
+        effective_window = _conv_dilate_window(window=window, dilation=dilation)
+        pad_total = tuple(w - 1 for w in effective_window)
+        pad_left = tuple(pt // 2 for pt in pad_total)
+        pad_right = tuple(pt - pl for pt, pl in zip(pad_total, pad_left))
+        return tuple(zip(pad_left, pad_right))
+    elif padding == "VALID":
+        return ((0, 0),) * len(window)
+    else:
+        raise ValueError(f"{padding} padding is not supported.")
+
+
+def _conv_output_shape(
+    in_shape: Sequence[Optional[int]],
+    *,
+    window: Sequence[int],
+    strides: Sequence[int],
+    padding: ConvPaddingType,
+    dilation: Optional[Sequence[int]] = None,
+) -> Sequence[int]:
+    """Returns output size for convolution.
+
+    Follow https://www.tensorflow.org/api_docs/python/tf/nn/convolution
+    * SAME: ceil(in_size / stride)
+    * VALID: ceil((in_size - (window - 1) * dilation) / stride)
+
+    Args:
+        in_shape: convolution lhs shape.
+        window: convolution window.
+        strides: convolution strides.
+        padding: convolution padding.
+        dilation: convolution dilation.
+
+    Returns:
+        The output shape.
+
+    Raises:
+        ValueError: If the length of in_shape, window, strides, and padding are not equal.
+    """
+    if len(in_shape) != len(window) or len(in_shape) != len(strides):
+        raise ValueError(
+            f"len(in_shape) = {len(in_shape)} must be equal to "
+            f"len(window) = {len(window)} and len(strides) = {len(strides)}"
+        )
+
+    if isinstance(padding, str):
+        padding = _conv_explicit_padding(window=window, padding=padding, dilation=dilation)
+
+    pad_amount = tuple(sum(p) for p in padding)
+    effective_window = _conv_dilate_window(window=window, dilation=dilation)
+
+    def output_shape(in_shape: Optional[int], effective_window: int, pad_amount: int, stride: int):
+        if in_shape is None:
+            return None
+        numerator = max(in_shape + pad_amount - (effective_window - 1), 0)
+        # ceil trick
+        return (numerator + stride - 1) // stride
+
+    return tuple(map(output_shape, in_shape, effective_window, pad_amount, strides))
+
+
 # The accuracy of the output of this layer currently doesn't match that of PyTorch
 # quite as closely as we would like. See layers_test.py:test_conv2d().
 class Conv2D(BaseConv):
@@ -697,7 +801,8 @@ class Conv2D(BaseConv):
         window: tuple[int, int] = (1, 1)  # The convolution window.
         strides: tuple[int, int] = (1, 1)  # The convolution strides.
         # Paddings: "SAME", "VALID", or ((top, bottom), (left, right)).
-        padding: Union[str, tuple[tuple[int, int], tuple[int, int]]] = ((0, 0), (0, 0))
+        # Note: Sequence models use the first component to represent time.
+        padding: ConvPaddingType = ((0, 0), (0, 0))
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
         # The number of groups in which the input is split along the channel axis.
@@ -756,69 +861,73 @@ class Conv2D(BaseConv):
                 f"input_shape[-1] = {input_shape[-1]} does not match "
                 f"cfg.input_dim = {cfg.input_dim}."
             )
-        input_height, input_width = input_shape[1:3]
-        if cfg.padding == "SAME":
-            if cfg.padding == "SAME" and any(s > 1 for s in cfg.strides):
-                raise NotImplementedError("SAME padding does not support strides > 1")
-            pad_height = cfg.window[0] - 1
-            pad_width = cfg.window[1] - 1
 
-        elif cfg.padding == "VALID":
-            pad_height = pad_width = 0
-        else:
-            pad_height = cfg.padding[0][0] + cfg.padding[0][1]
-            pad_width = cfg.padding[1][0] + cfg.padding[1][1]
-        if input_height is not None:
-            output_height = max(input_height + pad_height - cfg.window[0], 0) // cfg.strides[0] + 1
-        else:
-            output_height = None
-        if input_width is not None:
-            output_width = max(input_width + pad_width - cfg.window[1], 0) // cfg.strides[1] + 1
-        else:
-            output_width = None
-        return [input_shape[0], output_height, output_width, cfg.output_dim]
+        in_shape = input_shape[1:3]
+        out_shape = _conv_output_shape(
+            in_shape, window=cfg.window, strides=cfg.strides, padding=cfg.padding
+        )
+        return [input_shape[0], *out_shape, cfg.output_dim]
 
 
 def _compute_conv_output_1d_padding(
-    in_paddings: Tensor, *, window: int, stride: int, conv_padding_cfg: Union[str, tuple[int, int]]
+    in_paddings: Tensor,
+    *,
+    window: int,
+    stride: int,
+    conv_padding: ConvPaddingType,
+    anchor: Optional[int] = None,
 ):
-    """Helper function to compute 1D paddings for 2D convolution.
+    """Compute output paddings w.r.t. conv_padding.
+
+    The output paddings value is determined by the padding value at the anchor point in the
+    window. If anchor is None, the default anchor point is the left time padding from conv
+    padding config. See `Conv2DWith1DPadding.Config` in details.
 
     Args:
         in_paddings: A Tensor of shape [batch_size, seq_len].
         window: convolution window size of the time axis.
         stride: convolution stride size of the time axis.
-        conv_padding_cfg: convolution padding along the time axis.
-            Either the string "SAME", the string "VALID", or an
-            integer pair (left, right) that gives the padding to
-            apply before and after the time dimension. Front paddings
-            are treated as valid frames and back paddings as invalid frames.
+        conv_padding: "SAME", "VALID", or ((left_time_padding, right_time_padding),)
+        anchor: an optional integer in the range of [left_time_padding, window - right_time_padding)
+            that specifies the anchor position within the convolution window that is used to
+            determine output paddings. Specifically, the output token is valid iff the input token
+            at the anchor position of the corresponding window is valid.
+            If None, anchor defaults to conv_padding[0] (i.e. left_time_padding).
 
     Returns:
         out_paddings: A Tensor of shape [batch_size, seq_len].
 
     Raises:
-        NotImplementedError: If conv_padding_cfg is SAME and strides is > 1.
+        ValueError: If anchor is not between left_time_padding and right_time_padding.
     """
-    if conv_padding_cfg == "SAME":
-        if stride == 1:
-            return in_paddings
-        raise NotImplementedError("SAME padding does not support strides > 1")
+    chex.assert_rank(in_paddings, 2)
+    if isinstance(conv_padding, str):
+        conv_padding = _conv_explicit_padding(window=(window,), padding=conv_padding)
+    window = _conv_dilate_window(window=(window,))[0]
+    left_pad, right_pad = conv_padding[0]
+    pad_total = window - 1
 
-    if isinstance(conv_padding_cfg, tuple):
-        # Front paddings are valid frames.
-        in_paddings = jnp.pad(in_paddings, ((0, 0), (conv_padding_cfg[0], 0)), constant_values=0)
-        # Back paddings are invalid frames.
-        in_paddings = jnp.pad(in_paddings, ((0, 0), (0, conv_padding_cfg[1])), constant_values=1)
+    if anchor is None:
+        # valid_window = pad_total - left_pad - right_pad
+        # anchor_global = valid_window // 2
+        # anchor = anchor_global + left_pad
+        anchor = left_pad
+    elif not left_pad <= anchor < window - right_pad:
+        raise ValueError(f"anchor ({anchor}) must in range [{left_pad}, {window - right_pad}).")
 
-    # Apply max pooling with "VALID" padding along the time axis.
-    out_paddings = jax.lax.reduce_window(
-        in_paddings,
-        init_value=-jnp.inf,
-        computation=jax.lax.max,
-        window_dimensions=(1, window),
-        window_strides=(1, stride),
-        padding="VALID",
+    # This is a method to avoid using jax.pad, by leveraging the property that the valid_window
+    # is always within the input sequence.
+    # Note: transform anchor from window frame to input sequence frame.
+    start_index = anchor - left_pad
+    valid_window = pad_total - left_pad - right_pad
+    valid_window_right_pad = valid_window - start_index
+    seq_len = in_paddings.shape[1]
+    limit_index = max(seq_len - valid_window_right_pad, start_index)
+    if seq_len < start_index:
+        start_index = 0
+        limit_index = 0
+    out_paddings = jax.lax.slice_in_dim(
+        in_paddings, start_index=start_index, limit_index=limit_index, stride=stride, axis=1
     )
     return out_paddings
 
@@ -836,7 +945,7 @@ class Conv2DTranspose(BaseConv):
 
         window: tuple[int, int] = (1, 1)
         strides: tuple[int, int] = (1, 1)
-        padding: Union[str, tuple[tuple[int, int], tuple[int, int]]] = ((0, 0), (0, 0))
+        padding: ConvPaddingType = ((0, 0), (0, 0))
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
 
@@ -922,7 +1031,85 @@ class Conv2DWith1DPadding(Conv2D):
     paddings).
     """
 
-    Config = Conv2D.Config
+    @config_class
+    class Config(Conv2D.Config):
+        """Configures Conv2DWith1DPadding.
+
+        The output paddings value is determined by the padding value at the anchor point in the
+        window. If anchor is None, the default anchor point is the left time padding from conv
+        padding config.
+
+        For examples with window=5,
+        1. "SAME" padding case,
+            * padding=(2,2): (0 0 0 0 0)
+            * anchor index is 2: (0 0 |0| 0 0)
+                        pad  |           | pad
+            paddings:     0 0|0 0 0 1 1 1|1 1
+                          |___0___|
+                            |___0___|
+                              |___0___|
+                                |___1___|
+                                  |___1___|
+                                    |___1___|
+
+        2. "VALID" padding case,
+            * padding=(0,0): (0 0 0 0 0)
+            * anchor index is 0:  (|0| 0 0 0 0)
+                    pad |           | pad
+            paddings:   |0 0 0 1 1 1|
+                        |0_______|
+                          |0_______|
+
+        3. The legacy "VALID" padding case,
+            * padding=(0,0) and anchor=4: (0 0 0 0 0)
+            * anchor index is 4:  (0 0 0 0 |0|)
+                    pad |           | pad
+            paddings:   |0 0 0 1 1 1|
+                        |________1|
+                          |________1|
+
+        4. "CAUSAL" padding case,
+            * padding=(4,0): (0 0 0 0 0)
+            * anchor index is 4:  (0 0 0 0 |0|)
+                        pad      |           | pad
+            paddings:     0 0 0 0|0 0 0 1 1 1|
+                          |_______0|
+                            |_______0|
+                              |_______0|
+                                |_______1|
+                                  |_______1|
+                                    |_______1|
+
+        5. "CAUSAL" with lookahead=1,
+            * padding=(3, 1): (0 0 0 0 0)
+            * anchor index is 3:  (0 0 0 |0| 0)
+                        pad    |           | pad
+            paddings:     0 0 0|0 0 0 1 1 1|1
+                          |_____0_|
+                            |_____0_|
+                              |_____0_|
+                                |_____1_|
+                                  |_____1_|
+                                    |_____1_|
+
+        6. Arbitrary padding case,
+            * padding=(2,1): (0 0 0 0 0)
+            * anchor index is 2:  (0 0 |0| 0 0)
+                        pad  |           | pad
+            paddings:     0 0|0 0 0 1 1 1|1
+                          |___0___|
+                            |___0___|
+                              |___0___|
+                                |___1___|
+                                  |___1___|
+        """
+
+        # An optional integer in the range of [left_time_padding, window - right_time_padding)
+        # that specifies the anchor position within the convolution window that is used to
+        # determine output paddings. Specifically, the output token is valid iff the input token
+        # at the anchor position of the corresponding window is valid.
+        # If None, defaults to left time padding.
+        anchor: Optional[int] = None
 
     # We add a kwargs "paddings" to the forward method.
     # pylint: disable-next=arguments-differ
@@ -949,7 +1136,8 @@ class Conv2DWith1DPadding(Conv2D):
             paddings,
             window=cfg.window[0],
             stride=cfg.strides[0],
-            conv_padding_cfg=cfg.padding if isinstance(cfg.padding, str) else cfg.padding[0],
+            conv_padding=cfg.padding,
+            anchor=cfg.anchor,
         )
         # Apply padding to the outputs.
         output = output * (1 - output_paddings[..., None, None])
@@ -971,7 +1159,7 @@ class Conv3D(BaseConv):
         strides: tuple[int, int, int] = (1, 1, 1)  # The convolution strides.
 
         # Paddings: "SAME" or "VALID, or ((top, bottom), (left, right), (front, back))
-        padding: Union[str, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]] = (
+        padding: ConvPaddingType = (
             (0, 0),
             (0, 0),
             (0, 0),
@@ -1037,31 +1225,11 @@ class Conv3D(BaseConv):
                 f"cfg.input_dim = {cfg.input_dim}."
             )
 
-        if cfg.padding == "SAME":
-            pad_height = cfg.window[0] - 1
-            pad_width = cfg.window[1] - 1
-            pad_depth = cfg.window[2] - 1
-        elif cfg.padding == "VALID":
-            pad_height = pad_width = pad_depth = 0
-        else:
-            pad_height = cfg.padding[0][0] + cfg.padding[0][1]
-            pad_width = cfg.padding[1][0] + cfg.padding[1][1]
-            pad_depth = cfg.padding[2][0] + cfg.padding[2][1]
-
-        def compute_output_size(i, p, w, s):
-            if i is None:
-                return None
-            return max(i + p - w, 0) // s + 1
-
-        pad_shape = [pad_height, pad_width, pad_depth]
-        output_shape = [
-            compute_output_size(
-                input_shape[idx + 1], pad_shape[idx], cfg.window[idx], cfg.strides[idx]
-            )
-            for idx in range(3)
-        ]
-
-        return [input_shape[0], *output_shape, cfg.output_dim]
+        in_shape = input_shape[1:4]
+        out_shape = _conv_output_shape(
+            in_shape, window=cfg.window, strides=cfg.strides, padding=cfg.padding
+        )
+        return [input_shape[0], *out_shape, cfg.output_dim]
 
 
 class Conv1D(BaseConv):
@@ -1079,7 +1247,7 @@ class Conv1D(BaseConv):
         strides: int = 1  # The convolution strides.
         # Paddings: "SAME", "VALID", or (left, right).
         # For causal convolution, set padding to (window - 1, 0).
-        padding: Union[str, tuple[int, int]] = (0, 0)
+        padding: ConvPaddingType = ((0, 0),)
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
         # The number of groups in which the input is split along the channel axis.
@@ -1116,7 +1284,7 @@ class Conv1D(BaseConv):
             if cfg.padding == "SAME" and cfg.strides > 1:
                 raise NotImplementedError("SAME padding does not support strides > 1")
         else:
-            left, right = cfg.padding
+            left, right = cfg.padding[0]
             if any(p < 0 for p in (left, right)):
                 raise NotImplementedError("Negative padding is not supported")
         params = dict(
@@ -1138,7 +1306,7 @@ class Conv1D(BaseConv):
             rhs=self.parameters["weight"],
             window_strides=(cfg.strides,),
             dimension_numbers=("NWC", "WIO", "NWC"),
-            padding=cfg.padding if isinstance(cfg.padding, str) else (cfg.padding,),
+            padding=cfg.padding,
             feature_group_count=cfg.num_input_dim_groups,
             lhs_dilation=[cfg.lhs_dilation] if cfg.lhs_dilation is not None else None,
             rhs_dilation=[cfg.rhs_dilation] if cfg.rhs_dilation is not None else None,
@@ -1163,7 +1331,7 @@ class DepthwiseConv1D(BaseConv):
         strides: int = 1  # The convolution strides.
         # Paddings: "SAME", "VALID", or (left, right).
         # For causal convolution, set padding to (window - 1, 0).
-        padding: Union[str, tuple[int, int]] = (0, 0)
+        padding: ConvPaddingType = ((0, 0),)
         bias: bool = True  # Whether to add a bias.
 
     @classmethod
@@ -1178,7 +1346,7 @@ class DepthwiseConv1D(BaseConv):
             if cfg.padding == "SAME" and cfg.strides > 1:
                 raise NotImplementedError("SAME padding does not support strides > 1")
         else:
-            left, right = cfg.padding
+            left, right = cfg.padding[0]
             if any(p < 0 for p in (left, right)):
                 raise NotImplementedError("Negative padding is not supported")
         params = dict(
@@ -1204,7 +1372,7 @@ class DepthwiseConv1D(BaseConv):
             rhs=self.parameters["weight"],
             window_strides=(cfg.strides,),
             dimension_numbers=("NWC", "WIO", "NWC"),
-            padding=cfg.padding if isinstance(cfg.padding, str) else (cfg.padding,),
+            padding=cfg.padding,
             feature_group_count=cfg.input_dim,
         )
         if cfg.bias:
@@ -1827,7 +1995,7 @@ class VariationalNoise(ParameterNoise):
         cfg = self.config
         if cfg.vn_std <= 0:
             return params
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda x: x + jax.random.normal(prng_key, x.shape, dtype=x.dtype) * cfg.vn_std, params
         )
 

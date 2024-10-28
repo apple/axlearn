@@ -10,7 +10,8 @@
 
 Adapted from https://github.com/tensorflow/lingvo/blob/master/lingvo/core/hyperparams.py.
 
-See https://tinyurl.com/ml-api-styles for the design principles behind this config library.
+See https://github.com/apple/axlearn/blob/main/docs/ml_api_style.md
+for the design principles behind this config library.
 
 Example usage for configuring a module:
 
@@ -68,6 +69,7 @@ import re
 import types
 from collections import defaultdict
 from collections.abc import Collection, Iterable
+from functools import cache
 from typing import Any, Callable, Generic, Optional, TypeVar, Union
 
 # attr provides similar features as Python dataclass. Unlike
@@ -318,6 +320,32 @@ def _validate_and_transform_field(instance, attribute, value):
     return copy.deepcopy(value)
 
 
+@cache
+def _attr_fields_dict_cache(type_obj: type) -> dict[str, attr.Attribute]:
+    """Cache the fields dict for type.
+
+    Args:
+        type_obj: Type to be cached.
+
+    Returns:
+        A dictionary of fields for the type.
+    """
+    return attr.fields_dict(type_obj)
+
+
+@cache
+def _dir_set_cache(type_obj: type) -> set[str]:
+    """Cache the set for names in dir of a type.
+
+    Args:
+        type_obj: Type to be cached.
+
+    Returns:
+        A set of strings for dir of type_obj.
+    """
+    return set(dir(type_obj))
+
+
 _ConfigBase = TypeVar("_ConfigBase", bound="ConfigBase")
 
 
@@ -332,8 +360,8 @@ class ConfigBase:
         for k in dir(attr_cls):
             if (
                 not k.startswith("__")
-                and k not in dir(InstantiableConfig)
-                and k not in attr.fields_dict(attr_cls)
+                and k not in _attr_fields_dict_cache(attr_cls)
+                and k not in _dir_set_cache(InstantiableConfig)
             ):
                 raise NonConfigFieldError(f"Non-config attribute is not supported: {attr_cls}.{k}")
 
@@ -346,16 +374,16 @@ class ConfigBase:
             setattr(self, k, v)
 
     def __contains__(self, name: str) -> bool:
-        return name in attr.fields_dict(type(self))
+        return name in _attr_fields_dict_cache(type(self))
 
     def __len__(self) -> int:
-        return len(attr.fields(type(self)))
+        return len(_attr_fields_dict_cache(type(self)))
 
     def __getattr__(self, name: str) -> Any:
-        return attr.asdict(self, recurse=False)[name]
+        return _attr_fields_dict_cache(type(self))[name]
 
     def keys(self) -> list[str]:
-        return sorted(attr.fields_dict(type(self)).keys())
+        return sorted(_attr_fields_dict_cache(type(self)).keys())
 
     def items(self) -> list[tuple[str, Any]]:
         """Returns (key, value) pairs sorted by keys."""
@@ -451,7 +479,7 @@ class ConfigBase:
             return default_result
 
         def process_kv(key: str, val: Any):
-            field = attr.fields_dict(type(self)).get(key)
+            field = _attr_fields_dict_cache(type(self)).get(key)
             if isinstance(field, attr.Attribute):
                 default_val = field.default
                 if val is default_val and default_val in omit_default_values:
@@ -593,7 +621,7 @@ def _wrap_config_attr_cls(attr_cls: type, *, name: Optional[str] = None):
         if key.startswith("__"):
             self.__dict__[key] = value
         else:
-            if key not in attr.fields_dict(attr_cls):
+            if key not in _attr_fields_dict_cache(type(self)):
                 raise UnknownFieldError(self._key_error_string(key))
             orig_setattr(self, key, value)
 

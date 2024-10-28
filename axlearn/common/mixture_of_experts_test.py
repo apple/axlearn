@@ -603,7 +603,7 @@ class ParamConversionTest(parameterized.TestCase):
         state_moe_converted = _convert_feedforward_to_moe_parameters(
             state_dense, num_experts=num_experts, moe_parameter_specs=param_specs_moe
         )
-        state_moe_converted = jax.tree_util.tree_map(
+        state_moe_converted = jax.tree.map(
             lambda spec, param: spec if param is None else param,
             param_specs_moe,
             state_moe_converted,

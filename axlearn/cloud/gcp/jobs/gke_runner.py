@@ -195,6 +195,7 @@ class GKERunnerJob(GCPJob):
             max_tries=cfg.max_tries,
             retry_interval=cfg.retry_interval,
             enable_pre_provisioner=cfg.enable_pre_provisioner,
+            output_dir=cfg.output_dir,
         ).instantiate()
         # Use the bundler configured on inner.
         self._bundler = None

@@ -9,6 +9,7 @@ import asyncio
 import copy
 import dataclasses
 import functools
+import os
 from concurrent import futures
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -25,11 +26,23 @@ from axlearn.common.checkpointer import (
     CheckpointValidationType,
     async_save_tf_savables,
     check_state_structure,
+    maybe_restore_grain_savables,
+    maybe_save_grain_savables,
     restore_tf_savables,
 )
 from axlearn.common.config import config_class
 from axlearn.common.module import Module
 from axlearn.common.utils import Nested, Tensor, TensorSpec
+
+try:
+    # The import also registers the checkpoint handlers.
+    import grain.python as grain
+
+    _GrainIterator = Union[grain.DatasetIterator, grain.PyGrainDatasetIterator]
+    _GRAIN_INSTALLED = True
+except ImportError:
+    logging.warning("grain is not installed; checkpointing grain iterators will not work.")
+    _GRAIN_INSTALLED = False
 
 
 class _TfIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
@@ -68,7 +81,7 @@ class _TfIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
         self,
         infos: Sequence[ocp.type_handlers.ParamInfo],
         args: Optional[Sequence[RestoreArgs]] = None,
-    ) -> tf.data.Iterator:
+    ) -> Sequence[tf.data.Iterator]:
         if args is None:
             raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
         with futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -88,6 +101,54 @@ class _TfIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
 
 
 ocp.type_handlers.register_type_handler(tf.data.Iterator, _TfIteratorHandler(), override=True)
+
+
+if _GRAIN_INSTALLED:
+
+    class _GrainDatasetIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
+        """Serializes grain dataset iterators."""
+
+        @dataclasses.dataclass
+        class RestoreArgs(ocp.type_handlers.RestoreArgs):
+            item: Optional[_GrainIterator] = None
+
+        def typestr(self) -> str:
+            return "DatasetIterator"
+
+        async def serialize(
+            self,
+            values: Sequence[grain.DatasetIterator],
+            infos: Sequence[ocp.type_handlers.ParamInfo],
+            args: Optional[Sequence[ocp.args.PyTreeSave]],
+        ) -> List[futures.Future]:
+            """Serializes `values` into corresponding `info.path`s."""
+            del args  # Unused.
+            for value, info in zip(values, infos):
+                ckpt_dir = os.path.dirname(info.path)
+                path = os.path.basename(info.path)
+                maybe_save_grain_savables({path: value}, dir=ckpt_dir)
+            return []
+
+        async def deserialize(
+            self,
+            infos: Sequence[ocp.type_handlers.ParamInfo],
+            args: Optional[Sequence[RestoreArgs]] = None,
+        ) -> Sequence[_GrainIterator]:
+            if args is None:
+                raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
+            return [
+                maybe_restore_grain_savables(arg.item, dir=info.path)
+                for arg, info in zip(args, infos)
+            ]
+
+        async def metadata(
+            self, infos: Sequence[ocp.type_handlers.ParamInfo]
+        ) -> Sequence[ocp.metadata.Metadata]:
+            return [ocp.metadata.Metadata(name=info.name, directory=info.path) for info in infos]
+
+    ocp.type_handlers.register_type_handler(
+        grain.DatasetIterator, _GrainDatasetIteratorHandler(), override=True
+    )
 
 
 class OrbaxCheckpointer(BaseCheckpointer):
@@ -179,7 +240,11 @@ class OrbaxCheckpointer(BaseCheckpointer):
                 spec["index"].append(
                     (path, {"dtype": str(dtype), "shape": str(tuple(value.shape))})
                 )
-            elif isinstance(value, tf.data.Iterator):
+            elif (
+                isinstance(value, tf.data.Iterator)
+                or _GRAIN_INSTALLED
+                and isinstance(value, _GrainIterator)
+            ):
                 spec["index"].append((path, str(type(value))))
             else:
                 spec["index"].append((path, value))
@@ -202,6 +267,7 @@ class OrbaxCheckpointer(BaseCheckpointer):
         spec = self._get_spec(step=step, state=state)
         assert self._eval_summaries is None, self._eval_summaries
         self._eval_summaries = copy.deepcopy(evaler_summaries or {})
+
         try:
             # Note that save() waits for prior serialization to finish.
             self._manager.save(
@@ -241,10 +307,12 @@ class OrbaxCheckpointer(BaseCheckpointer):
                 )
             elif isinstance(x, tf.data.Iterator):
                 return _TfIteratorHandler.RestoreArgs(item=x)
+            elif _GRAIN_INSTALLED and isinstance(x, _GrainIterator):
+                return _GrainDatasetIteratorHandler.RestoreArgs(item=x)
             else:
                 return None
 
-        restore_args = jax.tree_util.tree_map(_restore_args, state)
+        restore_args = jax.tree.map(_restore_args, state)
 
         try:
             composite_state = self._manager.restore(

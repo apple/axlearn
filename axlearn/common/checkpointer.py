@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent import futures
 from types import TracebackType
-from typing import Any, NamedTuple, Optional, Protocol, Union
+from typing import Any, NamedTuple, Optional, Protocol, TypeAlias, Union
 
 import jax
 import jax.numpy as jnp
@@ -52,6 +52,15 @@ from axlearn.common.utils import (
     TensorSpec,
     set_recursively,
 )
+
+try:
+    import grain.python as grain
+
+    _GrainIterator: TypeAlias = Union[grain.DatasetIterator, grain.PyGrainDatasetIterator]
+    _GRAIN_INSTALLED = True
+except ImportError:
+    logging.warning("grain is not installed. Will not be able to checkpoint grain iterators.")
+    _GRAIN_INSTALLED = False
 
 # Number of digits in the step directory.
 STEP_NUM_DIGITS = 8
@@ -178,6 +187,48 @@ def restore_tf_savables(value_map: Nested[Any], *, dir: str) -> Nested[Any]:
     for path, value in utils.flatten_items(value_map):
         tf_checkpoint = tf.train.Checkpoint(value)
         tf_checkpoint.read(os.path.join(dir, path))
+
+    return value_map
+
+
+# pylint: disable-next=redefined-builtin
+def maybe_save_grain_savables(value_map: Nested[Any], *, dir: str):
+    """Saves grain savables from `value_map` into `dir`.
+
+    Is a no-op if grain is not installed.
+    """
+    if not _GRAIN_INSTALLED:
+        return
+    for path, value in utils.flatten_items(value_map):
+        if not callable(getattr(value, "get_state", None)):
+            continue
+        state = value.get_state()
+        if isinstance(state, bytes):
+            state = state.decode("utf-8")
+        dst = os.path.join(dir, path)
+        fs.makedirs(os.path.dirname(dst))
+        with fs.open(dst, "w") as f:
+            json.dump(state, f, indent=4)
+
+
+# pylint: disable-next=redefined-builtin
+def maybe_restore_grain_savables(value_map: Nested[Any], *, dir: str) -> Nested[Any]:
+    """Restores grain savables from `dir` into `value_map`.
+
+    Is a no-op if grain is not installed.
+    """
+    if not _GRAIN_INSTALLED:
+        return
+    for path, value in utils.flatten_items(value_map):
+        if not callable(getattr(value, "set_state", None)):
+            continue
+        with fs.open(os.path.join(dir, path), "rb") as f:
+            state = f.read()
+        if isinstance(value, grain.DatasetIterator):
+            if isinstance(state, bytes):
+                state = state.decode("utf-8")
+            state = json.loads(state)
+        value.set_state(state)
 
     return value_map
 
@@ -315,11 +366,15 @@ class TensorStoreStateStorage(StateStorage):
                 `None` and `1` means no sharding. `-1` means fully shard along data-parallel
                 replicas. `>1` means custom sharding degree (currently not implemented).
             max_concurrent_gb: Max concurrent shards (in GB) to write.
+            max_concurrent_restore_gb: Max concurrent shards (in GB) to read during checkpoint
+                restore. `None` or `0` means using a default value of 32GB.
         """
 
         timeout_secs: float = 3600
         max_data_shard_degree: Optional[int] = None
+        # TODO(hanzhi-zhou): rename this to max_concurrent_save_gb.
         max_concurrent_gb: Optional[int] = None
+        max_concurrent_restore_gb: Optional[int] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -334,6 +389,12 @@ class TensorStoreStateStorage(StateStorage):
             )
         else:
             self._manager = GlobalAsyncCheckpointManager(timeout_secs=cfg.timeout_secs)
+        if cfg.max_concurrent_restore_gb is not None and cfg.max_concurrent_restore_gb <= 0:
+            raise ValueError(
+                f"max_concurrent_restore_gb must be strictly positive. "
+                f"Got {cfg.max_concurrent_restore_gb}"
+            )
+        self._max_concurrent_restore_gb = cfg.max_concurrent_restore_gb or 32
         self._executor = futures.ThreadPoolExecutor()
 
     @dataclasses.dataclass
@@ -346,6 +407,7 @@ class TensorStoreStateStorage(StateStorage):
         shardings: list[jax.sharding.Sharding]
         gda_values: list[Tensor]
         tf_ckpt_map: dict[str, Any]
+        grain_ckpt_map: dict[str, Any]
 
     def _spec_from_path(self, ckpt_path: str):
         # TODO(markblee): Enable ocdbt driver.
@@ -361,6 +423,7 @@ class TensorStoreStateStorage(StateStorage):
             shardings=[],
             gda_values=[],
             tf_ckpt_map={},
+            grain_ckpt_map={},
         )
 
         mesh = thread_resources.env.physical_mesh
@@ -390,6 +453,9 @@ class TensorStoreStateStorage(StateStorage):
                 logging.vlog(3, "Adding value (%s) to tf_ckpt_map", value)
                 spec.index.append((path, str(type(value))))
                 spec.tf_ckpt_map[path] = value
+            elif _GRAIN_INSTALLED and isinstance(value, _GrainIterator):
+                spec.index.append((path, str(type(value))))
+                spec.grain_ckpt_map[path] = value
             else:
                 logging.vlog(3, "Adding value (%s) to index", value)
                 spec.index.append((path, value))
@@ -421,6 +487,9 @@ class TensorStoreStateStorage(StateStorage):
             executor=self._executor,
             dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"),
         )
+        maybe_save_grain_savables(
+            spec.grain_ckpt_map, dir=os.path.join(ckpt_dir, f"grain_{jax.process_index()}")
+        )
 
         def commit():
             on_commit_callback(ckpt_dir=ckpt_dir, index=spec.index)
@@ -451,7 +520,6 @@ class TensorStoreStateStorage(StateStorage):
         *,
         ckpt_dir: str,
         validation: CheckpointValidationType = CheckpointValidationType.EXACT,
-        concurrent_gb: int = 32,
     ) -> NestedTensor:
         spec = self._get_spec(step, state, ckpt_dir)
         logging.info("Restoring checkpoint from directory %s", ckpt_dir)
@@ -461,13 +529,16 @@ class TensorStoreStateStorage(StateStorage):
         restore_tf_savables(
             spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}")
         )
+        maybe_restore_grain_savables(
+            spec.grain_ckpt_map, dir=os.path.join(ckpt_dir, f"grain_{jax.process_index()}")
+        )
 
         restored_gda_values = self._manager.deserialize(
             shardings=spec.shardings,
             tensorstore_specs=spec.tensorstore_specs,
             global_shapes=spec.shapes,
             dtypes=spec.dtypes,
-            concurrent_gb=concurrent_gb,
+            concurrent_gb=self._max_concurrent_restore_gb,
         )
         state_leaves = []
         for path, value in spec.index:
@@ -475,6 +546,8 @@ class TensorStoreStateStorage(StateStorage):
                 pass
             elif path in spec.tf_ckpt_map:
                 state_leaves.append(spec.tf_ckpt_map[path])
+            elif path in spec.grain_ckpt_map:
+                state_leaves.append(spec.grain_ckpt_map[path])
             elif isinstance(value, dict):
                 state_leaves.append(restored_gda_values.pop(0))
             else:
@@ -906,7 +979,9 @@ class Checkpointer(BaseCheckpointer):
         remaining_dirs, gc_dirs = [], []
 
         try:
-            step_dirs = [step for step in fs.listdir(cfg.dir) if step.startswith(STEP_PREFIX)]
+            step_dirs = [
+                step.rstrip("/") for step in fs.listdir(cfg.dir) if step.startswith(STEP_PREFIX)
+            ]
         except fs.NotFoundError:
             step_dirs = []
 
