@@ -755,7 +755,6 @@ def batch(
     prefetch_buffer_size: Optional[int] = None,
     post_batch_processor: Optional[ConfigOr[DatasetToDatasetFn]] = None,
     repeat: Optional[int] = None,
-    debug: bool = False,
 ) -> DatasetToDatasetFn:
     """Returns a function that generates a tf.data.Dataset object.
 
@@ -864,12 +863,8 @@ def batch(
             ds = ds.repeat(repeat)
         elif is_training:
             ds = ds.repeat()
-        # debug with cached input.
-        if debug:
-            ds = ds.take(1).cache().repeat()
-        else:
-            # If `prefetch_buffer_size` is not set, use autotune.
-            ds = ds.prefetch(prefetch_buffer_size or tf.data.experimental.AUTOTUNE)
+        # If `prefetch_buffer_size` is not set, use autotune.
+        ds = ds.prefetch(prefetch_buffer_size or tf.data.experimental.AUTOTUNE)
         return ds
 
     return fn
