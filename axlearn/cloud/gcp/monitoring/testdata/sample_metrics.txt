@@ -1,0 +1,60 @@
+# HELP duty_cycle Percent of time when the TPU was actively processing
+# TYPE duty_cycle gauge
+duty_cycle{accelerator_id="2605441806135329501-404",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 100
+duty_cycle{accelerator_id="2605441806135329501-405",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 100
+duty_cycle{accelerator_id="2605441806135329501-412",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 100
+duty_cycle{accelerator_id="2605441806135329501-413",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 100
+# HELP duty_cycle_node Percent of time when the TPU was actively processing
+# TYPE duty_cycle_node gauge
+duty_cycle_node{accelerator_id="2605441806135329501-404",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 100
+duty_cycle_node{accelerator_id="2605441806135329501-405",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 100
+duty_cycle_node{accelerator_id="2605441806135329501-412",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 100
+duty_cycle_node{accelerator_id="2605441806135329501-413",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 100
+# HELP memory_bandwidth_utilization Memory bandwidth utilization of the TPU device
+# TYPE memory_bandwidth_utilization gauge
+memory_bandwidth_utilization{accelerator_id="2605441806135329501-0",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 30.0
+memory_bandwidth_utilization{accelerator_id="2605441806135329501-1",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 30.0
+memory_bandwidth_utilization{accelerator_id="2605441806135329501-2",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 30.0
+memory_bandwidth_utilization{accelerator_id="2605441806135329501-3",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 30.0
+# HELP memory_bandwidth_utilization_node Memory bandwidth utilization of the TPU device per node
+# TYPE memory_bandwidth_utilization_node gauge
+memory_bandwidth_utilization_node{accelerator_id="2605441806135329501-0",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 30.440544843673706
+memory_bandwidth_utilization_node{accelerator_id="2605441806135329501-1",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 30.44897723197937
+memory_bandwidth_utilization_node{accelerator_id="2605441806135329501-2",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 30.439972639083862
+memory_bandwidth_utilization_node{accelerator_id="2605441806135329501-3",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 30.460905075073242
+# HELP memory_total Total memory available on the TPU in bytes
+# TYPE memory_total gauge
+memory_total{accelerator_id="2605441806135329501-404",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 1.02803439616e+11
+memory_total{accelerator_id="2605441806135329501-405",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 1.02803439616e+11
+memory_total{accelerator_id="2605441806135329501-412",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 1.02803439616e+11
+memory_total{accelerator_id="2605441806135329501-413",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 1.02803439616e+11
+# HELP memory_total_node Total memory available on the TPU in bytes
+# TYPE memory_total_node gauge
+memory_total_node{accelerator_id="2605441806135329501-404",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 1.02803439616e+11
+memory_total_node{accelerator_id="2605441806135329501-405",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 1.02803439616e+11
+memory_total_node{accelerator_id="2605441806135329501-412",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 1.02803439616e+11
+memory_total_node{accelerator_id="2605441806135329501-413",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 1.02803439616e+11
+# HELP memory_used Allocated TPU memory in bytes
+# TYPE memory_used gauge
+memory_used{accelerator_id="2605441806135329501-404",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 6.5e+10
+memory_used{accelerator_id="2605441806135329501-405",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 6.5e+10
+memory_used{accelerator_id="2605441806135329501-412",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 6.5e+10
+memory_used{accelerator_id="2605441806135329501-413",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 6.5e+10
+# HELP memory_used_node Allocated TPU memory in bytes
+# TYPE memory_used_node gauge
+memory_used_node{accelerator_id="2605441806135329501-404",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 6.5e+10
+memory_used_node{accelerator_id="2605441806135329501-405",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 6.5e+10
+memory_used_node{accelerator_id="2605441806135329501-412",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 6.5e+10
+memory_used_node{accelerator_id="2605441806135329501-413",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 6.5e+10
+# HELP tensorcore_utilization Tensorcore percent utilization of the TPU device
+# TYPE tensorcore_utilization gauge
+tensorcore_utilization{accelerator_id="2605441806135329501-0",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 1.0
+tensorcore_utilization{accelerator_id="2605441806135329501-1",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 2.0
+tensorcore_utilization{accelerator_id="2605441806135329501-2",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 3.0
+tensorcore_utilization{accelerator_id="2605441806135329501-3",container="dummy",make="cloud-tpu",model="tpu-v5p-slice",namespace="default",pod="dummy-job-0-252-7jwkw",tpu_topology="8x8x16"} 4.0
+# HELP tensorcore_utilization_node Tensorcore percent utilization of the TPU device per node
+# TYPE tensorcore_utilization_node gauge
+tensorcore_utilization_node{accelerator_id="2605441806135329501-0",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 1.0
+tensorcore_utilization_node{accelerator_id="2605441806135329501-1",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 2.0
+tensorcore_utilization_node{accelerator_id="2605441806135329501-2",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 3.0
+tensorcore_utilization_node{accelerator_id="2605441806135329501-3",make="cloud-tpu",model="tpu-v5p-slice",tpu_topology="8x8x16"} 4.0
