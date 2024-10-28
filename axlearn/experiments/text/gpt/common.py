@@ -382,30 +382,11 @@ def adamw_decoupled_learner_config(
         # Decay to this fraction of the peak_lr.
         alpha=alpha,
     )
-    """Experiment results (using jnp.where as skip implementation):
-    jax/jaxlib: 0.4.35.dev20241017 libtpu-nightly: 0.1.dev20241017+nightly
+    """Bugs for weight-only offloading:
+    jax/jaxlib: 0.4.35
     accelerator: v5p-8
-
-    We currently focus on Adam and Adastar because they're most commonly used in axlearn.
-
-    USE_ADASTAR = True, USE_SKIP = False
-    INTERNAL: RET_CHECK failure (third_party/tensorflow/compiler/xla/hlo/ir/hlo_input_output_alias_config.cc:56) !alias_.element(output_index)
-    Trying to set up output alias for param 23 at {} but failed: output index {1} is already aliased with param 2 at {}
-
-    USE_ADASTAR = True, USE_SKIP = True
-    hlo_host_device_type_call_wrapper.cc:187] Check failed: instr->called_computations().size() == 1 (0 vs. 1)
-
-    USE_ADASTAR = True, USE_SKIP = *, USE_SHARD_MAP = False (see axlearn/common/optimizers.py:1964)
-    tfrt_tpu_pjrt_client.cc:8491] Failed to execute host offloading executable: FAILED_PRECONDITION:
-    Host offloaded collective custom call 'MegaScaleCollectiveInputStart' only works in multi slice environment.
-    Note: @Yash Katariya suggested using shard_map as a workaround, which can indeed fixed this problem of compiler
-    generating Megascale collectives in host computation.
-
-    USE_ADASTAR = False, USE_SKIP = *
-    Around 5.5s ~ 6s step time with this PR (fuji 7b with 16 layers = ~3.5b model). Looks like where is working expected in this case with no
-    performance penalty compared to the baseline. Performance is bad due to no overlapping with TPU computation.
-
-    Summary: Adastar optimizer is not working. Adam optimizer offloading is working but we need to improve its performance.
+    tpu_post_fusion_tiling_assignment.cc:481] Check failed: Shape::Equal().IgnoreTailPaddingAlignmentInElements()( leaf_to_shape, leaf->shape())
+    Unexpected unequal host memory space shapes: f32[3,1024,32,128]{1,2,3,0:T(8,128)S(5)} f32[3,1024,32,128]{3,2,1,0:T(8,128)S(5)}
     """
     USE_ADASTAR = False
     USE_SKIP = False
