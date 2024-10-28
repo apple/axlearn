@@ -407,7 +407,7 @@ def adamw_decoupled_learner_config(
 
     Summary: Adastar optimizer is not working. Adam optimizer offloading is working but we need to improve its performance.
     """
-    USE_ADASTAR = True
+    USE_ADASTAR = False
     USE_SKIP = False
     if USE_ADASTAR:
         optimizer = config_for_function(optimizers.adastar_optimizer).set(

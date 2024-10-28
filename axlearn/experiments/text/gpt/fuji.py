@@ -26,6 +26,7 @@ from axlearn.common.attention import (
     MultiheadAttention,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
+    StackedTransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
@@ -363,7 +364,7 @@ def model_config(
         hidden_dim=hidden_dim,
         num_heads=num_heads,
         vocab_size=vocab_size,
-        stack_cfg=stack_cfg if stack_cfg is not None else RepeatedTransformerLayer.default_config(),
+        stack_cfg=stack_cfg if stack_cfg is not None else StackedTransformerLayer.default_config(),
         activation_fn=activation_fn,
         ffn_dim=ffn_dim,
         normalization=RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),

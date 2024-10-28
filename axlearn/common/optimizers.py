@@ -179,7 +179,7 @@ def adam_partition(
                 dtype=state.count.dtype,
                 shape=state.count.shape,
                 mesh_axes=PartitionSpec(),
-                memory_kind=memory_kind,
+                # memory_kind=memory_kind,
             ),
             mu=copy_partition(param_specs, memory_kind),
             nu=copy_partition(param_specs, memory_kind),
@@ -193,8 +193,30 @@ def adam_partition(
         prev_update = base.update
 
         def update_fn(updates, states, params):
-            del params
-            return compute_on("device_host")(jax.jit(prev_update))(updates, states, None)
+            states = jax.tree.map(
+                lambda state, spec: jax.device_put(
+                    state,
+                    jax.sharding.NamedSharding(
+                        mesh=thread_resources.env.physical_mesh, spec=spec, memory_kind="device"
+                    ),
+                ),
+                states,
+                state_spec,
+            )
+            updates, states = prev_update(updates, states, params)
+            states = jax.tree.map(
+                lambda state, spec: jax.device_put(
+                    state,
+                    jax.sharding.NamedSharding(
+                        mesh=thread_resources.env.physical_mesh,
+                        spec=spec,
+                        memory_kind="pinned_host",
+                    ),
+                ),
+                states,
+                state_spec,
+            )
+            return updates, states
 
         base = optax.GradientTransformation(base.init, update_fn)
 
