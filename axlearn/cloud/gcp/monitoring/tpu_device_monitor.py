@@ -21,7 +21,7 @@ from axlearn.common.utils import DeviceUsage as Usage
 DEVICE_KIND_TO_CHIP_TYPE = {
     "TPU v4": device.TpuChip.V4,
     "TPU v5": device.TpuChip.V5P,
-    "TPU v5e": device.TpuChip.V5E,
+    "TPU v5 lite": device.TpuChip.V5E,
     "TPU v6e": device.TpuChip.V6E,
 }
 
