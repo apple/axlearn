@@ -197,15 +197,17 @@ class InputDispatcher(Module):
             logical_example_indices = dispatch_start_ix + np.arange(feed_logical_batch_size)
 
             # Construct a one-hot dispatch matrix.
-            dispatch = np.zeros([feed_logical_batch_size, cfg.global_logical_batch_size])
-            dispatch[np.arange(feed_logical_batch_size), logical_example_indices] = 1
+            dispatch = np.zeros(
+                [feed_logical_batch_size, cfg.global_logical_batch_size], dtype=bool
+            )
+            dispatch[np.arange(feed_logical_batch_size), logical_example_indices] = True
 
             if feed_logical_batch_size < feed_physical_batch_size:
                 # Pad dispatch matrix with 0's.
                 dispatch = np.pad(
                     dispatch,
                     ((0, feed_physical_batch_size - feed_logical_batch_size), (0, 0)),
-                    constant_values=0,
+                    constant_values=False,
                 )
 
         assert dispatch.shape == (

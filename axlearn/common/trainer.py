@@ -1027,11 +1027,12 @@ class SpmdTrainer(Module):
             if input_batch is None:
                 # Infer input batch shapes from input element spec.
                 # N.B. in a multi-process setting these will be host-local (per process).
+                # TODO(markblee): This path currently assumes input_tf_data; fix for generic inputs.
                 input_batch = jax.tree.map(
                     lambda tf_spec: jax.ShapeDtypeStruct(
                         shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
                     ),
-                    self.input.dataset().element_spec,
+                    self.input.dataset().element_spec,  # pytype: disable=attribute-error
                 )
             # Rely on the instance handle to ensure that we hit the compilation cache if possible.
             jit_train_step = self._jit_train_step or self._pjit_train_step()

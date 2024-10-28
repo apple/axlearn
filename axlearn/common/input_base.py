@@ -26,7 +26,7 @@ class Input(Module):
     `input_grain.Input` for example implementations.
 
     The typical usage within a trainer is:
-    1. Construct an iterator using `iter(input)`.
+    1. Construct an iterator using `iter(input.dataset())`.
     2. Iterate over per-feed physical batches using `batches(iterator)`.
     3. Use `host_to_global_device_array` to construct a global physical batch.
     4. Use `dispatch_global_batch` within pjit to construct a global logical batch.
@@ -34,7 +34,7 @@ class Input(Module):
     Example:
         ```
         input = Input.default_config().set(...).instantiate(parent=None)
-        input_iter = iter(input)  # Construct an iterator (which can be used e.g. in checkpointing).
+        input_iter = iter(input.dataset())  # Construct an iterator (used e.g. for checkpointing).
 
         def train_step(global_physical_batch):
             global_logical_batch = input.dispatch_global_batch(global_physical_batch)
@@ -61,8 +61,8 @@ class Input(Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         if cfg.input_dispatcher is not None:
-            self.input_dispatcher: InputDispatcher = self._add_child(
-                "input_dispatcher", cfg.input_dispatcher
+            self.input_dispatcher: InputDispatcher = (  # pytype: disable=annotation-type-mismatch
+                self._add_child("input_dispatcher", cfg.input_dispatcher)
             )
 
     def dataset(self) -> Iterable[Nested[Tensor]]:
@@ -87,7 +87,7 @@ class Input(Module):
         """
         yield from self.batches(iter(self.dataset()))
 
-    def batches(self, it: Iterator[Nested[Tensor]]) -> Iterable[Nested[Tensor]]:
+    def batches(self, it: Iterator[Nested[Tensor]]) -> Iterator[Nested[Tensor]]:
         """Yields per-feed physical input batches (using `input_dispatcher` if configured).
 
         The caller should use `host_to_global_array` to construct a global physical batch from the

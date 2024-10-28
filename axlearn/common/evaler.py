@@ -592,9 +592,7 @@ class SpmdEvaler(Module):
         if cfg.eval_dtype is not None:
             utils.validate_float_dtype(cfg.eval_dtype)
 
-        self.input: input_base.Input = self._add_child(
-            "input", maybe_set_config(cfg.input, is_training=False)
-        )
+        self._add_child("input", maybe_set_config(cfg.input, is_training=False))
         self._add_child(
             "metric_calculator",
             cfg.metric_calculator.set(eval_dtype=cfg.eval_dtype),
