@@ -2466,7 +2466,9 @@ class MultiheadAttentionTest(TestCase):
                 ),
             )
         else:
-            key = value = query
+            # Make key and value distinct from query. Otherwise, it is equivalent
+            # to the query only case.
+            key = value = query + 0.1
         attention_logit_biases = attention.make_causal_biases(tgt_len)
         return_aux = {"probs"}
         inputs = dict(
@@ -2500,6 +2502,10 @@ class MultiheadAttentionTest(TestCase):
         decoder_probs = jnp.zeros(shape=[tgt_len, batch_size, num_heads, tgt_len])
         for t in range(tgt_len):
             inputs["query"] = jnp.expand_dims(query[:, t, :], axis=1)
+            if key is not None:
+                inputs["key"] = jnp.expand_dims(key[:, t, :], axis=1)
+            if value is not None:
+                inputs["value"] = jnp.expand_dims(value[:, t, :], axis=1)
             inputs["attention_logit_biases"] = attention_logit_biases[
                 jnp.newaxis, jnp.newaxis, t, :
             ]
@@ -2615,6 +2621,12 @@ class MultiheadAttentionTest(TestCase):
         query = jax.random.normal(
             jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
         )
+        if attention_cfg.klass == attention.GroupedQueryAttention:
+            key = value = None
+        else:
+            # Make key and value distinct from query. Otherwise, it is equivalent
+            # to the query only case.
+            key = value = query + 0.1
         attention_logit_biases = attention.make_causal_biases(tgt_len)
         return_aux = {"probs"}
 
@@ -2624,7 +2636,11 @@ class MultiheadAttentionTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
             inputs=dict(
-                query=query, attention_logit_biases=attention_logit_biases, return_aux=return_aux
+                query=query,
+                key=key,
+                value=value,
+                attention_logit_biases=attention_logit_biases,
+                return_aux=return_aux,
             ),
         )
 
@@ -2637,6 +2653,8 @@ class MultiheadAttentionTest(TestCase):
             inputs=dict(
                 time_step=time_step,
                 query=query,
+                key=key,
+                value=value,
                 attention_logit_biases=attention_logit_biases,
                 return_aux=return_aux,
             ),
@@ -2680,6 +2698,13 @@ class MultiheadAttentionTest(TestCase):
             inputs["query"] = jnp.take_along_axis(
                 query, time_step[:, None, None], axis=1, mode="clip"
             )
+            if key is not None:
+                inputs["key"] = jnp.take_along_axis(
+                    key, time_step[:, None, None], axis=1, mode="clip"
+                )
+                inputs["value"] = jnp.take_along_axis(
+                    value, time_step[:, None, None], axis=1, mode="clip"
+                )
             # [batch=1, tgt_len=1, tgt_len].
             inputs["attention_logit_biases"] = jnp.take_along_axis(
                 attention_logit_biases[None, :, :], time_step[:, None, None], axis=1, mode="clip"

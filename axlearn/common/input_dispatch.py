@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Optional
 
 import jax
+import numpy as np
 from jax import numpy as jnp
 
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -146,6 +147,9 @@ class InputDispatcher(Module):
         Specifically, pads the batch to feed_physical_batch_size and adds a dispatch Tensor under
         key PHYSICAL_TO_LOGICAL_DISPATCH_KEY, which will be used by physical_to_logical_batch later.
 
+        Note that the processing in `logical_to_physical_batch` is entirely host-local, i.e.
+        operating on pure numpy arrays rather than JAX arrays.
+
         Args:
             logical_feed_batch: A per-feed logical batch, where every leaf Tensor should be of
                 shape [feed_logical_batch_size, ...].
@@ -154,7 +158,7 @@ class InputDispatcher(Module):
             A per-feed physical batch, where every leaf Tensor should be of shape
             [feed_physical_batch_size, ...].
         """
-        cfg = self.config
+        cfg: InputDispatcher.Config = self.config
         if (
             cfg.global_logical_batch_size == cfg.global_physical_batch_size
             and cfg.num_physical_feeds == self.num_logical_feeds
@@ -170,34 +174,42 @@ class InputDispatcher(Module):
                     f"{x.shape} vs. {feed_logical_batch_size}"
                 )
             if cfg.physical_feed_index not in cfg.logical_feed_indices:
-                x = jnp.zeros_like(x)
+                x = np.zeros_like(x)
             if feed_logical_batch_size == feed_physical_batch_size:
                 return x
             pad_size = feed_physical_batch_size - feed_logical_batch_size
             assert pad_size >= 0, f"{feed_physical_batch_size} < {feed_logical_batch_size}"
             if not jnp.isdtype(x.dtype, ("numeric", "bool")):
                 raise NotImplementedError(f"dtype {x.dtype} is not supported")
-            padding = jnp.zeros([pad_size] + list(x.shape[1:]), dtype=x.dtype)
-            return jnp.concatenate([x, padding], axis=0)
+            padding = np.zeros([pad_size] + list(x.shape[1:]), dtype=x.dtype)
+            return np.concatenate([x, padding], axis=0)
 
         physical_feed_batch = jax.tree.map(pad_to_physical_batch_size, logical_feed_batch)
 
         if cfg.physical_feed_index not in cfg.logical_feed_indices:
-            logical_example_indices = -1 + jnp.zeros([feed_physical_batch_size], dtype=jnp.int32)
+            # Dispatch matrix is all 0's.
+            dispatch = np.zeros(
+                [feed_physical_batch_size, cfg.global_logical_batch_size], dtype=bool
+            )
         else:
             dispatch_start_ix = self.logical_feed_index * feed_logical_batch_size
             # dispatch_start_ix + [0, feed_logical_batch_size).
-            logical_example_indices = dispatch_start_ix + jnp.arange(feed_logical_batch_size)
+            logical_example_indices = dispatch_start_ix + np.arange(feed_logical_batch_size)
+
+            # Construct a one-hot dispatch matrix.
+            dispatch = np.zeros(
+                [feed_logical_batch_size, cfg.global_logical_batch_size], dtype=bool
+            )
+            dispatch[np.arange(feed_logical_batch_size), logical_example_indices] = True
+
             if feed_logical_batch_size < feed_physical_batch_size:
-                # Padded with -1's.
-                logical_example_indices = jnp.pad(
-                    logical_example_indices,
-                    (0, feed_physical_batch_size - feed_logical_batch_size),
-                    constant_values=-1,
+                # Pad dispatch matrix with 0's.
+                dispatch = np.pad(
+                    dispatch,
+                    ((0, feed_physical_batch_size - feed_logical_batch_size), (0, 0)),
+                    constant_values=False,
                 )
-        dispatch = jax.nn.one_hot(
-            logical_example_indices, cfg.global_logical_batch_size, dtype=jnp.bool
-        )
+
         assert dispatch.shape == (
             feed_physical_batch_size,
             cfg.global_logical_batch_size,

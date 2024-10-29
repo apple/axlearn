@@ -232,6 +232,7 @@ def model_config(
     dropout_rate: float = 0.0,
     stack_cfg: causal_lm.TransformerStackConfig = RepeatedTransformerLayer.default_config(),
     emb_cfg: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config(),
+    lm_head_cfg: Optional[TransformerTextEmbeddings.Config] = None,
     layer_cfg: TransformerLayer.Config = TransformerLayer.default_config(),
     attention_cfg: Optional[MultiheadAttention.Config] = None,
     attention_qkv_linear: Optional[BaseQKVLinear.Config] = None,
@@ -256,6 +257,7 @@ def model_config(
             Defaults to 0.0 (i.e. no dropout).
         stack_cfg: The transformer stack config.
         emb_cfg: The transformer embedding layer config.
+        lm_head_cfg: The transformer LmHead layer config.
         layer_cfg: The transformer layer config.
         attention_cfg: The attention config.
         attention_qkv_linear: The attention QKV linear layer.
@@ -296,6 +298,7 @@ def model_config(
         dim=hidden_dim,
         vocab_size=vocab_size,
         emb=emb_cfg,
+        lm_head=lm_head_cfg,
         dropout_rate=dropout_rate,
     )
     # Model.

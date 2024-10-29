@@ -17,7 +17,9 @@
 # pylint: disable=too-many-lines
 """Basic layers."""
 
-from typing import Any, Callable, Optional, Sequence, Union
+import enum
+from collections.abc import Sequence
+from typing import Any, Callable, Optional, Union
 
 import chex
 import jax
@@ -56,9 +58,11 @@ from axlearn.common.utils import (
 )
 
 # The padding type for jax.lax.conv_general_dilated API. Either the strings ‘SAME’, or ‘VALID’, or
-# a sequence of n (low, high) integer pairs that give the padding to apply before and after each
-# spatial dimension. The number of tuple is 1 for NHC, 2 for NHWC and 3 for NHWDC.
+# 'CAUSAL' or a sequence of n (low, high) integer pairs that give the padding to apply before and
+# after each spatial dimension. The number of tuple is 1 for NHC, 2 for NHWC and 3 for NHWDC.
 ConvPaddingType = Union[str, Sequence[tuple[int, int]]]
+
+SUPPORT_CONV_PADDING = ("SAME", "VALID", "CAUSAL")
 
 
 def get_activation_fn(name) -> Callable[[Tensor], Tensor]:
@@ -375,7 +379,7 @@ def _compute_moments_with_paddings(
     x: Tensor,
     *,
     paddings: Tensor,
-    reduction_axis: list[int],
+    reduction_axis: Sequence[int],
     keepdims: bool = False,
 ) -> tuple[Tensor, Tensor]:
     """Computes mean and variance over sequence data.
@@ -402,8 +406,57 @@ def _compute_moments_with_paddings(
     return mean, variance
 
 
+def _compute_mean_square_with_paddings(
+    x: Tensor,
+    *,
+    paddings: Tensor,
+    reduction_axis: Sequence[int],
+) -> Tensor:
+    """Computes root mean square moments over sequence data.
+
+    Args:
+        x: inputs tensor of shape [batch_size, seq_len, ...].
+        paddings: 0/1 tensor of shape [batch_size, seq_len].
+        reduction_axis: a list of axes to compute moments over.
+
+    Returns:
+        mean_square: with the same shape as `x` except for axes specified in `reduction_axis`,
+            which will have dim of 1.
+    """
+    expanded_paddings = jnp.expand_dims(paddings, axis=tuple(range(2, x.ndim)))
+    mask = 1 - expanded_paddings
+    sum_x2 = jnp.sum((x * x) * mask, axis=reduction_axis, keepdims=True)
+    count_x2 = jnp.sum(jnp.ones_like(x) * mask, axis=reduction_axis, keepdims=True)
+    # If all elements of `padding` are 1 (i.e., jnp.all(padding == 1)), mean_square will be 0.
+    # However, the computation remains stable due to max(1, count).
+    mean_square = sum_x2 / jnp.maximum(count_x2, 1.0)
+    return mean_square
+
+
+class NormType(enum.Enum):
+    """NormType defines the normalization methods for the GroupNorm class.
+
+    Available normalization types:
+    - **LAYERNORM**: Applies layernorm across all axes except for the group and batch axes.
+    - **RMSNORM**: Applies rmsnorm across all axes except for the group and batch axes.
+    """
+
+    LAYERNORM = "layernorm"
+    RMSNORM = "rmsnorm"
+
+
 class GroupNorm(BaseNormalizationLayer):
-    """https://arxiv.org/abs/1803.08494."""
+    """GroupNorm provides group-wise normalization for inputs.
+
+    The choice of `norm_type` and `norm_axes` should be guided by the specific domain. In the vision
+    domain LayerNorm is typically applied across all axes except the group and batch dimensions,
+    e.g., normalization across spatial dims and feature channels (https://arxiv.org/abs/1803.08494).
+    In the text domain, normalization may be performed along the feature axis alone, e.g., RMSNorm
+    is applied along the last feature axis in [Mamba2](https://arxiv.org/abs/2405.21060).
+
+    In the future, we may consider supporting sliding window or causal group norm, e.g.,
+    https://github.com/tensorflow/lingvo/blob/b26149e423cd51498bd884ffd37a6b5ceb244d68/lingvo/core/bn_layers.py#L756-L764
+    """
 
     @config_class
     class Config(BaseNormalizationLayer.Config):
@@ -415,13 +468,35 @@ class GroupNorm(BaseNormalizationLayer):
         eps: float = 1e-8
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
+        # LAYERNORM` or `RMSNORM`.
+        # If None, assumes `LAYERNORM` (for backwards compatibility).
+        norm_type: Optional[NormType] = None
+        # Axes to apply the normalization in addition to the group size axis.
+        # E.g., (1,) means normalizing normalizing along the time axis (as well as the group size
+        # axis) if the input tensor has shape (batch, time, dim); (1, -1) has the same effect as
+        # (1,) as the last dim (i.e., the group size axis) is automatically added.
+        # If None, reduces along all dims except for the num of group and batch axes (for
+        # backwards compatibility).
+        norm_axes: Optional[Union[tuple[int, ...], int]] = None
+
+    @classmethod
+    def default_config(cls):
+        cfg = super().default_config()
+        if cfg.norm_type is None:
+            cfg.norm_type = NormType.LAYERNORM
+        return cfg
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
-        return {
-            "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
-            "bias": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
-        }
+        if cfg.norm_type == NormType.LAYERNORM:
+            return {
+                "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
+                "bias": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
+            }
+        else:
+            return {
+                "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
+            }
 
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
         """Applies group normalization.
@@ -437,6 +512,7 @@ class GroupNorm(BaseNormalizationLayer):
 
         Raises:
             ValueError: if num_groups does not divide input_dim.
+            ValueError: if num_groups axis is included in norm_axes.
         """
         cfg = self.config
         if cfg.num_groups <= 0 or cfg.input_dim % cfg.num_groups != 0:
@@ -447,22 +523,57 @@ class GroupNorm(BaseNormalizationLayer):
             x = x.astype(cfg.forward_dtype)
         # Reshape to [..., num_groups, group_size].
         y = jnp.reshape(x, list(x.shape[:-1]) + [cfg.num_groups, group_size])
-        # Reduce along spatial dims and group_size, but not along batch or num_groups.
-        reduction_axis = list(range(1, y.ndim - 2)) + [-1]
-        if paddings is None:
-            mean = jnp.mean(y, axis=reduction_axis, keepdims=True)
-            variance = jnp.mean((y - mean) ** 2, axis=reduction_axis, keepdims=True)
+
+        # Default norm axes: all axes except for the group and batch axes.
+        if cfg.norm_axes is None:
+            reduction_axis = list(range(1, y.ndim - 2)) + [y.ndim - 1]
         else:
-            mean, variance = _compute_moments_with_paddings(
-                x=y,
-                paddings=paddings,
-                reduction_axis=reduction_axis,
-                keepdims=True,
-            )
-        y = (y - mean) * jax.lax.rsqrt(variance + cfg.eps)
-        x = jnp.reshape(y, x.shape)
-        x = x.astype(x_dtype)
-        x = x * self.parameters["scale"] + self.parameters["bias"]
+            reduction_axis = cfg.norm_axes
+
+        # Normalize to a list of non-negative axes.
+        if isinstance(reduction_axis, int):
+            reduction_axis = [reduction_axis]
+        reduction_axis = [axis if axis >= 0 else y.ndim + axis for axis in reduction_axis]
+
+        if y.ndim - 2 in reduction_axis:
+            raise ValueError("GroupNorm should not normalize along the num_groups axis.")
+
+        if 0 in reduction_axis:
+            raise ValueError("GroupNorm should not normalize along the batch axis.")
+
+        # Add the group size axis to the reduction axis.
+        if y.ndim - 1 not in reduction_axis:
+            reduction_axis.append(y.ndim - 1)
+
+        if cfg.norm_type == NormType.LAYERNORM:
+            if paddings is None:
+                mean = jnp.mean(y, axis=reduction_axis, keepdims=True)
+                variance = jnp.mean((y - mean) ** 2, axis=reduction_axis, keepdims=True)
+            else:
+                mean, variance = _compute_moments_with_paddings(
+                    x=y,
+                    paddings=paddings,
+                    reduction_axis=reduction_axis,
+                    keepdims=True,
+                )
+
+            y = (y - mean) * jax.lax.rsqrt(variance + cfg.eps)
+            x = jnp.reshape(y, x.shape)
+            x = x.astype(x_dtype)
+            x = x * self.parameters["scale"] + self.parameters["bias"]
+        else:
+            if paddings is None:
+                msquare = (y * y).mean(axis=reduction_axis, keepdims=True)
+            else:
+                msquare = _compute_mean_square_with_paddings(
+                    x=y,
+                    paddings=paddings,
+                    reduction_axis=reduction_axis,
+                )
+            y = y * jax.lax.rsqrt(msquare + cfg.eps)
+            x = jnp.reshape(y, x.shape)
+            x = x.astype(x_dtype)
+            x = x * self.parameters["scale"]
         return x
 
 
@@ -602,15 +713,12 @@ class UnitNormLinear(Linear):
             return super().forward(x)
 
 
-def _check_conv_cfg(padding: Union[str, Sequence[tuple[int, int]]], strides: Sequence[int]):
+def _check_conv_cfg(*, padding: ConvPaddingType, strides: Sequence[int]):
     if any(s < 1 for s in strides):
         raise NotImplementedError(f"strides ({strides}) must be a positive integer.")
 
     if isinstance(padding, str):
-        if padding in ("SAME", "VALID"):
-            if padding == "SAME" and any(s > 1 for s in strides):
-                raise NotImplementedError("SAME padding does not support strides > 1")
-        else:
+        if padding not in SUPPORT_CONV_PADDING:
             raise NotImplementedError(f"{padding} padding is not supported.")
     else:
         padding_flattened = (p for p_tuple in padding for p in p_tuple)
@@ -708,10 +816,35 @@ def _conv_dilate_window(*, window: Sequence[int], dilation: Optional[Sequence[in
 
 
 # Copied from subroutine in jax.lax.reduce_window.
-def _conv_explicit_padding(
+# Extend lax.padtype_to_pads for CAUSAL.
+def conv_explicit_padding(
     *, window: Sequence[int], padding: ConvPaddingType, dilation: Optional[Sequence[int]] = None
 ) -> ConvPaddingType:
     """Convert str padding to tuple padding.
+
+    For example, with a window size of 3 and a stride of 2, padding="SAME" is applied as
+    padding=((1,1),) as shown below, as keeping input and output length.
+            pad  |         |pad
+    paddings:   0|0 0 0 0 0|0
+                |___|
+                    |___|
+                        |___|
+
+    To implement padding="VALID", we use padding=((0,0),) as follows.
+            pad|         |pad
+    paddings:  |0 0 0 0 0|
+                |___|
+                    |___|
+
+    To implement padding="CAUSAL", we use padding=((2,0),) as follows.
+            pad   |         |pad
+    paddings:  0 0|0 0 0 0 0|
+               |___|
+                   |___|
+                       |___|
+
+    For "CAUSAL", the first component is time and treated as "CAUSAL", while the remaining
+    components are handled with "SAME" padding.
 
     Args:
         window: convolution window.
@@ -724,14 +857,25 @@ def _conv_explicit_padding(
     Raises:
         ValueError: If padding is not supported.
     """
-    if padding == "SAME":
+    if not isinstance(padding, str):
+        return padding
+
+    def same_padding(window, dilation):
         effective_window = _conv_dilate_window(window=window, dilation=dilation)
         pad_total = tuple(w - 1 for w in effective_window)
         pad_left = tuple(pt // 2 for pt in pad_total)
         pad_right = tuple(pt - pl for pt, pl in zip(pad_total, pad_left))
         return tuple(zip(pad_left, pad_right))
+
+    if padding == "SAME":
+        return same_padding(window, dilation)
     elif padding == "VALID":
         return ((0, 0),) * len(window)
+    elif padding == "CAUSAL":
+        causal_padding = ((window[0] - 1, 0),)
+        if len(window) > 1:
+            causal_padding += same_padding(window[1:], dilation)
+        return causal_padding
     else:
         raise ValueError(f"{padding} padding is not supported.")
 
@@ -769,9 +913,7 @@ def _conv_output_shape(
             f"len(window) = {len(window)} and len(strides) = {len(strides)}"
         )
 
-    if isinstance(padding, str):
-        padding = _conv_explicit_padding(window=window, padding=padding, dilation=dilation)
-
+    padding = conv_explicit_padding(window=window, padding=padding, dilation=dilation)
     pad_amount = tuple(sum(p) for p in padding)
     effective_window = _conv_dilate_window(window=window, dilation=dilation)
 
@@ -800,7 +942,7 @@ class Conv2D(BaseConv):
 
         window: tuple[int, int] = (1, 1)  # The convolution window.
         strides: tuple[int, int] = (1, 1)  # The convolution strides.
-        # Paddings: "SAME", "VALID", or ((top, bottom), (left, right)).
+        # Paddings: "SAME", "VALID", "CAUSAL" or ((top, bottom), (left, right)).
         # Note: Sequence models use the first component to represent time.
         padding: ConvPaddingType = ((0, 0), (0, 0))
         output_dim: Required[int] = REQUIRED  # Output feature dim.
@@ -823,7 +965,7 @@ class Conv2D(BaseConv):
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
-        _check_conv_cfg(cfg.padding, cfg.strides)
+        _check_conv_cfg(padding=cfg.padding, strides=cfg.strides)
         params = dict(
             weight=ParameterSpec(
                 shape=list(cfg.window)
@@ -840,12 +982,13 @@ class Conv2D(BaseConv):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
+        conv_padding = conv_explicit_padding(window=cfg.window, padding=cfg.padding)
         output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],
             window_strides=cfg.strides,
             dimension_numbers=("NHWC", "HWIO", "NHWC"),
-            padding=cfg.padding,
+            padding=conv_padding,
             feature_group_count=cfg.num_input_dim_groups,
         )
         if cfg.bias:
@@ -887,7 +1030,7 @@ def _compute_conv_output_1d_padding(
         in_paddings: A Tensor of shape [batch_size, seq_len].
         window: convolution window size of the time axis.
         stride: convolution stride size of the time axis.
-        conv_padding: "SAME", "VALID", or ((left_time_padding, right_time_padding),)
+        conv_padding: "SAME", "VALID", "CAUSAL" or ((left_time_padding, right_time_padding),)
         anchor: an optional integer in the range of [left_time_padding, window - right_time_padding)
             that specifies the anchor position within the convolution window that is used to
             determine output paddings. Specifically, the output token is valid iff the input token
@@ -901,8 +1044,7 @@ def _compute_conv_output_1d_padding(
         ValueError: If anchor is not between left_time_padding and right_time_padding.
     """
     chex.assert_rank(in_paddings, 2)
-    if isinstance(conv_padding, str):
-        conv_padding = _conv_explicit_padding(window=(window,), padding=conv_padding)
+    conv_padding = conv_explicit_padding(window=(window,), padding=conv_padding)
     window = _conv_dilate_window(window=(window,))[0]
     left_pad, right_pad = conv_padding[0]
     pad_total = window - 1
@@ -957,7 +1099,7 @@ class Conv2DTranspose(BaseConv):
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
-        _check_conv_cfg(cfg.padding, cfg.strides)
+        _check_conv_cfg(padding=cfg.padding, strides=cfg.strides)
         params = dict(
             weight=ParameterSpec(
                 shape=list(cfg.window) + [cfg.output_dim, cfg.input_dim],
@@ -1186,7 +1328,7 @@ class Conv3D(BaseConv):
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
-        _check_conv_cfg(cfg.padding, cfg.strides)
+        _check_conv_cfg(padding=cfg.padding, strides=cfg.strides)
         params = dict(
             weight=ParameterSpec(
                 shape=list(cfg.window)
@@ -1203,12 +1345,13 @@ class Conv3D(BaseConv):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
+        conv_padding = conv_explicit_padding(window=cfg.window, padding=cfg.padding)
         output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],
             window_strides=cfg.strides,
             dimension_numbers=("NHWDC", "HWDIO", "NHWDC"),
-            padding=cfg.padding,
+            padding=conv_padding,
             feature_group_count=cfg.num_input_dim_groups,
         )
         if cfg.bias:
@@ -1245,7 +1388,7 @@ class Conv1D(BaseConv):
 
         window: Required[int] = REQUIRED  # The convolution window.
         strides: int = 1  # The convolution strides.
-        # Paddings: "SAME", "VALID", or (left, right).
+        # Paddings: "SAME", "VALID", "CAUSAL", or (left, right).
         # For causal convolution, set padding to (window - 1, 0).
         padding: ConvPaddingType = ((0, 0),)
         output_dim: Required[int] = REQUIRED  # Output feature dim.
@@ -1280,10 +1423,7 @@ class Conv1D(BaseConv):
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
-        if cfg.padding in ("SAME", "VALID"):
-            if cfg.padding == "SAME" and cfg.strides > 1:
-                raise NotImplementedError("SAME padding does not support strides > 1")
-        else:
+        if cfg.padding not in SUPPORT_CONV_PADDING:
             left, right = cfg.padding[0]
             if any(p < 0 for p in (left, right)):
                 raise NotImplementedError("Negative padding is not supported")
@@ -1301,12 +1441,16 @@ class Conv1D(BaseConv):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
+        dilation = (cfg.rhs_dilation,) if cfg.rhs_dilation else None
+        conv_padding = conv_explicit_padding(
+            window=(cfg.window,), padding=cfg.padding, dilation=dilation
+        )
         output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],
             window_strides=(cfg.strides,),
             dimension_numbers=("NWC", "WIO", "NWC"),
-            padding=cfg.padding,
+            padding=conv_padding,
             feature_group_count=cfg.num_input_dim_groups,
             lhs_dilation=[cfg.lhs_dilation] if cfg.lhs_dilation is not None else None,
             rhs_dilation=[cfg.rhs_dilation] if cfg.rhs_dilation is not None else None,
@@ -1329,7 +1473,7 @@ class DepthwiseConv1D(BaseConv):
 
         window: Required[int] = REQUIRED  # The convolution window.
         strides: int = 1  # The convolution strides.
-        # Paddings: "SAME", "VALID", or (left, right).
+        # Paddings: "SAME", "VALID", "CAUSAL" or (left, right).
         # For causal convolution, set padding to (window - 1, 0).
         padding: ConvPaddingType = ((0, 0),)
         bias: bool = True  # Whether to add a bias.
@@ -1342,10 +1486,7 @@ class DepthwiseConv1D(BaseConv):
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
-        if cfg.padding in ("SAME", "VALID"):
-            if cfg.padding == "SAME" and cfg.strides > 1:
-                raise NotImplementedError("SAME padding does not support strides > 1")
-        else:
+        if cfg.padding not in SUPPORT_CONV_PADDING:
             left, right = cfg.padding[0]
             if any(p < 0 for p in (left, right)):
                 raise NotImplementedError("Negative padding is not supported")
@@ -1367,12 +1508,13 @@ class DepthwiseConv1D(BaseConv):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
+        conv_padding = conv_explicit_padding(window=(cfg.window,), padding=cfg.padding)
         output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],
             window_strides=(cfg.strides,),
             dimension_numbers=("NWC", "WIO", "NWC"),
-            padding=cfg.padding,
+            padding=conv_padding,
             feature_group_count=cfg.input_dim,
         )
         if cfg.bias:

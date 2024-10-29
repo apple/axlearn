@@ -604,20 +604,18 @@ def data_partition_type_to_spec(partition: DataPartitionType) -> PartitionSpec:
 
 
 def host_to_global_device_array(
-    host_arrays: NestedTensor, *, partition: DataPartitionType = DataPartitionType.FULL
+    host_arrays: Nested[Union[np.ndarray, Tensor]],
+    *,
+    partition: DataPartitionType = DataPartitionType.FULL,
 ) -> NestedTensor:
     """Converts the given host device arrays to global device arrays.
 
     Must be called within the context of a Mesh.
 
-    We cannot use `multihost_utils.host_local_array_to_global_array` since the local mesh may not
-    be contiguous. According to yashkatariya@google.com,
-    "using `jax.make_array_from_single_device_arrays` is the right solution."
-
     Args:
-        host_arrays: a nested tree of device arrays in host memory. Usually these present the
+        host_arrays: A nested tree of device arrays in host memory. Usually these present the
             per-host portion of the global input batch.
-        partition: how the global array should be partitioned.
+        partition: How the global array should be partitioned.
 
     Returns:
         A nested tree with the same structure as `host_arrays`, but global device arrays at the
@@ -628,49 +626,25 @@ def host_to_global_device_array(
     """
     mesh = thread_resources.env.physical_mesh
     partition_spec = data_partition_type_to_spec(partition)
-
-    local_devices = mesh.local_devices
-
-    def put_to_devices_fully_partitioned(x: Tensor) -> list[Tensor]:
-        len_local_devices = len(local_devices)
-        if x.shape[0] % len_local_devices != 0:
-            raise ValueError(f"({x.shape}) cannot be sharded across {len_local_devices} devices.")
-        # np.reshape is faster than np.split, jnp.reshape, and jnp.split.
-        xs = np.reshape(x, (len_local_devices, x.shape[0] // len_local_devices, *x.shape[1:]))
-        return [jax.device_put(x_i, device) for x_i, device in zip(xs, local_devices)]
-
-    def put_to_devices_replicated(x: Tensor) -> list[Tensor]:
-        # Replicate `x` to every local device.
-        return [jax.device_put(x, device) for device in local_devices]
-
-    if partition == DataPartitionType.FULL:
-        put_to_devices = put_to_devices_fully_partitioned
-    elif partition == DataPartitionType.REPLICATED:
-        put_to_devices = put_to_devices_replicated
-    else:
-        raise NotImplementedError(f"Unsupported partition: {partition}")
-
-    device_arrays = jax.tree.map(put_to_devices, host_arrays)
     partition_specs = complete_partition_spec_tree(
-        jax.tree_util.tree_structure(host_arrays),
-        partition_spec,
+        jax.tree_util.tree_structure(host_arrays), partition_spec
     )
+    process_count = jax.process_count()
 
-    def make_gda(x, device_buffers, partition_spec):
+    def make_gda(x, partition_spec):
         if partition == DataPartitionType.FULL:
-            global_batch_size = x.shape[0] * jax.process_count()
+            global_shape = (x.shape[0] * process_count, *x.shape[1:])
         elif partition == DataPartitionType.REPLICATED:
-            global_batch_size = x.shape[0]
+            global_shape = (x.shape[0], *x.shape[1:])
         else:
             raise NotImplementedError(f"Unsupported partition: {partition}")
-        global_shape = tuple([global_batch_size] + list(x.shape[1:]))
-        return jax.make_array_from_single_device_arrays(
-            shape=global_shape,
+        return jax.make_array_from_process_local_data(
             sharding=jax.sharding.NamedSharding(mesh, partition_spec),
-            arrays=device_buffers,
+            local_data=x,
+            global_shape=global_shape,
         )
 
-    return jax.tree.map(make_gda, host_arrays, device_arrays, partition_specs)
+    return jax.tree.map(make_gda, host_arrays, partition_specs)
 
 
 def global_to_host_array(
