@@ -42,9 +42,10 @@ from array_record.python.array_record_data_source import PathLikeOrFileInstructi
 from grain._src.python.data_loader import _determine_worker_count
 from grain._src.python.dataset import stats as dataset_stats
 from grain._src.python.dataset.transformations import packing
+from grain._src.python.dataset.transformations import slice as slice_dataset
 from jax.experimental import multihost_utils
 
-from axlearn.common import utils
+from axlearn.common import input_base, utils
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -370,6 +371,31 @@ def trim_and_pack_dataset(ds: Dataset, *, feature_lengths: utils.Nested[int]) ->
     return packing.SingleBinPackIterDataset(parent=ds, length_struct=feature_lengths)
 
 
+class _ShardDataset(slice_dataset.SliceMapDataset):
+    """A thin wrapper of SliceMapDataset that allows setting read config after instantiation.
+
+    This is used in `Input` for input dispatch.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._iterated = False
+
+    def set_read_config(self, *, num_shards: int, shard_index: int):
+        """Sets the shard index and count.
+
+        The API follows that of `tfds_read_config`.
+        """
+        if self._iterated:
+            raise ValueError("Attempting to `set_read_config` after iterating.")
+        self._start = shard_index
+        self._step = num_shards
+
+    def __getitem__(self, index):
+        self._iterated = True
+        return super().__getitem__(index)
+
+
 def shard_dataset(
     ds: Dataset,
     *,
@@ -396,7 +422,7 @@ def shard_dataset(
         process_index = jax.process_index()
     if not 0 <= process_index < process_count:
         raise ValueError(f"{process_index=} should be between 0 and {process_count=}, exclusive.")
-    return ds.slice(slice(process_index, None, process_count))
+    return _ShardDataset(parent=ds, sl=slice(process_index, None, process_count))
 
 
 def prefetch_dataset(
@@ -563,23 +589,36 @@ def pad_for_evaluation(
     return ds
 
 
-class Input(Module):
+def _set_read_config_recursively(source: Dataset, **kwargs) -> bool:
+    """Sets **kwargs on all `shard_dataset` in `source`."""
+    if isinstance(source, _ShardDataset):
+        logging.info("Setting read config on %s", source)
+        source.set_read_config(**kwargs)
+        return True
+
+    for parent in source.parents:
+        if _set_read_config_recursively(parent, **kwargs):
+            return True
+    return False
+
+
+class Input(input_base.Input):
     """A Module to generate input batches with `grain`."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(input_base.Input.Config):
         """Configures Input.
 
         Attributes:
-            source: A `BuildDatasetFn` producing the source dataset. Can be a `grain.MapDataset` or
-                `grain.IterDataset`.
+            source: A BuildDatasetFn (or a config instantiating to one). The result dataset will
+                contain a stream of examples representing one epoch of the source dataset.
         """
 
         source: Required[ConfigOr[BuildDatasetFn]] = REQUIRED
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
-        cfg = self.config
+        cfg: Input.Config = self.config
         self._source = maybe_instantiate(cfg.source)
 
     @property
@@ -587,7 +626,11 @@ class Input(Module):
         return self._source
 
     def dataset(self) -> grain.IterDataset:
-        return maybe_to_iter_dataset(self._source())
-
-    def __iter__(self) -> grain.PyGrainDatasetIterator[utils.NestedTensor]:
-        return iter(self.dataset())
+        ds = self._source()
+        if "input_dispatcher" in self.children:
+            if not _set_read_config_recursively(ds, **self.input_dispatcher.feed_read_config()):
+                raise ValueError(
+                    f"Failed to set read config on {ds}. "
+                    f"Please make sure to call {shard_dataset.__name__} if using input dispatch."
+                )
+        return maybe_to_iter_dataset(ds)

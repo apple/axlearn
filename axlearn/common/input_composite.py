@@ -2,27 +2,17 @@
 
 """A library to support composite inputs."""
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import Optional
 
 import tensorflow as tf
 
+from axlearn.common import input_base
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.module import Module
-from axlearn.common.utils import Nested, Tensor, as_numpy_array
 
 
-class BaseInput(Module):
-    def __iter__(self) -> Iterable[Nested[Tensor]]:
-        it = iter(self.dataset())
-        yield from self.batches(it)
-
-    def batches(self, it: Iterable[Nested[Tensor]]) -> Iterable[Nested[Tensor]]:
-        for input_batch in it:
-            yield as_numpy_array(input_batch)
-
-
-class ConcatenatedInput(BaseInput):
+class ConcatenatedInput(input_base.Input):
     """A Module to generate input batches from a sequence of sub inputs.
 
     The sub inputs will be iterated in the order that they are given. All sub inputs except the
@@ -30,7 +20,7 @@ class ConcatenatedInput(BaseInput):
     """
 
     @config_class
-    class Config(BaseInput.Config):
+    class Config(input_base.Input.Config):
         is_training: Required[bool] = REQUIRED
         inputs: Sequence[InstantiableConfig] = []
 
@@ -51,7 +41,7 @@ class ConcatenatedInput(BaseInput):
         return ds
 
 
-class ZipInput(BaseInput):
+class ZipInput(input_base.Input):
     """A Module to generate input batches from a sequence of sub inputs.
 
     The sub inputs will be combined in the order that they are given.
@@ -60,7 +50,7 @@ class ZipInput(BaseInput):
     """
 
     @config_class
-    class Config(BaseInput.Config):
+    class Config(input_base.Input.Config):
         is_training: Required[bool] = REQUIRED
         inputs: dict[str, InstantiableConfig] = {}
 
