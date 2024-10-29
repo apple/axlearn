@@ -2096,6 +2096,8 @@ class MultiheadAttention(BaseLayer):
         *,
         time_step: Tensor,
         query: Tensor,
+        key: Optional[Tensor] = None,
+        value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor],
         return_aux: Optional[set[str]] = None,
@@ -2108,9 +2110,15 @@ class MultiheadAttention(BaseLayer):
         Args:
             time_step: A Tensor of shape [B]. Each value is an index into the length dimension
                 indicating where decoding will start from.
-            query: Tensor of shape [B, T, D] corresponding to query vector up to `time_step`. For
-                batch index `i`, only `query[i, :time_step[i], ...]` will affect subsequent
-                decoding.
+            query: Tensor of shape [B, T, D] corresponding to query projection input vector
+                up to `time_step`. For batch index `i`, only `query[i, :time_step[i], ...]`
+                will affect subsequent decoding.
+            key: Same description as `query`, but for the key projection input vector.
+                Key and value have to both be tensors or both be None.
+                If they are tensors, key and value are used as the unique input to the
+                input projection. Otherwise, query is used as the key and value input.
+            value: Same description as `query`, but for the value projection input vector.
+                See the above comment for `key` for additional constraints.
             kv_state: An optional KVState.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             return_aux: See comments on `Output`.
@@ -2123,6 +2131,8 @@ class MultiheadAttention(BaseLayer):
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             query=query,
+            key=key,
+            value=value,
             cached_states=dict(i_proj=time_step),
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
@@ -2134,6 +2144,8 @@ class MultiheadAttention(BaseLayer):
         cached_states: NestedTensor,
         query: Tensor,
         *,
+        key: Optional[Tensor] = None,
+        value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor],
         return_aux: Optional[set[str]] = None,
@@ -2148,7 +2160,15 @@ class MultiheadAttention(BaseLayer):
             cached_states: A `NestedTensor` object containing tensors which are the results of
                 previous attentions, and index used for fast decoding. Contains "key" and "value" of
                 shape [B, N, H, T], and a Tensor "time_step" of shape [B].
-            query: Tensor of shape [B, 1, D] corresponding to query vector at "time_step" indices.
+            query: Tensor of shape [B, 1, D] corresponding to query projection input vector
+                at "time_step" indices.
+            key: Tensor of shape [B, 1, D] corresponding to key projection input vector at
+                "time_step" indices. Key and value have to both be tensors or both be None.
+                If they are tensors, key and value are used as the unique input to the
+                input projection. Otherwise, query is used as the key and value input.
+            value: Tensor of shape [B, 1, D] corresponding to value projection input vector
+                at "time_step" indices. See the above comment for `key` for additional
+                constraints.
             kv_state: An optional KVState.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
                 Additionally, target_length is expected to be 1 since this is per time step.
@@ -2164,6 +2184,8 @@ class MultiheadAttention(BaseLayer):
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             query=query,
+            key=key,
+            value=value,
             cached_states=cached_states,
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
