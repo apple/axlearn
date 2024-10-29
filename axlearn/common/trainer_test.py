@@ -46,6 +46,7 @@ from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
+from axlearn.common.monitoring.device_monitor import DeviceMonitor
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.trainer import SpmdTrainer, TrainerState, select_mesh_config
 from axlearn.common.trainer_config_modifier import (
@@ -396,6 +397,7 @@ class TrainerTest(test_utils.TestCase):
         cfg.summary_writer.vlog = 5
         cfg.max_step = 12
         cfg.watchdog_timeout_seconds = 0.1
+        cfg.device_monitor = DeviceMonitor.default_config().set(check_interval_in_sec=0.1)
         cfg.vlog = 2
         trainer: SpmdTrainer = cfg.instantiate(parent=None)
         output_a = trainer.run(prng_key=jax.random.PRNGKey(123))
