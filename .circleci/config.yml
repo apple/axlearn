@@ -77,3 +77,4 @@ workflows:
       - build-and-test-job:
           requires:
             - hold
+            - pre-commit
