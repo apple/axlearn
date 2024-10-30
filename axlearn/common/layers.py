@@ -40,7 +40,7 @@ from axlearn.common.config import (
 from axlearn.common.loss import binary_cross_entropy, categorical_hinge_loss, cross_entropy
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.metrics_classification import precision_recall_f_score
-from axlearn.common.module import Module, child_context
+from axlearn.common.module import Module, child_context, nowrap
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,
@@ -760,6 +760,7 @@ class MaxPool2D(BaseLayer):
         )
         return output
 
+    @nowrap
     def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
         cfg = self.config
         if len(input_shape) != 4:
@@ -995,6 +996,7 @@ class Conv2D(BaseConv):
             output += self.parameters["bias"]
         return output
 
+    @nowrap
     def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
         cfg = self.config
         if len(input_shape) != 4:
@@ -1130,6 +1132,7 @@ class Conv2DTranspose(BaseConv):
             output += self.parameters["bias"]
         return output
 
+    @nowrap
     def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
         cfg = self.config
         if len(input_shape) != 4:
@@ -1358,6 +1361,7 @@ class Conv3D(BaseConv):
             output += self.parameters["bias"]
         return output
 
+    @nowrap
     def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
         cfg = self.config
         if len(input_shape) != 5:
@@ -2051,6 +2055,7 @@ class StackOverTime(BaseLayer):
         stacked_inputs = stacked_inputs * (1 - stacked_paddings)[:, :, None]
         return stacked_inputs, stacked_paddings
 
+    @nowrap
     def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
         """Computes stacked output shape.
 
