@@ -67,6 +67,37 @@ from axlearn.common.utils import (
     raise_for_cycles,
 )
 
+_CallableT = TypeVar("_CallableT", bound=Callable)
+
+
+def nowrap(fun: _CallableT) -> _CallableT:
+    """Marks the specified module method as one that doesn't need to be wrapped.
+
+    Methods decorated with `@nowrap` are helper methods that don't require wrapping, and
+    `_methods_to_wrap_for_auto_child_context()` will not return them.
+
+    This is especially useful in cases where a public method (i.e., one that is not explicitly
+    prefixed with `_`) does not need an invocation context, such as methods that do not attempt
+    to access state or PRNG keys.
+
+    For instance::
+
+        >>> from axlearn.common import module
+        >>> class Foo(module.Module):
+        ...   @module.nowrap
+        ...   def init_states(self, batch_size: int):
+        ...     return dict(time_step=jnp.zeros(batch_size, dtype=jnp.int32))
+
+    Args:
+        fun: The Module method to mark as nowrap.
+
+    Returns:
+        The given function ``fun`` marked as nowrap.
+    """
+    # pylint: disable-next=protected-access
+    fun._nowrap = True
+    return fun
+
 
 def _generate_seed_from_name(name: str) -> np.int64:
     """Generates a random seed from a name string.
@@ -660,6 +691,8 @@ class Module(Configurable, metaclass=_PostInitMeta):
                 return False
             fn_sig = inspect.signature(fn)
             if "self" not in fn_sig.parameters:
+                return False
+            if hasattr(fn, "_nowrap"):
                 return False
             return True
 

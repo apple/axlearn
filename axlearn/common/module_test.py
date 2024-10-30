@@ -32,6 +32,7 @@ from axlearn.common.module import functional as F
 from axlearn.common.module import (
     install_context_stack,
     new_output_collection,
+    nowrap,
     scan_in_context,
     set_current_context,
 )
@@ -793,6 +794,21 @@ class ModuleTest(TestWithTemporaryCWD):
         # Outer should also wrap the inner methods. We also ensure that `self.config` points to
         # `InnerModule.Config` rather than `OuterModule.Config`.
         self.assertEqual(inner_cfg.inner_a, outer.inner_method())
+
+    def test_nowrap(self):
+        class MyModule(Module):
+            def my_method1(self):
+                return 1
+
+            @nowrap
+            def my_method2(self):
+                return 2
+
+        cfg = MyModule.default_config()
+        layer = cfg.set(name="test").instantiate(parent=None)
+        wrapped_methods = layer._methods_to_wrap_for_auto_child_context()
+        self.assertIn("my_method1", wrapped_methods)
+        self.assertNotIn("my_method2", wrapped_methods)
 
 
 class ScanInContextTest(TestWithTemporaryCWD):
