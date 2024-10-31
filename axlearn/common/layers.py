@@ -128,10 +128,9 @@ class RedirectToSharedModule(BaseLayer):
             ) from e
 
     def _redirect(self, *args, redirection_target_method: str, **kwargs) -> Any:
-        cfg = self.config  # type: RedirectToSharedModule.Config
+        cfg: RedirectToSharedModule.Config = self.config
         shared_module = self.get_shared_module(cfg.shared_module)
-        with child_context("redirect", module=shared_module.module, state=shared_module.state):
-            return getattr(shared_module.module, redirection_target_method)(*args, **kwargs)
+        return getattr(shared_module.module, redirection_target_method)(*args, **kwargs)
 
 
 class Dropout(BaseLayer):
