@@ -371,6 +371,11 @@ class TestFlashAttention(TestCase):
                 causal=causal,
                 sliding_window_size=sliding_window_size,
             )
+            # pylint: disable-next=protected-access
+            if test_layer._backend() == "gpu" and query_len_multiplier != 1:
+                pytest.skip(
+                    reason="GPU flash attention does not support different query and key lengths."
+                )
 
             query_len = int(query_len_multiplier * seq_len)
             inputs = _fake_inputs(
@@ -498,6 +503,12 @@ class TestFlashAttention(TestCase):
             set_bias_recursively(test_cfg, False)
             ref_layer = ref_cfg.set(name="ref").instantiate(parent=None)
             test_layer = test_cfg.set(name="test").instantiate(parent=None)
+            # pylint: disable-next=protected-access
+            if test_layer.layer._backend() == "gpu" and query_len_multiplier != 1:
+                pytest.skip(
+                    reason="GPU flash attention does not support different query and key lengths."
+                )
+
             # Use the same params for both. Only attention implementation differs.
             params = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
             query_len = int(query_len_multiplier * seq_len)
