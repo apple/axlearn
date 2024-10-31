@@ -381,6 +381,7 @@ def sample_from_datasets(
     sources: Sequence[InstantiableConfig],
     weights: Sequence[float],
     seed: Optional[int] = None,
+    autotune_ram_budget_gb: Optional[int] = None,
 ) -> BuildDatasetFn:
     """Returns a data source formed by sampling from multiple data sources without replacement.
     All source datasets are repeated to prevent the sampling from stopping early and to prevent
@@ -399,6 +400,9 @@ def sample_from_datasets(
             use `config_for_function(with_processor)` to integrate processors with sources.
         weights: list or tf.Tensor of probabilities of picking each dataset.
         seed: optional random seed.
+        autotune_ram_budget_gb: The memory budget (in GiB) the tensorflow datasets optimization
+            pipeline will target. Typically configure as 50%-75% of available memory.
+            If None, uses tensorflow defaults.
 
     Returns:
         A BuildDatasetFn yielding the interleaved data source.
@@ -422,6 +426,21 @@ def sample_from_datasets(
         source_ds_list = [source_fn().repeat() for source_fn in source_fns]
         if any(source_ds.cardinality() == 0 for source_ds in source_ds_list):
             raise ValueError("Expected all cardinalities to be non-zero")
+
+        if autotune_ram_budget_gb is not None:
+            autotuned_ds_list = []
+            options = tf.data.Options()
+            options.autotune.enabled = True
+            options.autotune.ram_budget = int(
+                # Soft constrain to this many bytes of memory per component.
+                (autotune_ram_budget_gb / len(source_ds_list))
+                * 1024**3
+            )
+            # Start fetching data on iterator creation.
+            options.experimental_warm_start = True
+            for el in source_ds_list:
+                autotuned_ds_list.append(el.with_options(options))
+            source_ds_list = autotuned_ds_list
 
         return tf.data.Dataset.sample_from_datasets(
             source_ds_list,
