@@ -800,7 +800,7 @@ class BaseConv(BaseLayer):
 
 # Copied from jax.lax._dilate_shape
 # https://github.com/jax-ml/jax/blob/2d78b172266870bd755b039f6faa2056a51930f9/jax/_src/lax/lax.py#L5763
-def _conv_dilate_window(*, window: Sequence[int], dilation: Optional[Sequence[int]] = None):
+def conv_dilate_window(*, window: Sequence[int], dilation: Optional[Sequence[int]] = None):
     """Returns dilated effective window size.
 
     Args:
@@ -862,7 +862,7 @@ def conv_explicit_padding(
         return padding
 
     def same_padding(window, dilation):
-        effective_window = _conv_dilate_window(window=window, dilation=dilation)
+        effective_window = conv_dilate_window(window=window, dilation=dilation)
         pad_total = tuple(w - 1 for w in effective_window)
         pad_left = tuple(pt // 2 for pt in pad_total)
         pad_right = tuple(pt - pl for pt, pl in zip(pad_total, pad_left))
@@ -881,7 +881,7 @@ def conv_explicit_padding(
         raise ValueError(f"{padding} padding is not supported.")
 
 
-def _conv_output_shape(
+def conv_output_shape(
     in_shape: Sequence[Optional[int]],
     *,
     window: Sequence[int],
@@ -916,7 +916,7 @@ def _conv_output_shape(
 
     padding = conv_explicit_padding(window=window, padding=padding, dilation=dilation)
     pad_amount = tuple(sum(p) for p in padding)
-    effective_window = _conv_dilate_window(window=window, dilation=dilation)
+    effective_window = conv_dilate_window(window=window, dilation=dilation)
 
     def output_shape(in_shape: Optional[int], effective_window: int, pad_amount: int, stride: int):
         if in_shape is None:
@@ -1008,13 +1008,13 @@ class Conv2D(BaseConv):
             )
 
         in_shape = input_shape[1:3]
-        out_shape = _conv_output_shape(
+        out_shape = conv_output_shape(
             in_shape, window=cfg.window, strides=cfg.strides, padding=cfg.padding
         )
         return [input_shape[0], *out_shape, cfg.output_dim]
 
 
-def _compute_conv_output_1d_padding(
+def compute_conv_paddings(
     in_paddings: Tensor,
     *,
     window: int,
@@ -1047,7 +1047,7 @@ def _compute_conv_output_1d_padding(
     """
     chex.assert_rank(in_paddings, 2)
     conv_padding = conv_explicit_padding(window=(window,), padding=conv_padding)
-    window = _conv_dilate_window(window=(window,))[0]
+    window = conv_dilate_window(window=(window,))[0]
     left_pad, right_pad = conv_padding[0]
     pad_total = window - 1
 
@@ -1277,7 +1277,7 @@ class Conv2DWith1DPadding(Conv2D):
         # Apply Conv2D.
         output = super().forward(x)
         # Compute paddings conv output.
-        output_paddings = _compute_conv_output_1d_padding(
+        output_paddings = compute_conv_paddings(
             paddings,
             window=cfg.window[0],
             stride=cfg.strides[0],
@@ -1373,7 +1373,7 @@ class Conv3D(BaseConv):
             )
 
         in_shape = input_shape[1:4]
-        out_shape = _conv_output_shape(
+        out_shape = conv_output_shape(
             in_shape, window=cfg.window, strides=cfg.strides, padding=cfg.padding
         )
         return [input_shape[0], *out_shape, cfg.output_dim]

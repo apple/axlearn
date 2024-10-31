@@ -63,8 +63,8 @@ from axlearn.common.layers import (
     StochasticDepth,
     UnitNormLinear,
     VariationalNoise,
-    _compute_conv_output_1d_padding,
     _compute_moments_with_paddings,
+    compute_conv_paddings,
     get_activation_fn,
     get_stochastic_depth_linear_rate,
     set_bias_recursively,
@@ -892,6 +892,35 @@ class LayerTest(TestCase, tf.test.TestCase):
         output_shape = layer.output_shape(input_shape=inputs.shape)
         self.assertAllEqual(outputs.shape, output_shape)
 
+    @parameterized.parameters((1, 1, 1), (1, 2, 1), (2, 1, 2), (3, 1, 3), (3, 2, 5))
+    def test_conv_dilate_window(self, window, dilation, expected):
+        effective_window = layers.conv_dilate_window(window=(window,), dilation=(dilation,))[0]
+        self.assertEqual(effective_window, expected)
+
+    @parameterized.parameters(
+        (10, 3, 1, "SAME", 1, 10),
+        (10, 3, 2, "SAME", 1, 5),
+        (10, 3, 1, "SAME", 2, 10),
+        (10, 3, 2, "SAME", 2, 5),
+        (10, 3, 1, "VALID", 1, 8),
+        (10, 3, 2, "VALID", 1, 4),
+        (10, 3, 1, "VALID", 2, 6),
+        (10, 3, 2, "VALID", 2, 3),
+        (10, 3, 1, "CAUSAL", 1, 10),
+        (10, 3, 2, "CAUSAL", 1, 5),
+        (10, 3, 1, "CAUSAL", 2, 8),
+        (10, 3, 2, "CAUSAL", 2, 4),
+    )
+    def test_conv_output_shape(self, in_shape, window, strides, padding, dilation, expected):
+        out_shape = layers.conv_output_shape(
+            in_shape=(in_shape,),
+            window=(window,),
+            strides=(strides,),
+            padding=padding,
+            dilation=(dilation,),
+        )[0]
+        self.assertEqual(out_shape, expected)
+
     @parameterized.parameters(
         ([0, 0, 0, 1], [0, 0, 0, 1], 1, "SAME"),
         ([0], [], 1, "VALID"),
@@ -913,11 +942,11 @@ class LayerTest(TestCase, tf.test.TestCase):
         ([0, 0, 1, 1, 1, 1], [0, 1], 2, "VALID"),
     )
     def test_conv_padding(self, input_paddings, expected_paddings, stride: int, padding_cfg: str):
-        """Tests _compute_conv_output_1d_padding() with SAME and VALID padding cfg."""
+        """Tests compute_conv_paddings() with SAME and VALID padding cfg."""
         # This test is from lingvo
         # https://github.com/tensorflow/lingvo/blob/master/lingvo/core/conv_layers_with_time_padding_test.py#L157.
         window = 3
-        out_paddings = _compute_conv_output_1d_padding(
+        out_paddings = compute_conv_paddings(
             jnp.array([input_paddings]), window=window, stride=stride, conv_padding=padding_cfg
         )
         assert_allclose(out_paddings[0], expected_paddings)
@@ -936,7 +965,7 @@ class LayerTest(TestCase, tf.test.TestCase):
     def test_conv_output_1d_padding(
         self, window: int, stride: int, padding: ConvPaddingType, ref_padding: ConvPaddingType
     ):
-        """Tests _compute_conv_output_1d_padding() with explicit padding cfg."""
+        """Tests compute_conv_paddings() with explicit padding cfg."""
         batch_size = 5
         seq_len = 5
         paddings = jnp.triu(jnp.ones((batch_size, seq_len)), k=1)
@@ -944,10 +973,10 @@ class LayerTest(TestCase, tf.test.TestCase):
         explicit_padding = layers.conv_explicit_padding(window=(window,), padding=ref_padding)
         self.assertAllEqual(explicit_padding, padding[:1])
 
-        out_paddings = _compute_conv_output_1d_padding(
+        out_paddings = compute_conv_paddings(
             paddings, window=window, stride=stride, conv_padding=padding
         )
-        ref_paddings = _compute_conv_output_1d_padding(
+        ref_paddings = compute_conv_paddings(
             paddings, window=window, stride=stride, conv_padding=ref_padding
         )
         self.assertAllEqual(out_paddings, ref_paddings)
@@ -977,7 +1006,7 @@ class LayerTest(TestCase, tf.test.TestCase):
     def test_conv_output_1d_padding_with_anchor(self, window, padding, anchor, expected_paddings):
         input_paddings = [0, 0, 0, 1, 1, 1]
         try:
-            out_paddings = _compute_conv_output_1d_padding(
+            out_paddings = compute_conv_paddings(
                 jnp.array([input_paddings]),
                 window=window,
                 stride=1,
