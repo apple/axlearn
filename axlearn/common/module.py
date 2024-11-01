@@ -28,8 +28,8 @@ class MyModule(Module):
 
 `MyModule.__init__` will identify `MyModule.do_foo` as one of the methods to wrap through
 `Module._methods_to_wrap_for_auto_child_context` (which can be overridden by subclasses, e.g.,
-in RedirectToSharedModule). It will then wrap the method via
-`Module._wrap_method_with_auto_child_context` and install the wrapped function as `self.do_foo`.
+in RedirectToSharedModule). It will then wrap the method via `_wrap_method_with_auto_child_context`
+and install the wrapped function as `self.do_foo`.
 
 This allows MyModule's parents to invoke `do_foo` as `self.my_child.do_foo(...)` without having
 to create the child context explicitly.

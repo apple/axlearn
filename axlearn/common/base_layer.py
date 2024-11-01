@@ -554,7 +554,7 @@ class BaseLayer(Module):
         """Adds tensor stats about `value`.
 
         Suppose `self.tensor_stats` adds some summaries about `value`, e.g.,
-            self.add_summary("mean", jnp.mean(value))
+            `self._add_tensor_stats("mean", jnp.mean(value))`.
 
         The "mean" summary will show up under path f"{self.path()}/tensor_stats/{name}/mean".
 
