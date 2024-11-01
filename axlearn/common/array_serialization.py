@@ -412,11 +412,6 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
                 "max_data_shard_degree is not implemented for values other than 1 and -1"
             )
 
-        # Required for pinned host memory to work correctly.
-        # TODO(hanzhi-zhou): Pinned host memory for GPU doesn't work until jax 0.4.32.
-        # Fix this after jax upgrade.
-        jax.config.update("jax_enable_memories", jax.default_backend() == "tpu")
-
     def serialize(
         self,
         arrays: list[Tensor],
