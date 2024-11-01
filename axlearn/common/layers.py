@@ -819,36 +819,45 @@ def conv_dilate_window(*, window: Sequence[int], dilation: Optional[Sequence[int
 # Copied from subroutine in jax.lax.reduce_window.
 # Extend lax.padtype_to_pads for CAUSAL.
 def conv_explicit_padding(
-    *, window: Sequence[int], padding: ConvPaddingType, dilation: Optional[Sequence[int]] = None
+    *,
+    window: Sequence[int],
+    strides: Sequence[int],
+    padding: ConvPaddingType,
+    dilation: Optional[Sequence[int]] = None,
 ) -> ConvPaddingType:
-    """Convert str padding to tuple padding.
+    """Returns the explicit padding for "SAME", "VALID", and "CAUSAL" modes.
 
-    For example, with a window size of 3 and a stride of 2, padding="SAME" is applied as
-    padding=((1,1),) as shown below, as keeping input and output length.
-            pad  |         |pad
-    paddings:   0|0 0 0 0 0|0
-                |___|
-                    |___|
-                        |___|
+    Each mode follows the formulas below:
+    * SAME: (pad_total//2, pad_total - pad_total//2)
+    * VALID: (0, 0)
+    * CAUSAL: (dilate_window - stride * dilation, stride * dilation - 1)
 
-    To implement padding="VALID", we use padding=((0,0),) as follows.
-            pad|         |pad
-    paddings:  |0 0 0 0 0|
-                |___|
-                    |___|
+    For example, window=5, stride=2,
+    * SAME: padding = (2, 2)
+                pad|           |pad
+    paddings:   0 0|0 0 0 0 1 1|1 1
+                |___^___|
+                    |___^___|
+                        |___^___|
 
-    To implement padding="CAUSAL", we use padding=((2,0),) as follows.
-            pad   |         |pad
-    paddings:  0 0|0 0 0 0 0|
-               |___|
-                   |___|
-                       |___|
+    * VALID: padding = (0, 0)
+               |           |
+    paddings:  |0 0 0 0 1 1|
+               |^_______|
+
+    * CAUSAL: padding = (3, 1)
+                pad  |           |pad
+    paddings:   0 0 0|0 0 0 0 1 1|1
+                |_____^_|
+                    |_____^_|
+                        |_____^_|
 
     For "CAUSAL", the first component is time and treated as "CAUSAL", while the remaining
     components are handled with "SAME" padding.
 
     Args:
         window: convolution window.
+        strides: convolution strides.
         padding: convolution padding.
         dilation: convolution dilation.
 
@@ -861,9 +870,12 @@ def conv_explicit_padding(
     if not isinstance(padding, str):
         return padding
 
+    if dilation is None:
+        dilation = (1,) * len(window)
+
     def same_padding(window, dilation):
-        effective_window = conv_dilate_window(window=window, dilation=dilation)
-        pad_total = tuple(w - 1 for w in effective_window)
+        dilate_window = conv_dilate_window(window=window, dilation=dilation)
+        pad_total = tuple(w - 1 for w in dilate_window)
         pad_left = tuple(pt // 2 for pt in pad_total)
         pad_right = tuple(pt - pl for pt, pl in zip(pad_total, pad_left))
         return tuple(zip(pad_left, pad_right))
@@ -873,9 +885,14 @@ def conv_explicit_padding(
     elif padding == "VALID":
         return ((0, 0),) * len(window)
     elif padding == "CAUSAL":
-        causal_padding = ((window[0] - 1, 0),)
+        dilate_window = conv_dilate_window(window=window[:1], dilation=dilation[:1])[0]
+        dilate_stride = strides[0] * dilation[0]
+        pad_left = dilate_window - dilate_stride
+        pad_right = dilate_stride - 1
+        assert pad_left + pad_right == dilate_window - 1
+        causal_padding = ((pad_left, pad_right),)
         if len(window) > 1:
-            causal_padding += same_padding(window[1:], dilation)
+            causal_padding += same_padding(window[1:], dilation[1:])
         return causal_padding
     else:
         raise ValueError(f"{padding} padding is not supported.")
@@ -914,18 +931,20 @@ def conv_output_shape(
             f"len(window) = {len(window)} and len(strides) = {len(strides)}"
         )
 
-    padding = conv_explicit_padding(window=window, padding=padding, dilation=dilation)
+    padding = conv_explicit_padding(
+        window=window, strides=strides, padding=padding, dilation=dilation
+    )
     pad_amount = tuple(sum(p) for p in padding)
-    effective_window = conv_dilate_window(window=window, dilation=dilation)
+    dilate_window = conv_dilate_window(window=window, dilation=dilation)
 
-    def output_shape(in_shape: Optional[int], effective_window: int, pad_amount: int, stride: int):
+    def output_shape(in_shape: Optional[int], dilate_window: int, pad_amount: int, stride: int):
         if in_shape is None:
             return None
-        numerator = max(in_shape + pad_amount - (effective_window - 1), 0)
-        # ceil trick
+        numerator = max(in_shape + pad_amount - (dilate_window - 1), 0)
+        # ceil(numerator / stride)
         return (numerator + stride - 1) // stride
 
-    return tuple(map(output_shape, in_shape, effective_window, pad_amount, strides))
+    return tuple(map(output_shape, in_shape, dilate_window, pad_amount, strides))
 
 
 # The accuracy of the output of this layer currently doesn't match that of PyTorch
@@ -983,7 +1002,9 @@ class Conv2D(BaseConv):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
-        conv_padding = conv_explicit_padding(window=cfg.window, padding=cfg.padding)
+        conv_padding = conv_explicit_padding(
+            window=cfg.window, strides=cfg.strides, padding=cfg.padding
+        )
         output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],
@@ -1046,7 +1067,7 @@ def compute_conv_paddings(
         ValueError: If anchor is not between left_time_padding and right_time_padding.
     """
     chex.assert_rank(in_paddings, 2)
-    conv_padding = conv_explicit_padding(window=(window,), padding=conv_padding)
+    conv_padding = conv_explicit_padding(window=(window,), strides=(stride,), padding=conv_padding)
     window = conv_dilate_window(window=(window,))[0]
     left_pad, right_pad = conv_padding[0]
     pad_total = window - 1
@@ -1348,7 +1369,9 @@ class Conv3D(BaseConv):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
-        conv_padding = conv_explicit_padding(window=cfg.window, padding=cfg.padding)
+        conv_padding = conv_explicit_padding(
+            window=cfg.window, strides=cfg.strides, padding=cfg.padding
+        )
         output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],
@@ -1447,7 +1470,7 @@ class Conv1D(BaseConv):
         cfg = self.config
         dilation = (cfg.rhs_dilation,) if cfg.rhs_dilation else None
         conv_padding = conv_explicit_padding(
-            window=(cfg.window,), padding=cfg.padding, dilation=dilation
+            window=(cfg.window,), strides=(cfg.strides,), padding=cfg.padding, dilation=dilation
         )
         output = jax.lax.conv_general_dilated(
             lhs=x,
@@ -1512,7 +1535,9 @@ class DepthwiseConv1D(BaseConv):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
-        conv_padding = conv_explicit_padding(window=(cfg.window,), padding=cfg.padding)
+        conv_padding = conv_explicit_padding(
+            window=(cfg.window,), strides=(cfg.strides,), padding=cfg.padding
+        )
         output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],

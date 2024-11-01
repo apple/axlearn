@@ -908,8 +908,8 @@ class LayerTest(TestCase, tf.test.TestCase):
         (10, 3, 2, "VALID", 2, 3),
         (10, 3, 1, "CAUSAL", 1, 10),
         (10, 3, 2, "CAUSAL", 1, 5),
-        (10, 3, 1, "CAUSAL", 2, 8),
-        (10, 3, 2, "CAUSAL", 2, 4),
+        (10, 3, 1, "CAUSAL", 2, 10),
+        (10, 3, 2, "CAUSAL", 2, 5),
     )
     def test_conv_output_shape(self, in_shape, window, strides, padding, dilation, expected):
         out_shape = layers.conv_output_shape(
@@ -942,7 +942,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         ([0, 0, 1, 1, 1, 1], [0, 1], 2, "VALID"),
     )
     def test_conv_padding(self, input_paddings, expected_paddings, stride: int, padding_cfg: str):
-        """Tests compute_conv_paddings() with SAME and VALID padding cfg."""
+        """Tests conv_output_shape() with SAME and VALID padding cfg."""
         # This test is from lingvo
         # https://github.com/tensorflow/lingvo/blob/master/lingvo/core/conv_layers_with_time_padding_test.py#L157.
         window = 3
@@ -952,25 +952,135 @@ class LayerTest(TestCase, tf.test.TestCase):
         assert_allclose(out_paddings[0], expected_paddings)
 
     @parameterized.parameters(
+        (5, 1, "SAME", 1, (2, 2)),
+        (5, 2, "SAME", 1, (2, 2)),
+        (5, 3, "SAME", 1, (2, 2)),
+        (5, 1, "SAME", 2, (4, 4)),
+        (5, 2, "SAME", 2, (4, 4)),
+        (5, 3, "SAME", 2, (4, 4)),
+        (5, 1, "VALID", 1, (0, 0)),
+        (5, 2, "VALID", 1, (0, 0)),
+        (5, 3, "VALID", 1, (0, 0)),
+        (5, 1, "VALID", 2, (0, 0)),
+        (5, 2, "VALID", 2, (0, 0)),
+        (5, 3, "VALID", 2, (0, 0)),
+        (5, 1, "CAUSAL", 1, (4, 0)),
+        (5, 2, "CAUSAL", 1, (3, 1)),
+        (5, 3, "CAUSAL", 1, (2, 2)),
+        (5, 1, "CAUSAL", 2, (7, 1)),
+        (5, 2, "CAUSAL", 2, (5, 3)),
+        (5, 3, "CAUSAL", 2, (3, 5)),
+    )
+    def test_conv_explicit_padding(
+        self, window: int, stride: int, padding: ConvPaddingType, dilation: int, expected
+    ):
+        """Tests the cases in conv_explicit_padding() description."""
+        explicit_padding = layers.conv_explicit_padding(
+            window=(window,),
+            strides=(stride,),
+            padding=padding,
+            dilation=(dilation,),
+        )
+        self.assertAllEqual(explicit_padding[0], expected)
+
+    @parameterized.parameters(
+        (5, 1, "SAME", [0, 0, 0, 0, 1, 1]),
+        (5, 2, "SAME", [0, 0, 1]),
+        (5, 1, "VALID", [0, 0]),
+        (5, 2, "VALID", [0]),
+        (5, 1, "SAME", [0, 0, 0, 0, 1, 1]),
+        (5, 2, "SAME", [0, 0, 1]),
+    )
+    def test_conv_output_1d_padding_simple(
+        self, window: int, stride: int, padding: ConvPaddingType, expected
+    ):
+        """Tests the cases in conv_explicit_padding() description."""
+        paddings = jnp.array([[0, 0, 0, 0, 1, 1]])
+        out_paddings = compute_conv_paddings(
+            paddings, window=window, stride=stride, conv_padding=padding
+        )
+        self.assertAllEqual(out_paddings[0], expected)
+
+    @parameterized.parameters(
+        ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0]),
+        ([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0]),
+        ([1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0]),
+        ([1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 1, 0]),
+        ([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1]),
+        ([0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [0, 1, 1]),
+        ([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [0, 1, 1]),
+        ([0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [0, 0, 1]),
+    )
+    def test_conv_output_1d_padding_causal(self, in_paddings, expected):
+        """Test the below cases.
+
+        The formula for CAUSAL padding is `(window - stride, stride - 1)`.
+        With window=15 and stride=6, padding is (9, 5).
+        Below are examples illustrating how input paddings are transformed into output
+        paddings across different scenarios.
+
+            left_pad         |         input paddings              -> outputs paddings
+        1) |1 1 1|1 1 1|1 1 1|0 0 0|0 0 0|0 0 0|0 0 0|0 0 0|0 0 0| -> 0 0 0
+        2) |1 1 1|1 1 1|1 1 1|1 0 0|0 0 0|0 0 0|0 0 0|0 0 0|0 0 0| -> 1 0 0
+        3) |1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|0 0 0|0 0 0|0 0 0|0 0 0| -> 1 0 0
+        4) |1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 0 0|0 0 0|0 0 0|0 0 0| -> 1 1 0
+        5) |1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 1 1| -> 1 1 1
+        6) |1 1 1|1 1 1|1 1 1|0 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 1 1| -> 0 1 1
+        7) |1 1 1|1 1 1|1 1 1|0 0 0|0 0 0|1 1 1|1 1 1|1 1 1|1 1 1| -> 0 1 1
+        8) |1 1 1|1 1 1|1 1 1|0 0 0|0 0 0|0 1 1|1 1 1|1 1 1|1 1 1| -> 0 0 1
+            |_________________^_________|
+                        |_________________^_________|
+                                    |_________________^_________|
+
+        Let's take a closer look at case 7). In case 7), the first window component fully
+        covers all 0s, so the first component of the output padding should be the last
+        0 component, meaning the second component is 1.
+
+        In case 8), however, the first window component does not cover all 0s, so the
+        next component should also be 0. If the second component were 1, information
+        from the last partial window of the input would be lost.
+
+        In general, the anchor point should be the next position after the right edge
+        of the previous window. Since the anchor is defined by the left pad,
+        `left_pad = window - stride`, and `right_pad = (window - 1) - left_pad`,
+        simplifying to `right_pad = stride - 1`.
+        """
+        window = 15
+        stride = 6
+        padding = "CAUSAL"
+        explicit_padding = layers.conv_explicit_padding(
+            window=(window,), strides=(stride,), padding=padding
+        )
+        self.assertAllEqual(explicit_padding[0], (9, 5))
+
+        in_paddings = jnp.array([in_paddings])
+        out_paddings = compute_conv_paddings(
+            in_paddings, window=window, stride=stride, conv_padding=padding
+        )[0]
+        self.assertAllEqual(out_paddings, expected)
+
+    @parameterized.parameters(
         (3, 1, ((1, 1),), "SAME"),
         (3, 1, ((0, 0),), "VALID"),
         (3, 1, ((2, 0),), "CAUSAL"),
         (3, 2, ((1, 1),), "SAME"),
         (3, 2, ((0, 0),), "VALID"),
-        (3, 2, ((2, 0),), "CAUSAL"),
+        (3, 2, ((1, 1),), "CAUSAL"),
         (5, 2, ((2, 2),), "SAME"),
         (5, 2, ((0, 0),), "VALID"),
-        (5, 2, ((4, 0),), "CAUSAL"),
+        (5, 2, ((3, 1),), "CAUSAL"),
     )
-    def test_conv_output_1d_padding(
+    def test_conv_output_1d_padding_against_str_padding(
         self, window: int, stride: int, padding: ConvPaddingType, ref_padding: ConvPaddingType
     ):
-        """Tests compute_conv_paddings() with explicit padding cfg."""
+        """Tests conv_output_shape() with explicit padding cfg."""
         batch_size = 5
         seq_len = 5
         paddings = jnp.triu(jnp.ones((batch_size, seq_len)), k=1)
 
-        explicit_padding = layers.conv_explicit_padding(window=(window,), padding=ref_padding)
+        explicit_padding = layers.conv_explicit_padding(
+            window=(window,), strides=(stride,), padding=ref_padding
+        )
         self.assertAllEqual(explicit_padding, padding[:1])
 
         out_paddings = compute_conv_paddings(
