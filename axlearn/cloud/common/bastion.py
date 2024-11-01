@@ -53,6 +53,7 @@ import functools
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -99,6 +100,9 @@ _JOB_DIR = "/var/tmp/jobs"
 _BASTION_SERIALIZED_JOBSPEC_ENV_VAR = "_BASTION_SERIALIZED_JOBSPEC"
 
 FLAGS = flags.FLAGS
+
+_VALID_NAME_CHARS = r"[!-~]+"  # match all printing ASCII characters except space
+valid_name_re = re.compile(_VALID_NAME_CHARS)
 
 
 def bastion_job_flags(flag_values: flags.FlagValues = FLAGS):
@@ -323,11 +327,16 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
 
 
 def is_valid_job_name(name: str) -> bool:
-    """Ensures that job name does not look like a path.
+    """Ensures job name is not path-like and only contains safe characters.
 
-    We use a permissive regex to avoid making assumptions about the underlying compute environment.
+    We use a strict regex to avoid making assumptions about the underlying compute environment.
     """
-    return bool(name) and ("/" not in name) and (name not in (".", "..")) and ("\n" not in name)
+    return (
+        bool(name)
+        and ("/" not in name)
+        and (name not in (".", ".."))
+        and bool(valid_name_re.fullmatch(name))
+    )
 
 
 def _download_jobspec(job_name: str, *, remote_dir: str, local_dir: str = _JOB_DIR) -> JobSpec:
