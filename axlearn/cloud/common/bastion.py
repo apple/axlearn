@@ -329,7 +329,7 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
 def is_valid_job_name(name: str) -> bool:
     """Ensures job name is not path-like and only contains safe characters.
 
-    We use a strict regex to avoid making assumptions about the underlying compute environment.
+    This check should avoid making assumptions about the underlying compute environment.
     """
     return (
         bool(name)
