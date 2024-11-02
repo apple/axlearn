@@ -19,7 +19,7 @@
 
 import enum
 from collections.abc import Sequence
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Literal, Optional, Union
 
 import chex
 import jax
@@ -2030,7 +2030,8 @@ class StackOverTime(BaseLayer):
     """Stack inputs along the time axis.
 
     StackOverTime behaves the same as Conv2DWith1DPadding w.r.t. paddings along the time axis.
-    We treat front paddings as valid frames and back paddings as invalid frames.
+    Please refer to the docstring of Conv2DWith1DPadding to understand how the padding work
+    including "SAME", "VALID", and "CAUSAL" literals. The padding anchor is set to `left padding`.
     """
 
     @config_class
@@ -2038,9 +2039,13 @@ class StackOverTime(BaseLayer):
         """Configures StackOverTime."""
 
         stride: Required[int] = REQUIRED  # Number of frames to stack.
-        # Number of paddings to apply along the time axis. The two integers indicate
-        # leading and trailing padding to add respectively.
-        padding: tuple[int, int] = (0, 0)
+
+        # Number of paddings to apply along the time axis. The two integers specify the amount
+        # of leading and trailing padding, respectively. Alternatively, this can be a
+        # convolution padding literals type such as 'SAME', 'VALID', or 'CAUSAL'.
+        # Note: For backward compatibility, the default is set to VALID, but in most cases,
+        # CAUSAL is more appropriate as it preserves the sequence length.
+        padding: Union[tuple[int, int], Literal["SAME", "VALID", "CAUSAL"]] = "VALID"
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> tuple[Tensor, Tensor]:
         """Stacks stride number of frames into one frame along the time axis.
@@ -2060,11 +2065,16 @@ class StackOverTime(BaseLayer):
         cfg = self.config
         if cfg.stride <= 1:
             raise ValueError(f"stride should be greater than 1, but got {cfg.stride}.")
-        inputs = jnp.pad(inputs, ((0, 0), cfg.padding, (0, 0)), constant_values=0)
-        # Front paddings are valid frames.
-        paddings = jnp.pad(paddings, ((0, 0), (cfg.padding[0], 0)), constant_values=0)
-        # Back paddings are invalid frames.
-        paddings = jnp.pad(paddings, ((0, 0), (0, cfg.padding[1])), constant_values=1)
+
+        # For the last partial frame.
+        inputs = inputs * (1 - paddings)[:, :, None]
+
+        padding = cfg.padding
+        if isinstance(padding, str):
+            padding = conv_explicit_padding(
+                window=(cfg.stride,), strides=(cfg.stride,), padding=padding
+            )[0]
+        inputs = jnp.pad(inputs, ((0, 0), padding, (0, 0)), constant_values=0)
 
         batch_size, seq_len, input_dim = inputs.shape
         output_length = seq_len // cfg.stride
@@ -2072,9 +2082,8 @@ class StackOverTime(BaseLayer):
         # Stack inputs over the time dimension.
         stacked_inputs = jnp.reshape(inputs[:, : output_length * cfg.stride, :], new_shape)
         # An output frame is padding if at least one of the stacked input frames is padding.
-        stacked_paddings = jnp.max(
-            jnp.reshape(paddings[:, : output_length * cfg.stride], [-1, output_length, cfg.stride]),
-            axis=-1,
+        stacked_paddings = compute_conv_paddings(
+            paddings, window=cfg.stride, stride=cfg.stride, conv_padding=(padding,)
         )
         stacked_inputs = stacked_inputs * (1 - stacked_paddings)[:, :, None]
         return stacked_inputs, stacked_paddings
@@ -2092,8 +2101,13 @@ class StackOverTime(BaseLayer):
         """
         cfg = self.config
         batch_size, seq_len, input_dim = input_shape
-        output_length = (seq_len + sum(cfg.padding)) // cfg.stride if seq_len is not None else None
-        return [batch_size, output_length, input_dim * cfg.stride]
+        padding = cfg.padding
+        if isinstance(padding, tuple):
+            padding = (padding,)
+        out_shape = conv_output_shape(
+            [seq_len], window=(cfg.stride,), strides=(cfg.stride,), padding=padding
+        )
+        return [batch_size, *out_shape, input_dim * cfg.stride]
 
 
 class MultiLinear(BaseLayer):
