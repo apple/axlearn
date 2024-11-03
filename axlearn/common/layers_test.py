@@ -10,6 +10,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests basic layers."""
+
 # pylint: disable=no-self-use,too-many-lines,too-many-public-methods
 import copy
 import itertools

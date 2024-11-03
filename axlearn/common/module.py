@@ -133,6 +133,10 @@ class ChildNameConflictError(ValueError):
     pass
 
 
+class InvalidDescendantError(ValueError):
+    pass
+
+
 class OutputCollection(NamedTuple):
     """Implicit outputs from module invocations.
 
@@ -524,12 +528,24 @@ def _call_method_in_context(
     with contextlib.ExitStack() as stack:
         context = current_context()
         if context is not None:
-            # Enter context for descendant module if not already in it.
-            reversed_path_to_descendant = list(
-                reversed(context.module.path_to_descendant_module(module))
-            )
-            while reversed_path_to_descendant:
-                stack.enter_context(child_context(reversed_path_to_descendant.pop()))
+            try:
+                # Enter context for descendant module if not already in it.
+                reversed_path_to_descendant = list(
+                    reversed(context.module.path_to_descendant_module(module))
+                )
+                while reversed_path_to_descendant:
+                    stack.enter_context(child_context(reversed_path_to_descendant.pop()))
+            except InvalidDescendantError as e:
+                # If an ancestor shared this module, use the shared module context since the module
+                # may not be a descendant of the current module.
+                try:
+                    shared_module = context.module.get_shared_module(module)
+                    stack.enter_context(child_context(**shared_module._asdict()))
+                except InvalidDescendantError:
+                    raise ValueError(
+                        f"Module {module.path()} is not a descendant of {context.module.path()}, "
+                        "nor does any ancestor share the module."
+                    ) from e
 
         # pylint: disable-next=protected-access
         # Save call information on the stack so we can get this information from the traceback
@@ -621,6 +637,8 @@ class Module(Configurable, metaclass=_PostInitMeta):
         self._children: dict[str, "Module"] = {}
         # Mapping from descendant module name to relative path from current module.
         self._paths_to_shared_modules: dict[str, list[str]] = {}
+        # Mapping from modules being shared by the current module, to the shared module name.
+        self._shared_module_names: dict["Module", str] = {}
         self._vlog_level = cfg.vlog
 
     def __post_init__(self):
@@ -814,7 +832,9 @@ class Module(Configurable, metaclass=_PostInitMeta):
             module = module.parent
         path = list(reversed(relative_path))
         if module is None:
-            raise ValueError(f"Module at {'.'.join(path)} is not a descendant of {self.path()}")
+            raise InvalidDescendantError(
+                f"Module at {'.'.join(path)} is not a descendant of {self.path()}"
+            )
         return path
 
     def _share_with_descendants(self, module: "Module", *, shared_module_name: str):
@@ -841,12 +861,14 @@ class Module(Configurable, metaclass=_PostInitMeta):
                 f"{self._paths_to_shared_modules[shared_module_name]} vs. {relative_path}"
             )
         self._paths_to_shared_modules[shared_module_name] = relative_path
+        self._shared_module_names[module] = shared_module_name
 
     class SharedModuleInfo(NamedTuple):
+        name: str
         module: "Module"
         state: NestedTensor
 
-    def get_shared_module(self, shared_module_name: str) -> SharedModuleInfo:
+    def get_shared_module(self, shared_module_or_name: Union["Module", str]) -> SharedModuleInfo:
         """Gets the shared module and state with the given name from a nearest ancestor.
 
         Shared modules should be registered via `_share_with_descendants`.
@@ -860,34 +882,47 @@ class Module(Configurable, metaclass=_PostInitMeta):
         Raises:
             ValueError: if `shared_module_name` has not been shared by any ancestor.
         """
+        # pylint: disable=protected-access
         context = self.get_invocation_context()
-        while (
-            context is not None
-            # pylint: disable-next=protected-access
-            and shared_module_name not in context.module._paths_to_shared_modules
-        ):
+
+        def context_shares_module(ctx: InvocationContext) -> bool:
+            if isinstance(shared_module_or_name, str):
+                return shared_module_or_name in ctx.module._paths_to_shared_modules
+            elif isinstance(shared_module_or_name, Module):
+                return shared_module_or_name in ctx.module._shared_module_names
+            raise ValueError(f"{shared_module_or_name=} must be a string or Module.")
+
+        while context is not None and not context_shares_module(context):
             context = context.parent
         if context is None:
-            raise ValueError(
+            raise InvalidDescendantError(
                 f"Module '{self.path()}' does not have an ancestor that shares "
-                f"'{shared_module_name}'."
+                f"{shared_module_or_name=}."
             )
+
+        if isinstance(shared_module_or_name, Module):
+            shared_module_or_name = context.module._shared_module_names[shared_module_or_name]
+        assert isinstance(shared_module_or_name, str)
+
         target_module, target_state = context.module, context.state
         # pylint: disable-next=protected-access
-        path_from_ancestor = context.module._paths_to_shared_modules[shared_module_name]
+        path_from_ancestor = context.module._paths_to_shared_modules[shared_module_or_name]
         for part in path_from_ancestor:
             if part not in target_module.children:
-                raise ValueError(
+                raise InvalidDescendantError(
                     f"Module '{target_module.path()}' does not contain '{part}' from path "
                     f"'{'.'.join(path_from_ancestor)}'"
                 )
             if part not in target_state:
-                raise ValueError(
+                raise InvalidDescendantError(
                     f"Module '{target_module.path()}' state does not contain '{part}' from path "
                     f"'{'.'.join(path_from_ancestor)}'. The state contains: {target_state.keys()}"
                 )
             target_module, target_state = target_module.children[part], target_state[part]
-        return Module.SharedModuleInfo(module=target_module, state=target_state)
+
+        return Module.SharedModuleInfo(
+            module=target_module, state=target_state, name=shared_module_or_name
+        )
 
     def get_invocation_context(self) -> InvocationContext:
         context = current_context()
