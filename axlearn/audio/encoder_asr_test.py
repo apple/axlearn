@@ -7,6 +7,7 @@ import pytest
 from absl.testing import parameterized
 from jax import numpy as jnp
 
+from axlearn.audio import frontend_utils
 from axlearn.audio.encoder_asr import ASREncoder, SpeechContextNetwork, SpeechFeatureLayer
 from axlearn.audio.test_utils import fake_audio
 from axlearn.common.module import functional as F
@@ -248,9 +249,11 @@ class ASREncoderTest(TestCase):
 
         spectrogram = output_collections.module_outputs["feature"]["spectrogram"]
         spec, spec_paddings = spectrogram["outputs"], spectrogram["paddings"]
-        expected_spec_len = (seq_len - frame_size_ms * sample_rate // 1000) // (
-            hop_size_ms * sample_rate // 1000
-        ) + 1
+        expected_spec_len = frontend_utils.num_frames(
+            seq_len,
+            frame_size=frontend_utils.ms_to_samples(frame_size_ms, sample_rate=sample_rate),
+            hop_size=frontend_utils.ms_to_samples(hop_size_ms, sample_rate=sample_rate),
+        )
         self.assertEqual(spec.shape, (batch_size, expected_spec_len, num_filters, 1))
         self.assertEqual(spec_paddings.shape, (batch_size, expected_spec_len))
 
