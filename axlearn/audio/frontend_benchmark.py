@@ -1,12 +1,14 @@
+# Copyright © 2024 Apple Inc.
+
 """Benchmark Frontend.
 
 1) frontend_utils.frame benchmark
 * TPU v4
   * frame_time: 0.0686s.
-  * Note: before pull/836, frame_time: 1.7839s
+  * Note: before pull/807, frame_time: 1.7839s
 * CPU
   * frame_time:0.2298s
-  * Note: before pull/836, frame_time: 0.1403s
+  * Note: before pull/807, frame_time: 0.1403s
 """
 
 import functools
