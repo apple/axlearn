@@ -154,6 +154,7 @@ model.batch_axis_names[0]: 'data'
 model.batch_axis_names[1]: 'expert'
 model.batch_axis_names[2]: 'fsdp'
 model.decoder.attention_mask: None
+model.decoder.decoding.klass: 'axlearn.common.decoder.DecodingLayer'
 model.decoder.dim: 2048
 model.decoder.dropout_rate: 0.0
 model.decoder.emb.dropout.klass: 'axlearn.common.layers.Dropout'

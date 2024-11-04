@@ -1,8 +1,9 @@
 # Copyright © 2023 Apple Inc.
 
 """Decoder layers."""
+
 import contextlib
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Protocol, Union
 
 import jax
 from jax import numpy as jnp
@@ -20,6 +21,7 @@ from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
+    Configurable,
     InstantiableConfig,
     Required,
     config_class,
@@ -45,7 +47,7 @@ from axlearn.common.module import (
     current_context,
     new_output_collection,
 )
-from axlearn.common.utils import NestedTensor, with_sharding_constraint
+from axlearn.common.utils import Nested, NestedTensor, with_sharding_constraint
 
 
 # TODO(markblee): Remove this when we have a better solution at the decoding loop level.
@@ -110,20 +112,17 @@ def _scores_from_logits(
     return log_probs
 
 
-class DecodingMixin(Module):
-    """A mixin for Modules that support decoding.
+# NOTE: We use a Protocol instead of defining a base layer so that decoder implementations can
+# inherit from other base classes without resorting to multiple inheritance.
+class BaseDecoder(Protocol):
+    """Defines the interface that a Decoder must follow for compatibility with decoding."""
 
-    Contains shared functionality for beam search and sample decoding.
-    """
-
-    # TODO(markblee): Find a better way to implement Mixins. This is a bit weird as it's never part
-    # of the config hierarchy of the mixing class.
-    class Config:
-        pad_token_id: Required[int] = REQUIRED
-        eos_token_id: Required[int] = REQUIRED
+    @property
+    def prng_key(self) -> Tensor:
+        """A PRNG key for sampling."""
 
     # TODO(markblee): Remove this in favor of prefill_states.
-    def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
+    def init_states(self, *, batch_size: int, max_sequence_length: int) -> Nested[Tensor]:
         """Initializes cache for autoregressive cached decoding.
 
         Args:
@@ -131,18 +130,12 @@ class DecodingMixin(Module):
             max_sequence_length: The sequence length of the target to be decoded.
 
         Returns:
-            The cache as a `NestedTensor` with key and value initialized.
+            The cache as a Nested Tensor with key and value initialized.
         """
-        raise NotImplementedError
 
     def prefill_states(
-        self,
-        *,
-        time_step: Tensor,
-        input_ids: Tensor,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> tuple[NestedTensor, NestedTensor]:
+        self, *, time_step: Tensor, input_ids: Tensor, **kwargs
+    ) -> tuple[Nested[Tensor], Nested[Tensor]]:
         """Initializes cache for autoregressive cached decoding.
 
         TODO(markblee): Rename to init_states once we add support for decoding at non-zero time
@@ -153,46 +146,48 @@ class DecodingMixin(Module):
                 indicating where decoding will start from. If `time_step` exceeds `target_length`,
                 reads consume the last token in the sequence, and writes are no-ops.
             input_ids: An integer Tensor of shape [batch, target_length].
-            cross_attention_data: An optional Tensor of shape [..., source_length, source_dim].
-            cross_attention_logit_biases: An optional Tensor of shape
-                [..., target_step_length, source_length], where `target_step_length` must match
-                the shape of `input_ids`.
+            kwargs: Additional kwargs for prefilling.
 
         Returns:
-            A NestedTensor, which can be used as `cached_states` for the initial call of
+            A Nested Tensor, which can be used as `cached_states` for the initial call of
             `extend_step()`.
-            A NestedTensor representing outputs for the given inputs. `output['logits']` will have
+            A Nested Tensor representing outputs for the given inputs. `output['logits']` will have
             shape [batch, vocab_size].
         """
-        raise NotImplementedError
 
     def extend_step(
-        self,
-        *,
-        cached_states: NestedTensor,
-        input_ids: Tensor,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> tuple[NestedTensor, NestedTensor]:
+        self, *, cached_states: Nested[Tensor], input_ids: Tensor, **kwargs
+    ) -> tuple[Nested[Tensor], Nested[Tensor]]:
         """Computes incremental outputs during autoregressive decoding.
 
         Args:
-            cached_states: A NestedTensor returned by `init_states()` or a previous invocation of
-                `extend_step()`.
+            cached_states: A Nested Tensor returned by `prefill_states()` or a previous invocation
+                of `extend_step()`.
             input_ids: An int Tensor of shape [batch, target_step_length], where
                 `target_step_length` is 1.
-            cross_attention_data: An optional Tensor of shape [..., source_length, source_dim].
-            cross_attention_logit_biases: An optional Tensor of shape
-                [..., target_step_length, source_length], where `target_step_length` must match
-                the shape of `input_ids`.
+            kwargs: Additional kwargs for incremental decoding.
 
         Returns:
             (updated_cached_states, output), where:
             `updated_cached_states` represents the new cached states incorporating `input_ids`;
-            `output` represents the output for the given input data. `output['logits']` will have
-            shape [batch, vocab_size].
+            `output` represents the output for the given input data. `output['logits']` will
+            have shape [batch, vocab_size].
         """
-        raise NotImplementedError
+
+
+class DecodingLayer(Configurable):
+    """Base decoding API."""
+
+    @config_class
+    class Config(Configurable.Config):
+        """Configures DecodingLayer."""
+
+        pad_token_id: Required[int] = REQUIRED
+        eos_token_id: Required[int] = REQUIRED
+
+    def __init__(self, cfg, *, decoder: BaseDecoder):
+        super().__init__(cfg)
+        self._decoder = decoder
 
     def beam_search_decode(
         self,
@@ -224,7 +219,7 @@ class DecodingMixin(Module):
         Raises:
             ValueError: If pad_token_id is non-zero.
         """
-        cfg = self.config
+        cfg: DecodingLayer.Config = self.config
         tokens_to_scores_fn = self._tokens_to_scores(
             num_decodes=num_decodes,
             cross_attention_data=cross_attention_data,
@@ -235,7 +230,7 @@ class DecodingMixin(Module):
             prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
         )
         time_step = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id)
-        init_states, _ = self.prefill_states(
+        init_states, _ = self._decoder.prefill_states(
             time_step=time_step,
             input_ids=input_ids,
             cross_attention_data=cross_attention_data,
@@ -284,7 +279,7 @@ class DecodingMixin(Module):
         Returns:
             The sample decoding outputs.
         """
-        cfg = self.config
+        cfg: DecodingLayer.Config = self.config
         tokens_to_scores_fn = self._tokens_to_scores(
             num_decodes=num_decodes,
             cross_attention_data=cross_attention_data,
@@ -295,7 +290,7 @@ class DecodingMixin(Module):
             prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
         )
         time_step = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id)
-        init_states, init_outputs = self.prefill_states(
+        init_states, init_outputs = self._decoder.prefill_states(
             time_step=time_step,
             input_ids=input_ids,
             cross_attention_data=cross_attention_data,
@@ -316,7 +311,7 @@ class DecodingMixin(Module):
                 stop_decoding_condition or StopOnSubsequence([[cfg.eos_token_id]])
             ),
             num_decodes=num_decodes,
-            prng_key=self.prng_key,
+            prng_key=self._decoder.prng_key,
             pad_id=cfg.pad_token_id,
             input_token_scores=init_scores,
         )
@@ -331,6 +326,7 @@ class DecodingMixin(Module):
     ) -> Callable[[Tensor, NestedTensor], tuple[Tensor, NestedTensor]]:
         """Build a fn mapping current token IDs and model state to next logits and updated state."""
 
+        # TODO(markblee): Move cross attention data handling to Decoder.
         if cross_attention_data is not None:
             # Shape [batch*num_decodes, source_len, hidden_dim].
             cross_attention_data = jnp.repeat(cross_attention_data, num_decodes, axis=0)
@@ -373,7 +369,7 @@ class DecodingMixin(Module):
 
             # Use a temporary output collection to avoid tracer leaks during extend_step.
             with _temporary_output_collection():
-                updated_state, outputs = self.extend_step(
+                updated_state, outputs = self._decoder.extend_step(
                     cached_states=cache,
                     input_ids=token_ids,
                     cross_attention_data=cross_attention_data,
@@ -403,7 +399,7 @@ class DecodingMixin(Module):
 
 
 # TODO(gyin): Add unittest for Decoder forward
-class Decoder(DecodingMixin, BaseLayer):
+class Decoder(BaseLayer):
     """Construct a decoder transformer to output hidden states and logits based on lm head."""
 
     @config_class
@@ -442,6 +438,8 @@ class Decoder(DecodingMixin, BaseLayer):
         )
         # The logit modifier to apply. If None, does not modify logits.
         output_logits_modifier: Optional[ConfigOr[logit_modifiers.LogitsToLogitsFn]] = None
+        # The decoding implementation.
+        decoding: DecodingLayer.Config = DecodingLayer.default_config()
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -460,6 +458,9 @@ class Decoder(DecodingMixin, BaseLayer):
                 "lm_head", cfg.lm_head.set(vocab_size=cfg.vocab_size, embedding_dim=cfg.dim)
             )
         self._output_logits_modifier = maybe_instantiate(cfg.output_logits_modifier)
+        self._decoding: DecodingLayer = cfg.decoding.set(
+            pad_token_id=cfg.pad_token_id, eos_token_id=cfg.eos_token_id
+        ).instantiate(decoder=self)
 
     def _forward_for_mode(
         self,
@@ -476,12 +477,15 @@ class Decoder(DecodingMixin, BaseLayer):
     ) -> tuple[Optional[NestedTensor], Tensor]:
         x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
         if mode == ForwardMode.FORWARD:
-            transformer_state, x = None, self.transformer(
-                x,
-                self_attention_logit_biases=self_attention_logit_biases,
-                target_segment_ids=input_segment_ids,
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
+            transformer_state, x = (
+                None,
+                self.transformer(
+                    x,
+                    self_attention_logit_biases=self_attention_logit_biases,
+                    target_segment_ids=input_segment_ids,
+                    cross_attention_data=cross_attention_data,
+                    cross_attention_logit_biases=cross_attention_logit_biases,
+                ),
             )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
@@ -577,47 +581,37 @@ class Decoder(DecodingMixin, BaseLayer):
         return output
 
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
-        """See `DecodingMixin.init_states`."""
+        """See `BaseDecoder.init_states` for details."""
+        cfg: Decoder.Config = self.config
         return dict(
             transformer_state=self.transformer.init_states(
                 target_batch_size=batch_size, target_max_len=max_sequence_length
             ),
             input_ids=jnp.full(
-                (batch_size, max_sequence_length), self.config.pad_token_id, dtype=jnp.int32
+                (batch_size, max_sequence_length), cfg.pad_token_id, dtype=jnp.int32
             ),
             time_step=jnp.zeros(batch_size, dtype=jnp.int32),
         )
 
     def prefill_states(
-        self,
-        *,
-        time_step: Tensor,
-        input_ids: Tensor,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        self, *, time_step: Tensor, input_ids: Tensor, **kwargs
     ) -> tuple[NestedTensor, NestedTensor]:
-        """See `DecodingMixin.prefill_states`."""
+        """See `BaseDecoder.prefill_states` for details."""
         states, outputs = self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(transformer_state=time_step),
             input_ids=input_ids,
             # TODO(markblee): Consider supporting packed inputs for more efficient prefilling.
             self_attention_logit_biases=self.compute_attention_logit_biases(input_ids),
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **kwargs,
         )
         states = dict(time_step=time_step, input_ids=input_ids, **states)
         return states, outputs
 
     def extend_step(
-        self,
-        *,
-        cached_states: NestedTensor,
-        input_ids: Tensor,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        self, *, cached_states: NestedTensor, input_ids: Tensor, **kwargs
     ) -> tuple[NestedTensor, NestedTensor]:
-        """See `DecodingMixin.extend_step`."""
+        """See `BaseDecoder.extend_step` for details."""
         time_step = cached_states["time_step"]
         assert time_step.ndim == 1
 
@@ -651,10 +645,9 @@ class Decoder(DecodingMixin, BaseLayer):
             mode=ForwardMode.EXTEND_STEP,
             input_ids=input_ids,
             self_attention_logit_biases=self_attention_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
             positions=jnp.expand_dims(time_step, 1),
             cached_states=cached_states,
+            **kwargs,
         )
         updated_states = dict(
             input_ids=updated_inputs,
@@ -666,6 +659,37 @@ class Decoder(DecodingMixin, BaseLayer):
             **updated_states,
         )
         return updated_states, outputs
+
+    def beam_search_decode(
+        self,
+        *,
+        prefix: Tensor,
+        max_sequence_length: int,
+        num_decodes: int,
+        **kwargs,
+    ):
+        """See configured `decoding` implementation for details."""
+        return self._decoding.beam_search_decode(
+            prefix=prefix,
+            max_sequence_length=max_sequence_length,
+            num_decodes=num_decodes,
+            **kwargs,
+        )
+
+    def sample_decode(
+        self,
+        prefix: Tensor,
+        max_sequence_length: int,
+        num_decodes: int,
+        **kwargs,
+    ):
+        """See configured `decoding` implementation for details."""
+        return self._decoding.sample_decode(
+            prefix=prefix,
+            max_sequence_length=max_sequence_length,
+            num_decodes=num_decodes,
+            **kwargs,
+        )
 
     def compute_attention_logit_biases(
         self,

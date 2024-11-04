@@ -53,6 +53,8 @@ def default_xla_options(
             # concurrently with gradient computation for the following layer.
             xla_tpu_enable_data_parallel_all_reduce_opt="true",
             xla_tpu_data_parallel_opt_different_sized_ops="true",
+            # Group non-blocking DCN collectives into as few stages as possible.
+            xla_tpu_enable_sunk_dcn_allreduce_done_with_host_reduction="true",
         )
 
     # Validate options. Will never fail if this function is implemented correctly.

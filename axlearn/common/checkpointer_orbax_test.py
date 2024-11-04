@@ -1,3 +1,5 @@
+# Copyright © 2024 Apple Inc.
+
 """Tests orbax checkpointer.
 
 See also checkpointer_test.py for common checkpointing tests.

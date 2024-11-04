@@ -278,8 +278,9 @@ def _tpu_splash_attention(
     if mask is None:
         mask = splash_attention_mask.FullMask(mask_shape)
     else:
-        rows = np.arange(source_len)
-        cols = np.arange(target_len)
+        # Use fewer bytes for the mask.
+        rows = np.arange(source_len, dtype=np.int32)
+        cols = np.arange(target_len, dtype=np.int32)
         with jax.ensure_compile_time_eval():
             mask_array = np.asarray(mask(rows[:, None], cols[None, :]))
 

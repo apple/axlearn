@@ -5,6 +5,7 @@
 
 For example, utilities to convert AXLearn parameters to/from torch modules live here.
 """
+
 from collections.abc import Iterable, Mapping, Sequence
 from math import ceil
 from typing import Any, Optional, Protocol, Union, cast
@@ -20,6 +21,7 @@ from transformers.models.distilbert import modeling_distilbert as hf_distilbert
 from transformers.models.dpr import modeling_dpr as hf_dpr
 from transformers.models.encoder_decoder import modeling_encoder_decoder as hf_encoder_decoder
 from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
+from transformers.models.llama.modeling_llama import LlamaForCausalLM
 from transformers.models.mt5 import modeling_mt5 as hf_mt5
 from transformers.models.opt import modeling_opt as hf_opt
 from transformers.models.roberta import modeling_roberta as hf_roberta
@@ -2331,3 +2333,102 @@ def parameters_from_t5x_encoder_decoder(
             raise ValueError(f"Unsupported layer: {layer}")
 
     return as_tensor(dst)
+
+
+def _permute_q_k_for_rope(vector: torch.Tensor) -> torch.Tensor:
+    """Permutes q and k vector because transformers package has a different implementation of RoPE.
+
+    The revert operation of the following:
+    https://github.com/huggingface/transformers/blob/e42587f596181396e1c4b63660abf0c736b10dae/src/transformers/models/llama/convert_llama_weights_to_hf.py#L136
+    """
+    n, h, d = vector.shape
+    vector = vector.view(n, 2, h // 2, d).transpose(1, 2)
+    return vector.reshape(n, h, d)
+
+
+def parameters_from_llama_3(llama: LlamaForCausalLM, state: dict) -> dict:
+    """Converts llama weights from huggingface model to fuji state.
+
+    The following model are supported and tested:
+    - (fuji_model_name="fuji-1B-v3", llama_model_name="Llama-3.2-1B")
+    - (fuji_model_name="fuji-3B-v3", llama_model_name="Llama-3.2-3B")
+    - (fuji_model_name="fuji-8B-v3", llama_model_name="Llama-3.1-8B")
+    - (fuji_model_name="fuji-70B-v3", llama_model_name="Llama-3.1-70B")
+
+    Args:
+        llama: A Llama model with type LlamaForCausalLM.
+        state: The state of a fuji model.
+
+    Returns:
+        NestedTensor containing the same structure as state, but the weights are from llama.
+    """
+    # Copy the nested dict. No need to deep copy the data since it will be replaced.
+    state = jax.tree.map(lambda x: x, state)
+    if "lm_head" in state["decoder"]:
+        if id(llama.model.embed_tokens.weight) == id(llama.lm_head.weight):
+            raise ValueError("The embed_tokens and lm_head should not share weights.")
+        state["decoder"]["lm_head"]["weight"] = llama.lm_head.weight
+    elif id(llama.model.embed_tokens.weight) != id(llama.lm_head.weight):
+        raise ValueError("The embed_tokens and lm_head should share weights")
+
+    state["decoder"]["emb"]["token_emb"]["weight"] = llama.model.embed_tokens.weight
+    gate_proj = []
+    up_proj = []
+    down_proj = []
+    qkv = []
+    o = []
+    input_norm = []
+    post_attention_norm = []
+    o_shape = state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["attention"][
+        "o_proj"
+    ]["weight"].shape
+    i_shape = state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["attention"][
+        "i_proj"
+    ]["i_proj"]["qkv_proj"][
+        "weight"
+    ].shape  # (n_layers, d, n, h)
+
+    for layer in llama.model.layers:
+        gate_proj.append(layer.mlp.gate_proj.weight.transpose(0, 1))
+        up_proj.append(layer.mlp.up_proj.weight.transpose(0, 1))
+        down_proj.append(layer.mlp.down_proj.weight.transpose(0, 1))
+
+        vector = torch.concat(
+            [
+                _permute_q_k_for_rope(
+                    layer.self_attn.q_proj.weight.reshape(-1, i_shape[-1], i_shape[-3])
+                ),
+                _permute_q_k_for_rope(
+                    layer.self_attn.k_proj.weight.reshape(-1, i_shape[-1], i_shape[-3])
+                ),
+                layer.self_attn.v_proj.weight.reshape(-1, i_shape[-1], i_shape[-3]),
+            ],
+            dim=0,
+        ).permute(2, 0, 1)
+        qkv.append(vector)
+        o.append(layer.self_attn.o_proj.weight.reshape(-1, o_shape[-2], o_shape[-1]))
+        input_norm.append(layer.input_layernorm.weight)
+        post_attention_norm.append(layer.post_attention_layernorm.weight)
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear1_0"][
+        "weight"
+    ] = torch.stack(gate_proj)
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear1_1"][
+        "weight"
+    ] = torch.stack(up_proj)
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear2"][
+        "weight"
+    ] = torch.stack(down_proj)
+    state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["attention"]["o_proj"][
+        "weight"
+    ] = torch.stack(o)
+    state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["attention"]["i_proj"][
+        "i_proj"
+    ]["qkv_proj"]["weight"] = torch.stack(qkv)
+    state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["norm"][
+        "scale"
+    ] = torch.stack(input_norm)
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["norm"][
+        "scale"
+    ] = torch.stack(post_attention_norm)
+    state["decoder"]["output_norm"]["scale"] = llama.model.norm.weight
+    return as_tensor(state)

@@ -8,7 +8,7 @@
 # pylint: disable=too-many-lines
 """Input generator based on tf.data."""
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Callable, Optional, Union
 
 import jax
@@ -30,6 +30,7 @@ from seqio import map_over_dataset
 from typing_extensions import Protocol
 
 from axlearn.common import file_system as fs
+from axlearn.common import input_base
 from axlearn.common.config import (
     REQUIRED,
     ConfigBase,
@@ -42,19 +43,13 @@ from axlearn.common.config import (
     maybe_instantiate,
     maybe_set_config,
 )
-from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.module import Module
 from axlearn.common.utils import (
     PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
-    NestedTensor,
-    PartitionSpec,
     Tensor,
-    as_numpy_array,
-    dispatch_input_batch,
     get_data_dir,
     get_recursively,
     set_recursively,
-    with_sharding_constraint,
 )
 
 
@@ -386,6 +381,7 @@ def sample_from_datasets(
     sources: Sequence[InstantiableConfig],
     weights: Sequence[float],
     seed: Optional[int] = None,
+    autotune_ram_budget_gb: Optional[int] = None,
 ) -> BuildDatasetFn:
     """Returns a data source formed by sampling from multiple data sources without replacement.
     All source datasets are repeated to prevent the sampling from stopping early and to prevent
@@ -404,6 +400,9 @@ def sample_from_datasets(
             use `config_for_function(with_processor)` to integrate processors with sources.
         weights: list or tf.Tensor of probabilities of picking each dataset.
         seed: optional random seed.
+        autotune_ram_budget_gb: The memory budget (in GiB) the tensorflow datasets optimization
+            pipeline will target. Typically configure as 50%-75% of available memory.
+            If None, uses tensorflow defaults.
 
     Returns:
         A BuildDatasetFn yielding the interleaved data source.
@@ -427,6 +426,21 @@ def sample_from_datasets(
         source_ds_list = [source_fn().repeat() for source_fn in source_fns]
         if any(source_ds.cardinality() == 0 for source_ds in source_ds_list):
             raise ValueError("Expected all cardinalities to be non-zero")
+
+        if autotune_ram_budget_gb is not None:
+            autotuned_ds_list = []
+            options = tf.data.Options()
+            options.autotune.enabled = True
+            options.autotune.ram_budget = int(
+                # Soft constrain to this many bytes of memory per component.
+                (autotune_ram_budget_gb / len(source_ds_list))
+                * 1024**3
+            )
+            # Start fetching data on iterator creation.
+            options.experimental_warm_start = True
+            for el in source_ds_list:
+                autotuned_ds_list.append(el.with_options(options))
+            source_ds_list = autotuned_ds_list
 
         return tf.data.Dataset.sample_from_datasets(
             source_ds_list,
@@ -1128,7 +1142,7 @@ def set_read_config_recursively(source_config: ConfigBase, **kwargs):
     source_config.visit(visit_fn=lambda k, v: None, enter_fn=enter_fn)
 
 
-class Input(Module):
+class Input(input_base.Input):
     """A Module to generate input batches with tf.data.Dataset.
 
     This input module contains three components:
@@ -1142,7 +1156,7 @@ class Input(Module):
     """
 
     @config_class
-    class Config(Module.Config):
+    class Config(input_base.Input.Config):
         """Configures Input."""
 
         is_training: Required[bool] = REQUIRED
@@ -1152,25 +1166,20 @@ class Input(Module):
 
         # A config that instantiates to a BuildDatasetFn. The result dataset will contain
         # a stream of examples representing one epoch of the source dataset.
-        source: Required[InstantiableConfig] = REQUIRED
+        source: Required[InstantiableConfig[BuildDatasetFn]] = REQUIRED
 
         # A config that instantiates to a DatasetToDatasetFn, which processes examples from
         # the source dataset and generates the example dataset to be padded and batched, potentially
         # splitting and merging examples.
-        processor: Required[InstantiableConfig] = REQUIRED
+        processor: Required[InstantiableConfig[DatasetToDatasetFn]] = REQUIRED
 
         # A config that instantiates to a DatasetToDatasetFn, which performs batching of examples.
-        batcher: InstantiableConfig = config_for_function(batch)
-
-        # If not None, creates an InputDispatcher and uses it for dispatching per-feed batches to
-        # global batches.
-        input_dispatcher: Optional[InputDispatcher] = None
+        batcher: InstantiableConfig[DatasetToDatasetFn] = config_for_function(batch)
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        if cfg.input_dispatcher is not None:
-            self._add_child("input_dispatcher", cfg.input_dispatcher)
+        if "input_dispatcher" in self.children:
             # Let input_dispatcher determine num_shards and shard_index for tfds_read_config.
             feed_read_config = self.input_dispatcher.feed_read_config()
             set_read_config_recursively(cfg.source, **feed_read_config)
@@ -1194,37 +1203,6 @@ class Input(Module):
 
     def dataset(self) -> tf.data.Dataset:
         return self._batcher(self._processor(self._source()))
-
-    def batches(self, it: tf.data.Iterator) -> Iterable[NestedTensor]:
-        for input_batch in it:
-            input_batch = as_numpy_array(input_batch)
-            if "input_dispatcher" in self.children:
-                input_batch = self.input_dispatcher.logical_to_physical_batch(input_batch)
-            yield input_batch
-
-    def __iter__(self) -> Iterable[NestedTensor]:
-        it = iter(self.dataset())
-        yield from self.batches(it)
-
-    def dispatch_global_batch(
-        self,
-        global_physical_batch: NestedTensor,
-        *,
-        batch_axis_names: Union[str, Sequence[str]] = "data",
-    ) -> NestedTensor:
-        if "input_dispatcher" in self.children:
-            global_physical_batch = jax.tree.map(
-                lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)),
-                global_physical_batch,
-            )
-            global_logical_batch = self.input_dispatcher.physical_to_logical_batch(
-                global_physical_batch
-            )
-        else:
-            global_logical_batch = dispatch_input_batch(
-                global_physical_batch, batch_axis_names=batch_axis_names
-            )
-        return global_logical_batch
 
 
 def disable_shuffle_recursively(cfg: Input.Config):

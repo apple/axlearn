@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests repeat layer."""
+
 import itertools
 from typing import Optional
 
@@ -387,10 +388,10 @@ class RepeatTest(TestCase):
         )
 
         for forward_path, output_path, remat_methods in [
-            ("repeat", "repeat/layer{i}/redirect/carry_mean", ["forward"]),
+            ("repeat", "repeat/layer{i}/shared_layer/carry_mean", ["forward"]),
             (
                 "nested/repeat",
-                "nested/repeat/layer{i}/redirect/carry_mean",
+                "nested/repeat/layer{i}/shared_layer/carry_mean",
                 ["forward", "forward"],
             ),
         ]:

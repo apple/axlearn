@@ -10,7 +10,7 @@ from jax import numpy as jnp
 
 from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.test_utils import TestCase
-from axlearn.common.utils import shapes
+from axlearn.common.utils import PHYSICAL_TO_LOGICAL_DISPATCH_KEY, shapes
 
 
 class DispatcherTest(TestCase):
@@ -26,6 +26,8 @@ class DispatcherTest(TestCase):
         (8, 16, 2, (0,)),
         (8, 16, 4, (1, 3)),
         (2, 16, 16, (7, 11)),
+        # Test a case where `feed_logical_batch_size` < `feed_physical_batch_size`.
+        (2, 8, 2, (0,)),
     )
     def test_input_dispatcher(
         self,
@@ -71,6 +73,21 @@ class DispatcherTest(TestCase):
             self.assertEqual(
                 (dispatcher.feed_physical_batch_size,), feed_physical_batch["example_index"].shape
             )
+            # Dispatch should contain the right range of values.
+            if PHYSICAL_TO_LOGICAL_DISPATCH_KEY in feed_physical_batch:
+                dispatch = feed_physical_batch[PHYSICAL_TO_LOGICAL_DISPATCH_KEY]
+                if physical_feed_index in dispatcher.config.logical_feed_indices:
+                    self.assertEqual(
+                        dispatcher.feed_logical_batch_size, jnp.count_nonzero(dispatch)
+                    )
+                else:
+                    self.assertNestedEqual(
+                        jnp.zeros(
+                            [dispatcher.feed_physical_batch_size, global_logical_batch_size],
+                            dtype=bool,
+                        ),
+                        dispatch,
+                    )
             all_physical_batches.append(feed_physical_batch)
 
         # Shuffle the feed batches.

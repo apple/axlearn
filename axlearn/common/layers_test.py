@@ -10,6 +10,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests basic layers."""
+
 # pylint: disable=no-self-use,too-many-lines,too-many-public-methods
 import copy
 import itertools
@@ -28,7 +29,7 @@ from jax import numpy as jnp
 from sklearn.metrics import precision_score as sklearn_precision_score
 from sklearn.metrics import recall_score as sklearn_recall_score
 
-from axlearn.common import module, utils
+from axlearn.common import layers, module, utils
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import config_class
 from axlearn.common.decoder import Decoder
@@ -42,6 +43,7 @@ from axlearn.common.layers import (
     Conv2DTranspose,
     Conv2DWith1DPadding,
     Conv3D,
+    ConvPaddingType,
     DepthwiseConv1D,
     DropToken,
     Embedding,
@@ -53,6 +55,7 @@ from axlearn.common.layers import (
     MaxPool2D,
     MovingAverage,
     MultiLinear,
+    NormType,
     RedirectToSharedModule,
     RMSNorm,
     SeparableSpaceTimePositionalEmbedding,
@@ -61,8 +64,8 @@ from axlearn.common.layers import (
     StochasticDepth,
     UnitNormLinear,
     VariationalNoise,
-    _compute_conv_output_1d_padding,
     _compute_moments_with_paddings,
+    compute_conv_paddings,
     get_activation_fn,
     get_stochastic_depth_linear_rate,
     set_bias_recursively,
@@ -201,13 +204,87 @@ class LayerTest(TestCase, tf.test.TestCase):
                 num_groups=2,
                 scale_params=jnp.array([2, 2, 3, 3]),
             ),
+            dict(
+                inputs_shape=[72, 3, 7, 8],
+                num_groups=2,
+                scale_params=jnp.array([2, 2, 2, 2, 3, 3, 3, 3]),
+                norm_type=NormType.LAYERNORM,
+                norm_axes=-1,
+            ),
+            dict(
+                inputs_shape=[3, 3, 4],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 6],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, 2, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 16],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 16],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]]),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]]),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, 2, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]]),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]]),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
         ]
     )
     # pylint: disable-next=too-many-statements,too-many-branches
-    def test_group_norm(self, inputs_shape, *, paddings=None, num_groups=3, scale_params=None):
+    def test_group_norm(
+        self,
+        inputs_shape,
+        *,
+        paddings=None,
+        num_groups=3,
+        scale_params=None,
+        norm_type=NormType.LAYERNORM,
+        norm_axes=None,
+    ):
         batch_size = inputs_shape[0]
         dim = inputs_shape[-1]
-        cfg = GroupNorm.default_config().set(name="norm", input_dim=dim, num_groups=num_groups)
+        cfg = GroupNorm.default_config().set(
+            name="norm",
+            input_dim=dim,
+            num_groups=num_groups,
+            norm_type=norm_type,
+            norm_axes=norm_axes,
+        )
         layer = cfg.instantiate(parent=None)  # type: GroupNorm
 
         # Initialize layer parameters.
@@ -217,8 +294,6 @@ class LayerTest(TestCase, tf.test.TestCase):
         if scale_params is not None:
             # Set scales.
             layer_params["scale"] = scale_params
-
-        self.assertEqual(dict(scale=(dim,), bias=(dim,)), shapes(layer_params))
 
         # Random inputs.
         prng_key, input_key = jax.random.split(prng_key)
@@ -234,58 +309,104 @@ class LayerTest(TestCase, tf.test.TestCase):
         )
         # forward() should not mutate "inputs" in-place.
         assert_allclose(inputs, orig_inputs)
-        reduction_axis = (1, -1) if len(inputs_shape) == 3 else (1, 2, -1)
+        inputs_by_group = jnp.reshape(inputs, inputs_shape[:-1] + [num_groups, dim // num_groups])
         outputs_by_group = jnp.reshape(outputs, inputs_shape[:-1] + [num_groups, dim // num_groups])
 
-        if paddings is None:
-            output_mean = outputs_by_group.mean(axis=reduction_axis, keepdims=True)
-            output_var = ((outputs_by_group - output_mean) ** 2).mean(axis=(1, -1), keepdims=True)
+        if norm_axes is None:
+            reduction_axis = list(range(1, inputs.ndim - 1)) + [-1]
         else:
-            expanded_paddings = (
-                paddings[:, :, None, None]
-                if len(outputs_by_group.shape) == 4
-                else paddings[:, :, None, None, None]
-            )
-            output_sum = jnp.sum(
-                outputs_by_group * (1 - expanded_paddings), axis=reduction_axis, keepdims=True
-            )
-            output_count = jnp.sum(
-                jnp.ones_like(outputs_by_group) * (1 - expanded_paddings),
-                axis=reduction_axis,
-                keepdims=True,
-            )
-            output_mean = output_sum / jnp.maximum(output_count, 1.0)
-            output_var = jnp.sum(
-                (outputs_by_group * (1 - expanded_paddings) - output_mean) ** 2,
-                axis=reduction_axis,
-                keepdims=True,
-            ) / jnp.maximum(output_count, 1.0)
+            reduction_axis = norm_axes
 
-        if len(inputs_shape) == 3:
-            self.assertEqual(output_mean.shape, (batch_size, 1, num_groups, 1))
-            self.assertEqual(output_var.shape, (batch_size, 1, num_groups, 1))
-        else:
-            self.assertEqual(output_mean.shape, (batch_size, 1, 1, num_groups, 1))
-            self.assertEqual(output_var.shape, (batch_size, 1, 1, num_groups, 1))
-        # The output group mean should be close to 0.
-        assert_allclose(output_mean, np.zeros_like(output_mean), rtol=1e-6, atol=1e-6)
-        if scale_params is None:
-            # The output variance should be close to 1.
-            expected_var = np.ones_like(output_var)
-        else:
-            # [num_groups].
-            expected_var = jnp.reshape(scale_params, [num_groups, dim // num_groups])[:, 0] ** 2
-            expected_var = jnp.tile(expected_var, [batch_size, 1])
-            if len(inputs_shape) == 3:
-                expected_var = jnp.expand_dims(expected_var, axis=(1, 3))
+        if norm_type == NormType.LAYERNORM:
+            self.assertEqual(dict(scale=(dim,), bias=(dim,)), shapes(layer_params))
+
+            if paddings is None:
+                output_mean = outputs_by_group.mean(axis=reduction_axis, keepdims=True)
+                output_var = ((outputs_by_group - output_mean) ** 2).mean(
+                    axis=reduction_axis, keepdims=True
+                )
             else:
-                expected_var = jnp.expand_dims(expected_var, axis=(1, 2, 4))
+                expanded_paddings = (
+                    paddings[:, :, None, None]
+                    if len(outputs_by_group.shape) == 4
+                    else paddings[:, :, None, None, None]
+                )
+                output_sum = jnp.sum(
+                    outputs_by_group * (1 - expanded_paddings), axis=reduction_axis, keepdims=True
+                )
+                output_count = jnp.sum(
+                    jnp.ones_like(outputs_by_group) * (1 - expanded_paddings),
+                    axis=reduction_axis,
+                    keepdims=True,
+                )
+                output_mean = output_sum / jnp.maximum(output_count, 1.0)
+                output_var = jnp.sum(
+                    (outputs_by_group * (1 - expanded_paddings) - output_mean) ** 2,
+                    axis=reduction_axis,
+                    keepdims=True,
+                ) / jnp.maximum(output_count, 1.0)
 
-        if paddings is not None:
-            expected_var = expected_var * (
-                jnp.sum(1 - expanded_paddings, axis=1, keepdims=True) > 0
+            mean_var_shape = inputs_by_group.mean(axis=reduction_axis, keepdims=True).shape
+            self.assertEqual(output_mean.shape, mean_var_shape)
+            self.assertEqual(output_var.shape, mean_var_shape)
+
+            # The output group mean should be close to 0.
+            assert_allclose(output_mean, np.zeros_like(output_mean), rtol=1e-5, atol=1e-5)
+
+            if scale_params is None:
+                # The output variance should be close to 1.
+                expected_var = np.ones_like(output_var)
+            else:
+                # [num_groups].
+                expected_var = jnp.reshape(scale_params, [num_groups, dim // num_groups])[:, 0] ** 2
+                expected_var = jnp.tile(expected_var, [batch_size, 1])
+                if len(inputs_shape) == 3:
+                    expected_var = jnp.expand_dims(expected_var, axis=(1, 3))
+                else:
+                    expected_var = jnp.expand_dims(expected_var, axis=(1, 2, 4))
+
+            if paddings is not None:
+                expected_var = expected_var * (
+                    jnp.sum(1 - expanded_paddings, axis=1, keepdims=True) > 0
+                )
+                assert_allclose(output_var - expected_var, 0, atol=1e-5, rtol=1e-5)
+        else:
+            self.assertEqual(
+                dict(
+                    scale=(dim,),
+                ),
+                shapes(layer_params),
             )
-        assert_allclose(output_var, expected_var, atol=1e-6, rtol=1e-6)
+            if paddings is None:
+                output_msquare = jnp.mean(outputs_by_group**2, axis=reduction_axis, keepdims=True)
+                output_norm = jnp.sqrt(
+                    (outputs_by_group**2).sum(axis=reduction_axis, keepdims=True)
+                )
+
+            else:
+                expanded_paddings = (
+                    paddings[:, :, None, None]
+                    if len(outputs_by_group.shape) == 4
+                    else paddings[:, :, None, None, None]
+                )
+                mask = 1 - expanded_paddings
+                square_sum = jnp.sum(
+                    outputs_by_group**2 * mask, axis=reduction_axis, keepdims=True
+                )
+                square_count = jnp.sum(
+                    jnp.ones_like(outputs_by_group) * mask, axis=reduction_axis, keepdims=True
+                )
+                output_msquare = square_sum / jnp.maximum(square_count, 1.0)
+
+                output_norm = jnp.sqrt(
+                    (outputs_by_group**2).sum(axis=reduction_axis, keepdims=True)
+                )
+                assert_allclose(jnp.sqrt(square_sum), jnp.sqrt(square_count))
+
+            norm_shape = inputs_by_group.mean(axis=reduction_axis, keepdims=True).shape
+            self.assertEqual(output_msquare.shape, norm_shape)
+            self.assertEqual(output_norm.shape, norm_shape)
+            self.assertGreaterEqual(output_msquare.min(), 0)
 
     @parameterized.parameters(
         ((2, 10, 4, 3, 2), [1, 2, -1]),
@@ -772,78 +893,264 @@ class LayerTest(TestCase, tf.test.TestCase):
         output_shape = layer.output_shape(input_shape=inputs.shape)
         self.assertAllEqual(outputs.shape, output_shape)
 
+    @parameterized.parameters((1, 1, 1), (1, 2, 1), (2, 1, 2), (3, 1, 3), (3, 2, 5))
+    def test_conv_dilate_window(self, window, dilation, expected):
+        effective_window = layers.conv_dilate_window(window=(window,), dilation=(dilation,))[0]
+        self.assertEqual(effective_window, expected)
+
+    @parameterized.parameters(
+        (10, 3, 1, "SAME", 1, 10),
+        (10, 3, 2, "SAME", 1, 5),
+        (10, 3, 1, "SAME", 2, 10),
+        (10, 3, 2, "SAME", 2, 5),
+        (10, 3, 1, "VALID", 1, 8),
+        (10, 3, 2, "VALID", 1, 4),
+        (10, 3, 1, "VALID", 2, 6),
+        (10, 3, 2, "VALID", 2, 3),
+        (10, 3, 1, "CAUSAL", 1, 10),
+        (10, 3, 2, "CAUSAL", 1, 5),
+        (10, 3, 1, "CAUSAL", 2, 10),
+        (10, 3, 2, "CAUSAL", 2, 5),
+    )
+    def test_conv_output_shape(self, in_shape, window, strides, padding, dilation, expected):
+        out_shape = layers.conv_output_shape(
+            in_shape=(in_shape,),
+            window=(window,),
+            strides=(strides,),
+            padding=padding,
+            dilation=(dilation,),
+        )[0]
+        self.assertEqual(out_shape, expected)
+
     @parameterized.parameters(
         ([0, 0, 0, 1], [0, 0, 0, 1], 1, "SAME"),
+        ([0], [], 1, "VALID"),
+        ([0, 0], [], 1, "VALID"),
+        ([0, 0, 0], [0], 1, "VALID"),
         ([0, 0, 0, 0], [0, 0], 1, "VALID"),
-        ([0, 0, 0, 1], [0, 1], 1, "VALID"),
+        ([0, 0, 0, 1], [0, 0], 1, "VALID"),
         ([0, 0, 0, 0], [0], 2, "VALID"),
         ([0, 0, 0, 1], [0], 2, "VALID"),
-        ([0, 0, 1, 1], [1], 2, "VALID"),
+        ([0, 0, 1, 1], [0], 2, "VALID"),
         ([0, 0, 0, 0, 0], [0, 0], 2, "VALID"),
-        ([0, 0, 0, 0, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 0, 1, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 1, 1, 1], [1, 1], 2, "VALID"),
+        ([0, 0, 0, 0, 1], [0, 0], 2, "VALID"),
+        ([0, 0, 0, 1, 1], [0, 0], 2, "VALID"),
+        ([0, 0, 1, 1, 1], [0, 1], 2, "VALID"),
         ([0, 0, 0, 0, 0, 0], [0, 0], 2, "VALID"),
         ([0, 0, 0, 0, 0, 1], [0, 0], 2, "VALID"),
-        ([0, 0, 0, 0, 1, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 0, 1, 1, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 1, 1, 1, 1], [1, 1], 2, "VALID"),
+        ([0, 0, 0, 0, 1, 1], [0, 0], 2, "VALID"),
+        ([0, 0, 0, 1, 1, 1], [0, 0], 2, "VALID"),
+        ([0, 0, 1, 1, 1, 1], [0, 1], 2, "VALID"),
     )
-    def test_conv_padding_lingvo(
-        self, input_paddings, expected_paddings, stride: int, padding_cfg: str
-    ):
-        """Tests _compute_conv_output_1d_padding() with SAME and VALID padding cfg."""
+    def test_conv_padding(self, input_paddings, expected_paddings, stride: int, padding_cfg: str):
+        """Tests conv_output_shape() with SAME and VALID padding cfg."""
         # This test is from lingvo
         # https://github.com/tensorflow/lingvo/blob/master/lingvo/core/conv_layers_with_time_padding_test.py#L157.
         window = 3
-        out_paddings = _compute_conv_output_1d_padding(
-            jnp.array([input_paddings]), window=window, stride=stride, conv_padding_cfg=padding_cfg
+        out_paddings = compute_conv_paddings(
+            jnp.array([input_paddings]), window=window, stride=stride, conv_padding=padding_cfg
         )
         assert_allclose(out_paddings[0], expected_paddings)
 
     @parameterized.parameters(
-        (3, 2, (1, 1)),
-        (5, 2, (1, 1)),
-        (5, 2, (2, 2)),
+        (5, 1, "SAME", 1, (2, 2)),
+        (5, 2, "SAME", 1, (2, 2)),
+        (5, 3, "SAME", 1, (2, 2)),
+        (5, 1, "SAME", 2, (4, 4)),
+        (5, 2, "SAME", 2, (4, 4)),
+        (5, 3, "SAME", 2, (4, 4)),
+        (5, 1, "VALID", 1, (0, 0)),
+        (5, 2, "VALID", 1, (0, 0)),
+        (5, 3, "VALID", 1, (0, 0)),
+        (5, 1, "VALID", 2, (0, 0)),
+        (5, 2, "VALID", 2, (0, 0)),
+        (5, 3, "VALID", 2, (0, 0)),
+        (5, 1, "CAUSAL", 1, (4, 0)),
+        (5, 2, "CAUSAL", 1, (3, 1)),
+        (5, 3, "CAUSAL", 1, (2, 2)),
+        (5, 1, "CAUSAL", 2, (7, 1)),
+        (5, 2, "CAUSAL", 2, (5, 3)),
+        (5, 3, "CAUSAL", 2, (3, 5)),
     )
-    def test_conv_output_1d_padding(self, window: int, stride: int, padding_cfg: tuple[int, int]):
-        """Tests _compute_conv_output_1d_padding() with explicit padding cfg."""
+    def test_conv_explicit_padding(
+        self, window: int, stride: int, padding: ConvPaddingType, dilation: int, expected
+    ):
+        """Tests the cases in conv_explicit_padding() description."""
+        explicit_padding = layers.conv_explicit_padding(
+            window=(window,),
+            strides=(stride,),
+            padding=padding,
+            dilation=(dilation,),
+        )
+        self.assertAllEqual(explicit_padding[0], expected)
+
+    @parameterized.parameters(
+        (5, 1, "SAME", [0, 0, 0, 0, 1, 1]),
+        (5, 2, "SAME", [0, 0, 1]),
+        (5, 1, "VALID", [0, 0]),
+        (5, 2, "VALID", [0]),
+        (5, 1, "SAME", [0, 0, 0, 0, 1, 1]),
+        (5, 2, "SAME", [0, 0, 1]),
+    )
+    def test_conv_output_1d_padding_simple(
+        self, window: int, stride: int, padding: ConvPaddingType, expected
+    ):
+        """Tests the cases in conv_explicit_padding() description."""
+        paddings = jnp.array([[0, 0, 0, 0, 1, 1]])
+        out_paddings = compute_conv_paddings(
+            paddings, window=window, stride=stride, conv_padding=padding
+        )
+        self.assertAllEqual(out_paddings[0], expected)
+
+    @parameterized.parameters(
+        ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0]),
+        ([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0]),
+        ([1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0]),
+        ([1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 1, 0]),
+        ([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1]),
+        ([0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [0, 1, 1]),
+        ([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [0, 1, 1]),
+        ([0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [0, 0, 1]),
+    )
+    def test_conv_output_1d_padding_causal(self, in_paddings, expected):
+        """Test the below cases.
+
+        The formula for CAUSAL padding is `(window - stride, stride - 1)`.
+        With window=15 and stride=6, padding is (9, 5).
+        Below are examples illustrating how input paddings are transformed into output
+        paddings across different scenarios.
+
+            left_pad         |         input paddings              -> outputs paddings
+        1) |1 1 1|1 1 1|1 1 1|0 0 0|0 0 0|0 0 0|0 0 0|0 0 0|0 0 0| -> 0 0 0
+        2) |1 1 1|1 1 1|1 1 1|1 0 0|0 0 0|0 0 0|0 0 0|0 0 0|0 0 0| -> 1 0 0
+        3) |1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|0 0 0|0 0 0|0 0 0|0 0 0| -> 1 0 0
+        4) |1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 0 0|0 0 0|0 0 0|0 0 0| -> 1 1 0
+        5) |1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 1 1| -> 1 1 1
+        6) |1 1 1|1 1 1|1 1 1|0 1 1|1 1 1|1 1 1|1 1 1|1 1 1|1 1 1| -> 0 1 1
+        7) |1 1 1|1 1 1|1 1 1|0 0 0|0 0 0|1 1 1|1 1 1|1 1 1|1 1 1| -> 0 1 1
+        8) |1 1 1|1 1 1|1 1 1|0 0 0|0 0 0|0 1 1|1 1 1|1 1 1|1 1 1| -> 0 0 1
+            |_________________^_________|
+                        |_________________^_________|
+                                    |_________________^_________|
+
+        Let's take a closer look at case 7). In case 7), the first window component fully
+        covers all 0s, so the first component of the output padding should be the last
+        0 component, meaning the second component is 1.
+
+        In case 8), however, the first window component does not cover all 0s, so the
+        next component should also be 0. If the second component were 1, information
+        from the last partial window of the input would be lost.
+
+        In general, the anchor point should be the next position after the right edge
+        of the previous window. Since the anchor is defined by the left pad,
+        `left_pad = window - stride`, and `right_pad = (window - 1) - left_pad`,
+        simplifying to `right_pad = stride - 1`.
+        """
+        window = 15
+        stride = 6
+        padding = "CAUSAL"
+        explicit_padding = layers.conv_explicit_padding(
+            window=(window,), strides=(stride,), padding=padding
+        )
+        self.assertAllEqual(explicit_padding[0], (9, 5))
+
+        in_paddings = jnp.array([in_paddings])
+        out_paddings = compute_conv_paddings(
+            in_paddings, window=window, stride=stride, conv_padding=padding
+        )[0]
+        self.assertAllEqual(out_paddings, expected)
+
+    @parameterized.parameters(
+        (3, 1, ((1, 1),), "SAME"),
+        (3, 1, ((0, 0),), "VALID"),
+        (3, 1, ((2, 0),), "CAUSAL"),
+        (3, 2, ((1, 1),), "SAME"),
+        (3, 2, ((0, 0),), "VALID"),
+        (3, 2, ((1, 1),), "CAUSAL"),
+        (5, 2, ((2, 2),), "SAME"),
+        (5, 2, ((0, 0),), "VALID"),
+        (5, 2, ((3, 1),), "CAUSAL"),
+    )
+    def test_conv_output_1d_padding_against_str_padding(
+        self, window: int, stride: int, padding: ConvPaddingType, ref_padding: ConvPaddingType
+    ):
+        """Tests conv_output_shape() with explicit padding cfg."""
         batch_size = 5
         seq_len = 5
         paddings = jnp.triu(jnp.ones((batch_size, seq_len)), k=1)
-        out_paddings = _compute_conv_output_1d_padding(
-            paddings, window=window, stride=stride, conv_padding_cfg=padding_cfg
-        )
 
-        # The reference is computed using 1d convolution.
-        # We first pad the padding sequence with 0 on the left, and 1 on the right.
-        paddings = jnp.pad(paddings, ((0, 0), (padding_cfg[0], 0)), constant_values=0)
-        paddings = jnp.pad(paddings, ((0, 0), (0, padding_cfg[1])), constant_values=1)
-        conv_paddings = jax.lax.conv_general_dilated(
-            lhs=jnp.expand_dims(paddings, -1),  # [batch, seq, 1]
-            rhs=jnp.ones([window, 1, 1], paddings.dtype),
-            window_strides=(stride,),
-            dimension_numbers=("NWC", "WIO", "NWC"),
-            padding="VALID",
+        explicit_padding = layers.conv_explicit_padding(
+            window=(window,), strides=(stride,), padding=ref_padding
         )
-        ref_paddings = (jnp.squeeze(conv_paddings, axis=-1) > 0).astype(paddings.dtype)
+        self.assertAllEqual(explicit_padding, padding[:1])
+
+        out_paddings = compute_conv_paddings(
+            paddings, window=window, stride=stride, conv_padding=padding
+        )
+        ref_paddings = compute_conv_paddings(
+            paddings, window=window, stride=stride, conv_padding=ref_padding
+        )
         self.assertAllEqual(out_paddings, ref_paddings)
 
+    @parameterized.parameters(
+        (5, "SAME", None, [0, 0, 0, 1, 1, 1]),
+        (5, "SAME", 1, ValueError),
+        (5, "SAME", 2, [0, 0, 0, 1, 1, 1]),
+        (5, "SAME", 3, ValueError),
+        (5, ((1, 1),), None, [0, 0, 0, 1]),
+        (5, ((1, 1),), 0, ValueError),
+        (5, ((1, 1),), 1, [0, 0, 0, 1]),
+        (5, ((1, 1),), 2, [0, 0, 1, 1]),
+        (5, ((1, 1),), 3, [0, 1, 1, 1]),
+        (5, ((1, 1),), 4, ValueError),
+        (5, "VALID", None, [0, 0]),
+        (5, "VALID", 0, [0, 0]),
+        (5, "VALID", 1, [0, 0]),
+        (5, "VALID", 2, [0, 1]),
+        (5, "VALID", 3, [1, 1]),
+        (5, "VALID", 4, [1, 1]),
+        (5, "CAUSAL", None, [0, 0, 0, 1, 1, 1]),
+        (5, "CAUSAL", 3, ValueError),
+        (5, "CAUSAL", 4, [0, 0, 0, 1, 1, 1]),
+        (5, "CAUSAL", 5, ValueError),
+    )
+    def test_conv_output_1d_padding_with_anchor(self, window, padding, anchor, expected_paddings):
+        input_paddings = [0, 0, 0, 1, 1, 1]
+        try:
+            out_paddings = compute_conv_paddings(
+                jnp.array([input_paddings]),
+                window=window,
+                stride=1,
+                conv_padding=padding,
+                anchor=anchor,
+            )
+            assert_allclose(out_paddings[0], expected_paddings)
+        except ValueError as e:
+            self.assertTrue(isinstance(e, expected_paddings))
+
     @parameterized.named_parameters(
-        ("1x1", (1, 1), (1, 1), "VALID"),
-        ("2x2_VALID", (2, 2), (1, 1), "VALID"),
-        ("2x2_SAME", (2, 2), (1, 1), "SAME"),
-        ("2x2_S2_VALID", (2, 2), (2, 2), "VALID"),
-        ("3x3_VALID", (3, 3), (1, 1), "VALID"),
-        ("3x3_SAME", (3, 3), (1, 1), "SAME"),
-        ("3x3_S2_VALID", (3, 3), (2, 2), "VALID"),
-        ("3x3_S2_PADDING1", (3, 3), (2, 2), (1, 1)),
+        ("1x1", (1, 1), (1, 1), "VALID", None),
+        ("2x2_VALID", (2, 2), (1, 1), "VALID", None),
+        ("2x2_SAME", (2, 2), (1, 1), "SAME", None),
+        ("2x2_CAUSAL", (2, 2), (1, 1), "CAUSAL", None),
+        ("2x2_S2_VALID", (2, 2), (2, 2), "VALID", None),
+        ("2x2_S2_CAUSAL", (2, 2), (2, 2), "CAUSAL", None),
+        ("3x3_VALID", (3, 3), (1, 1), "VALID", None),
+        ("3x3_VALID_A0", (3, 3), (1, 1), "VALID", 0),
+        ("3x3_VALID_A1", (3, 3), (1, 1), "VALID", 1),
+        ("3x3_VALID_A2", (3, 3), (1, 1), "VALID", 2),
+        ("3x3_SAME", (3, 3), (1, 1), "SAME", None),
+        ("3x3_CAUSAL", (3, 3), (1, 1), "CAUSAL", None),
+        ("3x3_S2_VALID", (3, 3), (2, 2), "VALID", None),
+        ("3x3_S2_CAUSAL", (3, 3), (2, 2), "CAUSAL", None),
+        ("3x3_S2_PADDING1", (3, 3), (2, 2), (1, 1), None),
     )
     def test_conv2d_with_1d_padding(
         self,
         window: tuple[int, int],
         strides: tuple[int, int],
         padding: Union[str, tuple[int, int]],
+        anchor: Optional[int],
     ):
         """Tests that Conv2DWith1DPadding has consistent outputs under different padding lengths.
 
@@ -862,6 +1169,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             window=window,
             strides=strides,
             padding=conv_padding,
+            anchor=anchor,
         )
         layer: Conv2DWith1DPadding = cfg.instantiate(parent=None)
 
@@ -1187,14 +1495,14 @@ class LayerTest(TestCase, tf.test.TestCase):
         ("w3s1d1_SAME", 3, 1, "SAME", None),
         ("w4s1d1_SAME", 4, 1, "SAME", None),
         ("w4s1d3_SAME", 4, 1, "SAME", 3),
-        ("w4s1d1_CAUSAL", 4, 1, (3, 0), None),
-        ("w4s1d5_CAUSAL", 4, 1, (3, 0), 5),
+        ("w4s1d1_CAUSAL", 4, 1, ((3, 0),), None),
+        ("w4s1d5_CAUSAL", 4, 1, ((3, 0),), 5),
     )
     def test_conv1d(
         self,
         window: int,
         strides: int,
-        padding: Union[str, tuple[int, int]],
+        padding: ConvPaddingType,
         dilation: Optional[int] = None,
     ):
         input_dim, output_dim = 4, 6
@@ -1242,7 +1550,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         else:
             # torch.nn.Conv1d does not support asymmetric padding, so pad manually and use "valid".
             ref_padding = "valid"
-            ref_inputs = jnp.pad(inputs, ((0, 0), padding, (0, 0)))
+            ref_inputs = jnp.pad(inputs, ((0, 0), padding[0], (0, 0)))
         ref = torch.nn.Conv1d(
             in_channels=input_dim,
             out_channels=output_dim,
@@ -1278,7 +1586,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             output_dim=output_dim,
             window=window,
             strides=strides,
-            padding=padding,
+            padding=(padding,),
             lhs_dilation=dilation,
         )
         layer: Conv1D = cfg.instantiate(parent=None)
@@ -1326,13 +1634,13 @@ class LayerTest(TestCase, tf.test.TestCase):
         ("w3s1_VALID", 3, 1, "VALID"),
         ("w3s1_SAME", 3, 1, "SAME"),
         ("w4s1_SAME", 4, 1, "SAME"),
-        ("w4s1_CAUSAL", 4, 1, (3, 0)),
+        ("w4s1_CAUSAL", 4, 1, ((3, 0),)),
     )
     def test_depthwise_conv1d(
         self,
         window: int,
         strides: int,
-        padding: Union[str, tuple[int, int]],
+        padding: ConvPaddingType,
     ):
         input_dim = 4
         cfg = DepthwiseConv1D.default_config().set(
@@ -1379,7 +1687,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         else:
             # torch.nn.Conv1d does not support asymmetric padding, so pad manually and use "valid".
             ref_padding = "valid"
-            ref_inputs = jnp.pad(inputs, ((0, 0), padding, (0, 0)))
+            ref_inputs = jnp.pad(inputs, ((0, 0), padding[0], (0, 0)))
         ref = torch.nn.Conv1d(
             in_channels=input_dim,
             out_channels=input_dim,

@@ -3,19 +3,25 @@
 """Tests grain inputs."""
 
 import copy
-from typing import Optional
+from typing import Callable, Optional
 
 import grain.python as grain
 import jax
 import numpy as np
+import pytest
 from absl import logging
 from absl.testing import parameterized
 from grain._src.core.sharding import even_split
+from jax.sharding import PartitionSpec
 
+from axlearn.common.config import config_for_function
+from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.input_fake import fake_grain_source
 from axlearn.common.input_grain import (
+    BuildDatasetFn,
     Dataset,
     Input,
+    _set_read_config_recursively,
     maybe_to_iter_dataset,
     pad_for_evaluation,
     prefetch_dataset,
@@ -26,9 +32,11 @@ from axlearn.common.input_grain import (
     unbatch,
 )
 from axlearn.common.test_utils import TestCase
+from axlearn.common.utils import host_to_global_device_array, replicate_to_local_data
+from axlearn.common.utils_spmd import setup as setup_spmd
 
 
-def _range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
+def range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
     source = grain.RangeDataSource(start=start, stop=stop, step=step)
     ds = grain.MapDataset.source(source)
     if seed is not None:
@@ -102,7 +110,7 @@ class UtilsTest(TestCase):
     ):
         ds = sample_from_datasets(
             sources=[
-                _range_dataset(start=src.start, stop=src.stop, step=src.step) for src in sources
+                range_dataset(start=src.start, stop=src.stop, step=src.step) for src in sources
             ],
             weights=weights,
         )
@@ -110,7 +118,7 @@ class UtilsTest(TestCase):
         self.assertCountEqual(expected, list(ds))
 
     def test_sample_from_datasets_errors(self):
-        ds = _range_dataset(start=0, stop=2)
+        ds = range_dataset(start=0, stop=2)
         ds = ds.repeat()
         # Make sure that already-repeated datasets don't error.
         repeated_ds = sample_from_datasets(sources=[ds], weights=[1]).slice(slice(0, 4))
@@ -125,8 +133,8 @@ class UtilsTest(TestCase):
         # Test without repeat.
         ds = sample_from_datasets(
             sources=[
-                _range_dataset(start=0, stop=10, step=2),
-                _range_dataset(start=1, stop=5, step=2),
+                range_dataset(start=0, stop=10, step=2),
+                range_dataset(start=1, stop=5, step=2),
             ],
             weights=[2, 1],
         )
@@ -148,7 +156,7 @@ class UtilsTest(TestCase):
 
     def test_repeat_dataset(self):
         # Test repeat before shuffle.
-        ds = _range_dataset(start=0, stop=10)
+        ds = range_dataset(start=0, stop=10)
         ds = ds.repeat(num_epochs=2)
         ds = ds.shuffle(seed=123)
         ds = ds.slice(slice(0, 10))
@@ -161,12 +169,12 @@ class UtilsTest(TestCase):
         dict(s=slice(20, 24, 2), expected=[]),
     )
     def test_slice_dataset(self, s: slice, expected: list[int]):
-        ds = _range_dataset(start=0, stop=10).slice(s)
+        ds = range_dataset(start=0, stop=10).slice(s)
         self.assertCountEqual(expected, list(ds))
 
     def test_batch(self):
         # [0, 1, 2, 3, 4].
-        ds = _range_dataset(start=0, stop=5, seed=123)
+        ds = range_dataset(start=0, stop=5, seed=123)
         # [1, 2, 3, 4, 5].
         other_ds = ds.map(_PlusOne())
         # [0, 1, 2, 1, 3, 4, 2, 5, 1, 3, ...].
@@ -248,7 +256,7 @@ class UtilsTest(TestCase):
                 return {}
             return {"value": x}
 
-        ds = _range_dataset(start=1, stop=10)
+        ds = range_dataset(start=1, stop=10)
         ds = ds.repeat(None).batch(3)
         ds = ds.map(convert_examples, seed=123)
         ds = unbatch(maybe_to_iter_dataset(ds))
@@ -376,6 +384,62 @@ class UtilsTest(TestCase):
 class InputTest(parameterized.TestCase):
     """Tests Input module."""
 
+    def test_set_read_config_recursively(self):
+        read_config = dict(num_shards=4, shard_index=2)
+
+        # Should return False if no `shard_dataset`.
+        ds = range_dataset(start=0, stop=10, seed=123)
+        self.assertFalse(_set_read_config_recursively(ds, **read_config))
+
+        shard_ds = shard_dataset(ds, process_index=0, process_count=2)
+        ds = shard_ds.shuffle().repeat(num_epochs=1)
+        ds = ds.batch(1)
+        ds = prefetch_dataset(
+            maybe_to_iter_dataset(ds),
+            multiprocessing_options=grain.MultiprocessingOptions(num_workers=1),
+        )
+
+        # Should return True if we set successfully.
+        # pylint: disable=protected-access
+        self.assertTrue(_set_read_config_recursively(ds, **read_config))
+        self.assertEqual(shard_ds._start, read_config["shard_index"])
+        self.assertEqual(shard_ds._step, read_config["num_shards"])
+
+        # Should fail if we iterate and then attempt to set.
+        self.assertEqual(read_config["shard_index"], shard_ds[0])
+        with self.assertRaisesRegex(ValueError, "after iterating"):
+            _set_read_config_recursively(ds, **read_config)
+
+    def _input_config(
+        self,
+        source_ds: Dataset,
+        *,
+        per_process: Optional[Callable[[Dataset], Dataset]] = None,
+        process_index: Optional[int] = None,
+        process_count: Optional[int] = None,
+    ):
+        if process_index is None:
+            process_index = jax.process_index()
+        if process_count is None:
+            process_count = jax.process_count()
+
+        def ds_fn() -> BuildDatasetFn:
+            def source():
+                ds = source_ds
+                ds = shard_dataset(ds, process_index=process_index, process_count=process_count)
+                if callable(per_process):
+                    ds = per_process(ds)
+                ds = prefetch_dataset(
+                    maybe_to_iter_dataset(ds),
+                    multiprocessing_options=grain.MultiprocessingOptions(num_workers=1),
+                )
+                return ds
+
+            return source
+
+        cfg: Input.Config = Input.default_config().set(source=config_for_function(ds_fn))
+        return cfg.set(name="test")
+
     @parameterized.parameters(
         # A single process case.
         dict(process_index=0, process_count=1),
@@ -391,20 +455,13 @@ class InputTest(parameterized.TestCase):
     )
     def test_input(self, process_index: int, process_count: int):
         epoch_len, num_epochs = 10, 2
-        ds = _range_dataset(start=0, stop=epoch_len, seed=123)
-
-        def source(ds) -> Dataset:
-            ds = shard_dataset(ds, process_index=process_index, process_count=process_count)
-            ds = ds.shuffle().repeat(num_epochs=2)
-            ds = prefetch_dataset(
-                maybe_to_iter_dataset(ds),
-                multiprocessing_options=grain.MultiprocessingOptions(num_workers=1),
-            )
-            return ds
-
-        cfg: Input.Config = Input.default_config().set(source=lambda: source(ds))
-        grain_input = cfg.set(name="test").instantiate(parent=None)
-        self.assertEqual(epoch_len, len(ds))
+        cfg = self._input_config(
+            range_dataset(start=0, stop=epoch_len, seed=123),
+            per_process=lambda ds: ds.shuffle().repeat(num_epochs),
+            process_count=process_count,
+            process_index=process_index,
+        )
+        grain_input: Input = cfg.instantiate(parent=None)
         examples = list(grain_input)
         num_examples = num_epochs * epoch_len
 
@@ -428,3 +485,85 @@ class InputTest(parameterized.TestCase):
             self.assertSameElements(
                 list(range(epoch_len))[slice(process_index, None, process_count)], examples
             )
+
+    def test_batches(self):
+        """Test that we validate per-feed logical batch size."""
+
+        process_count, process_index = 2, 0
+        dispatcher = InputDispatcher.default_config().set(
+            global_logical_batch_size=4,
+            num_physical_feeds=process_count,
+            physical_feed_index=process_index,
+        )
+        # For global_logical_batch_size=4 and num_physical_feeds=2, each feed should produce logical
+        # batch of 2.
+        cfg = self._input_config(
+            range_dataset(start=0, stop=10, seed=123).shuffle().repeat(num_epochs=1),
+            per_process=lambda ds: ds.batch(2),
+            process_count=process_count,
+            process_index=process_index,
+        )
+        cfg.input_dispatcher = dispatcher
+        grain_input: Input = cfg.instantiate(parent=None)
+        batch = next(grain_input.batches(iter(grain_input)))
+        self.assertEqual(batch.shape[0], grain_input.input_dispatcher.feed_logical_batch_size)
+
+        # Try with the incorrect batching.
+        cfg = self._input_config(
+            range_dataset(start=0, stop=10, seed=123).shuffle().repeat(num_epochs=1),
+            per_process=lambda ds: ds.batch(4),
+            process_count=process_count,
+            process_index=process_index,
+        )
+        cfg.input_dispatcher = dispatcher
+        grain_input: Input = cfg.instantiate(parent=None)
+
+        with self.assertRaisesRegex(ValueError, "per-feed batch"):
+            next(grain_input.batches(iter(grain_input)))
+
+    @pytest.mark.tpu
+    def test_dispatch_tpu(self):
+        """Test that logical batching works on every other host.
+
+        Can be run on 2 or more hosts (e.g., v5e-16).
+        """
+        setup_spmd(jax_backend="tpu")
+        process_count = jax.process_count()
+        process_index = jax.process_index()
+        print(f"{process_count=}, {process_index=}")
+
+        # Set process_count to be larger than logical batch size.
+        assert process_count % 2 == 0
+        logical_batch_size = process_count // 2
+        batch_sharding = max(1, logical_batch_size // 2)
+
+        dispatcher = InputDispatcher.default_config().set(
+            global_logical_batch_size=logical_batch_size,
+            num_physical_feeds=process_count,
+            physical_feed_index=process_index,
+        )
+        # Dispatch requires examples to be dicts.
+        ds = range_dataset(start=0, stop=10, seed=123).map(lambda x: {"input_ids": x})
+        # Each process produces feed_logical_batch_size.
+        cfg = self._input_config(
+            ds.repeat(num_epochs=None),
+            per_process=lambda ds: ds.batch(1),  # Half of the processes will produce padding.
+            process_count=process_count,
+            process_index=process_index,
+        )
+        cfg.input_dispatcher = dispatcher
+
+        with jax.sharding.Mesh(np.array(jax.devices()).reshape(batch_sharding, -1), ("x", "y")):
+            grain_input: Input = cfg.instantiate(parent=None)
+            it = iter(grain_input)
+            for batch in grain_input.batches(it):
+                physical_batch = host_to_global_device_array(batch)
+                batch = grain_input.dispatch_global_batch(physical_batch, batch_axis_names="x")
+
+                # Should match the logical batch size.
+                self.assertEqual(batch["input_ids"].shape[0], logical_batch_size)
+                # Should be sharded along batch axes.
+                self.assertEqual(batch["input_ids"].sharding.spec, PartitionSpec("x"))
+                # Should contain the right ids.
+                self.assertEqual([0, 1, 2, 3], replicate_to_local_data(batch)["input_ids"].tolist())
+                break

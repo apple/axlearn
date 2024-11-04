@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests decoder layers."""
+
 # pylint: disable=no-self-use,too-many-branches
 import contextlib
 import unittest
@@ -582,7 +583,7 @@ class TestDecoder(TestCase):
 
             # If prefilling, check that initial cache is non-empty.
             if jnp.any(prefix_length > 1):
-                orig_tokens_to_scores = decoder._tokens_to_scores
+                orig_tokens_to_scores = decoder._decoding._tokens_to_scores
 
                 def mock_tokens_to_scores(*args, **kwargs):
                     fn = orig_tokens_to_scores(*args, **kwargs)
@@ -604,7 +605,7 @@ class TestDecoder(TestCase):
                     return tokens_to_scores
 
                 mock_ctx = mock.patch.object(
-                    decoder,
+                    decoder._decoding,
                     orig_tokens_to_scores.__name__,
                     side_effect=mock_tokens_to_scores,
                 )
@@ -658,9 +659,14 @@ class TestDecoder(TestCase):
     def test_output_logits_modifier(self):
         """Tests the output_logits_modifier config property of `Decoder`."""
 
-        with unittest.mock.patch.object(
-            causal_lm.Decoder, "_forward_for_mode", lambda *args, **kwargs: (None, dict(logits=5))
-        ), unittest.mock.patch.object(causal_lm.Decoder, "compute_attention_logit_biases"):
+        with (
+            unittest.mock.patch.object(
+                causal_lm.Decoder,
+                "_forward_for_mode",
+                lambda *args, **kwargs: (None, dict(logits=5)),
+            ),
+            unittest.mock.patch.object(causal_lm.Decoder, "compute_attention_logit_biases"),
+        ):
             decoder_cfg = gpt_decoder_config(
                 stack_cfg=StackedTransformerLayer.default_config(),
                 num_layers=2,
