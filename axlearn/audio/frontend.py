@@ -137,8 +137,7 @@ class LogMelFrontend(BaseFrontend):
         # Optional output transformation. See `normalize_by_mean_std` for an example.
         output_transformation: Optional[InstantiableConfig[StageFn]] = None
         # Floor of melfilter bank energy to prevent log(0).
-        # Recommend to set to 1e-6 or smaller to capture
-        # low-energy signals.
+        # Recommend to set to 1e-6 or smaller to capture low-energy signals.
         # TODO(markblee): Deprecate this in favor of setting `mel_floor` on `spectrogram`.
         mel_floor: Required[float] = REQUIRED
         # Pre-emphasis filter. If None, skips pre-emphasis.

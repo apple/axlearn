@@ -86,13 +86,15 @@ ENTRYPOINT ["/opt/apache/beam/boot"]
 
 FROM base AS tpu
 
+ARG EXTRAS=
+
 RUN apt-get install -y google-perftools
 
-# TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN pip install .[core,tpu]
+RUN if [ -n "$EXTRAS" ]; then pip install .[$EXTRAS]; fi
 COPY . .
 
 ################################################################################
