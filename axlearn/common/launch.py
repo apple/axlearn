@@ -2,9 +2,12 @@
 
 """A library with common flags to launch a trainer."""
 
-# pylint: disable=wrong-import-position,wrong-import-order
+import importlib
 import os
 import sys
+
+# pylint: disable=wrong-import-position,wrong-import-order
+from contextlib import nullcontext
 
 # pylint: disable-next=ungrouped-imports
 from axlearn.common import compiler_options
@@ -74,6 +77,17 @@ flags.DEFINE_integer(
     os.environ.get("PROCESS_ID", None),
     "Rank of the current process. Must be None on tpu, otherwise required.",
 )
+flags.DEFINE_string(
+    "health_check_module",
+    None,
+    "Path to health check module to run, e.g. axlearn.cloud.gcp.tpu_health_check. "
+    "Defaults to None, meaning no health check will run.",
+)
+flags.DEFINE_string(
+    "health_check_spec",
+    "",
+    "See the docstring of your `health_check_module`.",
+)
 
 FLAGS = flags.FLAGS
 
@@ -83,13 +97,23 @@ def setup():
         logging.info("LIBTPU_INIT_FLAGS was not set. Reason: %s", tpu_flags_exc)
     else:
         logging.info("LIBTPU_INIT_ARGS='%s'", os.environ["LIBTPU_INIT_ARGS"])
-    setup_spmd(
-        distributed_coordinator=FLAGS.distributed_coordinator,
-        num_processes=FLAGS.num_processes,
-        process_id=FLAGS.process_id,
-        jax_backend=FLAGS.jax_backend,
-        initialization_timeout=FLAGS.initialization_timeout,
-    )
+
+    if FLAGS.health_check_module:
+        health_check = importlib.import_module(FLAGS.health_check_module).health_check(
+            FLAGS.health_check_spec,
+            output_dir=FLAGS.trainer_dir,
+        )
+    else:
+        health_check = nullcontext()
+
+    with health_check:
+        setup_spmd(
+            distributed_coordinator=FLAGS.distributed_coordinator,
+            num_processes=FLAGS.num_processes,
+            process_id=FLAGS.process_id,
+            jax_backend=FLAGS.jax_backend,
+            initialization_timeout=FLAGS.initialization_timeout,
+        )
 
     if FLAGS.jax_profiler_port is not None:
         # Start jax.profiler for Tensorboard and profiling in open source.
