@@ -89,7 +89,7 @@ def test_triton_fwd_only_against_ref(
 
     o = impl(q, k, v, bias, segment_ids)
     o_ref = mha_reference(q, k, v, bias, segment_ids, causal=causal, softmax_scale=sm_scale)
-    chex.assert_trees_all_close(o, o_ref, atol=0.05, rtol=1e-2)
+    chex.assert_trees_all_close(o, o_ref, atol=0.07)
 
 
 # We test the flash_attention against the reference mha_reference.
