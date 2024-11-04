@@ -46,9 +46,13 @@ class Recorder(Configurable):
 
         Attributes:
             name: Name of the recorder.
+            upload_dir: Directory to store metrics for the monitor.
+            upload_interval: Time interval (seconds) for monitoring uploads.
         """
 
         name: Required[str] = REQUIRED
+        upload_dir: Required[str] = REQUIRED
+        upload_interval: Required[int] = REQUIRED
 
     @classmethod
     def from_flags(cls, fv: Optional[flags.FlagValues]) -> "Recorder":
@@ -57,6 +61,10 @@ class Recorder(Configurable):
 
     def record(self, event: Event, *args, **kwargs):
         """Records an event with the given name."""
+        raise NotImplementedError(type(self))
+
+    def start_monitoring(self, **kwargs):
+        """Starts computing and uploading metrics at some configured interval in the background."""
         raise NotImplementedError(type(self))
 
 
@@ -132,3 +140,16 @@ def record_event(event: Event):
         logging.log_first_n(logging.INFO, "No recorder configured, ignoring events.", 1)
     else:
         global_recorder.record(event)
+
+
+def start_monitoring():
+    """Begins monitoring events as per global monitor functionality."""
+    if global_recorder is None:
+        logging.log_first_n(
+            logging.INFO, "Since recorder is not set up, monitoring cannot be started.", 1
+        )
+    else:
+        global_recorder.start_monitoring()
+        logging.info(
+            "Starting monitoring of events using global recorder's monitor: %s", global_recorder
+        )

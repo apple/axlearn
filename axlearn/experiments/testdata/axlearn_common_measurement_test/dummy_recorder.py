@@ -10,4 +10,8 @@ class DummyRecorder(measurement.Recorder):
     @classmethod
     def from_flags(cls, fv) -> measurement.Recorder:
         del fv
-        return cls.default_config().set(name="dummy_recorder").instantiate()
+        return (
+            cls.default_config()
+            .set(name="dummy_recorder", upload_dir="/dummy/upload_dir", upload_interval=15)
+            .instantiate()
+        )
