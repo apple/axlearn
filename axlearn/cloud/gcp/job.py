@@ -524,6 +524,16 @@ class TPUGKEJob(GKEJob):
                 },
             },
         )
+        k8s_env_vars.append(
+            {
+                "name": "NODE_NAME",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": "spec.nodeName",
+                    }
+                },
+            },
+        )
 
         return dict(
             name=cfg.name,

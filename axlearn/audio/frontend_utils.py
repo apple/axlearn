@@ -11,8 +11,9 @@
 import enum
 import math
 from functools import partial
-from typing import Callable
+from typing import Callable, Union
 
+import einops
 import jax.numpy as jnp
 import numpy as np
 from jax._src.mesh import thread_resources
@@ -65,21 +66,175 @@ def warped_to_hertz_scale(freq: ArrayLike, *, freq_scale: FrequencyScale) -> Arr
         raise NotImplementedError(f"Unsupported source scale {freq_scale}.")
 
 
-def sliding_window(x: Tensor, *, window_size: int, stride: int) -> Tensor:
-    """Computes sliding windows.
+def _ceil_div(numerator: int | Tensor, denominator: int) -> int | Tensor:
+    """Computes ceil(numerator / denominator).
+
+    Args:
+        numerator: Numerator.
+        denominator: Denominator.
+
+    Returns:
+        The result of ceil(numerator / denominator).
+    """
+    return (numerator + denominator - 1) // denominator
+
+
+def ms_to_samples(ms: Union[int, float], *, sample_rate: int) -> int:
+    """Converts time in milliseconds to number of samples under the given sample rate.
+
+    Args:
+        ms: Time in milliseconds.
+        sample_rate: Sample rate.
+
+    Returns:
+        Number of samples.
+
+    Raises:
+        ValueError: If the input is invalid.
+    """
+    out_size = (sample_rate * ms) / 1000
+    if not out_size.is_integer():
+        raise ValueError(f"out_size must be an integer, got {out_size}.")
+    return int(out_size)
+
+
+def num_frames(seq_len: int | Tensor, *, frame_size: int, hop_size: int) -> int | Tensor:
+    """Computes the seq len of the frames.
+
+    Note: it includes a partial frame.
+    Eq: ceil((seq_len - frame_size + hop_size) / hop_size)
+
+    Args:
+        seq_len: Length of the input sequence.
+        frame_size: Size of the frames.
+        hop_size: hop_size of the frames.
+
+    Returns:
+        Output size of the frames.
+
+    Raises:
+        ValueError: If the input is invalid.
+    """
+    if seq_len < 0 or frame_size < 1 or hop_size < 0:
+        raise ValueError(
+            f"Invalid input: seq_len={seq_len}, frame_size={frame_size}, hop_size={hop_size}"
+        )
+    elif seq_len == 0:
+        return 0
+    return max(_ceil_div(seq_len - frame_size + hop_size, hop_size), 1)
+
+
+def frame(x: Tensor, *, frame_size: int, hop_size: int, pad_value: int = 0) -> Tensor:
+    """Frames inputs.
+
+    The uses chunk-based indexing for speed and memory optimization, making it a bit complex.
+    For example, with a window of 15 and a hop_size of 10, the chunk size is gcd (5). So, we chunk
+    the data in increments of 5, and then perform indexing at the chunk level.
+
+    # pylint: disable=line-too-long
+    input: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    ensure_chunkwise: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 0, 0, 0, 0, 0]
+    chunk_x: [[0, 1, 2, 3, 4], [5, 6, 7, 8, 9], [10, 11, 12, 13, 14], [15, 16, 17, 18, 19], [0, 0, 0, 0, 0]]
+    chunk_index:     0                1                   2                     3                  4
+    in_frame_indices: [[0, 1 ,2]]
+    out_frame_indices: [[0], [2]]
+    out_frame_indices + in_frame_indices: [[0, 1, 2], [2, 3, 4]]
+    frame_x: [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+              [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 0, 0, 0, 0, 0]]
+    # pylint: enable=line-too-long
+
+    In real world, chunk=1200 (sample_rate=24kHz, window=25ms, hop_size=10ms), so it uses 1200 times
+    less indexing.
 
     Args:
         x: A Tensor of shape `[..., seq_len]`.
-        window_size: Size of sliding window.
-        stride: Stride of sliding window.
+        frame_size: Size of frames.
+        hop_size: hop_size of frames.
 
     Returns:
-        Windows of shape `[..., num_windows, window_size]` via sliding window on the last axis.
+        Windows of shape `[..., num_windows, frame_size]` via frames on the last axis.
     """
-    # NOTE: using `max` instead of `jnp.maximum` is necessary here to treat as constant for jit.
-    output_size = max(x.shape[-1] - window_size, 0) // stride + 1
-    idx = stride * jnp.arange(output_size)[:, None] + jnp.arange(window_size)[None, :]
-    return x[..., idx]
+    x, ps = einops.pack([x], "* s")  # Ensure rank 2.
+
+    def flatten_size(frames, window, hop_size):
+        return frames * hop_size - hop_size + window
+
+    def ensure_chunkwise(x, output_size):
+        full_size = flatten_size(output_size, frame_size, hop_size)
+        input_size = x.shape[1]
+        frac = max(0, full_size - input_size)
+        x = jnp.pad(x, ((0, 0), (0, frac)), constant_values=pad_value)
+        return x[:, :full_size]
+
+    output_size = num_frames(x.shape[1], frame_size=frame_size, hop_size=hop_size)
+    x = ensure_chunkwise(x, output_size)
+
+    # For optimization, the index will be created at the chunk level, rather than for every sample.
+    chunk_size = math.gcd(frame_size, hop_size)
+    chunk_x = einops.rearrange(x, "b (t c) -> b t c", c=chunk_size)
+    num_chunk = chunk_x.shape[1]
+
+    frame_ratio = frame_size // chunk_size
+    hop_ratio = hop_size // chunk_size
+    assert flatten_size(output_size, frame_ratio, hop_ratio) == num_chunk
+
+    in_frame_indices = jnp.arange(frame_ratio)[jnp.newaxis, :]
+    out_frame_indices = (jnp.arange(output_size) * hop_ratio)[:, jnp.newaxis]
+    frame_x = chunk_x[:, out_frame_indices + in_frame_indices, :]
+    frame_x = einops.rearrange(
+        frame_x, "b ow iw c-> b ow (iw c)", ow=output_size, iw=frame_ratio, c=chunk_size
+    )
+    y = einops.unpack(frame_x, ps, "* f d")[0]
+    return y
+
+
+def frame_paddings(paddings: Tensor, *, frame_size: int, hop_size: int) -> Tensor:
+    """Frames paddings.
+
+    Given paddings,
+      1 1 1 1 0 0 0 0 1 1
+    we have frame_paddings, in frame_size=5 and hop_size=1 case,
+      1 1 1 1 0 0
+      1 1 1 0 0 0
+      1 1 0 0 0 0
+      1 0 0 0 0 1
+      0 0 0 0 1 1
+
+    out_paddings is as follows,
+      1 1 1 1 1 1
+
+    And frame_paddings, in frame_size=5 and hop_size=2 case,
+      1 1 0 0
+      1 1 0 0
+      1 0 0 1
+      1 0 0 1
+      0 0 1 P
+
+    out_paddings is as follows,
+      1 1 1 1
+
+    Args:
+        x: A Tensor of shape `[..., seq_len]`.
+        frame_size: Size of frames.
+        hop_size: hop_size of frames.
+
+    Returns:
+        Windows of shape `[..., num_windows, frame_size]` via frames on the last axis.
+
+    Raises:
+        ValueError: If the input is invalid.
+    """
+    if hop_size > frame_size:
+        raise ValueError(f"hop_size {hop_size} must be smaller than frame_size {frame_size}.")
+    #  |   input paddings  |
+    #  |1 1 1 1 0 0 0 0 1 1|
+    #   |_max 1_|
+    #       |_max 1_|
+    #           |_max 1_|
+    #               |_max 1_|
+    paddings_frame = frame(paddings, frame_size=frame_size, hop_size=hop_size, pad_value=1)
+    out_paddings = jnp.max(paddings_frame, axis=-1)
+    return out_paddings
 
 
 def pre_emphasis(x: Tensor, *, coeff: Tensor) -> Tensor:
