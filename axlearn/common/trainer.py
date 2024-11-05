@@ -753,17 +753,32 @@ class SpmdTrainer(Module):
             learner=initialized_trainer_state.learner,
         )
 
-    def _log_trainer_state_stats(self):
+    def _log_trainer_state_stats(self) -> str:
         total_num_params = count_model_params(self._trainer_state.model)
-        self._step_log("Total number of model params: %s", f"{total_num_params:,}")
+        analysis_logs = []
+
+        def _step_log(msg, *args, **kwargs):
+            self._step_log(msg, *args, **kwargs)
+            analysis_logs.append(msg % args)
+
+        _step_log("##################### Model analysis #####################\n")
+        _step_log("## Parameters:")
+        fmt = "%10d %-20s %s"
+        flatten_name_and_spec = flatten_items(self._model_param_specs)
+        for name, spec in flatten_name_and_spec:
+            spec_size = np.prod(spec.shape)
+            _step_log(fmt, spec_size, spec.shape, name)
+
+        _step_log("Total number of model params: %s", f"{total_num_params:,}")
         self.summary_writer(0, {"num_model_params": total_num_params})
 
+        _step_log("\n## Trainer States:")
         # Training state size.
         total_state_bytes = 0
         total_sharded_state_bytes = 0
         state_spec_map = dict(utils.flatten_items(self.trainer_state_specs))
         for path, value in utils.flatten_items(self._trainer_state):
-            self._step_log(
+            _step_log(
                 "State: %s=%s(%s) mesh_axes=%s",
                 path,
                 value.dtype,
@@ -780,7 +795,7 @@ class SpmdTrainer(Module):
         else:
             max_sharded_state_gb = total_sharded_state_gb
 
-        self._step_log(
+        _step_log(
             "Training state size: %.2f GiB\n"
             "Training state size (partitioned): %.2f GiB\n"
             "Max training state size (partitioned): %.2f GiB",
@@ -788,6 +803,9 @@ class SpmdTrainer(Module):
             total_sharded_state_gb,
             max_sharded_state_gb,
         )
+
+        _step_log("\n##########################################################")
+        return "\n".join(analysis_logs)
 
     def _prepare_training(self, prng_key: Tensor) -> bool:
         """Prepares training.
@@ -819,12 +837,16 @@ class SpmdTrainer(Module):
             # Note the default checkpointer and evaler do nothing at step 0 with min_step=1.
             self.save_checkpoint(self._run_eval())
 
-            # Log trainer state tree.
-            if jax.process_index() == 0:
-                with fs.open(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
-                    f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
+        model_analysis = self._log_trainer_state_stats()
 
-        self._log_trainer_state_stats()
+        # Log trainer state tree.
+        if not self.step and jax.process_index() == 0:
+            with fs.open(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
+                f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
+
+            with fs.open(os.path.join(cfg.dir, "model_analysis.txt"), "w") as f:
+                f.write(model_analysis)
+
         # Log config.
         self.summary_writer.log_config(cfg, step=self.step)
 
