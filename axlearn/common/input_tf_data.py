@@ -429,16 +429,21 @@ def sample_from_datasets(
 
         if autotune_ram_budget_gb is not None:
             autotuned_ds_list = []
-            options = tf.data.Options()
-            options.autotune.enabled = True
-            options.autotune.ram_budget = int(
-                # Soft constrain to this many bytes of memory per component.
-                (autotune_ram_budget_gb / len(source_ds_list))
-                * 1024**3
-            )
-            # Start fetching data on iterator creation.
-            options.experimental_warm_start = True
             for el in source_ds_list:
+                # We need a new Options object for each dataset,
+                # due to limitations on tfds side.
+                # It seems like only the first dataset gets the options,
+                # while others do not respect autotune.
+                options = tf.data.Options()
+                options.autotune.enabled = True
+                options.autotune.ram_budget = int(
+                    # Soft constrain to this many bytes of memory per component.
+                    (autotune_ram_budget_gb / len(source_ds_list))
+                    * 1024**3
+                )
+                # Start fetching data on iterator creation.
+                options.experimental_warm_start = True
+
                 autotuned_ds_list.append(el.with_options(options))
             source_ds_list = autotuned_ds_list
 
