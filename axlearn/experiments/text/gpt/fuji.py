@@ -385,9 +385,12 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
-            max_step=max_step,
-            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            train_batch_size=1024,
+            #max_step=500,
+            #eval_every_n_steps=500,
+            save_every_n_steps=100,
+            #start_trace_process_indices="all",
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=128),
             mesh_rules=(
                 # TPU V5e maximum per device batch is 1.
                 # with all activation offloading, HBM usage: 14.6GB/chip.
@@ -398,7 +401,7 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=128)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
@@ -416,6 +419,25 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
+                ),
+                # tpu-v6e.
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=128)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
                 ),
             ),
         )

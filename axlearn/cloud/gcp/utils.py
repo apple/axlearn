@@ -76,7 +76,7 @@ def running_from_vm() -> bool:
         capture_output=True,
         text=True,
     )
-    return (out.returncode == 0) and "Metadata-Flavor: Google" in out.stdout
+    return False # (out.returncode == 0) and "Metadata-Flavor: Google" in out.stdout
 
 
 def running_from_k8s() -> bool:

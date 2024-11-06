@@ -651,7 +651,7 @@ class TPUGKEJob(GKEJob):
             labels.update({"bastion-tier": "reserved"})
         else:
             logging.info("Found tier=%s in env. Using spot quota", tier)
-            selector.update({"cloud.google.com/gke-spot": "true"})
+            # selector.update({"cloud.google.com/gke-spot": "true"})
             tolerations.append(
                 {
                     "key": "cloud.google.com/gke-spot",
@@ -692,7 +692,7 @@ class TPUGKEJob(GKEJob):
                     # the original jobset attempts to restart (node pool conflict). This is more
                     # reliable at the moment but doesn't take advantage of node pool sharing. GCP is
                     # working on a fix.
-                    "provisioner-nodepool-id": cfg.name,
+                    # "provisioner-nodepool-id": cfg.name,
                 }
             )
 
@@ -745,6 +745,9 @@ class TPUGKEJob(GKEJob):
                 initContainers=[self._build_uploader_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
+                hostNetwork=True,
+                dnsPolicy="ClusterFirstWithHostNet",
+                priorityClassName="very-high",
             ),
         )
 
