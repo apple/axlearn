@@ -29,6 +29,8 @@ class JobMetadata:
     # It is not used by the bastion directly.
     # TODO(haijing-fu): make it as a required field.
     job_id: Optional[str] = None
+    # Version of the job.
+    version: Optional[int] = None
 
 
 @dataclasses.dataclass

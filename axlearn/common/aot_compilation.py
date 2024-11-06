@@ -199,9 +199,13 @@ def compile_trainer_programs(
         devices_per_slice = len(topology_devices)
 
     cfg = trainer_config.clone(dir="NOT_USED")
-    if cfg.mesh_shape is None:
-        cfg.mesh_shape = [len(topology_devices)] + [1] * (len(cfg.mesh_axis_names) - 1)
-    elif isinstance(cfg.mesh_shape, MeshShape):
+    cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
+    # Use a default mesh_shape if None or REQUIRED.
+    cfg.mesh_shape = cfg.mesh_shape or [len(topology_devices)] + [1] * (
+        len(cfg.mesh_axis_names) - 1
+    )
+
+    if isinstance(cfg.mesh_shape, MeshShape):
         cfg.mesh_shape = infer_mesh_shape(cfg.mesh_shape, num_devices=len(topology_devices))
         topology_devices = np.reshape(topology_devices, cfg.mesh_shape)
     else:

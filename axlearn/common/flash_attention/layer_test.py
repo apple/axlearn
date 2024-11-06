@@ -82,7 +82,13 @@ def _fake_inputs(
 
 
 def _prepare_layers(
-    *, num_heads, per_head_dim, mesh_axis_names, causal, sliding_window_size, inference=False
+    *,
+    num_heads,
+    per_head_dim,
+    mesh_axis_names,
+    causal,
+    sliding_window_size,
+    inference=False,
 ):
     hidden_dim = num_heads * per_head_dim
     kwargs = dict(
@@ -406,6 +412,7 @@ class TestFlashAttention(TestCase):
             )
             # TODO(markblee): Test probs.
             self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
+        jax.clear_backends()
 
     @parameterized.product(
         _TEST_CONFIGS,
@@ -433,7 +440,6 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
         if use_segment_ids and query_len_multiplier != 1:
             pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
-
         if not causal and sliding_window_size is not None:
             pytest.skip(reason="Sliding window attention must be causal.")
 
@@ -539,6 +545,7 @@ class TestFlashAttention(TestCase):
             atol = 1e-4
             self.assertNestedAllClose(ref_value, test_value, atol=atol)
             self.assertNestedAllClose(ref_grads, test_grads, atol=atol)
+        jax.clear_backends()
 
     @parameterized.product(_TEST_CONFIGS, causal=[True], sliding_window_size=[None, 4])
     def test_extend_step(
@@ -634,7 +641,7 @@ class TestFlashAttention(TestCase):
             initial_state = test_layer.init_states(
                 target_batch_size=batch, target_max_len=seq_len, kv_state=kv_state
             )
-            ref_initial_state = test_layer.init_states(
+            ref_initial_state = ref_layer.init_states(
                 target_batch_size=batch, target_max_len=seq_len, kv_state=kv_state
             )
             for k in ["key", "value"]:
@@ -714,3 +721,4 @@ class TestFlashAttention(TestCase):
                 test_out.data,
                 atol=2e-2,
             )
+        jax.clear_backends()

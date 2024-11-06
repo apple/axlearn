@@ -53,6 +53,7 @@ import functools
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -97,8 +98,12 @@ _LATEST_BASTION_VERSION = 1  # Determines job schema (see JobSpec).
 _LOG_DIR = "/var/tmp/logs"  # Use /var/tmp/ since /tmp/ is cleared every 10 days.
 _JOB_DIR = "/var/tmp/jobs"
 _BASTION_SERIALIZED_JOBSPEC_ENV_VAR = "_BASTION_SERIALIZED_JOBSPEC"
+BASTION_JOB_VERSION_ENV_VAR = "BASTION_JOB_VERSION"
 
 FLAGS = flags.FLAGS
+
+_VALID_NAME_CHARS = r"[!-~]+"  # match all printing ASCII characters except space
+valid_name_re = re.compile(_VALID_NAME_CHARS)
 
 
 def bastion_job_flags(flag_values: flags.FlagValues = FLAGS):
@@ -173,6 +178,8 @@ class JobLifecycleState(str, enum.Enum):
     PREEMPTING = "PREEMPTING"
     # Job is rescheduling.
     RESCHEDULING = "RESCHEDULING"
+    # Job is updating.
+    UPDATING = "UPDATING"
     # Job is cancelling. Command is terminating.
     CANCELLING = "CANCELLING"
     # Job has completed/terminated the command, is running cleanup command (if any).
@@ -235,6 +242,8 @@ def _validate_job_metadata(metadata: JobMetadata):
         raise ValidationError(f"Expected {metadata.resources=} to have string keys and int values.")
     if not isinstance(metadata.priority, int):
         raise ValidationError(f"Expected {metadata.priority=} to be an int.")
+    if metadata.version is not None and not isinstance(metadata.version, int):
+        raise ValidationError(f"Expected {metadata.version=} to be None or an int.")
 
 
 def _validate_jobspec(jobspec: JobSpec):
@@ -323,11 +332,16 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
 
 
 def is_valid_job_name(name: str) -> bool:
-    """Ensures that job name does not look like a path.
+    """Ensures job name is not path-like and only contains safe characters.
 
-    We use a permissive regex to avoid making assumptions about the underlying compute environment.
+    This check should avoid making assumptions about the underlying compute environment.
     """
-    return bool(name) and ("/" not in name) and (name not in (".", "..")) and ("\n" not in name)
+    return (
+        bool(name)
+        and ("/" not in name)
+        and (name not in (".", ".."))
+        and bool(valid_name_re.fullmatch(name))
+    )
 
 
 def _download_jobspec(job_name: str, *, remote_dir: str, local_dir: str = _JOB_DIR) -> JobSpec:
@@ -882,6 +896,12 @@ class Bastion(Configurable):
             else:
                 curr_job = self._active_jobs[job_name]
                 updated_job = active_jobs[job_name]
+                if updated_job.spec.metadata.version != curr_job.spec.metadata.version:
+                    # When a new version is detected, add "updated" in the metadata to signal
+                    # job state change and job relaunch.
+                    # Note: "updated" is a transient state and should not be persisted.
+                    updated_job.state.metadata["updated"] = True
+                    logging.info("Detected a different version of job %s", job_name)
                 curr_job.spec, curr_job.state = updated_job.spec, updated_job.state
 
     # pylint: disable-next=too-many-statements
@@ -926,10 +946,15 @@ class Bastion(Configurable):
                 self._append_to_job_history(
                     job,
                     msg=f"ACTIVE: start process command: {job.spec.command} "
-                    f"with metadata: {job.state.metadata}",
+                    f"with metadata: {job.state.metadata} and version: {job.spec.metadata.version}",
                     state=JobLifecycleState.STARTING,
                 )
             env_vars = {f"BASTION_{k.upper()}": v for k, v in job.state.metadata.items()}
+
+            if job.spec.metadata.version:
+                # For backwards compatibility, only set the version in env when not None.
+                env_vars.update({BASTION_JOB_VERSION_ENV_VAR: job.spec.metadata.version})
+
             serialized_jobspec = io.StringIO()
             serialize_jobspec(job.spec, serialized_jobspec)
             env_vars |= {_BASTION_SERIALIZED_JOBSPEC_ENV_VAR: serialized_jobspec.getvalue()}
@@ -1061,8 +1086,19 @@ class Bastion(Configurable):
                     new_tier = verdict.metadata.get("tier")
                     changed_tiers = old_tier != new_tier
 
-                    # Resume if not running, or keep running if scheduling tier did not change.
-                    if job.state.status == JobStatus.PENDING or not changed_tiers:
+                    jobspec_changed = job.state.metadata.get("updated")
+
+                    # Jobspec changed, trigger a restart of the runner.
+                    if jobspec_changed:
+                        self._append_to_job_history(
+                            job,
+                            msg="UPDATING: Detected updated jobspec. Will restart the runner "
+                            "by sending to PENDING state",
+                            state=JobLifecycleState.UPDATING,
+                        )
+                        job.state.status = JobStatus.PENDING
+                    elif job.state.status == JobStatus.PENDING or not changed_tiers:
+                        # Resume if not running, or keep running if scheduling tier did not change.
                         job.state.status = JobStatus.ACTIVE
                     else:
                         # Job changed scheduling tiers, and must be restarted on the new tier.
@@ -1279,3 +1315,25 @@ class BastionDirectory(Configurable):
         else:
             # Upload the job for bastion to pickup.
             tf_io.gfile.copy(job_spec_file, dst)
+
+    def get_job(self, job_name: str) -> JobSpec:
+        job_path = os.path.join(self.active_job_dir, job_name)
+        if not tf_io.gfile.exists(job_path):
+            raise ValueError(f"Unable to locate jobspec {job_path}")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            job_spec = _download_jobspec(job_name, remote_dir=self.active_job_dir, local_dir=tmpdir)
+            return job_spec
+
+    def update_job(self, job_name: str, *, job_spec: JobSpec) -> JobSpec:
+        dst = os.path.join(self.active_job_dir, job_name)
+        if not tf_io.gfile.exists(dst):
+            raise ValueError(f"Unable to locate jobspec {dst}")
+
+        with tempfile.NamedTemporaryFile("w") as f:
+            serialize_jobspec(job_spec, f)
+            # Upload the job for bastion to pickup.
+            tf_io.gfile.copy(f.name, dst, overwrite=True)
+        logging.info("Job %s is updating.", job_name)
+
+        return job_spec

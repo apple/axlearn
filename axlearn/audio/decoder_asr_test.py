@@ -14,8 +14,8 @@ from absl.testing import parameterized
 from jax import numpy as jnp
 
 from axlearn.audio.decoder_asr import (
+    CommonPrefixMerger,
     CTCDecoderModel,
-    CTCPrefixMerger,
     DecodeOutputs,
     LASDecoderModel,
     RNNPredictionNetwork,
@@ -263,12 +263,12 @@ class ValidCtcSeqTest(TestCase):
         )
 
 
-class CTCPrefixMergerTest(TestCase):
-    """Tests CTCPrefixMerger."""
+class CommonPrefixMergerTest(TestCase):
+    """Tests CommonPrefixMerger."""
 
     def test_ctc_prefix_merger(self):
         blank_id = 0
-        merger = CTCPrefixMerger(blank_id=blank_id)
+        merger = CommonPrefixMerger(blank_id=blank_id, pad_id=-1, remove_repeats=True)
         batch_size, num_decodes, max_decode_len = 2, 2, 4
         # Initialize empty state.
         state = merger.init_state(
@@ -878,7 +878,7 @@ class CTCDecoderModelTest(TestCase):
             prng_key=decode_key,
             method="beam_search_decode",
             num_decodes=num_decodes,
-            prefix_merger=CTCPrefixMerger(blank_id=cfg.blank_id),
+            prefix_merger=CommonPrefixMerger(blank_id=cfg.blank_id),
         )
         self.assertNestedEqual(
             jnp.array(

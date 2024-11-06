@@ -9,18 +9,22 @@
 import functools
 from collections.abc import Sequence
 from functools import partial
-from typing import Callable, Optional, Protocol, Union
+from typing import Callable, Optional, Protocol
 
+import einops
 import jax.numpy as jnp
 
 from axlearn.audio.frontend_utils import (
     WindowType,
+    frame,
+    frame_paddings,
     linear_to_log_mel_spectrogram,
     linear_to_mel_weight_matrix,
     magnitude_spectrogram,
+    ms_to_samples,
     next_power_of_2,
+    num_frames,
     pre_emphasis,
-    sliding_window,
     windowing,
 )
 from axlearn.common.base_layer import BaseLayer
@@ -33,7 +37,7 @@ from axlearn.common.config import (
     maybe_instantiate,
     maybe_set_config,
 )
-from axlearn.common.module import Module
+from axlearn.common.module import Module, nowrap
 from axlearn.common.utils import Tensor
 
 
@@ -53,11 +57,6 @@ def normalize_by_mean_std(
     if std is not None:
         x = x / jnp.maximum(jnp.array(std, dtype=x.dtype), jnp.finfo(x.dtype).eps)
     return x
-
-
-def _ms_to_samples(ms: Union[int, float], *, sample_rate: int) -> float:
-    """Converts time in milliseconds to number of samples under the given sample rate."""
-    return sample_rate / 1000 * ms
 
 
 class BaseFrontend(BaseLayer):
@@ -82,15 +81,10 @@ class BaseFrontend(BaseLayer):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
-        frame_size = _ms_to_samples(cfg.frame_size_ms, sample_rate=cfg.sample_rate)
-        hop_size = _ms_to_samples(cfg.hop_size_ms, sample_rate=cfg.sample_rate)
-        if not frame_size.is_integer():
-            raise ValueError(f"frame_size must be an integer, got {frame_size}.")
-        if not hop_size.is_integer():
-            raise ValueError(f"hop_size must be an integer, got {hop_size}.")
-
-        self._frame_size = int(frame_size)
-        self._hop_size = int(hop_size)
+        frame_size = ms_to_samples(cfg.frame_size_ms, sample_rate=cfg.sample_rate)
+        hop_size = ms_to_samples(cfg.hop_size_ms, sample_rate=cfg.sample_rate)
+        self._frame_size = frame_size
+        self._hop_size = hop_size
 
 
 def _log_mel_spectrogram(
@@ -143,8 +137,7 @@ class LogMelFrontend(BaseFrontend):
         # Optional output transformation. See `normalize_by_mean_std` for an example.
         output_transformation: Optional[InstantiableConfig[StageFn]] = None
         # Floor of melfilter bank energy to prevent log(0).
-        # Recommend to set to 1e-6 or smaller to capture
-        # low-energy signals.
+        # Recommend to set to 1e-6 or smaller to capture low-energy signals.
         # TODO(markblee): Deprecate this in favor of setting `mel_floor` on `spectrogram`.
         mel_floor: Required[float] = REQUIRED
         # Pre-emphasis filter. If None, skips pre-emphasis.
@@ -204,8 +197,27 @@ class LogMelFrontend(BaseFrontend):
             - paddings: A 0/1 Tensor of shape [batch, num_frames].
         """
         # TODO(markblee): Make these configurable as needed.
-        # Framer.
-        frames = sliding_window(inputs, window_size=self._frame_size, stride=self._hop_size)
+        frames = frame(inputs, frame_size=self._frame_size, hop_size=self._hop_size)
+        # TODO(dhwang2): Currently, a partial frame is padded. Explore it later.
+        out_paddings = frame_paddings(
+            paddings,
+            frame_size=self._frame_size,
+            hop_size=self._hop_size,
+        )
+        return self._to_logmel(frames, frames_paddings=out_paddings)
+
+    def _to_logmel(self, frames: Tensor, *, frames_paddings: Tensor) -> dict[str, Tensor]:
+        """Computes log-mel spectrogram features.
+
+        Args:
+            frames: Tensor of dtype float32 and shape [batch, num_frames, frame_size].
+            frames_paddings: A 0/1 Tensor of shape [batch, num_frames].
+
+        Returns:
+            A dict containing:
+            - outputs: A Tensor of shape [batch, num_frames, num_filters, 1].
+            - paddings: A 0/1 Tensor of shape [batch, num_frames].
+        """
         if self._pre_emphasis is not None:
             frames = self._pre_emphasis(frames)
         # Windowing. Defaults to a Hann window.
@@ -216,14 +228,10 @@ class LogMelFrontend(BaseFrontend):
         outputs = self._spectrogram(self._fft(frames), dtype=frames.dtype)
         if self._output_transformation is not None:
             outputs = self._output_transformation(outputs)
-        # To identify padding frames, apply the framer to the input padding.
-        # Consider a frame padded if it contains at least one padding sample.
-        paddings = sliding_window(paddings, window_size=self._frame_size, stride=self._hop_size)
-        # TODO(dhwang2): Logically, a partial frame is a valid frame. Explore it later.
-        paddings = jnp.max(paddings, axis=-1, keepdims=True)
-        outputs = outputs * (1 - paddings)
-        return dict(outputs=outputs[..., None], paddings=jnp.squeeze(paddings, axis=-1))
+        outputs = outputs * (1 - einops.rearrange(frames_paddings, "b t -> b t 1"))
+        return dict(outputs=einops.rearrange(outputs, "b t f -> b t f 1"), paddings=frames_paddings)
 
+    @nowrap
     def output_shape(self, *, input_shape: Sequence[Optional[int]]):
         """Computes the output shape given input shape.
 
@@ -242,7 +250,7 @@ class LogMelFrontend(BaseFrontend):
             raise ValueError(f"We expect len(input_shape) = 2, but got {len(input_shape)}.")
         batch_size, seq_len = input_shape
         if seq_len is not None:
-            num_frames = max(seq_len - self._frame_size, 0) // self._hop_size + 1
+            frame_len = num_frames(seq_len, frame_size=self._frame_size, hop_size=self._hop_size)
         else:
-            num_frames = None
-        return [batch_size, num_frames, cfg.num_filters, cfg.output_dim]
+            frame_len = None
+        return [batch_size, frame_len, cfg.num_filters, cfg.output_dim]

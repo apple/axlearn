@@ -130,14 +130,14 @@ class ASRModelTest(TestCase):
     """Tests ASRModel."""
 
     @parameterized.parameters(
-        (True, "forward", "ctc", 15.256454),
+        (True, "forward", "ctc", 13.895943),
         (False, "forward", "ctc", 15.304867),
         (False, "beam_search_decode", "ctc", None),
         (False, "predict", "ctc", None),
-        (True, "forward", "rnnt", 26.235899),
+        (True, "forward", "rnnt", 25.613092),
         (False, "forward", "rnnt", 26.705172),
         (False, "beam_search_decode", "rnnt", None),
-        (True, "forward", "las", 2.4774954),
+        (True, "forward", "las", 2.6430604),
         (False, "forward", "las", 2.5735652),
         (False, "beam_search_decode", "las", None),
     )

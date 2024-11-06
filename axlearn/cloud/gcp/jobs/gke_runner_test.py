@@ -12,16 +12,27 @@ import kubernetes as k8s
 from absl import app, flags
 from absl.testing import parameterized
 
+from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
-from axlearn.cloud.gcp.job import GPUGKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import BASTION_JOB_VERSION_LABEL, GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import gke_runner
 from axlearn.cloud.gcp.jobs.bastion_vm_test import _mock_job
-from axlearn.cloud.gcp.jobs.gke_runner import _get_runner_or_exit, _infer_reservation
+from axlearn.cloud.gcp.jobs.gke_runner import (
+    _get_runner_or_exit,
+    _infer_job_version,
+    _infer_reservation,
+)
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 
 
-def _mock_replicated_jobs(reservations: Sequence[str]):
+def _mock_replicated_jobs(reservations: Sequence[str], bastion_job_version: Optional[int] = None):
+    job_version_label = (
+        {"metadata": {"labels": {BASTION_JOB_VERSION_LABEL: str(bastion_job_version)}}}
+        if bastion_job_version
+        else {}
+    )
+
     return [
         {
             "template": {
@@ -34,6 +45,7 @@ def _mock_replicated_jobs(reservations: Sequence[str]):
                                 else {"cloud.google.com/gke-spot": "true"}
                             )
                         },
+                        **job_version_label,
                     },
                 }
             }
@@ -304,11 +316,33 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
     def test_infer_reservation(self, status: dict, expected: Optional[str] = None):
         self.assertEqual(expected, _infer_reservation(status))
 
+    @parameterized.parameters(
+        dict(
+            status=dict(
+                replicatedJobs=_mock_replicated_jobs(["test-reservation"], bastion_job_version=None)
+            ),
+            expected=None,
+        ),
+        dict(
+            status=dict(
+                replicatedJobs=_mock_replicated_jobs(["test-reservation"], bastion_job_version=1)
+            ),
+            expected=1,
+        ),
+        dict(
+            status=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"])),
+            expected=None,
+        ),
+    )
+    def test_infer_job_version(self, status: dict, expected: Optional[str] = None):
+        self.assertEqual(expected, _infer_job_version(status))
+
     @parameterized.product(
         (
             # Conditions is set, so we use it.
             dict(
                 tier=None,
+                job_version=None,
                 status=dict(
                     conditions=[
                         dict(type="COMPLETED", status="TRUE"),
@@ -321,6 +355,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # Ignore conditions with status.lower() != "true".
             dict(
                 tier=None,
+                job_version=None,
                 status=dict(
                     conditions=[
                         dict(type="COMPLETED", status="FALSE"),
@@ -334,6 +369,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # Missing conditions entirely, fallback to child job statuses.
             dict(
                 tier=None,
+                job_version=None,
                 status=dict(
                     replicatedJobsStatus=[
                         dict(failed=0, ready=1, succeeded=0),
@@ -347,6 +383,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # Ignore conditions with status.lower() != "true".
             dict(
                 tier=None,
+                job_version=None,
                 status=dict(
                     conditions=[dict(type="COMPLETED", status="FALSE")],
                     replicatedJobsStatus=[
@@ -361,6 +398,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # or until replicated job statuses change.
             dict(
                 tier=None,
+                job_version=None,
                 status=dict(
                     replicatedJobsStatus=[
                         dict(failed=1, ready=1, succeeded=0),
@@ -373,6 +411,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # At least one job failed without conditions, and tier does not match.
             dict(
                 tier="0",
+                job_version=None,
                 status=dict(
                     replicatedJobsStatus=[
                         dict(failed=1, ready=1, succeeded=0),
@@ -385,6 +424,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # Number of replicated job statuses do not match slices.
             dict(
                 tier=None,
+                job_version=None,
                 status=dict(
                     replicatedJobsStatus=[
                         dict(failed=0, ready=1, succeeded=0),
@@ -397,6 +437,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # All replicated jobs succeeded. No need to wait for jobset conditions.
             dict(
                 tier=None,
+                job_version=None,
                 status=dict(
                     replicatedJobsStatus=[
                         dict(failed=0, ready=0, succeeded=2),
@@ -409,6 +450,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # Ignore active and missing statuses.
             dict(
                 tier=None,
+                job_version=None,
                 status=dict(
                     replicatedJobsStatus=[
                         dict(active=1, ready=1),
@@ -421,6 +463,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # Missing jobset is reported as "not started".
             dict(
                 tier=None,
+                job_version=None,
                 status=k8s.client.exceptions.ApiException(status=404),
                 spec=None,
                 num_slices=1,
@@ -429,6 +472,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # All statuses are 0.
             dict(
                 tier=None,
+                job_version=None,
                 status=dict(
                     replicatedJobsStatus=[
                         dict(failed=0, ready=0, succeeded=0),
@@ -441,6 +485,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # All statuses are 0 and tiers do not match (thus will be recreated).
             dict(
                 tier="0",
+                job_version=None,
                 status=dict(
                     replicatedJobsStatus=[
                         dict(failed=0, ready=0, succeeded=0),
@@ -453,6 +498,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # Jobset reservation and bastion tier do not match.
             dict(
                 tier="1",
+                job_version=None,
                 status={},
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"])),
                 num_slices=2,
@@ -461,6 +507,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # Jobset reservation and bastion tier do not match.
             dict(
                 tier="1",
+                job_version=None,
                 status={},
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["spot", "test-reservation"])),
                 num_slices=2,
@@ -470,6 +517,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # In this case, we allow the job to keep running.
             dict(
                 tier="0",
+                job_version=None,
                 status=dict(
                     replicatedJobsStatus=[
                         dict(active=2, ready=2),
@@ -482,6 +530,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             # Missing reservation / invalid spec will be treated as spot.
             dict(
                 tier="0",
+                job_version=None,
                 status=dict(
                     replicatedJobsStatus=[
                         dict(active=2, ready=2),
@@ -489,6 +538,58 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 ),
                 spec=dict(replicatedJobs=[{"template": {}}]),
                 num_slices=2,
+                expected=gke_runner.GKERunnerJob.Status.READY,
+            ),
+            # Job version has increased from None.
+            dict(
+                tier="0",
+                job_version=1,
+                status=dict(
+                    replicatedJobsStatus=[
+                        dict(active=1, ready=1),
+                    ],
+                ),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None)),
+                num_slices=1,
+                expected=gke_runner.GKERunnerJob.Status.UPDATING,
+            ),
+            # Job version has increased from a non-None number.
+            dict(
+                tier="0",
+                job_version=4,
+                status=dict(
+                    replicatedJobsStatus=[
+                        dict(active=1, ready=1),
+                    ],
+                ),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 3)),
+                num_slices=1,
+                expected=gke_runner.GKERunnerJob.Status.UPDATING,
+            ),
+            # Job version has decreased, in which case, no update.
+            dict(
+                tier="0",
+                job_version=1,
+                status=dict(
+                    replicatedJobsStatus=[
+                        dict(active=1, ready=1),
+                    ],
+                ),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2)),
+                num_slices=1,
+                expected=gke_runner.GKERunnerJob.Status.READY,
+            ),
+            # Job version is set to None, in which case, no update.
+            dict(
+                tier="0",
+                job_version=None,
+                status=dict(
+                    replicatedJobsStatus=[
+                        dict(active=1, ready=1),
+                    ],
+                ),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2)),
+                num_slices=1,
                 expected=gke_runner.GKERunnerJob.Status.READY,
             ),
         ),
@@ -500,6 +601,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         num_slices: int,
         expected: gke_runner.GKERunnerJob.Status,
         tier: str,
+        job_version: Optional[int],
         spec: dict,
         enable_pre_provisioner: Optional[bool] = None,
     ):
@@ -519,7 +621,9 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 mock_get_status = mock.Mock(return_value=dict(status=status, spec=spec))
 
             with (
-                mock.patch.dict("os.environ", {"BASTION_TIER": tier}),
+                mock.patch.dict(
+                    "os.environ", {"BASTION_TIER": tier, BASTION_JOB_VERSION_ENV_VAR: job_version}
+                ),
                 mock.patch(
                     "kubernetes.client.CustomObjectsApi",
                     return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
@@ -835,6 +939,47 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
 
                 job._inner.execute.assert_called()  # pytype: disable=attribute-error
 
+    @parameterized.parameters(None, False, True)
+    def test_update(self, enable_pre_provisioner):
+        with self._job_config(
+            name="test-name",
+            cluster="test-cluster",
+            service_account="test-sa",
+            enable_pre_provisioner=enable_pre_provisioner,
+        ) as (
+            cfg,
+            _,
+        ):
+            cfg.bundler.set(image="test")
+
+            job: gke_runner.TPUGKERunnerJob = cfg.set(
+                command="",
+                status_interval_seconds=0,
+                enable_pre_provisioner=enable_pre_provisioner,
+            ).instantiate()
+
+            mock_job = mock.patch.multiple(
+                job,
+                _get_status=mock.Mock(
+                    side_effect=[
+                        gke_runner.GKERunnerJob.Status.UPDATING,
+                        gke_runner.GKERunnerJob.Status.COMPLETED,
+                    ]
+                ),
+                _get_job_credentials=mock.DEFAULT,
+                _delete=mock.DEFAULT,
+                _inner=mock.DEFAULT,
+                _pre_provisioner=mock.DEFAULT,
+            )
+
+            with mock_job:
+                job._execute()
+
+                # pytype: disable=attribute-error
+                job._pre_provisioner.delete_for.assert_not_called()
+                job._inner._delete.assert_called()
+                # pytype: enable=attribute-error
+
 
 class MainTest(parameterized.TestCase):
     """Tests CLI entrypoint."""
@@ -857,7 +1002,7 @@ class MainTest(parameterized.TestCase):
             dict(runner=gke_runner.TPUGKERunnerJob, instance_type="tpu-v4-8"),
             dict(runner=gke_runner.GPUGKERunnerJob, instance_type="gpu-a3-highgpu-8g-256"),
         ],
-        action=["start", "stop"],
+        action=["start", "stop", "update"],
     )
     def test_load_kube_config(self, action, runner, instance_type):
         # load_kube_config should only be called if using gke action.
