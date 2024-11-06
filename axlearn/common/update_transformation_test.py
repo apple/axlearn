@@ -166,9 +166,11 @@ def mock_params() -> Nested[Tensor]:
     )
 
 
-def mock_updates() -> axlearn.common.update_transformation.Updates:
+def mock_updates(state_param_none: bool = True) -> axlearn.common.update_transformation.Updates:
     """Create an updates object with various semi-reasonable values."""
     model_params = mock_params()
+    if state_param_none:
+        model_params["state"] = None
     opt_params = jax.tree.map(
         lambda p: OptParam(
             value=p,
@@ -197,6 +199,7 @@ class UpdatesTest(test_utils.TestCase):
         updates = mock_updates()
         actual = updates.param_values()
         expected = mock_params()
+        expected["state"] = None
         chex.assert_trees_all_equal_structs(actual, expected)
         self.assertNestedAllClose(actual, expected)
 
@@ -218,12 +221,7 @@ class UpdatesTest(test_utils.TestCase):
                     weight_decay_scale=0.1,
                 )
             ),
-            state=ParameterSpec(
-                shape=(2,),
-                dtype=jnp.int32,
-                factorization=FactorizationSpec([None]),
-                weight_decay_scale=0.1,
-            ),
+            state=None,
             more_state=ParameterSpec(
                 shape=(3,),
                 dtype=jnp.int32,
