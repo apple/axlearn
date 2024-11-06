@@ -264,7 +264,9 @@ def flash_attention(
         num_warps_ = 4 if head_dim <= 64 else 8
     num_stages_ = num_stages
     if num_stages_ is None:
-        num_stages_ = 2 if head_dim <= 64 else 1
+        num_stages_ = (
+            2 if bias is None and jnp.float32 not in (query.dtype, key.dtype, value.dtype) else 1
+        )
     kernel = functools.partial(
         _mha_forward_kernel,
         softmax_scale=softmax_scale,
@@ -358,7 +360,9 @@ def _mha_forward(
         num_warps_ = 4 if head_dim <= 64 else 8
     num_stages_ = num_stages
     if num_stages_ is None:
-        num_stages_ = 2 if head_dim <= 64 else 1
+        num_stages_ = (
+            2 if bias is None and jnp.float32 not in (query.dtype, key.dtype, value.dtype) else 1
+        )
     kernel = functools.partial(
         _mha_forward_kernel,
         softmax_scale=softmax_scale,
@@ -494,7 +498,6 @@ def _mha_backward_kernel(
     l_ref,
     m_ref,
     delta_ref,
-    _,
     # Outputs.
     dq_ref,
     dk_ref,
@@ -536,71 +539,123 @@ def _mha_backward_kernel(
     del out_ref, l_ref  # Not needed
     seq_len = q_ref.shape[0]
 
-    def outer_loop(start_k, _):
-        dv = jnp.zeros([block_k, block_d], dtype=jnp.float32)
-        dk = jnp.zeros([block_k, block_d], dtype=jnp.float32)
+    # Parallelize over k/v's seq dimension.
+    # Load a block of K and V of size (block_k, block_d).
+    # Iterate through Q in chunks of (block_q, block_d) to accumulate dK and dV.
+    start_k = pl.program_id(2)
+    slice_k = pl.ds(start_k * block_k, block_k)
+    dv = jnp.zeros([block_k, block_d], dtype=jnp.float32)
+    dk = jnp.zeros([block_k, block_d], dtype=jnp.float32)
+    k = pl.load(k_ref, (slice_k, slice(None)))
+    v = pl.load(v_ref, (slice_k, slice(None)))
+    span_k = start_k * block_k + jnp.arange(block_k)
+    kv_segment_ids = None if s_ref is None else pl.load(s_ref, (slice_k))
+
+    def inner_loop_dk_dv(start_q, carry):
+        dv, dk = carry
+        slice_q = pl.ds(start_q * block_q, block_q)
+        q = pl.load(q_ref, (slice_q, slice(None)))
+        qk = pl.dot(q, k.T)
+        # These casts are needed to avoid precision issues.
+        qk = qk.astype(jnp.float32)
+
+        if softmax_scale != 1.0:
+            qk *= softmax_scale
+
+        if b_ref is not None:
+            # Load bias in transposed order, for hopefully better cache efficiency.
+            b = pl.load(
+                b_ref,
+                (slice_k, slice_q),
+            )
+            b = b.astype(jnp.float32)
+            qk += b.T  # Transpose back.
+        if s_ref is not None:
+            q_segment_ids = pl.load(s_ref, (slice_q))
+            mask = _segment_mask(q_segment_ids, kv_segment_ids)
+            qk = jnp.where(mask, qk, NEG_INF)
+        if causal:
+            span_q = start_q * block_q + jnp.arange(block_q)
+            mask = span_q[:, None] >= span_k[None, :]
+            qk = jnp.where(mask, qk, NEG_INF)
+        m = pl.load(m_ref, (slice_q,))
+        p = jnp.exp(qk - m[:, None])
+        do = pl.load(do_scaled_ref, (slice_q, slice(None)))
+        dv = dv + pl.dot(p.astype(do.dtype).T, do)
+        di = pl.load(delta_ref, (slice_q,))
+        dp = jnp.zeros((block_q, block_k), dtype=jnp.float32) - di[:, None]
+        dp = dp + pl.dot(do, v.T)
+        ds = p * dp
+        if softmax_scale != 1.0:
+            ds = ds * softmax_scale
+        dk = dk + pl.dot(ds.astype(q_ref.dtype).T, q)
+
+        return dv, dk
+
+    lower_bound = lax.div(start_k * block_k, block_q) if causal else 0
+    dv, dk = lax.fori_loop(lower_bound, pl.cdiv(seq_len, block_q), inner_loop_dk_dv, (dv, dk))
+    pl.store(dv_ref, (slice_k, slice(None)), dv.astype(dv_ref.dtype))
+    pl.store(dk_ref, (slice_k, slice(None)), dk.astype(dk_ref.dtype))
+    # Free up memory.
+    del dv, dk
+
+    # Parallelize over q's seq dimension.
+    # 1. Load a block of Q of size (block_q, block_d).
+    # 2. Iterate through K and V in chunks of (block_k, block_d) to accumulate dQ.
+    start_q = pl.program_id(2)
+    slice_q = pl.ds(start_q * block_q, block_q)
+    q = pl.load(q_ref, (slice_q, slice(None)))
+    dq = jnp.zeros([block_q, block_d], dtype=jnp.float32)
+    q_segment_ids = None if s_ref is None else pl.load(s_ref, (slice_q))
+    span_q = start_q * block_q + jnp.arange(block_q)
+    m = pl.load(m_ref, (slice_q,))
+    di = pl.load(delta_ref, (slice_q,))
+    do = pl.load(do_scaled_ref, (slice_q, slice(None)))
+
+    def inner_loop_dq(start_k, carry):
+        dq = carry
         slice_k = pl.ds(start_k * block_k, block_k)
         k = pl.load(k_ref, (slice_k, slice(None)))
         v = pl.load(v_ref, (slice_k, slice(None)))
-        span_k = start_k * block_k + jnp.arange(block_k)
-        kv_segment_ids = None if s_ref is None else pl.load(s_ref, (slice_k))
+        qk = pl.dot(q, k.T)
 
-        def inner_loop(start_q, carry):
-            dv, dk = carry
-            slice_q = pl.ds(start_q * block_q, block_q)
-            q = pl.load(q_ref, (slice_q, slice(None)))
-            qk = pl.dot(q, k.T)
+        # These casts are needed to avoid precision issues.
+        qk = qk.astype(jnp.float32)
 
-            # These casts are needed to avoid precision issues.
-            qk = qk.astype(jnp.float32)
-
-            if softmax_scale != 1.0:
-                qk *= softmax_scale
-            if b_ref is not None:
-                # Load bias in transposed order, for hopefully better cache efficiency.
-                b = pl.load(
-                    b_ref,
-                    (slice_k, slice_q),
-                )
-                b = b.astype(jnp.float32)
-                qk += b.T  # Transpose back.
-            if s_ref is not None:
-                q_segment_ids = pl.load(s_ref, (slice_q))
-                mask = _segment_mask(q_segment_ids, kv_segment_ids)
-                qk = jnp.where(mask, qk, NEG_INF)
-            if causal:
-                span_q = start_q * block_q + jnp.arange(block_q)
-                mask = span_q[:, None] >= span_k[None, :]
-                qk = jnp.where(mask, qk, NEG_INF)
-            m = pl.load(m_ref, (slice_q,))
-            p = jnp.exp(qk - m[:, None])
-            do = pl.load(do_scaled_ref, (slice_q, slice(None)))
-            dv = dv + pl.dot(p.astype(do.dtype).T, do)
-            di = pl.load(delta_ref, (slice_q,))
-            dp = jnp.zeros((block_q, block_k), dtype=jnp.float32) - di[:, None]
-            dp = dp + pl.dot(do, v.T)
-            ds = p * dp
-            if softmax_scale != 1.0:
-                ds = ds * softmax_scale
-            dk = dk + pl.dot(ds.astype(q_ref.dtype).T, q)
-            dq = pl.load(
-                dq_ref,
-                (slice_q, slice(None)),
-                eviction_policy="evict_last",
+        if softmax_scale != 1.0:
+            qk *= softmax_scale
+        if b_ref is not None:
+            # Load bias in transposed order, for hopefully better cache efficiency.
+            b = pl.load(
+                b_ref,
+                (slice_k, slice_q),
             )
-            dq = dq + pl.dot(ds.astype(k.dtype), k).astype(dq.dtype)
-            pl.store(dq_ref, (slice_q, slice(None)), dq, eviction_policy="evict_last")
-            return dv, dk
-
+            b = b.astype(jnp.float32)
+            qk += b.T  # Transpose back.
+        if s_ref is not None:
+            kv_segment_ids = pl.load(s_ref, (slice_k))
+            mask = _segment_mask(q_segment_ids, kv_segment_ids)
+            qk = jnp.where(mask, qk, NEG_INF)
         if causal:
-            lower_bound = lax.div(start_k * block_k, block_q)
-        else:
-            lower_bound = 0
-        dv, dk = lax.fori_loop(lower_bound, pl.cdiv(seq_len, block_q), inner_loop, (dv, dk))
-        pl.store(dv_ref, (slice_k, slice(None)), dv.astype(dv_ref.dtype))
-        pl.store(dk_ref, (slice_k, slice(None)), dk.astype(dk_ref.dtype))
+            span_k = start_k * block_k + jnp.arange(block_k)
+            mask = span_q[:, None] >= span_k[None, :]
+            qk = jnp.where(mask, qk, NEG_INF)
+        p = jnp.exp(qk - m[:, None])
+        dp = jnp.zeros((block_q, block_k), dtype=jnp.float32) - di[:, None]
+        dp = dp + pl.dot(do, v.T)
+        ds = p * dp
+        if softmax_scale != 1.0:
+            ds = ds * softmax_scale
+        dq = dq + pl.dot(ds.astype(k.dtype), k).astype(dq.dtype)
+        return dq
 
-    lax.fori_loop(0, pl.cdiv(seq_len, block_k), outer_loop, None)
+    if causal:
+        upper_bound = lax.div((start_q + 1) * block_q, block_k)
+    else:
+        upper_bound = pl.cdiv(seq_len, block_k)
+
+    dq = lax.fori_loop(0, upper_bound, inner_loop_dq, (dq))
+    pl.store(dq_ref, (slice_q, slice(None)), dq.astype(dq_ref.dtype))
 
 
 def _mha_backward(
@@ -624,8 +679,9 @@ def _mha_backward(
     # NOTE: temporarily removed the "xla" branch, which seems unused.
     if backward_pass_impl == "triton":
         # We must shrink the block size for float32 inputs to avoid OOM during bwd pass.
-        if jnp.float32 in (q.dtype, k.dtype, v.dtype):
+        if jnp.float32 in (q.dtype, k.dtype, v.dtype, jnp.bfloat16 if b is None else b.dtype):
             block_q = block_k = 32
+
         batch_size, seq_len, num_heads, head_dim = q.shape
         # Backward heuristics, using the same block size for block q and block k.
         block_q = min(block_q, seq_len)
@@ -633,47 +689,36 @@ def _mha_backward(
         # Very tiny amount of time, not worth using pallas_call.
         do_scaled, delta = _preprocess_backward(out, do, l, block_q, debug, interpret)
         # We accumulate into dq so we need to initialize it to zeros.
-        dq = jnp.zeros(q.shape, jnp.float32)
         out_shapes = [
-            jax.ShapeDtypeStruct(dq.shape, dq.dtype),
+            jax.ShapeDtypeStruct(q.shape, q.dtype),
             jax.ShapeDtypeStruct(k.shape, k.dtype),
             jax.ShapeDtypeStruct(v.shape, v.dtype),
         ]
-
-        num_input = 8
 
         # Bias.
         bias_block_spec = None
         if b is not None:
             assert b.ndim == 4
             b = jnp.moveaxis(b, -1, -2)
-            # We must shrink the block size for float32 inputs to avoid OOM during bwd pass.
-            if b.dtype == jnp.float32:
-                block_q = block_k = 32
 
-            def bias_index_map(j, k):
+            def bias_index_map(j, k, _):
                 return (j if b.shape[0] != 1 else 0, k if b.shape[1] != 1 else 0, 0, 0)
 
             bias_block_spec = pl.BlockSpec(
                 index_map=bias_index_map, block_shape=(None, None, seq_len, seq_len)
             )
-            num_input += 1
 
         # Segment Ids.
         segment_ids_block_spec = None
         if s is not None:
             assert s.ndim == 2
             segment_ids_block_spec = pl.BlockSpec(
-                index_map=(lambda j, k: (j, 0)), block_shape=(None, seq_len)
+                index_map=(lambda j, k, _: (j, 0)), block_shape=(None, seq_len)
             )
-            num_input += 1
-
-        input_output_aliases = {num_input: 0}
-
-        grid = (batch_size, num_heads)
-        # TODO(markblee): num_warps=8 seems to work from basic testing, confirm the below comment.
-        # TODO(sharadmv): figure out why num_warps=8 doesn't work!
+        grid = (batch_size, num_heads, pl.cdiv(seq_len, block_q))
+        # Add some proof check against SRAM for float32 inputs or huge bias input.
         num_warps = 8
+        num_stages = 2 if b is None and jnp.float32 not in (q.dtype, k.dtype, v.dtype) else 1
         dq, dk, dv = pl.pallas_call(
             functools.partial(
                 _mha_backward_kernel,
@@ -687,55 +732,56 @@ def _mha_backward(
             out_shape=out_shapes,
             in_specs=[
                 pl.BlockSpec(
-                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    index_map=(lambda j, k, _: (j, 0, k, 0)),
                     block_shape=(None, seq_len, None, head_dim),
                 ),  # query
                 pl.BlockSpec(
-                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    index_map=(lambda j, k, _: (j, 0, k, 0)),
                     block_shape=(None, seq_len, None, head_dim),
                 ),  # key
                 pl.BlockSpec(
-                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    index_map=(lambda j, k, _: (j, 0, k, 0)),
                     block_shape=(None, seq_len, None, head_dim),
                 ),  # value
                 bias_block_spec,  # bias
                 segment_ids_block_spec,  # segment_ids
                 pl.BlockSpec(
-                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    index_map=(lambda j, k, _: (j, 0, k, 0)),
                     block_shape=(None, seq_len, None, head_dim),
                 ),
                 pl.BlockSpec(
-                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    index_map=(lambda j, k, _: (j, 0, k, 0)),
                     block_shape=(None, seq_len, None, head_dim),
                 ),
-                pl.BlockSpec(index_map=(lambda j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
-                pl.BlockSpec(index_map=(lambda j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
-                pl.BlockSpec(index_map=(lambda j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
                 pl.BlockSpec(
-                    index_map=(lambda j, k: (j, 0, k, 0)),
-                    block_shape=(None, seq_len, None, head_dim),
+                    index_map=(lambda j, k, _: (j, k, 0)), block_shape=(None, None, seq_len)
+                ),
+                pl.BlockSpec(
+                    index_map=(lambda j, k, _: (j, k, 0)), block_shape=(None, None, seq_len)
+                ),
+                pl.BlockSpec(
+                    index_map=(lambda j, k, _: (j, k, 0)), block_shape=(None, None, seq_len)
                 ),
             ],
             out_specs=[
                 pl.BlockSpec(
-                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    index_map=(lambda j, k, _: (j, 0, k, 0)),
                     block_shape=(None, seq_len, None, head_dim),
                 ),
                 pl.BlockSpec(
-                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    index_map=(lambda j, k, _: (j, 0, k, 0)),
                     block_shape=(None, seq_len, None, head_dim),
                 ),
                 pl.BlockSpec(
-                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    index_map=(lambda j, k, _: (j, 0, k, 0)),
                     block_shape=(None, seq_len, None, head_dim),
                 ),
             ],
             name="mha_backward",
             debug=debug,
             interpret=interpret,
-            compiler_params=plgpu.TritonCompilerParams(num_warps=num_warps, num_stages=1),
-            input_output_aliases=input_output_aliases,
-        )(q, k, v, b, s, out, do_scaled, l, m, delta, dq)
+            compiler_params=plgpu.TritonCompilerParams(num_warps=num_warps, num_stages=num_stages),
+        )(q, k, v, b, s, out, do_scaled, l, m, delta)
     else:
         raise ValueError(f"Invalid backward pass implementation: {backward_pass_impl}")
     return dq.astype(q.dtype), dk, dv, None, None
