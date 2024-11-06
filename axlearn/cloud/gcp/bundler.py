@@ -148,6 +148,9 @@ class CloudBuildBundler(BaseDockerBundler):
         cfg.project = cfg.project or gcp_settings("project", required=False, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
+        # The value from from_spec is a str and will result in wrong condition.
+        if isinstance(cfg.is_async, str):
+            cfg.is_async = cfg.is_async.lower() != "false"
         return cfg
 
     # pylint: disable-next=no-self-use,unused-argument

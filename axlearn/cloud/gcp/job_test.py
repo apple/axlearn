@@ -27,6 +27,7 @@ from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bastion import (
     _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
+    BASTION_JOB_VERSION_ENV_VAR,
     deserialize_jobspec,
     new_jobspec,
     serialize_jobspec,
@@ -39,6 +40,7 @@ from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import (
     _MEMORY_REQUEST_PERCENTAGE,
+    BASTION_JOB_VERSION_LABEL,
     CPUJob,
     GCSFuseMount,
     HostMount,
@@ -328,12 +330,13 @@ class TPUGKEJobTest(TestCase):
                 env={
                     "BASTION_TIER": "0",
                     _BASTION_SERIALIZED_JOBSPEC_ENV_VAR: _create_serialized_job_spec(1, "user-1"),
+                    BASTION_JOB_VERSION_ENV_VAR: "1",
                 },
                 reservation="test-reservation",
                 expect_reserved=True,
             ),
             dict(
-                env={"BASTION_TIER": "1"},
+                env={"BASTION_TIER": "1", BASTION_JOB_VERSION_ENV_VAR: "2"},
                 reservation="test-reservation",
                 expect_reserved=False,
             ),
@@ -420,6 +423,8 @@ class TPUGKEJobTest(TestCase):
                         break
                 else:
                     self.fail("host-mount not found!")
+
+            self.assertEqual(container["imagePullPolicy"], "Always")
 
             self.assertIn("limits", resources)
             tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
@@ -514,6 +519,12 @@ class TPUGKEJobTest(TestCase):
                 self.assertNotIn("job-priority", labels)
                 self.assertNotIn("job-priority", node_selector)
                 self.assertNotIn("user-id", labels)
+
+            if BASTION_JOB_VERSION_ENV_VAR in env:
+                job_version = env.get(BASTION_JOB_VERSION_ENV_VAR)
+                self.assertEqual(job_version, labels.get(BASTION_JOB_VERSION_LABEL, None))
+            else:
+                self.assertNotIn(BASTION_JOB_VERSION_LABEL, labels)
 
             if enable_tpu_smart_repair:
                 self.assertIn(

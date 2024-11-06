@@ -3,10 +3,12 @@
 """Tests launch utilities."""
 # pylint: disable=protected-access
 
+import contextlib
 import dataclasses
 import json
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Union
 from unittest import mock
 
 from absl import flags
@@ -18,11 +20,13 @@ from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import Table
 from axlearn.cloud.gcp.jobs import launch_utils
 from axlearn.cloud.gcp.jobs.launch_utils import (
+    _parse_resource_flags_from_command,
     jobs_table,
     match_by_regex,
     project_usage_table,
     serialized_flags_for_job,
     user_usage_table,
+    validate_resource_flags,
     with_k8s_jobset_state,
     with_qrm_tpu_state,
 )
@@ -119,6 +123,88 @@ class TestUtils(parameterized.TestCase):
                     gcp_api=case["gcp_api"],
                 ),
             )
+
+    @parameterized.parameters(
+        dict(
+            command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update -"
+            "-enable_pre_provisioner --instance_type=tpu-v5litepod-16 --num_replicas=1 "
+            "-- sleep infinity",
+            enable_pre_provisioner=True,
+            instance_type="tpu-v5litepod-16",
+            num_replicas=1,
+        ),
+        dict(
+            command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update "
+            "--noenable_pre_provisioner --tpu_type=tpu-v5litepod-32 --num_slices=2 "
+            "-- sleep infinity",
+            enable_pre_provisioner=False,
+            instance_type="tpu-v5litepod-32",
+            num_replicas=2,
+        ),
+        dict(
+            command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update "
+            "--tpu_type=tpu-v5litepod-32 --num_slices=2 "
+            "-- sleep infinity",
+            enable_pre_provisioner=None,
+            instance_type="tpu-v5litepod-32",
+            num_replicas=2,
+        ),
+    )
+    def test_parse_resource_flags_from_command(
+        self, command, enable_pre_provisioner, instance_type, num_replicas
+    ):
+        parsed_flags = _parse_resource_flags_from_command(command)
+
+        self.assertEqual(parsed_flags.enable_pre_provisioner, enable_pre_provisioner)
+        self.assertEqual(parsed_flags.instance_type, instance_type)
+        self.assertEqual(parsed_flags.num_replicas, num_replicas)
+
+    @parameterized.parameters(
+        dict(
+            original_command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update "
+            "--enable_pre_provisioner --instance_type=tpu-v5litepod-16 --num_replicas=1 "
+            "-- sleep infinity",
+            updated_command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update "
+            "--enable_pre_provisioner --instance_type=tpu-v5litepod-16 --num_replicas=1 "
+            "-- sleep 30",
+            expected=None,
+        ),
+        dict(
+            original_command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update "
+            "--enable_pre_provisioner --instance_type=tpu-v5litepod-16 --num_replicas=1 "
+            "-- sleep infinity",
+            updated_command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update "
+            "--enable_pre_provisioner --instance_type=tpu-v5litepod-32 --num_replicas=1 "
+            "-- sleep infinity",
+            expected=ValueError("instance_type"),
+        ),
+        dict(
+            original_command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update "
+            "--enable_pre_provisioner --instance_type=tpu-v5litepod-16 --num_replicas=1 "
+            "-- sleep infinity",
+            updated_command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update "
+            "--enable_pre_provisioner --instance_type=tpu-v5litepod-16 --num_slices=2 "
+            "-- sleep infinity",
+            expected=ValueError("num_replicas"),
+        ),
+        dict(
+            original_command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update"
+            " --instance_type=tpu-v5litepod-16 --num_replicas=1 -- sleep infinity",
+            updated_command="python3 -m axlearn.cloud.gcp.jobs.gke_runner update"
+            " --enable_pre_provisioner --instance_type=tpu-v5litepod-16 --num_replicas=1 "
+            "-- sleep infinity",
+            expected=ValueError("pre_provisioner"),
+        ),
+    )
+    def test_validate_resource_flags(
+        self, original_command, updated_command, expected: Union[Exception, type]
+    ):
+        if isinstance(expected, Exception):
+            ctx = self.assertRaisesRegex(type(expected), str(expected))
+        else:
+            ctx = contextlib.nullcontext()
+        with ctx:
+            validate_resource_flags(original_command, updated_command)
 
 
 class TestListUtils(parameterized.TestCase):
