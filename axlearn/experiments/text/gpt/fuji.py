@@ -378,14 +378,14 @@ def get_trainer_kwargs(
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
                 num_kv_heads=None if version == Version.V1 else 8,
                 # TODO(kelvin-zou): Remove the perf numbers for V5e (OOM).
-                #ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
+                ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
                 rope_theta=rope_theta,
                 shared_lm_head=False,
                 flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=1024*3,
             max_step=max_step,
             #eval_every_n_steps=500,
             save_every_n_steps=100,
