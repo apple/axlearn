@@ -14,6 +14,9 @@ from axlearn.common import measurement
 from axlearn.common.trainer import SpmdTrainer, select_mesh_config
 from axlearn.common.utils import MeshShape, get_data_dir, infer_mesh_shape
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
+from axlearn.cloud.gcp.system_characteristics import (
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+)
 
 # Trainer-specific flags.
 flags.DEFINE_string(
@@ -68,6 +71,16 @@ flags.DEFINE_string(
     None,
     "The mesh selector string. See `SpmdTrainer.Config.mesh_rules` for details.",
 )
+flags.DEFINE_string(
+    "pdbs",
+    None,
+    "Per device batch size (Overrides global batch size).",
+)
+flags.DEFINE_integer(
+    "slices",
+    1,
+    "Number of slices for the TPU job.",
+)
 
 FLAGS = flags.FLAGS
 
@@ -101,6 +114,9 @@ def get_trainer_config(
     trainer_config: SpmdTrainer.Config = trainer_config_fn()
     trainer_config.dir = trainer_config.dir or flag_values.trainer_dir
     if flag_values.mesh_selector is not None:
+        if flag_values.pdbs and flag_values.jax_backend == "tpu":
+            system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[flag_values.mesh_selector.replace("tpu-", "")]
+            trainer_config.train_batch_size = int(flag_values.pdbs) * system.chips_per_vm * system.vms_per_slice * int(flag_values.slices)
         select_mesh_config(trainer_config, mesh_selector=flag_values.mesh_selector)
     trainer_config.mesh_axis_names = trainer_config.mesh_axis_names or ("data", "model")
     trainer_config.mesh_shape = trainer_config.mesh_shape or (len(jax.devices()), 1)
@@ -110,6 +126,7 @@ def get_trainer_config(
     if trainer_config.watchdog_timeout_seconds is None:
         trainer_config.watchdog_timeout_seconds = flag_values.trainer_watchdog_timeout_seconds
     for eval_cfg in trainer_config.evalers.values():
+        eval_cfg.input.batcher.global_batch_size = trainer_config.train_batch_size
         eval_cfg.trace_at_iters = [int(el) for el in flag_values.eval_trace_at_iters]
     if flag_values.device_monitor == "tpu":
         # pylint: disable-next=wrong-import-position,import-outside-toplevel

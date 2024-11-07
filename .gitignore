@@ -1,3 +1,6 @@
+# jobset yaml
+jobset*.yaml
+
 # test results
 test-results
 

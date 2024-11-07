@@ -200,6 +200,9 @@ class SpmdTrainer(Module):
         # The provided config should instantiate to a thunk that returns the context manager.
         context_manager: Optional[ConfigOr[Callable[[], ContextManager]]] = None
 
+        # The Global Batch Size
+        train_batch_size: Optional[int] = None
+
     def __init__(
         self,
         cfg: Config,

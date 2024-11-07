@@ -385,7 +385,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=512 * 3, # fixed pdbs 3
+            train_batch_size=train_batch_size,
             max_step=max_step,
             #eval_every_n_steps=500,
             save_every_n_steps=100,
