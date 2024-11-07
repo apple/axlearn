@@ -574,9 +574,10 @@ class TestDecoder(TestCase):
 
             if method == "sample_decode":
                 # Modify logits so that we will always sample the last token ID.
-                inputs["logits_modifier"] = (
-                    lambda logits: jnp.full_like(logits, decoding.NEG_INF).at[:, -1].set(0)
-                )
+                def logits_modifier_fn():
+                    return lambda logits: jnp.full_like(logits, decoding.NEG_INF).at[:, -1].set(0)
+
+                inputs["logits_modifier"] = config_for_function(logits_modifier_fn)
 
             # pylint: disable=protected-access
             mock_ctx = contextlib.nullcontext()
