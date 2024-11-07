@@ -116,7 +116,7 @@ def get_trainer_config(
     if flag_values.mesh_selector is not None:
         if flag_values.pdbs and flag_values.jax_backend == "tpu":
             system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[flag_values.mesh_selector.replace("tpu-", "")]
-            trainer_config.train_batch_size = int(flag_values.pdbs) * system.chips_per_vm * system.vms_per_slice * int(flag_values.slices)
+            #trainer_config.train_batch_size = int(flag_values.pdbs) * system.chips_per_vm * system.vms_per_slice * int(flag_values.slices)
         select_mesh_config(trainer_config, mesh_selector=flag_values.mesh_selector)
     trainer_config.mesh_axis_names = trainer_config.mesh_axis_names or ("data", "model")
     trainer_config.mesh_shape = trainer_config.mesh_shape or (len(jax.devices()), 1)
@@ -126,7 +126,7 @@ def get_trainer_config(
     if trainer_config.watchdog_timeout_seconds is None:
         trainer_config.watchdog_timeout_seconds = flag_values.trainer_watchdog_timeout_seconds
     for eval_cfg in trainer_config.evalers.values():
-        eval_cfg.input.batcher.global_batch_size = trainer_config.train_batch_size
+        #eval_cfg.input.batcher.global_batch_size = trainer_config.train_batch_size
         eval_cfg.trace_at_iters = [int(el) for el in flag_values.eval_trace_at_iters]
     if flag_values.device_monitor == "tpu":
         # pylint: disable-next=wrong-import-position,import-outside-toplevel

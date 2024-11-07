@@ -389,7 +389,6 @@ def get_trainer_kwargs(
             max_step=max_step,
             #eval_every_n_steps=500,
             save_every_n_steps=100,
-            #start_trace_process_indices="all",
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
                 # TPU V5e maximum per device batch is 1.
