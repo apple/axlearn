@@ -55,25 +55,25 @@ def default_xla_options(
             xla_tpu_overlap_compute_collective_tc="true",
             xla_enable_async_all_gather="true",
             # Flag to enable some advanced scheduling features.
-            #xla_tpu_enable_all_experimental_scheduler_features="true",
+            xla_tpu_enable_all_experimental_scheduler_features="true",
             # Flag to enable memory tracking scheduling. The default AUTO only enables
             # it in some situations. Not needed if
             # xla_tpu_enable_all_experimental_scheduler_features is set to true already.
-            #xla_tpu_enable_scheduler_memory_pressure_tracking="ENABLED",
+            xla_tpu_enable_scheduler_memory_pressure_tracking="ENABLED",
             # Flag controlling the maximum number of overlapping host offloadings.
-            #xla_tpu_host_transfer_overlap_limit=24,
+            xla_tpu_host_transfer_overlap_limit=24,
             # Flag to enable the aggressive removal of opt-barriers.
-            #xla_tpu_aggressive_opt_barrier_removal="ENABLED",
+            xla_tpu_aggressive_opt_barrier_removal="ENABLED",
             # Flag to enable more aggressive scheduling for async ops, such as pushing
             # the async start to the beginning of the loop body.
-            #xla_lhs_prioritize_async_depth_over_stall="ENABLED",
+            xla_lhs_prioritize_async_depth_over_stall="ENABLED",
             # For multi-slice configurations,
             # Flag to enable pipelining of cross-DCN all-gathers.
-            #xla_tpu_enable_ag_backward_pipelining="true",
-            #xla_should_allow_loop_variant_parameter_in_chain="ENABLED",
-            #xla_should_add_loop_invariant_op_in_chain="ENABLED",
+            xla_tpu_enable_ag_backward_pipelining="true",
+            xla_should_allow_loop_variant_parameter_in_chain="ENABLED",
+            xla_should_add_loop_invariant_op_in_chain="ENABLED",
             # Flag controlling the maximum number of overlapping cross-DCN send/recv.
-            #xla_max_concurrent_host_send_recv=100,
+            xla_max_concurrent_host_send_recv=100,
             # If you are seeing OOM (out-of-memory) error, or bad performance when HBM memory
             # usage is close to HBM capacity, tuning these two flags might help:
             # Flag controlling the HBM memory limit as a percentage of the total HBM size.
@@ -90,7 +90,7 @@ def default_xla_options(
             # limit is already set too low. Cutting the memory limit to 90% of previous one
             # though, may make the scheduler weighting too much on the memory usage instead
             # of latency side.
-            #xla_latency_hiding_scheduler_rerun=0,
+            xla_latency_hiding_scheduler_rerun=0,
             # SC offload xla
             #xla_sc_disable_megacore_partitioning="true",
             #xla_tpu_use_tc_device_shape_on_sc="true",
@@ -99,18 +99,20 @@ def default_xla_options(
             #xla_sc_disjoint_spmem="false",
             #a886c8_chip_config_name="megachip_tccontrol",
             #xla_jf_crs_combiner_threshold_count=10,
+            # all reduce 
+            #xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
         options.update(
             # For collectives across multiple slices.
-            #xla_tpu_enable_megascale_barrier="true",
+            xla_tpu_enable_megascale_barrier="true",
             # Per rwitten@google.com the following two flags allow gradient all-reduce to happen
             # concurrently with gradient computation for the following layer.
-            #xla_tpu_enable_data_parallel_all_reduce_opt="true",
-            #xla_tpu_data_parallel_opt_different_sized_ops="true",
+            xla_tpu_enable_data_parallel_all_reduce_opt="true",
+            xla_tpu_data_parallel_opt_different_sized_ops="true",
             # Group non-blocking DCN collectives into as few stages as possible.
-            #xla_tpu_enable_sunk_dcn_allreduce_done_with_host_reduction="true",
+            xla_tpu_enable_sunk_dcn_allreduce_done_with_host_reduction="true",
         )
 
     # Validate options. Will never fail if this function is implemented correctly.
