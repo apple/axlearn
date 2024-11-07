@@ -91,16 +91,16 @@ def default_xla_options(
             # though, may make the scheduler weighting too much on the memory usage instead
             # of latency side.
             xla_latency_hiding_scheduler_rerun=0,
-            # SC offload xla
-            xla_sc_disable_megacore_partitioning="true",
-            xla_tpu_use_tc_device_shape_on_sc="true",
-            tpu_use_continuations="true",
-            xla_sc_enable_instruction_fusion="false",
-            xla_sc_disjoint_spmem="false",
+            # SC offload xla - Job fails using these:
+            #xla_sc_disable_megacore_partitioning="true",
+            #xla_tpu_use_tc_device_shape_on_sc="true",
+            #tpu_use_continuations="true",
+            #xla_sc_enable_instruction_fusion="false",
+            #xla_sc_disjoint_spmem="false",
             #a886c8_chip_config_name="megachip_tccontrol",
-            xla_jf_crs_combiner_threshold_count=10,
+            #xla_jf_crs_combiner_threshold_count=10,
             # all reduce 
-            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            #xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
