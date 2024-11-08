@@ -53,6 +53,12 @@ from axlearn.experiments.text.gpt.common import (
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
+from axlearn.cloud.gcp.system_characteristics import (
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+)
+from absl import flags
+
+FLAGS = flags.FLAGS
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
@@ -370,6 +376,9 @@ def get_trainer_kwargs(
             ),
         )
     elif model_size == "70B":
+        if FLAGS.pdbs and FLAGS.slices and "v6e" in FLAGS.mesh_selector:
+            system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[FLAGS.mesh_selector.replace("tpu-", "")]
+            train_batch_size = int(FLAGS.pdbs) * system.chips_per_vm * system.vms_per_slice * int(FLAGS.slices)
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=80,
@@ -385,7 +394,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=1024*3,
+            train_batch_size=train_batch_size,
             max_step=max_step,
             #eval_every_n_steps=500,
             save_every_n_steps=100,
