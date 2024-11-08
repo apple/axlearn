@@ -3601,6 +3601,45 @@ class BaseStackedTransformerLayer(BaseTransformerLayer):
         peak_stochastic_depth_rate: Optional[float] = None
 
 
+class UpdateDataFn(Protocol):
+    """A function for updating the constituent layers' input in a StackTransformerLayer."""
+
+    def __call__(
+        self, data: Tensor, all_layer_outputs: list[BaseTransformerLayer.Output]
+    ) -> Tensor:
+        """Returns a new Tensor with the same shape as `data`, reflecting some desired updates.
+
+        Args:
+            data: A Tensor denoting the input data to the upcoming layer.
+            all_layer_outputs: A list of BaseTransformerLayer.Output that is appended with
+                the output of each constituent layer in the stack.
+
+            Returns:
+                A new Tensor with the same shape as `data`.
+        """
+
+
+def update_data_with_skip_connection(skip_connections: dict[int, int]) -> UpdateDataFn:
+    """Creates a function that adds skip connection to the input data tensor.
+
+    Args:
+        skip_connections: A dictionary where keys and values represent 0-indexed layer indices.
+            For a (k, v) pair, the output of the v-th layer will be added to the input
+            of the k-th layer.
+
+    Returns:
+        A function that implements skip connections, following the UpdateDataFn protocol, .
+    """
+
+    def update_data(data: Tensor, all_layer_outputs: list[BaseTransformerLayer.Output]) -> Tensor:
+        layer_index = len(all_layer_outputs)
+        if layer_index in skip_connections:
+            data += all_layer_outputs[skip_connections[layer_index]].data
+        return data
+
+    return update_data
+
+
 class StackedTransformerLayer(BaseStackedTransformerLayer):
     """A simple implementation of BaseStackedTransformerLayer."""
 
@@ -3613,10 +3652,15 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         layer: Union[
             BaseTransformerLayer.Config, Sequence[BaseTransformerLayer.Config]
         ] = TransformerLayer.default_config()
+        # If set, implements the UpdateDataFn protocol to update individual layers' input
+        # data in some specified way. This operation is applied before calling every layer.
+        data_merger: Optional[InstantiableConfig[UpdateDataFn]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+        self._update_data = maybe_instantiate(cfg.data_merger)
+
         if isinstance(cfg.layer, Sequence):
             layer_cfgs = cfg.layer
             if len(layer_cfgs) != cfg.num_layers:
@@ -3685,7 +3729,8 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         all_layer_states = []
         for i, layer in enumerate(self._layers):
             # Prepare inputs to the current layer.
-            data = self._update_data(data, all_layer_outputs=all_layer_outputs)
+            if self._update_data is not None:
+                data = self._update_data(data, all_layer_outputs)
             self._update_layer_kwargs(layer_kwargs, all_layer_outputs=all_layer_outputs)
 
             if mode == ForwardMode.FORWARD:
@@ -3711,28 +3756,6 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             data = layer_outputs.data
 
         return all_layer_states, self._aggregate_layer_outputs(all_layer_outputs)
-
-    def _update_data(
-        self,
-        data: Tensor,
-        *,
-        all_layer_outputs: list[BaseTransformerLayer.Output],
-    ):
-        """Updates `data` using other args.
-
-        This method is called before we invoke each layer in `self._layers`.
-        The updated data will be passed to the layer invocation.
-
-        Args:
-            data: A Tensor denoting the input data to the upcoming layer.
-            all_layer_outputs: A list of BaseTransformerLayer.Output that is appended with
-                the output of each constituent layer in the stack.
-
-        Returns:
-            A new Tensor.
-        """
-        del all_layer_outputs
-        return data
 
     def _update_layer_kwargs(
         self,
