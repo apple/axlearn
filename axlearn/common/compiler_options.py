@@ -100,7 +100,7 @@ def default_xla_options(
             #a886c8_chip_config_name="megachip_tccontrol",
             #xla_jf_crs_combiner_threshold_count=10,
             # all reduce 
-            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            #xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
