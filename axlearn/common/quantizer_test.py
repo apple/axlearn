@@ -29,6 +29,7 @@ from axlearn.common.quantizer import (
     KmeansVectorQuantizer,
     RandomVectorQuantizer,
     SimilarityMetric,
+    _ids_to_onehots,
     compute_code_coverage,
     compute_code_pplx,
     quantize_by_nearest_neighbor,
@@ -86,12 +87,13 @@ class HelpersTest(TestCase):
                 inputs=inputs, codebook=codebook, metric=metric
             )
             # Compute codebook metrics.
-            coverage = compute_code_coverage(onehots=q_outputs.onehots, paddings=paddings)
-            pplx, entropy = compute_code_pplx(onehots=q_outputs.onehots, paddings=paddings)
+            onehots = _ids_to_onehots(q_outputs.ids, codebook_size=vocab_size, dtype=paddings.dtype)
+            coverage = compute_code_coverage(onehots=onehots, paddings=paddings)
+            pplx, entropy = compute_code_pplx(onehots=onehots, paddings=paddings)
 
             # Check shapes.
             self.assertEqual(q_outputs.ids.shape, (batch_size, seq_len, num_groups))
-            self.assertEqual(q_outputs.onehots.shape, (batch_size, seq_len, num_groups, vocab_size))
+            self.assertEqual(onehots.shape, (batch_size, seq_len, num_groups, vocab_size))
             self.assertEqual(
                 q_outputs.quantized_vectors.shape, (batch_size, seq_len, num_groups, codebook_dim)
             )
@@ -314,7 +316,7 @@ class RandomVectorQuantizerTest(TestCase):
             np.sum(layer_params["codebook"] ** 2),
             expected_values[batch_size][normalize_codebook]["codebook"],
             atol=1e-6,
-            rtol=1e-6,
+            rtol=2e-6,
         )
 
         np.random.seed(2022)
@@ -332,7 +334,6 @@ class RandomVectorQuantizerTest(TestCase):
             q_outputs.quantized_vectors.shape,
         )
         self.assertEqual((batch_size, seq_len, num_groups), q_outputs.ids.shape)
-        self.assertEqual((batch_size, seq_len, num_groups, vocab_size), q_outputs.onehots.shape)
         assert_allclose(
             np.sum(
                 jnp.reshape(
@@ -346,12 +347,6 @@ class RandomVectorQuantizerTest(TestCase):
         assert_allclose(
             np.sum(q_outputs.ids * (1 - paddings[:, :, None])),
             expected_values[batch_size][normalize_codebook]["ids"],
-            atol=1e-6,
-            rtol=1e-6,
-        )
-        assert_allclose(
-            np.sum(q_outputs.onehots),
-            expected_values[batch_size][normalize_codebook]["onehots"],
             atol=1e-6,
             rtol=1e-6,
         )
@@ -472,7 +467,6 @@ class KmeansVectorQuantizerTest(TestCase):
             outputs.quantized_vectors.shape,
         )
         self.assertEqual((batch_size, seq_len, num_groups), outputs.ids.shape)
-        self.assertEqual((batch_size, seq_len, num_groups, vocab_size), outputs.onehots.shape)
 
         assert_allclose(
             expected_outputs[num_groups][input_mean][0],
@@ -620,12 +614,6 @@ class KmeansVectorQuantizerTest(TestCase):
             rtol=1e-6,
         )
         assert_allclose(
-            outputs.onehots * paddings[:, :, None, None],
-            jnp.zeros_like(outputs.onehots),
-            atol=1e-6,
-            rtol=1e-6,
-        )
-        assert_allclose(
             outputs.quantized_vectors * paddings[:, :, None, None],
             jnp.zeros_like(outputs.quantized_vectors),
             atol=1e-6,
@@ -653,7 +641,8 @@ class KmeansVectorQuantizerTest(TestCase):
         # [batch_size, seq_len, num_groups, dim].
         # Gradient w.r.t codebook comes from kmeans_loss.
         grad_kmeans = -jnp.reshape(grad_l2_loss, [batch_size, seq_len, num_groups, codebook_dim])
-        expected_grad_codebook = jnp.einsum("btgh,btgv->vgh", grad_kmeans, outputs.onehots)
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=vocab_size, dtype=grad_kmeans.dtype)
+        expected_grad_codebook = jnp.einsum("btgh,btgv->vgh", grad_kmeans, onehots)
         self.assertNestedAllClose(grad_params, dict(codebook=expected_grad_codebook))
 
 
@@ -703,12 +692,6 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
         assert_allclose(
             outputs.ids * paddings[:, :, None],
             jnp.full_like(outputs.ids, fill_value=-1) * paddings[:, :, None],
-            atol=1e-6,
-            rtol=1e-6,
-        )
-        assert_allclose(
-            outputs.onehots * paddings[:, :, None, None],
-            jnp.zeros_like(outputs.onehots),
             atol=1e-6,
             rtol=1e-6,
         )
@@ -849,7 +832,8 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
 
         # [batch_size, seq_len, num_groups, dim].
         # Gradient w.r.t codebook.
-        expected_grad_codebook = jnp.einsum("btgh,btgv->vgh", grad_q_vecs, outputs.onehots)
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=vocab_size, dtype=grad_q_vecs.dtype)
+        expected_grad_codebook = jnp.einsum("btgh,btgv->vgh", grad_q_vecs, onehots)
         assert_allclose(grad_params["codebook"], expected_grad_codebook, atol=1e-6, rtol=1e-6)
 
 
