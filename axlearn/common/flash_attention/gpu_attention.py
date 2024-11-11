@@ -31,11 +31,10 @@ from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
-
-# pytype: disable=import-error  # pylint: disable=import-error
 from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import MaskType, dot_product_attention
 from jax.experimental import pallas as pl
+from jax.experimental.pallas import gpu as plgpu
 
 from axlearn.common.attention import NEG_INF
 
@@ -249,12 +248,16 @@ def flash_attention(
         def bias_index_map(_, j, k):
             return (j if bias.shape[0] != 1 else 0, k if bias.shape[1] != 1 else 0, 0, 0)
 
-        bias_block_spec = pl.BlockSpec(bias_index_map, (None, None, seq_len, seq_len))
+        bias_block_spec = pl.BlockSpec(
+            index_map=bias_index_map, block_shape=(None, None, seq_len, seq_len)
+        )
     # Segment Ids
     segment_ids_block_spec = None
     if segment_ids is not None:
         assert segment_ids.ndim == 2
-        segment_ids_block_spec = pl.BlockSpec(lambda _, j, k: (j, 0), (None, seq_len))
+        segment_ids_block_spec = pl.BlockSpec(
+            index_map=(lambda _, j, k: (j, 0)), block_shape=(None, seq_len)
+        )
 
     num_warps_ = num_warps
     if num_warps_ is None:
@@ -276,14 +279,25 @@ def flash_attention(
         kernel,
         grid=grid_,
         in_specs=[
-            pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # query
-            pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # key
-            pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # value
+            pl.BlockSpec(
+                index_map=(lambda _, j, k: (j, 0, k, 0)),
+                block_shape=(None, seq_len, None, head_dim),
+            ),  # query
+            pl.BlockSpec(
+                index_map=(lambda _, j, k: (j, 0, k, 0)),
+                block_shape=(None, seq_len, None, head_dim),
+            ),  # key
+            pl.BlockSpec(
+                index_map=(lambda _, j, k: (j, 0, k, 0)),
+                block_shape=(None, seq_len, None, head_dim),
+            ),  # value
             bias_block_spec,  # bias
             segment_ids_block_spec,  # segment_ids
         ],
-        out_specs=pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
-        compiler_params=dict(triton=dict(num_warps=num_warps_, num_stages=num_stages_)),
+        out_specs=pl.BlockSpec(
+            index_map=(lambda _, j, k: (j, 0, k, 0)), block_shape=(None, seq_len, None, head_dim)
+        ),
+        compiler_params=plgpu.TritonCompilerParams(num_warps=num_warps_, num_stages=num_stages_),
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
@@ -327,13 +341,17 @@ def _mha_forward(
         def bias_index_map(_, j, k):
             return (j if bias.shape[0] != 1 else 0, k if bias.shape[1] != 1 else 0, 0, 0)
 
-        bias_block_spec = pl.BlockSpec(bias_index_map, (None, None, seq_len, seq_len))
+        bias_block_spec = pl.BlockSpec(
+            index_map=bias_index_map, block_shape=(None, None, seq_len, seq_len)
+        )
 
     # Segment Ids.
     segment_ids_block_spec = None
     if segment_ids is not None:
         assert segment_ids.ndim == 2
-        segment_ids_block_spec = pl.BlockSpec(lambda _, j, k: (j, 0), (None, seq_len))
+        segment_ids_block_spec = pl.BlockSpec(
+            index_map=(lambda _, j, k: (j, 0)), block_shape=(None, seq_len)
+        )
 
     num_warps_ = num_warps
     if num_warps_ is None:
@@ -359,18 +377,30 @@ def _mha_forward(
         kernel,
         grid=grid_,
         in_specs=[
-            pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # query
-            pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # key
-            pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # value
+            pl.BlockSpec(
+                index_map=(lambda _, j, k: (j, 0, k, 0)),
+                block_shape=(None, seq_len, None, head_dim),
+            ),  # query
+            pl.BlockSpec(
+                index_map=(lambda _, j, k: (j, 0, k, 0)),
+                block_shape=(None, seq_len, None, head_dim),
+            ),  # key
+            pl.BlockSpec(
+                index_map=(lambda _, j, k: (j, 0, k, 0)),
+                block_shape=(None, seq_len, None, head_dim),
+            ),  # value
             bias_block_spec,  # bias
             segment_ids_block_spec,  # segment_ids
         ],
         out_specs=[
-            pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
-            pl.BlockSpec(lambda _, j, k: (j, k, 0), (None, None, seq_len)),
-            pl.BlockSpec(lambda _, j, k: (j, k, 0), (None, None, seq_len)),
+            pl.BlockSpec(
+                index_map=(lambda _, j, k: (j, 0, k, 0)),
+                block_shape=(None, seq_len, None, head_dim),
+            ),
+            pl.BlockSpec(index_map=(lambda _, j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
+            pl.BlockSpec(index_map=(lambda _, j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
         ],
-        compiler_params=dict(triton=dict(num_warps=num_warps_, num_stages=num_stages_)),
+        compiler_params=plgpu.TritonCompilerParams(num_warps=num_warps_, num_stages=num_stages_),
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
@@ -426,15 +456,24 @@ def _preprocess_backward(
         functools.partial(_preprocess_backward_kernel, block_q=block_q),
         grid=(pl.cdiv(seq_len, block_q), batch_size, num_heads),
         in_specs=[
-            pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
-            pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
-            pl.BlockSpec(lambda _, j, k: (j, k, 0), (None, None, seq_len)),
+            pl.BlockSpec(
+                index_map=(lambda _, j, k: (j, 0, k, 0)),
+                block_shape=(None, seq_len, None, head_dim),
+            ),
+            pl.BlockSpec(
+                index_map=(lambda _, j, k: (j, 0, k, 0)),
+                block_shape=(None, seq_len, None, head_dim),
+            ),
+            pl.BlockSpec(index_map=(lambda _, j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
         ],
         out_specs=[
-            pl.BlockSpec(lambda _, j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
-            pl.BlockSpec(lambda _, j, k: (j, k, 0), (None, None, seq_len)),
+            pl.BlockSpec(
+                index_map=(lambda _, j, k: (j, 0, k, 0)),
+                block_shape=(None, seq_len, None, head_dim),
+            ),
+            pl.BlockSpec(index_map=(lambda _, j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
         ],
-        compiler_params=dict(triton=dict(num_warps=4, num_stages=3)),
+        compiler_params=plgpu.TritonCompilerParams(num_warps=4, num_stages=3),
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
@@ -586,7 +625,7 @@ def _mha_backward(
     if backward_pass_impl == "triton":
         # We must shrink the block size for float32 inputs to avoid OOM during bwd pass.
         if jnp.float32 in (q.dtype, k.dtype, v.dtype):
-            block_q = block_k = 64
+            block_q = block_k = 32
         batch_size, seq_len, num_heads, head_dim = q.shape
         # Backward heuristics, using the same block size for block q and block k.
         block_q = min(block_q, seq_len)
@@ -610,19 +649,23 @@ def _mha_backward(
             b = jnp.moveaxis(b, -1, -2)
             # We must shrink the block size for float32 inputs to avoid OOM during bwd pass.
             if b.dtype == jnp.float32:
-                block_q = block_k = 64
+                block_q = block_k = 32
 
             def bias_index_map(j, k):
                 return (j if b.shape[0] != 1 else 0, k if b.shape[1] != 1 else 0, 0, 0)
 
-            bias_block_spec = pl.BlockSpec(bias_index_map, (None, None, seq_len, seq_len))
+            bias_block_spec = pl.BlockSpec(
+                index_map=bias_index_map, block_shape=(None, None, seq_len, seq_len)
+            )
             num_input += 1
 
         # Segment Ids.
         segment_ids_block_spec = None
         if s is not None:
             assert s.ndim == 2
-            segment_ids_block_spec = pl.BlockSpec(lambda j, k: (j, 0), (None, seq_len))
+            segment_ids_block_spec = pl.BlockSpec(
+                index_map=(lambda j, k: (j, 0)), block_shape=(None, seq_len)
+            )
             num_input += 1
 
         input_output_aliases = {num_input: 0}
@@ -643,27 +686,54 @@ def _mha_backward(
             grid=grid,
             out_shape=out_shapes,
             in_specs=[
-                pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # query
-                pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # key
-                pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),  # value
+                pl.BlockSpec(
+                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    block_shape=(None, seq_len, None, head_dim),
+                ),  # query
+                pl.BlockSpec(
+                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    block_shape=(None, seq_len, None, head_dim),
+                ),  # key
+                pl.BlockSpec(
+                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    block_shape=(None, seq_len, None, head_dim),
+                ),  # value
                 bias_block_spec,  # bias
                 segment_ids_block_spec,  # segment_ids
-                pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
-                pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
-                pl.BlockSpec(lambda j, k: (j, k, 0), (None, None, seq_len)),
-                pl.BlockSpec(lambda j, k: (j, k, 0), (None, None, seq_len)),
-                pl.BlockSpec(lambda j, k: (j, k, 0), (None, None, seq_len)),
-                pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
+                pl.BlockSpec(
+                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    block_shape=(None, seq_len, None, head_dim),
+                ),
+                pl.BlockSpec(
+                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    block_shape=(None, seq_len, None, head_dim),
+                ),
+                pl.BlockSpec(index_map=(lambda j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
+                pl.BlockSpec(index_map=(lambda j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
+                pl.BlockSpec(index_map=(lambda j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
+                pl.BlockSpec(
+                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    block_shape=(None, seq_len, None, head_dim),
+                ),
             ],
             out_specs=[
-                pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
-                pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
-                pl.BlockSpec(lambda j, k: (j, 0, k, 0), (None, seq_len, None, head_dim)),
+                pl.BlockSpec(
+                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    block_shape=(None, seq_len, None, head_dim),
+                ),
+                pl.BlockSpec(
+                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    block_shape=(None, seq_len, None, head_dim),
+                ),
+                pl.BlockSpec(
+                    index_map=(lambda j, k: (j, 0, k, 0)),
+                    block_shape=(None, seq_len, None, head_dim),
+                ),
             ],
             name="mha_backward",
             debug=debug,
             interpret=interpret,
-            compiler_params=dict(triton=dict(num_warps=num_warps, num_stages=1)),
+            compiler_params=plgpu.TritonCompilerParams(num_warps=num_warps, num_stages=1),
             input_output_aliases=input_output_aliases,
         )(q, k, v, b, s, out, do_scaled, l, m, delta, dq)
     else:
@@ -695,11 +765,6 @@ def cudnn_dot_product_attention(
     Reference implementation:
     https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/cudnn/fused_attention_stablehlo.py#L927.
     https://github.com/openxla/xla/blob/536ba0b7d74f6637a7a772471a99ecf4f578aef2/xla/service/gpu/cublas_cudnn.cc#L77.
-
-    We override the Jax fused multihead attention(fMHA) interface in axlearn
-    due to following reasons:
-    1. Original Jax implementation has a bug to support multi-node training (fixed in jax 0.4.32).
-    2. We may want to leverage more lower level CuDNN capabilities from xla and expose to users.
 
     Args:
         query: Query of shape [batch_size, target_length, num_heads, per_head_dim].

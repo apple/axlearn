@@ -233,6 +233,7 @@ class FlashAttention(GroupedQueryAttention):
                 mask_fn = None
         elif backend == "gpu" and q_proj.shape[1] != k_proj.shape[1]:
             # TODO(xuan-zou): Generalize GPU Flash Attention for q_len != kv_len.
+            # Remove pytest.skip corresponding to q_len != kv_len in layer_test.py once fixed.
             raise NotImplementedError(
                 f"Query length {q_proj.shape[1]} must be equal to KV length "
                 f"{k_proj.shape[1]} for correctly supported GPU flash attention usage."

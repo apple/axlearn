@@ -29,7 +29,7 @@ from axlearn.common.config import (
     Required,
     config_class,
 )
-from axlearn.common.decoder import DecodingMixin
+from axlearn.common.decoder import DecodingLayer
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.encoder import CausalEncoder
 from axlearn.common.layers import (
@@ -793,7 +793,7 @@ def set_captioning_cfg(
     return captioning_cfg
 
 
-class CoCaModel(MultiStreamModel, DecodingMixin):
+class CoCaModel(MultiStreamModel):
     """A CoCa two stream model.
 
     This class provides a customized predict function.
@@ -808,9 +808,10 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
     class Config(MultiStreamModel.Config):
         """Configures CoCaModel."""
 
-        # Required when running beacm_search_decode, see details in `DecodingMixin`
+        # Required when running beam_search_decode.
         pad_token_id: Optional[int] = None
         eos_token_id: Optional[int] = None
+        decoding: DecodingLayer.Config = DecodingLayer.default_config()
 
     @classmethod
     def default_config(cls):
@@ -820,6 +821,10 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
+        cfg: CoCaModel.Config = self.config
+        self._decoding: DecodingLayer = cfg.decoding.set(
+            pad_token_id=cfg.pad_token_id, eos_token_id=cfg.eos_token_id
+        ).instantiate(decoder=self)
         self._share_with_descendants(
             self._stream_encoder["textual_encoder"].text_encoder.emb.token_emb,
             shared_module_name="shared_token_emb",
@@ -863,7 +868,7 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
         return output["output_features"]
 
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
-        """See `DecodingMixin.init_states`."""
+        """See `BaseDecoder.init_states` for details."""
         textual_encoder_states = self._stream_encoder["textual_encoder"].init_states(
             batch_size=batch_size,
             max_sequence_length=max_sequence_length,
@@ -872,7 +877,6 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
             batch_size=batch_size,
             max_sequence_length=max_sequence_length,
         )
-
         return {
             "textual_encoder_transformer_state": textual_encoder_states["transformer_state"],
             "captioning_network_transformer_state": captioning_network_states["transformer_state"],
@@ -888,16 +892,17 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
     ) -> tuple[NestedTensor, NestedTensor]:
-        """See `DecodingMixin.prefill_states`."""
+        """See `BaseDecoder.prefill_states` for details."""
         textual_encoder_state, textual_encoder_output = self._stream_encoder[
             "textual_encoder"
         ].prefill_states(
             time_step=time_step,
             input_ids=input_ids,
         )
-        captioning_network_state, captioning_network_output = self._fusion_network[
-            "captioning_fusion_network"
-        ].prefill_states(
+        (
+            captioning_network_state,
+            captioning_network_output,
+        ) = self._fusion_network["captioning_fusion_network"].prefill_states(
             time_step=time_step,
             input_ids=input_ids,
             input_features=textual_encoder_output["caption_features"],
@@ -920,7 +925,7 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
     ) -> tuple[NestedTensor, NestedTensor]:
-        """See `DecodingMixin.extend_step`."""
+        """See `BaseDecoder.extend_step` for details."""
         # This structure is shared with Decoder, but is necessary to repeat in extend_step.
         time_step = cached_states["time_step"]
         assert time_step.ndim == 1
@@ -931,9 +936,10 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
             "time_step": cached_states["time_step"],
         }
 
-        updated_textual_encoder_state, textual_encoder_output = self._stream_encoder[
-            "textual_encoder"
-        ].extend_step(
+        (
+            updated_textual_encoder_state,
+            textual_encoder_output,
+        ) = self._stream_encoder["textual_encoder"].extend_step(
             cached_states=encoder_cached_state,
             input_ids=input_ids,
         )
@@ -942,9 +948,10 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
             "transformer_state": cached_states["captioning_network_transformer_state"],
             "time_step": cached_states["time_step"],
         }
-        updated_captioning_network_state, captioning_network_output = self._fusion_network[
-            "captioning_fusion_network"
-        ].extend_step(
+        (
+            updated_captioning_network_state,
+            captioning_network_output,
+        ) = self._fusion_network["captioning_fusion_network"].extend_step(
             cached_states=captioning_cached_states,
             input_ids=updated_textual_encoder_state["input_ids"],
             input_features=textual_encoder_output["caption_features"],
@@ -966,6 +973,37 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
         }
 
         return updated_state, captioning_network_output
+
+    def beam_search_decode(
+        self,
+        *,
+        prefix: Tensor,
+        max_sequence_length: int,
+        num_decodes: int,
+        **kwargs,
+    ):
+        """See configured `decoding` implementation for details."""
+        return self._decoding.beam_search_decode(
+            prefix=prefix,
+            max_sequence_length=max_sequence_length,
+            num_decodes=num_decodes,
+            **kwargs,
+        )
+
+    def sample_decode(
+        self,
+        prefix: Tensor,
+        max_sequence_length: int,
+        num_decodes: int,
+        **kwargs,
+    ):
+        """See configured `decoding` implementation for details."""
+        return self._decoding.sample_decode(
+            prefix=prefix,
+            max_sequence_length=max_sequence_length,
+            num_decodes=num_decodes,
+            **kwargs,
+        )
 
     def predict_caption(
         self,

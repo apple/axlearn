@@ -1,11 +1,22 @@
 # Copyright © 2023 Apple Inc.
 
-"""This test compares against golden files to detect inadvertent changes."""
+"""This test compares against golden files to detect inadvertent changes.
+
+Example commands:
+
+    # Test against all golden files.
+    pytest -n auto axlearn/experiments/golden_config_test.py
+
+    # Update all golden files.
+    pytest -n auto axlearn/experiments/golden_config_test.py --update
+
+"""
 
 import pytest
 from absl.testing import parameterized
 
 from axlearn.experiments import test_utils
+from axlearn.experiments.audio import conformer
 from axlearn.experiments.text import gpt
 from axlearn.experiments.vision import resnet
 
@@ -15,6 +26,7 @@ _CONFIGS = [
     *test_utils.named_parameters(gpt.deterministic_trainer),
     *test_utils.named_parameters(gpt.pajama_trainer),
     *test_utils.named_parameters(gpt.pajama_sigmoid_trainer),
+    *test_utils.named_parameters(conformer.librispeech_trainer),
 ]
 
 _INITS = [
@@ -22,6 +34,7 @@ _INITS = [
     *test_utils.named_parameters(gpt.c4_trainer),
     *test_utils.named_parameters(gpt.pajama_trainer),
     *test_utils.named_parameters(gpt.pajama_sigmoid_trainer),
+    *test_utils.named_parameters(conformer.librispeech_trainer),
 ]
 
 _REGULARIZERS = [
@@ -29,6 +42,7 @@ _REGULARIZERS = [
     *test_utils.named_parameters(gpt.c4_trainer),
     *test_utils.named_parameters(gpt.pajama_trainer),
     *test_utils.named_parameters(gpt.pajama_sigmoid_trainer),
+    *test_utils.named_parameters(conformer.librispeech_trainer),
 ]
 
 _RUNS = [

@@ -153,6 +153,14 @@ class TestDownloadJobBatch(parameterized.TestCase):
         dict(name="..test", valid=True),  # This is a valid file name.
         dict(name="test.job..", valid=True),  # This is a valid file name.
         dict(name="test\n", valid=False),  # newline causes bastion to crash
+        dict(name="test", valid=True),
+        dict(name="test“job”test", valid=False),  # pinyin quotes are invalid
+        dict(name="test‘job’test", valid=False),  # pinyin quotes are invalid
+        dict(name="test\\job", valid=True),
+        dict(name="test,job", valid=True),
+        dict(name="test:job", valid=True),
+        dict(name="test_job", valid=True),
+        dict(name="test job", valid=False),
     )
     def test_is_valid_job_name(self, name, valid):
         self.assertEqual(valid, is_valid_job_name(name))
@@ -773,6 +781,17 @@ class BastionTest(parameterized.TestCase):
                         resources={"test": 8},
                     ),
                 ),
+                new_jobspec(
+                    name="job3",
+                    command="",
+                    metadata=JobMetadata(
+                        user_id="user1",
+                        project_id="project1",
+                        creation_time=datetime(1900, 1, 1, 0, 0, 0, 1),
+                        resources={"test": 8},
+                        version=1,
+                    ),
+                ),
             ]
             # Write them to the Bastion submission directory.
             for spec in specs:
@@ -787,7 +806,30 @@ class BastionTest(parameterized.TestCase):
             # Download the jobspecs.
             mock_bastion._sync_jobs()
             # Confirm expected jobs were downloaded.
-            self.assertSequenceEqual(list(mock_bastion._active_jobs), ["job1"])
+            self.assertSequenceEqual(
+                sorted(list(mock_bastion._active_jobs)), sorted(["job1", "job3"])
+            )
+
+            # Submit the job again to update the version.
+            updated_job_spec = new_jobspec(
+                name="job3",
+                command="",
+                metadata=JobMetadata(
+                    user_id="user1",
+                    project_id="project1",
+                    creation_time=datetime(1900, 1, 1, 0, 0, 0, 1),
+                    resources={"test": 8},
+                    version=2,
+                ),
+            )
+            bastion_dir.update_job(updated_job_spec.name, job_spec=updated_job_spec)
+
+            # Download the jobspecs.
+            mock_bastion._sync_jobs()
+            # Confirm the update is received.
+            self.assertEqual(
+                mock_bastion._active_jobs.get(updated_job_spec.name).state.metadata["updated"], True
+            )
 
     @parameterized.product(
         [
@@ -1099,6 +1141,23 @@ class BastionTest(parameterized.TestCase):
                 command_proc=mock_proc("command"),
                 cleanup_proc=None,  # No cleanup_proc for ACTIVE.
             ),
+            # This job will go from ACTIVE to PENDING, since it is being updated.
+            "updating": Job(
+                spec=new_jobspec(
+                    name="updating",
+                    command="command",
+                    cleanup_command="cleanup",
+                    metadata=JobMetadata(
+                        user_id="e",
+                        project_id="project1",
+                        creation_time=yesterday + timedelta(seconds=2),
+                        resources={"v4": 1},  # Fits within the v4 budget in project1.
+                    ),
+                ),
+                state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0, "updated": True}),
+                command_proc=mock_proc("command"),
+                cleanup_proc=None,  # No cleanup_proc for ACTIVE.
+            ),
             # This job will go from ACTIVE to CLEANING.
             "cleaning": Job(
                 spec=new_jobspec(
@@ -1188,6 +1247,7 @@ class BastionTest(parameterized.TestCase):
                 "resume": JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
                 "active": JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
                 "preempt": JobState(status=JobStatus.PENDING),
+                "updating": JobState(status=JobStatus.PENDING, metadata={"tier": 0}),
                 "cleaning": JobState(status=JobStatus.CLEANING, metadata={"tier": 0}),
                 "cleaning_cancel": JobState(status=JobStatus.CLEANING),
                 "completed": JobState(status=JobStatus.COMPLETED),
@@ -1259,6 +1319,8 @@ class BastionTest(parameterized.TestCase):
                         expected_msg = {
                             "resume": "ACTIVE: start process command",
                             "preempt": "PENDING: pre-empting",
+                            "updating": "UPDATING: Detected updated jobspec. Will restart "
+                            "the runner by sending to PENDING state",
                             "cleaning": "CLEANING: process finished",
                             "cleaning_cancel": "CLEANING: process terminated",
                             "completed": "COMPLETED: cleanup finished",
@@ -1565,6 +1627,74 @@ class BastionDirectoryTest(parameterized.TestCase):
                     JobState(status=JobStatus.CANCELLING),
                     remote_dir=bastion_dir.user_states_dir,
                 )
+
+    @parameterized.parameters(True, False)
+    def test_get(self, spec_exists):
+        job_name = "test-job"
+        bastion_dir = (
+            bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
+        )
+
+        patch_tfio = mock.patch.multiple(
+            f"{bastion.__name__}.tf_io.gfile",
+            exists=mock.MagicMock(return_value=spec_exists),
+            copy=mock.DEFAULT,
+        )
+
+        mock_deserialize_jobspec = mock.patch(
+            f"{bastion.__name__}.deserialize_jobspec", return_value=None
+        )
+
+        if spec_exists:
+            ctx = contextlib.nullcontext()
+        else:
+            ctx = self.assertRaisesRegex(ValueError, "Unable to locate jobspec")
+
+        with ctx, mock_deserialize_jobspec, patch_tfio as mock_tfio:
+            bastion_dir.get_job(job_name)
+            if spec_exists:
+                mock_tfio["copy"].assert_called()
+                self.assertEqual(
+                    mock_tfio["copy"].call_args[0][0],
+                    os.path.join(bastion_dir.active_job_dir, job_name),
+                )
+                self.assertEqual(mock_tfio["copy"].call_args.kwargs["overwrite"], True)
+            else:
+                mock_tfio["copy"].assert_not_called()
+
+    @parameterized.parameters(True, False)
+    def test_update(self, spec_exists):
+        job_name = "test-job"
+        bastion_dir = (
+            bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
+        )
+
+        patch_tfio = mock.patch.multiple(
+            f"{bastion.__name__}.tf_io.gfile",
+            exists=mock.MagicMock(return_value=spec_exists),
+            copy=mock.DEFAULT,
+        )
+
+        mock_serialize_jobspec = mock.patch(
+            f"{bastion.__name__}.serialize_jobspec", return_value=None
+        )
+
+        if spec_exists:
+            ctx = contextlib.nullcontext()
+        else:
+            ctx = self.assertRaisesRegex(ValueError, "Unable to locate jobspec")
+
+        with ctx, mock_serialize_jobspec, patch_tfio as mock_tfio:
+            bastion_dir.update_job(job_name, job_spec=None)
+            if spec_exists:
+                mock_tfio["copy"].assert_called()
+                self.assertEqual(
+                    mock_tfio["copy"].call_args[0][1],
+                    os.path.join(bastion_dir.active_job_dir, job_name),
+                )
+                self.assertEqual(mock_tfio["copy"].call_args.kwargs["overwrite"], True)
+            else:
+                mock_tfio["copy"].assert_not_called()
 
 
 if __name__ == "__main__":

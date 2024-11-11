@@ -23,7 +23,11 @@ import kubernetes as k8s
 from absl import flags
 from google.auth.credentials import Credentials
 
-from axlearn.cloud.common.bastion import _BASTION_SERIALIZED_JOBSPEC_ENV_VAR, deserialize_jobspec
+from axlearn.cloud.common.bastion import (
+    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
+    BASTION_JOB_VERSION_ENV_VAR,
+    deserialize_jobspec,
+)
 from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import parse_kv_flags, subprocess_run
@@ -52,6 +56,9 @@ from axlearn.common.utils import Nested
 
 # Set 80% of the max value as the requested memory.
 _MEMORY_REQUEST_PERCENTAGE = 0.8
+
+# A label added to the jobset to indicate job version.
+BASTION_JOB_VERSION_LABEL = "bastion-job-version"
 
 
 class GCPJob(Job):
@@ -621,6 +628,16 @@ class TPUGKEJob(GKEJob):
                 },
             },
         )
+        k8s_env_vars.append(
+            {
+                "name": "NODE_NAME",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": "spec.nodeName",
+                    }
+                },
+            },
+        )
 
         return dict(
             name=container_name,
@@ -637,6 +654,7 @@ class TPUGKEJob(GKEJob):
             # Env var values should always be strings.
             env=k8s_env_vars,
             volumeMounts=volume_mounts,
+            imagePullPolicy="Always",
         )
 
     def _build_uploader_container(self) -> Nested[Any]:
@@ -783,6 +801,9 @@ class TPUGKEJob(GKEJob):
                     "provisioner-nodepool-id": cfg.name,
                 }
             )
+
+        if os.environ.get(BASTION_JOB_VERSION_ENV_VAR):
+            labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         if os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
             spec = deserialize_jobspec(

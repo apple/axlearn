@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests tf.data inputs."""
+
 # pylint: disable=no-self-use,too-many-lines
 import os
 import tempfile
@@ -176,6 +177,37 @@ class SamplingTest(parameterized.TestCase):
         ds_fn = sampling_ds_cfg.instantiate()
 
         expected = ["g", "w", "x", "h"]
+        actual = [bytes.decode(x.numpy(), "utf-8") for x in ds_fn().take(len(expected))]
+        assert expected == actual
+
+    def test_autotune_ram_budget(self):
+        sources = [
+            config_for_function(build_ds_fn).set(
+                texts=["a", "b", "c", "d", "e"],
+            ),
+            config_for_function(build_ds_fn).set(
+                texts=["w", "x", "y", "z"],
+            ),
+        ]
+
+        sampling_ds_cfg = config_for_function(sample_from_datasets).set(
+            is_training=False,
+            sources=sources,
+            weights=[0.5, 0.5],
+            seed=1,
+            autotune_ram_budget_gb=4,
+        )
+        ds_fn = sampling_ds_cfg.instantiate()
+        dataset = ds_fn()
+        # pylint: disable=protected-access
+        for component in dataset._data_inputs:
+            options = component.options()
+            self.assertTrue(options.experimental_warm_start)
+            self.assertTrue(options.autotune.enabled)
+            self.assertEqual(options.autotune.ram_budget, int(2 * 1024**3))
+        # pylint: enable=protected-access
+
+        expected = ["w", "a", "b", "c"]
         actual = [bytes.decode(x.numpy(), "utf-8") for x in ds_fn().take(len(expected))]
         assert expected == actual
 

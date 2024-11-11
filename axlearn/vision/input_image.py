@@ -27,6 +27,7 @@ https://github.com/google/flax/blob/ce98f350c22599b31cce1b787f5ed2d5510f0706/exa
 https://github.com/google-research/vision_transformer/blob/ac6e056f9da686895f9f0f6ac026d3b5a464e59e/vit_jax/input_pipeline.py#L195-L241
 https://github.com/tensorflow/models/blob/5a0305c41304e8136e2056c589ab490a807dffa0/official/legacy/image_classification/augment.py
 """
+
 from typing import Any, Optional
 
 import numpy as np
@@ -369,6 +370,7 @@ def pad_with_negative_labels(element_spec: Any) -> Any:
     return example
 
 
+# TODO(markblee): Deprecate Input subclasses in favor of config builder pattern.
 class ImagenetInput(input_tf_data.Input):
     """ImageNet input module."""
 

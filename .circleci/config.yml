@@ -23,7 +23,7 @@ jobs:
   build-and-test-job:
     executor: build-and-test-executor
     parallelism: 5
-    resource_class: large
+    resource_class: xlarge
     steps:
       - checkout
       - setup_remote_docker:

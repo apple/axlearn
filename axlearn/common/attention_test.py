@@ -78,6 +78,7 @@ from axlearn.common.attention import (
     set_double_shard_weights_config,
     sinusoidal_positional_embeddings,
     sliding_window_causal_mask,
+    update_data_with_skip_connection,
     xl_attention_logits,
 )
 from axlearn.common.base_layer import (
@@ -2466,7 +2467,9 @@ class MultiheadAttentionTest(TestCase):
                 ),
             )
         else:
-            key = value = query
+            # Make key and value distinct from query. Otherwise, it is equivalent
+            # to the query only case.
+            key = value = query + 0.1
         attention_logit_biases = attention.make_causal_biases(tgt_len)
         return_aux = {"probs"}
         inputs = dict(
@@ -2500,6 +2503,10 @@ class MultiheadAttentionTest(TestCase):
         decoder_probs = jnp.zeros(shape=[tgt_len, batch_size, num_heads, tgt_len])
         for t in range(tgt_len):
             inputs["query"] = jnp.expand_dims(query[:, t, :], axis=1)
+            if key is not None:
+                inputs["key"] = jnp.expand_dims(key[:, t, :], axis=1)
+            if value is not None:
+                inputs["value"] = jnp.expand_dims(value[:, t, :], axis=1)
             inputs["attention_logit_biases"] = attention_logit_biases[
                 jnp.newaxis, jnp.newaxis, t, :
             ]
@@ -2615,6 +2622,12 @@ class MultiheadAttentionTest(TestCase):
         query = jax.random.normal(
             jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim], dtype=dtype
         )
+        if attention_cfg.klass == attention.GroupedQueryAttention:
+            key = value = None
+        else:
+            # Make key and value distinct from query. Otherwise, it is equivalent
+            # to the query only case.
+            key = value = query + 0.1
         attention_logit_biases = attention.make_causal_biases(tgt_len)
         return_aux = {"probs"}
 
@@ -2624,7 +2637,11 @@ class MultiheadAttentionTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
             inputs=dict(
-                query=query, attention_logit_biases=attention_logit_biases, return_aux=return_aux
+                query=query,
+                key=key,
+                value=value,
+                attention_logit_biases=attention_logit_biases,
+                return_aux=return_aux,
             ),
         )
 
@@ -2637,6 +2654,8 @@ class MultiheadAttentionTest(TestCase):
             inputs=dict(
                 time_step=time_step,
                 query=query,
+                key=key,
+                value=value,
                 attention_logit_biases=attention_logit_biases,
                 return_aux=return_aux,
             ),
@@ -2680,6 +2699,13 @@ class MultiheadAttentionTest(TestCase):
             inputs["query"] = jnp.take_along_axis(
                 query, time_step[:, None, None], axis=1, mode="clip"
             )
+            if key is not None:
+                inputs["key"] = jnp.take_along_axis(
+                    key, time_step[:, None, None], axis=1, mode="clip"
+                )
+                inputs["value"] = jnp.take_along_axis(
+                    value, time_step[:, None, None], axis=1, mode="clip"
+                )
             # [batch=1, tgt_len=1, tgt_len].
             inputs["attention_logit_biases"] = jnp.take_along_axis(
                 attention_logit_biases[None, :, :], time_step[:, None, None], axis=1, mode="clip"
@@ -3736,22 +3762,6 @@ class NonUniformStack(StackedTransformerLayer):
         )
 
 
-class TestStackedTransformerLayerWithDataOverride(NonUniformStack):
-    """A class with a simple override of _update_data for unit testing."""
-
-    @property
-    def forced_input(self):
-        return jnp.ones((2, 3, 4))
-
-    def _update_data(
-        self,
-        data: Tensor,
-        *,
-        all_layer_outputs: list[BaseTransformerLayer.Output],
-    ):
-        return self.forced_input
-
-
 class TestStackedTransformerLayerWithKVState(NonUniformStack):
     """A class with a simple override of _update_layer_kwargs for unit testing."""
 
@@ -3766,6 +3776,16 @@ class TestStackedTransformerLayerWithKVState(NonUniformStack):
             layer_kwargs["self_attention_kv_state"] = all_layer_outputs[-1].self_attention_kv_state
         elif layer_index == 2:
             layer_kwargs["self_attention_kv_state"] = None
+
+
+class TestStackedTransformerLayerWithSkipConnection(StackedTransformerLayer):
+    """A class that outputs all layers' output for unit testing."""
+
+    def _aggregate_layer_outputs(
+        self,
+        layer_outputs: Sequence[BaseTransformerLayer.Output],
+    ) -> Sequence[BaseTransformerLayer.Output]:
+        return layer_outputs
 
 
 class StackedTransformerTest(BaseTransformerTest):
@@ -4092,46 +4112,62 @@ class StackedTransformerTest(BaseTransformerTest):
         assert_allclose(decoder_self_attention_probs, forward_outputs.self_attention_probs)
         assert_allclose(decoder_cross_attention_probs, forward_outputs.cross_attention_probs)
 
-    def test_update_data(self):
+    def test_skip_connection(self):
         batch_size = 2
         seq_len = 6
         num_heads = 2
         input_dim = 4
         hidden_dim = 8
+        num_layers = 5
+        layer_with_skip_input = 3
 
-        # Create a StackedTransformerLayer by specifying a sequence of non-uniform layer configs.
-        cfg = TestStackedTransformerLayerWithDataOverride.default_config().set(name="test")
-        cfg.input_dim = input_dim
-        cfg.num_layers = 2
+        cfg = TestStackedTransformerLayerWithSkipConnection.default_config().set(
+            name="test", input_dim=input_dim, num_layers=num_layers
+        )
 
         transformer_cfg = TransformerLayer.default_config()
         transformer_cfg.self_attention.attention.num_heads = num_heads
         transformer_cfg.feed_forward.hidden_dim = hidden_dim
         cfg.layer = transformer_cfg
 
-        layer: StackedTransformerLayer = cfg.instantiate(parent=None)
+        test_cfg = cfg.clone().set(
+            data_merger=config_for_function(update_data_with_skip_connection).set(
+                skip_connections={layer_with_skip_input: 1}
+            )
+        )
+
+        base_layer = cfg.instantiate(parent=None)
+        test_layer = test_cfg.instantiate(parent=None)
+
         random_inputs = jax.random.uniform(
             jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim)
         )
-        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
-        outputs_with_random_input, _ = F(
-            layer,
+        state = base_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        base_output, _ = F(
+            base_layer,
             is_training=True,
             prng_key=jax.random.PRNGKey(123),
             state=state,
             inputs=dict(data=random_inputs),
         )
-        outputs_with_forced_input, _ = F(
-            layer,
+        test_output, _ = F(
+            test_layer,
             is_training=True,
             prng_key=jax.random.PRNGKey(123),
             state=state,
-            inputs=dict(data=layer.forced_input),
+            inputs=dict(data=random_inputs),
         )
-        self.assertNestedAllClose(
-            outputs_with_random_input.data,
-            outputs_with_forced_input.data,
-        )
+
+        for i in range(layer_with_skip_input):
+            self.assertNestedAllClose(
+                base_output[i].data,
+                test_output[i].data,
+            )
+        for i in range(layer_with_skip_input, num_layers):
+            self.assertNotAlmostEqual(
+                jnp.min(jnp.abs(base_output[i].data - test_output[i].data)),
+                0.0,
+            )
 
     def test_update_layer_kwargs(self):
         batch_size = 2
