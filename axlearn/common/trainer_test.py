@@ -417,6 +417,11 @@ class TrainerTest(test_utils.TestCase):
         with open(os.path.join(cfg.dir, "trainer_state_tree.txt"), encoding="utf-8") as f:
             self.assertStartsWith(f.read(), "PyTreeDef(CustomNode(namedtuple[TrainerState], [*, ")
 
+        with open(os.path.join(cfg.dir, "model_analysis.txt"), encoding="utf-8") as f:
+            self.assertStartsWith(
+                f.read(), "##################### Model analysis #####################"
+            )
+
         if start_trace_steps:
             trace_dir = os.path.join(cfg.dir, "summaries", "train_train", "plugins", "profile")
             profile_files = []
@@ -856,6 +861,7 @@ class TrainerTest(test_utils.TestCase):
         first_output = trainer.run(prng_key=jax.random.PRNGKey(123))
 
         assert os.path.exists(os.path.join(cfg.dir, "trainer_state_tree.txt"))
+        assert os.path.exists(os.path.join(cfg.dir, "model_analysis.txt"))
         # Make sure checkpoint exists.
         trainer2: SpmdTrainer = cfg.instantiate(parent=None)
         with trainer2.mesh():
@@ -931,6 +937,7 @@ class TrainerTest(test_utils.TestCase):
         trainer.run(prng_key=jax.random.PRNGKey(123))
 
         assert os.path.exists(os.path.join(cfg.dir, "trainer_state_tree.txt"))
+        assert os.path.exists(os.path.join(cfg.dir, "model_analysis.txt"))
         trainer2: SpmdTrainer = cfg.clone(save_input_iterator=restore_input_iterator).instantiate(
             parent=None
         )
@@ -972,6 +979,7 @@ class TrainerTest(test_utils.TestCase):
         trainer.run(prng_key=jax.random.PRNGKey(123))
 
         assert os.path.exists(os.path.join(cfg.dir, "trainer_state_tree.txt"))
+        assert os.path.exists(os.path.join(cfg.dir, "model_analysis.txt"))
         trainer2: SpmdTrainer = cfg.instantiate(parent=None)
         with trainer2.mesh():
             # We should have checkpointed at the last step.
