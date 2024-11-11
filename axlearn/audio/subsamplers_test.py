@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from typing import Optional, Union
 
 import jax
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
 from axlearn.audio.subsamplers import ConvSubSampler
@@ -187,7 +187,8 @@ class ConvSubSamplerTest(TestCase):
         self.assertEqual(tuple(subsampled_shape), outputs["outputs"].shape)
         self.assertEqual(tuple(subsampled_shape)[:2], outputs["paddings"].shape)
 
-    def test_activation_summaries(self):
+    @parameterized.parameters(jnp.float32, jnp.bfloat16)
+    def test_activation_summaries(self, dtype):
         """Tests that activation summaries behave as expected."""
         input_dim, num_filters, hidden_dim, output_dim = 1, 80, 12, 8
         prng_key = jax.random.PRNGKey(567)
@@ -195,10 +196,12 @@ class ConvSubSamplerTest(TestCase):
 
         # Initialize layer parameters.
         cfg = ConvSubSampler.default_config().set(
-            input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim
+            input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, dtype=dtype
         )
         layer = cfg.set(name="test").instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(init_key)
+        dtypes, _ = jax.tree.flatten(jax.tree.map(jnp.dtype, layer_params))
+        self.assertTrue(all(dt == dtype for dt in dtypes))
 
         # Build inputs.
         batch_size, num_frames = 4, 10
@@ -206,6 +209,8 @@ class ConvSubSamplerTest(TestCase):
         inputs = jax.random.normal(key=data_key, shape=inputs_shape) * 10.0
         lengths = jnp.array([5, 10, 9, 0])
         paddings = jnp.arange(num_frames)[None, :] >= lengths[:, None]
+        inputs = inputs.astype(dtype)
+        paddings = paddings.astype(dtype)
         outputs, output_collections = F(
             layer,
             inputs=dict(inputs=inputs, paddings=paddings),
@@ -247,9 +252,14 @@ class ConvSubSamplerTest(TestCase):
             expected_outputs_norm,
         )
         self.assertNestedAllClose(
-            output_collections.summaries["activations/subsampler_inputs_mean"].weight, input_weights
+            output_collections.summaries["activations/subsampler_inputs_mean"].weight,
+            input_weights.astype(dtype),
         )
         self.assertNestedAllClose(
             output_collections.summaries["activations/subsampler_outputs_norm"].weight,
             output_weights,
         )
+
+
+if __name__ == "__main__":
+    absltest.main()
