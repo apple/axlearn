@@ -444,7 +444,7 @@ class TPUGKEJob(GKEJob):
         enable_tpu_ici_resiliency: Optional[bool] = None
         location_hint: Optional[str] = None
         enable_tpu_smart_repair: bool = False
-        use_pathways: Optional[bool] = False
+        import_pathways: Optional[list[str]] = []
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -459,8 +459,8 @@ class TPUGKEJob(GKEJob):
             "not all TPU types support this flag.",
             **common_kwargs,
         )
-        flags.DEFINE_boolean(
-            "use_pathways", False, "Wether the workload is pathways-enabled.", **common_kwargs
+        flags.DEFINE_list(
+            "import_pathways", [], "Modules to enable pathways proxy.", **common_kwargs
         )
 
     @classmethod
@@ -485,14 +485,15 @@ class TPUGKEJob(GKEJob):
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         super().__init__(cfg)
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
-        if cfg.use_pathways:
-            self._import_pathways()
+        if len(cfg.import_pathways) > 0:
+            self._import_pathways(cfg.import_pathways)
 
-    def _import_pathways(self):
+    def _import_pathways(self, import_pathways: list[str]):
         try:
-            importlib.import_module("pathwaysutils")
+            for module in import_pathways:
+                importlib.import_module(module)
         except ModuleNotFoundError:
-            logging.error("An error occurred while importing pathways-utils.")
+            logging.error("An error occurred while importing pathways dependencies.")
 
     def _maybe_add_volume_mount(self, volume_mounts: list[dict], *, spec: Optional[VolumeMount]):
         if spec:
