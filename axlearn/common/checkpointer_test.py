@@ -243,6 +243,47 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.wait_until_finished()
             self.assertNestedEqual((3, state0), ckpt.restore(step=None, state=state0))
 
+    @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
+    def test_save_can_override_on_gcs(self, checkpointer_cls: Type[BaseCheckpointer]):
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+        # Patch is_gcs_path for orbax, since it commits differently on gcs vs local.
+        with _mesh(mesh_shape), mock.patch(f"{ocp.step.__name__}.is_gcs_path", return_value=True):
+            cfg = _checkpointer_config(checkpointer_cls)
+            ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
+            state0 = dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32))
+
+            # Save a checkpoint.
+            ckpt.save(step=1, state=state0)
+            ckpt.wait_until_finished()
+            self.assertNestedEqual((1, state0), ckpt.restore(step=None, state=state0))
+
+            if isinstance(ckpt, (Checkpointer, OrbaxCheckpointer)):
+                ckpt_dir = ckpt.ckpt_dir(step=1)
+            else:
+                raise NotImplementedError(type(ckpt))
+
+            # Corrupt the checkpoint by removing some files, while ensuring it is non-empty.
+            commit_file = (
+                "index" if isinstance(ckpt, Checkpointer) else ocp.step._COMMIT_SUCCESS_FILE
+            )
+            fs.rmtree(os.path.join(ckpt_dir, commit_file))
+            self.assertGreater(len(fs.listdir(ckpt_dir)), 0)
+
+            if isinstance(ckpt, OrbaxCheckpointer):
+                ckpt._manager.reload()  # Orbax caches complete checkpoints.
+
+            self.assertEqual(0, len(ckpt.checkpoint_paths(ckpt.config.dir)))
+
+            # Test that save() should be able to override non-empty ckpt dir.
+            state1 = dict(x=jnp.ones([], dtype=jnp.int32), y=jnp.zeros([2], dtype=jnp.float32))
+            ckpt.save(step=1, state=state1)
+            ckpt.wait_until_finished()
+
+            # Should match the new state.
+            self.assertNestedEqual((1, state1), ckpt.restore(step=None, state=state1))
+
     @parameterized.product(
         checkpointer_cls=[Checkpointer, OrbaxCheckpointer],
         mesh_shape=[(1, 1), (2, 2), (4, 2)],
