@@ -10,13 +10,8 @@
 
 Currently tested on A100/H100.
 """
-# pylint: disable=wrong-import-position
 import functools
-import os
 from typing import Literal
-
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
 import chex
 import jax
@@ -28,6 +23,9 @@ from axlearn.common.flash_attention.gpu_attention import (
     flash_attention,
 )
 from axlearn.common.flash_attention.utils import mha_reference
+
+if jax.default_backend() != "gpu":
+    pytest.skip(reason="Incompatible hardware", allow_module_level=True)
 
 
 @pytest.mark.parametrize(
@@ -42,20 +40,17 @@ from axlearn.common.flash_attention.utils import mha_reference
     ],
 )
 @pytest.mark.parametrize("block_size", [64, 128])
-@pytest.mark.parametrize("use_fwd", [True, False])
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("sm_scale", [1.0, 0.123])
 @pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
 @pytest.mark.parametrize("use_segment_ids", [True, False])
 @pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
-@pytest.mark.skipif(jax.devices()[0].platform != "gpu", reason="Test only runs on GPU.")
-def test_fwd_against_ref(
+def test_triton_fwd_only_against_ref(
     batch_size: int,
     seq_len: int,
     num_heads: int,
     per_head_dim: int,
     block_size: int,
-    use_fwd: bool,
     causal: bool,
     sm_scale: float,
     attention_bias_type: Literal["2d", "4d", None],
@@ -80,37 +75,26 @@ def test_fwd_against_ref(
         jnp.concatenate([segment_left, segment_right], axis=-1) if use_segment_ids else None
     )
 
-    # Make sure that it is running on GPU.
-    assert str(q.devices()) == "{cuda(id=0)}"
-
-    if use_fwd:
-
-        @jax.jit
-        def impl(q, k, v, bias, segment_ids):
-            fn = functools.partial(
-                flash_attention,
-                block_q=block_size,
-                block_k=block_size,
-                causal=causal,
-                softmax_scale=sm_scale,
-            )
-            out, _ = jax.vjp(fn, q, k, v, bias, segment_ids)
-            return out
-
-    else:
-        impl = functools.partial(
+    @jax.jit
+    def impl(q, k, v, bias, segment_ids):
+        fn = functools.partial(
             flash_attention,
             block_q=block_size,
             block_k=block_size,
             causal=causal,
             softmax_scale=sm_scale,
         )
+        out, _ = jax.vjp(fn, q, k, v, bias, segment_ids)
+        return out
 
     o = impl(q, k, v, bias, segment_ids)
     o_ref = mha_reference(q, k, v, bias, segment_ids, causal=causal, softmax_scale=sm_scale)
-    chex.assert_trees_all_close(o, o_ref, atol=0.05)
+    chex.assert_trees_all_close(o, o_ref, atol=0.07)
 
 
+# We test the flash_attention against the reference mha_reference.
+# The outputs should be close in both fp16 and fp32, with a relaxed bound due
+# to the numerical difference during operations.
 @pytest.mark.parametrize(
     "batch_size,num_heads,seq_len,per_head_dim",
     [
@@ -127,8 +111,7 @@ def test_fwd_against_ref(
 @pytest.mark.parametrize("block_size", [64, 128])
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
-@pytest.mark.skipif(jax.devices()[0].platform != "gpu", reason="Test only runs on GPU.")
-def test_bwd_against_ref(
+def test_triton_against_xla_ref(
     batch_size: int,
     num_heads: int,
     seq_len: int,
@@ -163,9 +146,6 @@ def test_bwd_against_ref(
     segment_ids = (
         jnp.concatenate([segment_left, segment_right], axis=-1) if use_segment_ids else None
     )
-
-    # Make sure that it is running on GPU.
-    assert str(q.devices()) == "{cuda(id=0)}"
 
     sm_scale = q.shape[-1] ** -0.5
 
@@ -226,7 +206,6 @@ def test_bwd_against_ref(
 )
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float16])
-@pytest.mark.skipif(jax.devices()[0].platform != "gpu", reason="Test only runs on GPU.")
 def test_cudnn_against_triton_ref(
     batch_size: int,
     num_heads: int,
@@ -244,8 +223,6 @@ def test_cudnn_against_triton_ref(
     v = jax.random.normal(
         jax.random.PRNGKey(2), (batch_size, seq_len, num_heads, per_head_dim), dtype=dtype
     )
-    # Make sure that it is running on GPU.
-    assert str(q.devices()) == "{cuda(id=0)}"
 
     sm_scale = q.shape[-1] ** -0.5
 

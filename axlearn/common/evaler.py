@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Evaler and base metric calculators."""
+
 import functools
 import graphlib
 import os.path
@@ -15,7 +16,7 @@ from absl import logging
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 
-from axlearn.common import struct, summary_writer, utils
+from axlearn.common import input_base, struct, summary_writer, utils
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import (
     REQUIRED,
@@ -23,6 +24,7 @@ from axlearn.common.config import (
     Required,
     config_class,
     config_for_function,
+    maybe_set_config,
 )
 from axlearn.common.inference_output import BaseOutputWriter
 from axlearn.common.metrics import MetricAccumulator, WeightedScalar
@@ -556,7 +558,7 @@ class SpmdEvaler(Module):
         """Configures SpmdEvaler."""
 
         # The input source.
-        input: Required[InstantiableConfig] = REQUIRED
+        input: Required[input_base.Input.Config] = REQUIRED
         # A summary writer to log tagged summary values.
         summary_writer: InstantiableConfig = summary_writer.SummaryWriter.default_config()
         # Run this evaler according to this policy.
@@ -590,7 +592,7 @@ class SpmdEvaler(Module):
         if cfg.eval_dtype is not None:
             utils.validate_float_dtype(cfg.eval_dtype)
 
-        self._add_child("input", cfg.input.set(is_training=False))
+        self._add_child("input", maybe_set_config(cfg.input, is_training=False))
         self._add_child(
             "metric_calculator",
             cfg.metric_calculator.set(eval_dtype=cfg.eval_dtype),
@@ -657,7 +659,8 @@ class SpmdEvaler(Module):
 
         forward_outputs = None
         stop_trace_iter = None
-        for batch_ix, input_batch in enumerate(self.input):
+        eval_input_iter = iter(self.input.dataset())
+        for batch_ix, input_batch in enumerate(self.input.batches(eval_input_iter)):
             logging.log_first_n(logging.INFO, "Evaler input_batch=%s", 3, utils.shapes(input_batch))
 
             if batch_ix == stop_trace_iter:

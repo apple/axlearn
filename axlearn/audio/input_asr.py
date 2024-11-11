@@ -2,7 +2,7 @@
 
 """Input processing for ASR."""
 
-from typing import Optional
+from typing import Any, Optional
 
 import seqio
 import tensorflow as tf
@@ -185,3 +185,21 @@ def _normalize_by_scale(*, input_key: str, scale: float) -> input_tf_data.Datase
         return example
 
     return seqio.map_over_dataset(process_example_fn)
+
+
+def pad_example_fn(element_spec: Nested[Any]) -> Nested[Any]:
+    """Returns padding ASR examples.
+
+    Each padding example contains:
+    * A "source/paddings" key consisting of an all 1's Tensor;
+    * "target/input_ids" and "target_labels" containing all -1s.
+    """
+    example = input_tf_data.default_pad_example_fn(element_spec)
+    # Set source paddings to 1s.
+    example["source"]["paddings"] = tf.ones_like(example["source"]["paddings"], dtype=tf.int32)
+    # Set text tokens to -1s.
+    example["target"]["input_ids"] = -1 * tf.ones_like(
+        example["target"]["input_ids"], dtype=tf.int32
+    )
+    example["target_labels"] = -1 * tf.ones_like(example["target_labels"], dtype=tf.int32)
+    return example

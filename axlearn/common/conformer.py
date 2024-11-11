@@ -304,7 +304,7 @@ class ConformerLayer(BaseLayer):
         return x
 
 
-class _ConformerRepeat(Repeat):
+class ConformerRepeat(Repeat):
     """A Repeat layer with layer=ConformerLayer.
 
     See axlearn/common/repeat.py for more details.
@@ -333,6 +333,8 @@ class RepeatedConformerLayer(BaseLayer):
         num_layers: Required[int] = REQUIRED
         # Config for each layer in the stack.
         layer: ConformerLayer.Config = ConformerLayer.default_config()
+        # Config for the repeat implementation.
+        repeat: ConformerRepeat.Config = ConformerRepeat.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -341,7 +343,7 @@ class RepeatedConformerLayer(BaseLayer):
             raise ValueError(
                 f"num_layers must be greater than 0, get cfg.num_layers = {cfg.num_layers}."
             )
-        repeat_cfg = _ConformerRepeat.default_config().set(
+        repeat_cfg = cfg.repeat.set(
             layer=cfg.layer.set(input_dim=cfg.input_dim),
             num_layers=cfg.num_layers,
         )

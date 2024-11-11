@@ -32,6 +32,7 @@ from axlearn.common.module import functional as F
 from axlearn.common.module import (
     install_context_stack,
     new_output_collection,
+    nowrap,
     scan_in_context,
     set_current_context,
 )
@@ -403,6 +404,10 @@ class ModuleConsumingSharedChild(Module):
         shared_module = self.get_shared_module("shared")
         return x * shared_module.state["weight"]
 
+    def invoke_shared(self, *args):
+        shared_module = self.get_shared_module("shared")
+        return shared_module.module(*args)
+
 
 class ModuleProvidingSharedChild(Module):
     """A module to provide a shared child."""
@@ -423,6 +428,9 @@ class ModuleProvidingSharedChild(Module):
 
     def forward(self, x: Tensor) -> Tensor:
         return self.child1(x) + self.child2(x)
+
+    def invoke_shared(self, x: Tensor) -> Tensor:
+        return self.child1.invoke_shared(x) + self.child2.invoke_shared(x)
 
     def get_descendant_shared_module(self, *, path: list[str], shared_module_name: str):
         # Note: this function assumes that inner nodes (non-leaves) of the module hierarchy are
@@ -703,13 +711,13 @@ class ModuleTest(TestWithTemporaryCWD):
             prng_key=jax.random.PRNGKey(1),
             is_training=True,
             method="get_shared_module",
-            inputs=dict(shared_module_name="outer_shared"),
+            inputs=("outer_shared",),
         )
         self.assertIs(module.module, root.shared_child)
         self.assertEqual(module.state, root_state["shared_child"])
 
         # Test that we cannot access "inner_shared" from outside of "outer_shared".
-        with self.assertRaisesRegex(ValueError, "ancestor that shares 'inner_shared'"):
+        with self.assertRaisesRegex(ValueError, r"ancestor that shares .*'inner_shared'"):
             F(
                 root,
                 state=root_state,
@@ -727,7 +735,7 @@ class ModuleTest(TestWithTemporaryCWD):
                 prng_key=jax.random.PRNGKey(1),
                 is_training=True,
                 method="get_shared_module",
-                inputs=dict(shared_module_name="outer_shared"),
+                inputs=("outer_shared",),
             )
 
     def test_path_to_descendant_module(self):
@@ -746,6 +754,39 @@ class ModuleTest(TestWithTemporaryCWD):
 
         with self.assertRaisesRegex(ValueError, "descendant"):
             module.child2.path_to_descendant_module(module.child1)
+
+    def test_shared_module_auto_context(self):
+        """Tests that auto child context handling works with shared modules."""
+
+        class SharedModule(Module):
+            def forward(self, x: Tensor) -> Tensor:
+                self.add_summary("shared_input", x)
+                return x + self.state["weight"]
+
+        cfg = ModuleProvidingSharedChild.default_config().set(
+            name="root",
+            shared_child=SharedModule.default_config(),
+            child=ModuleConsumingSharedChild.default_config(),
+        )
+        module = cfg.instantiate(parent=None)
+        state = {
+            "shared_child": {"weight": jnp.ones([])},
+            "child1": {},
+            "child2": {},
+        }
+        outputs, output_collection = F(
+            module,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(x=jnp.zeros([])),
+            is_training=False,
+            method="invoke_shared",
+        )
+        # The shared child is invoked twice, once from each child of ModuleProvidingSharedChild.
+        # Each invocation adds 1.
+        self.assertEqual(2, outputs)
+        for child in ("child1", "child2"):
+            self.assertEqual(0, output_collection.summaries[child]["shared"]["shared_input"])
 
     def test_post_init(self):
         class InnerModule(Module):
@@ -793,6 +834,21 @@ class ModuleTest(TestWithTemporaryCWD):
         # Outer should also wrap the inner methods. We also ensure that `self.config` points to
         # `InnerModule.Config` rather than `OuterModule.Config`.
         self.assertEqual(inner_cfg.inner_a, outer.inner_method())
+
+    def test_nowrap(self):
+        class MyModule(Module):
+            def my_method1(self):
+                return 1
+
+            @nowrap
+            def my_method2(self):
+                return 2
+
+        cfg = MyModule.default_config()
+        layer = cfg.set(name="test").instantiate(parent=None)
+        wrapped_methods = layer._methods_to_wrap_for_auto_child_context()
+        self.assertIn("my_method1", wrapped_methods)
+        self.assertNotIn("my_method2", wrapped_methods)
 
 
 class ScanInContextTest(TestWithTemporaryCWD):

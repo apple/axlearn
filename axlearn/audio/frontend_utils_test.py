@@ -20,15 +20,17 @@ from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike
 
+from axlearn.audio import frontend_utils
 from axlearn.audio.frontend_utils import (
     WindowType,
+    frame,
+    frame_paddings,
     linear_to_log_mel_spectrogram,
     linear_to_mel_weight_matrix,
     magnitude_spectrogram,
     next_power_of_2,
     pre_emphasis,
     sharded_fft,
-    sliding_window,
     windowing,
 )
 from axlearn.audio.test_utils import fake_audio
@@ -40,16 +42,38 @@ def _magnitude_spectrogram_from_audio(x, fft_size):
     return magnitude_spectrogram(jnp.fft.fft(x, n=fft_size), dtype=x.dtype)
 
 
-class SlidingWindowTest(parameterized.TestCase, tf.test.TestCase):
-    """Tests sliding window."""
+class FrameTest(parameterized.TestCase, tf.test.TestCase):
+    """Tests frame."""
+
+    @parameterized.parameters((0, 5, 2, 0), (1, 5, 2, 1), (7, 5, 2, 2), (8, 5, 2, 3), (9, 5, 2, 3))
+    def test_num_frames(self, seq_len, frame_size, hop_size, expected):
+        num_frame = frontend_utils.num_frames(seq_len, frame_size=frame_size, hop_size=hop_size)
+        self.assertEqual(num_frame, expected)
+
+    def test_frame_simple(self):
+        # The example in frame() description.
+        window = 15
+        hop_size = 10
+        seq_len = 20
+        x = jnp.arange(seq_len)[None, :]
+        frames = frame(x, frame_size=window, hop_size=hop_size)
+        expected = jnp.array(
+            [
+                [
+                    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+                    [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 0, 0, 0, 0, 0],
+                ]
+            ]
+        )
+        self.assertAllClose(frames, expected)
 
     @parameterized.parameters(
-        dict(frame_size=25, frame_step=10, seq_len=16_000 * 15),
-        dict(frame_size=27, frame_step=13, seq_len=16_000 * 15),
-        dict(frame_size=25, frame_step=25, seq_len=16_000 * 15),
-        dict(frame_size=400, frame_step=160, seq_len=16_000 * 15),
+        dict(frame_size=25, frame_step=10, seq_len=3600),
+        dict(frame_size=27, frame_step=13, seq_len=3600),
+        dict(frame_size=25, frame_step=25, seq_len=3600),
+        dict(frame_size=400, frame_step=160, seq_len=3600),
     )
-    def test_sliding_window(self, frame_size: int, frame_step: int, seq_len: int):
+    def test_frame(self, frame_size: int, frame_step: int, seq_len: int):
         batch_size = 5
         inputs, paddings = fake_audio(
             prng_key=jax.random.PRNGKey(123), batch_size=batch_size, seq_len=seq_len
@@ -60,12 +84,32 @@ class SlidingWindowTest(parameterized.TestCase, tf.test.TestCase):
             frame_size=frame_size,
             frame_step=frame_step,
         )
-        fn = functools.partial(sliding_window, window_size=frame_size, stride=frame_step)
+        fn = functools.partial(frame, frame_size=frame_size, hop_size=frame_step)
         fn = jax.jit(fn)
-        test_paddings = jnp.max(fn(paddings), axis=-1)
         test_output = fn(inputs)
+        pad_fn = functools.partial(
+            frame_paddings,
+            frame_size=frame_size,
+            hop_size=frame_step,
+        )
+        pad_fn = jax.jit(pad_fn)
+        test_paddings = pad_fn(paddings)
+        num_frame = frontend_utils.num_frames(seq_len, frame_size=frame_size, hop_size=frame_step)
+        self.assertEqual(test_output.shape, (batch_size, num_frame, frame_size))
+        self.assertEqual(test_paddings.shape, (batch_size, num_frame))
         self.assertAllClose(ref_output, test_output)
         self.assertAllClose(ref_paddings, test_paddings)
+
+    @parameterized.parameters(
+        (1, [[1, 1, 1, 1, 1, 1]]),
+        (2, [[1, 1, 1, 1]]),
+    )
+    def test_frame_paddings_simple(self, hop_size, expected):
+        # The example in frame_paddings() description.
+        frame_size = 5
+        paddings = jnp.array([[1, 1, 1, 1, 0, 0, 0, 0, 1, 1]])
+        out_paddings = frame_paddings(paddings, frame_size=frame_size, hop_size=hop_size)
+        self.assertAllClose(out_paddings, expected)
 
 
 class PreEmphasisTest(parameterized.TestCase, tf.test.TestCase):
@@ -233,10 +277,14 @@ def _ref_framer(*, inputs: ArrayLike, paddings: ArrayLike, frame_size: int, fram
     https://github.com/tensorflow/lingvo/blob/4a9097a212622d99d7f8e2379804dbffdc44a97f/lingvo/tasks/asr/frontend.py#L420
     https://github.com/tensorflow/lingvo/blob/4a9097a212622d99d7f8e2379804dbffdc44a97f/lingvo/tasks/asr/frontend.py#L404
     """
-    outputs = tf.signal.frame(inputs, frame_size, frame_step, pad_end=False)
-    output_paddings = tf.signal.frame(paddings, frame_size, frame_step, pad_end=False)
+    outputs = tf.signal.frame(inputs, frame_size, frame_step, pad_end=True)
+    output_paddings = tf.signal.frame(paddings, frame_size, frame_step, pad_end=True)
     output_paddings = tf.reduce_max(output_paddings, axis=2)
-    return outputs, output_paddings
+    # Note: tf.signal.frame appends more padding than necessary.
+    num_frames = frontend_utils.num_frames(
+        inputs.shape[1], frame_size=frame_size, hop_size=frame_step
+    )
+    return outputs[:, :num_frames], output_paddings[:, :num_frames]
 
 
 def _ref_pre_emphasis(*, inputs: ArrayLike, coeff: float):

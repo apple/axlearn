@@ -26,11 +26,10 @@ from typing import Optional, Union
 
 import jax
 from absl import logging
-from aqt.jax.v2 import aqt_dot_general
+from aqt.jax.v2.config import DotGeneral, set_context
 from jax import numpy as jnp
 from jax.lax import DotDimensionNumbers, Precision
 from jax.typing import DTypeLike
-from typing_extensions import Protocol
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
@@ -62,26 +61,6 @@ class ClippingChoice(Enum):
     INPUT_ACTIVATION = 0
     # Output of dot_general op.
     OUTPUT_ACTIVATION = 1
-
-
-class AQTDotGeneralType(Protocol):
-    """Typedef for AQT DotGeneral functions.
-
-    Adds context kwarg containing prng key comparing to jax.lax.dot_general.
-
-    """
-
-    def __call__(
-        self,
-        lhs: Tensor,
-        rhs: Tensor,
-        *,
-        dimension_numbers: DotDimensionNumbers,
-        precision: PrecisionLike = None,
-        preferred_element_type: Optional[DTypeLike] = None,
-        context: aqt_dot_general.Context = aqt_dot_general.Context(key=None, train_step=None),
-    ) -> Tensor:
-        ...
 
 
 class QuantizedDotGeneral(BaseLayer):
@@ -131,13 +110,9 @@ class QuantizedDotGeneral(BaseLayer):
             # for anything, we just need to init an aqt_dot_general function
             # with recommended configs.
             # Dot general with default config.
-            self.lhs_act_dot_general: AQTDotGeneralType = aqt_dot_general.make_dot_general(
-                lhs_activation_aqt_config()
-            )
+            self.lhs_act_dot_general: DotGeneral = lhs_activation_aqt_config()
             # Dot general with mirrored config where lhs and rhs are swapped.
-            self.rhs_act_dot_general: AQTDotGeneralType = aqt_dot_general.make_dot_general(
-                rhs_activation_aqt_config()
-            )
+            self.rhs_act_dot_general: DotGeneral = rhs_activation_aqt_config()
         elif cfg.quantization_type == DotGeneralQuantizationType.FP_8:
             # TODO(jiarui): Is there a way to identify if we are running on H100?
             if jax.default_backend() != "gpu":
@@ -202,18 +177,19 @@ class QuantizedDotGeneral(BaseLayer):
         elif cfg.quantization_type == DotGeneralQuantizationType.INT_8:
             # Provide prng_key and call self.aqt_dot_general.
             if lhs_is_activation:
-                fn: AQTDotGeneralType = self.lhs_act_dot_general
+                fn: DotGeneral = self.lhs_act_dot_general
             else:
                 fn = self.rhs_act_dot_general
+            # Pass in prng_key for stochastic rounding
+            set_context(
+                cfg=fn, key=prng_key if prng_key is not None else self.prng_key, train_step=None
+            )
             return fn(
                 lhs,
                 rhs,
                 dimension_numbers=dimension_numbers,
                 precision=precision,
                 preferred_element_type=preferred_element_type,
-                context=aqt_dot_general.Context(
-                    key=prng_key if prng_key is not None else self.prng_key, train_step=None
-                ),
             )
         elif cfg.quantization_type == DotGeneralQuantizationType.FP_8:
             raise NotImplementedError("Fp8 quantization on GPU is not yet implemented")

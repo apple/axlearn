@@ -1219,7 +1219,7 @@ class CompositeLearnerTest(TestCase):
         pre-existing `CompositeLearner` implementation.
 
         """
-        updates = axlearn.common.update_transformation_test.mock_updates()
+        updates = axlearn.common.update_transformation_test.mock_updates(state_param_none=False)
 
         param_keys = updates.opt_params.keys()
         state_keys = updates.inplace_updates.keys()

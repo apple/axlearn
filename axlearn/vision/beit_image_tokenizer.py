@@ -185,11 +185,16 @@ class BEiTImageVQKD(BaseLayer):
         paddings = jnp.zeros(encoded_outputs.shape[:2])
         quantized_output = self.quantizer(inputs=encoded_outputs, paddings=paddings)
         # quantized_output.quantized_vectors shape [batch_size, seq_len, 1, codebook_dim]
-        # quantized_output.onehots in shape [batch_size, seq_len, 1, codebook_size]
         # quantized_output.ids in shape [batch_size, seq_len, 1]
+        onehots = jax.nn.one_hot(
+            quantized_output.ids,
+            num_classes=self.config.quantizer.codebook_size,
+            axis=-1,
+            dtype=paddings.dtype,
+        )
         return jnp.squeeze(quantized_output.ids, axis=-1), {
             "quantized_vectors": jnp.squeeze(quantized_output.quantized_vectors, axis=-2),
-            "quantized_codebook_onehots": jnp.squeeze(quantized_output.onehots, axis=-2),
+            "quantized_codebook_onehots": jnp.squeeze(onehots, axis=-2),
         }
 
 

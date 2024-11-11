@@ -155,6 +155,7 @@ model.batch_axis_names[1]: 'expert'
 model.batch_axis_names[2]: 'fsdp'
 model.decoder.attention_mask.klass: 'axlearn.common.attention.ALiBiAttentionLogitBiasLayer'
 model.decoder.attention_mask.num_heads: 12
+model.decoder.decoding.klass: 'axlearn.common.decoder.DecodingLayer'
 model.decoder.dim: 768
 model.decoder.dropout_rate: 0.0
 model.decoder.emb.dropout.klass: 'axlearn.common.layers.Dropout'

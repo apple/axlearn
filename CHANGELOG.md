@@ -1,5 +1,10 @@
 # Change Log
 
+## 0.1.4
+
+* Changes
+  * Upgrade Jax from 0.4.33 to 0.4.34.
+
 ## 0.1.3
 
 * Changes
