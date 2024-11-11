@@ -54,6 +54,7 @@ def default_xla_options(
             xla_tpu_enable_async_collective_fusion_multiple_steps="true",
             xla_tpu_overlap_compute_collective_tc="true",
             xla_enable_async_all_gather="true",
+            xla_enable_async_all_reduce="true",
             # Flag to enable some advanced scheduling features.
             xla_tpu_enable_all_experimental_scheduler_features="true",
             # Flag to enable memory tracking scheduling. The default AUTO only enables
