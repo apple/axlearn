@@ -21,7 +21,7 @@ from jax import numpy as jnp
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
 
-from axlearn.common import learner, optimizers, serialization, struct
+from axlearn.common import learner, optimizers, serialization, struct, utils
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import config_class, config_for_function, similar_names
 from axlearn.common.layers import BatchNorm, LayerNorm, Linear
@@ -760,6 +760,19 @@ class TreeUtilsTest(TestCase):
             check_jax_type(kwargs={"key": "1"})
         with self.assertRaisesRegex(ValueError, "^Argument key has leaf with non-JAX type"):
             check_jax_type(pretty_named_args={"key": "1"})
+
+    @parameterized.parameters(
+        dict(lengths=[3, 4], dtype=None, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
+        dict(lengths=[3, 4], dtype=jnp.int32, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
+        dict(lengths=[3, 4], dtype=jnp.float32, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
+        dict(lengths=[[3], [4]], dtype=jnp.int32, expected=[[[1, 1, 1, 0, 0]], [[1, 1, 1, 1, 0]]]),
+        dict(lengths=[[3, 4]], dtype=jnp.int32, expected=[[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]]),
+    )
+    def test_sequence_mask(self, lengths, dtype, expected):
+        max_len = 5
+        mask = utils.sequence_mask(lengths=jnp.array(lengths), max_len=max_len, dtype=dtype)
+        expected = jnp.array(expected).astype(dtype if dtype else jnp.int32)
+        self.assertNestedAllClose(mask, expected)
 
 
 class SimilarNamesTest(TestCase):
