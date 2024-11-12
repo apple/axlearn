@@ -512,8 +512,13 @@ def _mha_backward_kernel(
     """Computes the backward pass.
 
     This algorithm is described in https://arxiv.org/abs/2205.14135 Appendix B.4 Algorithm 4.
+    Jax reference implementation:
+    https://github.com/jax-ml/jax/blob/0995bc231c51e2ee66995be8ee2b31adf9236509/jax/experimental/pallas/ops/gpu/attention.py#L343
 
     See also `_mha_forward_kernel` for the forward pass.
+
+    The main difference between ours and jax reference implementation is that it supports 4-d bias,
+    and it supports float32 in the input dtype.
 
     Args:
         q_ref: Input query ref.
@@ -549,7 +554,7 @@ def _mha_backward_kernel(
     k = pl.load(k_ref, (slice_k, slice(None)))
     v = pl.load(v_ref, (slice_k, slice(None)))
     span_k = start_k * block_k + jnp.arange(block_k)
-    kv_segment_ids = None if s_ref is None else pl.load(s_ref, (slice_k))
+    kv_segment_ids = None if s_ref is None else pl.load(s_ref, (slice_k,))
 
     def inner_loop_dk_dv(start_q, carry):
         dv, dk = carry
@@ -571,7 +576,7 @@ def _mha_backward_kernel(
             b = b.astype(jnp.float32)
             qk += b.T  # Transpose back.
         if s_ref is not None:
-            q_segment_ids = pl.load(s_ref, (slice_q))
+            q_segment_ids = pl.load(s_ref, (slice_q,))
             mask = _segment_mask(q_segment_ids, kv_segment_ids)
             qk = jnp.where(mask, qk, NEG_INF)
         if causal:
@@ -606,7 +611,7 @@ def _mha_backward_kernel(
     slice_q = pl.ds(start_q * block_q, block_q)
     q = pl.load(q_ref, (slice_q, slice(None)))
     dq = jnp.zeros([block_q, block_d], dtype=jnp.float32)
-    q_segment_ids = None if s_ref is None else pl.load(s_ref, (slice_q))
+    q_segment_ids = None if s_ref is None else pl.load(s_ref, (slice_q,))
     span_q = start_q * block_q + jnp.arange(block_q)
     m = pl.load(m_ref, (slice_q,))
     di = pl.load(delta_ref, (slice_q,))
@@ -633,7 +638,7 @@ def _mha_backward_kernel(
             b = b.astype(jnp.float32)
             qk += b.T  # Transpose back.
         if s_ref is not None:
-            kv_segment_ids = pl.load(s_ref, (slice_k))
+            kv_segment_ids = pl.load(s_ref, (slice_k,))
             mask = _segment_mask(q_segment_ids, kv_segment_ids)
             qk = jnp.where(mask, qk, NEG_INF)
         if causal:

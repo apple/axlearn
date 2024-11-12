@@ -82,24 +82,24 @@ from axlearn.common.flash_attention.utils import mha_reference
 
 def _perf_report(prefix: str):
     # 128 is the most common value for per_head_dim.
-    batch_size, num_heads, seq_len, per_head_dim = 2, 16, 8192, 128
+    batch_size, num_heads, seq_len, per_head_dim = 2, 32, 2048, 128
 
     # Vary batch size for fixed heads and seq length.
     batch_size_bench = triton.testing.Benchmark(
         x_names=["batch_size"],
-        x_vals=[1, 2, 4],
+        x_vals=[2, 4, 8, 16],
         line_arg="library",
         line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
         line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
         styles=[("blue", "-"), ("purple", "-"), ("green", "-"), ("red", "-")],
         ylabel="ms",
-        plot_name=f"{prefix}-head{num_heads}-seq4096-d{per_head_dim}",
-        args={"num_heads": num_heads, "seq_len": 4096, "per_head_dim": per_head_dim},
+        plot_name=f"{prefix}-head{num_heads}-seq1024-d{per_head_dim}",
+        args={"num_heads": num_heads, "seq_len": 1024, "per_head_dim": per_head_dim},
     )
     # Vary num heads for fixed batch and seq length.
     num_heads_bench = triton.testing.Benchmark(
         x_names=["num_heads"],
-        x_vals=[8, 12, 16],
+        x_vals=[12, 16, 32, 48, 72],
         line_arg="library",
         line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
         line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
@@ -111,19 +111,19 @@ def _perf_report(prefix: str):
     # Vary seq length for fixed heads and batch size.
     seq_len_bench = triton.testing.Benchmark(
         x_names=["seq_len"],
-        x_vals=[2**i for i in range(10, 15)],  # 1024 to 16384.
+        x_vals=[2**i for i in range(7, 12)],  # 128 to 2048.
         line_arg="library",
         line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
         line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
         styles=[("blue", "-"), ("purple", "-"), ("green", "-"), ("red", "-")],
         ylabel="ms",
         plot_name=f"{prefix}-batch{batch_size}-head{num_heads}-d{per_head_dim}",
-        args={"batch_size": 2, "num_heads": 8, "per_head_dim": per_head_dim},
+        args={"batch_size": batch_size, "num_heads": num_heads, "per_head_dim": per_head_dim},
     )
     # Vary per head dim for fixed batch and seq length.
     per_head_dim_bench = triton.testing.Benchmark(
         x_names=["per_head_dim"],
-        x_vals=[64, 128],
+        x_vals=[16, 32, 64, 128],
         line_arg="library",
         line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
         line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
