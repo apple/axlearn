@@ -154,8 +154,12 @@ def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str):
     Temporary dir will be deleted after the upload is complete.
     """
     src_dir = src_dir_handle.name
-    fs.makedirs(dst_dir)
-    for item in fs.listdir(src_dir):
+    src_files = fs.listdir(src_dir)
+    # src_files will be empty if there are no tf savables (i.e., don't have any tf state to save).
+    # In this case, do not create empty dst_dirs.
+    if len(src_files):
+        fs.makedirs(dst_dir)
+    for item in src_files:
         src_file = os.path.join(src_dir, item)
         dst_file = os.path.join(dst_dir, item)
         assert not fs.isdir(src_file)
