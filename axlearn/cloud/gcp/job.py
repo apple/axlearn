@@ -357,6 +357,8 @@ class GKEJob(GCPJob):
                 Note: 1. Values need to be pre-defined in each cluster.
                       2. Job level priority is enforced by pod level priority of the leader pod.
                          This is managed by jobset controller.
+                      3. For TPU slice, this requires alpha.jobset.sigs.k8s.io/exclusive-topology
+                      4. [2024-11-11] Does not work on multi-slice TPU training yet.
             host_mounts: List of volumes from host to mount into the container.
                 See `HostMount` for details.
         """
