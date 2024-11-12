@@ -246,6 +246,7 @@ class TPUGKEJobTest(TestCase):
         service_account: Optional[str] = None,
         enable_pre_provisioner: Optional[bool] = None,
         host_mount_spec: Optional[list[str]] = None,
+        priority_class: Optional[str] = None,
     ):
         with mock_gcp_settings([job.__name__, bundler.__name__], self._mock_settings):
             fv = flags.FlagValues()
@@ -261,6 +262,7 @@ class TPUGKEJobTest(TestCase):
             cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             cfg.accelerator.instance_type = "tpu-v4-8"
             cfg.enable_pre_provisioner = enable_pre_provisioner
+            cfg.priority_class = priority_class
             yield cfg
 
     def test_mount_dataclass(self):
@@ -286,7 +288,12 @@ class TPUGKEJobTest(TestCase):
         enable_pre_provisioner=[None, False, True],
     )
     def test_instantiate(
-        self, reservation, service_account, enable_pre_provisioner, bundler_cls, wrap_bundler
+        self,
+        reservation,
+        service_account,
+        enable_pre_provisioner,
+        bundler_cls,
+        wrap_bundler,
     ):
         class WrappedBundler(Bundler):
             @config_class
@@ -352,6 +359,7 @@ class TPUGKEJobTest(TestCase):
         location_hint=["test-location-hint", None],
         enable_tpu_smart_repair=[True, False],
         host_mount_spec=[["name=host-mount,host_path=/tmp,mount_path=/host-tmp"], None],
+        priority_class=[None, "such-high-priority"],
     )
     def test_build_pod(
         self,
@@ -364,9 +372,12 @@ class TPUGKEJobTest(TestCase):
         location_hint: Optional[str] = None,
         enable_tpu_smart_repair: bool = False,
         host_mount_spec: Optional[list[str]] = None,
+        priority_class: Optional[str] = None,
     ):
         with mock.patch.dict("os.environ", env), self._job_config(
-            bundler_cls, host_mount_spec=host_mount_spec
+            bundler_cls,
+            host_mount_spec=host_mount_spec,
+            priority_class=priority_class,
         ) as cfg:
             gke_job: job.TPUGKEJob = cfg.set(
                 reservation=reservation,
@@ -538,6 +549,11 @@ class TPUGKEJobTest(TestCase):
                     annotations.get("tpu-provisioner.cloud.google.com/copy-labels", {}),
                 )
                 self.assertNotIn("cloud.google.com/gke-tpu-auto-restart", labels)
+
+            if priority_class is None:
+                self.assertNotIn("priorityClassName", pod_spec)
+            else:
+                self.assertEqual(pod_spec.get("priorityClassName", None), priority_class)
 
 
 class GPUGKEJobTest(TestCase):
