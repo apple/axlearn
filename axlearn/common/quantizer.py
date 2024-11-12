@@ -137,8 +137,27 @@ class BaseQuantizer(BaseLayer):
 
         Returns:
             BaseQuantizer.Output.
+            * ids: Tensor [..., num_codebooks].
+            * quantized_vectors: Tensor [..., num_codebooks, codebook_dim].
         """
         raise NotImplementedError(type(self))
+
+    def lookup(self, ids: Tensor) -> Output:
+        """Codebook look up with ids.
+
+        Args:
+            ids: integer tensor of shape [..., num_codebooks] with values
+                in range [0, codebook_size).
+
+        Returns:
+            BaseQuantizer.Output
+            * ids: Tensor [..., num_codebooks].
+            * quantized_vectors: Tensor [..., num_codebooks, codebook_dim].
+
+        Raises:
+            NotImplementedError: if ids.ndim > 11.
+        """
+        return _lookup(ids=ids, codebook=self.parameters["codebook"])
 
 
 def _lookup(*, ids: Tensor, codebook: Tensor) -> BaseQuantizer.Output:
@@ -235,8 +254,10 @@ def _apply_paddings(*, outputs: BaseQuantizer.Output, paddings: Tensor) -> BaseQ
     Returns:
         padded_outputs: BaseQuantizer.Output.
     """
+
     # ids are padded with -1.
-    ids = outputs.ids * (1 - paddings)[:, :, None] + (-1) * paddings[:, :, None]
+    ids_paddings = paddings[:, :, None].astype(outputs.ids.dtype)
+    ids = outputs.ids * (1 - ids_paddings) + (-1) * ids_paddings
     quantized_vectors = outputs.quantized_vectors * (1 - paddings)[:, :, None, None]
     return BaseQuantizer.Output(
         ids=ids,
@@ -618,16 +639,17 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
         ids = jnp.argmax(logits, axis=-1)
 
         if not self.is_training:
-            outputs = _lookup(ids=ids, codebook=self.parameters["codebook"])
+            outputs = self.lookup(ids=ids)
             outputs = _apply_paddings(outputs=outputs, paddings=paddings)
         else:
             # [batch_size, seq_len, 1].
-            mask = (1 - paddings)[:, :, None]
+            mask = (1 - paddings)[:, :, None].astype(ids.dtype)
             ids = ids * mask + (-1) * (1 - mask)
             # TODO(dhwang2): optimize memory by scan for long context training.
             # [batch_size, seq_len, num_codebooks, vocab_size].
             onehots = _ids_to_onehots(ids, codebook_size=cfg.codebook_size, dtype=inputs.dtype)
             # We need this to stop gradients on the padded frames.
+            mask = mask.astype(inputs.dtype)
             onehots = onehots * mask[:, :, :, None]
             # [batch_size, seq_len, num_codebooks, vocab_size].
             y_soft = jax.nn.softmax(logits, axis=-1)
