@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """FlashAttention layers."""
+
 from collections.abc import Sequence
 from typing import Optional
 
@@ -18,28 +19,13 @@ from axlearn.common.attention import (
     causal_mask,
     make_segment_mask,
 )
-from axlearn.common.base_layer import BaseLayer
-from axlearn.common.config import ConfigBase, config_class
+from axlearn.common.config import config_class
 from axlearn.common.flash_attention.utils import (
     MultiHeadAttentionImpl,
     flash_attention_implementation,
 )
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor, with_sharding_constraint
-
-
-def _check_bias_recursively(cfg: ConfigBase):
-    """Ensures that `cfg.bias` is set to False for all descendants."""
-
-    def visit_fn(_, value):
-        if isinstance(value, BaseLayer.Config) and getattr(value, "bias", False):
-            raise NotImplementedError("cfg.bias is not yet supported.")
-
-    def enter_fn(_, value, default_kv):
-        return None if isinstance(value, BaseLayer.Config) and "bias" in value else default_kv
-
-    cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
-    return cfg
 
 
 class FlashAttention(GroupedQueryAttention):
@@ -87,7 +73,6 @@ class FlashAttention(GroupedQueryAttention):
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        _check_bias_recursively(cfg)  # Bias not supported.
         if getattr(cfg, "atten_logit_cap", None) is not None:
             raise NotImplementedError("cfg.atten_logit_cap is not supported.")
         # TODO(kelvinzou): enable dropout for flash attention.
