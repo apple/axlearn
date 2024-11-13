@@ -1429,16 +1429,20 @@ class QKVLinearTest(TestCase):
                 self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
 
     @parameterized.parameters(
-        attention.QKVLinear,
-        attention.FusedQKVLinear,
-        attention.GroupedQKVLinear,
-        attention.FusedGroupedQKVLinear,
-        attention.RoFormerQKVLinear,
+        (attention.QKVLinear, 1),
+        (attention.FusedQKVLinear, 1),
+        (attention.GroupedQKVLinear, 1),
+        (attention.FusedGroupedQKVLinear, 1),
+        (attention.RoFormerQKVLinear, 1),
+        (attention.QKVLinear, 2),
+        (attention.FusedQKVLinear, 3),
+        (attention.GroupedQKVLinear, 4),
+        (attention.FusedGroupedQKVLinear, 3),
+        (attention.RoFormerQKVLinear, 2),
     )
-    def test_repeated_extend_step(self, layer_cls: type[attention.BaseQKVLinear]):
+    def test_repeated_extend_step(self, layer_cls: type[attention.BaseQKVLinear], stride):
         """Tests that calling QKVLinear.extend_step() multiple times with the
         same time_step results in the same output."""
-
         model_dim = 8
         num_heads = 2
         per_head_dim = model_dim // num_heads
@@ -1460,34 +1464,33 @@ class QKVLinearTest(TestCase):
         batch_size, tgt_len = 2, 4
         query = jax.random.uniform(jax.random.PRNGKey(0), [batch_size, tgt_len, model_dim])
 
-        extend_step_state, _ = F(
+        fwd_output, _ = F(
             layer,
             state=layer_state,
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
-            inputs=dict(target_batch_size=batch_size, target_max_len=tgt_len),
-            method="init_states",
+            inputs=dict(query=query),
         )
-        for t in range(tgt_len):
-            (first_call_state, first_call_output), _ = F(
+
+        cache_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
+        step_querys = []
+        step_keys = step_values = None
+        for t in range(0, tgt_len, stride):
+            (cache_state, step_output), _ = F(
                 layer,
                 state=layer_state,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(456),
-                inputs=dict(cached_states=extend_step_state, query=query[:, t : t + 1]),
+                inputs=dict(cached_states=cache_state, query=query[:, t : t + stride]),
                 method="extend_step",
             )
-            # Rewind the time_step.
-            first_call_state["time_step"] -= 1
-            (extend_step_state, second_call_output), _ = F(
-                layer,
-                state=layer_state,
-                is_training=False,
-                prng_key=jax.random.PRNGKey(456),
-                inputs=dict(cached_states=first_call_state, query=query[:, t : t + 1]),
-                method="extend_step",
-            )
-            self.assertNestedAllClose(first_call_output, second_call_output)
+            step_querys.append(step_output.query)
+            step_keys = step_output.key
+            step_values = step_output.value
+
+        self.assertNestedAllClose(fwd_output.query, jnp.concat(step_querys, axis=1))
+        self.assertNestedAllClose(fwd_output.key, step_keys)
+        self.assertNestedAllClose(fwd_output.value, step_values)
 
     @parameterized.parameters(jnp.float32, jnp.float16, jnp.bfloat16)
     def test_dtypes_inherited_from_parent(self, dtype: jnp.dtype):

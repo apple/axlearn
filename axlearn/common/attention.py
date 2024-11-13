@@ -724,6 +724,7 @@ class BaseQKVLinear(BaseLayer):
         dtype = cfg.cache_dtype or self.dtype()
         assert dtype is not None
 
+        # TODO(dhwang2): Use [BTNH], because our benchmark shows the current is slower.
         # Following T5X, we cache key, value as [batch, num_heads, head_dim, seq_len] to take
         # advantage of TPU optimizations (see `extend_step`).
         # Reference:
@@ -831,6 +832,8 @@ class BaseQKVLinear(BaseLayer):
             k_proj = k_proj * time_step_mask
             v_proj = v_proj * time_step_mask
 
+            # TODO(dhwang2): remove this unnecessary transpose, because our benchmark shows it
+            # slow down.
             # Following T5X, we cache key, value as [batch, num_heads, head_dim, seq_len] to take
             # advantage of TPU optimizations (see `extend_step`).
             # Reference:
@@ -861,8 +864,8 @@ class BaseQKVLinear(BaseLayer):
                 previous attentions, and index used for fast decoding. Contains "key" and "value" of
                 shape [batch, num_heads, per_head_dim, target_length], and a Tensor "time_step" of
                 shape [batch].
-            query: Tensor of shape [batch, 1, target_dim] corresponding to query vector at
-                "time_step" indices.
+            query: Tensor of shape [batch, steps, target_dim] corresponding to query vector starting
+                at "time_step" indices.
             key: An optional Tensor of shape [batch, source_length, source_dim]. If None, will use
                 `query`.
             value: An optional Tensor of shape [batch, source_length, source_dim]. If None, will
@@ -884,40 +887,42 @@ class BaseQKVLinear(BaseLayer):
             kv_kwargs = dict(kv_state=kv_state)
         else:
             kv_kwargs = dict(key=key, value=value)
-        # Project inputs to key, value and query. Each has shape [B, 1, N, H].
+        num_query_steps = query.shape[1]
+        # Project inputs to key, value and query. Each has shape [B, steps, N, H].
         q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, time_step=time_step)
-
-        updated_state = dict(time_step=time_step + 1)
+        updated_state = dict(time_step=time_step + num_query_steps)
         if kv_state is None:
-            # Move the length axis to the back. This allows us to update the cache key, value with
-            # the "scatter via one-hot broadcast" trick, rather than a scatter/gather operation.
-            # Profiling suggests moveaxis is competitive with tweaking einsum in `i_proj` -- it's
-            # also a bit simpler, so we keep it for now.
-            # [B, 1, N, H] --> [B, N, H, 1].
+            # TODO(dhwang2): remove this unnecessary transpose.
+            # [B, S, N, H] --> [B, N, H, S].
             k_proj = jnp.moveaxis(k_proj, -3, -1)
             v_proj = jnp.moveaxis(v_proj, -3, -1)
 
             # Update the cache via one-hot broadcast and addition.
             cached_key = cached_states["key"]
             cached_value = cached_states["value"]
-            target_len = cached_key.shape[-1]
-            oh_indices = jax.nn.one_hot(time_step, target_len, dtype=k_proj.dtype)
-            # [B, 1, 1, T] to broadcast.
-            oh_indices = oh_indices[:, None, None, :]
-            negated_oh_indices = (1 - oh_indices).astype(cached_key.dtype)
             # Ensure that we accumulate using the original dtype.
-            new_k_proj = (cached_key * negated_oh_indices) + (k_proj * oh_indices).astype(
-                cached_key.dtype
+            k_proj = k_proj.astype(cached_key.dtype)
+            v_proj = v_proj.astype(cached_value.dtype)
+
+            # Function to update the cached_key for a single batch element.
+            def update_single(cached_key_slice, k_proj_slice, time_idx):
+                start_indices = (0, 0, time_idx)
+                return jax.lax.dynamic_update_slice(cached_key_slice, k_proj_slice, start_indices)
+
+            # Use jax.vmap to vectorize over the batch dimension.
+            new_cached_key = jax.vmap(update_single, in_axes=(0, 0, 0))(
+                cached_key, k_proj, time_step
             )
-            new_v_proj = (cached_value * negated_oh_indices) + (v_proj * oh_indices).astype(
-                cached_value.dtype
+            new_cached_value = jax.vmap(update_single, in_axes=(0, 0, 0))(
+                cached_value, v_proj, time_step
             )
 
+            # TODO(dhwang2): remove this unnecessary transpose.
             # Move back to original [B, T, N, H] layout.
-            k_proj = jnp.moveaxis(new_k_proj, -1, -3)
-            v_proj = jnp.moveaxis(new_v_proj, -1, -3)
+            k_proj = jnp.moveaxis(new_cached_key, -1, -3)
+            v_proj = jnp.moveaxis(new_cached_value, -1, -3)
 
-            updated_state.update(key=new_k_proj, value=new_v_proj)
+            updated_state.update(key=new_cached_key, value=new_cached_value)
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
@@ -1391,8 +1396,9 @@ class RoFormerQKVLinear(BaseQKVLinear):
         else:
             # Time step shape is [batch_size]
             # The expected input shape for rope_pos_emb_layer is [batch_size, seq_len]
-            # Therefore, expanding the shape of time_step to [batch_size, 1]
-            time_step = jnp.expand_dims(time_step, 1)
+            # Therefore, expanding the shape of time_step to [batch_size, step].
+            step = query.shape[1]
+            time_step = jnp.arange(step)[None] + time_step[:, None]
         sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(time_step).astype(query.dtype)
         # sinusoidal_pos_emb shape should be [batch_size, seq_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(sinusoidal_pos_emb, 2)
