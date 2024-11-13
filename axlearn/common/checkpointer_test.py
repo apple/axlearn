@@ -112,7 +112,9 @@ class CheckpointerTest(test_utils.TestCase):
                 )
 
             # When the given state has a different array shape: [3] instead of [2] for y.
-            with self.assertRaisesRegex(ValueError, "checkpoint tree dtypes or shapes"):
+            with self.assertRaisesRegex(
+                ValueError, "(checkpoint tree dtypes or shapes|not compatible)"
+            ):
                 ckpt.restore(
                     step=None,
                     state=dict(
@@ -124,7 +126,7 @@ class CheckpointerTest(test_utils.TestCase):
             # Orbax throws AssertionError in this case.
             with self.assertRaisesRegex(
                 (AssertionError, ValueError),
-                "(checkpoint tree dtypes or shapes|do not match)",
+                "(checkpoint tree dtypes or shapes|not compatible)",
             ):
                 ckpt.restore(
                     step=None,
