@@ -57,6 +57,7 @@ from collections.abc import Sequence
 from enum import Enum, unique
 from typing import Any, Callable, Literal, NamedTuple, Optional, Protocol, Union
 
+import einops
 import jax
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
@@ -710,7 +711,7 @@ class BaseQKVLinear(BaseLayer):
 
     @property
     def num_kv_heads(self):
-        raise NotImplementedError(type(self))
+        return self.config.num_heads
 
     def init_states(
         self,
@@ -920,10 +921,6 @@ class QKVLinear(BaseQKVLinear):
             proj_cfg.per_head_dim = cfg.per_head_dim
             self._add_child(f"{name}_proj", proj_cfg)
 
-    @property
-    def num_kv_heads(self):
-        return self.config.num_heads
-
     def forward(
         self,
         query: Tensor,
@@ -994,10 +991,6 @@ class QLinear(BaseQKVLinear):
         proj_cfg.per_head_dim = cfg.per_head_dim
         self._add_child("q_proj", proj_cfg)
 
-    @property
-    def num_kv_heads(self):
-        raise NotImplementedError(type(self))
-
     def forward(
         self,
         query: Tensor,
@@ -1045,10 +1038,6 @@ class FusedQKVLinear(BaseQKVLinear):
         proj_cfg.num_heads = cfg.num_heads
         proj_cfg.per_head_dim = cfg.per_head_dim
         self._add_child("qkv_proj", proj_cfg)
-
-    @property
-    def num_kv_heads(self):
-        return self.config.num_heads
 
     def create_parameter_specs_recursively(self) -> NestedParameterSpec:
         specs = VDict(**super().create_parameter_specs_recursively())
@@ -1951,7 +1940,7 @@ class MultiheadAttention(BaseLayer):
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
         probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases)
         probs = self.dropout(probs)
-        context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
+        context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
         return context, probs
 
@@ -2007,9 +1996,30 @@ class MultiheadAttention(BaseLayer):
         return cap * jnp.tanh(logits / cap)
 
     def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
+        """Compute attention logits.
+
+        Args:
+            q_proj: query tensor, [batch, target_length, num_heads, per_head_dim].
+            k_proj: key tensor, [batch, source_length, num_heads, per_head_dim].
+
+        Returns:
+            logits: [batch, num_heads, target_length, source_length].
+        """
         q_proj = self.scale_query(q_proj)
         k_proj = self.scale_key(k_proj)
         return jnp.einsum("btnh,bsnh->bnts", q_proj, k_proj)
+
+    def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
+        """Compute attention context.
+
+        Args:
+            probs: probs tensor, [batch, num_heads, target_length, source_length].
+            v_proj: value tensor, [batch, source_length, num_heads, per_head_dim].
+
+        Returns:
+            context: [batch, target_length, num_heads, per_head_dim].
+        """
+        return jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
 
     def init_states(
         self,
@@ -2173,31 +2183,47 @@ class GroupedQueryAttention(MultiheadAttention):
     def num_kv_heads(self):
         return self.i_proj.num_kv_heads
 
-    def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
-        """Repeats key or value heads dim to match the query."""
-        num_head_repeats = self.config.num_heads // key_or_value.shape[-2]
-        if num_head_repeats == 1:
-            return key_or_value
-        # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
-        return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
+    def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
+        """Compute attention logits.
 
-    def _compute_attention(
-        self,
-        *,
-        q_proj: Tensor,
-        k_proj: Tensor,
-        v_proj: Tensor,
-        **kwargs,
-    ) -> tuple[Tensor, Tensor]:
-        """See `MultiheadAttention._compute_attention` for details."""
-        k_proj = self._repeat_kv_heads(k_proj)
-        v_proj = self._repeat_kv_heads(v_proj)
-        return super()._compute_attention(
-            q_proj=q_proj,
-            k_proj=k_proj,
-            v_proj=v_proj,
-            **kwargs,
-        )
+        Args:
+            q_proj: query tensor, [batch, target_length, num_heads, per_head_dim].
+            k_proj: key tensor, [batch, source_length, num_kv_heads, per_head_dim].
+
+        Returns:
+            logits: [batch, num_heads, target_length, source_length].
+        """
+        kv_heads = k_proj.shape[-2]
+        num_head_group = self.config.num_heads // kv_heads
+        if num_head_group == 1:
+            return super()._compute_logits(q_proj=q_proj, k_proj=k_proj)
+
+        q_proj = self.scale_query(q_proj)
+        k_proj = self.scale_key(k_proj)
+        q_proj = einops.rearrange(q_proj, "b t (g k) h -> b t g k h", g=num_head_group, k=kv_heads)
+        k_proj = einops.rearrange(k_proj, "b s k h -> b s 1 k h")
+        logits = jnp.einsum("btgkh,bs1kh->bgkts", q_proj, k_proj)
+        return einops.rearrange(logits, "b g k t s -> b (g k) t s")
+
+    def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
+        """Compute attention context.
+
+        Args:
+            probs: probs tensor, [batch, num_heads, target_length, source_length].
+            v_proj: value tensor, [batch, source_length, num_kv_heads, per_head_dim].
+
+        Returns:
+            context: [batch, target_length, num_heads, per_head_dim].
+        """
+        kv_heads = v_proj.shape[-2]
+        num_head_group = self.config.num_heads // kv_heads
+        if num_head_group == 1:
+            return super()._compute_context(probs=probs, v_proj=v_proj)
+
+        probs = einops.rearrange(probs, "b (g k) t s -> b g k t s", g=num_head_group, k=kv_heads)
+        v_proj = einops.rearrange(v_proj, "b s k h -> b s 1 k h")
+        context = jnp.einsum("bgkts,bs1kh->btgkh", probs, v_proj)
+        return einops.rearrange(context, "b t g k h -> b t (g k) h")
 
 
 class SigmoidAttention(MultiheadAttention):
@@ -2248,7 +2274,7 @@ class SigmoidAttention(MultiheadAttention):
         )
         probs = self.dropout(probs)
 
-        context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
+        context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
         return context, probs
 

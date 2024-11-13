@@ -146,6 +146,17 @@ class FlashAttention(GroupedQueryAttention):
                 spec = PartitionSpec(spec[0], None, *spec[2:])
         return spec
 
+    def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
+        """Repeats key or value heads dim to match the query.
+
+        TODO(dhwang2): optimize computation like GroupedQueryAttention.
+        """
+        num_head_repeats = self.config.num_heads // key_or_value.shape[-2]
+        if num_head_repeats == 1:
+            return key_or_value
+        # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
+        return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
+
     def _compute_attention(
         self,
         *,
