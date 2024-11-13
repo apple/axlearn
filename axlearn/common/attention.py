@@ -1885,17 +1885,13 @@ class MultiheadAttention(BaseLayer):
                     f"Invalid attention_logit_biases shape: {attention_logit_biases.shape}."
                 )
         if self._mask_fn is not None:
-            kv_len = k_proj.shape[1]
+            kv_pos = jnp.arange(k_proj.shape[1])[None, :]  # [1, source_len]
+            query_pos = jnp.arange(q_proj.shape[1])[None]  # [1, target_length]
             if mode == ForwardMode.EXTEND_STEP:
-                # query_len is unused because extend_step assumes query to be length 1.
-                query_len = None
-                time_step = cached_states["i_proj"]["time_step"]
-            else:
-                query_len = q_proj.shape[1]
-                time_step = None
-            mask = self._logit_biases_for_mask(
-                mode=mode, kv_len=kv_len, query_len=query_len, time_step=time_step
-            )
+                time_step = cached_states["i_proj"]["time_step"]  # [B]
+                # [B, target_length], target_length is often 1 for decoding, but not always.
+                query_pos = query_pos + time_step[:, None]
+            mask = self._logit_biases_for_mask(mode=mode, query_pos=query_pos, kv_pos=kv_pos)
             if mask is not None:
                 attention_logit_biases = apply_attention_logit_biases(
                     mask.astype(q_proj.dtype),
@@ -1924,12 +1920,7 @@ class MultiheadAttention(BaseLayer):
         return dict(i_proj=i_proj_state), output
 
     def _logit_biases_for_mask(
-        self,
-        *,
-        mode: ForwardMode,
-        kv_len: int,
-        query_len: Optional[int] = None,
-        time_step: Optional[Tensor] = None,
+        self, *, mode: ForwardMode, query_pos: Tensor, kv_pos: Tensor
     ) -> Optional[Tensor]:
         """Returns the configured attention mask in the form of logit biases.
 
@@ -1938,39 +1929,17 @@ class MultiheadAttention(BaseLayer):
         Args:
             mode: The forward propagation mode, chosen from
                 (ForwardMode.FORWARD, ForwardMode.INIT_STATES, ForwardMode.EXTEND_STEP).
-            kv_len: The sequence length. For (ForwardMode.INIT_STATES, ForwardMode.EXTEND_STEP),
-                this is equal to the KV cache size.
-            query_len: Only used for (ForwardMode.FORWARD, ForwardMode.INIT_STATES).
-                If set, this is the query length. Otherwise, it uses kv_len as the query length.
-                Must be None for ForwardMode.EXTEND_STEP.
-            time_step: Only used for (ForwardMode.EXTEND_STEP). A tensor of size [batch] denoting
-                the 0-indexed position of the current input token.
+            query_pos: The index in the sequence of query vectors, [1|batch, target_length].
+            kv_pos: The index in the sequence of kv vectors, [1|batch, source_length].
 
         Returns:
-            For (ForwardMode.FORWARD, ForwardMode.INIT_STATES), a logit bias tensor that can be
-                broadcast to [batch, num_heads, query_len, kv_len].
-
-            For ForwardMode.EXTEND_STEP, a logit bias tensor that can be broadcast to
-                [batch, num_heads, 1, kv_len].
+            A logit bias tensor [1|batch, 1, target_length, source_length].
         """
-        kv_pos = jnp.arange(kv_len)
-
-        if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
-            if time_step is not None:
-                raise ValueError(
-                    "FORWARD or INIT_STATES modes do not expect `time_step` as an argument."
-                )
-            query_pos = jnp.arange(kv_len if query_len is None else query_len)
-            mask = self._mask_fn(query_pos[:, None], kv_pos[None, :])[None, None]
-        elif mode == ForwardMode.EXTEND_STEP:
-            if query_len is not None:
-                raise ValueError("EXTEND_STEP mode does not expect `query_len` as an argument.")
-            # [batch, 1, 1, kv_len].
-            # Ex: for a causal mask, mask[b, :, :, kv_pos] = 0 if time_step[b] > kv_pos else 1.
-            mask = self._mask_fn(time_step[:, None], kv_pos[None, :])
-            mask = mask[:, None, None, :]
-        else:
-            raise ValueError(f"Unrecognized mode {mode}.")
+        del mode
+        kv_pos = kv_pos[:, None]  # [1|B, 1, source_len]
+        query_pos = query_pos[..., None]  # [1|B, target_len, 1]
+        # [1|B, 1, target_len, source_len]
+        mask = self._mask_fn(query_pos, kv_pos)[:, None]
         mask = bool_to_bias(mask)
         return mask
 

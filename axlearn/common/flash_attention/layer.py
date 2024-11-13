@@ -109,18 +109,13 @@ class FlashAttention(GroupedQueryAttention):
         )
 
     def _logit_biases_for_mask(
-        self,
-        *,
-        mode: ForwardMode,
-        kv_len: int,
-        query_len: Optional[int] = None,
-        time_step: Optional[Tensor] = None,
+        self, *, mode: ForwardMode, query_pos: Tensor, kv_pos: Tensor
     ) -> Optional[Tensor]:
         if self._mask_fn is None:
             return None
         elif mode == ForwardMode.EXTEND_STEP:
             # Use biases for decoding.
-            return super()._logit_biases_for_mask(mode=mode, kv_len=kv_len, time_step=time_step)
+            return super()._logit_biases_for_mask(mode=mode, query_pos=query_pos, kv_pos=kv_pos)
         elif self._is_mask_fn_used():
             # Biases are not needed in favor of mask_fn, which is supported in Splash Attention.
             return None
@@ -130,9 +125,7 @@ class FlashAttention(GroupedQueryAttention):
         else:
             # Fall back to biases. In the subsequent _compute_attention calls, _mask_fn should not
             # be used.
-            return super()._logit_biases_for_mask(
-                mode=mode, kv_len=kv_len, query_len=query_len, time_step=time_step
-            )
+            return super()._logit_biases_for_mask(mode=mode, query_pos=query_pos, kv_pos=kv_pos)
 
     def _backend(self):
         # For compatibility with AOT compilation, we obtain the backend type from physical_mesh.
