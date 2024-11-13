@@ -7,6 +7,7 @@ import difflib
 import enum
 import json
 import os.path
+import random
 import tempfile
 import threading
 import time
@@ -235,6 +236,11 @@ def maybe_restore_grain_savables(value_map: Nested[Any], *, dir: str) -> Nested[
         value.set_state(state)
 
     return value_map
+
+
+def _shuffle(*args, seed):
+    random.seed(seed)
+    return zip(random.shuffle(zip(*args)))
 
 
 # pylint: enable=redefined-builtin
@@ -507,9 +513,12 @@ class TensorStoreStateStorage(StateStorage):
         logging.debug(
             "array_values=%s tensorstore=%s", utils.shapes(spec.gda_values), spec.tensorstore_specs
         )
+        gda_values, tensorstore_specs = _shuffle(
+            spec.gda_values, spec.tensorstore_specs, seed=jax.process_index()
+        )
         self._manager.serialize(
-            spec.gda_values,
-            spec.tensorstore_specs,
+            gda_values,
+            tensorstore_specs,
             on_commit_callback=commit,
             additional_futures=[save_tf_future],
         )
@@ -537,13 +546,23 @@ class TensorStoreStateStorage(StateStorage):
             spec.grain_ckpt_map, dir=os.path.join(ckpt_dir, f"grain_{jax.process_index()}")
         )
 
+        tensorstore_specs, shardings, global_shapes, dtypes = _shuffle(
+            spec.tensorstore_specs,
+            spec.shardings,
+            spec.shapes,
+            spec.dtypes,
+            seed=jax.process_index(),
+        )
         restored_gda_values = self._manager.deserialize(
-            shardings=spec.shardings,
-            tensorstore_specs=spec.tensorstore_specs,
-            global_shapes=spec.shapes,
-            dtypes=spec.dtypes,
+            shardings=shardings,
+            tensorstore_specs=tensorstore_specs,
+            global_shapes=global_shapes,
+            dtypes=dtypes,
             concurrent_gb=self._max_concurrent_restore_gb,
         )
+        path_to_gda_value_map = {}
+        for spec, gda_value in zip(tensorstore_specs, restored_gda_values):
+            path_to_gda_value_map[spec.path] = gda_value
         state_leaves = []
         for path, value in spec.index:
             if path == "step":
@@ -553,7 +572,7 @@ class TensorStoreStateStorage(StateStorage):
             elif path in spec.grain_ckpt_map:
                 state_leaves.append(spec.grain_ckpt_map[path])
             elif isinstance(value, dict):
-                state_leaves.append(restored_gda_values.pop(0))
+                state_leaves.append(path_to_gda_value_map[path])
             else:
                 raise RuntimeError(f"Unknown index entry '{value}'")
 
