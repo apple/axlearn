@@ -364,10 +364,13 @@ class TensorStoreStateStorage(StateStorage):
             timeout_secs: Barrier timeout in seconds.
             max_data_shard_degree: Max sharding degree of model weights along data-parallel axis.
                 `None` and `1` means no sharding. `-1` means fully shard along data-parallel
-                replicas. `>1` means custom sharding degree (currently not implemented).
+                replicas. `>1` means custom sharding degree and should almost always be a power
+                of 2.
             max_concurrent_gb: Max concurrent shards (in GB) to write.
             max_concurrent_restore_gb: Max concurrent shards (in GB) to read during checkpoint
                 restore. `None` or `0` means using a default value of 32GB.
+            shard_threshold_bytes: Threshold for a array shard to be data-sharded. A value of None
+                or <= 0 means always data-shard according to max_data_shard_degree.
         """
 
         timeout_secs: float = 3600
@@ -375,6 +378,7 @@ class TensorStoreStateStorage(StateStorage):
         # TODO(hanzhi-zhou): rename this to max_concurrent_save_gb.
         max_concurrent_gb: Optional[int] = None
         max_concurrent_restore_gb: Optional[int] = None
+        shard_threshold_bytes: Optional[int] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -386,8 +390,14 @@ class TensorStoreStateStorage(StateStorage):
                 max_concurrent_gb=cfg.max_concurrent_gb,
                 timeout_secs=cfg.timeout_secs,
                 max_data_shard_degree=cfg.max_data_shard_degree,
+                shard_threshold_bytes=cfg.shard_threshold_bytes,
             )
         else:
+            if cfg.shard_threshold_bytes is not None:
+                raise ValueError(
+                    f"shard_threshold_bytes is set to {cfg.shard_threshold_bytes}, but "
+                    "max_data_shard_degree is not set. It will not take any effect."
+                )
             self._manager = GlobalAsyncCheckpointManager(timeout_secs=cfg.timeout_secs)
         if cfg.max_concurrent_restore_gb is not None and cfg.max_concurrent_restore_gb <= 0:
             raise ValueError(

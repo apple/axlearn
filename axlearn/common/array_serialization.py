@@ -72,7 +72,9 @@ def _num_replicas_per_shard(arr: Tensor) -> dict[tuple[_SliceTuple, ...], int]:
     return dict(replica_count)
 
 
-def _get_shard_infos(arr_inp: Tensor, *, max_data_shard_degree: int) -> list[_ShardInfo]:
+def _get_shard_infos(
+    arr_inp: Tensor, *, max_data_shard_degree: int, shard_threshold_bytes: int
+) -> list[_ShardInfo]:
     """Returns a list of _ShardInfo for addressable shards that need to be saved.
 
     If replica count for the shards are greater than 0, all replicas will save slices of the
@@ -84,11 +86,21 @@ def _get_shard_infos(arr_inp: Tensor, *, max_data_shard_degree: int) -> list[_Sh
     for shard in arr_inp.addressable_shards:
         replica_count = replica_count_map[_slices_to_tuple(shard.index)]
         assert replica_count > 0
+        shard_degree = (
+            min(replica_count, max_data_shard_degree)
+            if max_data_shard_degree > 0
+            else replica_count
+        )
+        should_skip = (
+            shard_degree == 1
+            or shard.data.nbytes < shard_threshold_bytes
+            or shard.replica_id >= shard_degree
+        )
         for axis, size in enumerate(shard.data.shape):
             # Find the first dim divisible by partial replication size.
-            if max_data_shard_degree == 1 or replica_count == 1 or size % replica_count != 0:
+            if should_skip or size % shard_degree != 0:
                 continue
-            part_size = size // replica_count
+            part_size = size // shard_degree
             slice_obj = shard.index[axis]
             assert slice_obj.step is None
             start_offset = shard.replica_id * part_size
@@ -103,7 +115,7 @@ def _get_shard_infos(arr_inp: Tensor, *, max_data_shard_degree: int) -> list[_Sh
                     + (slice(slice_start + start_offset, slice_start + end_offset),)
                     + shard.index[axis + 1 :],
                     (start_offset, end_offset, axis),
-                    replica_count,
+                    shard_degree,
                 )
             )
             break
@@ -181,7 +193,8 @@ async def _async_serialize(
     d2h_future: futures.Future,
     *,
     limiter: Optional[serialization._LimitInFlightBytes] = None,
-    max_data_shard_degree: Optional[int] = None,
+    max_data_shard_degree: int,
+    shard_threshold_bytes: int,
 ):
     """Similar to `serialization.async_serialize`, but limiting peak host memory usage and sharding
     along data-parallel axis.
@@ -195,7 +208,11 @@ async def _async_serialize(
     Reference:
     https://github.com/google/jax/blob/595a620804e810335a870e93975a78504b2e95e5/jax/experimental/array_serialization/serialization.py#L188
     """
-    shard_infos = _get_shard_infos(arr_inp, max_data_shard_degree=max_data_shard_degree)
+    shard_infos = _get_shard_infos(
+        arr_inp,
+        max_data_shard_degree=max_data_shard_degree,
+        shard_threshold_bytes=shard_threshold_bytes,
+    )
     if not shard_infos:
         d2h_future.set_result(shard_infos)
         return
@@ -261,7 +278,8 @@ async def _run_serializer(
     d2h_futures: list[futures.Future],
     *,
     max_concurrent_bytes: Optional[int] = None,
-    max_data_shard_degree: Optional[int] = None,
+    max_data_shard_degree: int,
+    shard_threshold_bytes: int,
 ):
     """Asynchronously serializes a list of tensors with _async_serialize."""
     # We add 1 because LimitInFlightBytes expects a limit strictly greater than any request.
@@ -274,7 +292,10 @@ async def _run_serializer(
     # pylint: enable=protected-access
     future_writer = jax.tree.map(
         functools.partial(
-            _async_serialize, limiter=limiter, max_data_shard_degree=max_data_shard_degree
+            _async_serialize,
+            limiter=limiter,
+            max_data_shard_degree=max_data_shard_degree,
+            shard_threshold_bytes=shard_threshold_bytes,
         ),
         arrays,
         tensorstore_specs,
@@ -385,7 +406,9 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
         max_concurrent_gb: Max concurrent shards (in GB) to write.
         max_data_shard_degree: Max sharding degree of model weights along data-parallel axis.
             `None` and `1` means no sharding. `-1` means fully shard along data-parallel
-            replicas. `>1` means custom sharding degree (currently not implemented).
+            replicas. `>1` means custom sharding degree and should almost always be a power of 2.
+        shard_threshold_bytes: Threshold for a array shard to be data-sharded. A value of None
+            or <= 0 means always data-shard according to max_data_shard_degree.
         timeout_secs: Barrier timeout in seconds.
     """
 
@@ -395,6 +418,7 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
         max_concurrent_gb: Optional[int] = None,
         timeout_secs: int = 300,
         max_data_shard_degree: Optional[int] = None,
+        shard_threshold_bytes: Optional[int] = None,
     ):
         super().__init__(timeout_secs)
         self._logged_spec = False
@@ -406,11 +430,10 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
                 raise ValueError("max_concurrent_gb must be strictly positive.")
             self._max_concurrent_bytes = int(max_concurrent_gb * 10**9)
 
-        self._max_data_shard_degree = max_data_shard_degree or 1
-        if self._max_data_shard_degree not in (1, -1):
-            raise NotImplementedError(
-                "max_data_shard_degree is not implemented for values other than 1 and -1"
-            )
+        self._max_data_shard_degree = 1 if max_data_shard_degree is None else max_data_shard_degree
+        if self._max_data_shard_degree == 0:
+            raise NotImplementedError("max_data_shard_degree cannot be 0.")
+        self._shard_threshold_bytes = shard_threshold_bytes or 0
 
     def serialize(
         self,
@@ -457,6 +480,7 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
                         d2h_futures,
                         max_concurrent_bytes=max_concurrent_bytes,
                         max_data_shard_degree=self._max_data_shard_degree,
+                        shard_threshold_bytes=self._shard_threshold_bytes,
                     )
                 )
             ]
