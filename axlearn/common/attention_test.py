@@ -2670,7 +2670,7 @@ class MultiheadAttentionTest(TestCase):
         self.assertTrue(jnp.all(time_step == initial_states["i_proj"]["time_step"]))
         for proj in ["key", "value"]:
             self.assertEqual(
-                (batch_size, num_kv_heads or num_heads, model_dim // num_heads, tgt_len),
+                (batch_size, tgt_len, num_kv_heads or num_heads, model_dim // num_heads),
                 initial_states["i_proj"][proj].shape,
             )
             self.assertEqual(
