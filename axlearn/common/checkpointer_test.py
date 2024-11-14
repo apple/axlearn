@@ -199,6 +199,77 @@ class CheckpointerTest(test_utils.TestCase):
                 self.assertEqual(step, restored_step)
                 self.assertNestedEqual(state, restored_state)
 
+    @parameterized.parameters(
+        # Number of files minus index and .zarray metadata.
+        dict(
+            max_data_shard_degree=None,
+            shard_threshold_bytes=None,
+            num_files=4,  # 2 ararys * 2 shards (2 model) per array.
+        ),
+        dict(
+            max_data_shard_degree=-1,
+            shard_threshold_bytes=None,
+            num_files=16,  # 2 ararys * 8 shards (2 model, 4 data) per array.
+        ),
+        dict(
+            max_data_shard_degree=2,
+            shard_threshold_bytes=None,
+            num_files=8,  # 2 ararys * 4 shards (2 model, 2 data) per array.
+        ),
+        dict(
+            max_data_shard_degree=2,
+            shard_threshold_bytes=1024,
+            num_files=6,  # 1 array 4 shards (2 model, 2 data) + 1 array 2 shards (small array).
+        ),
+    )
+    def test_save_restore_files_count(
+        self, max_data_shard_degree: int, shard_threshold_bytes: int, num_files: int
+    ):
+        # Tests the effect of max_data_shard_degree and shard_threshold_bytes on number of files.
+        mesh_shape = (4, 2)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+
+        cfg: Checkpointer.Config = _checkpointer_config(Checkpointer)
+        cfg.storage.max_data_shard_degree = max_data_shard_degree
+        cfg.storage.shard_threshold_bytes = shard_threshold_bytes
+        ckpt: Checkpointer = cfg.instantiate(parent=None)
+        state = dict(
+            x=jnp.zeros((1024, 1024), dtype=jnp.float32),
+            small_x=jnp.zeros((16, 16), dtype=jnp.float32),
+        )
+        step = 1
+
+        def count_files(directory):
+            file_count = 0
+            for _, _, files in os.walk(directory):
+                file_count += len(files)
+            return file_count
+
+        def state_specs(state):
+            return jax.tree.map(
+                lambda x: utils.TensorSpec(
+                    shape=x.shape,
+                    dtype=x.dtype,
+                    mesh_axes=jax.sharding.PartitionSpec(None, "model"),
+                ),
+                state,
+            )
+
+        with _mesh(mesh_shape) as mesh:
+            sharding = jax.sharding.NamedSharding(
+                mesh, spec=jax.sharding.PartitionSpec(None, "model")
+            )
+            state = jax.tree.map(lambda x: jax.device_put(x, device=sharding), state)
+            ckpt.save(step=step, state=state)
+            ckpt.wait_until_finished()
+
+            restored_step, restored_state = ckpt.restore(step=step, state=state_specs(state))
+            self.assertEqual(step, restored_step)
+            self.assertNestedEqual(state, restored_state)
+
+            self.assertEqual(count_files(ckpt.ckpt_dir(step)), num_files + 3)
+
     @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
     def test_save_and_restore_latest_valid(self, checkpointer_cls: Type[BaseCheckpointer]):
         mesh_shape = (1, 1)
@@ -936,11 +1007,30 @@ class CheckpointerTest(test_utils.TestCase):
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
-    @parameterized.product(max_concurrent_gb=[None, 1], max_data_shard_degree=[None, 1, -1])
-    def test_max_concurrent_gb(self, max_concurrent_gb: Optional[int], max_data_shard_degree: int):
+    @parameterized.product(
+        max_concurrent_gb=[None, 1],
+        max_data_shard_degree=[None, 1, -1],
+        shard_threshold_bytes=[None, 0, int(1024**3)],
+    )
+    def test_checkpointer_configs(
+        self,
+        max_concurrent_gb: Optional[int],
+        max_data_shard_degree: int,
+        shard_threshold_bytes: int,
+    ):
         cfg = TensorStoreStateStorage.default_config().set(
-            max_concurrent_gb=max_concurrent_gb, max_data_shard_degree=max_data_shard_degree
+            max_concurrent_gb=max_concurrent_gb,
+            max_data_shard_degree=max_data_shard_degree,
+            shard_threshold_bytes=shard_threshold_bytes,
         )
+        if (
+            not max_concurrent_gb
+            and not max_data_shard_degree
+            and shard_threshold_bytes is not None
+        ):
+            with self.assertRaises(ValueError):
+                storage = cfg.instantiate()
+            return
         storage = cfg.instantiate()
         if max_concurrent_gb is not None or max_data_shard_degree:
             self.assertIsInstance(storage._manager, BoundedDataShardedAsyncCheckpointManager)
