@@ -229,7 +229,7 @@ class WindowedAttention(MultiheadAttention):
             attention_logit_biases = attention_logit_biases[:, None, :, :]
         probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases)
         probs = self.dropout(probs)
-        context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
+        context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
         self.vlog(3, "atten.prob=%s", probs[0, 0, 0, :])
         self.vlog(3, "atten.context=%s", context.sum())
