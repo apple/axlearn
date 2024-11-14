@@ -145,7 +145,7 @@ mmau = [
 # Orbax checkpointing.
 orbax = [
     "humanize==4.10.0",
-    "orbax-checkpoint==0.5.23",
+    "orbax-checkpoint==0.9.1",
 ]
 # Grain input processing. Currently does not support macos.
 grain = [
