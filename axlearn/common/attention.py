@@ -724,21 +724,16 @@ class BaseQKVLinear(BaseLayer):
         dtype = cfg.cache_dtype or self.dtype()
         assert dtype is not None
 
-        # TODO(dhwang2): Use [BTNH], because our benchmark shows the current is slower.
-        # Following T5X, we cache key, value as [batch, num_heads, head_dim, seq_len] to take
-        # advantage of TPU optimizations (see `extend_step`).
-        # Reference:
-        # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
         cache = dict(time_step=jnp.zeros(target_batch_size, dtype=jnp.int32))
         # If `kv_state` is provided externally, we do not have to maintain key/value in cache.
         if kv_state is None:
             cache.update(
                 key=jnp.zeros(
-                    shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
+                    shape=(target_batch_size, target_max_len, self.num_kv_heads, cfg.per_head_dim),
                     dtype=dtype,
                 ),
                 value=jnp.zeros(
-                    shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
+                    shape=(target_batch_size, target_max_len, self.num_kv_heads, cfg.per_head_dim),
                     dtype=dtype,
                 ),
             )
@@ -831,17 +826,7 @@ class BaseQKVLinear(BaseLayer):
             time_step_mask = (jnp.arange(k_proj.shape[1]) < time_step[:, None])[..., None, None]
             k_proj = k_proj * time_step_mask
             v_proj = v_proj * time_step_mask
-
-            # TODO(dhwang2): remove this unnecessary transpose, because our benchmark shows it
-            # slow down.
-            # Following T5X, we cache key, value as [batch, num_heads, head_dim, seq_len] to take
-            # advantage of TPU optimizations (see `extend_step`).
-            # Reference:
-            # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
-            init_state.update(
-                key=jnp.moveaxis(k_proj, -3, -1).astype(dtype),
-                value=jnp.moveaxis(v_proj, -3, -1).astype(dtype),
-            )
+            init_state.update(key=k_proj.astype(dtype), value=v_proj.astype(dtype))
         return init_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
 
     def extend_step(
@@ -892,12 +877,7 @@ class BaseQKVLinear(BaseLayer):
         q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, time_step=time_step)
         updated_state = dict(time_step=time_step + num_query_steps)
         if kv_state is None:
-            # TODO(dhwang2): remove this unnecessary transpose.
-            # [B, S, N, H] --> [B, N, H, S].
-            k_proj = jnp.moveaxis(k_proj, -3, -1)
-            v_proj = jnp.moveaxis(v_proj, -3, -1)
-
-            # Update the cache via one-hot broadcast and addition.
+            # Update the cache via one-hot broadcast and addition. [B, S, N, H].
             cached_key = cached_states["key"]
             cached_value = cached_states["value"]
             # Ensure that we accumulate using the original dtype.
@@ -906,23 +886,13 @@ class BaseQKVLinear(BaseLayer):
 
             # Function to update the cached_key for a single batch element.
             def update_single(cached_key_slice, k_proj_slice, time_idx):
-                start_indices = (0, 0, time_idx)
+                start_indices = (time_idx, 0, 0)
                 return jax.lax.dynamic_update_slice(cached_key_slice, k_proj_slice, start_indices)
 
             # Use jax.vmap to vectorize over the batch dimension.
-            new_cached_key = jax.vmap(update_single, in_axes=(0, 0, 0))(
-                cached_key, k_proj, time_step
-            )
-            new_cached_value = jax.vmap(update_single, in_axes=(0, 0, 0))(
-                cached_value, v_proj, time_step
-            )
-
-            # TODO(dhwang2): remove this unnecessary transpose.
-            # Move back to original [B, T, N, H] layout.
-            k_proj = jnp.moveaxis(new_cached_key, -1, -3)
-            v_proj = jnp.moveaxis(new_cached_value, -1, -3)
-
-            updated_state.update(key=new_cached_key, value=new_cached_value)
+            k_proj = jax.vmap(update_single)(cached_key, k_proj, time_step)
+            v_proj = jax.vmap(update_single)(cached_value, v_proj, time_step)
+            updated_state.update(key=k_proj, value=v_proj)
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
