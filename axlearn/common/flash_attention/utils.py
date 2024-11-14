@@ -241,6 +241,8 @@ def flash_attention_implementation(
                 )
 
         elif backend == "tpu":
+            # TODO(dhwang2): splash attention supports GQA natively, so don't repeat it.
+            # https://github.com/jax-ml/jax/blob/7b9914d711593dca8725d46aa1dadb2194284519/jax/experimental/pallas/ops/tpu/splash_attention/splash_attention_kernel.py#L934
             key = _repeat_kv_heads(query.shape[2], key)
             value = _repeat_kv_heads(query.shape[2], value)
             # `mask` is supported.

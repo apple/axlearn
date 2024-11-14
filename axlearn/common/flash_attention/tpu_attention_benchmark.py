@@ -3,34 +3,28 @@
 """Benchmark TPU FlashAttention kernels.
 
 Sample outputs: (v5p)
+CMD: python \
+/opt/venv/lib/python3.10/site-packages/axlearn/common/flash_attention/tpu_attention_benchmark.py \
+2>&1 | grep -E "Benchmarking|ref_|HBM usage"
 
 Benchmarking attention representative of 1.2b model layer on TPU v5.
-ref_fwd:0.0008s, flash_fwd:0.0007s
-ref_bwd:0.0027s, flash_bwd:0.0026s
-
- Benchmarking attention representative of 12.6b model layer on TPU v5.
-ref_fwd:0.0012s, flash_fwd:0.0010s
-ref_bwd:0.0037s, flash_bwd:0.0026s
-
- Benchmarking attention representative of 29.6b model layer on TPU v5.
-ref_fwd:0.0017s, flash_fwd:0.0013s
-ref_bwd:0.0053s, flash_bwd:0.0034s
-
- Benchmarking attention representative of 65.2b model layer on TPU v5.
-ref_fwd:0.0021s, flash_fwd:0.0015s
-ref_bwd:0.0067s, flash_bwd:0.0042s
-
- Benchmarking attention representative of 134b model layer on TPU v5.
-ref_fwd:0.0024s, flash_fwd:0.0018s
-ref_bwd:0.0080s, flash_bwd:0.0050s
-
- Benchmarking attention representative of 261.7b model layer on TPU v5.
-ref_fwd:0.0027s, flash_fwd:0.0019s
-ref_bwd:0.0092s, flash_bwd:0.0056s
-
- Benchmarking attention representative of 539.5b model layer on TPU v5.
-ref_fwd:0.0034s, flash_fwd:0.0023s
-ref_bwd:0.0126s, flash_bwd:0.0070s
+ref_fwd:0.2291s, flash_fwd:0.0014s
+ref_bwd:0.0217s, flash_bwd:0.0058s
+Benchmarking attention representative of 12.6b model layer on TPU v5.
+ref_fwd:0.5699s, flash_fwd:0.0032s
+ref_bwd:0.0524s, flash_bwd:0.0152s
+Benchmarking attention representative of 29.6b model layer on TPU v5.
+ref_fwd:0.7957s, flash_fwd:0.0043s
+ref_bwd:0.0731s, flash_bwd:0.0204s
+Benchmarking attention representative of 65.2b model layer on TPU v5.
+ref_fwd:1.0225s, flash_fwd:0.0055s
+ref_bwd:0.0948s, flash_bwd:0.0262s
+Benchmarking attention representative of 134b model layer on TPU v5.
+ref_fwd:1.2485s, flash_fwd:0.0067s
+ref_bwd:0.1159s, flash_bwd:0.0313s
+Benchmarking attention representative of 261.7b model layer on TPU v5.
+ref_fwd:1.5577s, flash_fwd:0.0072s
+ref_bwd:0.1349s, flash_bwd:0.0373s
 """
 import time
 from typing import Callable, Optional
@@ -49,8 +43,8 @@ from axlearn.common.flash_attention.utils import flash_attention_implementation,
 
 _BENCHMARK_CONFIGS = {
     "1.2b": dict(
-        num_heads=32,
-        per_head_dim=64,
+        num_heads=16,
+        per_head_dim=128,
     ),
     "12.6b": dict(
         num_heads=40,
@@ -72,10 +66,11 @@ _BENCHMARK_CONFIGS = {
         num_heads=110,
         per_head_dim=128,
     ),
-    "539.5b": dict(
-        num_heads=140,
-        per_head_dim=128,
-    ),
+    # OOM in mha_reference.
+    # "539.5b": dict(
+    #     num_heads=140,
+    #     per_head_dim=128,
+    # ),
 }
 
 
@@ -167,7 +162,8 @@ if __name__ == "__main__":
         print(f"Benchmarking attention representative of {name} model layer on {device_kind}.")
         _benchmark(
             batch_size=2,
-            seq_len=2048,
+            seq_len=1024 * 8,
             block_size=4 * 128,
+            sliding_window_size=1024,
             **cfg,
         )
