@@ -31,6 +31,7 @@ from jax.experimental.pallas.ops.tpu.splash_attention import (
     splash_attention_mask,
 )
 
+from axlearn.common import attention, config
 from axlearn.common.attention import MaskFn, apply_attention_logit_biases, bool_to_bias, causal_mask
 from axlearn.common.utils import Tensor
 
@@ -42,9 +43,10 @@ def tpu_flash_attention(
     bias: Tensor = None,  # [batch_size, num_heads, source_len, target_len]
     segment_ids: Tensor = None,  # [batch_size, source_len]
     *,
-    mask: Optional[MaskFn] = None,
+    mask: config.ConfigOr[Optional[MaskFn]] = None,
     softmax_scale: float = 1.0,
     block_size: int = 128,
+    interpret: bool = False,
 ):
     """Wraps JAX's TPU flash-attention, with reshapes and softmax-scaling outside kernel.
 
@@ -66,6 +68,7 @@ def tpu_flash_attention(
         mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
         softmax_scale: A scaling factor applied to the query.
         block_size: The block size to use for chunking data in the kernel.
+        interpret: If True, interpret the kernel using the pallas interpreter. CPU needs it.
 
     Returns:
         The context tensor, of shape [batch_size, source_len, num_heads, head_dim].
@@ -97,6 +100,19 @@ def tpu_flash_attention(
     key = jnp.einsum("bsnh->bnsh", key)
     value = jnp.einsum("bsnh->bnsh", value)
     try:
+        if not check_tpu_splash_attention(
+            query=query,
+            key=key,
+            has_mask=bool(mask),
+            segment_ids=segment_ids,
+            has_bias=(bias is not None),
+        ):
+            raise SplashAttentionUnsupportedError(
+                f"SplashAttention does not support with arguments: {query.shape=}, {key.shape=}, "
+                f"{bool(mask)=}, {bool(segment_ids)=}, {bool(bias)=}."
+            )
+        mask_shape = (query.shape[2], key.shape[2])
+        mask_fn = to_splash_mask(mask, mask_shape=mask_shape)
         block_sizes = splash_attention_kernel.BlockSizes(
             block_q=block_size,
             block_kv=block_size,
@@ -110,10 +126,18 @@ def tpu_flash_attention(
             use_fused_bwd_kernel=True,
         )
         context = _tpu_splash_attention(
-            query, key, value, bias, segment_ids=segment_ids, mask=mask, block_sizes=block_sizes
+            query,
+            key,
+            value,
+            segment_ids=segment_ids,
+            mask=mask_fn,
+            block_sizes=block_sizes,
+            interpret=interpret,
         )
         logging.info("Using SplashAttention.")
     except SplashAttentionUnsupportedError as e:
+        if isinstance(mask, config.InstantiableConfig):
+            mask = mask.instantiate()
         # TODO(tom_gunter): See if we can do better block-size tuning.
         block_sizes = LegacyBlockSizes(
             block_q=block_size,
@@ -136,6 +160,7 @@ def tpu_flash_attention(
             segment_ids=segment_ids,
             mask=mask,
             block_sizes=block_sizes,
+            interpret=interpret,
         )
         logging.warning(
             "Falling back to legacy flash attention because SplashAttention is not supported.\n"
@@ -152,6 +177,7 @@ def tpu_flash_attention(
     static_argnames=[
         "mask",  # Mask objects don't actually contain jax arrays, so they are static.
         "block_sizes",
+        "interpret",
     ],
 )
 def _legacy_tpu_flash_attention(
@@ -163,6 +189,7 @@ def _legacy_tpu_flash_attention(
     *,
     mask: Optional[MaskFn] = None,
     block_sizes: Optional[LegacyBlockSizes] = None,
+    interpret: bool = False,
 ) -> Tensor:  # [batch_size, num_heads, source_len, head_dim].
     """Wraps JAX's legacy TPU flash-attention.
 
@@ -177,6 +204,7 @@ def _legacy_tpu_flash_attention(
         mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
         block_sizes: An object containing values that can be used to tune the performance
             such as the block size to chunk things into.
+        interpret: If True, interpret the kernel using the pallas interpreter. CPU needs it.
 
     Returns:
         The context tensor, of shape [batch_size, num_heads, source_len, head_dim].
@@ -203,6 +231,7 @@ def _legacy_tpu_flash_attention(
         sm_scale=1.0,
         block_sizes=block_sizes,
         debug=False,
+        interpret=interpret,
     )
 
     return context
@@ -212,22 +241,59 @@ class SplashAttentionUnsupportedError(NotImplementedError):
     """An error indicating splash attention is not supported."""
 
 
+def check_tpu_splash_attention(
+    *,
+    query: Tensor,  # [batch_size, num_heads, source_len, head_dim]
+    key: Tensor,  # [batch_size, num_heads, target_len, head_dim]
+    has_mask: bool,
+    segment_ids: Tensor = None,  # [batch_size, source_len]
+    has_bias: bool = False,
+) -> bool:
+    """Checks if splash attention is supported for the given arguments.
+
+    Args:
+        query: The query tensor, of shape [batch_size, num_heads, source_len, head_dim].
+        key: The key tensor, of shape [batch_size, num_heads, target_len, head_dim].
+        has_mask: bool, whether to have a mask.
+        segment_ids: The id of which segment each token belongs to. Attention is not computed
+            between tokens in different segments, [batch_size, source_len].
+        has_bias: bool, whether to have a bias.
+
+    Returns:
+        True if splash attention is supported, False otherwise.
+    """
+    source_len = query.shape[2]
+    target_len = key.shape[2]
+    head_dim = query.shape[3]
+    if has_bias:
+        return False
+    if head_dim % splash_attention_kernel.NUM_LANES != 0:
+        return False
+    if segment_ids is not None:
+        return False
+    # TODO(dhwang2): it's not necessary. We can handle the case by mask offset.
+    if source_len != target_len and has_mask:
+        return False
+    return True
+
+
 @functools.partial(
     jax.jit,
     static_argnames=[
         "mask",  # Mask objects don't actually contain jax arrays, so they are static.
         "block_sizes",
+        "interpret",
     ],
 )
 def _tpu_splash_attention(
     query: Tensor,  # [batch_size, num_heads, source_len, head_dim]
     key: Tensor,  # [batch_size, num_heads, target_len, head_dim]
     value: Tensor,  # [batch_size, num_heads, target_len, head_dim]
-    bias: Tensor = None,  # [batch_size, num_heads, source_len, target_len]
-    segment_ids: Tensor = None,  # [batch_size, source_len]
     *,
-    mask: Optional[MaskFn] = None,
+    mask: splash_attention_mask.Mask,
+    segment_ids: Tensor = None,  # [batch_size, source_len]
     block_sizes: Optional[splash_attention_kernel.BlockSizes] = None,
+    interpret: bool = False,
 ) -> Tensor:  # [batch_size, num_heads, source_len, head_dim].
     """Wraps JAX's sparse TPU flash-attention.
 
@@ -235,13 +301,13 @@ def _tpu_splash_attention(
         query: The query tensor, of shape [batch_size, num_heads, source_len, head_dim].
         key: The key tensor, of shape [batch_size, num_heads, target_len, head_dim].
         value: The value tensor, of shape [batch_size, num_heads, source_len, head_dim].
-        bias: The attention biases, of shape [batch_size, num_heads, source_len, target_len].
-        segment_ids: The id of which segment each token belongs to. Attention is not computed
-            between tokens in different segments.
-             Shape:  [batch_size, source_len].
+        bias: must be None.
         mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
+        segment_ids: The id of which segment each token belongs to. Attention is not computed
+            between tokens in different segments, [batch_size, source_len].
         block_sizes: An object containing values that can be used to tune the performance
             such as the block size to chunk things into.
+        interpret: If True, interpret the kernel using the pallas interpreter. CPU needs it.
 
     Returns:
         The context tensor, of shape [batch_size, num_heads, source_len, head_dim].
@@ -250,53 +316,53 @@ def _tpu_splash_attention(
         NotImplementedError: If a bias is also specified or the head_dim is not divisible by
             128.
     """
-
-    source_len = query.shape[2]
-    target_len = key.shape[2]
+    # TODO(dhwang2): splash attention can support segment_ids. Support it when needed.
+    del segment_ids
     num_heads = query.shape[1]
-    head_dim = query.shape[3]
-
-    if bias is not None:
-        raise SplashAttentionUnsupportedError("SplashAttention does not support specifying a bias.")
-    if head_dim % splash_attention_kernel.NUM_LANES != 0:
-        raise SplashAttentionUnsupportedError(
-            "SplashAttention requires "
-            f"head_dim=={splash_attention_kernel.NUM_LANES}, "
-            f"got {head_dim}."
-        )
-    if segment_ids is not None:
-        raise SplashAttentionUnsupportedError(
-            "The public API for SplashAttention that we "
-            "currently use does not support segment ids."
-        )
-    if source_len != target_len and mask is not None:
-        raise SplashAttentionUnsupportedError(
-            "Query and key/value must have same length when mask is used."
-        )
-
-    mask_shape = (source_len, target_len)
-    if mask is None:
-        mask = splash_attention_mask.FullMask(mask_shape)
-    else:
-        # Use fewer bytes for the mask.
-        rows = np.arange(source_len, dtype=np.int32)
-        cols = np.arange(target_len, dtype=np.int32)
-        with jax.ensure_compile_time_eval():
-            mask_array = np.asarray(mask(rows[:, None], cols[None, :]))
-
-        # NumpyMask is backed by a dense [source_len, target_len] numpy array.
-        # May consume a large amount of host memory for long sequences at compile time.
-        mask = splash_attention_mask.NumpyMask(array=mask_array)
 
     kernel = splash_attention_kernel.make_splash_mha(
         mask=splash_attention_mask.MultiHeadMask(masks=[mask] * num_heads),
         block_sizes=block_sizes,
+        # TODO(dhwang2): support "seq" and "model" shard.
         head_shards=1,
         q_seq_shards=1,
+        interpret=interpret,
     )
     kernel = jax.vmap(kernel)
     context = kernel(q=query, k=key, v=value)
     return context
+
+
+def to_splash_mask(
+    mask: config.ConfigOr[Optional[MaskFn]], *, mask_shape: tuple[int, int], q_seq_shards: int = 1
+) -> splash_attention_mask.Mask:
+    """Converts a mask to a splash mask."""
+    if mask is None:
+        return splash_attention_mask.FullMask(mask_shape)
+    if mask is causal_mask:
+        return splash_attention_mask.CausalMask(shape=mask_shape, shard_count=q_seq_shards)
+    if (
+        isinstance(mask, config.InstantiableConfig)
+        and mask.fn is attention.sliding_window_causal_mask
+    ):
+        window_size = (mask.sliding_window_size, 0)
+        return splash_attention_mask.LocalMask(
+            shape=mask_shape, window_size=window_size, offset=0, shard_count=q_seq_shards
+        )
+
+    # NumpyMask fallback. Note: It consumes O(T^2) memory.
+    cols = np.arange(mask_shape[1], dtype=np.int32)
+
+    # Use fewer bytes for the mask.
+    source_len, target_len = mask_shape
+    rows = np.arange(source_len, dtype=np.int32)
+    cols = np.arange(target_len, dtype=np.int32)
+    with jax.ensure_compile_time_eval():
+        mask_array = np.asarray(mask(rows[:, None], cols[None, :]))
+
+    # NumpyMask is backed by a dense [source_len, target_len] numpy array.
+    # May consume a large amount of host memory for long sequences at compile time.
+    return splash_attention_mask.NumpyMask(array=mask_array)
 
 
 # The following code is adapted from jax-ml/jax:
@@ -311,6 +377,7 @@ def _tpu_splash_attention(
         "sm_scale",
         "block_sizes",
         "debug",
+        "interpret",
     ],
 )
 def pallas_tpu_flash_attention(
@@ -324,6 +391,7 @@ def pallas_tpu_flash_attention(
     sm_scale: float = 1.0,
     block_sizes: Optional[LegacyBlockSizes] = None,
     debug: bool = False,
+    interpret: bool = False,
 ):
     batch_size, num_heads, q_seq_len, d_model = q.shape
     batch_size_k, num_heads_k, kv_seq_len, d_model_k = k.shape
@@ -372,10 +440,12 @@ def pallas_tpu_flash_attention(
         block_sizes = LegacyBlockSizes.get_default(
             batch_size, num_heads, q_seq_len, kv_seq_len, d_model
         )
-    return _flash_attention(q, k, v, ab, segment_ids, False, causal, sm_scale, block_sizes, debug)
+    return _flash_attention(
+        q, k, v, ab, segment_ids, False, causal, sm_scale, block_sizes, debug, interpret
+    )
 
 
-@functools.partial(jax.custom_vjp, nondiff_argnums=range(5, 10))
+@functools.partial(jax.custom_vjp, nondiff_argnums=range(5, 11))
 def _flash_attention(
     q,
     k,
@@ -387,6 +457,7 @@ def _flash_attention(
     sm_scale,
     block_sizes,
     debug,
+    interpret,
 ):
     return _flash_attention_impl(
         q,
@@ -402,6 +473,7 @@ def _flash_attention(
         block_sizes.block_k_major,
         block_sizes.block_k,
         debug,
+        interpret,
     )
 
 
@@ -416,10 +488,13 @@ def _flash_attention_fwd(
     sm_scale,
     block_sizes,
     debug,
+    interpret,
 ):
     if save_residuals:
         raise NotImplementedError("Higher-order AD not supported")
-    o, l, m = _flash_attention(q, k, v, ab, segment_ids, True, causal, sm_scale, block_sizes, debug)
+    o, l, m = _flash_attention(
+        q, k, v, ab, segment_ids, True, causal, sm_scale, block_sizes, debug, interpret
+    )
     return o, (q, k, v, ab, segment_ids, o, l, m)
 
 
@@ -429,6 +504,7 @@ def _flash_attention_bwd(
     sm_scale: float,
     block_sizes: LegacyBlockSizes,
     debug: bool,
+    interpret: bool,
     residuals,
     do,
 ):
@@ -463,6 +539,7 @@ def _flash_attention_bwd(
         causal=causal,
         mask_value=DEFAULT_MASK_VALUE,
         debug=debug,
+        interpret=interpret,
     )
 
     dq, ds = _flash_attention_bwd_dq(
@@ -482,6 +559,7 @@ def _flash_attention_bwd(
         causal=causal,
         mask_value=DEFAULT_MASK_VALUE,
         debug=debug,
+        interpret=interpret,
     )
     return dq, dk, dv, ds, None
 
@@ -503,6 +581,7 @@ def _flash_attention_impl(
     block_k_major,
     block_k,
     debug,
+    interpret,
 ):
     batch_size, num_heads, q_seq_len, head_dim = q.shape
     _, _, kv_seq_len, _ = k.shape
@@ -665,6 +744,7 @@ def _flash_attention_impl(
         ),
         out_shape=out_shape,
         debug=debug,
+        interpret=interpret,
         compiler_params=dict(
             mosaic=dict(
                 dimension_semantics=(
@@ -702,6 +782,7 @@ def _flash_attention_bwd_dkv(
     causal: bool = False,
     mask_value: float = DEFAULT_MASK_VALUE,
     debug: bool = False,
+    interpret: bool = False,
 ):
     batch_size, num_heads, q_seq_len, head_dim = q.shape
     _, _, kv_seq_len, _ = k.shape
@@ -868,6 +949,7 @@ def _flash_attention_bwd_dkv(
             ),
             out_shape=out_shapes,
             debug=debug,
+            interpret=interpret,
             compiler_params=dict(
                 mosaic=dict(
                     dimension_semantics=(
@@ -902,6 +984,7 @@ def _flash_attention_bwd_dq(
     causal: bool,
     mask_value: float,
     debug: bool,
+    interpret: bool,
 ):
     batch_size, num_heads, q_seq_len, head_dim = q.shape
     _, _, kv_seq_len, _ = k.shape
@@ -1059,6 +1142,7 @@ def _flash_attention_bwd_dq(
             ),
             out_shape=out_shapes,
             debug=debug,
+            interpret=interpret,
             compiler_params=dict(
                 mosaic=dict(
                     dimension_semantics=(

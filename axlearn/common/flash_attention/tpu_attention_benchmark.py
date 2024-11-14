@@ -38,6 +38,7 @@ from typing import Callable, Optional
 import jax
 import jax.numpy as jnp
 
+from axlearn.common import config
 from axlearn.common.attention import causal_mask, sliding_window_causal_mask
 from axlearn.common.flash_attention.utils import flash_attention_implementation, mha_reference
 
@@ -131,7 +132,9 @@ def _benchmark(
     if causal and sliding_window_size is None:
         mask = causal_mask
     elif causal:
-        mask = sliding_window_causal_mask(sliding_window_size)
+        mask = config.config_for_function(sliding_window_causal_mask).set(
+            sliding_window_size=sliding_window_size
+        )
 
     # Get fwd & bwd timing information when softmax scaling applied before calling the kernel.
     mha_impl = flash_attention_implementation(
