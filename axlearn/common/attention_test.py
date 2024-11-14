@@ -1440,7 +1440,7 @@ class QKVLinearTest(TestCase):
         (attention.FusedGroupedQKVLinear, 3),
         (attention.RoFormerQKVLinear, 2),
     )
-    def test_repeated_extend_step(self, layer_cls: type[attention.BaseQKVLinear], stride):
+    def test_repeated_extend_step(self, layer_cls: type[attention.BaseQKVLinear], extend_step_len):
         """Tests that calling QKVLinear.extend_step() multiple times with the
         same time_step results in the same output."""
         model_dim = 8
@@ -1475,13 +1475,13 @@ class QKVLinearTest(TestCase):
         cache_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
         step_querys = []
         step_keys = step_values = None
-        for t in range(0, tgt_len, stride):
+        for t in range(0, tgt_len, extend_step_len):
             (cache_state, step_output), _ = F(
                 layer,
                 state=layer_state,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(456),
-                inputs=dict(cached_states=cache_state, query=query[:, t : t + stride]),
+                inputs=dict(cached_states=cache_state, query=query[:, t : t + extend_step_len]),
                 method="extend_step",
             )
             step_querys.append(step_output.query)
@@ -2187,7 +2187,10 @@ class MultiheadAttentionTest(TestCase):
         layer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
-        inputs = dict(mode=ForwardMode.FORWARD, kv_len=3, query_len=2)
+        query_len, kv_len = 2, 3
+        query_pos = jnp.arange(query_len)[None]
+        kv_pos = jnp.arange(kv_len)[None]
+        inputs = dict(mode=ForwardMode.FORWARD, query_pos=query_pos, kv_pos=kv_pos)
         layer_outputs, _ = F(
             layer,
             state=layer_params,
@@ -2201,33 +2204,11 @@ class MultiheadAttentionTest(TestCase):
             bool_to_bias(jnp.array([[1, 0, 0], [1, 1, 0]], dtype=jnp.bool))[None, None],
         )
 
-        inputs = dict(mode=ForwardMode.FORWARD, kv_len=3, query_len=2, time_step=jnp.array([3, 4]))
-        with self.assertRaises(ValueError) as cm:
-            layer_outputs, _ = F(
-                layer,
-                state=layer_params,
-                is_training=True,
-                prng_key=jax.random.PRNGKey(456),
-                inputs=inputs,
-                method="_logit_biases_for_mask",
-            )
-        self.assertTrue(isinstance(cm.exception, ValueError))
-
-        inputs = dict(
-            mode=ForwardMode.EXTEND_STEP, kv_len=3, query_len=2, time_step=jnp.array([3, 4])
-        )
-        with self.assertRaises(ValueError) as cm:
-            F(
-                layer,
-                state=layer_params,
-                is_training=True,
-                prng_key=jax.random.PRNGKey(456),
-                inputs=inputs,
-                method="_logit_biases_for_mask",
-            )
-        self.assertTrue(isinstance(cm.exception, ValueError))
-
-        inputs = dict(mode=ForwardMode.EXTEND_STEP, kv_len=4, time_step=jnp.array([1, 2]))
+        time_step = jnp.array([1, 2])
+        query_pos = time_step[:, None]
+        kv_len = 4
+        kv_pos = jnp.arange(kv_len)[None]
+        inputs = dict(mode=ForwardMode.EXTEND_STEP, query_pos=query_pos, kv_pos=kv_pos)
         layer_outputs, _ = F(
             layer,
             state=layer_params,
@@ -2439,6 +2420,7 @@ class MultiheadAttentionTest(TestCase):
         num_heads: int,
         dtype: jnp.dtype,
         bias: bool,
+        extend_step_len: int,
     ):
         cfg = attention_cfg.set(
             query_dim=model_dim,
@@ -2502,18 +2484,16 @@ class MultiheadAttentionTest(TestCase):
             self.assertNotIn("key", initial_state["i_proj"])
             self.assertNotIn("value", initial_state["i_proj"])
         inputs = dict(cached_states=initial_state, kv_state=kv_state, return_aux=return_aux)
-        decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
-        decoder_probs = jnp.zeros(shape=[tgt_len, batch_size, num_heads, tgt_len])
-        for t in range(tgt_len):
-            inputs["query"] = jnp.expand_dims(query[:, t, :], axis=1)
+        decoder_output = []
+        decoder_probs = []
+        for t in range(0, tgt_len, extend_step_len):
+            inputs["query"] = query[:, t : t + extend_step_len, :]
             if key is not None:
-                inputs["key"] = jnp.expand_dims(key[:, t, :], axis=1)
+                inputs["key"] = key[:, t : t + extend_step_len, :]
             if value is not None:
-                inputs["value"] = jnp.expand_dims(value[:, t, :], axis=1)
-            inputs["attention_logit_biases"] = attention_logit_biases[
-                jnp.newaxis, jnp.newaxis, t, :
-            ]
-            extend_step_outputs, _ = F(
+                inputs["value"] = value[:, t : t + extend_step_len, :]
+            inputs["attention_logit_biases"] = attention_logit_biases[t : t + extend_step_len, :]
+            (cached_states, extend_step_outputs), _ = F(
                 layer,
                 state=layer_params,
                 is_training=False,
@@ -2521,25 +2501,13 @@ class MultiheadAttentionTest(TestCase):
                 inputs=inputs,
                 method="extend_step",
             )
-            inputs["cached_states"] = extend_step_outputs[0]
-            decoder_output = decoder_output.at[t].set(
-                jnp.squeeze(extend_step_outputs[1].data, axis=1)
-            )
-            decoder_probs = decoder_probs.at[t].set(
-                jnp.squeeze(extend_step_outputs[1].probs, axis=2)
-            )
-        decoder_out_transposed = jnp.transpose(decoder_output, [1, 0, 2])
-        decoder_probs_transposed = jnp.transpose(decoder_probs, [1, 2, 0, 3])
-        assert_allclose(
-            decoder_out_transposed,
-            forward_outputs.data,
-            atol=1e-6,
-        )
-        assert_allclose(
-            decoder_probs_transposed,
-            forward_outputs.probs,
-            atol=1e-6,
-        )
+            inputs["cached_states"] = cached_states
+            decoder_output.append(extend_step_outputs.data)
+            decoder_probs.append(extend_step_outputs.probs)
+        decoder_output = jnp.concatenate(decoder_output, axis=1)
+        decoder_probs = jnp.concatenate(decoder_probs, axis=2)
+        assert_allclose(decoder_output, forward_outputs.data, atol=1e-6)
+        assert_allclose(decoder_probs, forward_outputs.probs, atol=1e-6)
 
     @parameterized.product(
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
@@ -2547,6 +2515,7 @@ class MultiheadAttentionTest(TestCase):
         atten_logit_cap=(0.0, 20.0),
         bias=(True, False),
         input_linear=(QKVLinear, RoFormerQKVLinear, QLinear),
+        extend_step_len=(1, 4),
     )
     def test_extend_step(
         self,
@@ -2555,6 +2524,7 @@ class MultiheadAttentionTest(TestCase):
         atten_logit_cap: float,
         input_linear: attention.BaseQKVLinear,
         bias: bool,
+        extend_step_len: int,
     ):
         model_dim = 16
         num_heads = 4
@@ -2568,7 +2538,12 @@ class MultiheadAttentionTest(TestCase):
             input_linear=input_linear,
         )
         self._test_extend_step(
-            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+            cfg,
+            model_dim=model_dim,
+            num_heads=num_heads,
+            dtype=dtype,
+            bias=bias,
+            extend_step_len=extend_step_len,
         )
 
     @parameterized.product(
@@ -2578,6 +2553,7 @@ class MultiheadAttentionTest(TestCase):
         num_kv_heads=(1, 2, 4),
         input_linear=(attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear),
         bias=(True, False),
+        extend_step_len=(1, 4),
     )
     def test_gqa_extend_step(
         self,
@@ -2587,6 +2563,7 @@ class MultiheadAttentionTest(TestCase):
         num_kv_heads: int,
         input_linear: type[attention.BaseQKVLinear],
         bias: bool,
+        extend_step_len: int,
     ):
         model_dim = 16
         num_heads = 4
@@ -2596,7 +2573,12 @@ class MultiheadAttentionTest(TestCase):
             input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
         )
         self._test_extend_step(
-            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+            cfg,
+            model_dim=model_dim,
+            num_heads=num_heads,
+            dtype=dtype,
+            bias=bias,
+            extend_step_len=extend_step_len,
         )
 
     def _test_prefill_states(
