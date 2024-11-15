@@ -833,6 +833,15 @@ class BaseCheckpointer(Module):
 
         This is typically invoked after the training loop has exited.
         """
+        # When `wait_until_finished` encountered an error, it will raise an exception and cleanup
+        # that exception. This will trigger the context manager to exit. If we call `stop` again
+        # which will call `wait_until_finished`, the error is already thrown and it will pass the
+        # error check and got stuck at `blocking_key_value_get`. This causes the error throwing
+        # rank to stuck at `blocking_key_value_get` and other ranks stuck at `wait_for_barrier`.
+        # To prevent this problem and facilitate faster restart when there's an exception, we do
+        # not call `stop`.
+        if exc_type is not None:
+            return
         del exc_type, exc, traceback
         self.stop()
         # Note: returning None here lets the caller handle the exception, if any.
