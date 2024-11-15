@@ -968,9 +968,9 @@ class LayerTest(TestCase, tf.test.TestCase):
         (5, 1, "CAUSAL", 1, (4, 0)),
         (5, 2, "CAUSAL", 1, (3, 1)),
         (5, 3, "CAUSAL", 1, (2, 2)),
-        (5, 1, "CAUSAL", 2, (7, 1)),
-        (5, 2, "CAUSAL", 2, (5, 3)),
-        (5, 3, "CAUSAL", 2, (3, 5)),
+        (5, 1, "CAUSAL", 2, (8, 0)),
+        (5, 2, "CAUSAL", 2, (7, 1)),
+        (5, 3, "CAUSAL", 2, (6, 2)),
     )
     def test_conv_explicit_padding(
         self, window: int, stride: int, padding: ConvPaddingType, dilation: int, expected
@@ -1091,6 +1091,28 @@ class LayerTest(TestCase, tf.test.TestCase):
             paddings, window=window, stride=stride, conv_padding=ref_padding
         )
         self.assertAllEqual(out_paddings, ref_paddings)
+
+    @parameterized.parameters(
+        ("SAME", 1, [0, 0, 0, 0, 1, 1], [0, 0, 1]),
+        ("VALID", 1, [0, 0, 0, 0, 1, 1], [0]),
+        ("CAUSAL", 1, [0, 0, 0, 0, 1, 1], [0, 0, 1]),
+        ("SAME", 2, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1], [0, 0, 0, 0, 1]),
+        ("VALID", 2, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1], [0]),
+        ("CAUSAL", 2, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1], [0, 0, 0, 0, 1]),
+    )
+    def test_compute_conv_paddings_with_dilation(
+        self, padding: ConvPaddingType, dilation: int, paddings, expected
+    ):
+        """Tests compute_conv_paddings() as described in conv_explicit_padding()."""
+        window, stride = 5, 2
+        out_paddings = compute_conv_paddings(
+            jnp.array([paddings]),
+            window=window,
+            stride=stride,
+            conv_padding=padding,
+            dilation=dilation,
+        )[0]
+        self.assertAllEqual(out_paddings, expected)
 
     @parameterized.parameters(
         (5, "SAME", None, [0, 0, 0, 1, 1, 1]),
