@@ -376,6 +376,23 @@ def get_trainer_kwargs(
             ),
         )
     elif model_size == "70B":
+        remat_policy_70b = config_for_function(
+            jax_remat_policies.save_and_offload_only_these_names
+        ).set(
+            names_which_can_be_saved=[],
+            names_which_can_be_offloaded=[
+                "FlashAttention.q_proj",
+                "FlashAttention.k_proj",
+                "FlashAttention.v_proj",
+                "FlashAttention.o_proj",
+                # "FlashAttention.context",
+                # "TransformerFeedForwardLayer.activation",
+                # "TransformerFeedForwardLayer.linear2",
+                # "transformer_forward_data",
+            ],
+            offload_src="device",
+            offload_dst="pinned_host",
+        )
         if FLAGS.pdbs and FLAGS.slices and "v6e" in FLAGS.mesh_selector:
             system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[FLAGS.mesh_selector.replace("tpu-", "")]
             train_batch_size = int(FLAGS.pdbs) * system.chips_per_vm * system.vms_per_slice * int(FLAGS.slices)
@@ -415,7 +432,7 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        policy=offload_dots_saveable_policy,
+                                        policy=jax_remat_policies.dots_saveable,
                                     ),
                                 }
                             ),
@@ -440,7 +457,7 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        policy=jax_remat_policies.nothing_saveable,
+                                        policy=remat_policy_70b,
                                     ),
                                 }
                             ),

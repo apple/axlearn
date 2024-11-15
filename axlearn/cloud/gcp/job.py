@@ -833,7 +833,7 @@ class TPUGKEJob(GKEJob):
             **self._build_jobset(),
         )
         logging.info("Submitting JobSet body=%s api_kwargs=%s", custom_object, api_kwargs)
-        with open(f"jobset-{cfg.name}.yaml", "w") as f:
+        with open(f"jobsets/jobset-{cfg.name}.yaml", "w") as f:
             logging.info("Output jobset to yaml file...")
             import yaml
             yaml.dump(custom_object, f, default_flow_style=False)
