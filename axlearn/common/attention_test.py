@@ -2764,6 +2764,64 @@ class MultiheadAttentionTest(TestCase):
             bias=bias,
         )
 
+    def test_gqa_against_mha(self):
+        model_dim = 16
+        num_heads = 4
+        num_kv_heads = 2
+        ref_cfg = attention.MultiheadAttention.default_config().set(
+            name="mha",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+        )
+        ref_layer = ref_cfg.instantiate(parent=None)
+
+        test_cfg = attention.GroupedQueryAttention.default_config().set(
+            name="gqa",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            input_linear=attention.GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads),
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, data_key = jax.random.split(prng_key, num=3)
+        state = ref_layer.initialize_parameters_recursively(init_key)
+
+        batch, seq_len = 2, 10
+        per_head_dim = ref_layer.per_head_dim()
+        q = jax.random.uniform(data_key, (batch, seq_len, num_heads, per_head_dim))
+        k = jax.random.uniform(data_key, (batch, seq_len, num_kv_heads, per_head_dim))
+        v = jax.random.uniform(data_key, (batch, seq_len, num_kv_heads, per_head_dim))
+
+        (test_context, ref_probs), _ = F(
+            test_layer,
+            method="_compute_attention",
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+            inputs=dict(q_proj=q, k_proj=k, v_proj=v),
+        )
+
+        k = jnp.repeat(k, num_heads // num_kv_heads, axis=2)
+        v = jnp.repeat(v, num_heads // num_kv_heads, axis=2)
+
+        (ref_context, ref_probs), _ = F(
+            ref_layer,
+            method="_compute_attention",
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+            inputs=dict(q_proj=q, k_proj=k, v_proj=v),
+        )
+
+        assert_allclose(ref_context, test_context)
+        assert_allclose(ref_probs, ref_probs)
+
     def _scale_query_kwargs(
         self,
         *,

@@ -2200,10 +2200,10 @@ class GroupedQueryAttention(MultiheadAttention):
 
         q_proj = self.scale_query(q_proj)
         k_proj = self.scale_key(k_proj)
-        q_proj = einops.rearrange(q_proj, "b t (g k) h -> b t g k h", g=num_head_group, k=kv_heads)
-        k_proj = einops.rearrange(k_proj, "b s k h -> b s 1 k h")
-        logits = jnp.einsum("btgkh,bs1kh->bgkts", q_proj, k_proj)
-        return einops.rearrange(logits, "b g k t s -> b (g k) t s")
+        q_proj = einops.rearrange(q_proj, "b t (k g) h -> b t k g h", k=kv_heads, g=num_head_group)
+        k_proj = einops.rearrange(k_proj, "b s k h -> b s k 1 h")
+        logits = jnp.einsum("btkgh,bsk1h->bkgts", q_proj, k_proj)
+        return einops.rearrange(logits, "b k g t s -> b (k g) t s")
 
     def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
         """Compute attention context.
@@ -2220,10 +2220,10 @@ class GroupedQueryAttention(MultiheadAttention):
         if num_head_group == 1:
             return super()._compute_context(probs=probs, v_proj=v_proj)
 
-        probs = einops.rearrange(probs, "b (g k) t s -> b g k t s", g=num_head_group, k=kv_heads)
-        v_proj = einops.rearrange(v_proj, "b s k h -> b s 1 k h")
-        context = jnp.einsum("bgkts,bs1kh->btgkh", probs, v_proj)
-        return einops.rearrange(context, "b t g k h -> b t (g k) h")
+        probs = einops.rearrange(probs, "b (k g) t s -> b k g t s", k=kv_heads, g=num_head_group)
+        v_proj = einops.rearrange(v_proj, "b s k h -> b s k 1 h")
+        context = jnp.einsum("bkgts,bsk1h->btkgh", probs, v_proj)
+        return einops.rearrange(context, "b t k g h -> b t (k g) h")
 
 
 class SigmoidAttention(MultiheadAttention):
