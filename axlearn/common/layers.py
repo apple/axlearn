@@ -1216,17 +1216,7 @@ class Conv2DTranspose(BaseConv):
 
 
 class Conv2DWith1DPadding(Conv2D):
-    """The 2-D convolution with 1-D padding on the time axis.
-
-    Kernel weights have the HWIO layout and in the shape of (window[0], window[1], input_dim,
-    output_dim). Both inputs and outputs will be in the NHWC layout.
-
-    For audio inputs/outputs, we assume dims correspond to [batch_size, time, frequency, input_dim].
-    This layer also returns paddings along the time axis. If specifying `cfg.padding` as a tuple of
-    (leading, trailing) paddings, leading padding frames are treated as valid (i.e. not masked by
-    the output paddings) while trailing padding frames are invalid (i.e. masked by the output
-    paddings).
-    """
+    """The 2-D convolution with 1-D padding on the time axis."""
 
     @config_class
     class Config(Conv2D.Config):
@@ -1499,10 +1489,11 @@ class Conv1D(BaseConv):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
-        dilation = (cfg.rhs_dilation,) if cfg.rhs_dilation else None
+        dilation = cfg.rhs_dilation or 1
         conv_padding = conv_explicit_padding(
-            window=(cfg.window,), strides=(cfg.strides,), padding=cfg.padding, dilation=dilation
+            window=(cfg.window,), strides=(cfg.strides,), padding=cfg.padding, dilation=(dilation,)
         )
+        transpose_dilation = cfg.lhs_dilation or 1
         output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],
@@ -1510,12 +1501,67 @@ class Conv1D(BaseConv):
             dimension_numbers=("NWC", "WIO", "NWC"),
             padding=conv_padding,
             feature_group_count=cfg.num_input_dim_groups,
-            lhs_dilation=[cfg.lhs_dilation] if cfg.lhs_dilation is not None else None,
-            rhs_dilation=[cfg.rhs_dilation] if cfg.rhs_dilation is not None else None,
+            lhs_dilation=(transpose_dilation,),
+            rhs_dilation=(dilation,),
         )
         if cfg.bias:
             output += self.parameters["bias"]
         return output
+
+
+class Conv1DWithPadding(Conv1D):
+    """The 1-D convolution with 1-D padding on the time axis."""
+
+    @config_class
+    class Config(Conv1D.Config):
+        """Configures Conv1DWithPadding."""
+
+        # An optional integer in the range of [left_time_padding, window - right_time_padding)
+        # that specifies the anchor position within the convolution window that is used to
+        # determine output paddings. Specifically, the output token is valid iff the input token
+        # at the anchor position of the corresponding window is valid.
+        # If None, defaults to left time padding. See Conv2DWith1DPadding more details.
+        anchor: Optional[int] = None
+
+    # We add a kwargs "paddings" to the forward method.
+    # pylint: disable-next=arguments-differ
+    def forward(self, x: Tensor, *, paddings: Tensor) -> tuple[Tensor, Tensor]:
+        """Computes convolution outputs and paddings.
+
+        Args:
+            x: A Tensor of shape [batch_size, seq_len, frequency, input_dim].
+            paddings: 0/1 Tensor of shape [batch_size, seq_len].
+
+        Returns:
+            output: A Tensor of shape [batch_size, seq_len, frequency, output_dim].
+            paddings: 0/1 Tensor of shape [batch_size, seq_len].
+        """
+        cfg = self.config
+        chex.assert_rank(x, paddings.ndim + 1)
+        # Apply padding to the input.
+        x = x * (1 - paddings[..., None])
+
+        # Apply Conv1D.
+        output = super().forward(x)
+
+        # TODO(dhwang2): Implement Conv1DTranspose separately for lhs_dilation. It's problematic
+        # for lhs_dilation (Conv Transpose) and rhs_dilation (Dilated Convolution) to be part of
+        # the same class. Not only are they never used together, but their combined usage would
+        # result in undefined behavior. Additionally, the logic for handling explicit padding and
+        # paddings is fundamentally different between them, so supporting both in a single class
+        # makes the code error-prone.
+        # Compute paddings conv output.
+        output_paddings = compute_conv_paddings(
+            paddings,
+            window=cfg.window,
+            stride=cfg.strides,
+            conv_padding=cfg.padding,
+            dilation=cfg.rhs_dilation,
+            anchor=cfg.anchor,
+        )
+        # Apply padding to the outputs.
+        output = output * (1 - output_paddings[..., None])
+        return output, output_paddings
 
 
 class DepthwiseConv1D(BaseConv):
