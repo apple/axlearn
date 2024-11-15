@@ -49,12 +49,24 @@ def default_xla_options(
             # improved performance for v6e
             xla_tpu_scoped_vmem_limit_kib="98304",
             # maxtext xla flags
+            # xla_enable_async_all_reduce="true",
+            # CF_FOR_ALL_GATHER
             xla_tpu_enable_async_collective_fusion="true",
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
             xla_tpu_enable_async_collective_fusion_multiple_steps="true",
             xla_tpu_overlap_compute_collective_tc="true",
             xla_enable_async_all_gather="true",
-            xla_enable_async_all_reduce="true",
+            # sparsecore offloading AR
+            xla_sc_disable_megacore_partitioning="true",
+            # xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
+            # xla_tpu_enable_all_gather_offload_tracing="true",
+            xla_tpu_use_tc_device_shape_on_sc="true",
+            # xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
+            xla_sc_enable_instruction_fusion="false",
+            xla_sc_disjoint_spmem="false",
+            tpu_use_continuations="true",
+            xla_jf_crs_combiner_threshold_count="10",
+            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
             # Flag to enable some advanced scheduling features.
             xla_tpu_enable_all_experimental_scheduler_features="true",
             # Flag to enable memory tracking scheduling. The default AUTO only enables
@@ -103,6 +115,7 @@ def default_xla_options(
             # all reduce 
             #xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
         )
+        options["2a886c8_chip_config_name"] = "megachip_tccontrol" 
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
         options.update(
