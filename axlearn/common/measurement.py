@@ -46,13 +46,9 @@ class Recorder(Configurable):
 
         Attributes:
             name: Name of the recorder.
-            upload_dir: Directory to store metrics for the monitor.
-            upload_interval: Time interval (seconds) for monitoring uploads.
         """
 
         name: Required[str] = REQUIRED
-        upload_dir: Required[str] = REQUIRED
-        upload_interval: Required[int] = REQUIRED
 
     @classmethod
     def from_flags(cls, fv: Optional[flags.FlagValues]) -> "Recorder":

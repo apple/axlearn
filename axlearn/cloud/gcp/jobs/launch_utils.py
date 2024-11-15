@@ -5,6 +5,7 @@
 import collections
 import json
 import re
+import shlex
 from typing import Any, Optional, Protocol
 
 from absl import flags
@@ -253,3 +254,55 @@ def _k8s_jobset_state_from_jobs(
         else:
             states.append("PENDING")
     return states
+
+
+def _parse_resource_flags_from_command(command: str) -> flags.FlagValues:
+    """Infer resources flags from launch command.
+
+    It parses the resources flags from the command.
+
+    Args:
+        command: The launch command of a job.
+
+    Returns:
+        A flags.FlagValues containing the parsed resources flags.
+    """
+    commands = shlex.split(command)
+
+    fv = flags.FlagValues()
+    flags.DEFINE_string("instance_type", default=None, help="", flag_values=fv)
+    flags.DEFINE_integer("num_replicas", default=None, help="", flag_values=fv)
+    flags.DEFINE_boolean("enable_pre_provisioner", default=None, help="", flag_values=fv)
+    flags.DEFINE_alias("num_slices", "num_replicas", flag_values=fv)
+    flags.DEFINE_alias("tpu_type", "instance_type", flag_values=fv)
+    fv(commands, known_only=True)
+
+    return fv
+
+
+def validate_resource_flags(original_command: str, updated_command: str):
+    """Raise an exception if the resource flags are different
+    in the original and updated commands."""
+
+    original_parsed_flags = _parse_resource_flags_from_command(original_command)
+    updated_parsed_flags = _parse_resource_flags_from_command(updated_command)
+
+    original_instance_type = original_parsed_flags.instance_type or original_parsed_flags.tpu_type
+    updated_instance_type = updated_parsed_flags.instance_type or updated_parsed_flags.tpu_type
+
+    original_num_replicas = original_parsed_flags.num_replicas or original_parsed_flags.num_slices
+    updated_num_replicas = updated_parsed_flags.num_replicas or updated_parsed_flags.num_slices
+
+    original_pre_provisioner = original_parsed_flags.enable_pre_provisioner
+    updated_pre_provisioner = updated_parsed_flags.enable_pre_provisioner
+
+    if original_instance_type != updated_instance_type:
+        raise ValueError(f"Expected {original_instance_type=} to match {updated_instance_type=}.")
+
+    if original_num_replicas != updated_num_replicas:
+        raise ValueError(f"Expected {original_num_replicas=} to match {updated_num_replicas=}.")
+
+    if original_pre_provisioner != updated_pre_provisioner:
+        raise ValueError(
+            f"Expected {original_pre_provisioner=} to match {updated_pre_provisioner=}."
+        )

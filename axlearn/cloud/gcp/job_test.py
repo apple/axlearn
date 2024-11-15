@@ -27,6 +27,7 @@ from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bastion import (
     _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
+    BASTION_JOB_VERSION_ENV_VAR,
     deserialize_jobspec,
     new_jobspec,
     serialize_jobspec,
@@ -39,6 +40,7 @@ from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import (
     _MEMORY_REQUEST_PERCENTAGE,
+    BASTION_JOB_VERSION_LABEL,
     CPUJob,
     GCSFuseMount,
     HostMount,
@@ -244,6 +246,7 @@ class TPUGKEJobTest(TestCase):
         service_account: Optional[str] = None,
         enable_pre_provisioner: Optional[bool] = None,
         host_mount_spec: Optional[list[str]] = None,
+        priority_class: Optional[str] = None,
     ):
         with mock_gcp_settings([job.__name__, bundler.__name__], self._mock_settings):
             fv = flags.FlagValues()
@@ -259,6 +262,7 @@ class TPUGKEJobTest(TestCase):
             cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             cfg.accelerator.instance_type = "tpu-v4-8"
             cfg.enable_pre_provisioner = enable_pre_provisioner
+            cfg.priority_class = priority_class
             yield cfg
 
     def test_mount_dataclass(self):
@@ -284,7 +288,12 @@ class TPUGKEJobTest(TestCase):
         enable_pre_provisioner=[None, False, True],
     )
     def test_instantiate(
-        self, reservation, service_account, enable_pre_provisioner, bundler_cls, wrap_bundler
+        self,
+        reservation,
+        service_account,
+        enable_pre_provisioner,
+        bundler_cls,
+        wrap_bundler,
     ):
         class WrappedBundler(Bundler):
             @config_class
@@ -328,12 +337,13 @@ class TPUGKEJobTest(TestCase):
                 env={
                     "BASTION_TIER": "0",
                     _BASTION_SERIALIZED_JOBSPEC_ENV_VAR: _create_serialized_job_spec(1, "user-1"),
+                    BASTION_JOB_VERSION_ENV_VAR: "1",
                 },
                 reservation="test-reservation",
                 expect_reserved=True,
             ),
             dict(
-                env={"BASTION_TIER": "1"},
+                env={"BASTION_TIER": "1", BASTION_JOB_VERSION_ENV_VAR: "2"},
                 reservation="test-reservation",
                 expect_reserved=False,
             ),
@@ -349,6 +359,7 @@ class TPUGKEJobTest(TestCase):
         location_hint=["test-location-hint", None],
         enable_tpu_smart_repair=[True, False],
         host_mount_spec=[["name=host-mount,host_path=/tmp,mount_path=/host-tmp"], None],
+        priority_class=[None, "such-high-priority"],
     )
     def test_build_pod(
         self,
@@ -361,9 +372,12 @@ class TPUGKEJobTest(TestCase):
         location_hint: Optional[str] = None,
         enable_tpu_smart_repair: bool = False,
         host_mount_spec: Optional[list[str]] = None,
+        priority_class: Optional[str] = None,
     ):
         with mock.patch.dict("os.environ", env), self._job_config(
-            bundler_cls, host_mount_spec=host_mount_spec
+            bundler_cls,
+            host_mount_spec=host_mount_spec,
+            priority_class=priority_class,
         ) as cfg:
             gke_job: job.TPUGKEJob = cfg.set(
                 reservation=reservation,
@@ -420,6 +434,8 @@ class TPUGKEJobTest(TestCase):
                         break
                 else:
                     self.fail("host-mount not found!")
+
+            self.assertEqual(container["imagePullPolicy"], "Always")
 
             self.assertIn("limits", resources)
             tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
@@ -515,6 +531,12 @@ class TPUGKEJobTest(TestCase):
                 self.assertNotIn("job-priority", node_selector)
                 self.assertNotIn("user-id", labels)
 
+            if BASTION_JOB_VERSION_ENV_VAR in env:
+                job_version = env.get(BASTION_JOB_VERSION_ENV_VAR)
+                self.assertEqual(job_version, labels.get(BASTION_JOB_VERSION_LABEL, None))
+            else:
+                self.assertNotIn(BASTION_JOB_VERSION_LABEL, labels)
+
             if enable_tpu_smart_repair:
                 self.assertIn(
                     "cloud.google.com/gke-tpu-auto-restart",
@@ -527,6 +549,11 @@ class TPUGKEJobTest(TestCase):
                     annotations.get("tpu-provisioner.cloud.google.com/copy-labels", {}),
                 )
                 self.assertNotIn("cloud.google.com/gke-tpu-auto-restart", labels)
+
+            if priority_class is None:
+                self.assertNotIn("priorityClassName", pod_spec)
+            else:
+                self.assertEqual(pod_spec.get("priorityClassName", None), priority_class)
 
 
 class GPUGKEJobTest(TestCase):

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """FlashAttention layers."""
+
 from collections.abc import Sequence
 from typing import Optional
 
@@ -18,28 +19,13 @@ from axlearn.common.attention import (
     causal_mask,
     make_segment_mask,
 )
-from axlearn.common.base_layer import BaseLayer
-from axlearn.common.config import ConfigBase, config_class
+from axlearn.common.config import config_class
 from axlearn.common.flash_attention.utils import (
     MultiHeadAttentionImpl,
     flash_attention_implementation,
 )
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor, with_sharding_constraint
-
-
-def _check_bias_recursively(cfg: ConfigBase):
-    """Ensures that `cfg.bias` is set to False for all descendants."""
-
-    def visit_fn(_, value):
-        if isinstance(value, BaseLayer.Config) and getattr(value, "bias", False):
-            raise NotImplementedError("cfg.bias is not yet supported.")
-
-    def enter_fn(_, value, default_kv):
-        return None if isinstance(value, BaseLayer.Config) and "bias" in value else default_kv
-
-    cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
-    return cfg
 
 
 class FlashAttention(GroupedQueryAttention):
@@ -87,7 +73,6 @@ class FlashAttention(GroupedQueryAttention):
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        _check_bias_recursively(cfg)  # Bias not supported.
         if getattr(cfg, "atten_logit_cap", None) is not None:
             raise NotImplementedError("cfg.atten_logit_cap is not supported.")
         # TODO(kelvinzou): enable dropout for flash attention.
@@ -124,18 +109,13 @@ class FlashAttention(GroupedQueryAttention):
         )
 
     def _logit_biases_for_mask(
-        self,
-        *,
-        mode: ForwardMode,
-        kv_len: int,
-        query_len: Optional[int] = None,
-        time_step: Optional[Tensor] = None,
+        self, *, mode: ForwardMode, query_pos: Tensor, kv_pos: Tensor
     ) -> Optional[Tensor]:
         if self._mask_fn is None:
             return None
         elif mode == ForwardMode.EXTEND_STEP:
             # Use biases for decoding.
-            return super()._logit_biases_for_mask(mode=mode, kv_len=kv_len, time_step=time_step)
+            return super()._logit_biases_for_mask(mode=mode, query_pos=query_pos, kv_pos=kv_pos)
         elif self._is_mask_fn_used():
             # Biases are not needed in favor of mask_fn, which is supported in Splash Attention.
             return None
@@ -145,9 +125,7 @@ class FlashAttention(GroupedQueryAttention):
         else:
             # Fall back to biases. In the subsequent _compute_attention calls, _mask_fn should not
             # be used.
-            return super()._logit_biases_for_mask(
-                mode=mode, kv_len=kv_len, query_len=query_len, time_step=time_step
-            )
+            return super()._logit_biases_for_mask(mode=mode, query_pos=query_pos, kv_pos=kv_pos)
 
     def _backend(self):
         # For compatibility with AOT compilation, we obtain the backend type from physical_mesh.
@@ -167,6 +145,17 @@ class FlashAttention(GroupedQueryAttention):
             if attention_logit_biases.shape[1] == 1:
                 spec = PartitionSpec(spec[0], None, *spec[2:])
         return spec
+
+    def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
+        """Repeats key or value heads dim to match the query.
+
+        TODO(dhwang2): optimize computation like GroupedQueryAttention.
+        """
+        num_head_repeats = self.config.num_heads // key_or_value.shape[-2]
+        if num_head_repeats == 1:
+            return key_or_value
+        # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
+        return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
 
     def _compute_attention(
         self,

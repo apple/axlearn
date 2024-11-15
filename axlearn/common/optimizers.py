@@ -544,11 +544,13 @@ def add_decayed_weights(
             lr_scale = lr**learning_rate_exponent
 
         param_scales = _weight_decay_scales(params, per_param_scale=per_param_scale)
+        f = lambda g, p, s: g + weight_decay * lr_scale * p.value * s
         updates = jax.tree.map(
-            lambda g, p, s: g + weight_decay * lr_scale * p.value * s,
+            lambda x, y, z: None if x is None else f(x, y, z),
             updates,
             params,
             param_scales,
+            is_leaf=lambda x: x is None,
         )
         if learning_rate_exponent is None:
             updated_state = state
@@ -1882,9 +1884,10 @@ def adastar_optimizer(
         # First compute raw updates.
         raw_updates, pps_tree = _split_update_results(
             jax.tree.map(
-                lambda g, s: _raw_updates(grad=g, pps=s),
+                lambda g, s: None if g is None else _raw_updates(grad=g, pps=s),
                 grads,
                 state.pps,
+                is_leaf=lambda x: x is None,
             )
         )
         # Clip raw updates if necessary.
@@ -1966,7 +1969,12 @@ def adastar_optimizer(
                 context.add_summary("weight_decay_rate", weight_decay * schedule_scale)
             return -schedule_scale * updates_with_wd
 
-        updates2 = jax.tree.map(lambda u, p: _update2(u, param=p), updates, params)
+        updates2 = jax.tree.map(
+            lambda u, p: None if u is None else _update2(u, param=p),
+            updates,
+            params,
+            is_leaf=lambda x: x is None,
+        )
         return updates2, optax.safe_int32_increment(step)
 
     # Stage 1.

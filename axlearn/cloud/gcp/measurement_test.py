@@ -60,7 +60,7 @@ class GoodputRecorderTest(parameterized.TestCase):
         fv.mark_as_parsed()
 
         recorder = GoodputRecorder.from_flags(fv)
-        recorder._monitor = None  # Ensure _monitor is initially None
+        self.assertIsNone(recorder._monitor)  # Ensure _monitor is initially None
 
         with mock.patch("ml_goodput_measurement.monitoring.GoodputMonitor") as mock_goodput_monitor:
             mock_monitor_instance = mock_goodput_monitor.return_value

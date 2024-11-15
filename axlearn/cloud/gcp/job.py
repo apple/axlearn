@@ -22,7 +22,11 @@ import kubernetes as k8s
 from absl import flags
 from google.auth.credentials import Credentials
 
-from axlearn.cloud.common.bastion import _BASTION_SERIALIZED_JOBSPEC_ENV_VAR, deserialize_jobspec
+from axlearn.cloud.common.bastion import (
+    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
+    BASTION_JOB_VERSION_ENV_VAR,
+    deserialize_jobspec,
+)
 from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import parse_kv_flags, subprocess_run
@@ -51,6 +55,9 @@ from axlearn.common.utils import Nested
 
 # Set 80% of the max value as the requested memory.
 _MEMORY_REQUEST_PERCENTAGE = 0.8
+
+# A label added to the jobset to indicate job version.
+BASTION_JOB_VERSION_LABEL = "bastion-job-version"
 
 
 class GCPJob(Job):
@@ -345,6 +352,13 @@ class GKEJob(GCPJob):
                 Each host's output will be placed in `"{output_dir}/output/$HOSTNAME/"`.
                 This directory is used by the sidecar container to sync outputs to GCS using gsutil.
                 Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
+            priority_class: Optional; The GKE PriorityClass for the job.
+                https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption
+                Note: 1. Values need to be pre-defined in each cluster.
+                      2. Job level priority is enforced by pod level priority of the leader pod.
+                         This is managed by jobset controller.
+                      3. For TPU slice, this requires alpha.jobset.sigs.k8s.io/exclusive-topology
+                      4. [2024-11-11] Does not work on multi-slice TPU training yet.
             host_mounts: List of volumes from host to mount into the container.
                 See `HostMount` for details.
         """
@@ -356,6 +370,7 @@ class GKEJob(GCPJob):
         enable_pre_provisioner: Optional[bool] = None
         queue: Optional[str] = None
         output_dir: Optional[str] = None
+        priority_class: Optional[str] = None
         host_mounts: Optional[list[HostMount]] = None
 
     @classmethod
@@ -552,6 +567,7 @@ class TPUGKEJob(GKEJob):
             # Env var values should always be strings.
             env=k8s_env_vars,
             volumeMounts=volume_mounts,
+            imagePullPolicy="Always",
         )
 
     def _build_uploader_container(self) -> Nested[Any]:
@@ -696,6 +712,9 @@ class TPUGKEJob(GKEJob):
                 }
             )
 
+        if os.environ.get(BASTION_JOB_VERSION_ENV_VAR):
+            labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
+
         if os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
             spec = deserialize_jobspec(
                 io.StringIO(os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR))
@@ -728,24 +747,29 @@ class TPUGKEJob(GKEJob):
                 }
             )
 
+        spec = dict(
+            # NOTE: Don't set hostNetwork or dnsPolicy for compat with Workload Identity.
+            terminationGracePeriodSeconds=60,
+            # Fail if any pod fails, and allow retries to happen at JobSet level.
+            restartPolicy="Never",
+            nodeSelector={
+                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
+                "cloud.google.com/gke-tpu-topology": system.topology,
+                **selector,
+            },
+            tolerations=tolerations,
+            containers=[self._build_container()],
+            initContainers=[self._build_uploader_container()],
+            serviceAccountName=cfg.service_account,
+            volumes=volumes,
+        )
+
+        if cfg.priority_class:
+            spec["priorityClassName"] = cfg.priority_class
+
         return dict(
             metadata=dict(annotations=annotations, labels=labels),
-            spec=dict(
-                # NOTE: Don't set hostNetwork or dnsPolicy for compat with Workload Identity.
-                terminationGracePeriodSeconds=60,
-                # Fail if any pod fails, and allow retries to happen at JobSet level.
-                restartPolicy="Never",
-                nodeSelector={
-                    "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                    "cloud.google.com/gke-tpu-topology": system.topology,
-                    **selector,
-                },
-                tolerations=tolerations,
-                containers=[self._build_container()],
-                initContainers=[self._build_uploader_container()],
-                serviceAccountName=cfg.service_account,
-                volumes=volumes,
-            ),
+            spec=spec,
         )
 
     def _build_job(self) -> Nested[Any]:

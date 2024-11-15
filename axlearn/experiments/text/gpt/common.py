@@ -466,6 +466,7 @@ def mixture_train_input_source(
     max_sequence_length: int,
     replace_newlines_with: str = REPLACE_NEWLINES_WITH,
     fake_input_source_cfg: Optional[InstantiableConfig] = None,
+    autotune_ram_budget_gb: Optional[int] = None,
 ) -> input_tf_data.BuildDatasetFn:
     """Build mixture training input source for decoder-only LM model.
 
@@ -483,6 +484,9 @@ def mixture_train_input_source(
         replace_newlines_with: Value to replace newlines with in the text.
         fake_input_source_cfg: A config that instantiates to a BuildDatasetFn for the input source
             used during unittest.
+        autotune_ram_budget_gb: The memory budget (in GiB) the tensorflow datasets optimization
+            pipeline will target. Typically configure as 50%-75% of available memory.
+            If None, uses tensorflow defaults.
 
     Returns:
         A BuildDatasetFn that mixes the given list of DataMixtureComponent(s).
@@ -535,6 +539,7 @@ def mixture_train_input_source(
         sources=sources,
         weights=weights,
         is_training=is_training,
+        autotune_ram_budget_gb=autotune_ram_budget_gb,
     )
 
 

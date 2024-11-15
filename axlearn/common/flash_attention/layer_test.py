@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests FlashAttention layers."""
+
 import math
 import os
 from unittest import mock
@@ -82,7 +83,14 @@ def _fake_inputs(
 
 
 def _prepare_layers(
-    *, num_heads, per_head_dim, mesh_axis_names, causal, sliding_window_size, inference=False
+    *,
+    num_heads,
+    per_head_dim,
+    mesh_axis_names,
+    causal,
+    sliding_window_size,
+    inference=False,
+    set_layer_bias_recursively=False,
 ):
     hidden_dim = num_heads * per_head_dim
     kwargs = dict(
@@ -118,8 +126,8 @@ def _prepare_layers(
         ref_cfg.set(causal=causal)
         test_cfg.set(causal=causal)
 
-    set_bias_recursively(ref_cfg, False)
-    set_bias_recursively(test_cfg, False)
+    set_bias_recursively(ref_cfg, set_layer_bias_recursively)
+    set_bias_recursively(test_cfg, set_layer_bias_recursively)
 
     ref_layer = ref_cfg.set(name="ref").instantiate(parent=None)
     test_layer = test_cfg.set(name="test").instantiate(parent=None)
@@ -406,6 +414,7 @@ class TestFlashAttention(TestCase):
             )
             # TODO(markblee): Test probs.
             self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
+        jax.clear_backends()
 
     @parameterized.product(
         _TEST_CONFIGS,
@@ -414,6 +423,7 @@ class TestFlashAttention(TestCase):
         sliding_window_size=[None, 4],
         use_bias=[False, True],
         use_segment_ids=[False, True],
+        set_layer_bias_recursively=[False, True],
     )
     def test_backward(
         self,
@@ -428,12 +438,12 @@ class TestFlashAttention(TestCase):
         sliding_window_size,
         use_bias,
         use_segment_ids,
+        set_layer_bias_recursively,
     ):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
         if use_segment_ids and query_len_multiplier != 1:
             pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
-
         if not causal and sliding_window_size is not None:
             pytest.skip(reason="Sliding window attention must be causal.")
 
@@ -490,17 +500,17 @@ class TestFlashAttention(TestCase):
                 layer=GroupedQueryAttention.default_config().set(**kwargs),
             )
             test_cfg = DummyModel.default_config().set(
-                layer=FlashAttention.default_config()
-                .set(**kwargs, tpu_block_size=128)
-                .set(
+                layer=FlashAttention.default_config().set(
+                    tpu_block_size=128,
                     mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(mesh_axis_names),
                     output_dim_to_partition_spec=default_output_dim_to_partition_spec(
                         mesh_axis_names
                     ),
+                    **kwargs,
                 )
             )
-            set_bias_recursively(ref_cfg, False)
-            set_bias_recursively(test_cfg, False)
+            set_bias_recursively(ref_cfg, set_layer_bias_recursively)
+            set_bias_recursively(test_cfg, set_layer_bias_recursively)
             ref_layer = ref_cfg.set(name="ref").instantiate(parent=None)
             test_layer = test_cfg.set(name="test").instantiate(parent=None)
             # pylint: disable-next=protected-access
@@ -535,10 +545,19 @@ class TestFlashAttention(TestCase):
 
             ref_value, ref_grads = jax.value_and_grad(loss)(params, ref_inputs, ref_layer)
             test_value, test_grads = jax.value_and_grad(loss)(params, inputs, test_layer)
+
+            # Have slightly higher diffs with layer bias on GPU. We don't see this on TPU or CPU.
+            # pylint: disable-next=protected-access
+            if set_layer_bias_recursively and test_layer.layer._backend() == "gpu":
+                atol, rtol = 5e-4, 5e-2
+
             # Can be 1e-5 on x86_64/GPU/TPU, needed to be slightly higher on ARM.
-            atol = 1e-4
-            self.assertNestedAllClose(ref_value, test_value, atol=atol)
-            self.assertNestedAllClose(ref_grads, test_grads, atol=atol)
+            else:
+                atol, rtol = 1e-4, 1e-3
+
+            self.assertNestedAllClose(ref_value, test_value, atol=atol, rtol=rtol)
+            self.assertNestedAllClose(ref_grads, test_grads, atol=atol, rtol=rtol)
+        jax.clear_backends()
 
     @parameterized.product(_TEST_CONFIGS, causal=[True], sliding_window_size=[None, 4])
     def test_extend_step(
@@ -634,7 +653,7 @@ class TestFlashAttention(TestCase):
             initial_state = test_layer.init_states(
                 target_batch_size=batch, target_max_len=seq_len, kv_state=kv_state
             )
-            ref_initial_state = test_layer.init_states(
+            ref_initial_state = ref_layer.init_states(
                 target_batch_size=batch, target_max_len=seq_len, kv_state=kv_state
             )
             for k in ["key", "value"]:
@@ -714,3 +733,4 @@ class TestFlashAttention(TestCase):
                 test_out.data,
                 atol=2e-2,
             )
+        jax.clear_backends()

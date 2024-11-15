@@ -22,12 +22,26 @@ from axlearn.common.test_utils import TestCase
 class TestQuantizedDotGeneral(TestCase):
     """Tests QuantizedDotGeneral layer."""
 
-    # TODO(jiarui): Add TPU / GPU tests once they are available in CI
-    @parameterized.product(b=[2, 16], d=[4, 32], h=[8, 64])
-    def test_einsum_maybe_quantized(self, b, d, h):
+    # TODO(jiarui): Assert output for INT8 once TPU tests are available in CI
+    @parameterized.product(
+        b=[2, 16],
+        d=[4, 32],
+        h=[8, 64],
+        quantization_type_and_assert_output=[
+            (None, True),  # Test bf16, ensure parity on output
+            (
+                DotGeneralQuantizationType.INT_8,
+                False,
+            ),  # Test INT8, ignore output parity since this is executing on CPU instead of TPU
+        ],
+    )
+    def test_einsum_maybe_quantized(self, b, d, h, quantization_type_and_assert_output):
+        quantization_type, assert_output = quantization_type_and_assert_output
         # When config is None, maybe_quantized_einsum should reduce to einsum
         with Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "fsdp")):
-            quantized_dot_general_cfg = QuantizedDotGeneral.default_config()
+            quantized_dot_general_cfg = QuantizedDotGeneral.default_config().set(
+                quantization_type=quantization_type
+            )
             quantized_dot_general_layer = quantized_dot_general_cfg.set(
                 name="quantized_dot_general_layer"
             ).instantiate(parent=None)
@@ -56,7 +70,8 @@ class TestQuantizedDotGeneral(TestCase):
                 method="einsum_maybe_quantized",
             )
             reference = jnp.einsum(*inputs)
-            self.assertNestedAllClose(output, reference)
+            if assert_output:
+                self.assertNestedAllClose(output, reference)
 
     def test_set_quantized_dot_general_recursively(self):
         cfg = Decoder.default_config()

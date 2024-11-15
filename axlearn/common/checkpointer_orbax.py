@@ -45,7 +45,7 @@ except ImportError:
     _GRAIN_INSTALLED = False
 
 
-class _TfIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
+class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
     """Serializes tf.data.Iterator.
 
     Reference:
@@ -105,7 +105,7 @@ ocp.type_handlers.register_type_handler(tf.data.Iterator, _TfIteratorHandler(), 
 
 if _GRAIN_INSTALLED:
 
-    class _GrainDatasetIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
+    class _GrainDatasetIteratorHandler(ocp.type_handlers.TypeHandler):
         """Serializes grain dataset iterators."""
 
         @dataclasses.dataclass
@@ -178,6 +178,8 @@ class OrbaxCheckpointer(BaseCheckpointer):
         keep_last_n: int = 1
         validation_type: CheckpointValidationType = CheckpointValidationType.EXACT
         async_timeout_secs: int = 300
+        max_concurrent_save_gb: Optional[int] = None
+        max_concurrent_restore_gb: Optional[int] = None
 
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> List[str]:
@@ -225,10 +227,12 @@ class OrbaxCheckpointer(BaseCheckpointer):
                 # for simplicity. The test cases ensure that this is compatible with
                 # `read_index_file`.
                 "index": ocp.JsonCheckpointHandler(filename="index"),
-                # TODO(markblee): Add save/restore_concurrent_gb when available.
                 # Note that this defaults to use_ocdb=True. Note also that custom `TypeHandler`s are
                 # ignored by `StandardCheckpointHandler`, so we use `PyTreeCheckpointHandler`.
-                "state": ocp.PyTreeCheckpointHandler(),
+                "state": ocp.PyTreeCheckpointHandler(
+                    save_concurrent_gb=cfg.max_concurrent_save_gb,
+                    restore_concurrent_gb=cfg.max_concurrent_restore_gb,
+                ),
             },
         )
 

@@ -4,6 +4,7 @@
 # pylint: disable=protected-access
 
 import contextlib
+import copy
 from datetime import datetime
 from typing import Optional
 from unittest import mock
@@ -17,6 +18,7 @@ from axlearn.cloud.common.bastion import JobStatus, deserialize_jobspec, new_job
 from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.scheduler import JobMetadata
+from axlearn.cloud.common.types import JobSpec
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp import job as gcp_job
 from axlearn.cloud.gcp.jobs import bastion_vm, gke_runner, launch, tpu_runner
@@ -461,7 +463,7 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
                 cluster="test-cluster",
             ),
         ],
-        action=["start", "list"],
+        action=["start", "list", "update"],
     )
     def test_tpu_flags(
         self,
@@ -550,7 +552,7 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             cfg = tpu_gke_job.from_flags(fv, **from_flags_kwargs)
 
             self.assertIsNone(cfg.bundler)
-            if action == "start":
+            if action in ("start", "update"):
                 self.assertIsNotNone(cfg.runner)
                 self.assertIsNotNone(cfg.runner.bundler)
                 self.assertIn("tpu", cfg.runner.bundler.extras)
@@ -581,7 +583,7 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             # Test infer tpu resources.
             self.assertEqual({"v4": 16}, maybe_instantiate(cfg.resources))
 
-        if action == "start":
+        if action in ("start", "update"):
             # Make sure command is expected.
             for flag in ["name", "bundler_type", "instance_type"]:
                 if fv[flag].value is not None:
@@ -601,7 +603,7 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             )
 
         # Bundler should be propagated to runner.
-        if action == "start":
+        if action in ("start", "update"):
             self.assertIsNotNone(job.runner.bundler)
 
     @parameterized.parameters(
@@ -638,3 +640,48 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             else:
                 mock_execute.assert_called_once()
                 self.assertIsNotNone(job_spec)
+
+    @parameterized.parameters(None, 0, 1)
+    def test_update(self, job_version):
+        job_name = "test_job0"
+
+        job_spec = new_jobspec(
+            name=job_name,
+            command="command",
+            metadata=JobMetadata(
+                user_id="test_user",
+                project_id="test_project",
+                creation_time=datetime.now(),
+                resources={"v4": 8},
+                job_id="test-id0",
+                version=job_version,
+            ),
+        )
+
+        class FakeBastionDirectory(BastionDirectory):
+            def get_job(self, job_name: str) -> JobSpec:
+                return copy.deepcopy(job_spec)
+
+            def update_job(self, job_name: str, *, job_spec: JobSpec) -> JobSpec:
+                return job_spec
+
+        tpu_gke_job = BastionManagedGKEJob.with_runner(_DummyRunner)
+        cfg = tpu_gke_job.default_config().set(
+            **_common_bastion_managed_job_kwargs(),
+            namespace="default",
+            project="test-project",
+            cluster="test-cluster",
+            bastion_dir=FakeBastionDirectory.default_config().set(root_dir="temp_dir"),
+        )
+        cfg.set(name=job_name)
+        patch_kube_config = mock.patch(f"{launch.__name__}.load_kube_config")
+
+        with patch_kube_config:
+            job: BastionManagedGKEJob = cfg.instantiate()
+
+            # Update the job.
+            updated_job_spec = job._update()
+
+            updated_version = (job_spec.metadata.version or 0) + 1
+
+            self.assertEqual(updated_job_spec.metadata.version, updated_version)

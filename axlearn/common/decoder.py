@@ -280,11 +280,12 @@ class DecodingLayer(Configurable):
             The sample decoding outputs.
         """
         cfg: DecodingLayer.Config = self.config
+        logits_modifier = maybe_instantiate(logits_modifier)
         tokens_to_scores_fn = self._tokens_to_scores(
             num_decodes=num_decodes,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
-            logits_modifier=maybe_instantiate(logits_modifier),
+            logits_modifier=logits_modifier,
         )
         input_ids = self._pad(
             prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id

@@ -1419,3 +1419,25 @@ class DeviceUsage:
     hbm_memory_usage_bytes: Optional[int] = None
     hbm_memory_total_bytes: Optional[int] = None
     hbm_memory_bandwidth_utilization: Optional[float] = None
+
+
+def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] = None) -> Tensor:
+    """Computes a mask over sequence positions for each given length.
+
+    Args:
+        lengths: [...]. int32
+        max_len: T, int
+        dtype: outputs dtype.
+
+    Returns:
+        Tensor [..., T]. 1 is valid and 0 is padding.
+    """
+    if dtype is None:
+        dtype = lengths.dtype
+
+    prefix_axis = tuple(range(lengths.ndim))
+    # [..., T]
+    sequence = jnp.expand_dims(jnp.arange(max_len), axis=prefix_axis)
+    # [..., 1]
+    lengths = lengths[..., jnp.newaxis]
+    return (sequence < lengths).astype(dtype)

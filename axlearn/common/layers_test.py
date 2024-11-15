@@ -2000,8 +2000,8 @@ class LayerTest(TestCase, tf.test.TestCase):
         (
             3,
             (0, 0),
-            [[[1, 1, 2, 2, 3, 3]], [[0, 0, 0, 0, 0, 0]]],
-            [[0], [1]],
+            [[[1, 1, 2, 2, 3, 3]], [[7, 7, 8, 8, 0, 0]]],
+            [[0], [0]],
         ),
         (
             3,
@@ -2066,18 +2066,14 @@ class LayerTest(TestCase, tf.test.TestCase):
         )
         output_shape = layer.output_shape(input_shape=inputs.shape)
         self.assertAllEqual(outputs.shape, output_shape)
-        self.assertAllEqual(np.array([4, 7], dtype=np.float32), np.sum(1 - output_paddings, axis=1))
-        self.assertAllClose(
-            np.sum(inputs**2, (1, 2)),
-            np.sum(outputs**2, (1, 2)) + np.array([np.sum(inputs[0][8] ** 2), 0.0]),
-        )
+        self.assertAllEqual(np.array([5, 7], dtype=np.float32), np.sum(1 - output_paddings, axis=1))
+        self.assertAllClose(np.sum(inputs**2, (1, 2)), np.sum(outputs**2, (1, 2)))
 
-    @parameterized.product(stride=(2, 3, 4), pad=((0, 0), (1, 1), (2, 0)))
+    @parameterized.product(stride=(2, 3, 4), pad=("VALID", "SAME", "CAUSAL"))
     def test_stack_consistent_outputs(self, stride, pad):
         """Tests that StackOverTime has consistent outputs under different padding lengths."""
         batch_size, input_dim = 2, 1
         input_length = 7
-        expected_output_length = (input_length + pad[0]) // stride
         layer: StackOverTime = (
             StackOverTime.default_config()
             .set(
@@ -2087,12 +2083,13 @@ class LayerTest(TestCase, tf.test.TestCase):
             )
             .instantiate(parent=None)
         )
+        expected_output_length = layer.output_shape(input_shape=[1, input_length, 1])[1]
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
         for ll in range(4, 11):
             # Batch with another example of length ll.
             length = max(input_length, ll)
             inputs = jnp.ones([batch_size, length, input_dim])
-            paddings = jnp.arange(length)[None, :] >= jnp.array([7, ll])[:, None]
+            paddings = jnp.arange(length)[None, :] >= jnp.array([input_length, ll])[:, None]
             (outputs, output_paddings), _ = F(
                 layer,
                 inputs=dict(inputs=inputs, paddings=paddings),
@@ -2102,7 +2099,8 @@ class LayerTest(TestCase, tf.test.TestCase):
             )
             output_shape = layer.output_shape(input_shape=inputs.shape)
             self.assertAllEqual(outputs.shape, output_shape)
-            self.assertEqual(expected_output_length, np.sum(1 - output_paddings, axis=1)[0])
+            if pad != "VALID":  # VALID doesn't preserve length.
+                self.assertEqual(expected_output_length, np.sum(1 - output_paddings, axis=1)[0])
 
     @parameterized.parameters(((0, 1), (0, 0)), ((1, 1), (3, 0)), ((1, 1), (0, 3)))
     def test_stack_vs_conv2d_output_len_match(self, conv_padding, stack_padding):

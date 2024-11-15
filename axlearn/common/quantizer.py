@@ -105,8 +105,6 @@ class BaseQuantizer(BaseLayer):
     class Output(NamedTuple):
         # [..., num_codebooks].
         ids: Tensor
-        # [..., num_codebooks, codebook_size].
-        onehots: Tensor
         # [..., num_codebooks, codebook_dim].
         quantized_vectors: Tensor
         # Scalar of quantizer loss.
@@ -139,33 +137,55 @@ class BaseQuantizer(BaseLayer):
 
         Returns:
             BaseQuantizer.Output.
+            * ids: Tensor [..., num_codebooks].
+            * quantized_vectors: Tensor [..., num_codebooks, codebook_dim].
         """
         raise NotImplementedError(type(self))
+
+    def lookup(self, ids: Tensor) -> Output:
+        """Codebook look up with ids.
+
+        Args:
+            ids: integer tensor of shape [..., num_codebooks] with values
+                in range [0, codebook_size).
+
+        Returns:
+            BaseQuantizer.Output
+            * ids: Tensor [..., num_codebooks].
+            * quantized_vectors: Tensor [..., num_codebooks, codebook_dim].
+
+        Raises:
+            NotImplementedError: if ids.ndim > 11.
+        """
+        return _lookup(ids=ids, codebook=self.parameters["codebook"])
 
 
 def _lookup(*, ids: Tensor, codebook: Tensor) -> BaseQuantizer.Output:
     """Codebook look up with ids.
 
     Args:
-        ids: integer tensor of shape [batch_size, seq_len, num_codebooks] with values
+        ids: integer tensor of shape [..., num_codebooks] with values
             in range [0, codebook_size).
         codebook: Tensor of shape [codebook_size, num_codebooks, codebook_dim].
 
     Returns:
-        BaseQuantizer.Output.
+        BaseQuantizer.Output
+        * ids: Tensor [..., num_codebooks].
+        * quantized_vectors: Tensor [..., num_codebooks, codebook_dim].
 
     Raises:
         NotImplementedError: if ids.ndim > 11.
     """
     if ids.ndim - 1 > len(_einsum_dims):
         raise NotImplementedError(ids.shape)
-    # [..., num_codebooks, vocab_size].
-    onehots = jax.nn.one_hot(ids, num_classes=codebook.shape[0], axis=-1, dtype=codebook.dtype)
-    batch_dims = _einsum_dims[: onehots.ndim - 2]
-    quantized_vectors = jnp.einsum(f"{batch_dims}gv,vgh->{batch_dims}gh", onehots, codebook)
+
+    # [..., num_codebooks]
+    g_index = jnp.expand_dims(jnp.arange(ids.shape[-1]), axis=tuple(range(ids.ndim - 1)))
+    # codebook: [codebook_size, num_codebooks, codebook_dim], ids: [..., num_codebooks]
+    # -> [..., num_codebooks, codebook_dim]
+    quantized_vectors = codebook[ids, g_index]
     return BaseQuantizer.Output(
         ids=ids,
-        onehots=onehots,
         quantized_vectors=quantized_vectors,
     )
 
@@ -234,21 +254,24 @@ def _apply_paddings(*, outputs: BaseQuantizer.Output, paddings: Tensor) -> BaseQ
     Returns:
         padded_outputs: BaseQuantizer.Output.
     """
+
     # ids are padded with -1.
-    ids = outputs.ids * (1 - paddings)[:, :, None] + (-1) * paddings[:, :, None]
-    onehots = outputs.onehots * (1 - paddings)[:, :, None, None]
+    ids_paddings = paddings[:, :, None].astype(outputs.ids.dtype)
+    ids = outputs.ids * (1 - ids_paddings) + (-1) * ids_paddings
     quantized_vectors = outputs.quantized_vectors * (1 - paddings)[:, :, None, None]
     return BaseQuantizer.Output(
         ids=ids,
-        onehots=onehots,
         quantized_vectors=quantized_vectors,
         loss=outputs.loss,
     )
 
 
-def _add_codebook_summaries(
-    *, context: InvocationContext, outputs: BaseQuantizer.Output, paddings: Tensor
-):
+def _ids_to_onehots(ids: Tensor, *, codebook_size: int, dtype: jnp.dtype) -> Tensor:
+    # [..., num_codebooks, codebook_size].
+    return jax.nn.one_hot(ids, num_classes=codebook_size, axis=-1, dtype=dtype)
+
+
+def _add_codebook_summaries(*, context: InvocationContext, onehots: Tensor, paddings: Tensor):
     """Helper function to compute codebook distribution statistics and add to summaries.
 
     The statistics are from all frames, not only on those masked frames in self-supervised training.
@@ -256,11 +279,11 @@ def _add_codebook_summaries(
 
     Args:
         context: Module invocation context to add summaries to.
-        outputs: BaseQuantizer.Output.
+        onehots: onehot of BaseQuantizer.Output.ids.
         paddings: 0/1 tensor of shape [batch_size, seq_len], where 0 is valid position.
     """
-    coverage = compute_code_coverage(onehots=outputs.onehots, paddings=paddings)
-    pplx, entropy = compute_code_pplx(onehots=outputs.onehots, paddings=paddings)
+    coverage = compute_code_coverage(onehots=onehots, paddings=paddings)
+    pplx, entropy = compute_code_pplx(onehots=onehots, paddings=paddings)
     batch_size = paddings.shape[0]
 
     num_frames = jnp.sum(1 - paddings)
@@ -368,18 +391,19 @@ class RandomVectorQuantizer(BaseQuantizer):
         q_outputs = _apply_paddings(outputs=q_outputs, paddings=paddings)
         # Best-rq freezes the codebook.
         ids = jax.lax.stop_gradient(q_outputs.ids)
-        onehots = jax.lax.stop_gradient(q_outputs.onehots)
         quantized_vectors = jax.lax.stop_gradient(q_outputs.quantized_vectors)
 
         outputs = self.Output(
             # [batch_size, seq_len, num_codebooks].
             ids=ids,
-            # [batch_size, seq_len, num_codebooks, codebook_size].
-            onehots=onehots,
             # [batch_size, seq_len, num_codebooks, codebook_dim].
             quantized_vectors=quantized_vectors,
         )
-        _add_codebook_summaries(context=current_context(), outputs=outputs, paddings=paddings)
+
+        onehots = _ids_to_onehots(
+            outputs.ids, codebook_size=cfg.codebook_size, dtype=paddings.dtype
+        )
+        _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         return outputs
 
 
@@ -519,15 +543,16 @@ class KmeansVectorQuantizer(BaseQuantizer):
         outputs = self.Output(
             # [batch_size, seq_len, num_codebooks].
             ids=quantized_inputs.ids,
-            # [batch_size, seq_len, num_codebooks, vocab_size].
-            onehots=quantized_inputs.onehots,
             # [batch_size, seq_len, num_codebooks, codebook_dim].
             quantized_vectors=jnp.reshape(
                 quantized_vectors, [batch_size, seq_len, cfg.num_codebooks, cfg.codebook_dim]
             ),
             loss=total_loss,
         )
-        _add_codebook_summaries(context=current_context(), outputs=outputs, paddings=paddings)
+        onehots = _ids_to_onehots(
+            outputs.ids, codebook_size=cfg.codebook_size, dtype=paddings.dtype
+        )
+        _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         return outputs
 
 
@@ -614,17 +639,17 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
         ids = jnp.argmax(logits, axis=-1)
 
         if not self.is_training:
-            outputs = _lookup(ids=ids, codebook=self.parameters["codebook"])
+            outputs = self.lookup(ids=ids)
             outputs = _apply_paddings(outputs=outputs, paddings=paddings)
         else:
             # [batch_size, seq_len, 1].
-            mask = (1 - paddings)[:, :, None]
+            mask = (1 - paddings)[:, :, None].astype(ids.dtype)
             ids = ids * mask + (-1) * (1 - mask)
+            # TODO(dhwang2): optimize memory by scan for long context training.
             # [batch_size, seq_len, num_codebooks, vocab_size].
-            onehots = jax.nn.one_hot(
-                ids, num_classes=cfg.codebook_size, axis=-1, dtype=inputs.dtype
-            )
+            onehots = _ids_to_onehots(ids, codebook_size=cfg.codebook_size, dtype=inputs.dtype)
             # We need this to stop gradients on the padded frames.
+            mask = mask.astype(inputs.dtype)
             onehots = onehots * mask[:, :, :, None]
             # [batch_size, seq_len, num_codebooks, vocab_size].
             y_soft = jax.nn.softmax(logits, axis=-1)
@@ -640,13 +665,14 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
             outputs = self.Output(
                 # [batch_size, seq_len, num_codebooks].
                 ids=ids,
-                # [batch_size, seq_len, num_codebooks, vocab_size].
-                onehots=onehots,
                 # [batch_size, seq_len, num_codebooks, codebook_dim].
                 quantized_vectors=quantized_vectors,
             )
 
-        _add_codebook_summaries(context=current_context(), outputs=outputs, paddings=paddings)
+        onehots = _ids_to_onehots(
+            outputs.ids, codebook_size=cfg.codebook_size, dtype=paddings.dtype
+        )
+        _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         if self.is_training:
             self.add_module_output("probs", y_soft)
             self.add_summary("codebook/temperature_schedule_step", self.parameters["step"])

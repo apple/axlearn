@@ -9,14 +9,24 @@ from ml_goodput_measurement import monitoring as goodput_monitoring
 
 from axlearn.cloud.common.utils import parse_kv_flags
 from axlearn.common import measurement
-from axlearn.common.config import maybe_set_config
+from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
 
 
 @measurement.register_recorder("goodput")
 class GoodputRecorder(measurement.Recorder):
     """Records overall training goodput."""
 
-    Config = measurement.Recorder.Config
+    @config_class
+    class Config(measurement.Recorder.Config):
+        """Configures GoodputRecorder.
+
+        Attributes:
+            upload_dir: Directory to store metrics for the monitor.
+            upload_interval: Time interval (seconds) for monitoring uploads.
+        """
+
+        upload_dir: Required[str] = REQUIRED
+        upload_interval: Required[int] = REQUIRED
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues) -> "GoodputRecorder":
@@ -76,10 +86,12 @@ class GoodputRecorder(measurement.Recorder):
             )
 
     def start_monitoring(self, *args, **kwargs):
-        # Instantiate ml-goodput-measurement's GoodputMonitor
-        # to asynchronously calculate goodput and badput at
-        # the upload_interval and upload to the specified
-        # tensorboard directory.
+        """
+        Instantiate ml-goodput-measurement's GoodputMonitor to asynchronously calculate
+        Goodput and Badput at the upload_interval and upload to the specified TensorBoard
+        directory.
+        Note: This function requires initialization of distributed JAX before it is called.
+        """
         if self._monitor is None:
             cfg: GoodputRecorder.Config = self.config
             self._monitor = goodput_monitoring.GoodputMonitor(
