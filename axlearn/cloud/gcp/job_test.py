@@ -40,6 +40,7 @@ from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import (
     _MEMORY_REQUEST_PERCENTAGE,
+    _METADATA_GOOGLE_INTERNAL_IP,
     BASTION_JOB_VERSION_LABEL,
     CPUJob,
     GCSFuseMount,
@@ -393,6 +394,17 @@ class TPUGKEJobTest(TestCase):
             node_selector = pod_spec["nodeSelector"]
             annotations = pod["metadata"]["annotations"]
             labels = pod["metadata"]["labels"]
+            host_alias = pod["spec"]["hostAliases"]
+
+            self.assertEqual(1, len(host_alias))
+            self.assertEqual(
+                dict(
+                    ip=_METADATA_GOOGLE_INTERNAL_IP,
+                    hostnames=["metadata", "metadata.google.internal"],
+                ),
+                host_alias[0],
+            )
+
             # The reservation should be used only if scheduled as tier 0.
             if expect_reserved:
                 self.assertEqual(
