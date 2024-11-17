@@ -431,8 +431,17 @@ class CheckpointerTest(test_utils.TestCase):
                 input_iter=input_iter,
             )
 
+            self.assertEqual([], os.listdir(cfg.dir))
+
             ckpt.save(step=100, state=state0)
             ckpt.wait_until_finished()
+
+            # Check that input iterators are saved under a per-worker path.
+            # E.g., /path/to/<step>/[state/]tf_0/input_iter.index.
+            state_dir = ckpt.ckpt_dir(100)
+            if "state" in os.listdir(state_dir):
+                state_dir = os.path.join(state_dir, "state")
+            self.assertIn("tf_0", os.listdir(state_dir))
 
             state0_specs = dict(
                 x=utils.TensorSpec(shape=[], dtype=jnp.int32),
@@ -469,8 +478,17 @@ class CheckpointerTest(test_utils.TestCase):
             self.assertEqual(next(ds), 1)
             state0 = dict(x=jnp.ones([3, 2]), y=ds)
 
+            self.assertEqual([], os.listdir(cfg.dir))
+
             ckpt.save(step=100, state=state0)
             ckpt.wait_until_finished()
+
+            # Check that input iterators are saved under a per-worker path.
+            # E.g., /path/to/<step>/[state/]grain_0/input_iter.index.
+            state_dir = ckpt.ckpt_dir(100)
+            if "state" in os.listdir(state_dir):
+                state_dir = os.path.join(state_dir, "state")
+            self.assertIn("grain_0", os.listdir(state_dir))
 
             state0_specs = dict(
                 x=utils.TensorSpec(shape=[3, 2], dtype=jnp.float32),

@@ -8,7 +8,6 @@ See also checkpointer.py for other checkpointing utilities and checkpointer_test
 import asyncio
 import copy
 import dataclasses
-import functools
 import os
 from concurrent import futures
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -72,9 +71,17 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
         """Serializes `values` into corresponding `info.path`s."""
         del args  # Unused.
         futs = []
+        # Each worker writes its tf checkpoints under a different path.
+        tf_dir = f"tf_{jax.process_index()}"
         with futures.ThreadPoolExecutor(max_workers=1) as executor:
             for value, info in zip(values, infos):
-                futs.append(async_save_tf_savables(value, executor=executor, dir=info.path))
+                futs.append(
+                    async_save_tf_savables(
+                        {info.name: value},
+                        executor=executor,
+                        dir=os.path.join(info.parent_dir, tf_dir),
+                    )
+                )
         return futs
 
     async def deserialize(
@@ -84,14 +91,17 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
     ) -> Sequence[tf.data.Iterator]:
         if args is None:
             raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
+        tf_dir = f"tf_{jax.process_index()}"
+        futs = []
         with futures.ThreadPoolExecutor(max_workers=1) as executor:
-            futs = [
-                asyncio.get_event_loop().run_in_executor(
-                    executor,
-                    functools.partial(restore_tf_savables, arg.item, dir=info.path),
-                )
-                for arg, info in zip(args, infos)
-            ]
+            for arg, info in zip(args, infos):
+
+                def restore(arg=arg, info=info):
+                    return restore_tf_savables(
+                        {info.name: arg.item}, dir=os.path.join(info.parent_dir, tf_dir)
+                    )[info.name]
+
+                futs.append(asyncio.get_event_loop().run_in_executor(executor, restore))
         return await asyncio.gather(*futs)
 
     async def metadata(
@@ -123,10 +133,11 @@ if _GRAIN_INSTALLED:
         ) -> List[futures.Future]:
             """Serializes `values` into corresponding `info.path`s."""
             del args  # Unused.
+            grain_dir = f"grain_{jax.process_index()}"
             for value, info in zip(values, infos):
-                ckpt_dir = os.path.dirname(info.path)
-                path = os.path.basename(info.path)
-                maybe_save_grain_savables({path: value}, dir=ckpt_dir)
+                maybe_save_grain_savables(
+                    {info.name: value}, dir=os.path.join(info.parent_dir, grain_dir)
+                )
             return []
 
         async def deserialize(
@@ -136,10 +147,15 @@ if _GRAIN_INSTALLED:
         ) -> Sequence[_GrainIterator]:
             if args is None:
                 raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
-            return [
-                maybe_restore_grain_savables(arg.item, dir=info.path)
-                for arg, info in zip(args, infos)
-            ]
+            grain_dir = f"grain_{jax.process_index()}"
+            ret = []
+            for arg, info in zip(args, infos):
+                ret.append(
+                    maybe_restore_grain_savables(
+                        {info.name: arg.item}, dir=os.path.join(info.parent_dir, grain_dir)
+                    )[info.name]
+                )
+            return ret
 
         async def metadata(
             self, infos: Sequence[ocp.type_handlers.ParamInfo]
