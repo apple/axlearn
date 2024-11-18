@@ -460,7 +460,7 @@ class TPUGKEJob(GKEJob):
             **common_kwargs,
         )
         flags.DEFINE_list(
-            "import_pathways", [], "Modules to enable pathways proxy.", **common_kwargs
+            "import_modules", [], "Modules to enable pathways proxy.", **common_kwargs
         )
 
     @classmethod
@@ -485,12 +485,12 @@ class TPUGKEJob(GKEJob):
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         super().__init__(cfg)
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
-        if len(cfg.import_pathways) > 0:
-            self._import_pathways(cfg.import_pathways)
+        if len(cfg.import_modules) > 0:
+            self._import_modules(cfg.import_modules)
 
-    def _import_pathways(self, import_pathways: list[str]):
+    def _import_modules(self, import_modules: list[str]):
         try:
-            for module in import_pathways:
+            for module in import_modules:
                 importlib.import_module(module)
         except ModuleNotFoundError:
             logging.error("An error occurred while importing pathways dependencies.")
