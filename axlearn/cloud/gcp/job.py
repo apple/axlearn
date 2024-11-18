@@ -493,7 +493,7 @@ class TPUGKEJob(GKEJob):
             for module in import_modules:
                 importlib.import_module(module)
         except ModuleNotFoundError:
-            logging.error("An error occurred while importing pathways dependencies.")
+            logging.error("An error occurred while importing dependencies.")
 
     def _maybe_add_volume_mount(self, volume_mounts: list[dict], *, spec: Optional[VolumeMount]):
         if spec:
