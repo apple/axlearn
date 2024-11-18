@@ -372,6 +372,6 @@ class OrbaxCheckpointer(BaseCheckpointer):
         """See `BaseCheckpointer.wait_until_finished` docstring for details."""
         self._manager.wait_until_finished()
 
-    def stop(self):
+    def stop(self, *, has_exception: bool = False):
         """See `BaseCheckpointer.stop` for details."""
         self._manager.close()

@@ -833,17 +833,8 @@ class BaseCheckpointer(Module):
 
         This is typically invoked after the training loop has exited.
         """
-        # When `wait_until_finished` encountered an error, it will raise an exception and cleanup
-        # that exception. This will trigger the context manager to exit. If we call `stop` again
-        # which will call `wait_until_finished`, the error is already thrown and it will pass the
-        # error check and got stuck at `blocking_key_value_get`. This causes the error throwing
-        # rank to stuck at `blocking_key_value_get` and other ranks stuck at `wait_for_barrier`.
-        # To prevent this problem and facilitate faster restart when there's an exception, we do
-        # not call `stop`.
-        if exc_type is not None:
-            return
-        del exc_type, exc, traceback
-        self.stop()
+        del exc, traceback
+        self.stop(has_exception=exc_type is not None)
         # Note: returning None here lets the caller handle the exception, if any.
         self._within_context = False
 
@@ -885,8 +876,13 @@ class BaseCheckpointer(Module):
         """Waits for pending asynchronous saves to finish."""
         raise NotImplementedError(type(self))
 
-    def stop(self):
-        """Stops the checkpointer. Waits for async writes, garbage collection, etc. to finish."""
+    def stop(self, *, has_exception: bool = False):
+        """Stops the checkpointer. Waits for async writes, garbage collection, etc. to finish.
+
+        Args:
+            has_exception: A boolean indicating whether an exception has occurred while
+                the checkpointer context is active.
+        """
         raise NotImplementedError(type(self))
 
 
@@ -999,9 +995,17 @@ class Checkpointer(BaseCheckpointer):
             )
             self._gc_thread.start()
 
-    def stop(self):
+    def stop(self, *, has_exception: bool = False):
         """See `BaseCheckpointer.stop` for details."""
-        self.wait_until_finished()
+        if not has_exception:
+            # When `wait_until_finished` encountered an error, it will raise an exception and
+            # cleanup that exception. This will trigger the context manager to exit. If we call
+            # `wait_until_finished`, the error is already thrown and it will pass the error check
+            # and got stuck at `blocking_key_value_get`. This causes the error throwing rank to
+            # stuck at `blocking_key_value_get` and other ranks stuck at `wait_for_barrier`. To
+            # prevent this problem and facilitate faster restart when there's an exception, we do
+            # not call `wait_until_finished`.
+            self.wait_until_finished()
         self._storage.stop()
         logging.info("Waiting for gc_thread to finish")
         if self._gc_thread is not None:
