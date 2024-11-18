@@ -384,7 +384,7 @@ def get_trainer_kwargs(
                 "FlashAttention.q_proj",
                 "FlashAttention.k_proj",
                 "FlashAttention.v_proj",
-                "FlashAttention.o_proj",
+                #"FlashAttention.o_proj",
                 # "FlashAttention.context",
                 # "TransformerFeedForwardLayer.activation",
                 # "TransformerFeedForwardLayer.linear2",
@@ -396,7 +396,7 @@ def get_trainer_kwargs(
         if FLAGS.pdbs:
             import jax
             train_batch_size = len(jax.devices()) * int(FLAGS.pdbs)
-            
+
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=80,
@@ -458,8 +458,8 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        # policy=remat_policy_70b,
-                                        policy=jax_remat_policies.nothing_saveable,
+                                        policy=remat_policy_70b,
+                                        # policy=jax_remat_policies.nothing_saveable,
                                     ),
                                 }
                             ),
