@@ -393,9 +393,10 @@ def get_trainer_kwargs(
             offload_src="device",
             offload_dst="pinned_host",
         )
-        if FLAGS.pdbs and FLAGS.slices and "v6e" in FLAGS.mesh_selector:
-            system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[FLAGS.mesh_selector.replace("tpu-", "")]
-            train_batch_size = int(FLAGS.pdbs) * system.chips_per_vm * system.vms_per_slice * int(FLAGS.slices)
+        if FLAGS.pdbs:
+            import jax
+            train_batch_size = len(jax.devices()) * int(FLAGS.pdbs)
+            
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=80,
