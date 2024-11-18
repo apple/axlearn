@@ -57,6 +57,7 @@ from collections.abc import Sequence
 from enum import Enum, unique
 from typing import Any, Callable, Literal, NamedTuple, Optional, Protocol, Union
 
+import einops
 import jax
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
@@ -710,7 +711,7 @@ class BaseQKVLinear(BaseLayer):
 
     @property
     def num_kv_heads(self):
-        raise NotImplementedError(type(self))
+        return self.config.num_heads
 
     def init_states(
         self,
@@ -724,20 +725,16 @@ class BaseQKVLinear(BaseLayer):
         dtype = cfg.cache_dtype or self.dtype()
         assert dtype is not None
 
-        # Following T5X, we cache key, value as [batch, num_heads, head_dim, seq_len] to take
-        # advantage of TPU optimizations (see `extend_step`).
-        # Reference:
-        # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
         cache = dict(time_step=jnp.zeros(target_batch_size, dtype=jnp.int32))
         # If `kv_state` is provided externally, we do not have to maintain key/value in cache.
         if kv_state is None:
             cache.update(
                 key=jnp.zeros(
-                    shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
+                    shape=(target_batch_size, target_max_len, self.num_kv_heads, cfg.per_head_dim),
                     dtype=dtype,
                 ),
                 value=jnp.zeros(
-                    shape=(target_batch_size, self.num_kv_heads, cfg.per_head_dim, target_max_len),
+                    shape=(target_batch_size, target_max_len, self.num_kv_heads, cfg.per_head_dim),
                     dtype=dtype,
                 ),
             )
@@ -830,15 +827,7 @@ class BaseQKVLinear(BaseLayer):
             time_step_mask = (jnp.arange(k_proj.shape[1]) < time_step[:, None])[..., None, None]
             k_proj = k_proj * time_step_mask
             v_proj = v_proj * time_step_mask
-
-            # Following T5X, we cache key, value as [batch, num_heads, head_dim, seq_len] to take
-            # advantage of TPU optimizations (see `extend_step`).
-            # Reference:
-            # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
-            init_state.update(
-                key=jnp.moveaxis(k_proj, -3, -1).astype(dtype),
-                value=jnp.moveaxis(v_proj, -3, -1).astype(dtype),
-            )
+            init_state.update(key=k_proj.astype(dtype), value=v_proj.astype(dtype))
         return init_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
 
     def extend_step(
@@ -861,8 +850,8 @@ class BaseQKVLinear(BaseLayer):
                 previous attentions, and index used for fast decoding. Contains "key" and "value" of
                 shape [batch, num_heads, per_head_dim, target_length], and a Tensor "time_step" of
                 shape [batch].
-            query: Tensor of shape [batch, 1, target_dim] corresponding to query vector at
-                "time_step" indices.
+            query: Tensor of shape [batch, steps, target_dim] corresponding to query vector starting
+                at "time_step" indices.
             key: An optional Tensor of shape [batch, source_length, source_dim]. If None, will use
                 `query`.
             value: An optional Tensor of shape [batch, source_length, source_dim]. If None, will
@@ -884,40 +873,30 @@ class BaseQKVLinear(BaseLayer):
             kv_kwargs = dict(kv_state=kv_state)
         else:
             kv_kwargs = dict(key=key, value=value)
-        # Project inputs to key, value and query. Each has shape [B, 1, N, H].
+        num_query_steps = query.shape[1]
+        # Project inputs to key, value and query. Each has shape [B, steps, N, H].
         q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, time_step=time_step)
-
-        updated_state = dict(time_step=time_step + 1)
+        updated_state = dict(time_step=time_step + num_query_steps)
         if kv_state is None:
-            # Move the length axis to the back. This allows us to update the cache key, value with
-            # the "scatter via one-hot broadcast" trick, rather than a scatter/gather operation.
-            # Profiling suggests moveaxis is competitive with tweaking einsum in `i_proj` -- it's
-            # also a bit simpler, so we keep it for now.
-            # [B, 1, N, H] --> [B, N, H, 1].
-            k_proj = jnp.moveaxis(k_proj, -3, -1)
-            v_proj = jnp.moveaxis(v_proj, -3, -1)
-
-            # Update the cache via one-hot broadcast and addition.
+            # Update the cache via dynamic slice. [B, S, N, H].
             cached_key = cached_states["key"]
             cached_value = cached_states["value"]
-            target_len = cached_key.shape[-1]
-            oh_indices = jax.nn.one_hot(time_step, target_len, dtype=k_proj.dtype)
-            # [B, 1, 1, T] to broadcast.
-            oh_indices = oh_indices[:, None, None, :]
-            negated_oh_indices = (1 - oh_indices).astype(cached_key.dtype)
+
             # Ensure that we accumulate using the original dtype.
-            new_k_proj = (cached_key * negated_oh_indices) + (k_proj * oh_indices).astype(
-                cached_key.dtype
-            )
-            new_v_proj = (cached_value * negated_oh_indices) + (v_proj * oh_indices).astype(
-                cached_value.dtype
-            )
+            k_proj = k_proj.astype(cached_key.dtype)
+            v_proj = v_proj.astype(cached_value.dtype)
 
-            # Move back to original [B, T, N, H] layout.
-            k_proj = jnp.moveaxis(new_k_proj, -1, -3)
-            v_proj = jnp.moveaxis(new_v_proj, -1, -3)
+            # Function to update the cache for a single batch element.
+            def update_single(cached_kv_slice, kv_proj_slice, time_idx):
+                return jax.lax.dynamic_update_slice_in_dim(
+                    cached_kv_slice, kv_proj_slice, time_idx, axis=0
+                )
 
-            updated_state.update(key=new_k_proj, value=new_v_proj)
+            # Use jax.vmap to vectorize over the batch dimension.
+            vmap_update = jax.vmap(update_single)
+            k_proj = vmap_update(cached_key, k_proj, time_step)
+            v_proj = vmap_update(cached_value, v_proj, time_step)
+            updated_state.update(key=k_proj, value=v_proj)
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
@@ -944,10 +923,6 @@ class QKVLinear(BaseQKVLinear):
             proj_cfg.num_heads = num_heads
             proj_cfg.per_head_dim = cfg.per_head_dim
             self._add_child(f"{name}_proj", proj_cfg)
-
-    @property
-    def num_kv_heads(self):
-        return self.config.num_heads
 
     def forward(
         self,
@@ -1019,10 +994,6 @@ class QLinear(BaseQKVLinear):
         proj_cfg.per_head_dim = cfg.per_head_dim
         self._add_child("q_proj", proj_cfg)
 
-    @property
-    def num_kv_heads(self):
-        raise NotImplementedError(type(self))
-
     def forward(
         self,
         query: Tensor,
@@ -1070,10 +1041,6 @@ class FusedQKVLinear(BaseQKVLinear):
         proj_cfg.num_heads = cfg.num_heads
         proj_cfg.per_head_dim = cfg.per_head_dim
         self._add_child("qkv_proj", proj_cfg)
-
-    @property
-    def num_kv_heads(self):
-        return self.config.num_heads
 
     def create_parameter_specs_recursively(self) -> NestedParameterSpec:
         specs = VDict(**super().create_parameter_specs_recursively())
@@ -1384,16 +1351,10 @@ class RoFormerQKVLinear(BaseQKVLinear):
         cfg = self.config
         # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
         query, key, value = self.i_proj(query, key=key, value=value)
-        if time_step is None:
-            # If time_step is None, then we set it to [batch_size, seq_len].
-            # In this case, batch_size can be set as 1.
-            time_step = jnp.expand_dims(jnp.arange(query.shape[1]), 0)
-        else:
-            # Time step shape is [batch_size]
-            # The expected input shape for rope_pos_emb_layer is [batch_size, seq_len]
-            # Therefore, expanding the shape of time_step to [batch_size, 1]
-            time_step = jnp.expand_dims(time_step, 1)
-        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(time_step).astype(query.dtype)
+        query_pos = jnp.arange(query.shape[1])[None]  # [batch_size=1, seq_len].
+        if time_step is not None:
+            query_pos = query_pos + time_step[:, None]  # [batch_size, seq_len].
+        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(query_pos).astype(query.dtype)
         # sinusoidal_pos_emb shape should be [batch_size, seq_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(sinusoidal_pos_emb, 2)
         query, key, value = apply_rotary_position_embeddings(
@@ -1879,17 +1840,13 @@ class MultiheadAttention(BaseLayer):
                     f"Invalid attention_logit_biases shape: {attention_logit_biases.shape}."
                 )
         if self._mask_fn is not None:
-            kv_len = k_proj.shape[1]
+            kv_pos = jnp.arange(k_proj.shape[1])[None, :]  # [1, source_len]
+            query_pos = jnp.arange(q_proj.shape[1])[None]  # [1, target_length]
             if mode == ForwardMode.EXTEND_STEP:
-                # query_len is unused because extend_step assumes query to be length 1.
-                query_len = None
-                time_step = cached_states["i_proj"]["time_step"]
-            else:
-                query_len = q_proj.shape[1]
-                time_step = None
-            mask = self._logit_biases_for_mask(
-                mode=mode, kv_len=kv_len, query_len=query_len, time_step=time_step
-            )
+                time_step = cached_states["i_proj"]["time_step"]  # [B]
+                # [B, target_length], target_length is often 1 for decoding, but not always.
+                query_pos = query_pos + time_step[:, None]
+            mask = self._logit_biases_for_mask(mode=mode, query_pos=query_pos, kv_pos=kv_pos)
             if mask is not None:
                 attention_logit_biases = apply_attention_logit_biases(
                     mask.astype(q_proj.dtype),
@@ -1918,12 +1875,7 @@ class MultiheadAttention(BaseLayer):
         return dict(i_proj=i_proj_state), output
 
     def _logit_biases_for_mask(
-        self,
-        *,
-        mode: ForwardMode,
-        kv_len: int,
-        query_len: Optional[int] = None,
-        time_step: Optional[Tensor] = None,
+        self, *, mode: ForwardMode, query_pos: Tensor, kv_pos: Tensor
     ) -> Optional[Tensor]:
         """Returns the configured attention mask in the form of logit biases.
 
@@ -1932,39 +1884,17 @@ class MultiheadAttention(BaseLayer):
         Args:
             mode: The forward propagation mode, chosen from
                 (ForwardMode.FORWARD, ForwardMode.INIT_STATES, ForwardMode.EXTEND_STEP).
-            kv_len: The sequence length. For (ForwardMode.INIT_STATES, ForwardMode.EXTEND_STEP),
-                this is equal to the KV cache size.
-            query_len: Only used for (ForwardMode.FORWARD, ForwardMode.INIT_STATES).
-                If set, this is the query length. Otherwise, it uses kv_len as the query length.
-                Must be None for ForwardMode.EXTEND_STEP.
-            time_step: Only used for (ForwardMode.EXTEND_STEP). A tensor of size [batch] denoting
-                the 0-indexed position of the current input token.
+            query_pos: The index in the sequence of query vectors, [1|batch, target_length].
+            kv_pos: The index in the sequence of kv vectors, [1|batch, source_length].
 
         Returns:
-            For (ForwardMode.FORWARD, ForwardMode.INIT_STATES), a logit bias tensor that can be
-                broadcast to [batch, num_heads, query_len, kv_len].
-
-            For ForwardMode.EXTEND_STEP, a logit bias tensor that can be broadcast to
-                [batch, num_heads, 1, kv_len].
+            A logit bias tensor [1|batch, 1, target_length, source_length].
         """
-        kv_pos = jnp.arange(kv_len)
-
-        if mode in (ForwardMode.FORWARD, ForwardMode.INIT_STATES):
-            if time_step is not None:
-                raise ValueError(
-                    "FORWARD or INIT_STATES modes do not expect `time_step` as an argument."
-                )
-            query_pos = jnp.arange(kv_len if query_len is None else query_len)
-            mask = self._mask_fn(query_pos[:, None], kv_pos[None, :])[None, None]
-        elif mode == ForwardMode.EXTEND_STEP:
-            if query_len is not None:
-                raise ValueError("EXTEND_STEP mode does not expect `query_len` as an argument.")
-            # [batch, 1, 1, kv_len].
-            # Ex: for a causal mask, mask[b, :, :, kv_pos] = 0 if time_step[b] > kv_pos else 1.
-            mask = self._mask_fn(time_step[:, None], kv_pos[None, :])
-            mask = mask[:, None, None, :]
-        else:
-            raise ValueError(f"Unrecognized mode {mode}.")
+        del mode
+        kv_pos = kv_pos[:, None]  # [1|B, 1, source_len]
+        query_pos = query_pos[..., None]  # [1|B, target_len, 1]
+        # [1|B, 1, target_len, source_len]
+        mask = self._mask_fn(query_pos, kv_pos)[:, None]
         mask = bool_to_bias(mask)
         return mask
 
@@ -2006,7 +1936,7 @@ class MultiheadAttention(BaseLayer):
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
         probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases)
         probs = self.dropout(probs)
-        context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
+        context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
         return context, probs
 
@@ -2062,9 +1992,30 @@ class MultiheadAttention(BaseLayer):
         return cap * jnp.tanh(logits / cap)
 
     def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
+        """Compute attention logits.
+
+        Args:
+            q_proj: query tensor, [batch, target_length, num_heads, per_head_dim].
+            k_proj: key tensor, [batch, source_length, num_heads, per_head_dim].
+
+        Returns:
+            logits: [batch, num_heads, target_length, source_length].
+        """
         q_proj = self.scale_query(q_proj)
         k_proj = self.scale_key(k_proj)
         return jnp.einsum("btnh,bsnh->bnts", q_proj, k_proj)
+
+    def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
+        """Compute attention context.
+
+        Args:
+            probs: probs tensor, [batch, num_heads, target_length, source_length].
+            v_proj: value tensor, [batch, source_length, num_heads, per_head_dim].
+
+        Returns:
+            context: [batch, target_length, num_heads, per_head_dim].
+        """
+        return jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
 
     def init_states(
         self,
@@ -2228,31 +2179,47 @@ class GroupedQueryAttention(MultiheadAttention):
     def num_kv_heads(self):
         return self.i_proj.num_kv_heads
 
-    def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
-        """Repeats key or value heads dim to match the query."""
-        num_head_repeats = self.config.num_heads // key_or_value.shape[-2]
-        if num_head_repeats == 1:
-            return key_or_value
-        # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
-        return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
+    def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
+        """Compute attention logits.
 
-    def _compute_attention(
-        self,
-        *,
-        q_proj: Tensor,
-        k_proj: Tensor,
-        v_proj: Tensor,
-        **kwargs,
-    ) -> tuple[Tensor, Tensor]:
-        """See `MultiheadAttention._compute_attention` for details."""
-        k_proj = self._repeat_kv_heads(k_proj)
-        v_proj = self._repeat_kv_heads(v_proj)
-        return super()._compute_attention(
-            q_proj=q_proj,
-            k_proj=k_proj,
-            v_proj=v_proj,
-            **kwargs,
-        )
+        Args:
+            q_proj: query tensor, [batch, target_length, num_heads, per_head_dim].
+            k_proj: key tensor, [batch, source_length, num_kv_heads, per_head_dim].
+
+        Returns:
+            logits: [batch, num_heads, target_length, source_length].
+        """
+        kv_heads = k_proj.shape[-2]
+        num_head_group = self.config.num_heads // kv_heads
+        if num_head_group == 1:
+            return super()._compute_logits(q_proj=q_proj, k_proj=k_proj)
+
+        q_proj = self.scale_query(q_proj)
+        k_proj = self.scale_key(k_proj)
+        q_proj = einops.rearrange(q_proj, "b t (k g) h -> b t k g h", k=kv_heads, g=num_head_group)
+        k_proj = einops.rearrange(k_proj, "b s k h -> b s k 1 h")
+        logits = jnp.einsum("btkgh,bsk1h->bkgts", q_proj, k_proj)
+        return einops.rearrange(logits, "b k g t s -> b (k g) t s")
+
+    def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
+        """Compute attention context.
+
+        Args:
+            probs: probs tensor, [batch, num_heads, target_length, source_length].
+            v_proj: value tensor, [batch, source_length, num_kv_heads, per_head_dim].
+
+        Returns:
+            context: [batch, target_length, num_heads, per_head_dim].
+        """
+        kv_heads = v_proj.shape[-2]
+        num_head_group = self.config.num_heads // kv_heads
+        if num_head_group == 1:
+            return super()._compute_context(probs=probs, v_proj=v_proj)
+
+        probs = einops.rearrange(probs, "b (k g) t s -> b k g t s", k=kv_heads, g=num_head_group)
+        v_proj = einops.rearrange(v_proj, "b s k h -> b s k 1 h")
+        context = jnp.einsum("bkgts,bsk1h->btkgh", probs, v_proj)
+        return einops.rearrange(context, "b t k g h -> b t (k g) h")
 
 
 class SigmoidAttention(MultiheadAttention):
@@ -2303,7 +2270,7 @@ class SigmoidAttention(MultiheadAttention):
         )
         probs = self.dropout(probs)
 
-        context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
+        context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
         return context, probs
 

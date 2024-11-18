@@ -829,9 +829,10 @@ def conv_explicit_padding(
     Each mode follows the formulas below:
     * SAME: (pad_total//2, pad_total - pad_total//2)
     * VALID: (0, 0)
-    * CAUSAL: (dilate_window - stride * dilation, stride * dilation - 1)
+    * CAUSAL: (dilate_window - stride, stride - 1)
+        s.t. dilate_window = (window - 1) * dilation + 1. Check conv_dilate_window()
 
-    For example, window=5, stride=2,
+    For example, window=5 and stride=2,
     * SAME: padding = (2, 2)
                 pad|           |pad
     paddings:   0 0|0 0 0 0 1 1|1 1
@@ -850,6 +851,32 @@ def conv_explicit_padding(
                 |_____^_|
                     |_____^_|
                         |_____^_|
+
+
+    For example, window=5, stride=2 and dilation=2
+        -> dilate_window = 9 (== (window-1)*dilation + 1) and pad_total = 8
+    * SAME: padding = (4, 4)
+                    pad|                   |pad
+    paddings:   0 0 0 0|0 0 0 0 0 0 0 0 1 1|1 1 1 1
+                |_______^_______|
+                    |_______^_______|
+                        |_______^_______|
+                            |_______^_______|
+                                |_______^_______|
+
+    * VALID: padding = (0, 0)
+                |                   |pad
+    paddings:   |0 0 0 0 0 0 0 0 1 1|
+                |^_______________|
+
+    * CAUSAL: padding = (7, 1)
+                        pad  |                   |pad
+    paddings:   0 0 0 0 0 0 0|0 0 0 0 0 0 0 0 1 1|1
+                |_____________^_|
+                    |_____________^_|
+                        |_____________^_|
+                            |_____________^_|
+                                |_____________^_|
 
     For "CAUSAL", the first component is time and treated as "CAUSAL", while the remaining
     components are handled with "SAME" padding.
@@ -885,9 +912,9 @@ def conv_explicit_padding(
         return ((0, 0),) * len(window)
     elif padding == "CAUSAL":
         dilate_window = conv_dilate_window(window=window[:1], dilation=dilation[:1])[0]
-        dilate_stride = strides[0] * dilation[0]
-        pad_left = dilate_window - dilate_stride
-        pad_right = dilate_stride - 1
+        stride = strides[0]
+        pad_left = dilate_window - stride
+        pad_right = stride - 1
         assert pad_left + pad_right == dilate_window - 1
         causal_padding = ((pad_left, pad_right),)
         if len(window) > 1:
@@ -1040,6 +1067,7 @@ def compute_conv_paddings(
     window: int,
     stride: int,
     conv_padding: ConvPaddingType,
+    dilation: Optional[int] = None,
     anchor: Optional[int] = None,
 ):
     """Compute output paddings w.r.t. conv_padding.
@@ -1053,6 +1081,7 @@ def compute_conv_paddings(
         window: convolution window size of the time axis.
         stride: convolution stride size of the time axis.
         conv_padding: "SAME", "VALID", "CAUSAL" or ((left_time_padding, right_time_padding),)
+        dilation: convolution dilation size of the time axis.
         anchor: an optional integer in the range of [left_time_padding, window - right_time_padding)
             that specifies the anchor position within the convolution window that is used to
             determine output paddings. Specifically, the output token is valid iff the input token
@@ -1066,8 +1095,11 @@ def compute_conv_paddings(
         ValueError: If anchor is not between left_time_padding and right_time_padding.
     """
     chex.assert_rank(in_paddings, 2)
-    conv_padding = conv_explicit_padding(window=(window,), strides=(stride,), padding=conv_padding)
-    window = conv_dilate_window(window=(window,))[0]
+    dilation = dilation or 1
+    conv_padding = conv_explicit_padding(
+        window=(window,), strides=(stride,), padding=conv_padding, dilation=(dilation,)
+    )
+    window = conv_dilate_window(window=(window,), dilation=(dilation,))[0]
     left_pad, right_pad = conv_padding[0]
     pad_total = window - 1
 

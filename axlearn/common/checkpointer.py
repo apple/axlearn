@@ -154,8 +154,12 @@ def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str):
     Temporary dir will be deleted after the upload is complete.
     """
     src_dir = src_dir_handle.name
-    fs.makedirs(dst_dir)
-    for item in fs.listdir(src_dir):
+    src_files = fs.listdir(src_dir)
+    # src_files will be empty if there are no tf savables (i.e., don't have any tf state to save).
+    # In this case, do not create empty dst_dirs.
+    if len(src_files):
+        fs.makedirs(dst_dir)
+    for item in src_files:
         src_file = os.path.join(src_dir, item)
         dst_file = os.path.join(dst_dir, item)
         assert not fs.isdir(src_file)
@@ -364,10 +368,13 @@ class TensorStoreStateStorage(StateStorage):
             timeout_secs: Barrier timeout in seconds.
             max_data_shard_degree: Max sharding degree of model weights along data-parallel axis.
                 `None` and `1` means no sharding. `-1` means fully shard along data-parallel
-                replicas. `>1` means custom sharding degree (currently not implemented).
+                replicas. `>1` means custom sharding degree and should almost always be a power
+                of 2.
             max_concurrent_gb: Max concurrent shards (in GB) to write.
             max_concurrent_restore_gb: Max concurrent shards (in GB) to read during checkpoint
                 restore. `None` or `0` means using a default value of 32GB.
+            shard_threshold_bytes: Threshold for a array shard to be data-sharded. A value of None
+                or <= 0 means always data-shard according to max_data_shard_degree.
         """
 
         timeout_secs: float = 3600
@@ -375,6 +382,7 @@ class TensorStoreStateStorage(StateStorage):
         # TODO(hanzhi-zhou): rename this to max_concurrent_save_gb.
         max_concurrent_gb: Optional[int] = None
         max_concurrent_restore_gb: Optional[int] = None
+        shard_threshold_bytes: Optional[int] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -386,8 +394,14 @@ class TensorStoreStateStorage(StateStorage):
                 max_concurrent_gb=cfg.max_concurrent_gb,
                 timeout_secs=cfg.timeout_secs,
                 max_data_shard_degree=cfg.max_data_shard_degree,
+                shard_threshold_bytes=cfg.shard_threshold_bytes,
             )
         else:
+            if cfg.shard_threshold_bytes is not None:
+                raise ValueError(
+                    f"shard_threshold_bytes is set to {cfg.shard_threshold_bytes}, but "
+                    "max_data_shard_degree is not set. It will not take any effect."
+                )
             self._manager = GlobalAsyncCheckpointManager(timeout_secs=cfg.timeout_secs)
         if cfg.max_concurrent_restore_gb is not None and cfg.max_concurrent_restore_gb <= 0:
             raise ValueError(
@@ -954,7 +968,6 @@ class Checkpointer(BaseCheckpointer):
         if step < 0 or step >= 10**8:
             raise ValueError(f"Out-of-range: {step}")
         ckpt_dir = self.ckpt_dir(step)
-        self.cleanup_checkpoint(ckpt_dir)
         self._storage.save_to_dir(
             step=step, state=state, ckpt_dir=ckpt_dir, on_commit_callback=write_index_file
         )

@@ -1429,16 +1429,20 @@ class QKVLinearTest(TestCase):
                 self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
 
     @parameterized.parameters(
-        attention.QKVLinear,
-        attention.FusedQKVLinear,
-        attention.GroupedQKVLinear,
-        attention.FusedGroupedQKVLinear,
-        attention.RoFormerQKVLinear,
+        (attention.QKVLinear, 1),
+        (attention.FusedQKVLinear, 1),
+        (attention.GroupedQKVLinear, 1),
+        (attention.FusedGroupedQKVLinear, 1),
+        (attention.RoFormerQKVLinear, 1),
+        (attention.QKVLinear, 2),
+        (attention.FusedQKVLinear, 3),
+        (attention.GroupedQKVLinear, 4),
+        (attention.FusedGroupedQKVLinear, 3),
+        (attention.RoFormerQKVLinear, 2),
     )
-    def test_repeated_extend_step(self, layer_cls: type[attention.BaseQKVLinear]):
+    def test_repeated_extend_step(self, layer_cls: type[attention.BaseQKVLinear], extend_step_len):
         """Tests that calling QKVLinear.extend_step() multiple times with the
         same time_step results in the same output."""
-
         model_dim = 8
         num_heads = 2
         per_head_dim = model_dim // num_heads
@@ -1460,34 +1464,33 @@ class QKVLinearTest(TestCase):
         batch_size, tgt_len = 2, 4
         query = jax.random.uniform(jax.random.PRNGKey(0), [batch_size, tgt_len, model_dim])
 
-        extend_step_state, _ = F(
+        fwd_output, _ = F(
             layer,
             state=layer_state,
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
-            inputs=dict(target_batch_size=batch_size, target_max_len=tgt_len),
-            method="init_states",
+            inputs=dict(query=query),
         )
-        for t in range(tgt_len):
-            (first_call_state, first_call_output), _ = F(
+
+        cache_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
+        step_querys = []
+        step_keys = step_values = None
+        for t in range(0, tgt_len, extend_step_len):
+            (cache_state, step_output), _ = F(
                 layer,
                 state=layer_state,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(456),
-                inputs=dict(cached_states=extend_step_state, query=query[:, t : t + 1]),
+                inputs=dict(cached_states=cache_state, query=query[:, t : t + extend_step_len]),
                 method="extend_step",
             )
-            # Rewind the time_step.
-            first_call_state["time_step"] -= 1
-            (extend_step_state, second_call_output), _ = F(
-                layer,
-                state=layer_state,
-                is_training=False,
-                prng_key=jax.random.PRNGKey(456),
-                inputs=dict(cached_states=first_call_state, query=query[:, t : t + 1]),
-                method="extend_step",
-            )
-            self.assertNestedAllClose(first_call_output, second_call_output)
+            step_querys.append(step_output.query)
+            step_keys = step_output.key
+            step_values = step_output.value
+
+        self.assertNestedAllClose(fwd_output.query, jnp.concat(step_querys, axis=1))
+        self.assertNestedAllClose(fwd_output.key, step_keys)
+        self.assertNestedAllClose(fwd_output.value, step_values)
 
     @parameterized.parameters(jnp.float32, jnp.float16, jnp.bfloat16)
     def test_dtypes_inherited_from_parent(self, dtype: jnp.dtype):
@@ -2184,7 +2187,10 @@ class MultiheadAttentionTest(TestCase):
         layer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
-        inputs = dict(mode=ForwardMode.FORWARD, kv_len=3, query_len=2)
+        query_len, kv_len = 2, 3
+        query_pos = jnp.arange(query_len)[None]
+        kv_pos = jnp.arange(kv_len)[None]
+        inputs = dict(mode=ForwardMode.FORWARD, query_pos=query_pos, kv_pos=kv_pos)
         layer_outputs, _ = F(
             layer,
             state=layer_params,
@@ -2198,33 +2204,11 @@ class MultiheadAttentionTest(TestCase):
             bool_to_bias(jnp.array([[1, 0, 0], [1, 1, 0]], dtype=jnp.bool))[None, None],
         )
 
-        inputs = dict(mode=ForwardMode.FORWARD, kv_len=3, query_len=2, time_step=jnp.array([3, 4]))
-        with self.assertRaises(ValueError) as cm:
-            layer_outputs, _ = F(
-                layer,
-                state=layer_params,
-                is_training=True,
-                prng_key=jax.random.PRNGKey(456),
-                inputs=inputs,
-                method="_logit_biases_for_mask",
-            )
-        self.assertTrue(isinstance(cm.exception, ValueError))
-
-        inputs = dict(
-            mode=ForwardMode.EXTEND_STEP, kv_len=3, query_len=2, time_step=jnp.array([3, 4])
-        )
-        with self.assertRaises(ValueError) as cm:
-            F(
-                layer,
-                state=layer_params,
-                is_training=True,
-                prng_key=jax.random.PRNGKey(456),
-                inputs=inputs,
-                method="_logit_biases_for_mask",
-            )
-        self.assertTrue(isinstance(cm.exception, ValueError))
-
-        inputs = dict(mode=ForwardMode.EXTEND_STEP, kv_len=4, time_step=jnp.array([1, 2]))
+        time_step = jnp.array([1, 2])
+        query_pos = time_step[:, None]
+        kv_len = 4
+        kv_pos = jnp.arange(kv_len)[None]
+        inputs = dict(mode=ForwardMode.EXTEND_STEP, query_pos=query_pos, kv_pos=kv_pos)
         layer_outputs, _ = F(
             layer,
             state=layer_params,
@@ -2319,31 +2303,6 @@ class MultiheadAttentionTest(TestCase):
         # The outputs are equivalent.
         self.assertNestedAllClose(outputs[0], outputs[1])
 
-    def test_gqa_kv_heads(self):
-        """Checks that only the heads dim is repeated."""
-        batch = source_length = num_heads = 8
-        per_head_dim = 2
-        num_kv_heads = 4
-        dtype = jnp.float32
-        key_or_value = jnp.zeros((batch, source_length, num_kv_heads, per_head_dim), dtype=dtype)
-        model_dim = per_head_dim * num_heads
-        cfg = attention.GroupedQueryAttention.default_config().set(
-            query_dim=model_dim,
-            key_dim=model_dim,
-            value_dim=model_dim,
-            num_heads=num_heads,
-            input_linear=attention.FusedGroupedQKVLinear.default_config().set(
-                num_kv_heads=num_kv_heads
-            ),
-            dtype=dtype,
-        )
-        test_layer = cfg.set(name="test").instantiate(parent=None)
-        # pylint: disable-next=protected-access
-        repeated_key_or_value = test_layer._repeat_kv_heads(key_or_value)
-        self.assertEqual(
-            repeated_key_or_value.shape, (batch, source_length, num_heads, per_head_dim)
-        )
-
     @parameterized.product(
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
         per_dim_scale=(None, PerDimScale.default_config()),
@@ -2436,6 +2395,7 @@ class MultiheadAttentionTest(TestCase):
         num_heads: int,
         dtype: jnp.dtype,
         bias: bool,
+        extend_step_len: int,
     ):
         cfg = attention_cfg.set(
             query_dim=model_dim,
@@ -2499,18 +2459,16 @@ class MultiheadAttentionTest(TestCase):
             self.assertNotIn("key", initial_state["i_proj"])
             self.assertNotIn("value", initial_state["i_proj"])
         inputs = dict(cached_states=initial_state, kv_state=kv_state, return_aux=return_aux)
-        decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
-        decoder_probs = jnp.zeros(shape=[tgt_len, batch_size, num_heads, tgt_len])
-        for t in range(tgt_len):
-            inputs["query"] = jnp.expand_dims(query[:, t, :], axis=1)
+        decoder_output = []
+        decoder_probs = []
+        for t in range(0, tgt_len, extend_step_len):
+            inputs["query"] = query[:, t : t + extend_step_len, :]
             if key is not None:
-                inputs["key"] = jnp.expand_dims(key[:, t, :], axis=1)
+                inputs["key"] = key[:, t : t + extend_step_len, :]
             if value is not None:
-                inputs["value"] = jnp.expand_dims(value[:, t, :], axis=1)
-            inputs["attention_logit_biases"] = attention_logit_biases[
-                jnp.newaxis, jnp.newaxis, t, :
-            ]
-            extend_step_outputs, _ = F(
+                inputs["value"] = value[:, t : t + extend_step_len, :]
+            inputs["attention_logit_biases"] = attention_logit_biases[t : t + extend_step_len, :]
+            (cached_states, extend_step_outputs), _ = F(
                 layer,
                 state=layer_params,
                 is_training=False,
@@ -2518,25 +2476,13 @@ class MultiheadAttentionTest(TestCase):
                 inputs=inputs,
                 method="extend_step",
             )
-            inputs["cached_states"] = extend_step_outputs[0]
-            decoder_output = decoder_output.at[t].set(
-                jnp.squeeze(extend_step_outputs[1].data, axis=1)
-            )
-            decoder_probs = decoder_probs.at[t].set(
-                jnp.squeeze(extend_step_outputs[1].probs, axis=2)
-            )
-        decoder_out_transposed = jnp.transpose(decoder_output, [1, 0, 2])
-        decoder_probs_transposed = jnp.transpose(decoder_probs, [1, 2, 0, 3])
-        assert_allclose(
-            decoder_out_transposed,
-            forward_outputs.data,
-            atol=1e-6,
-        )
-        assert_allclose(
-            decoder_probs_transposed,
-            forward_outputs.probs,
-            atol=1e-6,
-        )
+            inputs["cached_states"] = cached_states
+            decoder_output.append(extend_step_outputs.data)
+            decoder_probs.append(extend_step_outputs.probs)
+        decoder_output = jnp.concatenate(decoder_output, axis=1)
+        decoder_probs = jnp.concatenate(decoder_probs, axis=2)
+        assert_allclose(decoder_output, forward_outputs.data, atol=1e-6)
+        assert_allclose(decoder_probs, forward_outputs.probs, atol=1e-6)
 
     @parameterized.product(
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
@@ -2544,6 +2490,7 @@ class MultiheadAttentionTest(TestCase):
         atten_logit_cap=(0.0, 20.0),
         bias=(True, False),
         input_linear=(QKVLinear, RoFormerQKVLinear, QLinear),
+        extend_step_len=(1, 4),
     )
     def test_extend_step(
         self,
@@ -2552,6 +2499,7 @@ class MultiheadAttentionTest(TestCase):
         atten_logit_cap: float,
         input_linear: attention.BaseQKVLinear,
         bias: bool,
+        extend_step_len: int,
     ):
         model_dim = 16
         num_heads = 4
@@ -2565,7 +2513,12 @@ class MultiheadAttentionTest(TestCase):
             input_linear=input_linear,
         )
         self._test_extend_step(
-            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+            cfg,
+            model_dim=model_dim,
+            num_heads=num_heads,
+            dtype=dtype,
+            bias=bias,
+            extend_step_len=extend_step_len,
         )
 
     @parameterized.product(
@@ -2575,6 +2528,7 @@ class MultiheadAttentionTest(TestCase):
         num_kv_heads=(1, 2, 4),
         input_linear=(attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear),
         bias=(True, False),
+        extend_step_len=(1, 4),
     )
     def test_gqa_extend_step(
         self,
@@ -2584,6 +2538,7 @@ class MultiheadAttentionTest(TestCase):
         num_kv_heads: int,
         input_linear: type[attention.BaseQKVLinear],
         bias: bool,
+        extend_step_len: int,
     ):
         model_dim = 16
         num_heads = 4
@@ -2593,7 +2548,12 @@ class MultiheadAttentionTest(TestCase):
             input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
         )
         self._test_extend_step(
-            cfg, model_dim=model_dim, num_heads=num_heads, dtype=dtype, bias=bias
+            cfg,
+            model_dim=model_dim,
+            num_heads=num_heads,
+            dtype=dtype,
+            bias=bias,
+            extend_step_len=extend_step_len,
         )
 
     def _test_prefill_states(
@@ -2667,7 +2627,7 @@ class MultiheadAttentionTest(TestCase):
         self.assertTrue(jnp.all(time_step == initial_states["i_proj"]["time_step"]))
         for proj in ["key", "value"]:
             self.assertEqual(
-                (batch_size, num_kv_heads or num_heads, model_dim // num_heads, tgt_len),
+                (batch_size, tgt_len, num_kv_heads or num_heads, model_dim // num_heads),
                 initial_states["i_proj"][proj].shape,
             )
             self.assertEqual(
@@ -2803,6 +2763,64 @@ class MultiheadAttentionTest(TestCase):
             dtype=dtype,
             bias=bias,
         )
+
+    def test_gqa_against_mha(self):
+        model_dim = 16
+        num_heads = 4
+        num_kv_heads = 2
+        ref_cfg = attention.MultiheadAttention.default_config().set(
+            name="mha",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+        )
+        ref_layer = ref_cfg.instantiate(parent=None)
+
+        test_cfg = attention.GroupedQueryAttention.default_config().set(
+            name="gqa",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            input_linear=attention.GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads),
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, data_key = jax.random.split(prng_key, num=3)
+        state = ref_layer.initialize_parameters_recursively(init_key)
+
+        batch, seq_len = 2, 10
+        per_head_dim = ref_layer.per_head_dim()
+        q = jax.random.uniform(data_key, (batch, seq_len, num_heads, per_head_dim))
+        k = jax.random.uniform(data_key, (batch, seq_len, num_kv_heads, per_head_dim))
+        v = jax.random.uniform(data_key, (batch, seq_len, num_kv_heads, per_head_dim))
+
+        (test_context, ref_probs), _ = F(
+            test_layer,
+            method="_compute_attention",
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+            inputs=dict(q_proj=q, k_proj=k, v_proj=v),
+        )
+
+        k = jnp.repeat(k, num_heads // num_kv_heads, axis=2)
+        v = jnp.repeat(v, num_heads // num_kv_heads, axis=2)
+
+        (ref_context, ref_probs), _ = F(
+            ref_layer,
+            method="_compute_attention",
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+            inputs=dict(q_proj=q, k_proj=k, v_proj=v),
+        )
+
+        assert_allclose(ref_context, test_context)
+        assert_allclose(ref_probs, ref_probs)
 
     def _scale_query_kwargs(
         self,

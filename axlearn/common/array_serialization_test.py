@@ -70,7 +70,12 @@ class SerializerTest(parameterized.TestCase):
         with mock.patch("jax.process_count", return_value=2), self.assertRaises(Exception):
             asyncio.run(
                 _async_serialize(
-                    jnp.array(1), {}, futures.Future(), limiter=serialization._LimitInFlightBytes(1)
+                    jnp.array(1),
+                    {},
+                    futures.Future(),
+                    limiter=serialization._LimitInFlightBytes(1),
+                    max_data_shard_degree=-1,
+                    shard_threshold_bytes=0,
                 ),
                 debug=True,
             )
@@ -122,7 +127,14 @@ class SerializerTest(parameterized.TestCase):
             # ValueError(...Buffer has been deleted or donated...) may occur.
             with pytest.raises((RuntimeError, ValueError), match=re.escape("delete")):
                 f = _CommitFuture(
-                    _run_serializer([arr], [spec], [d2h_future], max_concurrent_bytes=arr.nbytes)
+                    _run_serializer(
+                        [arr],
+                        [spec],
+                        [d2h_future],
+                        max_concurrent_bytes=arr.nbytes,
+                        max_data_shard_degree=-1,
+                        shard_threshold_bytes=-1,
+                    )
                 )
                 # Throws Array deleted exception if not waiting for d2h_future.
                 jit_fn(arr)
@@ -138,7 +150,14 @@ class SerializerTest(parameterized.TestCase):
             f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
         ):
             f = _CommitFuture(
-                _run_serializer([arr], [spec], [d2h_future], max_concurrent_bytes=arr.nbytes)
+                _run_serializer(
+                    [arr],
+                    [spec],
+                    [d2h_future],
+                    max_concurrent_bytes=arr.nbytes,
+                    max_data_shard_degree=-1,
+                    shard_threshold_bytes=-1,
+                )
             )
             d2h_future.result()
             # If D2H is finished, arr can be safely donated.
@@ -162,7 +181,11 @@ class SerializerTest(parameterized.TestCase):
             f"{array_serialization.__name__}.serialization.ts.open",
             ts_open_patch,
         ), get_tensorstore_spec(arr) as spec:
-            f = _CommitFuture(_run_serializer([arr], [spec], [d2h_future]))
+            f = _CommitFuture(
+                _run_serializer(
+                    [arr], [spec], [d2h_future], max_data_shard_degree=-1, shard_threshold_bytes=-1
+                )
+            )
             d2h_future.result()
             with pytest.raises(RuntimeError, match=re.escape("Test")):
                 f.result()
@@ -175,7 +198,11 @@ class SerializerTest(parameterized.TestCase):
             f"{array_serialization.__name__}._transfer_to_host",
             transfer_to_host_patch,
         ), get_tensorstore_spec(arr) as spec:
-            f = _CommitFuture(_run_serializer([arr], [spec], [d2h_future]))
+            f = _CommitFuture(
+                _run_serializer(
+                    [arr], [spec], [d2h_future], max_data_shard_degree=-1, shard_threshold_bytes=-1
+                )
+            )
             # Exceptions will be raised in both the d2h future and the commit future.
             with pytest.raises(RuntimeError, match=re.escape("Test")):
                 d2h_future.result()
@@ -285,9 +312,17 @@ class SerializerTest(parameterized.TestCase):
         self.assertTrue(np.all(x_zero_copy == x_np))
 
     def _verify_shard_info(
-        self, single_device_arr: jax.Array, arr: jax.Array, max_data_shard_degree: int
+        self,
+        single_device_arr: jax.Array,
+        arr: jax.Array,
+        max_data_shard_degree: int,
+        shard_threshold_bytes: int,
     ):
-        shard_infos = _get_shard_infos(arr, max_data_shard_degree=max_data_shard_degree)
+        shard_infos = _get_shard_infos(
+            arr,
+            max_data_shard_degree=max_data_shard_degree,
+            shard_threshold_bytes=shard_threshold_bytes,
+        )
 
         # Write each shard to output and check if it's the same as the original
         # single device array. If same, that means all shards should cover all
@@ -299,12 +334,16 @@ class SerializerTest(parameterized.TestCase):
             out_array[info.index] = info.data
         self.assertTrue(np.all(out_array == np.array(single_device_arr)))
 
-    @parameterized.parameters(1, -1)
+    @parameterized.product(
+        max_data_shard_degree=[1, -1, 2, 4, 8], shard_threshold_bytes=[1000 * 1000 * 1000, 1]
+    )
     @pytest.mark.skipif(
         jax.device_count() != 8 or jax.process_count() != 1,
         reason="Incorrect device count for mesh.",
     )
-    def test_shard_info_partially_replicated(self, max_data_shard_degree):
+    def test_shard_info_partially_replicated(
+        self, max_data_shard_degree: int, shard_threshold_bytes: int
+    ):
         single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
         devices = mesh_utils.create_device_mesh((8,))
         sharding = PositionalSharding(devices)
@@ -315,14 +354,18 @@ class SerializerTest(parameterized.TestCase):
         self.assertEqual(replica_count[((None, None, None), (0, 512, None))], 4)
         self.assertEqual(replica_count[((None, None, None), (512, 1024, None))], 4)
 
-        self._verify_shard_info(single_device_arr, arr, max_data_shard_degree)
+        self._verify_shard_info(
+            single_device_arr, arr, max_data_shard_degree, shard_threshold_bytes
+        )
 
-    @parameterized.parameters(1, -1)
+    @parameterized.product(
+        max_data_shard_degree=[1, -1, 2, 4, 8], shard_threshold_bytes=[1000 * 1000 * 1000, 1]
+    )
     @pytest.mark.skipif(
         jax.device_count() != 8 or jax.process_count() != 1,
         reason="Incorrect device count for mesh.",
     )
-    def test_shard_info_fully_sharded(self, max_data_shard_degree):
+    def test_shard_info_fully_sharded(self, max_data_shard_degree: int, shard_threshold_bytes: int):
         single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
         devices = mesh_utils.create_device_mesh((8,))
         sharding = PositionalSharding(devices)
@@ -332,14 +375,22 @@ class SerializerTest(parameterized.TestCase):
         replica_count = _num_replicas_per_shard(arr)
         self.assertEqual(replica_count[((0, 256, None), (0, 512, None))], 1)
 
-        self._verify_shard_info(single_device_arr, arr, max_data_shard_degree)
+        self._verify_shard_info(
+            single_device_arr, arr, max_data_shard_degree, shard_threshold_bytes
+        )
 
-    @parameterized.product(sz=[1, 11, 16, 21], max_data_shard_degree=[1, -1])
+    @parameterized.product(
+        sz=[1, 11, 16, 21],
+        max_data_shard_degree=[1, -1, 2, 4, 8],
+        shard_threshold_bytes=[1000 * 1000 * 1000, 1],
+    )
     @pytest.mark.skipif(
         jax.device_count() != 8 or jax.process_count() != 1,
         reason="Incorrect device count for mesh.",
     )
-    def test_shard_info_fully_replicated(self, sz: int, max_data_shard_degree: int):
+    def test_shard_info_fully_replicated(
+        self, sz: int, max_data_shard_degree: int, shard_threshold_bytes: int
+    ):
         single_device_arr = jnp.arange(0, sz)
         devices = mesh_utils.create_device_mesh((8,))
         sharding = PositionalSharding(devices)
@@ -350,4 +401,6 @@ class SerializerTest(parameterized.TestCase):
         # Fully replicated on 8 devices.
         self.assertEqual(replica_count[((None, None, None),)], 8)
 
-        self._verify_shard_info(single_device_arr, arr, max_data_shard_degree)
+        self._verify_shard_info(
+            single_device_arr, arr, max_data_shard_degree, shard_threshold_bytes
+        )

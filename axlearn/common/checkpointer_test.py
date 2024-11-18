@@ -112,7 +112,9 @@ class CheckpointerTest(test_utils.TestCase):
                 )
 
             # When the given state has a different array shape: [3] instead of [2] for y.
-            with self.assertRaisesRegex(ValueError, "checkpoint tree dtypes or shapes"):
+            with self.assertRaisesRegex(
+                ValueError, "(checkpoint tree dtypes or shapes|not compatible)"
+            ):
                 ckpt.restore(
                     step=None,
                     state=dict(
@@ -124,7 +126,7 @@ class CheckpointerTest(test_utils.TestCase):
             # Orbax throws AssertionError in this case.
             with self.assertRaisesRegex(
                 (AssertionError, ValueError),
-                "(checkpoint tree dtypes or shapes|do not match)",
+                "(checkpoint tree dtypes or shapes|not compatible)",
             ):
                 ckpt.restore(
                     step=None,
@@ -197,6 +199,77 @@ class CheckpointerTest(test_utils.TestCase):
                 self.assertEqual(step, restored_step)
                 self.assertNestedEqual(state, restored_state)
 
+    @parameterized.parameters(
+        # Number of files minus index and .zarray metadata.
+        dict(
+            max_data_shard_degree=None,
+            shard_threshold_bytes=None,
+            num_files=4,  # 2 ararys * 2 shards (2 model) per array.
+        ),
+        dict(
+            max_data_shard_degree=-1,
+            shard_threshold_bytes=None,
+            num_files=16,  # 2 ararys * 8 shards (2 model, 4 data) per array.
+        ),
+        dict(
+            max_data_shard_degree=2,
+            shard_threshold_bytes=None,
+            num_files=8,  # 2 ararys * 4 shards (2 model, 2 data) per array.
+        ),
+        dict(
+            max_data_shard_degree=2,
+            shard_threshold_bytes=1024,
+            num_files=6,  # 1 array 4 shards (2 model, 2 data) + 1 array 2 shards (small array).
+        ),
+    )
+    def test_save_restore_files_count(
+        self, max_data_shard_degree: int, shard_threshold_bytes: int, num_files: int
+    ):
+        # Tests the effect of max_data_shard_degree and shard_threshold_bytes on number of files.
+        mesh_shape = (4, 2)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+
+        cfg: Checkpointer.Config = _checkpointer_config(Checkpointer)
+        cfg.storage.max_data_shard_degree = max_data_shard_degree
+        cfg.storage.shard_threshold_bytes = shard_threshold_bytes
+        ckpt: Checkpointer = cfg.instantiate(parent=None)
+        state = dict(
+            x=jnp.zeros((1024, 1024), dtype=jnp.float32),
+            small_x=jnp.zeros((16, 16), dtype=jnp.float32),
+        )
+        step = 1
+
+        def count_files(directory):
+            file_count = 0
+            for _, _, files in os.walk(directory):
+                file_count += len(files)
+            return file_count
+
+        def state_specs(state):
+            return jax.tree.map(
+                lambda x: utils.TensorSpec(
+                    shape=x.shape,
+                    dtype=x.dtype,
+                    mesh_axes=jax.sharding.PartitionSpec(None, "model"),
+                ),
+                state,
+            )
+
+        with _mesh(mesh_shape) as mesh:
+            sharding = jax.sharding.NamedSharding(
+                mesh, spec=jax.sharding.PartitionSpec(None, "model")
+            )
+            state = jax.tree.map(lambda x: jax.device_put(x, device=sharding), state)
+            ckpt.save(step=step, state=state)
+            ckpt.wait_until_finished()
+
+            restored_step, restored_state = ckpt.restore(step=step, state=state_specs(state))
+            self.assertEqual(step, restored_step)
+            self.assertNestedEqual(state, restored_state)
+
+            self.assertEqual(count_files(ckpt.ckpt_dir(step)), num_files + 3)
+
     @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
     def test_save_and_restore_latest_valid(self, checkpointer_cls: Type[BaseCheckpointer]):
         mesh_shape = (1, 1)
@@ -242,6 +315,47 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.save(step=3, state=state0)
             ckpt.wait_until_finished()
             self.assertNestedEqual((3, state0), ckpt.restore(step=None, state=state0))
+
+    @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
+    def test_save_can_override_on_gcs(self, checkpointer_cls: Type[BaseCheckpointer]):
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+        # Patch is_gcs_path for orbax, since it commits differently on gcs vs local.
+        with _mesh(mesh_shape), mock.patch(f"{ocp.step.__name__}.is_gcs_path", return_value=True):
+            cfg = _checkpointer_config(checkpointer_cls)
+            ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
+            state0 = dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32))
+
+            # Save a checkpoint.
+            ckpt.save(step=1, state=state0)
+            ckpt.wait_until_finished()
+            self.assertNestedEqual((1, state0), ckpt.restore(step=None, state=state0))
+
+            if isinstance(ckpt, (Checkpointer, OrbaxCheckpointer)):
+                ckpt_dir = ckpt.ckpt_dir(step=1)
+            else:
+                raise NotImplementedError(type(ckpt))
+
+            # Corrupt the checkpoint by removing some files, while ensuring it is non-empty.
+            commit_file = (
+                "index" if isinstance(ckpt, Checkpointer) else ocp.step._COMMIT_SUCCESS_FILE
+            )
+            fs.rmtree(os.path.join(ckpt_dir, commit_file))
+            self.assertGreater(len(fs.listdir(ckpt_dir)), 0)
+
+            if isinstance(ckpt, OrbaxCheckpointer):
+                ckpt._manager.reload()  # Orbax caches complete checkpoints.
+
+            self.assertEqual(0, len(ckpt.checkpoint_paths(ckpt.config.dir)))
+
+            # Test that save() should be able to override non-empty ckpt dir.
+            state1 = dict(x=jnp.ones([], dtype=jnp.int32), y=jnp.zeros([2], dtype=jnp.float32))
+            ckpt.save(step=1, state=state1)
+            ckpt.wait_until_finished()
+
+            # Should match the new state.
+            self.assertNestedEqual((1, state1), ckpt.restore(step=None, state=state1))
 
     @parameterized.product(
         checkpointer_cls=[Checkpointer, OrbaxCheckpointer],
@@ -893,11 +1007,30 @@ class CheckpointerTest(test_utils.TestCase):
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
-    @parameterized.product(max_concurrent_gb=[None, 1], max_data_shard_degree=[None, 1, -1])
-    def test_max_concurrent_gb(self, max_concurrent_gb: Optional[int], max_data_shard_degree: int):
+    @parameterized.product(
+        max_concurrent_gb=[None, 1],
+        max_data_shard_degree=[None, 1, -1],
+        shard_threshold_bytes=[None, 0, int(1024**3)],
+    )
+    def test_checkpointer_configs(
+        self,
+        max_concurrent_gb: Optional[int],
+        max_data_shard_degree: int,
+        shard_threshold_bytes: int,
+    ):
         cfg = TensorStoreStateStorage.default_config().set(
-            max_concurrent_gb=max_concurrent_gb, max_data_shard_degree=max_data_shard_degree
+            max_concurrent_gb=max_concurrent_gb,
+            max_data_shard_degree=max_data_shard_degree,
+            shard_threshold_bytes=shard_threshold_bytes,
         )
+        if (
+            not max_concurrent_gb
+            and not max_data_shard_degree
+            and shard_threshold_bytes is not None
+        ):
+            with self.assertRaises(ValueError):
+                storage = cfg.instantiate()
+            return
         storage = cfg.instantiate()
         if max_concurrent_gb is not None or max_data_shard_degree:
             self.assertIsInstance(storage._manager, BoundedDataShardedAsyncCheckpointManager)
@@ -1046,6 +1179,19 @@ class TfIteratorTest(test_utils.TestCase):
         # Every input example should be seen exactly once, since the saved and restored iterator
         # should continue from the interruption.
         self.assertSetEqual(set(seen), set(range(num_examples)))
+
+    def test_no_save_input_iterator(self):
+        executor = ThreadPoolExecutor(1)
+        tmpdir = tempfile.mkdtemp()
+        ckpt_dir = os.path.join(tmpdir, "tf_ckpt")
+        self.assertEqual(0, len(fs.listdir(tmpdir)))
+        # Test that when we don't save input iterator, tf dirs are not created.
+        async_save_tf_savables({}, executor=executor, dir=ckpt_dir)
+        self.assertEqual([], fs.listdir(tmpdir))
+        # Test that dirs are created if we save.
+        ds = tf.data.Dataset.from_tensor_slices([])
+        async_save_tf_savables({"it": iter(ds)}, executor=executor, dir=ckpt_dir)
+        self.assertEqual(["tf_ckpt"], fs.listdir(tmpdir))
 
 
 SWITCHABLE_VDICT_IMPL: Optional[type[VDict]] = None
