@@ -444,7 +444,7 @@ class TPUGKEJob(GKEJob):
         enable_tpu_ici_resiliency: Optional[bool] = None
         location_hint: Optional[str] = None
         enable_tpu_smart_repair: bool = False
-        import_pathways: Optional[list[str]] = []
+        import_modules: list[str] = []
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
