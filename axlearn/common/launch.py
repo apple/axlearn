@@ -2,15 +2,16 @@
 
 """A library with common flags to launch a trainer."""
 
+import contextlib
 import importlib
 import os
 import sys
 
-# pylint: disable=wrong-import-position,wrong-import-order
-from contextlib import nullcontext
-
 # pylint: disable-next=ungrouped-imports
 from axlearn.common import compiler_options
+
+# pylint: disable=wrong-import-position,wrong-import-order
+
 
 instance_type = os.environ.get("TPU_TYPE", "none")
 num_tpu_slices = int(os.environ.get("NUM_TPU_SLICES", 1))
@@ -77,19 +78,31 @@ flags.DEFINE_integer(
     os.environ.get("PROCESS_ID", None),
     "Rank of the current process. Must be None on tpu, otherwise required.",
 )
-flags.DEFINE_string(
-    "health_check_module",
-    None,
-    "Path to health check module to run, e.g. axlearn.cloud.gcp.tpu_health_check. "
-    "Defaults to None, meaning no health check will run.",
-)
-flags.DEFINE_string(
-    "health_check_spec",
-    "",
-    "See the docstring of your `health_check_module`.",
+flags.DEFINE_multi_string(
+    "init_module",
+    [],
+    "Zero or more init modules to import prior to setting up JAX distributed. "
+    "Each flag value should be a string containing 'module_path' or 'module_path:spec', e.g. "
+    "'axlearn.cloud.gcp.tpu_health_check' or 'axlearn.cloud.gcp.tpu_health_check:output_dir=...'.\n"
+    "The module should expose a public function `setup`, a context manager exposing pre- and post-"
+    "SPMD setup logic which is entered prior to `setup_spmd` and exited immediately afterwards.\n"
+    "The spec (if provided) will be provided to `module.setup(spec)` and therefore can be "
+    "implementation dependent. Not specifying a spec is equivalent to passing `None` to `setup`.\n"
+    "If specifying multiple modules, each `setup` context is entered in the given order.",
 )
 
 FLAGS = flags.FLAGS
+
+
+# Kept separate for easier testing.
+@contextlib.contextmanager
+def _init_context(fv: flags.FlagValues = FLAGS):
+    with contextlib.ExitStack() as ctx:
+        for module_spec in fv.init_module:
+            parts = module_spec.split(":", maxsplit=1) + [None]
+            module, spec = parts[:2]
+            ctx.enter_context(importlib.import_module(module).setup(spec))
+        yield
 
 
 def setup():
@@ -98,15 +111,7 @@ def setup():
     else:
         logging.info("LIBTPU_INIT_ARGS='%s'", os.environ["LIBTPU_INIT_ARGS"])
 
-    if FLAGS.health_check_module:
-        health_check = importlib.import_module(FLAGS.health_check_module).health_check(
-            FLAGS.health_check_spec,
-            output_dir=FLAGS.trainer_dir,
-        )
-    else:
-        health_check = nullcontext()
-
-    with health_check:
+    with _init_context():
         setup_spmd(
             distributed_coordinator=FLAGS.distributed_coordinator,
             num_processes=FLAGS.num_processes,
