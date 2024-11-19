@@ -61,13 +61,15 @@ class Version(enum.Enum):
     V1 = 1
     V2 = 2
     V3 = 3
+    V3_TIKTOKEN = "3-tiktoken"
 
 
 # Mapping from Fuji versions to vocab sizes.
 VOCAB_SIZE = {
     Version.V1: 32 * 1024,
     Version.V2: 32 * 1024,
-    Version.V3: 128256,
+    Version.V3: 128 * 1024,
+    Version.V3_TIKTOKEN: 128256,
 }
 
 
@@ -76,6 +78,7 @@ MAX_SEQUENCE_LENGTH = {
     Version.V1: 2048,
     Version.V2: 4096,
     Version.V3: 8192,
+    Version.V3_TIKTOKEN: 8192,
 }
 
 
@@ -83,6 +86,7 @@ ROPE_THETA = {
     Version.V1: 1e4,
     Version.V2: 1e4,
     Version.V3: 5e5,
+    Version.V3_TIKTOKEN: 5e5,
 }
 
 
@@ -102,6 +106,13 @@ TOTAL_TOKENS = {
         "test": 15 * (1024**4),  # 15T tokens
         "1B": 15 * (1024**4),  # 15T tokens
         "3B": 15 * (1024**4),  # 15T tokens
+        "7B": 15 * (1024**4),  # 15T tokens
+        "70B": 15 * (1024**4),  # 15T tokens
+    },
+    Version.V3_TIKTOKEN: {
+        "test": 15 * (1024**4),  # 15T tokens
+        "1B": 15 * (1024**4),  # 15T tokens
+        "3B": 15 * (1024**4),  # 15T tokens
         "8B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
     },
@@ -117,15 +128,13 @@ def get_trainer_kwargs(
 ) -> dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 4 * (1024**2)  # 4M tokens.
-    if model_size not in TOTAL_TOKENS[version]:
-        return {}
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
 
     # Whether to use grouped query attention.
     num_kv_heads = None
-    if version == Version.V3:
+    if version in (Version.V3, Version.V3_TIKTOKEN):
         num_kv_heads = 8
 
     rope_theta = ROPE_THETA[version]
@@ -423,6 +432,9 @@ def get_trainer_kwargs(
         raise NotImplementedError(f"Unknown model size {model_size}.")
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
+    if version == Version.V3_TIKTOKEN:  # tiktoken tokenizer
+        model_kwargs["pad_token_id"] = 128004
+        model_kwargs["eos_token_id"] = 128001
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
     trainer_kwargs["learner_cfg"] = adamw_decoupled_learner_config(
         max_step=trainer_kwargs["max_step"],
@@ -445,6 +457,8 @@ def model_config(
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
     flash_attention: bool = False,
     stack_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
+    pad_token_id: Optional[int] = None,
+    eos_token_id: Optional[int] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -463,6 +477,8 @@ def model_config(
         flash_attention: Whether to enable flash attention.
         stack_cfg: The transformer stack config.
             If None, defaults to a RepeatedTransformerLayer.
+        pad_token_id: Int ID of the inputs to be masked for self-attention.
+        eos_token_id: Int ID of the end of sequence token id.
 
     Returns:
         A causal LM config.
@@ -500,6 +516,8 @@ def model_config(
         lm_head_cfg=LmHead.default_config() if not shared_lm_head else None,
         attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
+        pad_token_id=pad_token_id,
+        eos_token_id=eos_token_id,
     )
     return cfg
 
@@ -518,6 +536,8 @@ def trainer_configs(
     for version, model_size, flash_attention in itertools.product(
         Version, MODEL_SIZES, [True, False]
     ):
+        if model_size not in TOTAL_TOKENS[version]:  # This combination does not exist.
+            continue
         vocab_size = VOCAB_SIZE[version]
         config_name = make_config_name(
             arch=arch,
@@ -528,8 +548,6 @@ def trainer_configs(
         kwargs = get_trainer_kwargs(
             model_size, vocab_size=vocab_size, version=version, flash_attention=flash_attention
         )
-        if len(kwargs) == 0:  # This combination does not exist
-            continue
         max_sequence_length = kwargs.pop("max_sequence_length")
         # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
         config_map[config_name] = get_trainer_config_fn(
