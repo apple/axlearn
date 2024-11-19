@@ -594,11 +594,13 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         save_policy = cfg.save_policy.instantiate()
         local_save_policy = cfg.local_save_policy.instantiate()
 
-        # Non-tensor states must save when either local or persistent ckpt needs to be saved in
-        # order for restore from either to succeed.
+        # Non-tensor states must save when either local or persistent ckpt needs to be saved for
+        # restore from either to succeed.
         def _composite_save_policy(*, step: int, evaler_summaries: dict[str, Any]):
-            return save_policy(step=step, evaler_summaries=evaler_summaries) or local_save_policy(
-                step=step, evaler_summaries=evaler_summaries
+            return (
+                save_policy(step=step, evaler_summaries=evaler_summaries)
+                or local_save_policy(step=step, evaler_summaries=evaler_summaries)
+                or self._reached_preemption
             )
 
         ckpt_cfg.save_policy = config_for_function(lambda: _composite_save_policy)
@@ -606,6 +608,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         self._tensor_manager: Optional[oecp.CheckpointManager] = None
         # See comments of _eval_summaries in `OrbaxCheckpointer`.
         self._eval_summaries = None
+        self._reached_preemption = False
 
     # pylint: disable-next=redefined-builtin
     def ckpt_dir(self, step: int, dir: Optional[str] = None) -> str:
@@ -679,6 +682,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         """See `BaseCheckpointer.save` for details."""
         assert self._eval_summaries is None, self._eval_summaries
         self._eval_summaries = copy.deepcopy(evaler_summaries or {})
+        self._reached_preemption = self._tensor_manager.reached_preemption(step)
 
         start_t = time.perf_counter()
         state_with_tensors = jax.tree.map(
@@ -692,6 +696,9 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         self._eval_summaries = None
         if (time_diff := time.perf_counter() - start_t) > 0.5:
             logging.info("In-mem ckpt blocking time is %fs.", time_diff)
+        if self._reached_preemption:
+            self.wait_until_finished()
+            raise SystemExit(f"Exiting after saving checkpoint at {step=} due to pre-emption.")
 
     def restore(
         self,
