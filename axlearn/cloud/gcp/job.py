@@ -629,9 +629,9 @@ class TPUGKEJob(GKEJob):
             annotations.update(
                 {
                     "gke-gcsfuse/volumes": "true",
-                    "gke-gcsfuse/cpu-limit": cfg.gcsfuse_mount.cpu,
-                    "gke-gcsfuse/memory-limit": cfg.gcsfuse_mount.memory,
-                    "gke-gcsfuse/ephemeral-storage-limit": cfg.gcsfuse_mount.ephemeral_gb,
+                    "gke-gcsfuse/cpu-request": cfg.gcsfuse_mount.cpu,
+                    "gke-gcsfuse/memory-request": cfg.gcsfuse_mount.memory,
+                    "gke-gcsfuse/ephemeral-storage-request": cfg.gcsfuse_mount.ephemeral_gb,
                 }
             )
             # Parse GCSFuseMount path into bucket, prefix.
