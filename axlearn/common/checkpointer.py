@@ -732,6 +732,8 @@ class BaseCheckpointer(Module):
             every_n_steps_policy
         )
 
+    # TODO(hanzhi-zhou): deprecate all checkpoint_paths related class methods in favor of
+    # checkpoint_steps.
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> list[str]:
         """Returns complete checkpoint paths under base dir.
@@ -757,6 +759,24 @@ class BaseCheckpointer(Module):
         """
         # Note: checkpoint_paths should already filter incomplete checkpoints.
         return sorted(cls.checkpoint_paths(base_dir)).pop()
+
+    @classmethod
+    def checkpoint_steps(cls, base_dir: str) -> list[int]:
+        """Returns complete checkpoint steps under base dir.
+
+        Args:
+            base_dir: Path to checkpoints dir.
+
+        Returns:
+            A list of committed checkpoint steps. Incomplete checkpoints are dropped.
+        """
+        raise NotImplementedError(cls)
+
+    @classmethod
+    def latest_checkpoint_step(cls, base_dir: str) -> int:
+        """Returns the most recent (highest step count) checkpoint step under base dir."""
+        # Note: checkpoint_steps should already filter incomplete checkpoints.
+        return max(cls.checkpoint_steps(base_dir))
 
     def __init__(self, cfg: Module.Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -864,7 +884,11 @@ class Checkpointer(BaseCheckpointer):
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> list[str]:
         """See `BaseCheckpointer.checkpointer_paths`."""
-
+        logging.log_first_n(
+            logging.WARNING,
+            msg="checkpoint_paths is deprecated. Use checkpoint_steps instead.",
+            n=1,
+        )
         # The default checkpointer commits under "<base_dir>/<step_prefix>_<step>/index". Using a
         # concurrent `exists` check for the index file can be several times faster than `glob` on
         # gcs when there are many checkpoint files, even if using a "native" solution like
@@ -880,6 +904,10 @@ class Checkpointer(BaseCheckpointer):
         with futures.ThreadPoolExecutor() as pool:
             index_exists = pool.map(fs.exists, paths)
         return [os.path.dirname(path) for path, committed in zip(paths, index_exists) if committed]
+
+    @classmethod
+    def checkpoint_steps(cls, base_dir: str) -> list[int]:
+        return [parse_step_from_dir(path) for path in cls.checkpoint_paths(base_dir)]
 
     @classmethod
     def cleanup_checkpoint(cls, ckpt_dir: str, *, sync: bool = True):

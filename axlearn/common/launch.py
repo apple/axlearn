@@ -41,6 +41,7 @@ if instance_type != "none":
 
 from absl import flags, logging
 
+from axlearn.common.checkpointer_orbax_emergency import get_consistent_proc_info
 from axlearn.common.status_server import StatusHTTPServer
 from axlearn.common.utils import get_data_dir
 from axlearn.common.utils_spmd import setup as setup_spmd
@@ -88,6 +89,18 @@ flags.DEFINE_string(
     "",
     "See the docstring of your `health_check_module`.",
 )
+flags.DEFINE_string(
+    "local_ckpt_dir",
+    None,
+    "If specified, enable local checkpoint and saves checkpoints to this directory. See "
+    "`OrbaxEmergencyCheckpointer` for more details",
+)
+flags.DEFINE_string(
+    "local_address",
+    None,
+    "A IP:Port configuration that can be used for distributed coordinator if this rank is elected "
+    "as the distributed coordinator.",
+)
 
 FLAGS = flags.FLAGS
 
@@ -107,13 +120,23 @@ def setup():
         health_check = nullcontext()
 
     with health_check:
-        setup_spmd(
+        init_args = dict(
+            jax_backend=FLAGS.jax_backend,
             distributed_coordinator=FLAGS.distributed_coordinator,
             num_processes=FLAGS.num_processes,
             process_id=FLAGS.process_id,
-            jax_backend=FLAGS.jax_backend,
             initialization_timeout=FLAGS.initialization_timeout,
         )
+        if FLAGS.local_ckpt_dir:
+            info = get_consistent_proc_info(
+                trainer_dir=FLAGS.trainer_dir,
+                local_address=FLAGS.local_address,
+                local_ckpt_dir=FLAGS.local_ckpt_dir,
+                **init_args,
+            )
+            init_args["process_id"] = info.inv_proc_id
+            init_args["distributed_coordinator"] = info.address
+        setup_spmd(**init_args)
 
     if FLAGS.jax_profiler_port is not None:
         # Start jax.profiler for Tensorboard and profiling in open source.

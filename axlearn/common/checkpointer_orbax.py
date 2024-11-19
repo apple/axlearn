@@ -13,6 +13,7 @@ from concurrent import futures
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import jax
+import jax.lib
 import orbax.checkpoint as ocp
 import tensorflow as tf
 from absl import logging
@@ -199,7 +200,17 @@ class OrbaxCheckpointer(BaseCheckpointer):
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> List[str]:
         """See `BaseCheckpointer.checkpointer_paths`."""
+        logging.log_first_n(
+            logging.WARNING,
+            msg="checkpoint_paths is deprecated. Use checkpoint_steps instead.",
+            n=1,
+        )
         return [str(path) for path in ocp.utils.checkpoint_steps_paths(base_dir)]
+
+    @classmethod
+    def checkpoint_steps(cls, base_dir) -> list[int]:
+        """See `BaseCheckpointer.checkpointer_steps`."""
+        return ocp.utils.checkpoint_steps(base_dir)
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
