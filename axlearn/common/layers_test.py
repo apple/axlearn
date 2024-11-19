@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from functools import partial
 from typing import Optional, Union
 
+import einops
 import jax.random
 import numpy as np
 import tensorflow as tf
@@ -39,6 +40,7 @@ from axlearn.common.layers import (
     CategoricalHingeLossMetric,
     ClassificationMetric,
     Conv1D,
+    Conv1DWithPadding,
     Conv2D,
     Conv2DTranspose,
     Conv2DWith1DPadding,
@@ -1264,6 +1266,89 @@ class LayerTest(TestCase, tf.test.TestCase):
                     output_paddings_batch,
                     jnp.take_along_axis(ref_paddings, permute_idx[:, None], axis=0)[:, :output_len],
                 )
+
+    @parameterized.named_parameters(
+        ("1_S1", 1, 1, "VALID", None),
+        ("2_S1_VALID", 2, 1, "VALID", None),
+        ("2_S2_SAME", 2, 2, "SAME", None),
+        ("2_S_CAUSAL", 2, 1, "CAUSAL", None),
+        ("2_S2_VALID", 2, 2, "VALID", None),
+        ("2_S2_CAUSAL", 2, 2, "CAUSAL", None),
+        ("3_S1_VALID", 3, 1, "VALID", None),
+        ("3_S1_VALID_A0", 3, 1, "VALID", 0),
+        ("3_S1_VALID_A1", 3, 1, "VALID", 1),
+        ("3_S1_VALID_A2", 3, 1, "VALID", 2),
+        ("3_S1_SAME", 3, 1, "SAME", None),
+        ("3_S1_CAUSAL", 3, 1, "CAUSAL", None),
+        ("3_S2_VALID", 3, 2, "VALID", None),
+        ("3_S2_CAUSAL", 3, 2, "CAUSAL", None),
+    )
+    def test_conv1d_against_conv2d_with_1d_padding(
+        self,
+        window: int,
+        strides: int,
+        padding: ConvPaddingType,
+        anchor: Optional[int],
+    ):
+        input_dim, output_dim = 4, 6
+        ref_cfg = Conv2DWith1DPadding.default_config().set(
+            name="ref",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=(window, 1),
+            strides=(strides, 1),
+            padding=padding,
+            anchor=anchor,
+        )
+        ref_layer = ref_cfg.instantiate(parent=None)
+
+        test_cfg = Conv1DWithPadding.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            strides=strides,
+            padding=padding,
+            anchor=anchor,
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        state = ref_layer.initialize_parameters_recursively(init_key)
+        test_state = dict(
+            bias=state["bias"], weight=einops.rearrange(state["weight"], "t 1 i o -> t i o")
+        )
+
+        # Generate a batch of 10 input sequences.
+        batch_size, max_seq_len = 10, 10
+
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, input_dim])
+        # The 10 sequences have length 1 to 10.
+        paddings = jnp.triu(jnp.ones((batch_size, max_seq_len)), k=1)
+
+        (test_outputs, test_paddings), _ = F(
+            test_layer,
+            inputs=dict(x=inputs, paddings=paddings),
+            is_training=True,
+            state=test_state,
+            prng_key=prng_key,
+        )
+
+        inputs = einops.rearrange(inputs, "b t i -> b t 1 i")
+        (ref_outputs, ref_paddings), _ = F(
+            ref_layer,
+            inputs=dict(x=inputs, paddings=paddings),
+            is_training=True,
+            state=state,
+            prng_key=prng_key,
+        )
+        ref_outputs = einops.rearrange(ref_outputs, "b t 1 o -> b t o")
+
+        assert_allclose(ref_paddings, test_paddings)
+        assert_allclose(ref_outputs, test_outputs)
 
     @parameterized.named_parameters(
         {
