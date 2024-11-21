@@ -226,6 +226,12 @@ class OrbaxCheckpointer(BaseCheckpointer):
             step_prefix=STEP_PREFIX,
             step_format_fixed_length=STEP_NUM_DIGITS,
         )
+        # TODO(matthew_e_hopkins): bring back save_concurrent_gb and restore_concurrent_gb
+        # after bumping up the Jax version.
+        if cfg.max_concurrent_restore_gb is not None:
+            raise NotImplementedError(
+                "Orbax version (0.5.23) doesn't support separate save/restore concurrent_gb."
+            )
         self._manager = ocp.CheckpointManager(
             directory=cfg.dir,
             options=ocp.CheckpointManagerOptions(
@@ -245,8 +251,7 @@ class OrbaxCheckpointer(BaseCheckpointer):
                 # Note that this defaults to use_ocdb=True. Note also that custom `TypeHandler`s are
                 # ignored by `StandardCheckpointHandler`, so we use `PyTreeCheckpointHandler`.
                 "state": ocp.PyTreeCheckpointHandler(
-                    save_concurrent_gb=cfg.max_concurrent_save_gb,
-                    restore_concurrent_gb=cfg.max_concurrent_restore_gb,
+                    concurrent_gb=cfg.max_concurrent_save_gb,
                 ),
             },
         )

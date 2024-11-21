@@ -121,20 +121,33 @@ class CheckpointerTest(test_utils.TestCase):
                         x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([3], dtype=jnp.float32)
                     ),
                 )
-
-            # When the given state has a different dict shape: [1] instead of [] for x.
-            # Orbax throws AssertionError in this case.
-            with self.assertRaisesRegex(
-                (AssertionError, ValueError),
-                "(checkpoint tree dtypes or shapes|not compatible)",
-            ):
-                ckpt.restore(
-                    step=None,
-                    state=dict(
-                        x=jnp.zeros([1], dtype=jnp.int32),
-                        y=jnp.ones([2], dtype=jnp.float32),
-                    ),
-                )
+            # TODO(matthew_e_hopkins): revert it once upgrade jax version.
+            if checkpointer_cls is Checkpointer:
+                # When the given state has a different dict shape: [1] instead of [] for x.
+                # Orbax throws AssertionError in this case.
+                with self.assertRaisesRegex(
+                    (AssertionError, ValueError),
+                    "(checkpoint tree dtypes or shapes|not compatible)",
+                ):
+                    ckpt.restore(
+                        step=None,
+                        state=dict(
+                            x=jnp.zeros([1], dtype=jnp.int32),
+                            y=jnp.ones([2], dtype=jnp.float32),
+                        ),
+                    )
+            else:
+                with self.assertRaisesRegex(
+                    (AssertionError, ValueError),
+                    "Cannot intersect index domain",
+                ):
+                    ckpt.restore(
+                        step=None,
+                        state=dict(
+                            x=jnp.zeros([1], dtype=jnp.int32),
+                            y=jnp.ones([2], dtype=jnp.float32),
+                        ),
+                    )
 
             # When the given state has a different dtype: float32 instead of int32 for x.
             with self.assertRaisesRegex(ValueError, "checkpoint tree dtypes or shapes"):
