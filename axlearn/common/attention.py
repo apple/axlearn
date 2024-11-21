@@ -867,6 +867,7 @@ class QKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[Tensor] = None,
         time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         """Computes attention for the given query, key, value.
@@ -875,6 +876,12 @@ class QKVLinear(BaseQKVLinear):
 
         See parent class for full docstring.
         """
+        if kv_state is not None:
+            raise ValueError(
+                "QKVLinear computes key and value projections "
+                "and does not expect external `kv_state`."
+            )
+
         key = query if key is None else key
         value = query if value is None else value
         q_proj = self.q_proj(query)
@@ -1019,6 +1026,7 @@ class FusedQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
         time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         """Computes multi-head query, key, and value for the input query, key, value
@@ -1029,8 +1037,14 @@ class FusedQKVLinear(BaseQKVLinear):
         See parent class for full docstring.
 
         Raises:
-            ValueError: If key and value are not both set or both None.
+            ValueError: If key and value are not both set or both None; or if kv_state is not None.
         """
+        if kv_state is not None:
+            raise ValueError(
+                "FusedQKVLinear computes key and value projections "
+                "and does not expect external `kv_state`."
+            )
+
         with child_context("qkv_proj"):
             params = self.qkv_proj.parameters
             if key is None and value is None:
@@ -1111,12 +1125,18 @@ class FusedGroupedQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[Tensor] = None,
         time_step: Optional[Tensor] = None,
     ) -> FusedQKVLinear.Output:
         """See FusedQKVLinear for full docstring.
 
         N.B. Only supports cases where key and value are both None.
         """
+        if kv_state is not None:
+            raise ValueError(
+                "FusedGroupedQKVLinear computes key and value projections "
+                "and does not expect external `kv_state`."
+            )
         if key is not None or value is not None:
             raise ValueError("Key and value should be both None.")
         cfg = self.config
@@ -1193,6 +1213,7 @@ def apply_rotary_position_embeddings(
     key: Tensor,
     value: Tensor,
     sinusoidal_pos: Tensor,
+    rotary_key: bool,
     rotary_value: bool,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """This is a jax implementation (a copy) of the RoPE apply_rotary_position_embeddings.
@@ -1205,7 +1226,8 @@ def apply_rotary_position_embeddings(
         key: Key embeddings with shape [batch_size, seq_len, num_heads, dim].
         value: Value embeddings with shape [batch_size, seq_len, num_heads, dim].
         sinusoidal_pos: Rotary position embeddings with shape [batch_size, seq_len, 1, dim].
-        rotary_value: Whether to apply rotary position embeddings on value layer.
+        rotary_key: Whether to apply rotary position embeddings on key.
+        rotary_value: Whether to apply rotary position embeddings on value.
 
     Returns:
         A tuple of:
@@ -1226,9 +1248,13 @@ def apply_rotary_position_embeddings(
         jnp.stack([-query[..., 1::2], query[..., ::2]], axis=-1), query.shape
     )
     query = query * cos_pos + rotate_half_query * sin_pos
-    # rotate_half_key_layer [-k1,k0,-k3,k2......,-kd-1,kd-2]
-    rotate_half_key = jnp.reshape(jnp.stack([-key[..., 1::2], key[..., ::2]], axis=-1), key.shape)
-    key = key * cos_pos + rotate_half_key * sin_pos
+
+    if rotary_key:
+        # rotate_half_key_layer [-k1,k0,-k3,k2......,-kd-1,kd-2]
+        rotate_half_key = jnp.reshape(
+            jnp.stack([-key[..., 1::2], key[..., ::2]], axis=-1), key.shape
+        )
+        key = key * cos_pos + rotate_half_key * sin_pos
     if rotary_value:
         # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
         rotate_half_value = jnp.reshape(
@@ -1252,6 +1278,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
             RoFormerSinusoidalPositionalEmbedding.default_config()
         )
         input_linear: BaseQKVLinear.Config = QKVLinear.default_config()
+        # Whether to apply RoPE rotations to the value embeddings.
         rotary_value: Required[bool] = REQUIRED
 
     def __init__(self, cfg: QKVLinear.Config, *, parent: Module):
@@ -1283,23 +1310,27 @@ class RoFormerQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
         time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         cfg = self.config
         # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
-        query, key, value = self.i_proj(query, key=key, value=value)
+        query, key, value = self.i_proj(query, key=key, value=value, kv_state=kv_state)
         query_pos = jnp.arange(query.shape[1])[None]  # [batch_size=1, seq_len].
         if time_step is not None:
             query_pos = query_pos + time_step[:, None]  # [batch_size, seq_len].
         sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(query_pos).astype(query.dtype)
         # sinusoidal_pos_emb shape should be [batch_size, seq_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(sinusoidal_pos_emb, 2)
+
+        i_proj_computes_kv = kv_state is None
         query, key, value = apply_rotary_position_embeddings(
             sinusoidal_pos=sinusoidal_pos_emb,
             query=query,
             key=key,
             value=value,
-            rotary_value=cfg.rotary_value,
+            rotary_key=i_proj_computes_kv,
+            rotary_value=i_proj_computes_kv and cfg.rotary_value,
         )
 
         return self.Output(query, key, value)

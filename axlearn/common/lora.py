@@ -516,8 +516,15 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[Tensor] = None,
         time_step: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
+        if kv_state is not None:
+            raise ValueError(
+                "LoraFusedQKVLinear computes key and value projections "
+                "and does not expect external `kv_state`."
+            )
+
         cfg = self.config
         if key is None and value is None:
             inputs = query
