@@ -52,7 +52,8 @@ def setup(
         if initialization_timeout is not None:
             init_kwargs["initialization_timeout"] = initialization_timeout
 
-        if jax_backend == "tpu":
+        # TPU resources orchestrated by Pathways use 'proxy' as the JAX backend
+        if jax_backend in ("tpu", "proxy"):
             if not (
                 distributed_coordinator is None and num_processes is None and process_id is None
             ):
@@ -92,5 +93,7 @@ def setup(
                 # local_device_ids arg allows us to maintain expected behavior
                 init_kwargs["local_device_ids"] = list(range(8))
 
-        jax.distributed.initialize(**init_kwargs)
+        # When using Pathways proxy for TPU backend, jax distributed init is not needed
+        if jax_backend != "proxy":
+            jax.distributed.initialize(**init_kwargs)
         _jax_distributed_initialized = True
