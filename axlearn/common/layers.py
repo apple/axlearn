@@ -54,6 +54,7 @@ from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.utils import (
     NestedTensor,
     Tensor,
+    maybe_shard,
     partial_with_fn_metadata,
     with_sharding_constraint,
 )
@@ -331,6 +332,10 @@ class RMSNorm(BaseNormalizationLayer):
         eps: float = 1e-8
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
+        # If not None, how to partition input activation values.
+        input_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition output activation values.
+        output_partition_spec: Optional[tuple[Optional[str]]] = None
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
@@ -341,6 +346,7 @@ class RMSNorm(BaseNormalizationLayer):
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
         del paddings  # paddings do not affect LayerNorm results
         cfg = self.config
+        x = maybe_shard(x, cfg.input_partition_spec)
         x_dtype = x.dtype
         if cfg.forward_dtype is not None:
             x = x.astype(cfg.forward_dtype)
@@ -348,6 +354,7 @@ class RMSNorm(BaseNormalizationLayer):
         x = x * jax.lax.rsqrt(moment2 + cfg.eps)
         x = x.astype(x_dtype)
         x = x * self.parameters["scale"]
+        x = maybe_shard(x, cfg.output_partition_spec)
         return x
 
 
@@ -780,6 +787,12 @@ class Embedding(BaseLayer):
 
         num_embeddings: Required[int] = REQUIRED  # Maximum number of embeddings in table.
         dim: Required[int] = REQUIRED  # Embedding vector dimensionality.
+        # If not None, how to partition input activation values.
+        input_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition embedding table.
+        embedding_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition output activation values.
+        output_partition_spec: Optional[tuple[Optional[str]]] = None
 
     @classmethod
     def default_config(cls):
@@ -814,8 +827,13 @@ class Embedding(BaseLayer):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        cfg = self.config
+        x = maybe_shard(x, cfg.input_partition_spec)
         emb = self.parameters["weight"]
-        return emb[x]
+        emb = maybe_shard(emb, cfg.embedding_partition_spec)
+        activation = emb[x]
+        activation = maybe_shard(activation, cfg.output_partition_spec)
+        return activation
 
     def attend(self, x: Tensor) -> Tensor:
         """Apply query array 'x' to the embedding weight array.
