@@ -111,6 +111,7 @@ from axlearn.common.utils import (
     get_or_none,
     shapes,
     split_prng_key,
+    maybe_shard
 )
 
 NEG_INF = -1e15
@@ -2525,6 +2526,12 @@ class TransformerAttentionLayer(BaseLayer):
         # Ref: https://github.com/google/praxis/blob/main/praxis/layers/transformers.py#L1129
         # TODO (bwzhang@) Adding a unittest for the hybridnorm.
         structure: str = "prenorm"
+        # If not None, how to partition pre norm activation values.
+        prenorm_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition pre attention activation values.
+        preattention_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition post attention activation values.
+        postattention_partition_spec: Optional[tuple[Optional[str]]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -2648,9 +2655,12 @@ class TransformerAttentionLayer(BaseLayer):
                 return dict(attention=atten_state), atten_output
 
         if cfg.structure == "prenorm":
+            target = maybe_shard(target, cfg.prenorm_partition_spec)
             skip_input = target  # pre-norm: where normalization happens within the residual part.
             norm_target = self.norm(target)
+            norm_target = maybe_shard(norm_target, cfg.preattention_partition_spec)
             atten_state, atten_output = attention_thunk(norm_target)
+            atten_output = maybe_shard(atten_output, cfg.postattention_partition_spec)
             data = skip_input + self.stochastic_depth(self.dropout(atten_output.data))
         elif cfg.structure == "postnorm":
             # This is the structure used by the original Transformer, BERT, and RoBERTa.
@@ -2878,6 +2888,13 @@ class TransformerFeedForwardLayer(BaseLayer):
         # TODO(tlei3): deprecate this feature since we use TensorStats.
         add_value_rms_norm_summary: Sequence[str] = []
 
+        # If not None, how to partition pre norm activation values.
+        prenorm_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition pre MLP activation values.
+        premlp_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition post MLP activation values.
+        postmlp_partition_spec: Optional[tuple[Optional[str]]] = None
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg: TransformerFeedForwardLayer.Config = self.config
@@ -2942,12 +2959,15 @@ class TransformerFeedForwardLayer(BaseLayer):
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
         if cfg.structure == "prenorm":
+            inputs = maybe_shard(inputs, cfg.prenorm_partition_spec)
             x = self.norm(inputs)
+            x = maybe_shard(x, cfg.premlp_partition_spec)
             x = self._linear1_activation(x)
             x = self._remat_name(x, remat_pt1)
             x = self.dropout1(x)
             x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
+            x = maybe_shard(x, cfg.postmlp_partition_spec)
             x = self.dropout2(x)
             x = self.stochastic_depth(x)
             if cfg.residual_weight != 1:
