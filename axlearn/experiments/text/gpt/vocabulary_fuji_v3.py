@@ -118,15 +118,19 @@ class FujiV3Vocabulary:
         for token in ("<|pad_id|>", "<|finetune_right_pad_id|>"):
             if token in self.vocab:
                 return self.vocab[token]
-        else:
-            raise ValueError("Unable to infer pad token.")
+        raise ValueError("Unable to infer pad token.")
 
     @property
     def eos_id(self) -> Optional[int]:
         if "<|end_of_text|>" in self.vocab:
             return self.vocab["<|end_of_text|>"]
-        else:
-            raise NotImplementedError()
+        raise ValueError("Unable to infer eos token.")
+
+    @property
+    def bos_id(self) -> Optional[int]:
+        if "<|begin_of_text|>" in self.vocab:
+            return self.vocab["<|begin_of_text|>"]
+        raise ValueError("Unable to infer eos token.")
 
     def _encode_tf(self, s: tf.Tensor) -> tf.Tensor:
         """Encodes a string to token IDs.
@@ -144,8 +148,12 @@ class FujiV3Vocabulary:
 
         def helper(s):
             s = s.numpy()
-            res = self._tokenizer.encode_batch([item.decode("utf-8") for item in s])
-            return tf.ragged.constant([r.ids for r in res])
+            res = self._tokenizer.encode_batch(
+                [item.decode("utf-8") for item in s], add_special_tokens=True
+            )
+            # The return does not include EOS, but we need to remove BOS.
+            res = [item.ids[1:] if item.ids[0] == self.bos_id else item.ids for item in res]
+            return tf.ragged.constant(res, dtype=tf.int32)
 
         ret = tf.py_function(
             helper, inp=[s], Tout=tf.RaggedTensorSpec([None, None], dtype=tf.int32)
@@ -158,12 +166,17 @@ class FujiV3Vocabulary:
     def _decode_tf(self, ids: tf.Tensor) -> tf.Tensor:
         """Detokenizes int32 batched Tensor."""
         need_unpack = False
-        if ids.ndim == 1:
+        if len(ids.shape) == 1:
             ids = tf.reshape(ids, (1, -1))
             need_unpack = True
 
         def helper(ids):
-            s = self._tokenizer.decode_batch(ids.numpy().tolist(), skip_special_tokens=True)
+            ids = [ids[i].numpy() for i in range(ids.shape[0])]
+            ids = [
+                item[(item != self.bos_id) & (item != self.eos_id) & (item != self.pad_id)]
+                for item in ids
+            ]
+            s = self._tokenizer.decode_batch(ids, skip_special_tokens=False)
             return tf.convert_to_tensor(s, dtype=tf.string)
 
         ret = tf.py_function(helper, inp=[ids], Tout=tf.string)
@@ -186,11 +199,16 @@ class FujiV3Vocabulary:
 
     def encode(self, s: str) -> list[int]:
         """Tokenizes string to an int sequence, without adding EOS."""
-        return self._tokenizer.encode(s).ids
+        ret = self._tokenizer.encode(s, add_special_tokens=True).ids
+        # The return does not include EOS, but we need to remove BOS.
+        return ret[1:] if ret[0] == self.bos_id else ret
 
     def _decode(self, ids: Union[list[int], tuple[int]]) -> str:
         """Detokenizes int32 iterable to a string."""
-        return self._tokenizer.decode(ids)
+        # remove BOS, EOS and PAD.
+        ids = np.array(ids)
+        ids = ids[(ids != self.bos_id) & (ids != self.eos_id) & (ids != self.pad_id)]
+        return self._tokenizer.decode(ids, skip_special_tokens=False)
 
     def decode(self, ids: Union[list[int], tuple[int], jax.Array, np.ndarray]) -> str:
         """Detokenizes int32 iterable to a string, up through first EOS."""
