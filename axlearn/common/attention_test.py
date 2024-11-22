@@ -4936,6 +4936,70 @@ class ConfigHelperTest(TestCase):
                     (fsdp_axis_names, tp_axis_names, None),
                 )
 
+    @parameterized.product(
+    self_attention_input_linear_cfg=(
+        QKVLinear.default_config(),
+        FusedQKVLinear.default_config(),
+    ),
+    cross_attention_cfg=(None, TransformerAttentionLayer.default_config()),
+    batch_axis_names=("data", ("replica", "data", "fsdp")),
+    fsdp_axis_names=("fsdp",),
+    tp_axis_names=("model",),
+        seq_axis_names=("seq",),
+    )
+    def test_set_activation_shardings_config_for_list_of_configs(
+        self,
+        self_attention_input_linear_cfg,
+        cross_attention_cfg,
+        batch_axis_names,
+        fsdp_axis_names,
+        tp_axis_names,
+        seq_axis_names,
+    ):
+        cfg_layer: TransformerLayer.Config = TransformerLayer.default_config().set(
+            cross_attention=cross_attention_cfg
+        )
+        cfg_layer.self_attention.structure = "prenorm"
+        cfg_layer.feed_forward.structure = "prenorm"
+        cfg_layer.self_attention.attention.input_linear = self_attention_input_linear_cfg
+        cfg_layers = [cfg_layer, cfg_layer]
+
+        cfg_layer.self_attention.prenorm_partition_spec = (fsdp_axis_names, tp_axis_names, None,)
+        cfg_layer.self_attention.preattention_partition_spec = (fsdp_axis_names, None, None)
+        cfg_layer.self_attention.postattention_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+
+        cfg_layer.feed_forward.prenorm_partition_spec = (fsdp_axis_names, tp_axis_names, None,)
+        cfg_layer.feed_forward.premlp_partition_spec = (fsdp_axis_names, None, None)
+        cfg_layer.feed_forward.postmlp_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+
+        for cfg in cfg_layers:
+            self_atten = cfg.self_attention
+            feed_forward = cfg.feed_forward
+            self.assertSequenceEqual(
+                self_atten.prenorm_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
+            )
+            self.assertSequenceEqual(
+                self_atten.preattention_partition_spec,
+                (fsdp_axis_names, None, None),
+            )
+            self.assertSequenceEqual(
+                self_atten.postattention_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
+            )
+
+            self.assertSequenceEqual(
+                feed_forward.prenorm_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
+            )
+            self.assertSequenceEqual(
+                feed_forward.premlp_partition_spec,
+                (fsdp_axis_names, None, None),
+            )
+            self.assertSequenceEqual(
+                feed_forward.postmlp_partition_spec,
+                (fsdp_axis_names, tp_axis_names, None),
+            )
 
 class PositionalEmbeddingTest(TestCase):
     """Tests PositionalEmbedding."""
