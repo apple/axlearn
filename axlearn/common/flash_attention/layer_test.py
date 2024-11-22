@@ -38,6 +38,7 @@ from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
+from axlearn.common.utils import TensorSpec
 
 
 def _fake_inputs(
@@ -650,12 +651,20 @@ class TestFlashAttention(TestCase):
             )
 
             # Prepare initial states.
-            initial_state = test_layer.init_states(
-                target_batch_size=batch, target_max_len=seq_len, kv_state=kv_state
+            initial_state, initial_output = test_layer.init_states(
+                time_step=None,
+                query=TensorSpec([batch, seq_len]),
+                kv_state=kv_state,
+                attention_logit_biases=None,
             )
-            ref_initial_state = ref_layer.init_states(
-                target_batch_size=batch, target_max_len=seq_len, kv_state=kv_state
+            ref_initial_state, ref_inital_output = ref_layer.init_states(
+                time_step=None,
+                query=TensorSpec([batch, seq_len]),
+                kv_state=kv_state,
+                attention_logit_biases=None,
             )
+            self.assertIsNone(initial_output)
+            self.assertIsNone(ref_inital_output)
             for k in ["key", "value"]:
                 self.assertEqual(ref_initial_state["i_proj"][k].dtype, dtype)
                 self.assertEqual(initial_state["i_proj"][k].dtype, dtype)

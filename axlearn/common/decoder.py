@@ -47,7 +47,7 @@ from axlearn.common.module import (
     current_context,
     new_output_collection,
 )
-from axlearn.common.utils import Nested, NestedTensor, with_sharding_constraint
+from axlearn.common.utils import Nested, NestedTensor, TensorSpec, with_sharding_constraint
 
 
 # TODO(markblee): Remove this when we have a better solution at the decoding loop level.
@@ -492,7 +492,7 @@ class Decoder(BaseLayer):
             assert cached_states is not None
             if input_segment_ids is not None:
                 raise ValueError("input_segment_ids is not supported in INIT_STATES.")
-            transformer_state, x = self.transformer.prefill_states(
+            transformer_state, x = self.transformer.init_states(
                 time_step=cached_states["transformer_state"],
                 data=x,
                 self_attention_logit_biases=self_attention_logit_biases,
@@ -584,10 +584,12 @@ class Decoder(BaseLayer):
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
         """See `BaseDecoder.init_states` for details."""
         cfg: Decoder.Config = self.config
+        init_state, _ = self.transformer.init_states(
+            time_step=None,
+            data=TensorSpec([batch_size, max_sequence_length, cfg.dim]),
+        )
         return dict(
-            transformer_state=self.transformer.init_states(
-                target_batch_size=batch_size, target_max_len=max_sequence_length
-            ),
+            transformer_state=init_state,
             input_ids=jnp.full(
                 (batch_size, max_sequence_length), cfg.pad_token_id, dtype=jnp.int32
             ),
