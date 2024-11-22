@@ -41,7 +41,7 @@ class FujiV3VocabularyTest(TestCase):
     def test_tokenize_example(self):
         vocab = self.vocab_cfg.instantiate()
         newlines_replaced_with = "<n>"
-        newlines_replaced_with_id = vocab.encode(newlines_replaced_with)[1:]  # remove bos token
+        newlines_replaced_with_id = vocab.encode(newlines_replaced_with)
 
         # Test tokenize_example replaces newlines.
         tokens = input_text.tokenize_example(
@@ -110,7 +110,7 @@ class FujiV3VocabularyTest(TestCase):
             processor=config_for_function(text_to_lm_training_input).set(
                 vocab_cfg=self.vocab_cfg,
                 max_len=max_len,
-                replace_newlines_with="<n>",
+                replace_newlines_with="\n",
                 window_size=window_size,
                 max_padding_fraction=max_padding_fraction,
                 shuffle_buffer_size=shuffle_buffer_size,
@@ -193,9 +193,7 @@ class FujiV3VocabularyTest(TestCase):
 
         input_ids, target_labels = example["input_ids"].numpy(), example["target_labels"].numpy()
         self.assertEqual(128001, input_ids[0])  # EOS
-        self.assertEqual(128000, input_ids[1])  # BOS
         non_padded_length = (target_labels == 128004).argmax()
-        self.assertEqual(128000, target_labels[0])  # BOS at start.
         self.assertEqual(128001, target_labels[non_padded_length - 1])  # EOS.
         # The inputs should be one-off the labels.
         self.assertNestedAllClose(
