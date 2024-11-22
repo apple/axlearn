@@ -53,6 +53,12 @@ from axlearn.experiments.text.gpt.common import (
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
+from axlearn.cloud.gcp.system_characteristics import (
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+)
+from absl import flags
+
+FLAGS = flags.FLAGS
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
@@ -370,6 +376,27 @@ def get_trainer_kwargs(
             ),
         )
     elif model_size == "70B":
+        remat_policy_70b = config_for_function(
+            jax_remat_policies.save_and_offload_only_these_names
+        ).set(
+            names_which_can_be_saved=[],
+            names_which_can_be_offloaded=[
+                "FlashAttention.q_proj",
+                "FlashAttention.k_proj",
+                "FlashAttention.v_proj",
+                #"FlashAttention.o_proj",
+                # "FlashAttention.context",
+                # "TransformerFeedForwardLayer.activation",
+                # "TransformerFeedForwardLayer.linear2",
+                # "transformer_forward_data",
+            ],
+            offload_src="device",
+            offload_dst="pinned_host",
+        )
+        if FLAGS.pdbs:
+            import jax
+            train_batch_size = len(jax.devices()) * int(FLAGS.pdbs)
+
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=80,
@@ -387,6 +414,8 @@ def get_trainer_kwargs(
             max_sequence_length=max_sequence_length,
             train_batch_size=train_batch_size,
             max_step=max_step,
+            #eval_every_n_steps=500,
+            save_every_n_steps=100,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
                 # TPU V5e maximum per device batch is 1.
@@ -398,13 +427,13 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=128)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        policy=offload_dots_saveable_policy,
+                                        policy=jax_remat_policies.dots_saveable,
                                     ),
                                 }
                             ),
@@ -416,6 +445,26 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
+                ),
+                # tpu-v6e.
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=remat_policy_70b,
+                                        # policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
                 ),
             ),
         )

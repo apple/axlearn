@@ -787,6 +787,7 @@ class TPUGKEJob(GKEJob):
                 labels.update({"bastion-tier": "reserved"})
             else:
                 logging.info("Found tier=%s in env. Using spot quota", tier)
+                # Comment out selector when running against internal v6e test project
                 selector.update({"cloud.google.com/gke-spot": "true"})
                 tolerations.append(
                     {
@@ -1063,6 +1064,11 @@ class TPUGKEJob(GKEJob):
             import yaml
             yaml.dump(custom_object, f, default_flow_style=False)
         logging.info("Submitting JobSet body=%s api_kwargs=%s", custom_object, api_kwargs)
+        with open(f"jobsets/jobset-{cfg.name}.yaml", "w") as f:
+            logging.info("Output jobset to yaml file...")
+            import yaml
+            yaml.dump(custom_object, f, default_flow_style=False)
+
         return k8s.client.CustomObjectsApi().create_namespaced_custom_object(
             namespace=cfg.namespace,
             body=custom_object,

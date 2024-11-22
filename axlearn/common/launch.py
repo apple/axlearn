@@ -23,6 +23,7 @@ try:
         instance_type=instance_type, num_slices=num_tpu_slices, backend="tpu"
     )
     os.environ["LIBTPU_INIT_ARGS"] = compiler_options.xla_flags_from_options(libtpu_init_options)
+    print("LIBTPU_INIT_ARGS: ", os.environ["LIBTPU_INIT_ARGS"], file=sys.stderr)
 except compiler_options.NotTpuError as e:
     # Log this when setup() is called.
     tpu_flags_exc = e
