@@ -341,10 +341,13 @@ class RMSNorm(BaseNormalizationLayer):
         x_dtype = x.dtype
         if cfg.forward_dtype is not None:
             x = x.astype(cfg.forward_dtype)
+        x = with_sharding_constraint(x, PartitionSpec('fsdp','model', None))
         moment2 = (x * x).mean(axis=-1, keepdims=True)
         x = x * jax.lax.rsqrt(moment2 + cfg.eps)
         x = x.astype(x_dtype)
+        x = with_sharding_constraint(x, PartitionSpec('fsdp','model', None))
         x = x * self.parameters["scale"]
+        x = with_sharding_constraint(x, PartitionSpec('fsdp','model', None))
         return x
 
 
@@ -2498,8 +2501,14 @@ class Embedding(BaseLayer):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        x = with_sharding_constraint(x, PartitionSpec('fsdp', None))
         emb = self.parameters["weight"]
-        return emb[x]
+        emb = with_sharding_constraint(emb, PartitionSpec('model', None))
+        # return emb[x]
+        activation = emb[x]
+        activation = with_sharding_constraint(activation, PartitionSpec('fsdp', None, None))
+        return activation
+
 
     def attend(self, x: Tensor) -> Tensor:
         """Apply query array 'x' to the embedding weight array.

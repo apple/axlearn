@@ -596,14 +596,18 @@ class DataPartitionType(Enum):
     FULL = "full"
     # Data are fully replicated across all devices.
     REPLICATED = "replicated"
+    # Data are partitioned across batch axis only.
+    BATCH = "batch"
 
 
-def data_partition_type_to_spec(partition: DataPartitionType) -> PartitionSpec:
+def data_partition_type_to_spec(partition: DataPartitionType, * , batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp")) -> PartitionSpec:
     """Returns a PartitionSpec for the given partition type."""
     if partition == DataPartitionType.FULL:
         return input_partition_spec()
     elif partition == DataPartitionType.REPLICATED:
         return None
+    elif partition == DataPartitionType.BATCH:
+        return PartitionSpec(batch_axis_names)
     else:
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
@@ -612,6 +616,7 @@ def host_to_global_device_array(
     host_arrays: Nested[Union[np.ndarray, Tensor]],
     *,
     partition: DataPartitionType = DataPartitionType.FULL,
+    batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp"),
 ) -> NestedTensor:
     """Converts the given host device arrays to global device arrays.
 
@@ -630,7 +635,7 @@ def host_to_global_device_array(
         NotImplementedError: if the given `partition` type is not supported.
     """
     mesh = thread_resources.env.physical_mesh
-    partition_spec = data_partition_type_to_spec(partition)
+    partition_spec = data_partition_type_to_spec(partition, batch_axis_names=batch_axis_names)
     partition_specs = complete_partition_spec_tree(
         jax.tree_util.tree_structure(host_arrays), partition_spec
     )
@@ -640,6 +645,8 @@ def host_to_global_device_array(
         if partition == DataPartitionType.FULL:
             global_shape = (x.shape[0] * process_count, *x.shape[1:])
         elif partition == DataPartitionType.REPLICATED:
+            global_shape = (x.shape[0], *x.shape[1:])
+        elif partition == DataPartitionType.BATCH:
             global_shape = (x.shape[0], *x.shape[1:])
         else:
             raise NotImplementedError(f"Unsupported partition: {partition}")

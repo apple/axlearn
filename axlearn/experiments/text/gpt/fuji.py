@@ -27,6 +27,7 @@ from axlearn.common.attention import (
     MultiheadAttention,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
+    TransformerLayer,
     RoFormerQKVLinear,
 )
 from axlearn.common.base_layer import RematSpec
@@ -41,7 +42,7 @@ from axlearn.common.trainer_config_modifier import (
     MeshShapeModifier,
     RematSpecModifier,
 )
-from axlearn.common.utils import extended_checkpoint_policies
+from axlearn.common.utils import DataPartitionType, extended_checkpoint_policies
 from axlearn.experiments.text.gpt.common import (
     STEP_DTYPE,
     SourceBuilder,
@@ -123,7 +124,8 @@ def get_trainer_kwargs(
         return {}
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
-    train_batch_size = tokens_per_batch // max_sequence_length
+    # train_batch_size = tokens_per_batch // max_sequence_length
+    train_batch_size = 16
 
     # Whether to use grouped query attention.
     num_kv_heads = None
@@ -200,7 +202,7 @@ def get_trainer_kwargs(
     elif model_size == "7B":
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=32,
+                num_layers=4,
                 hidden_dim=128 * 32,
                 num_heads=32,
                 num_kv_heads=num_kv_heads,
@@ -212,6 +214,7 @@ def get_trainer_kwargs(
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
             train_batch_size=train_batch_size,
+            input_partition_type=None if backend != "neuron" else DataPartitionType.BATCH,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
@@ -385,21 +388,23 @@ def get_trainer_kwargs(
     elif model_size == "70B":
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=80,
+                num_layers=8,
                 hidden_dim=128 * 64,
                 num_heads=64,
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
-                num_kv_heads=None if version == Version.V1 else 8,
+                num_kv_heads=None, # if version == Version.V1 else 8,
                 # TODO(kelvin-zou): Remove the perf numbers for V5e (OOM).
                 ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
                 rope_theta=rope_theta,
-                shared_lm_head=False,
+                # shared_lm_head=False,
+                shared_lm_head=True,
                 flash_attention=flash_attention,
                 stack_cfg=None if backend != "neuron" else StackedTransformerLayer.default_config(),
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
             train_batch_size=train_batch_size,
+            input_partition_type=None if backend != "neuron" else DataPartitionType.BATCH,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -504,6 +509,23 @@ def model_config(
     )
     atten_qkv_linear.rope_pos_emb_layer.theta = rope_theta
 
+    # batch_axis_names=("data", ("replica", "data", "fsdp"))
+    # fsdp_axis_names=("fsdp")
+    # tp_axis_names=("model")
+    # seq_axis_names=("seq",)
+    # prenorm_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+    # preattention_partition_spec = (fsdp_axis_names, None, None)
+    # postattention_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+    # layer_cfg=TransformerLayer.default_config()
+    # layer_cfg.self_attention.set(
+    #     prenorm_partition_spec=prenorm_partition_spec, 
+    #     preattention_partition_spec=preattention_partition_spec, 
+    #     postattention_partition_spec=postattention_partition_spec)
+    # layer_cfg.feed_forward.set(
+    #     prenorm_partition_spec=prenorm_partition_spec, 
+    #     premlp_partition_spec=preattention_partition_spec, 
+    #     postmlp_partition_spec=postattention_partition_spec),
+
     cfg = common_model_config(
         num_layers=num_layers,
         hidden_dim=hidden_dim,
@@ -517,6 +539,7 @@ def model_config(
         emb_cfg=TransformerTextEmbeddings.default_config().set(pos_emb=None),
         lm_head_cfg=LmHead.default_config() if not shared_lm_head else None,
         attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
+        # layer_cfg=layer_cfg,
         attention_qkv_linear=atten_qkv_linear,
     )
     return cfg
