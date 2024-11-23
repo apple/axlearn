@@ -57,7 +57,7 @@ from axlearn.common.optimizer_base import PartitionedGradientTransformation
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.summary_writer import BaseWriter
 from axlearn.common.trainer import MeshShape, SpmdTrainer
-from axlearn.common.utils import HybridMeshShape, Nested, get_data_dir
+from axlearn.common.utils import DataPartitionType, HybridMeshShape, Nested, get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, tfds_text_source
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
@@ -326,6 +326,7 @@ def model_config(
         seq_axis_names="seq",
     )
     cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
+    cfg.decoder.emb.token_emb.param_partition_spec = ("model", ("expert", "fsdp", "seq")) # shard vocab
     set_bias_recursively(cfg, False)
     set_norm_recursively(cfg, normalization)
     cfg.z_loss_scale = z_loss_scale
@@ -638,6 +639,7 @@ def get_trainer_config_fn(
     train_input_source: InstantiableConfig[input_tf_data.BuildDatasetFn],
     evalers: dict[str, SpmdEvaler.Config],
     mesh_shape: Union[MeshShape, HybridMeshShape],
+    input_partition_type:  Optional[DataPartitionType] = None,
     mesh_axis_names: Sequence[str] = MESH_AXIS_NAMES,
     mesh_rules: Optional[Sequence[tuple[str, Optional[Union[MeshShape, HybridMeshShape]]]]] = None,
     eval_every_n_steps: int = 5000,
@@ -689,6 +691,8 @@ def get_trainer_config_fn(
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
         )
+        if input_partition_type:
+            cfg.input_partition_type = input_partition_type
         cfg.evalers = {}
         for name, evaler_cfg in evalers.items():
             evaler_cfg.input.batcher.set(global_batch_size=eval_batch_size or train_batch_size)
