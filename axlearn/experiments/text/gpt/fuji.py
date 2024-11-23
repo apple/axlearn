@@ -15,6 +15,7 @@ import functools
 import itertools
 from typing import Any, Optional, Union
 
+import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
@@ -25,6 +26,7 @@ from axlearn.common.attention import (
     GroupedQueryAttention,
     MultiheadAttention,
     RepeatedTransformerLayer,
+    StackedTransformerLayer,
     RoFormerQKVLinear,
 )
 from axlearn.common.base_layer import RematSpec
@@ -127,6 +129,7 @@ def get_trainer_kwargs(
     num_kv_heads = None
     if version == Version.V3:
         num_kv_heads = 8
+    backend = jax.default_backend()
 
     rope_theta = ROPE_THETA[version]
 
@@ -147,11 +150,12 @@ def get_trainer_kwargs(
                 rope_theta=rope_theta,
                 shared_lm_head=True,
                 flash_attention=flash_attention,
+                stack_cfg=None if backend != "neuron" else StackedTransformerLayer.default_config(),
             ),
             learner_kwargs=dict(peak_lr=6e-4, weight_decay=0.01),
             max_sequence_length=64,
-            train_batch_size=32,
-            eval_batch_size=32,
+            train_batch_size=64,
+            eval_batch_size=64,
             max_step=3000,
             eval_every_n_steps=1500,
             save_every_n_steps=500,
@@ -203,6 +207,7 @@ def get_trainer_kwargs(
                 rope_theta=rope_theta,
                 shared_lm_head=True,
                 flash_attention=flash_attention,
+                stack_cfg=None if backend != "neuron" else StackedTransformerLayer.default_config(),
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -286,6 +291,14 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    mesh_shape_from_axes(fsdp=-1, model=4),
+                ),
+                (
+                    "neuron-(trn1|trn1n).32xlarge-64",
+                    mesh_shape_from_axes(fsdp=-1, model=8),
                 ),
             ),
         )
@@ -382,6 +395,7 @@ def get_trainer_kwargs(
                 rope_theta=rope_theta,
                 shared_lm_head=False,
                 flash_attention=flash_attention,
+                stack_cfg=None if backend != "neuron" else StackedTransformerLayer.default_config(),
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -416,6 +430,10 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
+                ),
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    mesh_shape_from_axes(fsdp=-1, model=4),
                 ),
             ),
         )
