@@ -229,6 +229,7 @@ class SimpleFPN(BaseLayer):
             window=(2, 2),
             padding="VALID",
             strides=(2, 2),
+            transpose_kernel=True,
             param_partition_spec=(None, None, None, "model"),
             # Equivalent to kaiming_normal_(mode='fan_out', nonlinearity='relu').
             param_init=DefaultInitializer.default_config().set(

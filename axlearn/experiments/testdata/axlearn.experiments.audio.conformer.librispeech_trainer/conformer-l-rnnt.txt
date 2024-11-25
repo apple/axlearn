@@ -410,7 +410,8 @@ model.encoder.context.context.layer.ff_start.stochastic_depth.mode: 'row'
 model.encoder.context.context.layer.ff_start.structure: 'prenorm'
 model.encoder.context.context.layer.klass: 'axlearn.common.conformer.ConformerLayer'
 model.encoder.context.context.layer.lconv.conv.bias: False
-model.encoder.context.context.layer.lconv.conv.klass: 'axlearn.common.layers.DepthwiseConv1D'
+model.encoder.context.context.layer.lconv.conv.klass: 'axlearn.common.layers.Conv1D'
+model.encoder.context.context.layer.lconv.conv.num_input_dim_groups: 1
 model.encoder.context.context.layer.lconv.conv.padding: 'SAME'
 model.encoder.context.context.layer.lconv.conv.param_partition_spec[0]: None
 model.encoder.context.context.layer.lconv.conv.param_partition_spec[1]: None
