@@ -507,9 +507,9 @@ class TPUGKEJob(GKEJob):
         # brittle implementation
         return "pathwaysutils" in self.config.import_modules and "jax_backend proxy" in self.config.command
 
-    def _import_modules(self, import_modules: list[str]):
+    def _import_modules(self):
         try:
-            for module in import_modules:
+            for module in self.config.import_modules:
                 importlib.import_module(module)
         except ModuleNotFoundError:
             logging.error("An error occurred while importing dependencies.")
@@ -584,7 +584,7 @@ class TPUGKEJob(GKEJob):
             )
             staging_location = "gs://cloud-pathways-staging/tmp"
             cluster = flags.FLAGS.cluster or gcp_settings("gke_cluster", required=False, fv=flags.FLAGS)
-            rm_address = f"{cfg.name}-rm-0-0.{cfg.name}.default.svc.{cluster}-domain.:38677"
+            rm_address = f"{cfg.name}-rm-0-0.{cfg.name}.default.svc.{cluster}-domain:38677"
 
             if job_type == "worker":
                 args.extend(
@@ -637,7 +637,7 @@ class TPUGKEJob(GKEJob):
                 resources["limits"]["memory"] = "100Gi"
                 resources["limits"]["cpu"] = "24"
                 proxy = (
-                    f"grpc://{cfg.name}-proxy-0-0.{cfg.name}.default.svc.{cluster}-domain.:38676"
+                    f"grpc://{cfg.name}-proxy-0-0.{cfg.name}.default.svc.{cluster}-domain:38676"
                 )
                 env_vars.update(
                     JAX_BACKEND_TARGET=proxy,
@@ -788,7 +788,7 @@ class TPUGKEJob(GKEJob):
             else:
                 logging.info("Found tier=%s in env. Using spot quota", tier)
                 # Comment out selector when running against internal v6e test project
-                selector.update({"cloud.google.com/gke-spot": "true"})
+                # selector.update({"cloud.google.com/gke-spot": "true"})
                 tolerations.append(
                     {
                         "key": "cloud.google.com/gke-spot",

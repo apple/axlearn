@@ -6,7 +6,8 @@ from absl import app, flags
 
 from axlearn.common import launch, launch_trainer, measurement
 from axlearn.common.config import config_for_function
-
+# Temp hack to bypass invalid backend error
+import pathwaysutils
 
 def main(_):
     measurement.initialize(flags.FLAGS)
