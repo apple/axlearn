@@ -1740,7 +1740,7 @@ class MultiheadAttention(BaseLayer):
         self,
         *,
         mode: ForwardMode,
-        query: Tensor,
+        query: Union[Tensor, TensorSpec],
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
@@ -1756,7 +1756,7 @@ class MultiheadAttention(BaseLayer):
         Args:
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
-            query: A Tensor of shape [batch, target_length, target_dim].
+            query: A Tensor or TensorSpec of shape [batch, target_length, target_dim].
             key:   An optional Tensor of shape [batch, source_length, source_dim].
             value: An optional Tensor of shape [batch, source_length, source_dim].
             kv_state: An optional KVState. If specified, both `key` and `value` should be None.
@@ -1766,9 +1766,11 @@ class MultiheadAttention(BaseLayer):
             return_aux: See comments on `Output`.
 
         Returns:
-            An optional NestedTensor of cache states, depending on `mode`.
-            An Output instance, where .data is of the same shape as query and .probs is of shape
-            [batch, num_heads, target_length, source_length].
+            A tuple (cached_states, output):
+            * cached_states: An optional NestedTensor of cache states, depending on `mode`.
+            * output: An optional Output instance, where .data is of the same shape as query and
+                .probs is of shape [batch, num_heads, target_length, source_length].
+                If initializing cache from scratch, output will be None.
 
         Raises:
             ValueError: If key & value are an invalid combination.
@@ -2565,19 +2567,19 @@ class TransformerAttentionLayer(BaseLayer):
         self,
         *,
         mode: ForwardMode,
-        target: Tensor,
+        target: Union[Tensor, TensorSpec],
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
         segment_ids: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
-    ) -> tuple[Optional[NestedTensor], Output]:
+    ) -> tuple[Optional[Nested[Tensor]], Optional[Output]]:
         """Computes either self-attention or cross-attention for the given target and source.
 
         Args:
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
-            target: A Tensor of shape [batch, target_length, target_dim].
+            target: A Tensor or TensorSpec of shape [batch, target_length, target_dim].
             source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention).
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
@@ -2586,9 +2588,11 @@ class TransformerAttentionLayer(BaseLayer):
             return_aux: See comments on `Output`.
 
         Returns:
-            An optional NestedTensor of cache states, depending on `mode`.
-            An Output instance, where .data is of the same shape as query and .probs is of shape
-            [batch, num_heads, target_length, source_length].
+            A tuple (cached_states, output):
+            * cached_states: An optional Nested Tensor of cache states, depending on `mode`.
+            * output: An optional Output instance, where .data is of the same shape as query and
+                .probs is of shape [batch, num_heads, target_length, source_length].
+                If initializing cache from scratch, output will be None.
 
         Raises:
             ValueError: If `mode` is unsupported.
@@ -3077,7 +3081,7 @@ class TransformerLayer(BaseTransformerLayer):
         self,
         *,
         mode: ForwardMode,
-        data: Tensor,
+        data: Union[Tensor, TensorSpec],
         self_attention_kv_state: Optional[KVState] = None,
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
@@ -3085,13 +3089,13 @@ class TransformerLayer(BaseTransformerLayer):
         target_segment_ids: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
-    ) -> tuple[Optional[NestedTensor], BaseTransformerLayer.Output]:
+    ) -> tuple[Optional[NestedTensor], Optional[BaseTransformerLayer.Output]]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
         Args:
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
-            data: A Tensor of shape [batch, target_length, target_dim].
+            data: A Tensor or TensorSpec of shape [batch, target_length, target_dim].
             self_attention_kv_state: An optional KVState used for self-attention.
             self_attention_logit_biases: An optional Tensor representing the self-attention biases.
             cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
@@ -3102,10 +3106,12 @@ class TransformerLayer(BaseTransformerLayer):
             return_aux: See comments on BaseTransformerLayer.forward.
 
         Returns:
-            An optional NestedTensor of cache states, depending on `mode`.
-            An Output instance, where .data is of the same shape as `data`, .self_attention_probs is
-            of shape [batch, num_heads, target_length, target_length], and .cross_attention_probs is
-            of shape [batch, num_heads, target_length, source_length].
+            A tuple (cached_states, output):
+            * cached_states: An optional Nested Tensor of cache states, depending on `mode`.
+            * output: An optional Output instance, where .data is of the same shape as `data`,
+                .self_attention_probs is of shape [batch, num_heads, target_length, target_length];
+                .cross_attention_probs is of shape [batch, num_heads, target_length, source_length].
+                If initializing cache from scratch, output will be None.
 
         Raises:
             ValueError: If `mode` is unsupported.
@@ -3343,10 +3349,10 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         self,
         *,
         mode: ForwardMode,
-        data: Tensor,
+        data: Union[Tensor, TensorSpec],
         cached_states: Optional[NestedTensor] = None,
         **kwargs,
-    ) -> tuple[Optional[NestedTensor], Tensor]:
+    ) -> tuple[Optional[Nested[Tensor]], Optional[Tensor]]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
         Args:
@@ -3356,10 +3362,12 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
             cached_states: Optional NestedTensor as produced by `init_states`.
 
         Returns:
-            An optional NestedTensor of cache states, depending on `mode`.
-            An Output instance, where .data is of the same shape as `data`, .self_attention_probs is
-            of shape [batch, num_heads, target_length, target_length], and .cross_attention_probs is
-            of shape [batch, num_heads, target_length, source_length].
+            A tuple (cached_states, output):
+            * cached_states: An optional NestedTensor of cache states, depending on `mode`.
+            * output: An Output instance, where .data is of the same shape as `data`;
+                .self_attention_probs is of shape [batch, num_heads, target_length, target_length];
+                .cross_attention_probs is of shape [batch, num_heads, target_length, source_length].
+                If initializing cache from scratch, output will be None.
 
         Raises:
             ValueError: If `mode` is unsupported.
@@ -3626,9 +3634,9 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             cached_states: Optional Nested Tensor as produced by `init_states`.
 
         Returns:
-            (updated_cache_states, outputs), where
-            updated_cached_states is an optional NestedTensor of cache states, depending on `mode`;
-            outputs is an instance of Output (see comments on BaseStackedTransformerLayer).
+            A tuple (updated_cache_states, outputs):
+            * updated_cached_states: An optional NestedTensor of cache states, depending on `mode`;
+            * outputs: An optional instance of Output (see comments on BaseStackedTransformerLayer).
 
         Raises:
             ValueError: If `mode` is unsupported.
@@ -3774,7 +3782,7 @@ class _TransformerRepeat(Repeat):
         self,
         *,
         mode: ForwardMode,
-        data: Tensor,
+        data: Union[Tensor, TensorSpec],
         cached_states: Optional[Nested[Tensor]] = None,
         **layer_kwargs,
     ) -> tuple[Optional[Nested[Tensor]], Optional[TransformerLayer.Output]]:
@@ -3788,9 +3796,9 @@ class _TransformerRepeat(Repeat):
             layer_kwargs: Additional kwargs to each layer.
 
         Returns:
-            (updated_cache_states, outputs), where
-            updated_cached_states is an optional NestedTensor of cache states, depending on `mode`;
-            outputs is an instance of Output (see comments on BaseStackedTransformerLayer).
+            A tuple (updated_cache_states, outputs):
+            * updated_cached_states: An optional NestedTensor of cache states, depending on `mode`;
+            * outputs: An optional instance of Output (see comments on BaseStackedTransformerLayer).
 
         Raises:
             ValueError: If `mode` is unsupported.
