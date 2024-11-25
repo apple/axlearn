@@ -572,9 +572,7 @@ class SpmdTrainer(Module):
                     self.vlog(3, "Start step %s", self.step)
                     output = self._run_step(
                         utils.host_to_global_device_array(input_batch),
-                        force_run_evals=(
-                            force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
-                        ),
+                        force_run_evals=None,
                     )
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
