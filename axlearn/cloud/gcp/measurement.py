@@ -86,7 +86,8 @@ class GoodputRecorder(measurement.Recorder):
             )
 
     def start_monitoring(self, *args, **kwargs):
-        """
+        """Starts Monitoring of Goodput.
+
         Instantiate ml-goodput-measurement's GoodputMonitor to asynchronously calculate
         Goodput and Badput at the upload_interval and upload to the specified TensorBoard
         directory.
