@@ -158,7 +158,6 @@ audio = [
     "einops==0.8.0",
     "levenshtein==0.25.1",
 ]
-
 # Pathways utilities.
 pathways = [
     "pathwaysutils==0.0.7", # for JAX+Pathways single-controller accelerator coordinator
