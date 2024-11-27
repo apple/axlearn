@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Encoder layers."""
+
 import math
 from typing import Optional
 
@@ -20,7 +21,7 @@ from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import BaseClassificationHead, set_dropout_rate_recursively
 from axlearn.common.module import Module, Tensor, child_context
-from axlearn.common.utils import NestedTensor
+from axlearn.common.utils import NestedTensor, TensorSpec
 
 
 class Encoder(BaseLayer):
@@ -167,12 +168,15 @@ class CausalEncoder(Encoder):
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
         """
+        cfg: CausalEncoder.Config = self.config
+        init_state, _ = self.transformer.init_states(
+            time_step=None,
+            data=TensorSpec([batch_size, max_sequence_length, cfg.dim]),
+        )
         return dict(
-            transformer_state=self.transformer.init_states(
-                target_batch_size=batch_size, target_max_len=max_sequence_length
-            ),
+            transformer_state=init_state,
             input_ids=jnp.full(
-                (batch_size, max_sequence_length), self.config.pad_token_id, dtype=jnp.int32
+                (batch_size, max_sequence_length), cfg.pad_token_id, dtype=jnp.int32
             ),
             time_step=jnp.zeros(batch_size, dtype=jnp.int32),
         )
@@ -279,7 +283,7 @@ class CausalEncoder(Encoder):
         # Note: this follows `Decoder.prefill_states` closely. Refer to that method for details.
         # TODO(markblee): Possibly consolidate some of this with decoder.
         x = self.emb(input_ids, token_type_ids=token_type_ids, positions=None)
-        transformer_state, x = self.transformer.prefill_states(
+        transformer_state, x = self.transformer.init_states(
             time_step=time_step,
             data=x,
             self_attention_logit_biases=self.compute_attention_logit_biases(input_ids),

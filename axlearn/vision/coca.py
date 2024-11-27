@@ -47,7 +47,7 @@ from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
 from axlearn.common.multi_stream_model import FusionNetwork, MultiStreamModel, StreamEncoder
 from axlearn.common.poolings import AttentionPooling, BasePoolingLayer, LastNTokenPooling
-from axlearn.common.utils import NestedTensor, Tensor
+from axlearn.common.utils import NestedTensor, Tensor, TensorSpec
 from axlearn.common.vision_transformer import VisionTransformer, layer_norm_config
 from axlearn.vision.clip import CLIPFusionNetwork
 
@@ -536,7 +536,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
 
         lm_head: Optional[CoCaLMHead.Config] = CoCaLMHead.default_config()
 
-        dim: Required[int] = None
+        dim: Required[int] = REQUIRED
         pad_token_id: int = 0
 
     def __init__(self, cfg: Config, *, parent: Module):
@@ -660,11 +660,12 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
         """
-        return dict(
-            transformer_state=self.transformer.init_states(
-                target_batch_size=batch_size, target_max_len=max_sequence_length
-            ),
+        cfg = self.config
+        init_state, _ = self.transformer.init_states(
+            time_step=None,
+            data=TensorSpec([batch_size, max_sequence_length, cfg.dim]),
         )
+        return dict(transformer_state=init_state)
 
     def prefill_states(
         self,
@@ -676,7 +677,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         cross_attention_logit_biases: Optional[Tensor] = None,
     ) -> tuple[NestedTensor, NestedTensor]:
         cfg = self.config
-        transformer_state, transformer_data = self.transformer.prefill_states(
+        transformer_state, transformer_data = self.transformer.init_states(
             time_step=time_step,
             data=input_features,
             self_attention_logit_biases=self.attention_mask(

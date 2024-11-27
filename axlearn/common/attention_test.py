@@ -116,6 +116,7 @@ from axlearn.common.utils import (
     Nested,
     PartitionSpec,
     Tensor,
+    TensorSpec,
     VDict,
     as_tensor,
     flatten_items,
@@ -1472,7 +1473,10 @@ class QKVLinearTest(TestCase):
             inputs=dict(query=query),
         )
 
-        cache_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
+        cache_state, init_output = layer.init_states(
+            time_step=None, query=TensorSpec([batch_size, tgt_len])
+        )
+        self.assertIsNone(init_output)
         step_querys = []
         step_keys = step_values = None
         for t in range(0, tgt_len, extend_step_len):
@@ -1531,18 +1535,19 @@ class QKVLinearTest(TestCase):
         qkv_linear = parent.qkv_linear
         state = qkv_linear.initialize_parameters_recursively(jax.random.PRNGKey(0))
 
-        # Check dtypes from init_states
-        cache, _ = F(
+        # Check dtypes from init_states.
+        (cache, init_output), _ = F(
             qkv_linear,
             prng_key=jax.random.PRNGKey(0),
             state=state,
             inputs=dict(
-                target_batch_size=target_batch_size,
-                target_max_len=target_max_len,
+                time_step=None,
+                query=TensorSpec([target_batch_size, target_max_len]),
             ),
             method="init_states",
             is_training=False,
         )
+        self.assertIsNone(init_output)
         self.assertEqual(cache["key"].dtype, dtype)
         self.assertEqual(cache["value"].dtype, dtype)
 
@@ -1562,7 +1567,7 @@ class QKVLinearTest(TestCase):
             prng_key=jax.random.PRNGKey(0),
             state=state,
             inputs=dict(time_step=time_step, query=query),
-            method="prefill_states",
+            method="init_states",
             is_training=False,
         )
         self.assertEqual(init_state["key"].dtype, dtype)
@@ -2448,9 +2453,14 @@ class MultiheadAttentionTest(TestCase):
             inputs=inputs,
         )
 
-        initial_state = layer.init_states(
-            target_batch_size=batch_size, target_max_len=tgt_len, kv_state=kv_state
+        initial_state, initial_output = layer.init_states(
+            time_step=None,
+            query=TensorSpec([batch_size, tgt_len]),
+            kv_state=kv_state,
+            # This is unused for initializing state from scratch.
+            attention_logit_biases=None,
         )
+        self.assertIsNone(initial_output)
         if kv_state is None:
             for k in ["key", "value"]:
                 # Check that the cache dtype is inferred as the layer dtype.
@@ -2619,7 +2629,7 @@ class MultiheadAttentionTest(TestCase):
                 attention_logit_biases=attention_logit_biases,
                 return_aux=return_aux,
             ),
-            method="prefill_states",
+            method="init_states",
         )
 
         # Check time_step and shapes of state.
@@ -3227,6 +3237,96 @@ class TransformerXLTest(TestCase):
         )
 
 
+class TransformerAttentionLayerTest(TestCase):
+    @parameterized.parameters([False, True])
+    def test_forward_vs_extend_step(self, with_source: bool):
+        init_prng, target_prng, source_prng = jax.random.split(jax.random.PRNGKey(0), 3)
+
+        model_dim = 8
+        layer_kwargs = dict(target_dim=model_dim, source_dim=model_dim)
+        cfg: TransformerAttentionLayer.Config = TransformerAttentionLayer.default_config().set(
+            **layer_kwargs
+        )
+        cfg.attention.set(num_heads=2, mask=causal_mask)
+        layer: TransformerAttentionLayer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=init_prng)
+
+        batch, decode_len = 2, 6
+        target = jax.random.uniform(target_prng, shape=[batch, decode_len, model_dim])
+        input_kwargs = {}
+
+        if with_source:
+            input_kwargs.update(
+                source=jax.random.uniform(source_prng, shape=[batch, decode_len, model_dim])
+            )
+
+        forward_outputs, _ = F(
+            layer,
+            inputs=dict(target=jnp.asarray(target), **input_kwargs),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+
+        for start_time_step in (-1, 0, 2, decode_len):
+            if start_time_step < 0:
+                (cached_states, init_outputs), _ = F(
+                    layer,
+                    inputs=dict(
+                        time_step=None,
+                        target=TensorSpec(target.shape, target.dtype),
+                        **input_kwargs,
+                    ),
+                    state=layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="init_states",
+                )
+                self.assertIsNone(init_outputs)
+                data = jnp.zeros([batch, decode_len, model_dim])
+                start_time_step = 0
+            else:
+                (cached_states, prefill_outputs), _ = F(
+                    layer,
+                    inputs=dict(
+                        time_step=jnp.array([start_time_step] * batch, dtype=jnp.int32),
+                        target=target,
+                        **input_kwargs,
+                    ),
+                    state=layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="init_states",
+                )
+                data = prefill_outputs.data
+
+            data = jnp.einsum("btd->tbd", data)
+
+            for time_step in range(start_time_step, decode_len):
+                extend_kwargs = {}
+                for k, v in input_kwargs.items():
+                    extend_kwargs[k] = jnp.asarray(v[:, time_step : time_step + 1, :])
+
+                (cached_states, extend_outputs), _ = F(
+                    layer,
+                    inputs=dict(
+                        target=jnp.asarray(target[:, time_step : time_step + 1, :]),
+                        cached_states=cached_states,
+                        **extend_kwargs,
+                    ),
+                    state=layer_params,
+                    is_training=True,
+                    prng_key=jax.random.PRNGKey(0),
+                    method="extend_step",
+                )
+                data = data.at[time_step].set(jnp.squeeze(extend_outputs.data, axis=1))
+
+            data = jnp.einsum("tbd->btd", data)
+
+            # Prefill + extend_step == forward.
+            assert_allclose(forward_outputs.data, data)
+
+
 class TransformerFeedForwardLayerTest(TestCase):
     @parameterized.parameters(
         dict(rms_norm_summary=[]),
@@ -3392,13 +3492,13 @@ class BaseTransformerTest(TestCase):
         for start_time_step in (-1, 0, 2, tgt_len):
             if start_time_step > tgt_len:
                 continue
-            print(f"start_time_step={start_time_step}")
+            print(f"start_time_step={start_time_step} layer={type(layer)}")
             if start_time_step < 0:
-                cached_states, _ = F(
+                (cached_states, init_outputs), _ = F(
                     layer,
                     inputs=dict(
-                        target_batch_size=batch_size,
-                        target_max_len=tgt_len,
+                        time_step=None,
+                        data=TensorSpec([batch_size, tgt_len]),
                         **input_kwargs,
                     ),
                     state=layer_params,
@@ -3406,6 +3506,7 @@ class BaseTransformerTest(TestCase):
                     prng_key=jax.random.PRNGKey(0),
                     method="init_states",
                 )
+                self.assertIsNone(init_outputs)
                 decoder_output = jnp.zeros_like(target)
                 start_time_step = 0
             else:
@@ -3419,7 +3520,7 @@ class BaseTransformerTest(TestCase):
                     state=layer_params,
                     is_training=True,
                     prng_key=jax.random.PRNGKey(0),
-                    method="prefill_states",
+                    method="init_states",
                 )
                 decoder_output = prefill_outputs.data
             # Transpose to [tgt_len, batch_size, model_dim].
@@ -3850,7 +3951,7 @@ class StackedTransformerTest(BaseTransformerTest):
         batch_size, src_len, tgt_len = 10, 4, 6
         num_dec_layers, model_dim, num_heads = 3, 16, 4
 
-        cfg = transformer_type.default_config().set(
+        cfg: BaseStackedTransformerLayer.Config = transformer_type.default_config().set(
             name="test",
             input_dim=model_dim,
             num_layers=num_dec_layers,
@@ -3872,7 +3973,7 @@ class StackedTransformerTest(BaseTransformerTest):
         layer_cfg.feed_forward.hidden_dim = model_dim * 4
 
         # Instantiate transformer stack.
-        layer = cfg.instantiate(parent=None)
+        layer: BaseStackedTransformerLayer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
@@ -3897,7 +3998,11 @@ class StackedTransformerTest(BaseTransformerTest):
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
         )
-        initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
+        initial_state, initial_output = layer.init_states(
+            time_step=None,
+            data=TensorSpec([batch_size, tgt_len]),
+        )
+        self.assertIsNone(initial_output)
         inputs = dict(
             cached_states=initial_state, cross_attention_data=source, return_aux=return_aux
         )
@@ -4036,7 +4141,7 @@ class StackedTransformerTest(BaseTransformerTest):
                 cross_attention_logit_biases=cross_attention_logit_biases,
                 return_aux=return_aux,
             ),
-            method="prefill_states",
+            method="init_states",
         )
 
         # Zero-out outputs starting from initial time_step, and test that we can recover the full

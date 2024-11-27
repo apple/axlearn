@@ -13,7 +13,8 @@ References:
 https://arxiv.org/pdf/2111.02358.pdf
 https://github.com/microsoft/unilm/tree/master/vlmo
 """
-from typing import Optional
+
+from typing import Optional, Union
 
 import numpy as np
 from jax import numpy as jnp
@@ -35,6 +36,7 @@ from axlearn.common.layers import Dropout, Embedding, LayerNorm, set_dropout_rat
 from axlearn.common.module import Module, NestedTensor, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, GaussianInitializer
 from axlearn.common.poolings import BasePoolingLayer, FirstNTokenPooling
+from axlearn.common.utils import Nested, TensorSpec
 from axlearn.common.vision_transformer import VisualEmbedding
 
 TEXT_MODALITY = 0
@@ -94,7 +96,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
-    ) -> tuple[Optional[NestedTensor], Tensor]:
+    ) -> tuple[Optional[Nested[Tensor]], Optional[Tensor]]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
         Args:
@@ -118,9 +120,9 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         Raises:
             ValueError: If `mode` is unsupported.
         """
-
         cfg = self.config
-        self.vlog(3, "transformer.input=%s", data.sum())
+        if isinstance(data, Tensor):
+            self.vlog(3, "transformer.input=%s", data.sum())
         self_attention_return_aux = set()
         cross_attention_return_aux = set()
         if return_aux:
@@ -131,13 +133,16 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
             if "cross_attention_probs" in return_aux:
                 cross_attention_return_aux.add("probs")
         if mode == ForwardMode.FORWARD:
-            self_atten_state, self_atten_outputs = None, self.self_attention(
-                target=data,
-                attention_logit_biases=self_attention_logit_biases,
-                return_aux=self_attention_return_aux,
+            self_atten_state, self_atten_outputs = (
+                None,
+                self.self_attention(
+                    target=data,
+                    attention_logit_biases=self_attention_logit_biases,
+                    return_aux=self_attention_return_aux,
+                ),
             )
         elif mode == ForwardMode.INIT_STATES:
-            self_atten_state, self_atten_outputs = self.self_attention.prefill_states(
+            self_atten_state, self_atten_outputs = self.self_attention.init_states(
                 time_step=cached_states["self_attention"],
                 target=data,
                 attention_logit_biases=self_attention_logit_biases,
@@ -152,6 +157,11 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
+
+        if self_atten_outputs is None:
+            assert mode == ForwardMode.INIT_STATES
+            return dict(self_attention=self_atten_state), None
+
         data = self_atten_outputs.data
         self.vlog(3, "self_attention.output=%s", data.sum())
         if cross_attention_data is not None:
@@ -204,22 +214,13 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         )
         return output
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
-        return dict(
-            self_attention=self.self_attention.init_states(
-                target_batch_size=target_batch_size, target_max_len=target_max_len
-            )
-        )
-
-    # pylint: disable-next=arguments-differ
-    def prefill_states(
+    def init_states(
         self,
-        *,
-        time_step: Tensor,
-        data: Tensor,
+        time_step: Optional[Tensor],
+        data: Union[Tensor, TensorSpec],
         feed_forward_index: int = 0,
         **kwargs,
-    ) -> tuple[NestedTensor, Output]:
+    ) -> tuple[Nested[Tensor], Optional[Output]]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(self_attention=time_step),
