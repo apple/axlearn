@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests PyTorch adapter layers."""
+
 # pylint: disable=too-many-lines
 import itertools
 from collections import OrderedDict
@@ -889,9 +890,11 @@ class TransformerEmbeddingsTest(TestCase):
             jax.random.PRNGKey(0),
             state=axlearn_layer_state,
             inputs=dict(
-                inputs=jnp.asarray(input_ids),
-                token_type_ids=axlearn_token_type_ids,
-                positions=axlearn_positions,
+                input_batch=dict(
+                    inputs=jnp.asarray(input_ids),
+                    token_type_ids=axlearn_token_type_ids,
+                    positions=axlearn_positions,
+                ),
             ),
             is_training=False,
             method="forward",
@@ -971,7 +974,7 @@ class DecoderTest(TestCase):
             axlearn_layer,
             jax.random.PRNGKey(0),
             state=axlearn_layer_state,
-            inputs=dict(input_ids=jnp.asarray(input_ids)),
+            inputs=dict(input_batch=dict(input_ids=jnp.asarray(input_ids))),
             is_training=False,
             method="forward",
         )[0]

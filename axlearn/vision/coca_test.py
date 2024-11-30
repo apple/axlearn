@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests CoCa implementations."""
+
 # pylint: disable=no-self-use
 from copy import deepcopy
 
@@ -553,7 +554,7 @@ class TestCoCaModel(parameterized.TestCase):
                 prng_key=jax.random.PRNGKey(456),
                 inputs=dict(
                     time_step=time_step,
-                    input_ids=tokenized_text,
+                    input_batch=dict(input_ids=tokenized_text),
                     cross_attention_data=cross_attention_data,
                 ),
                 method="prefill_states",

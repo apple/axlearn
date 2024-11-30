@@ -1441,3 +1441,15 @@ def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] =
     # [..., 1]
     lengths = lengths[..., jnp.newaxis]
     return (sequence < lengths).astype(dtype)
+
+
+def validate_contains_paths(x: Nested[Tensor], paths: Sequence[str]):
+    """Raises ValueError if any of the given `paths` are not present in `x`."""
+    for path in paths:
+        try:
+            get_recursively(x, path)
+        except KeyError as e:
+            raise ValueError(
+                f"Input is expected to contain '{path}'; "
+                f"instead, it contains: '{jax.tree_structure(x)}'."
+            ) from e

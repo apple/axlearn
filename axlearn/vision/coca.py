@@ -47,7 +47,7 @@ from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
 from axlearn.common.multi_stream_model import FusionNetwork, MultiStreamModel, StreamEncoder
 from axlearn.common.poolings import AttentionPooling, BasePoolingLayer, LastNTokenPooling
-from axlearn.common.utils import NestedTensor, Tensor, TensorSpec
+from axlearn.common.utils import Nested, NestedTensor, Tensor, TensorSpec, validate_contains_paths
 from axlearn.common.vision_transformer import VisionTransformer, layer_norm_config
 from axlearn.vision.clip import CLIPFusionNetwork
 
@@ -889,11 +889,28 @@ class CoCaModel(MultiStreamModel):
         self,
         *,
         time_step: Tensor,
-        input_ids: Tensor,
+        input_batch: Nested[Tensor],
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
     ) -> tuple[NestedTensor, NestedTensor]:
-        """See `BaseDecoder.prefill_states` for details."""
+        """See `BaseDecoder.prefill_states` for details.
+
+        Args:
+            time_step: A Tensor of shape [batch_size]. See `BaseDecoder.prefill_states` for details.
+            input_batch: A dict containing at minimum:
+                * input_ids: An int Tensor of shape [batch_size, seq_len].
+                    Values should be in the range [0, vocab_size), where `vocab_size` is commonly
+                    configured in `textual_encoder`.
+            cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
+            cross_attention_logit_biases: A Tensor of shape [batch_size, target_len, source_len].
+                A -inf represents a disconnected position pair.
+
+        Returns:
+            See `BaseDecoder.prefill_states` for details.
+        """
+        validate_contains_paths(input_batch, paths=["input_ids"])
+        input_ids = input_batch["input_ids"]
+
         textual_encoder_state, textual_encoder_output = self._stream_encoder[
             "textual_encoder"
         ].prefill_states(
@@ -978,14 +995,14 @@ class CoCaModel(MultiStreamModel):
     def beam_search_decode(
         self,
         *,
-        prefix: Tensor,
+        input_batch: Nested[Tensor],
         max_sequence_length: int,
         num_decodes: int,
         **kwargs,
     ):
         """See configured `decoding` implementation for details."""
         return self._decoding.beam_search_decode(
-            prefix=prefix,
+            input_batch=input_batch,
             max_sequence_length=max_sequence_length,
             num_decodes=num_decodes,
             **kwargs,
@@ -993,14 +1010,15 @@ class CoCaModel(MultiStreamModel):
 
     def sample_decode(
         self,
-        prefix: Tensor,
+        *,
+        input_batch: Nested[Tensor],
         max_sequence_length: int,
         num_decodes: int,
         **kwargs,
     ):
         """See configured `decoding` implementation for details."""
         return self._decoding.sample_decode(
-            prefix=prefix,
+            input_batch=input_batch,
             max_sequence_length=max_sequence_length,
             num_decodes=num_decodes,
             **kwargs,
@@ -1044,9 +1062,9 @@ class CoCaModel(MultiStreamModel):
 
         if decode_method in ("beam_search_decode", "sample_decode"):
             output = getattr(self, decode_method)(
+                input_batch=input_batch,
                 max_sequence_length=max_sequence_length,
                 num_decodes=num_decodes,
-                prefix=input_batch["prefix"],
                 cross_attention_data=visual_features,
             )
         else:
