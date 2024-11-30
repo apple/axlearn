@@ -372,7 +372,7 @@ class MultiModalEncoder(BaseLayer):
 
     def get_text_embed(self, data: Tensor, modality: int) -> Tensor:
         # Same text embeddings as Bert.
-        x = self.text_embed(inputs=data)
+        x = self.text_embed(input_batch=dict(inputs=data))
         # Add modality type embedding.
         x = x + self.modality_emb(jnp.full(x.shape[:2], modality))
         return x

@@ -4,6 +4,7 @@
 
 import os
 from typing import Literal, Optional
+from unittest import mock
 
 import jax
 import numpy as np
@@ -272,9 +273,6 @@ class TestEncoderDecoder(TestCase):
     def test_forward_key_conflict(self):
         # pylint: disable=unused-argument
         class DummyEncoderDecoderModel(EncoderDecoderModel):
-            def _validate_input_batch(self, *args, **kwargs):
-                pass
-
             def predict(self, *args, **kwargs):
                 return dict(x=1)
 
@@ -286,7 +284,10 @@ class TestEncoderDecoder(TestCase):
             encoder=cfg.encoder, decoder=cfg.decoder
         )
         model = cfg.set(name="test").instantiate(parent=None)
-        with self.assertRaisesRegex(KeyError, "conflict"):
+        with (
+            mock.patch(f"{utils.__name__}.validate_contains_paths"),
+            self.assertRaisesRegex(KeyError, "conflict"),
+        ):  # noqa: F821
             F(
                 model,
                 inputs=dict(

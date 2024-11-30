@@ -1139,7 +1139,7 @@ class LASDecoderModel(BaseASRDecoderModel):
             paddings=input_batch["paddings"]
         )
         predict_outputs = self.decoder(
-            input_ids=input_batch["target"]["input_ids"],
+            input_batch=input_batch["target"],
             cross_attention_data=input_batch["inputs"],
             cross_attention_logit_biases=cross_attention_logit_biases,
         )
@@ -1241,7 +1241,7 @@ class LASDecoderModel(BaseASRDecoderModel):
 
         with child_context("beam_search_decode", module=self.decoder):
             beam_search_outputs: decoding.BeamSearchOutputs = self.decoder.beam_search_decode(
-                prefix=input_batch["prefix"],
+                input_batch=input_batch,
                 max_sequence_length=max_decode_len,
                 num_decodes=num_decodes,
                 cross_attention_data=input_batch["inputs"],
@@ -1291,7 +1291,7 @@ class LASDecoderModel(BaseASRDecoderModel):
 
         with child_context("sample_decode", module=self.decoder):
             sample_decode_outputs: decoding.SampleOutputs = self.decoder.sample_decode(
-                prefix=input_batch["prefix"],
+                input_batch=input_batch,
                 max_sequence_length=max_decode_len,
                 num_decodes=num_decodes,
                 cross_attention_data=input_batch["inputs"],

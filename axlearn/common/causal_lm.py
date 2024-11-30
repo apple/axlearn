@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Autoregressive decoder model, e.g. as seen in the GPT family."""
+
 import math
 import re
 from typing import Callable, Optional, Union
@@ -170,7 +171,7 @@ class Model(BaseModel):
         with child_context("beam_search_decode", module=self.decoder):
             prefix = input_batch["prefix"]
             return self.decoder.beam_search_decode(
-                prefix=prefix,
+                input_batch=input_batch,
                 max_sequence_length=prefix.shape[-1],
                 num_decodes=num_decodes,
                 brevity_penalty=brevity_penalty,
@@ -203,7 +204,7 @@ class Model(BaseModel):
         with child_context("sample_decode", module=self.decoder):
             prefix = input_batch["prefix"]
             return self.decoder.sample_decode(
-                prefix=prefix,
+                input_batch=input_batch,
                 max_sequence_length=prefix.shape[-1],
                 num_decodes=num_decodes,
                 logits_modifier=logits_modifier,
@@ -280,10 +281,14 @@ class Model(BaseModel):
         input_positions: Optional[Tensor] = input_batch.get("input_positions")
         # Decoder hidden states: [batch_size, target_len, hidden_dim].
         decoder_output = self.decoder(
-            input_ids=input_ids,
-            token_type_ids=token_type_ids,
-            input_segment_ids=input_segment_ids,
-            positions=input_positions,
+            # TODO(markblee): Simplify by using consistent naming between `input_positions` and
+            # `positions`, `input_segment_ids` and `segment_ids`.
+            input_batch=dict(
+                input_ids=input_ids,
+                token_type_ids=token_type_ids,
+                input_segment_ids=input_segment_ids,
+                positions=input_positions,
+            ),
         )
         return decoder_output
 

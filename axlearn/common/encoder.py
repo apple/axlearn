@@ -58,6 +58,7 @@ class Encoder(BaseLayer):
             self._add_child("output", cfg.output.set(input_dim=cfg.dim))
         self._add_child("attention_mask", cfg.attention_mask)
 
+    # TODO(markblee): Generalize to support input_batch, similar to Decoder.
     def forward(
         self,
         input_ids: Tensor,
@@ -82,7 +83,9 @@ class Encoder(BaseLayer):
             A Tensor of shape [batch_size, seq_len, hidden_dim].
         """
         # [batch_size, seq_len, hidden_dim].
-        x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        x = self.emb(
+            input_batch=dict(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        )
         # [batch_size, num_heads, seq_len, seq_len].
         attention_logit_biases = self.compute_attention_logit_biases(
             input_ids, segment_ids=input_segment_ids, positions=positions
@@ -231,7 +234,9 @@ class CausalEncoder(Encoder):
         batch_size, max_seq_len = input_ids.shape
 
         # [batch_size, seq_len, hidden_dim].
-        x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        x = self.emb(
+            input_batch=dict(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        )
 
         # Append optional cls tokens as used in CoCa.
         if cfg.num_cls_tokens > 0:
@@ -282,7 +287,9 @@ class CausalEncoder(Encoder):
     ) -> tuple[NestedTensor, NestedTensor]:
         # Note: this follows `Decoder.prefill_states` closely. Refer to that method for details.
         # TODO(markblee): Possibly consolidate some of this with decoder.
-        x = self.emb(input_ids, token_type_ids=token_type_ids, positions=None)
+        x = self.emb(
+            input_batch=dict(inputs=input_ids, token_type_ids=token_type_ids, positions=None)
+        )
         transformer_state, x = self.transformer.init_states(
             time_step=time_step,
             data=x,
@@ -328,7 +335,11 @@ class CausalEncoder(Encoder):
 
         # [B, 1, D].
         x = self.emb(
-            input_ids, positions=jnp.expand_dims(time_step, 1), token_type_ids=token_type_ids
+            input_batch=dict(
+                inputs=input_ids,
+                positions=jnp.expand_dims(time_step, 1),
+                token_type_ids=token_type_ids,
+            )
         )
         updated_transformer_state, transformer_data = self.transformer.extend_step(
             cached_states=cached_states["transformer_state"],

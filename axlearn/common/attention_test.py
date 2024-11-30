@@ -3445,7 +3445,7 @@ class BaseTransformerTest(TestCase):
         oh_indices = jax.nn.one_hot(prefix_length - 1, seq_len, dtype=prefix.dtype)
         prefix = prefix * (1 - oh_indices) + bos_id * oh_indices
         inputs = dict(
-            prefix=prefix,
+            input_batch=dict(prefix=prefix),
             max_sequence_length=seq_len,
             # cross_attention_data=None,
             # cross_attention_logit_biases=None,
