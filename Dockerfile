@@ -39,7 +39,7 @@ RUN pip install --upgrade pip
 ################################################################################
 
 # Leverage multi-stage build for unit tests.
-FROM base as ci
+FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
 RUN pip install .[core,dev,grain,gcp,vertexai_tensorboard]
