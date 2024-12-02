@@ -300,7 +300,7 @@ class DiTFeedForwardLayer(BaseLayer):
             A tensor with shape [batch_size, num_length, input_dim].
         """
         cfg = self.config
-        remat_pt1 = "activation"
+        remat_pt1 = "linear1_0"
         remat_pt2 = "linear2"
 
         if cfg.structure == "prenorm":
@@ -312,8 +312,8 @@ class DiTFeedForwardLayer(BaseLayer):
 
         x = modulate(x=x, shift=shift, scale=scale)
         x = self.linear1(x)
-        x = get_activation_fn(cfg.activation)(x)
         x = self._remat_name(x, remat_pt1)
+        x = get_activation_fn(cfg.activation)(x)
         x = self.dropout1(x)
         x = self.linear2(x)
         x = self._remat_name(x, remat_pt2)

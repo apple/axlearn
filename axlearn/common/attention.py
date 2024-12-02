@@ -52,14 +52,17 @@ On `segment_ids`:
 import enum
 import functools
 import math
+import re
 from collections.abc import Sequence
 from enum import Enum, unique
-from typing import Any, Callable, Literal, NamedTuple, Optional, Protocol, Union
+from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 
 import einops
 import jax
 from jax import numpy as jnp
-from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
+from jax._src.ad_checkpoint import name_p
+from jax._src.interpreters import partial_eval as pe
+from jax.core import Primitive
 
 from axlearn.common import ops, param_init
 from axlearn.common.base_layer import (
@@ -2939,12 +2942,10 @@ class TransformerFeedForwardLayer(BaseLayer):
 
         self._add_tensor_stats("inputs", inputs)
 
-        remat_pt1 = "activation"
         remat_pt2 = "linear2"
         if cfg.structure == "prenorm":
             x = self.norm(inputs)
             x = self._linear1_activation(x)
-            x = self._remat_name(x, remat_pt1)
             x = self.dropout1(x)
             x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
@@ -2955,7 +2956,6 @@ class TransformerFeedForwardLayer(BaseLayer):
             x += inputs
         elif cfg.structure == "postnorm":
             x = self._linear1_activation(inputs)
-            x = self._remat_name(x, remat_pt1)
             x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
             x = self.dropout(x)
@@ -2966,7 +2966,6 @@ class TransformerFeedForwardLayer(BaseLayer):
         elif cfg.structure == "hybridnorm":
             x = self.prenorm(inputs)
             x = self._linear1_activation(x)
-            x = self._remat_name(x, remat_pt1)
             x = self.dropout1(x)
             x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
@@ -2979,7 +2978,6 @@ class TransformerFeedForwardLayer(BaseLayer):
         elif cfg.structure == "nonorm":
             x = inputs
             x = self._linear1_activation(x)
-            x = self._remat_name(x, remat_pt1)
             x = self.dropout1(x)
             x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
@@ -2998,7 +2996,8 @@ class TransformerFeedForwardLayer(BaseLayer):
         if isinstance(cfg.activation, tuple):
             activations = [
                 self._get_activation(
-                    self.children[f"linear1_{i}"](x), activation_fn_name=activation
+                    self._remat_name(self.children[f"linear1_{i}"](x), f"linear1_{i}"),
+                    activation_fn_name=activation,
                 )
                 for i, activation in enumerate(cfg.activation)
             ]
@@ -3010,6 +3009,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             return outputs
         else:
             x = self.linear1(x)
+            x = self._remat_name(x, "linear1_0")
             x = self._get_activation(x, activation_fn_name=cfg.activation)
             self._add_tensor_stats("linear1_outputs", x)
             return x
@@ -4072,13 +4072,43 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
     # TODO(sneha): extend_step
 
 
+OffloadPolicy = Callable[[Primitive, list[Any], dict[str, Any]], Union[bool, Any]]
+_SavePattern = Union[str, re.Pattern, None]
+
+
+# Adapted from jax source code to support regex. Reference:
+# https://github.com/jax-ml/jax/blob/0d36b0b433a93c707f86dac89b0c05d40302775a/jax/_src/ad_checkpoint.py#L120
+def _save_and_offload_only_these_names_regex(
+    *,
+    names_which_can_be_saved: _SavePattern,
+    names_which_can_be_offloaded: _SavePattern,
+    offload_src: str,
+    offload_dst: str,
+) -> OffloadPolicy:
+    def policy(prim, *_, **params):
+        if prim is name_p:
+            if names_which_can_be_saved and re.fullmatch(names_which_can_be_saved, params["name"]):
+                return pe.Saveable
+            if names_which_can_be_offloaded and re.fullmatch(
+                names_which_can_be_offloaded, params["name"]
+            ):
+                return pe.Offloadable(src=offload_src, dst=offload_dst)
+        return pe.Recompute  # not saveable unless it's in the allow-list
+
+    return policy
+
+
+SELF_ATTENTION_SAVE_PATTERN = ".*([qkvo]_proj|context)"
+FEED_FORWARD_SAVE_PATTERN = ".*linear[12]_.*"
+
+
 def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
     ],
-    self_attention: bool = True,
-    feed_forward: bool = False,
-    offload_dst: Optional[Literal["pinned_host"]] = None,
+    save_pattern: _SavePattern = SELF_ATTENTION_SAVE_PATTERN,
+    offload_pattern: _SavePattern = None,
+    offload_dst: str = "pinned_host",
 ) -> Optional[RematSpec]:
     """Configures how the Transformer or Conformer stack will save the linearization points.
 
@@ -4094,10 +4124,10 @@ def build_remat_spec(
 
     Args:
         stack_cfg: A transformer config.
-        self_attention: Checkpoint self attention layer activations if true.
-        feed_forward: Checkpoint feed-forward layer activations if true.
+        save_pattern: Activation regex pattern to save in HBM.
+        offload_pattern: Activation regex pattern to offload to `offload_dst`.
         offload_dst: Destination of remat checkptoing offloading. Relevant Maxtext example:
-          https://github.com/google/maxtext/blob/ebd39aa64d670fa13a313b6f776e01ad9e450321/MaxText/layers/models.py#L230.
+            https://github.com/google/maxtext/blob/ebd39aa64d670fa13a313b6f776e01ad9e450321/MaxText/layers/models.py#L230.
 
     Returns:
         None (if no rematerialization is needed) or a RematSpec.
@@ -4106,27 +4136,12 @@ def build_remat_spec(
     if stack_cfg.klass is PipelinedTransformerLayer:
         return None
 
-    checkpoints = []
-    if self_attention:
-        attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
-        checkpoints.extend(
-            [f"{attention_name}.{el}" for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]]
-        )
-
-    if feed_forward and hasattr(stack_cfg.layer, "feed_forward"):
-        ffn_name = stack_cfg.layer.feed_forward.klass.__name__
-        checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
-
-    policy = config_for_function(jax_remat_policies.save_only_these_names).set(
-        names_which_can_be_saved=checkpoints
+    policy = config_for_function(_save_and_offload_only_these_names_regex).set(
+        names_which_can_be_saved=save_pattern,
+        names_which_can_be_offloaded=offload_pattern,
+        offload_src="device",
+        offload_dst=offload_dst,
     )
-    if offload_dst:
-        policy = config_for_function(jax_remat_policies.save_and_offload_only_these_names).set(
-            names_which_can_be_saved=[],
-            names_which_can_be_offloaded=checkpoints,
-            offload_src="device",
-            offload_dst=offload_dst,
-        )
 
     return RematSpec(
         prevent_cse=stack_cfg.klass is StackedTransformerLayer,

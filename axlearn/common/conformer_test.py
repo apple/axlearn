@@ -164,13 +164,10 @@ class ConformerLayerTest(TestCase):
         self.assertEqual(cfg.layer.self_attention.attention.input_linear.layer.bias, True)
 
     @parameterized.product(
-        checkpoint_self_attention=(True, False),
-        checkpoint_feed_forward=(True, False),
+        test_remat=(True, False),
         layer_order=(None, "lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv"),
     )
-    def test_repeated_conformer_forward(
-        self, checkpoint_self_attention, checkpoint_feed_forward, layer_order
-    ):
+    def test_repeated_conformer_forward(self, test_remat, layer_order):
         """Tests RepeatedConformerLayer."""
         dim, num_heads = 6, 2
         # Create a conformer layer.
@@ -189,11 +186,8 @@ class ConformerLayerTest(TestCase):
         )
         repeat_cfg.layer.layer_order = layer_order
         repeat_cfg.layer.self_attention.attention.num_heads = num_heads
-        repeat_cfg.layer.remat_spec = build_remat_spec(
-            repeat_cfg,
-            self_attention=checkpoint_self_attention,
-            feed_forward=checkpoint_feed_forward,
-        )
+        if test_remat:
+            repeat_cfg.layer.remat_spec = build_remat_spec(repeat_cfg)
         repeat_layer = repeat_cfg.instantiate(parent=None)  # type: RepeatedConformerLayer
         repeat_state = repeat_layer.initialize_parameters_recursively(jax.random.PRNGKey(100))
         # Generate synthetic inputs.

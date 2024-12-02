@@ -186,12 +186,11 @@ model.encoder.context.context.layer.self_attention.stochastic_depth.mode: 'row'
 model.encoder.context.context.layer.self_attention.structure: 'prenorm'
 model.encoder.context.context.num_layers: 1
 model.encoder.context.context.remat_spec['prevent_cse']: False
-model.encoder.context.context.remat_spec['policy'].fn: 'jax._src.ad_checkpoint.save_only_these_names'
-model.encoder.context.context.remat_spec['policy'].names_which_can_be_saved[0]: 'MultiheadAttentionXL.q_proj'
-model.encoder.context.context.remat_spec['policy'].names_which_can_be_saved[1]: 'MultiheadAttentionXL.k_proj'
-model.encoder.context.context.remat_spec['policy'].names_which_can_be_saved[2]: 'MultiheadAttentionXL.v_proj'
-model.encoder.context.context.remat_spec['policy'].names_which_can_be_saved[3]: 'MultiheadAttentionXL.context'
-model.encoder.context.context.remat_spec['policy'].names_which_can_be_saved[4]: 'MultiheadAttentionXL.o_proj'
+model.encoder.context.context.remat_spec['policy'].fn: 'axlearn.common.attention._save_and_offload_only_these_names_regex'
+model.encoder.context.context.remat_spec['policy'].names_which_can_be_offloaded: None
+model.encoder.context.context.remat_spec['policy'].names_which_can_be_saved: '.*([qkvo]_proj|context)'
+model.encoder.context.context.remat_spec['policy'].offload_dst: 'pinned_host'
+model.encoder.context.context.remat_spec['policy'].offload_src: 'device'
 model.encoder.context.context.repeat.drop_output.fn: 'axlearn.common.repeat._drop_by_regex'
 model.encoder.context.context.repeat.drop_output.rules[0]: 'module_outputs.*'
 model.encoder.context.context.repeat.klass: 'axlearn.common.conformer.ConformerRepeat'
