@@ -43,7 +43,8 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
-from axlearn.common.layers import Conv1D, Linear, MultiLinear, RMSNorm
+from axlearn.common.convolution import Conv1D
+from axlearn.common.layers import Linear, MultiLinear, RMSNorm
 from axlearn.common.module import Module
 from axlearn.common.param_init import FanAxes, Initializer, Shape, constant_initializer, uniform
 from axlearn.common.ssm_kernels.mamba_kernels import compute_mamba_scan

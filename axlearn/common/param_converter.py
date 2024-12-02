@@ -48,6 +48,7 @@ from axlearn.common.attention import (
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.bert import BertModel, BertPooler, BertSequenceClassificationHead
 from axlearn.common.causal_lm import Model as CausalLMModel
+from axlearn.common.convolution import Conv2D
 from axlearn.common.deberta import DeBERTaV2Encoder
 from axlearn.common.decoder import Decoder
 from axlearn.common.dit import (
@@ -61,7 +62,7 @@ from axlearn.common.dit import (
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.encoder import Encoder, EncoderModel
-from axlearn.common.layers import Conv2D, Embedding, LayerNorm, LayerNormStateless, Linear, RMSNorm
+from axlearn.common.layers import Embedding, LayerNorm, LayerNormStateless, Linear, RMSNorm
 from axlearn.common.t5 import T5Decoder, T5Encoder, T5EncoderDecoderModel
 from axlearn.common.text_encoder import TextEmbeddingEncoder
 from axlearn.common.utils import NestedTensor, Tensor, VDict, as_tensor

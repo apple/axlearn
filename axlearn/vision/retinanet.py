@@ -23,7 +23,8 @@ from axlearn.common.config import (
     config_class,
     config_for_class,
 )
-from axlearn.common.layers import BatchNorm, Conv2D, get_activation_fn
+from axlearn.common.convolution import Conv2D
+from axlearn.common.layers import BatchNorm, get_activation_fn
 from axlearn.common.loss import ReductionMethod, focal_loss, huber_loss
 from axlearn.common.module import Module, NestedTensor, Tensor, child_context
 from axlearn.common.param_init import (

@@ -16,7 +16,8 @@ from jax import numpy as jnp
 from axlearn.common import struct
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
-from axlearn.common.layers import BatchNorm, Conv2D, Linear, get_activation_fn
+from axlearn.common.convolution import Conv2D
+from axlearn.common.layers import BatchNorm, Linear, get_activation_fn
 from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 

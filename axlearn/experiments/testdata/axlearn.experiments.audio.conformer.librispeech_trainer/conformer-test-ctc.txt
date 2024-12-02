@@ -116,7 +116,7 @@ model.encoder.context.context.layer.ff_start.stochastic_depth.mode: 'row'
 model.encoder.context.context.layer.ff_start.structure: 'prenorm'
 model.encoder.context.context.layer.klass: 'axlearn.common.conformer.ConformerLayer'
 model.encoder.context.context.layer.lconv.conv.bias: False
-model.encoder.context.context.layer.lconv.conv.klass: 'axlearn.common.layers.Conv1D'
+model.encoder.context.context.layer.lconv.conv.klass: 'axlearn.common.convolution.Conv1D'
 model.encoder.context.context.layer.lconv.conv.num_input_dim_groups: 1
 model.encoder.context.context.layer.lconv.conv.padding: 'SAME'
 model.encoder.context.context.layer.lconv.conv.param_partition_spec[0]: None
@@ -226,7 +226,7 @@ model.encoder.feature.klass: 'axlearn.audio.encoder_asr.SpeechFeatureLayer'
 model.encoder.feature.output_dim: 4
 model.encoder.feature.subsampler.activation: 'nn.relu'
 model.encoder.feature.subsampler.conv.bias: True
-model.encoder.feature.subsampler.conv.klass: 'axlearn.common.layers.Conv2DWith1DPadding'
+model.encoder.feature.subsampler.conv.klass: 'axlearn.common.convolution.Conv2DWith1DPadding'
 model.encoder.feature.subsampler.conv.num_input_dim_groups: 1
 model.encoder.feature.subsampler.conv.padding[0][0]: 1
 model.encoder.feature.subsampler.conv.padding[0][1]: 1
