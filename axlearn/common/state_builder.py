@@ -26,9 +26,11 @@ from axlearn.common.checkpointer import (
     CheckpointValidationType,
     StateStorage,
     TensorStoreStateStorage,
+    build_step_dir,
     check_state_structure,
     parse_step_from_dir,
 )
+from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -370,25 +372,57 @@ def clone_tree(in_tree: NestedTensor) -> NestedTensor:
     return jax.tree.map(lambda x: x if isinstance(x, Tensor) else copy.deepcopy(x), in_tree)
 
 
-class TensorStoreStateStorageBuilder(Builder):
+# pylint: disable-next=abstract-method
+class BaseStateStorageBuilder(Builder):
+    """Builds state by restoring from a checkpoint."""
+
+    @config_class
+    class Config(Builder.Config):
+        """Configures BaseStateStorageBuilder.
+
+        Attributes:
+            base_dir: Base directory that contains the checkpoint.
+            step: Step number to load.
+            validation: Checkpoint validation type.
+            concurrent_gb: Memory limit of the in-flight reads.
+        """
+
+        base_dir: Optional[str] = None
+        step: Optional[int] = None
+        validation: CheckpointValidationType = CheckpointValidationType.EXACT
+        concurrent_gb: int = 32
+
+    def input_state_type(self) -> Builder.StateType:
+        return Builder.StateType.TENSOR_SPECS
+
+
+class TensorStoreStateStorageBuilder(BaseStateStorageBuilder):
     """Builds state by restoring from TensorStoreStateStorage."""
 
     SPEC_PREFIX = "tensor_store_state_storage:"
 
     @config_class
-    class Config(Builder.Config):
-        dir: Required[str] = REQUIRED
-        validation: CheckpointValidationType = CheckpointValidationType.EXACT
-        concurrent_gb: int = 32
-        # A config that instantiates to a StateStorage.
+    class Config(BaseStateStorageBuilder.Config):
+        """Configures TensorStoreStateStorageBuilder.
+
+        Attributes:
+            dir: Full checkpoint path. This is supported for backward compatibility purposes.
+                It's recommended to use `base_dir` and `step` if possible.
+            storage: Config for the underlying storage used during checkpoint loading. Defaults
+                to `TensorStoreStateStorage`.
+        """
+
+        dir: Optional[str] = None
         storage: StateStorage.Config = TensorStoreStateStorage.default_config()
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        if not (cfg.dir is None) ^ (cfg.base_dir is None and cfg.step is None):
+            raise ValueError("Error in config. You must either specify dir or base_dir and step.")
 
     @classmethod
     def spec_to_config(cls, spec: str) -> Config:
         return cls.default_config().set(dir=spec)
-
-    def input_state_type(self) -> Builder.StateType:
-        return Builder.StateType.TENSOR_SPECS
 
     def __call__(self, state: Builder.State) -> Builder.State:
         """Restores state from TensorStoreStateStorage.
@@ -399,14 +433,19 @@ class TensorStoreStateStorageBuilder(Builder):
         Returns:
             The restored state.
         """
-        cfg: Builder.Config = self.config
+        cfg: TensorStoreStateStorageBuilder.Config = self.config
+        if cfg.base_dir:
+            ckpt_dir = build_step_dir(cfg.base_dir, step=cfg.step)
+            step = cfg.step
+        else:
+            ckpt_dir = cfg.dir
+            step = parse_step_from_dir(cfg.dir)
         cfg.storage.max_concurrent_restore_gb = cfg.concurrent_gb
         storage = cfg.storage.instantiate()
-        step = parse_step_from_dir(cfg.dir)
         restored_state = storage.restore_from_dir(
             step=step,
             state=state.trainer_state,
-            ckpt_dir=cfg.dir,
+            ckpt_dir=ckpt_dir,
             validation=cfg.validation,
         )
         built_keys = state.built_keys.union({key for key, _ in flatten_items(restored_state)})
@@ -1211,3 +1250,29 @@ def get_builder(spec: Union[str, Builder]) -> Builder:
     builder_cfg = get_builder_config(spec, builders=_BUILDERS)
     builder = builder_cfg.set(name="builder").instantiate(parent=None)
     return builder
+
+
+class OrbaxStateBuilder(BaseStateStorageBuilder):
+    """Build trainer state from Orbax checkpoints."""
+
+    SPEC_PREFIX = "orbax_state_builder:"
+
+    def __init__(self, cfg: BaseStateStorageBuilder.Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        if cfg.base_dir is None or cfg.step is None:
+            raise ValueError("OrbaxStateBuilder requires base_dir and step to be specified.")
+
+    def __call__(self, state: BaseStateStorageBuilder.State) -> BaseStateStorageBuilder.State:
+        cfg: OrbaxStateBuilder.Config = self.config
+        reader_cfg: OrbaxCheckpointer.Config = OrbaxCheckpointer.default_config()
+        reader_cfg.name = cfg.name + "-reader"
+        reader_cfg.validation_type = cfg.validation
+        reader_cfg.dir = cfg.base_dir
+        reader_cfg.max_concurrent_restore_gb = cfg.concurrent_gb
+        ckpt_reader: OrbaxCheckpointer = reader_cfg.instantiate(parent=self)
+        step, restored_state = ckpt_reader.restore(step=cfg.step, state=state.trainer_state)
+        assert step == cfg.step
+        built_keys = state.built_keys.union({key for key, _ in flatten_items(restored_state)})
+        return BaseStateStorageBuilder.State(
+            step=step, trainer_state=restored_state, built_keys=built_keys
+        )
