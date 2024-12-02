@@ -13,7 +13,6 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
 """Tests attention layers."""
-
 import contextlib
 import copy
 import itertools
@@ -23,6 +22,7 @@ import math
 from collections.abc import Sequence
 from itertools import combinations
 from typing import Any, Callable, Optional, Union
+from unittest import mock
 
 import jax
 import numpy as np
@@ -40,6 +40,7 @@ from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
 from axlearn.common import attention, test_utils, utils
 from axlearn.common.attention import (
+    FEED_FORWARD_SAVE_PATTERN,
     NEG_INF,
     BaseStackedTransformerLayer,
     BaseTransformerLayer,
@@ -65,6 +66,7 @@ from axlearn.common.attention import (
     TransformerFeedForwardLayer,
     TransformerLayer,
     _next_power_of_two,
+    _save_and_offload_only_these_names_regex,
     apply_attention_logit_biases,
     apply_rotary_position_embeddings,
     bool_to_bias,
@@ -3405,6 +3407,53 @@ class TransformerFeedForwardLayerTest(TestCase):
             },
         )
 
+    def test_linear_remat(self):
+        batch, seq_len, dim = 2, 3, 4
+        cfg = TransformerFeedForwardLayer.default_config().set(
+            name="ffn",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            add_value_rms_norm_summary=[],
+            tensor_stats=DefaultTensorStats.default_config(),
+            activation=("nn.relu", "nn.relu"),
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        x = jax.random.normal(jax.random.PRNGKey(1), shape=[batch, seq_len, dim])
+
+        def f(x, layer_params):
+            y, _ = F(
+                layer,
+                inputs=dict(inputs=x),
+                state=layer_params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(0),
+            )
+            return y
+
+        _, save_name_backward = jax.linearize(
+            jax.remat(
+                f,
+                policy=_save_and_offload_only_these_names_regex(
+                    names_which_can_be_saved=FEED_FORWARD_SAVE_PATTERN,
+                    names_which_can_be_offloaded=None,
+                    offload_src="device",
+                    offload_dst="pinned_host",
+                ),
+            ),
+            x,
+            layer_params,
+        )
+        _, save_dots_backward = jax.linearize(
+            jax.remat(f, policy=jax_remat_policies.dots_saveable), x, layer_params
+        )
+
+        self.assertEqual(str(save_name_backward).count(" dot_general"), 6)
+        self.assertEqual(
+            str(save_name_backward).count(" dot_general"),
+            str(save_dots_backward).count(" dot_general"),
+        )
+
 
 class BaseTransformerTest(TestCase):
     def _test_decoder_with_transformer(self, transformer_cfg: BaseTransformerLayer.Config):
@@ -3793,6 +3842,53 @@ class ParallelTransformerTest(TestCase):
         )
         self.assertEqual(target.shape, layer_outputs.data.shape)
         self.assertNestedAllClose(0.609666, np.mean(layer_outputs.data))
+
+    def test_build_remat_spec(self):
+        model_dim, num_heads = 6, 2
+        cfg: TransformerLayer.Config = TransformerLayer.default_config().set(input_dim=model_dim)
+        cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
+        cfg.feed_forward.hidden_dim = model_dim * 4
+        cfg.vlog = 5
+
+        layer: BaseTransformerLayer = cfg.clone(name="layer").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        batch_size, tgt_len = 2, 5
+        rng = np.random.default_rng(seed=123)
+        target = rng.random([batch_size, tgt_len, cfg.input_dim], dtype=np.float32)
+
+        def f(x, layer_params):
+            forward_outputs, _ = F(
+                layer,
+                inputs=dict(
+                    data=x,
+                ),
+                state=layer_params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(0),
+            )
+            return forward_outputs
+
+        # Ignore type errors.
+        spec: Any = build_remat_spec(mock.MagicMock())
+
+        _, default_policy_backward = jax.linearize(
+            jax.remat(f, policy=spec.policy.instantiate(), prevent_cse=spec.prevent_cse),
+            jnp.asarray(target),
+            layer_params,
+        )
+        _, full_remat_backward = jax.linearize(
+            jax.remat(f),
+            jnp.asarray(target),
+            layer_params,
+        )
+        # Eliminated the remat of qkv_proj, context and o_proj = 5 dots. This assumes
+        # FlashAttention is not enabled.
+        self.assertEqual(
+            str(full_remat_backward).count(" dot_general")
+            - str(default_policy_backward).count(" dot_general"),
+            5,
+        )
 
 
 class TestStackModel(BaseLayer):
@@ -4757,9 +4853,7 @@ class StackedTransformerTest(BaseTransformerTest):
             output_self_attention_kv_state=True,
         )
         cfg.stack.repeat.carry = repeat_carry
-        cfg.stack.layer.remat_spec = build_remat_spec(
-            cfg.stack, self_attention=True, feed_forward=True
-        )
+        cfg.stack.layer.remat_spec = build_remat_spec(cfg.stack)
         if precomputed_kv_state:
             kv_shape = (batch_size, seq_len, num_heads, head_dim)
             kv_state = KVState(
@@ -4845,9 +4939,7 @@ class StackedTransformerTest(BaseTransformerTest):
             remat_spec=None,
             output_self_attention_kv_state=True,
         )
-        cfg.stack.layer.remat_spec = build_remat_spec(
-            cfg.stack, self_attention=True, feed_forward=True
-        )
+        cfg.stack.layer.remat_spec = build_remat_spec(cfg.stack)
         layer = cfg.instantiate(parent=None)
         param_specs = layer.create_parameter_specs_recursively()
         initialized_from_scratch = layer.initialize_parameters_recursively(
