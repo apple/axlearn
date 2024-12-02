@@ -238,7 +238,6 @@ class SpmdTrainer(Module):
             utils.validate_float_dtype(cfg.train_dtype)
 
         # Create the device mesh.
-        self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
         if devices is None:
             self._step_log(
                 "Devices: global=%s local=%s %s",
@@ -325,7 +324,6 @@ class SpmdTrainer(Module):
                     model=self.model,
                     model_param_partition_specs=model_param_partition_specs,
                 )
-        self._maybe_record_event(measurement.Event.END_ACCELERATOR_INIT)
 
     @property
     def step(self):
@@ -830,7 +828,6 @@ class SpmdTrainer(Module):
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
         self.restore_checkpoint(restore_step=None)
 
-        self._maybe_record_event(measurement.Event.START_TRAINING_PREPARATION)
         if self.step is None:
             # If we didn't restore from checkpoint, attempt to build initial state according
             # to `cfg.init_state_builder` and initialize the remaining parameters.
@@ -850,7 +847,6 @@ class SpmdTrainer(Module):
             with fs.open(os.path.join(cfg.dir, "model_analysis.txt"), "w") as f:
                 f.write(model_analysis)
 
-        self._maybe_record_event(measurement.Event.END_TRAINING_PREPARATION)
         # Log config.
         self.summary_writer.log_config(cfg, step=self.step)
 
@@ -887,7 +883,6 @@ class SpmdTrainer(Module):
             restore_input_iter = cfg.save_input_iterator
             try:
                 # Try to restore with `input_iter`.
-                self._maybe_record_event(measurement.Event.START_DATA_LOADING)
                 step, ckpt_state = self.checkpointer.restore(
                     step=restore_step,
                     state=(
@@ -901,7 +896,6 @@ class SpmdTrainer(Module):
                         step,
                         restore_input_iter,
                     )
-                self._maybe_record_event(measurement.Event.END_DATA_LOADING)
             except ValueError as e:
                 logging.warning(
                     "Attempt to restore checkpoint with restore_input_iter=%s failed: %s",
@@ -909,7 +903,6 @@ class SpmdTrainer(Module):
                     e,
                 )
                 # Restore with a different restore_input_iter setting.
-                self._maybe_record_event(measurement.Event.START_DATA_LOADING)
                 restore_input_iter = not restore_input_iter
                 step, ckpt_state = self.checkpointer.restore(
                     step=restore_step,
@@ -924,7 +917,6 @@ class SpmdTrainer(Module):
                         step,
                         restore_input_iter,
                     )
-                self._maybe_record_event(measurement.Event.END_DATA_LOADING)
             if step is not None:
                 self._step = step
                 self._trainer_state = TrainerState(
