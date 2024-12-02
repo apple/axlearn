@@ -7,7 +7,8 @@ from typing import Optional, Union
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.layers import BaseNormalizationLayer, Conv2DWith1DPadding, get_activation_fn
+from axlearn.common.convolution import Conv2DWith1DPadding
+from axlearn.common.layers import BaseNormalizationLayer, get_activation_fn
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor
 

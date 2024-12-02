@@ -44,12 +44,12 @@ from axlearn.audio.subsamplers import ConvSubSampler
 from axlearn.common import learner
 from axlearn.common.checkpointer import every_n_steps_policy as save_every_n_steps
 from axlearn.common.config import InstantiableConfig, config_for_class, config_for_function
+from axlearn.common.convolution import Conv2DWith1DPadding
 from axlearn.common.decoding import PrefixMerger
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps
 from axlearn.common.input_fake import fake_speech_source, fake_text_source
 from axlearn.common.input_tf_data import BuildDatasetFn, Input, batch, tfds_dataset
-from axlearn.common.layers import Conv2DWith1DPadding
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import get_data_dir
 from axlearn.experiments.audio.conformer.common import (

@@ -27,8 +27,9 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
+from axlearn.common.convolution import Conv2D
 from axlearn.common.input_fake import FakeLmInput
-from axlearn.common.layers import Conv2D, Linear
+from axlearn.common.layers import Linear
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import torch_to_axlearn
