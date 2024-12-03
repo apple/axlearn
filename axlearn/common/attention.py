@@ -4100,6 +4100,20 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
 
     # TODO(sneha): extend_step
 
+def save_only_these(*names_to_save):
+    # Save all values, including unnamed ones, excluding the specified names.
+    names_to_save = frozenset(names_to_save)
+    def policy(prim, *_, **params):
+        if 'name' in params and params['name'] in names_to_save:
+            print(f"[WIP] Saving {params['name']}")
+            return True
+        elif 'name' in params:
+            print(f"[WIP] Not saving tensor: {params['name']}")
+            return False
+        else:
+            print("[WIP] Not saving unnamed tensor")
+            return False
+    return policy
 
 def build_remat_spec(
     stack_cfg: Union[
@@ -4155,6 +4169,23 @@ def build_remat_spec(
             names_which_can_be_offloaded=checkpoints,
             offload_src="device",
             offload_dst=offload_dst,
+        )
+
+    backend = jax.default_backend()
+    if backend == 'none':
+        # new remat 3
+        ffn_name = stack_cfg.layer.feed_forward.klass.__name__
+        attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
+        return RematSpec(
+            prevent_cse=True,
+            policy=config_for_function(save_only_these).set(
+                names_to_save=(
+                    [f"FlashAttention.{el}"
+                        for el in ['q_proj', 'k_proj', 'v_proj']] +
+                    ["input_to_qkvee", "TransformerAttentionLayer.residual_add", "TransformerFeedForwardLayer.mlp_residual"] +
+                    [f"{ffn_name}.{el}" for el in ["linear1_0", "linear1_1"]]
+                )
+            ),
         )
 
     return RematSpec(

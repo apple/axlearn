@@ -201,10 +201,10 @@ def update_model_remat_config(
     Raises:
         NotImplementedError: If `stack_cfg.klass` is not a RepeatedTransformerLayer.
     """
-    if stack_cfg.klass is not RepeatedTransformerLayer:
-        raise NotImplementedError(
-            f"Remat spec is not implemented for stack_cfg with klass={type(stack_cfg.klass)}"
-        )
+    # if stack_cfg.klass is not RepeatedTransformerLayer:
+    #     raise NotImplementedError(
+    #         f"Remat spec is not implemented for stack_cfg with klass={type(stack_cfg.klass)}"
+    #     )
 
     if layer_cfg.self_attention.attention.klass is not FlashAttention:
         # Enable remat to reduce memory usage for larger models.
@@ -288,8 +288,8 @@ def model_config(
         layer_cfg.self_attention.attention.input_linear = attention_qkv_linear
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
-    if stack_cfg.klass is RepeatedTransformerLayer:
-        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
+    # if stack_cfg.klass is RepeatedTransformerLayer:
+    update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
     # Stack.
     transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(

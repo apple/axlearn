@@ -22,6 +22,7 @@ from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
     BaseStackedTransformerLayer,
     FusedGroupedQKVLinear,
+    GroupedQKVLinear,
     FusedQKVLinear,
     GroupedQueryAttention,
     MultiheadAttention,
@@ -116,7 +117,7 @@ def get_trainer_kwargs(
     *,
     vocab_size: int,
     version: Version,
-    flash_attention: bool = False,
+    flash_attention: bool = True,
 ) -> dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 4 * (1024**2)  # 4M tokens.
@@ -392,7 +393,7 @@ def get_trainer_kwargs(
                 hidden_dim=128 * 64,
                 num_heads=64,
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
-                num_kv_heads=None, # if version == Version.V1 else 8,
+                num_kv_heads=None,# if version == Version.V1 else 8,
                 # TODO(kelvin-zou): Remove the perf numbers for V5e (OOM).
                 ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
                 rope_theta=rope_theta,
@@ -466,7 +467,7 @@ def model_config(
     shared_lm_head: bool,
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
-    flash_attention: bool = False,
+    flash_attention: bool = True,
     stack_cfg: Optional[BaseStackedTransformerLayer.Config] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
@@ -496,7 +497,10 @@ def model_config(
         ffn_dim = scaled_hidden_dim(scale=8 / 3, round_up_to_multiples_of=256)
     if num_kv_heads:
         atten_cfg = GroupedQueryAttention.default_config()
-        atten_input_linear = FusedGroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+        backend = jax.default_backend()
+
+        qkv_linear =  FusedGroupedQKVLinear if backend != "neuron" else GroupedQKVLinear
+        atten_input_linear = qkv_linear.default_config().set(num_kv_heads=num_kv_heads)
     else:
         atten_cfg = MultiheadAttention.default_config()
         atten_input_linear = FusedQKVLinear.default_config()
