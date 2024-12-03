@@ -381,8 +381,9 @@ class BaseStateStorageBuilder(Builder):
         """Configures BaseStateStorageBuilder.
 
         Attributes:
-            base_dir: Base directory that contains the checkpoint.
-            step: Step number to load.
+            base_dir: Base directory that contains checkpoints of a trainer, usually containing
+                subdirs, one for each checkpointed step.
+            step: Step number to load. Required if `base_dir` is specified.
             validation: Checkpoint validation type.
             concurrent_gb: Memory limit of the in-flight reads.
         """
@@ -406,7 +407,8 @@ class TensorStoreStateStorageBuilder(BaseStateStorageBuilder):
         """Configures TensorStoreStateStorageBuilder.
 
         Attributes:
-            dir: Full checkpoint path. This is supported for backward compatibility purposes.
+            dir: Full checkpoint path that contains a checkpoint of a single step.
+                This is supported for backward compatibility purposes.
                 It's recommended to use `base_dir` and `step` if possible.
             storage: Config for the underlying storage used during checkpoint loading. Defaults
                 to `TensorStoreStateStorage`.
