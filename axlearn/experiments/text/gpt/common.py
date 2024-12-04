@@ -57,7 +57,7 @@ from axlearn.common.optimizer_base import PartitionedGradientTransformation
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.summary_writer import BaseWriter
 from axlearn.common.trainer import MeshShape, SpmdTrainer
-from axlearn.common.utils import HybridMeshShape, Nested, get_data_dir
+from axlearn.common.utils import DataPartitionType, HybridMeshShape, Nested, get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, tfds_text_source
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
@@ -640,6 +640,7 @@ def get_trainer_config_fn(
     mesh_shape: Union[MeshShape, HybridMeshShape],
     mesh_axis_names: Sequence[str] = MESH_AXIS_NAMES,
     mesh_rules: Optional[Sequence[tuple[str, Optional[Union[MeshShape, HybridMeshShape]]]]] = None,
+    input_partition_type: Optional[DataPartitionType] = None,
     eval_every_n_steps: int = 5000,
     eval_batch_size: Optional[int] = None,
     keep_every_n_steps: int = 50_000,
@@ -689,9 +690,27 @@ def get_trainer_config_fn(
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
         )
+        if input_partition_type:
+            cfg.input_partition_type = input_partition_type
+        if len(mesh_axis_names) != len(mesh_shape):
+            raise ValueError(
+                f"Number of mesh axis names ({mesh_axis_names}) "
+                f"must match number of mesh dims ({mesh_shape})."
+            )
+        cfg.mesh_axis_names = mesh_axis_names
+        cfg.mesh_shape = mesh_shape
+        # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism) and
+        # "pipeline" axis (for pipeline parallelism).
+        cfg.batch_axis_names = tuple(
+            el for el in mesh_axis_names if el not in ("model", "pipeline")
+        )
+        cfg.mesh_rules = mesh_rules
         cfg.evalers = {}
         for name, evaler_cfg in evalers.items():
             evaler_cfg.input.batcher.set(global_batch_size=eval_batch_size or train_batch_size)
+            if input_partition_type:
+                evaler_cfg.set(input_partition_type=input_partition_type)
+                evaler_cfg.set(batch_axis_names=cfg.batch_axis_names)
             evaler_cfg.set(
                 eval_policy=config_for_function(eval_every_n_steps_policy).set(
                     n=eval_every_n_steps,
@@ -708,19 +727,6 @@ def get_trainer_config_fn(
         cfg.checkpointer.keep_last_n = 3
         cfg.summary_writer.write_every_n_steps = min(eval_every_n_steps, 100)
         cfg.summary_writer.max_queue = 1000
-        if len(mesh_axis_names) != len(mesh_shape):
-            raise ValueError(
-                f"Number of mesh axis names ({mesh_axis_names}) "
-                f"must match number of mesh dims ({mesh_shape})."
-            )
-        cfg.mesh_axis_names = mesh_axis_names
-        cfg.mesh_shape = mesh_shape
-        # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism) and
-        # "pipeline" axis (for pipeline parallelism).
-        cfg.batch_axis_names = tuple(
-            el for el in mesh_axis_names if el not in ("model", "pipeline")
-        )
-        cfg.mesh_rules = mesh_rules
         # Maybe load state.
         if init_state_builder:
             cfg.init_state_builder = init_state_builder
