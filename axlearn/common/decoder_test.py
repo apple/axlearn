@@ -111,7 +111,7 @@ class TestDecoder(TestCase):
         def layer_output(state, layer):
             return functional(
                 layer,
-                inputs=dict(input_ids=inputs),
+                inputs=dict(input_batch=dict(input_ids=inputs)),
                 state=state,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(2),
@@ -200,7 +200,7 @@ class TestDecoder(TestCase):
             def layer_output(state, layer):
                 return functional(
                     layer,
-                    inputs=dict(input_ids=input_ids),
+                    inputs=dict(input_batch=dict(input_ids=input_ids)),
                     state=state,
                     is_training=False,
                     prng_key=jax.random.PRNGKey(2),
@@ -221,7 +221,7 @@ class TestDecoder(TestCase):
             oh_indices = jax.nn.one_hot(prefix_length - 1, source_length, dtype=prefix.dtype)
             prefix = prefix * (1 - oh_indices) + ref_cfg.eos_token_id * oh_indices
             inputs = dict(
-                prefix=prefix,
+                input_batch=dict(prefix=prefix),
                 max_sequence_length=source_length,
                 num_decodes=2,
             )
@@ -305,7 +305,7 @@ class TestDecoder(TestCase):
 
         _, output_collection = functional(
             layer,
-            inputs=dict(input_ids=inputs),
+            inputs=dict(input_batch=dict(input_ids=inputs)),
             state=layer_state,
             is_training=False,
             prng_key=jax.random.PRNGKey(2),
@@ -397,9 +397,11 @@ class TestDecoder(TestCase):
         forward_outputs, _ = functional(
             layer,
             inputs=dict(
-                input_ids=input_ids,
-                input_segment_ids=jnp.ones_like(input_ids),
-                positions=jnp.arange(input_ids.shape[-1])[None, :],
+                input_batch=dict(
+                    input_ids=input_ids,
+                    input_segment_ids=jnp.ones_like(input_ids),
+                    positions=jnp.arange(input_ids.shape[-1])[None, :],
+                ),
                 cross_attention_data=cross_attention_data,
                 cross_attention_logit_biases=cross_attention_logit_biases,
             ),
@@ -412,7 +414,7 @@ class TestDecoder(TestCase):
             layer,
             inputs=dict(
                 time_step=time_step,
-                input_ids=input_ids,
+                input_batch=dict(input_ids=input_ids),
                 cross_attention_data=cross_attention_data,
                 cross_attention_logit_biases=cross_attention_logit_biases,
             ),
@@ -565,7 +567,7 @@ class TestDecoder(TestCase):
             prefix = prefix * (1 - oh_indices) + bos_id * oh_indices
 
             inputs = dict(
-                prefix=prefix,
+                input_batch=dict(prefix=prefix),
                 max_sequence_length=tgt_len,
                 cross_attention_data=cross_attention_data,
                 cross_attention_logit_biases=cross_attention_logit_biases,
@@ -682,7 +684,10 @@ class TestDecoder(TestCase):
             )
             decoder_cfg.set(name="tmp", output_logits_modifier=output_logits_modifier)
             decoder = decoder_cfg.instantiate(parent=None)
-            chex.assert_trees_all_close(decoder(5 * jnp.ones(3)), dict(logits=17 * 5 * jnp.ones(3)))
+            chex.assert_trees_all_close(
+                decoder(input_batch=dict(input_ids=5 * jnp.ones(3))),
+                dict(logits=17 * 5 * jnp.ones(3)),
+            )
 
     def test_token_scores_match_between_decoded_and_prefix(self):
         """Test that token scores match between sample_decode passes.
@@ -734,7 +739,7 @@ class TestDecoder(TestCase):
         outputs_1, _ = functional(
             decoder,
             inputs=dict(
-                prefix=prefix_1,
+                input_batch=dict(prefix=prefix_1),
                 max_sequence_length=target_length,
                 num_decodes=1,
                 # Don't stop decoding until target length is reached
@@ -755,7 +760,7 @@ class TestDecoder(TestCase):
         outputs_2, _ = functional(
             decoder,
             inputs=dict(
-                prefix=prefix_2,
+                input_batch=dict(prefix=prefix_2),
                 max_sequence_length=target_length,
                 num_decodes=1,
                 # Don't stop decoding until target length is reached

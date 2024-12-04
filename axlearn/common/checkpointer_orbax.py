@@ -8,7 +8,6 @@ See also checkpointer.py for other checkpointing utilities and checkpointer_test
 import asyncio
 import copy
 import dataclasses
-import functools
 import os
 from concurrent import futures
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -45,7 +44,7 @@ except ImportError:
     _GRAIN_INSTALLED = False
 
 
-class _TfIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
+class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
     """Serializes tf.data.Iterator.
 
     Reference:
@@ -63,6 +62,10 @@ class _TfIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
     def typestr(self) -> str:
         return "TfIterator"
 
+    def _ckpt_dir(self, info: ocp.type_handlers.ParamInfo) -> str:
+        # Each worker writes its tf checkpoints under a different path.
+        return os.path.join(info.parent_dir, f"tf_{jax.process_index()}")
+
     async def serialize(
         self,
         values: Sequence[tf.data.Iterator],
@@ -74,7 +77,11 @@ class _TfIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
         futs = []
         with futures.ThreadPoolExecutor(max_workers=1) as executor:
             for value, info in zip(values, infos):
-                futs.append(async_save_tf_savables(value, executor=executor, dir=info.path))
+                futs.append(
+                    async_save_tf_savables(
+                        {info.name: value}, executor=executor, dir=self._ckpt_dir(info)
+                    )
+                )
         return futs
 
     async def deserialize(
@@ -84,14 +91,16 @@ class _TfIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
     ) -> Sequence[tf.data.Iterator]:
         if args is None:
             raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
+        futs = []
         with futures.ThreadPoolExecutor(max_workers=1) as executor:
-            futs = [
-                asyncio.get_event_loop().run_in_executor(
-                    executor,
-                    functools.partial(restore_tf_savables, arg.item, dir=info.path),
-                )
-                for arg, info in zip(args, infos)
-            ]
+            for arg, info in zip(args, infos):
+
+                def restore(arg=arg, info=info):
+                    return restore_tf_savables({info.name: arg.item}, dir=self._ckpt_dir(info))[
+                        info.name
+                    ]
+
+                futs.append(asyncio.get_event_loop().run_in_executor(executor, restore))
         return await asyncio.gather(*futs)
 
     async def metadata(
@@ -105,7 +114,7 @@ ocp.type_handlers.register_type_handler(tf.data.Iterator, _TfIteratorHandler(), 
 
 if _GRAIN_INSTALLED:
 
-    class _GrainDatasetIteratorHandler(ocp.pytree_checkpoint_handler.TypeHandler):
+    class _GrainDatasetIteratorHandler(ocp.type_handlers.TypeHandler):
         """Serializes grain dataset iterators."""
 
         @dataclasses.dataclass
@@ -114,6 +123,10 @@ if _GRAIN_INSTALLED:
 
         def typestr(self) -> str:
             return "DatasetIterator"
+
+        def _ckpt_dir(self, info: ocp.type_handlers.ParamInfo) -> str:
+            # Each worker writes its grain checkpoints under a different path.
+            return os.path.join(info.parent_dir, f"grain_{jax.process_index()}")
 
         async def serialize(
             self,
@@ -124,9 +137,7 @@ if _GRAIN_INSTALLED:
             """Serializes `values` into corresponding `info.path`s."""
             del args  # Unused.
             for value, info in zip(values, infos):
-                ckpt_dir = os.path.dirname(info.path)
-                path = os.path.basename(info.path)
-                maybe_save_grain_savables({path: value}, dir=ckpt_dir)
+                maybe_save_grain_savables({info.name: value}, dir=self._ckpt_dir(info))
             return []
 
         async def deserialize(
@@ -136,10 +147,14 @@ if _GRAIN_INSTALLED:
         ) -> Sequence[_GrainIterator]:
             if args is None:
                 raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
-            return [
-                maybe_restore_grain_savables(arg.item, dir=info.path)
-                for arg, info in zip(args, infos)
-            ]
+            ret = []
+            for arg, info in zip(args, infos):
+                ret.append(
+                    maybe_restore_grain_savables({info.name: arg.item}, dir=self._ckpt_dir(info))[
+                        info.name
+                    ]
+                )
+            return ret
 
         async def metadata(
             self, infos: Sequence[ocp.type_handlers.ParamInfo]
@@ -178,6 +193,8 @@ class OrbaxCheckpointer(BaseCheckpointer):
         keep_last_n: int = 1
         validation_type: CheckpointValidationType = CheckpointValidationType.EXACT
         async_timeout_secs: int = 300
+        max_concurrent_save_gb: Optional[int] = None
+        max_concurrent_restore_gb: Optional[int] = None
 
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> List[str]:
@@ -209,6 +226,12 @@ class OrbaxCheckpointer(BaseCheckpointer):
             step_prefix=STEP_PREFIX,
             step_format_fixed_length=STEP_NUM_DIGITS,
         )
+        # TODO(matthew_e_hopkins): bring back save_concurrent_gb and restore_concurrent_gb
+        # after bumping up the Jax version.
+        if cfg.max_concurrent_restore_gb is not None:
+            raise NotImplementedError(
+                "Orbax version (0.5.23) doesn't support separate save/restore concurrent_gb."
+            )
         self._manager = ocp.CheckpointManager(
             directory=cfg.dir,
             options=ocp.CheckpointManagerOptions(
@@ -225,10 +248,11 @@ class OrbaxCheckpointer(BaseCheckpointer):
                 # for simplicity. The test cases ensure that this is compatible with
                 # `read_index_file`.
                 "index": ocp.JsonCheckpointHandler(filename="index"),
-                # TODO(markblee): Add save/restore_concurrent_gb when available.
                 # Note that this defaults to use_ocdb=True. Note also that custom `TypeHandler`s are
                 # ignored by `StandardCheckpointHandler`, so we use `PyTreeCheckpointHandler`.
-                "state": ocp.PyTreeCheckpointHandler(),
+                "state": ocp.PyTreeCheckpointHandler(
+                    concurrent_gb=cfg.max_concurrent_save_gb,
+                ),
             },
         )
 

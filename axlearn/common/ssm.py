@@ -55,7 +55,6 @@ from axlearn.common.ssm_kernels.ssd_kernels import (
 )
 from axlearn.common.utils import Nested, Tensor, with_sharding_constraint
 
-
 class MambaDtProjInitializer(Initializer):
     """Initializes the weight and bias of a Linear layer as described in the Mamba paper."""
 
@@ -560,10 +559,10 @@ class MambaMixerLayer(BaseLayer):
         # The recurrence implementation to use for full-sequence inputs.
         mamba_recurrence: BaseMambaRecurrence = LinearScanMambaRecurrence.default_config()
         # The recurrence implementation to use for inference.
-        inference_mamba_recurrence: (
-            BaseMambaRecurrence
-        ) = LinearScanMambaRecurrence.default_config().set(
-            output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
+        inference_mamba_recurrence: BaseMambaRecurrence = (
+            LinearScanMambaRecurrence.default_config().set(
+                output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
+            )
         )
 
     class MambaOutput(NamedTuple):
@@ -756,7 +755,7 @@ class MambaMixerLayer(BaseLayer):
         Args:
             mode: Configures whether `cached_states` are consumed or emitted.
             query: A Tensor of shape [batch, target_length, target_dim].
-            cached_states: Optional NestedTensor as produced by `prefill_states`.
+            cached_states: Optional Nested Tensor as produced by `init_states`.
 
         Returns:
             An optional NestedTensor of cached states, depending on `mode`.
@@ -767,12 +766,13 @@ class MambaMixerLayer(BaseLayer):
         """
         self.vlog(3, "mamba.input=%s", query.sum())
         if mode == ForwardMode.FORWARD:
-            mamba_state, mamba_output = None, self._full_sequence_forward(
-                query, recurrence=self.recurrence
+            mamba_state, mamba_output = (
+                None,
+                self._full_sequence_forward(query, recurrence=self.recurrence),
             )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
-            mamba_state, mamba_output = self.prefill_states(
+            mamba_state, mamba_output = self.init_states(
                 time_step=cached_states["mamba_layer"],
                 query=query,
             )
@@ -796,54 +796,52 @@ class MambaMixerLayer(BaseLayer):
         _, output = self._forward_for_mode(mode=ForwardMode.FORWARD, query=query)
         return output
 
-    # pylint: disable=unused-argument
-    def init_states(self, *, target_batch_size: int, **_kwargs) -> Nested[Tensor]:
-        """Initializes cache for autoregressive cached decoding.
-
-        Args:
-            target_batch_size: The batch size of the target to be decoded.
-
-        Returns:
-            The cache as a Nested[Tensor].
-        """
-        cfg = self.config
-        dtype = cfg.cache_dtype or cfg.dtype
-        cache = dict(
-            conv_input=jnp.zeros((target_batch_size, cfg.conv.window, self.inner_dim), dtype=dtype),
-            state=jnp.zeros((target_batch_size, 1, cfg.state_dim, self.inner_dim), dtype=dtype),
-            time_step=jnp.zeros(target_batch_size, dtype=jnp.int32),
-        )
-        return cache
-
-    def prefill_states(
+    def init_states(
         self,
         *,
-        time_step: Tensor,
-        query: Tensor,
-    ) -> tuple[Nested[Tensor], MambaOutput]:
+        time_step: Optional[Tensor],
+        query: Union[Tensor, TensorSpec],
+    ) -> tuple[Nested[Tensor], Optional[MambaOutput]]:
         """Initializes cache for autoregressive cached decoding.
 
+        The method supports initializing an empty cache as well as prefilling:
+        * To initialize an empty cache, specify `time_step=None`.
+            In this case, `query` is allowed to be a TensorSpec.
+        * To prefill, provide `time_step` and `query` as Tensors.
+
         Args:
-            time_step: A Tensor of shape [batch_size]. Each value is an index into the length
-                dimension indicating where decoding will start from.
-            query: Tensor of shape [batch, target_length, target_dim] corresponding to query vector
-                up to `time_step` indices. For batch index `i`, only `query[i, :time_step[i], ...]`
-                will affect subsequent decoding.
+            time_step: An optional Tensor of shape [batch_size]. Each value is an index into the
+                length dimension indicating where decoding will start from.
+            query: A Tensor or TensorSpec of shape [batch, target_length, target_dim] corresponding
+                to query vector up to `time_step` indices. For batch index `i`, only
+                `query[i, :time_step[i], ...]` will affect subsequent decoding.
 
         Returns:
-            A Nested[Tensor] containing the cached convolution input, ssm state,
-            and updated time_step.
-            A MambaOutput instance where .data is the same shape as query.
+            A tuple (init_states, output):
+            * init_states: A Nested Tensor containing the cached convolution input, ssm state,
+                and updated time_step.
+            * output: In the prefill case, a MambaOutput instance where .data is the same shape as
+                query. Otherwise, if initializing cache from scratch, output will be None.
         """
-        cfg = self.config
+        cfg: MambaMixerLayer.Config = self.config
         dtype = cfg.cache_dtype or cfg.dtype
+        batch_size = query.shape[0]
+
+        if time_step is None:
+            init_state = dict(
+                conv_input=jnp.zeros((batch_size, cfg.conv.window, self.inner_dim), dtype=dtype),
+                state=jnp.zeros((batch_size, 1, cfg.state_dim, self.inner_dim), dtype=dtype),
+                time_step=jnp.zeros(batch_size, dtype=jnp.int32),
+            )
+            return init_state, None
+
         output = self._full_sequence_forward(query, recurrence=self.inference_recurrence)
         conv_input, states = output.conv_input, output.states
         # Pad conv input so we can take the last window timesteps that precede time_step.
         padded_conv_input = jnp.pad(
             conv_input, ((0, 0), (cfg.conv.window, 0), (0, 0))
         )  # [batch_size, target_length+window, input_dim]
-        batch_range = jnp.arange(conv_input.shape[0])
+        batch_range = jnp.arange(batch_size)
         time_step_range = time_step[:, None] + jnp.arange(cfg.conv.window)
         conv_input_cache = padded_conv_input[batch_range[:, None], time_step_range]
         # Pad states so we can take the step preceding time_step, even if time_step is zero.
@@ -1054,38 +1052,33 @@ class BaseSSMLayer(BaseLayer):
         """
         raise NotImplementedError(type(self))
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> Nested[Tensor]:
-        """Initializes cached states for incremental computation.
-
-        Args:
-            target_batch_size: The batch size for target sequences.
-            target_max_len: The maximum number of tokens in a target sequence.
-
-        Returns:
-            A nested tree of Tensors, which can be used as `cached_states` for the initial call
-            of `extend_step()`.
-        """
-        raise NotImplementedError(type(self))
-
-    def prefill_states(
+    def init_states(
         self,
         *,
-        time_step: Tensor,
-        data: Tensor,
+        time_step: Optional[Tensor],
+        data: Union[Tensor, TensorSpec],
         **_kwargs,
-    ) -> tuple[Nested[Tensor], BaseTransformerLayer.Output]:
+    ):
         """Initializes cached states for incremental computation.
 
+        The method supports initializing an empty cache as well as prefilling:
+        * To initialize an empty cache, specify `time_step=None`.
+            In this case, `data` is allowed to be a TensorSpec.
+        * To prefill, provide `time_step` and `data` as Tensors.
+
         Args:
-            time_step: A Tensor of shape [batch]. Each value is an index into the length dimension
-                indicating where decoding will start from.
-            data: A Tensor of shape [batch, target_length, input_dim]. For batch index `i`, only
-                `data[i, :time_step[i], ...]` will affect subsequent decoding.
+            time_step: An optional Tensor of shape [batch]. Each value is an index into the length
+                dimension indicating where decoding will start from.
+            data: A Tensor or TensorSpec of shape [batch, target_length, input_dim]. For batch index
+                `i`, only `data[i, :time_step[i], ...]` will affect subsequent decoding.
 
         Returns:
-            A nested tree of Tensors, which can be used as `cached_states` for the initial call
-            of `extend_step()`.
-            A BaseTransformerLayer.Output instance, where .data is of the same shape as `data`.
+            A tuple (init_states, output):
+            * init_states: A nested tree of Tensors, which can be used as `cached_states` for the
+                initial call of `extend_step()`.
+            * output: In the prefill case, a BaseTransformerLayer.Output instance, where .data is of
+                the same shape as `data`. Otherwise, if initializing cache from scratch, output will
+                be None.
         """
         raise NotImplementedError(type(self))
 
@@ -1150,7 +1143,7 @@ class MambaBlock(BaseSSMLayer):
         self,
         *,
         mode: ForwardMode,
-        data: Tensor,
+        data: Union[Tensor, TensorSpec],
         cached_states: Optional[Nested[Tensor]] = None,
         **_kwargs,
     ) -> tuple[Optional[Nested[Tensor]], BaseTransformerLayer.Output]:
@@ -1161,7 +1154,7 @@ class MambaBlock(BaseSSMLayer):
             mode: Configures whether `cached_states` are consumed or emitted.
                   See `axlearn.common.attention.ForwardMode` for details.
             data: A Tensor of shape [batch, target_length, target_dim].
-            cached_states: Optional NestedTensor as produced by `prefill_states`.
+            cached_states: Optional Nested Tensor as produced by `init_states`.
 
         Returns:
             An optional NestedTensor of cache states, depending on `mode`.
@@ -1170,30 +1163,42 @@ class MambaBlock(BaseSSMLayer):
         Raises:
             ValueError: If `mode` is unsupported.
         """
-        cfg = self.config
+        cfg: MambaBlock.Config = self.config
+
+        def mamba_thunk(target):
+            if mode == ForwardMode.FORWARD:
+                state, output = None, self.mamba(query=target)
+            elif mode == ForwardMode.INIT_STATES:
+                assert cached_states is not None
+                state, output = self.mamba.init_states(
+                    time_step=cached_states["mamba_block"],
+                    query=target,
+                )
+            elif mode == ForwardMode.EXTEND_STEP:
+                assert cached_states is not None
+                state, output = self.mamba.extend_step(
+                    cached_states["mamba_block"],
+                    target,
+                )
+            else:
+                raise ValueError(f"Unrecognized mode {mode}.")
+            return state, output
+
+        if mode == ForwardMode.INIT_STATES:
+            assert cached_states is not None
+            if cached_states["mamba_block"] is None:
+                state, _ = mamba_thunk(data)
+                return dict(mamba_block=state), None
+
         skip_input = data
         if cfg.residual_mode == BlockResidualMode.FP32:
             skip_input = _at_least_float32(skip_input)
         target = self.norm(data)
-
-        if mode == ForwardMode.FORWARD:
-            state, output = None, self.mamba(query=target)
-        elif mode == ForwardMode.INIT_STATES:
-            assert cached_states is not None
-            state, output = self.mamba.prefill_states(
-                time_step=cached_states["mamba_block"],
-                query=target,
-            )
-        elif mode == ForwardMode.EXTEND_STEP:
-            assert cached_states is not None
-            state, output = self.mamba.extend_step(
-                cached_states["mamba_block"],
-                target,
-            )
-        else:
-            raise ValueError(f"Unrecognized mode {mode}.")
+        state, output = mamba_thunk(target)
         output = (output.data + skip_input).astype(target.dtype)
-        return dict(mamba_block=state), self._to_transformer_output(data=output)
+        output = self._to_transformer_output(data=output)
+
+        return dict(mamba_block=state), output
 
     def forward(
         self,
@@ -1216,41 +1221,32 @@ class MambaBlock(BaseSSMLayer):
         )
         return output
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> Nested[Tensor]:
-        """Initializes cache for autoregressive cached decoding.
-
-        Args:
-            target_batch_size: The batch size of the target to be decoded.
-            target_max_len: The sequence length of the target to be decoded.
-
-        Returns:
-            The cache as a `Nested[Tensor]`.
-        """
-        return dict(
-            mamba_block=self.mamba.init_states(
-                target_batch_size=target_batch_size, target_max_len=target_max_len
-            )
-        )
-
-    def prefill_states(
+    def init_states(
         self,
         *,
-        time_step: Nested[Tensor],
-        data: Tensor,
+        time_step: Optional[Tensor],
+        data: Union[Tensor, TensorSpec],
         **_kwargs,
     ) -> tuple[Nested[Tensor], BaseTransformerLayer.Output]:
         """Initializes cache for autoregressive cached decoding.
 
+        The method supports initializing an empty cache as well as prefilling:
+        * To initialize an empty cache, specify `time_step=None`.
+            In this case, `data` is allowed to be a TensorSpec.
+        * To prefill, provide `time_step` and `data` as Tensors.
+
         Args:
             time_step: A Tensor of shape [batch]. Each value is an index into the length dimension
                 indicating where decoding will start from.
-            data: Tensor of shape [batch, target_length, target_dim] corresponding to query vector
-                at `time_step` indices. For batch index `i`, only `target[i, :time_step[i], ...]`
-                will affect subsequent decoding.
+            data: A Tensor or TensorSpec of shape [batch, target_length, target_dim] corresponding
+                to query vector at `time_step` indices. For batch index `i`, only
+                `target[i, :time_step[i], ...]` will affect subsequent decoding.
 
         Returns:
-            A `NestedTensor` state depending on the `attention` layer implementation.
-            An Output instance, where .data is of the same shape as data.
+            A tuple (init_states, output):
+            * init_states: A Nested Tensor state depending on the `attention` layer implementation.
+            * output: In the prefill case, an Output instance, where .data is of the same shape as
+                data. Otherwise, if initializing cache from scratch, output will be None.
         """
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
@@ -1307,32 +1303,44 @@ class JambaMambaBlock(MambaBlock):
         self,
         *,
         mode: ForwardMode,
-        data: Tensor,
+        data: Union[Tensor, TensorSpec],
         cached_states: Optional[Nested[Tensor]] = None,
         **_kwargs,
     ) -> tuple[Optional[Nested[Tensor]], BaseTransformerLayer.Output]:
         cfg = self.config
+
+        def mamba_thunk(target):
+            if mode == ForwardMode.FORWARD:
+                state, output = None, self.mamba(query=target)
+            elif mode == ForwardMode.INIT_STATES:
+                assert cached_states is not None
+                state, output = self.mamba.init_states(
+                    time_step=cached_states["mamba_block"],
+                    query=target,
+                )
+            elif mode == ForwardMode.EXTEND_STEP:
+                assert cached_states is not None
+                state, output = self.mamba.extend_step(
+                    cached_states["mamba_block"],
+                    target,
+                )
+            else:
+                raise ValueError(f"Unrecognized mode {mode}.")
+            return state, output
+
+        # Handle the case where we initialize cache from scratch.
+        # `data` can be effectively treated as a TensorSpec in this case, so norm doesn't apply.
+        if mode == ForwardMode.INIT_STATES:
+            assert cached_states is not None
+            if cached_states["mamba_block"] is None:
+                state, _ = mamba_thunk(TensorSpec(shape=data.shape, dtype=data.dtype))
+                return dict(mamba_block=state), None
+
         skip_input = data
         if cfg.residual_mode == BlockResidualMode.FP32:
             skip_input = _at_least_float32(skip_input)
         target = self.norm(data)
-
-        if mode == ForwardMode.FORWARD:
-            state, output = None, self.mamba(query=target)
-        elif mode == ForwardMode.INIT_STATES:
-            assert cached_states is not None
-            state, output = self.mamba.prefill_states(
-                time_step=cached_states["mamba_block"],
-                query=target,
-            )
-        elif mode == ForwardMode.EXTEND_STEP:
-            assert cached_states is not None
-            state, output = self.mamba.extend_step(
-                cached_states["mamba_block"],
-                target,
-            )
-        else:
-            raise ValueError(f"Unrecognized mode {mode}.")
+        state, output = mamba_thunk(target)
         data = (output.data + skip_input).astype(target.dtype)
         output = self.feed_forward(data).astype(target.dtype)  # Feed-forward norms its input.
         return dict(mamba_block=state), self._to_transformer_output(data=output)

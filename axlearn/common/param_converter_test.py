@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests param converter utils."""
+
 # pylint: disable=too-many-lines
 import os
 from typing import Any, Callable, Optional
@@ -270,7 +271,7 @@ class ParameterTest(BaseParamConverterTest):
         out, hf_out = self._compute_layer_outputs(
             test_layer=layer,
             ref_layer=hf_layer,
-            test_inputs=[inputs],
+            test_inputs=dict(input_batch=dict(inputs=inputs)),
             ref_inputs=as_torch_tensor(inputs),
         )
         self.assertNestedAllClose(out, hf_out)
@@ -303,7 +304,7 @@ class ParameterTest(BaseParamConverterTest):
         out, hf_out = self._compute_layer_outputs(
             test_layer=layer,
             ref_layer=hf_layer,
-            test_inputs=[inputs],
+            test_inputs=dict(input_batch=dict(inputs=inputs)),
             ref_inputs=as_torch_tensor(inputs),
         )
         # Compare only at non-padding positions.

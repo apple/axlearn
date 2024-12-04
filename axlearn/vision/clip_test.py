@@ -15,6 +15,7 @@ from axlearn.common.test_utils import assert_allclose
 from axlearn.common.text_encoder import TEXT_EMBEDDINGS
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import as_tensor
+from axlearn.vision import param_converter  # pylint: disable=unused-import
 from axlearn.vision.clip import (
     set_clip_model_config,
     set_text_encoder_config,

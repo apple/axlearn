@@ -10,6 +10,7 @@
 
 https://arxiv.org/abs/2006.06666
 """
+
 from typing import Optional, Union
 
 import jax
@@ -24,7 +25,7 @@ from axlearn.common.decoding import BeamSearchOutputs
 from axlearn.common.layers import Linear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, child_context
-from axlearn.common.utils import NestedTensor, get_recursively, tree_paths
+from axlearn.common.utils import NestedTensor, get_recursively, tree_paths, validate_contains_paths
 from axlearn.common.vision_transformer import VisionTransformer as ViTModel
 from axlearn.common.vision_transformer import named_model_configs as vit_named_model_configs
 from axlearn.vision.resnet import ResNet
@@ -235,7 +236,8 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
         # Decode caption.
         decoder_ids, decoder_labels = caption_tokens[:, :-1], caption_tokens[:, 1:]
         predictions: dict[str, Tensor] = self.textual(
-            decoder_ids, cross_attention_data=projected_visual_features
+            input_batch=dict(input_ids=decoder_ids),
+            cross_attention_data=projected_visual_features,
         )
         metrics = self._metrics(predictions["logits"], decoder_labels)
 
@@ -266,9 +268,9 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
         projected_visual_features = self.embed_image(image)
         with child_context("beam_search_decode", module=self.textual):
             output: BeamSearchOutputs = self.textual.beam_search_decode(
+                input_batch=dict(prefix=prefix),
                 max_sequence_length=max_sequence_length,
                 num_decodes=num_decodes,
-                prefix=prefix,
                 cross_attention_data=projected_visual_features,
             )
         return output
@@ -294,6 +296,7 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
         Returns:
             The beam search outputs.
         """
+        validate_contains_paths(input_batch, paths=["image", "prefix"])
         return self.caption(
             image=input_batch["image"],
             prefix=input_batch["prefix"],
