@@ -12,11 +12,17 @@ from collections import defaultdict
 from collections.abc import Sequence
 from typing import Optional
 
+from tpu_info import device
+
 import google.auth
+import jax
+import requests
 from absl import app, flags, logging
 from google.auth import exceptions as gauthexceptions
 from google.auth import impersonated_credentials
 from google.auth.credentials import Credentials
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from axlearn.cloud.common.utils import Table, infer_cli_name, subprocess_run
 from axlearn.cloud.gcp.scopes import DEFAULT_APPLICATION
@@ -307,3 +313,103 @@ class GCPAPI(str, enum.Enum):
 
     QRM = "QRM"
     GKE = "GKE"
+
+
+def get_acc_ids_for_jax_process(jax_process_index):
+    """
+    Get accelerator IDs for a specific JAX process.
+
+    Args:
+        jax_process_index (int): The index of the JAX process to filter devices.
+
+    Returns:
+        list: A list of accelerator IDs matching the process index and platform.
+    """
+    acc_ids = [
+        device.id
+        for device in jax.devices()
+        if device.process_index == jax_process_index and device.platform == jax.default_backend()
+    ]
+    return acc_ids
+
+
+def get_gcp_metadata(category, attribute, timeout=5, retries=3):
+    """
+    Fetch a specified attribute from GCP metadata with a configurable timeout and retry logic.
+
+    Args:
+        category (str): The high-level metadata category (e.g., 'instance', 'project').
+        attribute (str): The specific attribute to fetch within the category (e.g., 'id', 'zone').
+        timeout (int): Timeout for the request in seconds (default: 5).
+        retries (int): Number of retry attempts for transient failures (default: 3).
+
+    Returns:
+        str: The metadata value as a string, or None if the request fails.
+    """
+    base_url = "http://metadata.google.internal/computeMetadata/v1/"
+    metadata_url = f"{base_url}{category}/{attribute}"
+    headers = {"Metadata-Flavor": "Google"}
+
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=retries,
+        backoff_factor=0.5,
+        # Retry on these HTTP status codes
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+
+    try:
+        response = session.get(metadata_url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        return response.text
+    except requests.exceptions.RequestException as e:
+        logging.error("Failed to retrieve metadata for %s/%s: %s", category, attribute, e)
+        return None
+
+def get_tpu_chip_type() -> device.TpuChip:
+    """
+    Automatically detect the TPU chip type based on JAX devices.
+
+    Returns:
+        A `device.TpuChip` enum value indicating the detected chip type.
+
+    Raises:
+        RuntimeError: If no TPU devices are found or chip type cannot be inferred.
+    """
+    tpu_devices = [d for d in jax.devices() if d.platform == "tpu"]
+    if not tpu_devices:
+        raise RuntimeError("No TPU devices found on this system.")
+
+    # Extract TPU version from device attributes (e.g., 'tpu_v4', 'tpu_v3')
+    tpu_version = tpu_devices[0].device_kind.lower()  # Example: "TPU v4" -> "tpu_v4"
+
+    if "v2" in tpu_version:
+        return device.TpuChip.V2
+    elif "v3" in tpu_version:
+        return device.TpuChip.V3
+    elif "v4" in tpu_version:
+        return device.TpuChip.V4
+    elif "v5 lite" in tpu_version:
+        return device.TpuChip.V5E
+    elif "v5p" in tpu_version:
+        return device.TpuChip.V5P
+    elif "v6 lite" in tpu_version:
+        return device.TpuChip.V6E
+    else:
+        raise RuntimeError(f"Unknown TPU chip type detected: {tpu_version}")
+
+def is_tpu_device(acc_id):
+    """
+    Check if the given accelerator ID corresponds to a TPU device.
+    Args:
+        acc_id: Accelerator ID to check.
+    Returns:
+        True if the device is a TPU, False otherwise.
+    """
+    devices = jax.devices()
+    for d in devices:
+        if d.id == acc_id and d.platform == "tpu":
+            return True
+    return False

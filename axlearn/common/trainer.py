@@ -19,6 +19,14 @@ from jax import numpy as jnp
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
 
+from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.monitoring.monitor_workload import GCPWorkloadMonitoring
+from axlearn.cloud.gcp.monitoring.tpu_client import is_tpu_active
+from axlearn.cloud.gcp.utils import (
+    get_acc_ids_for_jax_process, 
+    get_tpu_chip_type, 
+    is_tpu_device
+)
 from axlearn.common import file_system as fs
 from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
@@ -209,6 +217,25 @@ class SpmdTrainer(Module):
     ):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+
+        self.gcp_workload_monitor = None
+        self.enable_gcp_workload_monitoring = gcp_settings(
+            "enable_gcp_workload_monitoring", default=False
+        )
+
+        if self.enable_gcp_workload_monitoring:
+            self.gcp_project_id = gcp_settings("project", required=True)
+            self.gcp_zone = gcp_settings("zone", required=True)
+            self.workload_id = gcp_settings("workload_id", required=True)
+            self.replica_id = gcp_settings("replica_id", required=True)
+
+            # Initialize Google Cloud Monitoring client if GCP reporting is enabled.
+            self.gcp_workload_monitor = GCPWorkloadMonitoring(
+                project_id=self.gcp_project_id,
+                zone=self.gcp_zone,
+                workload_id=self.workload_id,
+                replica_id=self.replica_id,
+            )
 
         if not cfg.prune_empty_state_updates:
             raise ValueError(
@@ -552,6 +579,7 @@ class SpmdTrainer(Module):
             with self.checkpointer:
                 logging.info("Starting loop...")
                 start_time = time.perf_counter()
+                init_time = time.perf_counter()
                 num_steps = 0
                 output = None
                 stop_trace_step = None
@@ -575,6 +603,77 @@ class SpmdTrainer(Module):
                     )
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
+
+                    if self.enable_gcp_workload_monitoring:
+                        curr_time = time.perf_counter()
+                        step_time = curr_time - init_time
+                        init_time = curr_time
+
+                        jax_process_index = jax.process_index()
+
+                        logging.info("Jax process id: %s", jax_process_index)
+
+                        if jax_process_index == 0:
+                            self.gcp_workload_monitor.send_performance_metric(
+                                perf_metric=step_time
+                            )
+
+                        global_acc_ids = get_acc_ids_for_jax_process(
+                            jax_process_index
+                        )
+
+                        logging.info(
+                            "Accelerator ids associated with Jax process id "
+                            "%s: %s",
+                            str(jax_process_index),
+                            ", ".join(map(str, global_acc_ids)),
+                        )
+
+                        for acc_id in global_acc_ids:
+                            if is_tpu_device(acc_id):
+                                try:
+                                    # Dynamically get chip type and check
+                                    # activity Function to dynamically get TPU
+                                    # chip type
+                                    chip_type = get_tpu_chip_type()
+                                    if is_tpu_active(
+                                        local_device_id=global_acc_ids.index(
+                                            int(acc_id)
+                                        ),  # TPU monitoring requires local
+                                        # device id, not global. Workaround to
+                                        # provide local device id is the
+                                        # assumption that the index of the tpu
+                                        # id while identifying attached tpu ids
+                                        # in jax process is local id.
+                                        # TODO verify this assumption using tpu chip coordinates.
+                                        chip_type=chip_type,
+                                    ):
+                                        logging.info(
+                                            "TPU device %s is active. Sending heartbeat.",
+                                            str(acc_id),
+                                        )
+                                        self.gcp_workload_monitor.send_heartbeat_metric(
+                                            acc_index=str(acc_id),
+                                            jax_process_index=str(jax_process_index),
+                                        )
+                                    else:
+                                        logging.warning(
+                                            "TPU device %s is inactive. Skipping heartbeat.", str(acc_id)
+                                        )
+                                except Exception as e:
+                                    logging.error(
+                                        "Error checking TPU activity for device %s: %s", str(acc_id), e
+                                    )
+                            else:
+                                # If not a TPU, send heartbeat as is
+                                logging.info(
+                                    "Non-TPU device %s. Sending heartbeat.", acc_id
+                                )
+                                self.gcp_workload_monitor.send_heartbeat_metric(
+                                    acc_index=str(acc_id),
+                                    jax_process_index=str(jax_process_index),
+                                )
+
                     if num_steps % 100 == 0:
                         now = time.perf_counter()
                         average_step_time = (now - start_time) / num_steps

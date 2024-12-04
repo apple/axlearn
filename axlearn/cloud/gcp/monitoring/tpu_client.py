@@ -238,3 +238,57 @@ def get_chip_metrics_v2(
     except urllib.error.URLError as e:
         logging.log_first_n(logging.ERROR, "Failed to fetch metrics from %s: %s", 5, addr, e)
         return []
+
+def is_tpu_active(
+    local_device_id: int,
+    chip_type: device.TpuChip,
+    *,
+    addr_v1: str = LIB_TPU_METRICS_SERVER_ADDR,
+    addr_v2: str = TPU_DEVICE_PLUGIN_METRICS_SERVER_ADDR,
+) -> bool:
+    """
+    Check if a TPU is active based on its local device ID. Tries both v1 (libtpu) and v2 (tpu-device-plugin) metrics.
+    LIBTPU and tpu-device-plugin can only determine metrics of attached tpu devices in the currrent node.
+    
+    Args:
+        local_device_id: The local device ID of the TPU to check.
+        chip_type: The TPU chip type to determine metrics interpretation.
+        addr_v1: Address of libtpu metrics server.
+        addr_v2: Address of tpu-device-plugin metrics server.
+
+    Returns:
+        True if the TPU is active, False otherwise.
+    """
+    try:
+        # Try using get_chip_metrics_v2 first
+        logging.info("Attempting to fetch metrics using get_chip_metrics_v2...")
+        metrics_v2 = get_chip_metrics_v2(
+            metric_list=[MetricV2Name.TENSORCORE_DUTY_CYCLE_PERCENT],
+            chip_type=chip_type,
+            addr=addr_v2,
+        )
+        if 0 <= local_device_id < len(metrics_v2):
+            duty_cycle = metrics_v2[local_device_id].tensorcore_duty_cycle_percent
+            if duty_cycle is not None and duty_cycle > 0:
+                return True
+    except Exception as e:
+        logging.warning("Failed to fetch metrics using v2: %s", e)
+
+    try:
+        # Fallback to get_chip_metrics
+        logging.info("Falling back to fetch metrics using get_chip_metrics...")
+        metrics_v1 = get_chip_metrics(
+            metric_list=[MetricName.TENSORCORE_DUTY_CYCLE_PERCENT],
+            chip_type=chip_type,
+            addr=addr_v1,
+        )
+        if 0 <= local_device_id < len(metrics_v1):
+            duty_cycle = metrics_v1[local_device_id].tensorcore_duty_cycle_percent
+            if duty_cycle is not None and duty_cycle > 0:
+                return True
+    except Exception as e:
+        logging.error("Failed to fetch metrics using v1: %s", e)
+
+    # If all attempts fail, log and return False
+    logging.error("Unable to determine TPU activity. Returning False.")
+    return False

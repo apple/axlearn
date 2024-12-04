@@ -11,6 +11,7 @@
 | [Concepts](docs/02-concepts.md) | Core concepts and design principles. |
 | [CLI User Guide](docs/03-cli.md) | How to use the CLI. |
 | [Infrastructure](docs/04-infrastructure.md) | Core infrastructure components. |
+| [GCP Monitoring](docs/05-monitoring.md) | Enable GCP Monitoring. |
 
 ## Introduction
 
