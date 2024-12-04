@@ -53,7 +53,8 @@ from axlearn.common.ssm_kernels.ssd_kernels import (
     ssd_linear_scan_w_hidden_states,
     ssd_linear_scan_w_timestep,
 )
-from axlearn.common.utils import Nested, Tensor, with_sharding_constraint
+from axlearn.common.utils import Nested, Tensor, TensorSpec, with_sharding_constraint
+
 
 class MambaDtProjInitializer(Initializer):
     """Initializes the weight and bias of a Linear layer as described in the Mamba paper."""
