@@ -513,23 +513,6 @@ def model_config(
     )
     atten_qkv_linear.rope_pos_emb_layer.theta = rope_theta
 
-    # batch_axis_names=("data", ("replica", "data", "fsdp"))
-    # fsdp_axis_names=("fsdp")
-    # tp_axis_names=("model")
-    # seq_axis_names=("seq",)
-    # prenorm_partition_spec = (fsdp_axis_names, tp_axis_names, None)
-    # preattention_partition_spec = (fsdp_axis_names, None, None)
-    # postattention_partition_spec = (fsdp_axis_names, tp_axis_names, None)
-    # layer_cfg=TransformerLayer.default_config()
-    # layer_cfg.self_attention.set(
-    #     prenorm_partition_spec=prenorm_partition_spec, 
-    #     preattention_partition_spec=preattention_partition_spec, 
-    #     postattention_partition_spec=postattention_partition_spec)
-    # layer_cfg.feed_forward.set(
-    #     prenorm_partition_spec=prenorm_partition_spec, 
-    #     premlp_partition_spec=preattention_partition_spec, 
-    #     postmlp_partition_spec=postattention_partition_spec),
-
     cfg = common_model_config(
         num_layers=num_layers,
         hidden_dim=hidden_dim,

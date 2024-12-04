@@ -446,8 +446,7 @@ def with_sharding_constraint(x, shardings):
 def maybe_shard(x, partition_spec) -> Tensor:
     if partition_spec is None:
         return x
-    assert len(x.shape) == len(partition_spec)
-    return with_sharding_constraint(x, PartitionSpec(partition_spec))
+    return with_sharding_constraint(x, PartitionSpec(*partition_spec))
 
 def replicate_to_local_data(x: NestedTensor) -> NestedTensor:
     """Replicates and converts Tensors in `x` to local DeviceArrays.

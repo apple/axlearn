@@ -2657,15 +2657,15 @@ class TransformerAttentionLayer(BaseLayer):
                 return dict(attention=atten_state), atten_output
 
         if cfg.structure == "prenorm":
-            # target = maybe_shard(target, *cfg.prenorm_partition_spec)
-            target = with_sharding_constraint(target, PartitionSpec('fsdp','model',None))
+            target = maybe_shard(target, cfg.prenorm_partition_spec)
+            #target = with_sharding_constraint(target, PartitionSpec('fsdp','model',None))
             skip_input = target  # pre-norm: where normalization happens within the residual part.
             norm_target = self.norm(target)
-            norm_target = with_sharding_constraint(norm_target, PartitionSpec('fsdp',None,None))
-            # norm_target = maybe_shard(norm_target, *cfg.preattention_partition_spec)
+            #norm_target = with_sharding_constraint(norm_target, PartitionSpec('fsdp',None,None))
+            norm_target = maybe_shard(norm_target, cfg.preattention_partition_spec)
             atten_state, atten_output = attention_thunk(norm_target)
-            atten_output = with_sharding_constraint(atten_output, PartitionSpec('fsdp','model',None))
-            # atten_output = maybe_shard(atten_output, *cfg.postattention_partition_spec)
+            #atten_output = with_sharding_constraint(atten_output, PartitionSpec('fsdp','model',None))
+            atten_output = maybe_shard(atten_output, cfg.postattention_partition_spec)
             data = skip_input + self.stochastic_depth(self.dropout(atten_output.data))
         elif cfg.structure == "postnorm":
             # This is the structure used by the original Transformer, BERT, and RoBERTa.
@@ -2964,18 +2964,18 @@ class TransformerFeedForwardLayer(BaseLayer):
         remat_pt1 = "activation"
         remat_pt2 = "linear2"
         if cfg.structure == "prenorm":
-            # inputs = maybe_shard(inputs, *cfg.prenorm_partition_spec)
-            x = with_sharding_constraint(inputs, PartitionSpec('fsdp','model',None))
+            inputs = maybe_shard(inputs, cfg.prenorm_partition_spec)
+           # x = with_sharding_constraint(inputs, PartitionSpec('fsdp','model',None))
             x = self.norm(inputs)
-            # x = maybe_shard(x, *cfg.premlp_partition_spec)
-            x = with_sharding_constraint(x, PartitionSpec('fsdp',None,None))
+            x = maybe_shard(x, cfg.premlp_partition_spec)
+            #x = with_sharding_constraint(x, PartitionSpec('fsdp',None,None))
             x = self._linear1_activation(x)
             x = self._remat_name(x, remat_pt1)
             x = self.dropout1(x)
             x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
-            x = with_sharding_constraint(x, PartitionSpec('fsdp','model',None))
-            # x = maybe_shard(x, *cfg.postmlp_partition_spec)
+            #x = with_sharding_constraint(x, PartitionSpec('fsdp','model',None))
+            x = maybe_shard(x, cfg.postmlp_partition_spec)
             x = self.dropout2(x)
             x = self.stochastic_depth(x)
             if cfg.residual_weight != 1:
@@ -3517,6 +3517,21 @@ def set_double_shard_weights_config(
             set_attn_partition_specs(layer_cfg.cross_attention.attention)
         if isinstance(layer_cfg.feed_forward, TransformerFeedForwardLayer.Config):
             set_ffn_partition_specs(layer_cfg.feed_forward)
+            
+        # Neuron backend needs fine grained activation sharding.
+        if jax.default_backend() == 'neuron':
+            prenorm_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+            preattention_partition_spec = (fsdp_axis_names, None, None)
+            postattention_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+
+            layer_cfg.self_attention.set(
+                prenorm_partition_spec=prenorm_partition_spec, 
+                preattention_partition_spec=preattention_partition_spec, 
+                postattention_partition_spec=postattention_partition_spec)
+            layer_cfg.feed_forward.set(
+                prenorm_partition_spec=prenorm_partition_spec, 
+                premlp_partition_spec=preattention_partition_spec, 
+                postmlp_partition_spec=postattention_partition_spec)
     # pytype: enable=attribute-error
 
 
