@@ -167,7 +167,9 @@ def flash_attention_implementation(
 
         # shard_map-decorated function needs to be jitted.
         @jax.jit
-        def jit_attn(query, key, value, bias):
+        def jit_attn(query, key, value, bias, segment_ids):
+            if segment_ids != None:
+                raise Exception("Sequence Packing is not supported on Neuron backend")
             return neuron_flash_attention(
                 query, key, value, causal, softmax_scale)
 

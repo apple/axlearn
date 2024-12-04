@@ -399,7 +399,7 @@ def get_trainer_kwargs(
                 rope_theta=rope_theta,
                 # shared_lm_head=False,
                 shared_lm_head=True,
-                flash_attention=flash_attention,
+                flash_attention=True,
                 stack_cfg=None if backend != "neuron" else StackedTransformerLayer.default_config(),
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
