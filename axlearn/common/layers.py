@@ -56,6 +56,7 @@ from axlearn.common.utils import (
     Tensor,
     partial_with_fn_metadata,
     with_sharding_constraint,
+    maybe_shard
 )
 
 # The padding type for jax.lax.conv_general_dilated API. Either the strings ‘SAME’, or ‘VALID’, or
@@ -341,13 +342,10 @@ class RMSNorm(BaseNormalizationLayer):
         x_dtype = x.dtype
         if cfg.forward_dtype is not None:
             x = x.astype(cfg.forward_dtype)
-        x = with_sharding_constraint(x, PartitionSpec('fsdp','model', None))
         moment2 = (x * x).mean(axis=-1, keepdims=True)
         x = x * jax.lax.rsqrt(moment2 + cfg.eps)
         x = x.astype(x_dtype)
-        x = with_sharding_constraint(x, PartitionSpec('fsdp','model', None))
         x = x * self.parameters["scale"]
-        x = with_sharding_constraint(x, PartitionSpec('fsdp','model', None))
         return x
 
 
@@ -2467,6 +2465,12 @@ class Embedding(BaseLayer):
 
         num_embeddings: Required[int] = REQUIRED  # Maximum number of embeddings in table.
         dim: Required[int] = REQUIRED  # Embedding vector dimensionality.
+        # If not None, how to partition pre gather activation values.
+        pregather_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition embedding table.
+        embedding_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition post gather activation values.
+        postgather_partition_spec: Optional[tuple[Optional[str]]] = None
 
     @classmethod
     def default_config(cls):
@@ -2501,12 +2505,12 @@ class Embedding(BaseLayer):
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        x = with_sharding_constraint(x, PartitionSpec('fsdp', None))
+        cfg = self.config
+        x = maybe_shard(x, cfg.pregather_partition_spec)
         emb = self.parameters["weight"]
-        emb = with_sharding_constraint(emb, PartitionSpec('model', None))
-        # return emb[x]
+        emb = maybe_shard(emb, cfg.embedding_partition_spec)
         activation = emb[x]
-        activation = with_sharding_constraint(activation, PartitionSpec('fsdp', None, None))
+        activation = maybe_shard(activation, cfg.postgather_partition_spec)
         return activation
 
 

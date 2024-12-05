@@ -13,7 +13,7 @@ See c4_trainer.py for how they are used.
 import math
 from collections.abc import Sequence
 from typing import Literal, Optional, Protocol, Union
-
+import jax
 import jax.numpy as jnp
 import tensorflow as tf
 from jax.sharding import PartitionSpec
@@ -327,6 +327,12 @@ def model_config(
     )
     cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
     cfg.decoder.emb.token_emb.param_partition_spec = ("model", ("expert", "fsdp", "seq")) # shard vocab
+    # Neuron backend require fine grained sharding around embedding gather op.
+    if jax.default_backend() == 'neuron':
+        cfg.decoder.emb.token_emb.pregather_partition_spec = ('fsdp', None)
+        cfg.decoder.emb.token_emb.embedding_partition_spec = ('model', None)
+        cfg.decoder.emb.token_emb.postgather_partition_spec = ('fsdp', None, None)
+
     set_bias_recursively(cfg, False)
     set_norm_recursively(cfg, normalization)
     cfg.z_loss_scale = z_loss_scale

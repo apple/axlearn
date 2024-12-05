@@ -112,7 +112,6 @@ from axlearn.common.utils import (
     shapes,
     split_prng_key,
     maybe_shard,
-    with_sharding_constraint
 )
 
 NEG_INF = -1e15
@@ -1971,7 +1970,6 @@ class MultiheadAttention(BaseLayer):
             segment_ids=segment_ids,
             return_aux=return_aux,
         )
-        output = with_sharding_constraint(output, PartitionSpec('fsdp', None, None))
         return output
 
     def _cap_logits(self, logits: Tensor) -> Tensor:
@@ -2658,13 +2656,10 @@ class TransformerAttentionLayer(BaseLayer):
 
         if cfg.structure == "prenorm":
             target = maybe_shard(target, cfg.prenorm_partition_spec)
-            #target = with_sharding_constraint(target, PartitionSpec('fsdp','model',None))
             skip_input = target  # pre-norm: where normalization happens within the residual part.
             norm_target = self.norm(target)
-            #norm_target = with_sharding_constraint(norm_target, PartitionSpec('fsdp',None,None))
             norm_target = maybe_shard(norm_target, cfg.preattention_partition_spec)
             atten_state, atten_output = attention_thunk(norm_target)
-            #atten_output = with_sharding_constraint(atten_output, PartitionSpec('fsdp','model',None))
             atten_output = maybe_shard(atten_output, cfg.postattention_partition_spec)
             data = skip_input + self.stochastic_depth(self.dropout(atten_output.data))
         elif cfg.structure == "postnorm":
@@ -2965,16 +2960,13 @@ class TransformerFeedForwardLayer(BaseLayer):
         remat_pt2 = "linear2"
         if cfg.structure == "prenorm":
             inputs = maybe_shard(inputs, cfg.prenorm_partition_spec)
-           # x = with_sharding_constraint(inputs, PartitionSpec('fsdp','model',None))
             x = self.norm(inputs)
             x = maybe_shard(x, cfg.premlp_partition_spec)
-            #x = with_sharding_constraint(x, PartitionSpec('fsdp',None,None))
             x = self._linear1_activation(x)
             x = self._remat_name(x, remat_pt1)
             x = self.dropout1(x)
             x = _linear2(x)
             x = self._remat_name(x, remat_pt2)
-            #x = with_sharding_constraint(x, PartitionSpec('fsdp','model',None))
             x = maybe_shard(x, cfg.postmlp_partition_spec)
             x = self.dropout2(x)
             x = self.stochastic_depth(x)
