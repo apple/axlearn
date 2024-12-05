@@ -582,48 +582,51 @@ class TPUGKEJob(GKEJob):
                     mountPath="/tmp",
                 ),
             )
-            staging_location = "gs://cloud-pathways-staging/tmp"
+            staging_location = f"{cfg.output_dir}/pathways-staging/tmp"
             cluster = flags.FLAGS.cluster or gcp_settings("gke_cluster", required=False, fv=flags.FLAGS)
-            rm_address = f"{cfg.name}-rm-0-0.{cfg.name}.default.svc.{cluster}-domain:38677"
+            pathways_port = 38677
+            rm_address = f"{cfg.name}-rm-0-0.{cfg.name}.default.svc.{cluster}-domain:{pathways_port}"
+            #rm_address = f"{cfg.name}-rm-0-0.{cfg.name}:{pathways_port}"
 
             if job_type == "worker":
                 args.extend(
                     [
-                        "--server_port=38677",
+                        f"--server_port={pathways_port}",
                         f"--resource_manager_address={rm_address}",
                         f"--gcs_scratch_location={staging_location}",
                     ]
                 )
                 image = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:latest"
-                ports.append(dict(containerPort=38677))
+                ports.append(dict(containerPort=pathways_port))
                 resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
 
             elif job_type == "rm":
                 tpu_type = self._get_pathways_tpu_type(system.device_type)
                 args.extend(
                     [
-                        "--server_port=38677",
+                        f"--server_port={pathways_port}",
                         "--node_type=resource_manager",
                         f"--gcs_scratch_location={staging_location}",
-                        f"--instance_count={system.vms_per_slice}",
+                        f"--instance_count={cfg.accelerator.num_replicas}",
                         f"--instance_type={tpu_type}:{system.topology}",
                     ]
                 )
                 env_vars.update(
                     TPU_SKIP_MDS_QUERY="true",
-                    HOST_ADDRESS="$(JOBSET_NAME)-$(REPLICATED_JOB_NAME)-0-0.$(JOBSET_NAME)",
+                    HOST_ADDRESS=f"{cfg.name}-{job_type}-0-0.{cfg.name}",
+                    #HOST_ADDRESS="$(JOBSET_NAME)-$(REPLICATED_JOB_NAME)-0-0.$(JOBSET_NAME)",
                     REPLICATED_JOB_NAME=job_type,
                     JOBSET_NAME=cfg.name,
                 )
                 image = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:latest"
                 resources["limits"]["memory"] = "8Gi"
                 resources["limits"]["cpu"] = "4"
-                ports.append(dict(containerPort=38677))
+                ports.append(dict(containerPort=pathways_port))
 
             elif job_type == "proxy":
                 args.extend(
                     [
-                        "--server_port=38676",
+                        f"--server_port={pathways_port - 1}",
                         f"--resource_manager_address={rm_address}",
                         f"--gcs_scratch_location={staging_location}",
                     ]
@@ -631,13 +634,14 @@ class TPUGKEJob(GKEJob):
                 image = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:latest"
                 resources["limits"]["memory"] = "100Gi"
                 resources["limits"]["cpu"] = "24"
-                ports.append(dict(containerPort=38676))
+                ports.append(dict(containerPort=pathways_port-1))
 
             elif job_type == "user":
                 resources["limits"]["memory"] = "100Gi"
                 resources["limits"]["cpu"] = "24"
                 proxy = (
-                    f"grpc://{cfg.name}-proxy-0-0.{cfg.name}.default.svc.{cluster}-domain:38676"
+                    f"grpc://{cfg.name}-proxy-0-0.{cfg.name}.default.svc.{cluster}-domain:{pathways_port - 1}"
+                    #f"grpc://{cfg.name}-proxy-0-0.{cfg.name}:{pathways_port - 1}"
                 )
                 env_vars.update(
                     JAX_BACKEND_TARGET=proxy,
@@ -907,7 +911,7 @@ class TPUGKEJob(GKEJob):
             },
             tolerations=tolerations,
             containers=[self._build_container(job_type)],
-            initContainers=[self._build_uploader_container()],
+            # initContainers=[self._build_uploader_container()],
             serviceAccountName=cfg.service_account,
             volumes=volumes,
             hostNetwork=True,
@@ -1064,11 +1068,6 @@ class TPUGKEJob(GKEJob):
             import yaml
             yaml.dump(custom_object, f, default_flow_style=False)
         logging.info("Submitting JobSet body=%s api_kwargs=%s", custom_object, api_kwargs)
-        with open(f"jobsets/jobset-{cfg.name}.yaml", "w") as f:
-            logging.info("Output jobset to yaml file...")
-            import yaml
-            yaml.dump(custom_object, f, default_flow_style=False)
-
         return k8s.client.CustomObjectsApi().create_namespaced_custom_object(
             namespace=cfg.namespace,
             body=custom_object,
