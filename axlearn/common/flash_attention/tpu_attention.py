@@ -690,7 +690,7 @@ def _flash_attention_impl(
     )
     out_shape = jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype)
     out_shape = [out_shape]
-    out_specs = [pl.BlockSpec(o_index_map, (block_b, 1, block_q, head_dim))]
+    out_specs = [pl.BlockSpec((block_b, 1, block_q, head_dim), o_index_map)]
 
     if block_k != kv_seq_len:
         m_scratch = pltpu.VMEM((block_b, 1, block_q, MIN_BLOCK_SIZE), jnp.float32)
@@ -703,8 +703,8 @@ def _flash_attention_impl(
     if save_residuals:
         out_specs = [
             *out_specs,
-            pl.BlockSpec(lm_index_map, (block_b, 1, block_q, MIN_BLOCK_SIZE)),
-            pl.BlockSpec(lm_index_map, (block_b, 1, block_q, MIN_BLOCK_SIZE)),
+            pl.BlockSpec((block_b, 1, block_q, MIN_BLOCK_SIZE), lm_index_map),
+            pl.BlockSpec((block_b, 1, block_q, MIN_BLOCK_SIZE), lm_index_map),
         ]
         l = jax.ShapeDtypeStruct(
             (batch_size, num_heads, q_seq_len, MIN_BLOCK_SIZE), dtype=jnp.float32
@@ -718,7 +718,7 @@ def _flash_attention_impl(
         out_shape = (*out_shape, None, None)
 
     ab_block_spec = (
-        pl.BlockSpec(ab_index_map, (block_b, 1, block_q, block_k_major)) if ab is not None else None
+        pl.BlockSpec((block_b, 1, block_q, block_k_major), ab_index_map) if ab is not None else None
     )
 
     q_segment_ids_spec = kv_segment_ids_spec = None
@@ -741,9 +741,9 @@ def _flash_attention_impl(
                 next_kv_index = kv_seq_index
             return (batch_index, 0, next_kv_index)
 
-        q_segment_ids_spec = pl.BlockSpec(q_segment_ids_index_map, (block_b, block_q, NUM_LANES))
+        q_segment_ids_spec = pl.BlockSpec((block_b, block_q, NUM_LANES), q_segment_ids_index_map)
         kv_segment_ids_spec = pl.BlockSpec(
-            kv_segment_ids_index_map, (block_b, NUM_SUBLANES, block_k_major)
+            (block_b, NUM_SUBLANES, block_k_major), kv_segment_ids_index_map
         )
 
         q_segment_ids = jax.lax.broadcast_in_dim(
@@ -764,9 +764,9 @@ def _flash_attention_impl(
         )
 
     in_specs = [
-        pl.BlockSpec(q_index_map, (block_b, 1, block_q, head_dim)),
-        pl.BlockSpec(kv_index_map, (block_b, 1, block_k_major, head_dim)),
-        pl.BlockSpec(kv_index_map, (block_b, 1, block_k_major, head_dim)),
+        pl.BlockSpec((block_b, 1, block_q, head_dim), q_index_map),
+        pl.BlockSpec((block_b, 1, block_k_major, head_dim), kv_index_map),
+        pl.BlockSpec((block_b, 1, block_k_major, head_dim), kv_index_map),
         ab_block_spec,
         q_segment_ids_spec,
         kv_segment_ids_spec,
@@ -861,7 +861,7 @@ def _flash_attention_bwd_dkv(
 
         return (batch_index, head_index, next_q_index, 0)
 
-    qo_spec = pl.BlockSpec(qo_index_map, (1, 1, block_q_major, head_dim))
+    qo_spec = pl.BlockSpec((1, 1, block_q_major, head_dim), qo_index_map)
     assert qo_spec.block_shape is not None
     assert q.ndim == len(qo_spec.block_shape)
     do_spec = qo_spec
@@ -870,7 +870,7 @@ def _flash_attention_bwd_dkv(
     def kv_index_map(batch_index, head_index, kv_seq_index, _):
         return (batch_index, head_index, kv_seq_index, 0)
 
-    kv_spec = pl.BlockSpec(kv_index_map, (1, 1, block_k_major, head_dim))
+    kv_spec = pl.BlockSpec((1, 1, block_k_major, head_dim), kv_index_map)
     assert kv_spec.block_shape is not None
     assert k.ndim == len(kv_spec.block_shape)
     assert v.ndim == len(kv_spec.block_shape)
@@ -878,12 +878,12 @@ def _flash_attention_bwd_dkv(
     def lm_index_map(batch_index, head_index, _, q_seq_index):
         return (batch_index, head_index, q_seq_index, 0)
 
-    lm_spec = pl.BlockSpec(lm_index_map, (1, 1, block_q_major, MIN_BLOCK_SIZE))
+    lm_spec = pl.BlockSpec((1, 1, block_q_major, MIN_BLOCK_SIZE), lm_index_map)
     assert lm_spec.block_shape is not None
     assert l.ndim == len(lm_spec.block_shape)
     assert m.ndim == len(lm_spec.block_shape)
 
-    di_spec = pl.BlockSpec(qo_index_map, (1, 1, block_q_major, MIN_BLOCK_SIZE))
+    di_spec = pl.BlockSpec((1, 1, block_q_major, MIN_BLOCK_SIZE), qo_index_map)
     assert di_spec.block_shape is not None
     assert di.ndim == len(di_spec.block_shape)
 
@@ -896,7 +896,7 @@ def _flash_attention_bwd_dkv(
         )
 
     dab_spec = (
-        pl.BlockSpec(ab_index_map, (1, 1, block_q_major, block_k_major)) if ab is not None else None
+        pl.BlockSpec((1, 1, block_q_major, block_k_major), ab_index_map) if ab is not None else None
     )
 
     q_segment_ids_spec = kv_segment_ids_spec = None
@@ -919,9 +919,9 @@ def _flash_attention_bwd_dkv(
             del head_index
             return (batch_index, 0, kv_seq_index)
 
-        q_segment_ids_spec = pl.BlockSpec(q_segment_ids_index_map, (1, block_q_major, NUM_LANES))
+        q_segment_ids_spec = pl.BlockSpec((1, block_q_major, NUM_LANES), q_segment_ids_index_map)
         kv_segment_ids_spec = pl.BlockSpec(
-            kv_segment_ids_index_map, (1, NUM_SUBLANES, block_k_major)
+            (1, NUM_SUBLANES, block_k_major), kv_segment_ids_index_map
         )
 
         q_segment_ids = jax.lax.broadcast_in_dim(
@@ -962,7 +962,7 @@ def _flash_attention_bwd_dkv(
     def dkv_index_map(batch_index, head_index, kv_seq_index, _):
         return (batch_index, head_index, kv_seq_index, 0)
 
-    dkv_spec = pl.BlockSpec(dkv_index_map, (1, 1, block_k_major, head_dim))
+    dkv_spec = pl.BlockSpec((1, 1, block_k_major, head_dim), dkv_index_map)
     out_specs = [dkv_spec, dkv_spec]
     scratch_shapes = [
         pltpu.VMEM((block_k_major, head_dim), jnp.float32),  # type: ignore
@@ -1050,7 +1050,7 @@ def _flash_attention_bwd_dq(
     def qo_index_map(batch_index, head_index, q_seq_index, _):
         return (batch_index, head_index, q_seq_index, 0)
 
-    qo_spec = pl.BlockSpec(qo_index_map, (1, 1, block_q_major, head_dim))
+    qo_spec = pl.BlockSpec((1, 1, block_q_major, head_dim), qo_index_map)
     do_spec = qo_spec
 
     def kv_index_map(batch_index, head_index, q_seq_index, kv_seq_index):
@@ -1066,7 +1066,7 @@ def _flash_attention_bwd_dq(
             next_kv_index = kv_seq_index
         return (batch_index, head_index, next_kv_index, 0)
 
-    kv_spec = pl.BlockSpec(kv_index_map, (1, 1, block_k_major, head_dim))
+    kv_spec = pl.BlockSpec((1, 1, block_k_major, head_dim), kv_index_map)
     assert kv_spec.block_shape is not None
     assert k.ndim == len(kv_spec.block_shape)
     assert v.ndim == len(kv_spec.block_shape)
@@ -1074,12 +1074,12 @@ def _flash_attention_bwd_dq(
     def lm_index_map(batch_index, head_index, q_seq_index, _):
         return (batch_index, head_index, q_seq_index, 0)
 
-    lm_spec = pl.BlockSpec(lm_index_map, (1, 1, block_q_major, MIN_BLOCK_SIZE))
+    lm_spec = pl.BlockSpec((1, 1, block_q_major, MIN_BLOCK_SIZE), lm_index_map)
     assert lm_spec.block_shape is not None
     assert l.ndim == len(lm_spec.block_shape)
     assert m.ndim == len(lm_spec.block_shape)
 
-    di_spec = pl.BlockSpec(qo_index_map, (1, 1, block_q_major, MIN_BLOCK_SIZE))
+    di_spec = pl.BlockSpec((1, 1, block_q_major, MIN_BLOCK_SIZE), qo_index_map)
     assert di_spec.block_shape is not None
     assert di.ndim == len(di_spec.block_shape)
 
@@ -1092,7 +1092,7 @@ def _flash_attention_bwd_dq(
         )
 
     dab_spec = (
-        pl.BlockSpec(ab_index_map, (1, 1, block_q_major, block_k_major)) if ab is not None else None
+        pl.BlockSpec((1, 1, block_q_major, block_k_major), ab_index_map) if ab is not None else None
     )
 
     q_segment_ids_spec = kv_segment_ids_spec = None
@@ -1117,9 +1117,9 @@ def _flash_attention_bwd_dq(
                 next_kv_index = kv_seq_index
             return (batch_index, 0, next_kv_index)
 
-        q_segment_ids_spec = pl.BlockSpec(q_segment_ids_index_map, (1, block_q_major, NUM_LANES))
+        q_segment_ids_spec = pl.BlockSpec((1, block_q_major, NUM_LANES), q_segment_ids_index_map)
         kv_segment_ids_spec = pl.BlockSpec(
-            kv_segment_ids_index_map, (1, NUM_SUBLANES, block_k_major)
+            (1, NUM_SUBLANES, block_k_major), kv_segment_ids_index_map
         )
 
         q_segment_ids = jax.lax.broadcast_in_dim(
@@ -1156,7 +1156,7 @@ def _flash_attention_bwd_dq(
         jax.ShapeDtypeStruct(q.shape, q.dtype),
         jax.ShapeDtypeStruct(ab.shape, ab.dtype) if ab is not None else None,
     ]
-    dq_spec = pl.BlockSpec(qo_index_map, (1, 1, block_q_major, head_dim))
+    dq_spec = pl.BlockSpec((1, 1, block_q_major, head_dim), qo_index_map)
     out_specs = [
         dq_spec,
         dab_spec,
