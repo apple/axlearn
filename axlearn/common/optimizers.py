@@ -2028,8 +2028,8 @@ def offload_optimizer(
 
     Args:
         optimizer: The optimizer to offload.
-        pattern: Regex pattern used to match the path of optimizer states. Matched states will be
-            offloaded. Default to regex that matches all states.
+        pattern: Regex pattern used to match the path of optimizer states. Fully matched states
+            will be offloaded. Default to regex that matches all states.
         offload_src: Offload-from memory kind. Default to "device".
         offload_dst: Offload-to memory kind. Default to "pinned_host".
 
@@ -2048,7 +2048,7 @@ def offload_optimizer(
 
     The regex pattern is matched against the full path of each optimizer state. An example full
     path is optimizer/1/0/mu/decoder/transformer/repeat/layer/feed_forward/linear1_0. If the
-    pattern should not depend on model structure, you can use ".*mu.*" to offload all `mu`.
+    pattern should not depend on model structure, you can use ".*/mu/.*" to offload all `mu`.
 
     The .update function of the returned `PartitionedGradientTransformation` must be called within
     a jit function.
