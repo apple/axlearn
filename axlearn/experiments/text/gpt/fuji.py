@@ -128,6 +128,9 @@ def get_trainer_kwargs(
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
+    if FLAGS.pdbs:
+        import jax
+        train_batch_size = len(jax.devices()) * int(FLAGS.pdbs)
 
     # Whether to use grouped query attention.
     num_kv_heads = None
@@ -293,6 +296,25 @@ def get_trainer_kwargs(
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
+                # tpu-v6e.
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
             ),
         )
     elif model_size == "8B":
@@ -373,6 +395,25 @@ def get_trainer_kwargs(
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
+                # tpu-v6e.
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
             ),
         )
     elif model_size == "70B":
@@ -384,19 +425,10 @@ def get_trainer_kwargs(
                 "FlashAttention.q_proj",
                 "FlashAttention.k_proj",
                 "FlashAttention.v_proj",
-                #"FlashAttention.o_proj",
-                # "FlashAttention.context",
-                # "TransformerFeedForwardLayer.activation",
-                # "TransformerFeedForwardLayer.linear2",
-                # "transformer_forward_data",
             ],
             offload_src="device",
             offload_dst="pinned_host",
         )
-        if FLAGS.pdbs:
-            import jax
-            train_batch_size = len(jax.devices()) * int(FLAGS.pdbs)
-
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=80,
