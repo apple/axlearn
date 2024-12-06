@@ -429,21 +429,25 @@ def metric_fn(
         - number_of_generation_errors: Total number of examples with generation errors.
         - accuracy: Accuracy after standardization of argument values including removing spaces,
             punctuation, and converting to lowercases. Also apply matching rules if provided.
+            See `_default_value_match()` for string standardization.
         - strict_accuracy: Strict accuracy where argument values exactly matches the
             ground truth or not.
         - lenient_accuracy: Accuracy after removing spaces, punctuation and a static list of
             stop words in the argument values.
+            See `_is_arg_value_equal()` in ./tool_use_execution_utils.py for details.
         - bow_accuracy: Bag-of-words accuracy. Transforms the argument strings in the same way
             as the lenient matching. But instead of comparing the resulting strings it checks
             if the words in the ground truth argument values are contained in the predicted
             argument values.
+            See `_is_arg_value_equal()` in ./tool_use_execution_utils.py for details.
         - func_name_accuracy: Accuracy of matching the ground truth tool names.
-        - number_of_expected_tool_calls: Number of expected tool calls.
-        - num_func_call_intents_ground_truth: Number of assistant turns with tool calls
+        - number_of_expected_tool_calls: Number of tool calls in ground truth.
+        - number_of_func_call_intents_ground_truth: Number of assistant turns with tool calls
             in the ground truth.
-        - num_func_call_intents_pred: Number of assistant turns with tool calls in predictions.
+        - number_of_func_call_intents_pred: Number of assistant turns with tool calls
+            in predictions.
         - func_intent_recall: Recall of tool calls intent.
-        - func_intent_precision": Precision of tool calls intent.
+        - func_intent_precision: Precision of tool calls intent.
 
     """
     if len(responses) == 0:
@@ -474,9 +478,9 @@ def metric_fn(
     total_lenient_matches = 0
     total_bow_matches = 0
 
-    num_func_call_intents_ground_truth = 0
-    num_func_call_intents_pred = 0
-    num_func_call_intents_ground_truth_pred = 0
+    number_of_func_call_intents_ground_truth = 0
+    number_of_func_call_intents_pred = 0
+    number_of_func_call_intents_ground_truth_pred = 0
 
     number_of_parsing_errors = 0
     number_of_generation_errors = 0
@@ -512,14 +516,14 @@ def metric_fn(
         if target.tool_calls is not None:
             target_tool_calls = get_tool_calls_from_message(target.model_dump())
             total_tool_calls += len(target_tool_calls)
-            num_func_call_intents_ground_truth += 1
+            number_of_func_call_intents_ground_truth += 1
 
         if len(pred_messages) > 0:
             pred = pred_messages[0]
             if pred.tool_calls is not None:
-                num_func_call_intents_pred += 1
+                number_of_func_call_intents_pred += 1
                 if target.tool_calls is not None:
-                    num_func_call_intents_ground_truth_pred += 1
+                    number_of_func_call_intents_ground_truth_pred += 1
 
             # Check string match.
             if (
@@ -570,11 +574,11 @@ def metric_fn(
         if matched:
             total_matches += 1
 
-    func_intent_recall = num_func_call_intents_ground_truth_pred / max(
-        num_func_call_intents_ground_truth, 1
+    func_intent_recall = number_of_func_call_intents_ground_truth_pred / max(
+        number_of_func_call_intents_ground_truth, 1
     )
-    func_intent_precision = num_func_call_intents_ground_truth_pred / max(
-        num_func_call_intents_pred, 1
+    func_intent_precision = number_of_func_call_intents_ground_truth_pred / max(
+        number_of_func_call_intents_pred, 1
     )
     return {
         "accuracy": total_matches / len(responses),
@@ -586,8 +590,8 @@ def metric_fn(
         "lenient_accuracy": total_lenient_matches / max(1, total_tool_calls),
         "bow_accuracy": total_bow_matches / max(1, total_tool_calls),
         "number_of_expected_tool_calls": total_tool_calls,
-        "num_func_call_intents_ground_truth": num_func_call_intents_ground_truth,
-        "num_func_call_intents_pred": num_func_call_intents_pred,
+        "number_of_func_call_intents_ground_truth": number_of_func_call_intents_ground_truth,
+        "number_of_func_call_intents_pred": number_of_func_call_intents_pred,
         "func_intent_recall": func_intent_recall,
         "func_intent_precision": func_intent_precision,
     }

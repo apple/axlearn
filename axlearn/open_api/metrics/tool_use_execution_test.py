@@ -291,8 +291,8 @@ class TestToolUseExecution(parameterized.TestCase):
             self.assertEqual(
                 metrics["number_of_expected_tool_calls"], number_of_expected_tool_calls
             )
-            self.assertEqual(metrics["num_func_call_intents_ground_truth"], 1)
-            self.assertEqual(metrics["num_func_call_intents_pred"], 1)
+            self.assertEqual(metrics["number_of_func_call_intents_ground_truth"], 1)
+            self.assertEqual(metrics["number_of_func_call_intents_pred"], 1)
             self.assertEqual(metrics["func_intent_recall"], 1)
             self.assertEqual(metrics["func_intent_precision"], 1)
 
@@ -339,8 +339,8 @@ class TestToolUseExecution(parameterized.TestCase):
                 },
             )
             self.assertEqual(metrics["accuracy"], 0.0)
-            self.assertEqual(metrics["num_func_call_intents_ground_truth"], 1)
-            self.assertEqual(metrics["num_func_call_intents_pred"], 0)
+            self.assertEqual(metrics["number_of_func_call_intents_ground_truth"], 1)
+            self.assertEqual(metrics["number_of_func_call_intents_pred"], 0)
             self.assertEqual(metrics["func_intent_recall"], 0)
             self.assertEqual(metrics["func_intent_precision"], 0)
 
@@ -358,8 +358,8 @@ class TestToolUseExecution(parameterized.TestCase):
             expected_lenient_accuracy=1.0,
             expected_bow_accuracy=1.0,
             expected_number_of_expected_tool_calls=1,
-            expected_num_func_call_intents_ground_truth=1,
-            expected_num_func_call_intents_pred=1,
+            expected_number_of_func_call_intents_ground_truth=1,
+            expected_number_of_func_call_intents_pred=1,
             expected_func_intent_recall=1.0,
             expected_func_intent_precision=1.0,
         ),
@@ -376,8 +376,8 @@ class TestToolUseExecution(parameterized.TestCase):
             expected_lenient_accuracy=0.0,
             expected_bow_accuracy=0.0,
             expected_number_of_expected_tool_calls=0,
-            expected_num_func_call_intents_ground_truth=0,
-            expected_num_func_call_intents_pred=1,
+            expected_number_of_func_call_intents_ground_truth=0,
+            expected_number_of_func_call_intents_pred=1,
             expected_func_intent_recall=0.0,
             expected_func_intent_precision=0.0,
         ),
@@ -394,8 +394,8 @@ class TestToolUseExecution(parameterized.TestCase):
             expected_lenient_accuracy=0.0,
             expected_bow_accuracy=0.0,
             expected_number_of_expected_tool_calls=1,
-            expected_num_func_call_intents_ground_truth=1,
-            expected_num_func_call_intents_pred=0,
+            expected_number_of_func_call_intents_ground_truth=1,
+            expected_number_of_func_call_intents_pred=0,
             expected_func_intent_recall=0.0,
             expected_func_intent_precision=0.0,
         ),
@@ -412,8 +412,8 @@ class TestToolUseExecution(parameterized.TestCase):
             expected_lenient_accuracy=0.0,
             expected_bow_accuracy=0.0,
             expected_number_of_expected_tool_calls=1,
-            expected_num_func_call_intents_ground_truth=1,
-            expected_num_func_call_intents_pred=1,
+            expected_number_of_func_call_intents_ground_truth=1,
+            expected_number_of_func_call_intents_pred=1,
             expected_func_intent_recall=1.0,
             expected_func_intent_precision=1.0,
         ),
@@ -430,8 +430,8 @@ class TestToolUseExecution(parameterized.TestCase):
             expected_lenient_accuracy=1.0,  # 'ma' is part of _STOP_WORDS and removed.
             expected_bow_accuracy=1.0,
             expected_number_of_expected_tool_calls=1,
-            expected_num_func_call_intents_ground_truth=1,
-            expected_num_func_call_intents_pred=1,
+            expected_number_of_func_call_intents_ground_truth=1,
+            expected_number_of_func_call_intents_pred=1,
             expected_func_intent_recall=1.0,
             expected_func_intent_precision=1.0,
         ),
@@ -446,8 +446,8 @@ class TestToolUseExecution(parameterized.TestCase):
         expected_lenient_accuracy,
         expected_bow_accuracy,
         expected_number_of_expected_tool_calls,
-        expected_num_func_call_intents_ground_truth,
-        expected_num_func_call_intents_pred,
+        expected_number_of_func_call_intents_ground_truth,
+        expected_number_of_func_call_intents_pred,
         expected_func_intent_recall,
         expected_func_intent_precision,
     ):
@@ -507,9 +507,10 @@ class TestToolUseExecution(parameterized.TestCase):
                 "lenient_accuracy": expected_lenient_accuracy,
                 "bow_accuracy": expected_bow_accuracy,
                 "number_of_expected_tool_calls": expected_number_of_expected_tool_calls,
-                "num_func_call_intents_ground_truth": expected_num_func_call_intents_ground_truth,
-                "num_func_call_intents_pred": expected_num_func_call_intents_pred,
+                "number_of_func_call_intents_ground_truth": expected_number_of_func_call_intents_ground_truth,  # pylint: disable=line-too-long
+                "number_of_func_call_intents_pred": expected_number_of_func_call_intents_pred,
                 "func_intent_recall": expected_func_intent_recall,
                 "func_intent_precision": expected_func_intent_precision,
             }
+
             self.assertEqual(metrics, expected_metrics)
