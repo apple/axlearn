@@ -125,8 +125,7 @@ def get_trainer_kwargs(
         return {}
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
-    # train_batch_size = tokens_per_batch // max_sequence_length
-    train_batch_size = 16
+    train_batch_size = tokens_per_batch // max_sequence_length
 
     # Whether to use grouped query attention.
     num_kv_heads = None
@@ -153,7 +152,6 @@ def get_trainer_kwargs(
                 rope_theta=rope_theta,
                 shared_lm_head=True,
                 flash_attention=flash_attention,
-                stack_cfg=None if backend != "neuron" else StackedTransformerLayer.default_config(),
             ),
             learner_kwargs=dict(peak_lr=6e-4, weight_decay=0.01),
             max_sequence_length=64,
@@ -210,7 +208,6 @@ def get_trainer_kwargs(
                 rope_theta=rope_theta,
                 shared_lm_head=True,
                 flash_attention=flash_attention,
-                stack_cfg=None if backend != "neuron" else StackedTransformerLayer.default_config(),
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
@@ -393,18 +390,17 @@ def get_trainer_kwargs(
                 hidden_dim=128 * 64,
                 num_heads=64,
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
-                num_kv_heads=None,# if version == Version.V1 else 8,
+                num_kv_heads=None if version == Version.V1 else 8,
                 # TODO(kelvin-zou): Remove the perf numbers for V5e (OOM).
                 ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
                 rope_theta=rope_theta,
                 # shared_lm_head=False,
                 shared_lm_head=True,
                 flash_attention=True,
-                stack_cfg=None if backend != "neuron" else StackedTransformerLayer.default_config(),
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=int((jax.device_count()/4)),
             input_partition_type=None if backend != "neuron" else DataPartitionType.BATCH,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
@@ -447,6 +443,7 @@ def get_trainer_kwargs(
         raise NotImplementedError(f"Unknown model size {model_size}.")
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
+    model_kwargs.setdefault("stack_cfg", None if backend != "neuron" else StackedTransformerLayer.default_config())
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
     trainer_kwargs["learner_cfg"] = adamw_decoupled_learner_config(
         max_step=trainer_kwargs["max_step"],

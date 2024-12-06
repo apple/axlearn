@@ -646,7 +646,7 @@ def host_to_global_device_array(
         elif partition == DataPartitionType.REPLICATED:
             global_shape = (x.shape[0], *x.shape[1:])
         elif partition == DataPartitionType.BATCH:
-            global_shape = (x.shape[0], *x.shape[1:])
+            global_shape = (x.shape[0] * process_count, *x.shape[1:])
         else:
             raise NotImplementedError(f"Unsupported partition: {partition}")
         return jax.make_array_from_process_local_data(

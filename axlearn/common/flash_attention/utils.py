@@ -171,7 +171,7 @@ def flash_attention_implementation(
             if segment_ids != None:
                 raise Exception("Sequence Packing is not supported on Neuron backend")
             return neuron_flash_attention(
-                query, key, value, causal, softmax_scale)
+                query, key, value, bias, causal, softmax_scale)
 
         return jit_attn
 
