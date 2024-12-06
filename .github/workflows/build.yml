@@ -1,5 +1,5 @@
 name: build-and-test
-on: [pull_request, push]
+on: [pull_request, push, merge_group]
 
 jobs:
   build-and-test-job:

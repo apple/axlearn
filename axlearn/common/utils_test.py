@@ -2,6 +2,7 @@
 
 """Tests common utils."""
 
+import contextlib
 import dataclasses
 import enum
 import sys
@@ -75,6 +76,7 @@ from axlearn.common.utils import (
     set_recursively,
     split_prng_key,
     tree_paths,
+    validate_contains_paths,
     validate_float_dtype,
     vectorized_tree_map,
     with_sharding_constraint,
@@ -1775,6 +1777,31 @@ class HostToGlobalArrayTest(TestCase):
         # Check that contents are as expected.
         expected = jnp.arange(0, process_count, 2, dtype=batch.dtype)[:, None]
         self.assertNestedEqual(expected, replicate_to_local_data(batch))
+
+
+class ValidateContainsPathsTest(TestCase):
+    @parameterized.parameters(
+        # Missing path.
+        dict(
+            x={},
+            paths=["test"],
+            missing="test",
+        ),
+        # OK.
+        dict(x={"test": 123}, paths=["test"], missing=None),
+        # OK.
+        dict(x={"00": {"10": 123}}, paths=["00/10"], missing=None),
+        # Missing '00/11'.
+        dict(x={"00": {"10": 123}}, paths=["00/10", "00/11"], missing="00/11"),
+    )
+    def test_basic(self, x: Nested[Tensor], paths: Sequence[str], missing: Optional[str]):
+        if missing is not None:
+            ctx = self.assertRaisesRegex(ValueError, missing)
+        else:
+            ctx = contextlib.nullcontext()
+
+        with ctx:
+            validate_contains_paths(x, paths=paths)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Test embedding layers."""
+
 # pylint: disable=no-self-use
 import itertools
 
@@ -77,7 +78,7 @@ class TestTransformerTextEmbeddings(TestCase):
         test_hidden_states, ref_hidden_states = self._compute_layer_outputs(
             test_layer=layer,
             ref_layer=ref_layer,
-            test_inputs=test_inputs,
+            test_inputs=dict(input_batch=test_inputs),
             ref_inputs=dict(
                 input_ids=as_torch_tensor(input_ids),
             ),

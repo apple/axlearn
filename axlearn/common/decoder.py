@@ -47,7 +47,13 @@ from axlearn.common.module import (
     current_context,
     new_output_collection,
 )
-from axlearn.common.utils import Nested, NestedTensor, with_sharding_constraint
+from axlearn.common.utils import (
+    Nested,
+    NestedTensor,
+    TensorSpec,
+    validate_contains_paths,
+    with_sharding_constraint,
+)
 
 
 # TODO(markblee): Remove this when we have a better solution at the decoding loop level.
@@ -134,7 +140,7 @@ class BaseDecoder(Protocol):
         """
 
     def prefill_states(
-        self, *, time_step: Tensor, input_ids: Tensor, **kwargs
+        self, *, time_step: Tensor, input_batch: Nested[Tensor], **kwargs
     ) -> tuple[Nested[Tensor], Nested[Tensor]]:
         """Initializes cache for autoregressive cached decoding.
 
@@ -145,7 +151,7 @@ class BaseDecoder(Protocol):
             time_step: A Tensor of shape [batch]. Each value is an index into the length dimension
                 indicating where decoding will start from. If `time_step` exceeds `target_length`,
                 reads consume the last token in the sequence, and writes are no-ops.
-            input_ids: An integer Tensor of shape [batch, target_length].
+            input_batch: A nested Tensor. See corresponding implementation for details.
             kwargs: Additional kwargs for prefilling.
 
         Returns:
@@ -192,7 +198,7 @@ class DecodingLayer(Configurable):
     def beam_search_decode(
         self,
         *,
-        prefix: Tensor,
+        input_batch: Nested[Tensor],
         max_sequence_length: int,
         num_decodes: int,
         cross_attention_data: Optional[Tensor] = None,
@@ -202,15 +208,19 @@ class DecodingLayer(Configurable):
         """Perform beam search decoding.
 
         Args:
-            prefix: The prefix to use for prompting. A Tensor of shape [batch, max_prefix_length].
-                The prefix for each example in the batch should begin with a prompt token (e.g.
-                BOS).
+            input_batch: A dict containing:
+                prefix: The prefix to use for prompting of shape [batch, max_prefix_length].
+                    The prefix for each example in the batch should begin with a prompt token (e.g.
+                    BOS).
+                    The prefix will be padded with `cfg.pad_token_id` to `max_sequence_length`, thus
+                    it is expected that `max_prefix_length <= max_sequence_length`.
             max_sequence_length: The maximum sequence length of tokens to generate.
             num_decodes: The number of decoded sequences to return. These are the number of
                 hypotheses per batch example.
             cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
             cross_attention_logit_biases: A Tensor of shape [batch_size, target_len, source_len].
                 A -inf represents a disconnected position pair.
+                `target_len` should be broadcastable to `max_sequence_length`.
             brevity_penalty: Brevity penalty function for length normalization during beam search.
 
         Returns:
@@ -219,6 +229,9 @@ class DecodingLayer(Configurable):
         Raises:
             ValueError: If pad_token_id is non-zero.
         """
+        validate_contains_paths(input_batch, paths=["prefix"])
+        prefix = input_batch["prefix"]
+
         cfg: DecodingLayer.Config = self.config
         tokens_to_scores_fn = self._tokens_to_scores(
             num_decodes=num_decodes,
@@ -230,9 +243,11 @@ class DecodingLayer(Configurable):
             prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
         )
         time_step = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id)
+        prefill_batch = {**input_batch}
+        prefill_batch["input_ids"] = input_ids
         init_states, _ = self._decoder.prefill_states(
             time_step=time_step,
-            input_ids=input_ids,
+            input_batch=prefill_batch,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
         )
@@ -250,7 +265,7 @@ class DecodingLayer(Configurable):
     def sample_decode(
         self,
         *,
-        prefix: Tensor,
+        input_batch: Nested[Tensor],
         max_sequence_length: int,
         num_decodes: int,
         cross_attention_data: Optional[Tensor] = None,
@@ -261,15 +276,19 @@ class DecodingLayer(Configurable):
         """Perform sample-based decoding.
 
         Args:
-            prefix: The prefix to use for prompting. Of shape [batch, max_prefix_length].
-                The prefix for each example in the batch should begin with a prompt token (e.g.
-                BOS).
+            input_batch: A dict containing:
+                prefix: The prefix to use for prompting of shape [batch, max_prefix_length].
+                    The prefix for each example in the batch should begin with a prompt token (e.g.
+                    BOS).
+                    The prefix will be padded with `cfg.pad_token_id` to `max_sequence_length`, thus
+                    it is expected that `max_prefix_length <= max_sequence_length`.
             max_sequence_length: The maximum sequence length of tokens to generate.
             num_decodes: The number of decoded sequences to return.
                 These are the number of hypotheses per batch example.
             cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
             cross_attention_logit_biases: A Tensor of shape [batch_size, target_len, source_len].
                 A -inf represents a disconnected position pair.
+                `target_len` should be broadcastable to `max_sequence_length`.
             logits_modifier: Function used to adjust the raw next-token logit distribution values,
                 to e.g. implement top-k/top-p/etc sampling (see `logit_modifiers`).
                 If None, do not modify the logits.
@@ -279,6 +298,9 @@ class DecodingLayer(Configurable):
         Returns:
             The sample decoding outputs.
         """
+        validate_contains_paths(input_batch, paths=["prefix"])
+        prefix = input_batch["prefix"]
+
         cfg: DecodingLayer.Config = self.config
         logits_modifier = maybe_instantiate(logits_modifier)
         tokens_to_scores_fn = self._tokens_to_scores(
@@ -291,9 +313,11 @@ class DecodingLayer(Configurable):
             prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
         )
         time_step = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id)
+        prefill_batch = {**input_batch}
+        prefill_batch["input_ids"] = input_ids
         init_states, init_outputs = self._decoder.prefill_states(
             time_step=time_step,
-            input_ids=input_ids,
+            input_batch=prefill_batch,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
         )
@@ -467,16 +491,19 @@ class Decoder(BaseLayer):
         self,
         *,
         mode: ForwardMode,
-        input_ids: Tensor,
+        input_batch: Nested[Tensor],
         self_attention_logit_biases: Optional[Tensor],
-        input_segment_ids: Optional[Tensor] = None,
-        token_type_ids: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-        positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
     ) -> tuple[Optional[NestedTensor], Tensor]:
-        x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        validate_contains_paths(input_batch, paths=["input_ids"])
+        input_segment_ids = input_batch.get("input_segment_ids", None)
+
+        emb_batch = {**input_batch}
+        emb_batch["inputs"] = emb_batch["input_ids"]
+        x = self.emb(input_batch=emb_batch)
+
         if mode == ForwardMode.FORWARD:
             transformer_state, x = (
                 None,
@@ -492,7 +519,7 @@ class Decoder(BaseLayer):
             assert cached_states is not None
             if input_segment_ids is not None:
                 raise ValueError("input_segment_ids is not supported in INIT_STATES.")
-            transformer_state, x = self.transformer.prefill_states(
+            transformer_state, x = self.transformer.init_states(
                 time_step=cached_states["transformer_state"],
                 data=x,
                 self_attention_logit_biases=self_attention_logit_biases,
@@ -531,31 +558,30 @@ class Decoder(BaseLayer):
 
     def forward(
         self,
-        input_ids: Tensor,
+        input_batch: Nested[Tensor],
         *,
-        input_segment_ids: Optional[Tensor] = None,
-        token_type_ids: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-        positions: Optional[Tensor] = None,
+        **kwargs,
     ) -> dict[str, Tensor]:
         """Computes decoder hidden states and logits from input ids and cross attention hidden
         states.
 
         Args:
-            input_ids: An int Tensor of shape [batch_size, target_len].
-                Values should be in the range [0, vocab_size).
-            input_segment_ids: An optional Tensor of same shape as `input_ids` with values in
-                [0, num_segments]. Tokens are only allowed to attend to other tokens within the same
-                segment. input_segment_ids == 0 represents paddings. If None, inferred from
-                input_ids != pad_token_id.
-            token_type_ids: An optional int Tensor of shape [batch_size, target_len].
-                Values should be in the range [0, type_vocab_size).
+            input_batch: A dict containing:
+                * input_ids: An int Tensor of shape [batch_size, target_len].
+                    Values should be in the range [0, vocab_size).
+                * input_segment_ids: An optional Tensor of same shape as `input_ids` with values in
+                    [0, num_segments]. Tokens are only allowed to attend to other tokens within the
+                    same segment. input_segment_ids == 0 represents paddings. If None, inferred from
+                    input_ids != pad_token_id.
+                * token_type_ids: An optional int Tensor of shape [batch_size, target_len].
+                    Values should be in the range [0, type_vocab_size).
+                * positions: An optional int Tensor of shape [batch_size, target_len].
+                    If None, assumed to be jnp.arange(target_len) for each sequence.
             cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
             cross_attention_logit_biases: A Tensor of shape [batch_size, target_len, source_len].
                 A -inf represents a disconnected position pair.
-            positions: An optional int Tensor of shape [batch_size, target_len].
-                If None, assumed to be jnp.arange(target_len) for each sequence.
 
         Returns:
             A dict containing:
@@ -563,19 +589,22 @@ class Decoder(BaseLayer):
                 logits: A float Tensor of shape [batch_size, target_len, num_classes], where
                     num_classes depends on the configured lm_head.
         """
+        validate_contains_paths(input_batch, paths=["input_ids"])
+        input_ids = input_batch["input_ids"]
+        input_segment_ids = input_batch.get("input_segment_ids", None)
+        positions = input_batch.get("positions", None)
+
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
-            input_ids=input_ids,
+            input_batch=input_batch,
             # [batch_size, num_heads, seq_len, seq_len].
             self_attention_logit_biases=self.compute_attention_logit_biases(
                 input_ids, segment_ids=input_segment_ids, positions=positions
             ),
-            input_segment_ids=input_segment_ids,
-            token_type_ids=token_type_ids,
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
-            positions=positions,
             cached_states=None,
+            **kwargs,
         )
         if self._output_logits_modifier is not None:
             output["logits"] = self._output_logits_modifier(output["logits"])
@@ -584,10 +613,12 @@ class Decoder(BaseLayer):
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
         """See `BaseDecoder.init_states` for details."""
         cfg: Decoder.Config = self.config
+        init_state, _ = self.transformer.init_states(
+            time_step=None,
+            data=TensorSpec([batch_size, max_sequence_length, cfg.dim]),
+        )
         return dict(
-            transformer_state=self.transformer.init_states(
-                target_batch_size=batch_size, target_max_len=max_sequence_length
-            ),
+            transformer_state=init_state,
             input_ids=jnp.full(
                 (batch_size, max_sequence_length), cfg.pad_token_id, dtype=jnp.int32
             ),
@@ -595,31 +626,55 @@ class Decoder(BaseLayer):
         )
 
     def prefill_states(
-        self, *, time_step: Tensor, input_ids: Tensor, **kwargs
-    ) -> tuple[NestedTensor, NestedTensor]:
-        """See `BaseDecoder.prefill_states` for details."""
+        self,
+        *,
+        time_step: Tensor,
+        input_batch: Nested[Tensor],
+        **kwargs,
+    ) -> tuple[Nested[Tensor], Nested[Tensor]]:
+        """See `BaseDecoder.prefill_states` for details.
+
+        Args:
+            time_step: A Tensor of shape [batch_size]. See `BaseDecoder.prefill_states` for details.
+            input_batch: See `forward` for details.
+            kwargs: See `forward` for details.
+
+        Returns:
+            See `BaseDecoder.prefill_states` for details.
+        """
+        validate_contains_paths(input_batch, paths=["input_ids"])
+        input_ids = input_batch["input_ids"]
+        input_segment_ids = input_batch.get("input_segment_ids", None)
+        positions = input_batch.get("positions", None)
+
         states, outputs = self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(transformer_state=time_step),
-            input_ids=input_ids,
+            input_batch=input_batch,
             # TODO(markblee): Consider supporting packed inputs for more efficient prefilling.
-            self_attention_logit_biases=self.compute_attention_logit_biases(input_ids),
+            self_attention_logit_biases=self.compute_attention_logit_biases(
+                input_ids, segment_ids=input_segment_ids, positions=positions
+            ),
             **kwargs,
         )
         states = dict(time_step=time_step, input_ids=input_ids, **states)
         return states, outputs
 
     def extend_step(
-        self, *, cached_states: NestedTensor, input_ids: Tensor, **kwargs
-    ) -> tuple[NestedTensor, NestedTensor]:
+        self,
+        *,
+        cached_states: Nested[Tensor],
+        input_ids: Tensor,
+        **kwargs,
+    ) -> tuple[Nested[Tensor], Nested[Tensor]]:
         """See `BaseDecoder.extend_step` for details."""
-        time_step = cached_states["time_step"]
+        time_step: Tensor = cached_states["time_step"]
         assert time_step.ndim == 1
 
         # Update cached input_ids via "scatter via one-hot broadcast" trick.
         # Note: in the cases where `time_step` exceeds `target_len`, the update becomes a no-op.
         # --> [B, T].
-        cached_inputs = cached_states["input_ids"]
+        cached_inputs: Tensor = cached_states["input_ids"]
         target_len = cached_inputs.shape[-1]
         oh_indices = jax.nn.one_hot(time_step, target_len, dtype=input_ids.dtype)
         updated_inputs = cached_inputs * (1 - oh_indices) + input_ids * oh_indices
@@ -642,11 +697,19 @@ class Decoder(BaseLayer):
                 mode="clip",
             )
 
+        input_segment_ids = kwargs.pop("input_segment_ids", None)
+        token_type_ids = kwargs.pop("token_type_ids", None)
+        positions = kwargs.pop("positions", jnp.expand_dims(time_step, 1))
+
         updated_states, outputs = self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
-            input_ids=input_ids,
+            input_batch=dict(
+                input_ids=input_ids,
+                input_segment_ids=input_segment_ids,
+                token_type_ids=token_type_ids,
+                positions=positions,
+            ),
             self_attention_logit_biases=self_attention_biases,
-            positions=jnp.expand_dims(time_step, 1),
             cached_states=cached_states,
             **kwargs,
         )
@@ -664,14 +727,14 @@ class Decoder(BaseLayer):
     def beam_search_decode(
         self,
         *,
-        prefix: Tensor,
+        input_batch: Nested[Tensor],
         max_sequence_length: int,
         num_decodes: int,
         **kwargs,
     ):
         """See configured `decoding` implementation for details."""
         return self._decoding.beam_search_decode(
-            prefix=prefix,
+            input_batch=input_batch,
             max_sequence_length=max_sequence_length,
             num_decodes=num_decodes,
             **kwargs,
@@ -679,14 +742,15 @@ class Decoder(BaseLayer):
 
     def sample_decode(
         self,
-        prefix: Tensor,
+        *,
+        input_batch: Nested[Tensor],
         max_sequence_length: int,
         num_decodes: int,
         **kwargs,
     ):
         """See configured `decoding` implementation for details."""
         return self._decoding.sample_decode(
-            prefix=prefix,
+            input_batch=input_batch,
             max_sequence_length=max_sequence_length,
             num_decodes=num_decodes,
             **kwargs,

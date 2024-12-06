@@ -2,7 +2,6 @@
 
 """Base Encoder-Decoder model interface."""
 
-from collections.abc import Sequence
 from typing import Optional
 
 from axlearn.common.base_layer import BaseLayer
@@ -10,7 +9,7 @@ from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class
 from axlearn.common.decoding import BeamSearchOutputs, SampleOutputs
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
-from axlearn.common.utils import Nested, Tensor, get_recursively
+from axlearn.common.utils import Nested, Tensor
 
 
 class BaseEncoderDecoderModel(BaseModel):
@@ -60,14 +59,6 @@ class BaseEncoderDecoderModel(BaseModel):
             A dict containing prediction outputs, such as logits or decoder hidden states.
         """
         raise NotImplementedError(type(self))
-
-    def _validate_input_batch(self, input_batch: Nested[Tensor], paths: Sequence[str]):
-        """Raises ValueError if any of the given `paths` are not present in `input_batch`."""
-        for path in paths:
-            try:
-                get_recursively(input_batch, path)
-            except KeyError as e:
-                raise ValueError(f"Input batch is expected to contain '{path}'.") from e
 
     def beam_search_decode(
         self, input_batch: dict[str, Tensor], num_decodes: int, **kwargs

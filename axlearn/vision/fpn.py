@@ -30,15 +30,8 @@ from jax import numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
-from axlearn.common.layers import (
-    BatchNorm,
-    Conv2D,
-    Conv2DTranspose,
-    LayerNorm,
-    MaxPool2D,
-    get_activation_fn,
-    normalize_sum,
-)
+from axlearn.common.convolution import Conv2D, Conv2DTranspose
+from axlearn.common.layers import BatchNorm, LayerNorm, MaxPool2D, get_activation_fn, normalize_sum
 from axlearn.common.module import Module
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,

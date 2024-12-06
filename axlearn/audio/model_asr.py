@@ -9,7 +9,7 @@ from axlearn.audio.encoder_asr import ASREncoder
 from axlearn.common.base_encoder_decoder import BaseEncoderDecoderModel
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import Nested, Tensor, validate_contains_paths
 
 
 class ASRModel(BaseEncoderDecoderModel):
@@ -51,7 +51,7 @@ class ASRModel(BaseEncoderDecoderModel):
         Returns:
             A dict containing logits. The shape of logits depend on the decoder.
         """
-        self._validate_input_batch(input_batch, ["source", "target", "target_labels"])
+        validate_contains_paths(input_batch, ["source", "target", "target_labels"])
         # Encoder hidden states: [batch_size, source_len, dim].
         encoder_output = self.encoder(**input_batch["source"])
         logits = self.decoder.predict(
@@ -82,7 +82,7 @@ class ASRModel(BaseEncoderDecoderModel):
                 aux_outputs: A dict containing auxiliary outputs if `return_aux=True`, otherwise an
                     empty dict.
         """
-        self._validate_input_batch(input_batch, ["source", "target", "target_labels"])
+        validate_contains_paths(input_batch, ["source", "target", "target_labels"])
         # Encoder hidden states: [batch_size, source_len, dim].
         encoder_output = self.encoder(**input_batch["source"])
         loss, aux_outputs = self.decoder(
@@ -115,7 +115,7 @@ class ASRModel(BaseEncoderDecoderModel):
         Returns:
             Beam search decode outputs.
         """
-        self._validate_input_batch(input_batch, ["source/inputs", "source/paddings"])
+        validate_contains_paths(input_batch, ["source/inputs", "source/paddings"])
         encoder_output = self.encoder(**input_batch["source"])
         return self.decoder.beam_search_decode(
             input_batch=dict(

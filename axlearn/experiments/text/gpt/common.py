@@ -12,7 +12,7 @@ See c4_trainer.py for how they are used.
 
 import math
 from collections.abc import Sequence
-from typing import Literal, Optional, Protocol, Union
+from typing import Optional, Protocol, Union
 
 import jax.numpy as jnp
 import tensorflow as tf
@@ -187,7 +187,6 @@ def update_model_remat_config(
     *,
     stack_cfg: causal_lm.TransformerStackConfig,
     layer_cfg: TransformerLayer.Config,
-    offload_dst: Optional[Literal["pinned_host"]] = None,
 ):
     """Recomputes and sets the remat_spec based on provided layer_cfg.
 
@@ -206,17 +205,7 @@ def update_model_remat_config(
             f"Remat spec is not implemented for stack_cfg with klass={type(stack_cfg.klass)}"
         )
 
-    if layer_cfg.self_attention.attention.klass is not FlashAttention:
-        # Enable remat to reduce memory usage for larger models.
-        remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg), offload_dst=offload_dst)
-    else:
-        # Checkpointing both ffn and attention to give the best performance.
-        remat_spec = build_remat_spec(
-            stack_cfg.clone(layer=layer_cfg),
-            feed_forward=True,
-            self_attention=True,
-            offload_dst=offload_dst,
-        )
+    remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg))
     layer_cfg.set(remat_spec=remat_spec)
 
 

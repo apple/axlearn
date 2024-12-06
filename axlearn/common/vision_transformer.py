@@ -36,8 +36,8 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.convolution import Conv2D
 from axlearn.common.layers import (
-    Conv2D,
     Dropout,
     DropToken,
     L2Norm,

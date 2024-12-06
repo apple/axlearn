@@ -16,7 +16,7 @@ from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, Tensor, child_context
-from axlearn.common.utils import Nested
+from axlearn.common.utils import Nested, validate_contains_paths
 
 
 class EncoderDecoderModel(BaseEncoderDecoderModel):
@@ -48,7 +48,7 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
         return_aux: bool = False,
     ) -> tuple[Tensor, Nested[Tensor]]:
         """See `BaseEncoderDecoderModel` docstring for details."""
-        self._validate_input_batch(input_batch, paths=["source", "target", "target_labels"])
+        validate_contains_paths(input_batch, paths=["source", "target", "target_labels"])
         predict_outputs = self.predict(input_batch)
         loss, aux_metrics = self._metrics(input_batch, predict_outputs=predict_outputs)
         if not predict_outputs.keys().isdisjoint(aux_metrics.keys()):
@@ -100,7 +100,7 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
         Raises:
             ValueError: If source_segment_ids and target_segment_ids are not provided together.
         """
-        self._validate_input_batch(input_batch, paths=["source/input_ids", "target/input_ids"])
+        validate_contains_paths(input_batch, paths=["source/input_ids", "target/input_ids"])
         source_batch: dict[str, Tensor] = input_batch["source"]
         target_batch: dict[str, Tensor] = input_batch["target"]
         source_segment_ids: Optional[Tensor] = source_batch.get("input_segment_ids")
@@ -122,7 +122,7 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
             )
         # Decoder hidden states: [batch_size, target_len, hidden_dim].
         decoder_output = self.decoder(
-            **target_batch,
+            target_batch,
             cross_attention_data=encoder_output,
             cross_attention_logit_biases=cross_attention_logit_biases,
         )
@@ -158,8 +158,8 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
                 aux_outputs: A dict containing auxiliary metrics:
                     per_token_loss: A float Tensor of shape [batch_size, target_len].
         """
-        self._validate_input_batch(input_batch, paths=["target_labels"])
-        self._validate_input_batch(predict_outputs, paths=["logits"])
+        validate_contains_paths(input_batch, paths=["target_labels"])
+        validate_contains_paths(predict_outputs, paths=["logits"])
         logits: Tensor = predict_outputs["logits"]
         target_labels: Tensor = input_batch["target_labels"]
 
@@ -202,15 +202,14 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
         Returns:
             Beam search outputs. See parent docstring for details.
         """
-        self._validate_input_batch(input_batch, paths=["prefix", "source/input_ids"])
-        prefix: Tensor = input_batch["prefix"]
+        validate_contains_paths(input_batch, paths=["prefix", "source/input_ids"])
         input_ids: Tensor = input_batch["source"]["input_ids"]
         encoder_output = self.encoder(input_ids=input_ids)
         cross_attention_logit_biases = self.compute_attention_logit_biases(input_ids)
 
         with child_context("beam_search_decode", module=self.decoder):
             return self.decoder.beam_search_decode(
-                prefix=prefix,
+                input_batch=input_batch,
                 num_decodes=num_decodes,
                 cross_attention_data=encoder_output,
                 cross_attention_logit_biases=cross_attention_logit_biases,
@@ -241,15 +240,14 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
         Returns:
             Sample decoding outputs. See parent docstring for details.
         """
-        self._validate_input_batch(input_batch, paths=["prefix", "source/input_ids"])
-        prefix: Tensor = input_batch["prefix"]
+        validate_contains_paths(input_batch, paths=["prefix", "source/input_ids"])
         input_ids: Tensor = input_batch["source"]["input_ids"]
         encoder_output = self.encoder(input_ids=input_ids)
         cross_attention_logit_biases = self.compute_attention_logit_biases(input_ids)
 
         with child_context("sample_decode", module=self.decoder):
             return self.decoder.sample_decode(
-                prefix=prefix,
+                input_batch=input_batch,
                 num_decodes=num_decodes,
                 cross_attention_data=encoder_output,
                 cross_attention_logit_biases=cross_attention_logit_biases,

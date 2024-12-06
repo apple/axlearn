@@ -15,6 +15,7 @@
 
 
 """Tests Mamba and Jamba implementations."""
+
 import math
 from typing import Optional
 
@@ -41,7 +42,7 @@ from axlearn.common.ssm import (
     StackedSSMLayer,
 )
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import Nested, Tensor, cast_floats
+from axlearn.common.utils import Nested, Tensor, TensorSpec, cast_floats
 
 # The following PyTorch Mamba implementations are adapted from:
 # https://github.com/huggingface/transformers/blob/v4.39.3/src/transformers/models/mamba/modeling_mamba.py
@@ -407,7 +408,11 @@ class MambaMixerLayerTest(TestCase):
             prng_key=jax.random.PRNGKey(2),
             inputs=inputs,
         )
-        initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
+        initial_state, initial_output = layer.init_states(
+            time_step=None,
+            query=TensorSpec([batch_size, tgt_len]),
+        )
+        self.assertIsNone(initial_output)
         for k in ["conv_input", "state"]:
             self.assertEqual(initial_state[k].dtype, dtype)
 
@@ -463,7 +468,7 @@ class MambaMixerLayerTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(3),
             inputs=dict(time_step=time_step, query=query),
-            method="prefill_states",
+            method="init_states",
         )
         self.assertTrue(jnp.all(time_step == initial_states["time_step"]))
         for k in ["conv_input", "state"]:
@@ -532,7 +537,12 @@ def _test_extend_step(layer_cfg: InstantiableConfig, *, model_dim: int, dtype: j
         prng_key=jax.random.PRNGKey(2),
         inputs=inputs,
     )
-    initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
+    if isinstance(layer, MambaMixerLayer):
+        init_kwargs = dict(query=TensorSpec([batch_size, tgt_len]))
+    else:
+        init_kwargs = dict(data=TensorSpec([batch_size, tgt_len]))
+    initial_state, initial_output = layer.init_states(time_step=None, **init_kwargs)
+    assert initial_output is None
     inputs = dict(cached_states=initial_state)
     decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
     for t in range(tgt_len):
@@ -588,7 +598,7 @@ def _test_prefill_states(layer_cfg: InstantiableConfig, *, model_dim: int, dtype
             data=query,
             self_attention_logit_biases=self_attention_logit_biases,
         ),
-        method="prefill_states",
+        method="init_states",
     )
 
     # Zero-out outputs starting from initial time_step, and test that we can recover the full

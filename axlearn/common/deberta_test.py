@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests DeBERTa implementation."""
+
 # pylint: disable=no-self-use
 from types import SimpleNamespace
 from typing import Optional
@@ -483,7 +484,7 @@ class DeBERTaEncoderTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
             state=layer_params["encoder"]["emb"],
-            inputs=[input_ids],
+            inputs=dict(input_batch=dict(inputs=input_ids)),
         )
         ref_outputs = hf_layer.embeddings(as_torch_tensor(input_ids))
         self.assertNestedAllClose(test_outputs, ref_outputs)

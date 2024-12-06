@@ -47,11 +47,14 @@ from axlearn.common.checkpointer import (
     read_state_spec,
     restore_tf_savables,
 )
-from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
-from axlearn.common.input_grain_test import range_dataset
+from axlearn.common.checkpointer_orbax import _GRAIN_INSTALLED, OrbaxCheckpointer
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.utils import VDict
+
+# Conditionally import to allow running tests on Apple silicon where grain is not supported.
+if _GRAIN_INSTALLED:
+    from axlearn.common.input_grain_test import range_dataset
 
 
 def _mesh(mesh_shape: Sequence[int]):
@@ -480,6 +483,8 @@ class CheckpointerTest(test_utils.TestCase):
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
     def test_grain(self, checkpointer_cls):
+        if not _GRAIN_INSTALLED:
+            self.skipTest("Cannot run when grain is not installed.")
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
@@ -922,7 +927,7 @@ class CheckpointerTest(test_utils.TestCase):
         self.assertTrue(policy(step=13, evaler_summaries={}))
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
-    def test_latest_checkpoint_path(self, checkpointer_cls: Type[BaseCheckpointer]):
+    def test_latest_checkpoint_path_and_step(self, checkpointer_cls: Type[BaseCheckpointer]):
         with tempfile.TemporaryDirectory() as td:
             # Test that the most recent checkpoint is returned.
             ckpt_paths = {}
@@ -944,6 +949,7 @@ class CheckpointerTest(test_utils.TestCase):
             final_ckpt_path = ckpt_paths[10]
             # Note: step 11 is not complete, so the latest path returns step 10.
             self.assertEqual(checkpointer_cls.latest_checkpoint_path(td), final_ckpt_path)
+            self.assertEqual(checkpointer_cls.latest_checkpoint_step(td), 10)
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
     def test_read_state_spec(self, checkpointer_cls: Type[BaseCheckpointer]):
