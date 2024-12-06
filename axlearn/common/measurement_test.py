@@ -85,3 +85,10 @@ class UtilsTest(parameterized.TestCase):
         with mock.patch.object(measurement.global_recorder, "record") as mock_record:
             measurement.record_event(measurement.Event.START_JOB)
             self.assertIn(measurement.Event.START_JOB, mock_record.call_args[0])
+
+        # Ensure that start_monitoring does not fail.
+        with mock.patch.object(
+            measurement.global_recorder, "start_monitoring"
+        ) as mock_start_monitoring:
+            measurement.start_monitoring()
+            mock_start_monitoring.assert_called_once()
