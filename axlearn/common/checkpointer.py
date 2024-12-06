@@ -94,6 +94,11 @@ def parse_step_from_dir(step_dir: str) -> int:
     return int(step_dir[-STEP_NUM_DIGITS:])
 
 
+def build_step_dir(base_dir: str, *, step: int) -> str:
+    """Returns the path of checkpoint at `step` under `base_dir`."""
+    return os.path.join(base_dir, f"{STEP_PREFIX}_{step:0{STEP_NUM_DIGITS}d}")
+
+
 def check_state_structure(
     ckpt_structure: list[tuple[str, Any]],
     target_structure: list[tuple[str, Any]],
@@ -732,6 +737,8 @@ class BaseCheckpointer(Module):
             every_n_steps_policy
         )
 
+    # TODO(hanzhi-zhou): deprecate all checkpoint_paths related class methods in favor of
+    # checkpoint_steps.
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> list[str]:
         """Returns complete checkpoint paths under base dir.
@@ -755,8 +762,31 @@ class BaseCheckpointer(Module):
             The path to the checkpoint directory under base_dir with the highest step count.
             The checkpoint is guaranteed to be complete.
         """
+        logging.log_first_n(
+            logging.WARNING,
+            msg="latest_checkpoint_path is deprecated. Use latest_checkpoint_step instead.",
+            n=1,
+        )
         # Note: checkpoint_paths should already filter incomplete checkpoints.
         return sorted(cls.checkpoint_paths(base_dir)).pop()
+
+    @classmethod
+    def checkpoint_steps(cls, base_dir: str) -> list[int]:
+        """Returns complete checkpoint steps under base dir.
+
+        Args:
+            base_dir: Path to checkpoints dir.
+
+        Returns:
+            A list of committed checkpoint steps. Incomplete checkpoints are dropped.
+        """
+        raise NotImplementedError(cls)
+
+    @classmethod
+    def latest_checkpoint_step(cls, base_dir: str) -> int:
+        """Returns the most recent (highest step count) checkpoint step under base dir."""
+        # Note: checkpoint_steps should already filter incomplete checkpoints.
+        return max(cls.checkpoint_steps(base_dir))
 
     def __init__(self, cfg: Module.Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -864,7 +894,6 @@ class Checkpointer(BaseCheckpointer):
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> list[str]:
         """See `BaseCheckpointer.checkpointer_paths`."""
-
         # The default checkpointer commits under "<base_dir>/<step_prefix>_<step>/index". Using a
         # concurrent `exists` check for the index file can be several times faster than `glob` on
         # gcs when there are many checkpoint files, even if using a "native" solution like
@@ -880,6 +909,10 @@ class Checkpointer(BaseCheckpointer):
         with futures.ThreadPoolExecutor() as pool:
             index_exists = pool.map(fs.exists, paths)
         return [os.path.dirname(path) for path, committed in zip(paths, index_exists) if committed]
+
+    @classmethod
+    def checkpoint_steps(cls, base_dir: str) -> list[int]:
+        return [parse_step_from_dir(path) for path in cls.checkpoint_paths(base_dir)]
 
     @classmethod
     def cleanup_checkpoint(cls, ckpt_dir: str, *, sync: bool = True):
@@ -953,7 +986,7 @@ class Checkpointer(BaseCheckpointer):
     def ckpt_dir(self, step: int) -> str:
         """Obtains the checkpoint dir for the given step."""
         cfg: Checkpointer.Config = self.config
-        return os.path.join(cfg.dir, f"{STEP_PREFIX}_{step:0{STEP_NUM_DIGITS}d}")
+        return build_step_dir(cfg.dir, step=step)
 
     def save(
         self, *, step: int, state: NestedTensor, evaler_summaries: Optional[dict[str, Any]] = None
