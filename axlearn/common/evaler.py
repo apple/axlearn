@@ -702,8 +702,6 @@ class SpmdEvaler(Module):
 
             with jax.profiler.StepTraceAnnotation(cfg.name, step_num=step):
                 with jax.profiler.TraceAnnotation(f"{cfg.name}.forward"):
-                    print("evaler data partition type ", self.config.input_partition_type, flush=True)
-                    print("evaler batch_axis_names type ", self.config.batch_axis_names, flush=True)
                     global_input_batch = utils.host_to_global_device_array(input_batch, partition=self.config.input_partition_type, batch_axis_names=self.config.batch_axis_names)
                     forward_outputs = self.metric_calculator.forward(
                         global_input_batch,

@@ -394,8 +394,7 @@ def get_trainer_kwargs(
                 # TODO(kelvin-zou): Remove the perf numbers for V5e (OOM).
                 ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
                 rope_theta=rope_theta,
-                # shared_lm_head=False,
-                shared_lm_head=True,
+                shared_lm_head=False,
                 flash_attention=True,
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),

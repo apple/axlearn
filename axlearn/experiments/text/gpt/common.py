@@ -329,6 +329,8 @@ def model_config(
     cfg.decoder.emb.token_emb.param_partition_spec = ("model", ("expert", "fsdp", "seq")) # shard vocab
     # Neuron backend require fine grained sharding around embedding gather op.
     if jax.default_backend() == 'neuron':
+        if lm_head_cfg != None:
+            cfg.decoder.lm_head.param_partition_spec = ("model", ("expert", "fsdp", "seq")) # shard vocab
         cfg.decoder.emb.token_emb.pregather_partition_spec = ('fsdp', None)
         cfg.decoder.emb.token_emb.embedding_partition_spec = ('model', None)
         cfg.decoder.emb.token_emb.postgather_partition_spec = ('fsdp', None, None)
