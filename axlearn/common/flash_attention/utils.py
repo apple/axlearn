@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 from absl import logging
 
+from axlearn.common import config
 from axlearn.common.attention import NEG_INF, MaskFn, causal_mask, softmax_with_biases
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
 from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
@@ -77,7 +78,7 @@ MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tens
 def flash_attention_implementation(
     backend: Literal["cpu", "tpu", "gpu", "xla"],
     *,
-    mask: Optional[MaskFn] = None,
+    mask: config.ConfigOr[Optional[MaskFn]] = None,
     softmax_scale: float,
     block_size: int = 128,
 ) -> MultiHeadAttentionImpl:
@@ -98,14 +99,16 @@ def flash_attention_implementation(
     Raises:
         NotImplementedError: If implementation for the backend is not available.
     """
-    causal = mask is causal_mask
-    if mask is not None and not causal and backend != "tpu":
-        raise NotImplementedError(
-            "Custom (non-causal, non-full) mask only supported on TPU.\n"
-            "You can use NEG_INF biases instead, but it won't "
-            "have the sparsity optimizations."
-        )
     if backend == "gpu":
+        mask: Optional[MaskFn] = mask
+        causal = mask is causal_mask
+        if mask is not None and not causal:
+            raise NotImplementedError(
+                "Custom (non-causal, non-full) mask is not supported on GPU.\n"
+                "You can use NEG_INF biases instead, but it won't "
+                "have the sparsity optimizations."
+            )
+
         # shard_map-decorated function needs to be jitted.
         @jax.jit
         def jit_attn(query, key, value, bias, segment_ids):
@@ -141,7 +144,10 @@ def flash_attention_implementation(
 
         return jit_attn
 
-    elif backend == "tpu":
+    elif backend in ("tpu", "cpu"):
+        if backend == "cpu":
+            logging.warning("Flash attention CPU backend is for testing only.")
+
         # shard_map-decorated function needs to be jitted.
         @jax.jit
         def jit_attn(query, key, value, bias, segment_ids):
@@ -154,14 +160,15 @@ def flash_attention_implementation(
                 mask=mask,
                 softmax_scale=softmax_scale,
                 block_size=block_size,
+                interpret=(backend == "cpu"),
             )
             return context
 
         return jit_attn
 
-    elif backend in ("cpu", "xla"):
-        if backend == "cpu":
-            logging.warning("Flash attention CPU backend is for testing only.")
+    elif backend == "xla":
+        mask: Optional[MaskFn] = mask
+        causal = mask is causal_mask
         logging.warning("Flash attention falling back using plain MHA implementation")
 
         # shard_map-decorated function needs to be jitted.

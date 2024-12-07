@@ -20,6 +20,7 @@ from axlearn.common.attention import (
     make_segment_mask,
 )
 from axlearn.common.config import config_class
+from axlearn.common.flash_attention import tpu_attention
 from axlearn.common.flash_attention.utils import (
     MultiHeadAttentionImpl,
     flash_attention_implementation,
@@ -169,10 +170,6 @@ class FlashAttention(GroupedQueryAttention):
         cfg = self.config
         backend = self._backend()
 
-        # Repeats key/value heads dim if necessary.
-        k_proj = self._repeat_kv_heads(k_proj)
-        v_proj = self._repeat_kv_heads(v_proj)
-
         batch, target_len, num_heads, _ = q_proj.shape
         _, source_len, _, _ = k_proj.shape
 
@@ -228,7 +225,18 @@ class FlashAttention(GroupedQueryAttention):
                 f"{k_proj.shape[1]} for correctly supported GPU flash attention usage."
             )
 
-        if backend == "tpu":
+        if backend == "cpu" and not tpu_attention.check_tpu_splash_attention(
+            query=q_proj,
+            key=k_proj,
+            has_mask=bool(cfg.mask),
+            segment_ids=segment_ids,
+            has_bias=(attention_logit_biases is not None),
+        ):
+            backend = "xla"
+
+        if backend in ("tpu", "cpu"):
+            # Splash attention needs to know sliding_window_size.
+            mask_fn = cfg.mask
             assert q_proj.shape[1] % cfg.tpu_block_size == 0, (
                 f"Target seq len {q_proj.shape[1]} must be "
                 f"divisible by block size {cfg.tpu_block_size}."
@@ -262,6 +270,12 @@ class FlashAttention(GroupedQueryAttention):
         # Scale query and key.
         q_proj = self.scale_query(q_proj)
         k_proj = self.scale_key(k_proj)
+
+        # TODO(dhwang2): splash attention supports GQA natively, so don't repeat with proper shard.
+        # https://github.com/jax-ml/jax/blob/7b9914d711593dca8725d46aa1dadb2194284519/jax/experimental/pallas/ops/tpu/splash_attention/splash_attention_kernel.py#L934
+        # Repeats key/value heads dim if necessary.
+        k_proj = self._repeat_kv_heads(k_proj)
+        v_proj = self._repeat_kv_heads(v_proj)
 
         # Constrain input to conform to partitioned MHA expectations.
         q_proj = with_sharding_constraint(q_proj, cfg.mha_dim_to_partition_spec["btnh"])

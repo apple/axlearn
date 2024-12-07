@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import unittest
 
+import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.shard_map import shard_map
@@ -17,13 +18,18 @@ from jax.interpreters.pxla import thread_resources
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from axlearn.common.attention import causal_mask, sliding_window_causal_mask
+from axlearn.common.config import config_for_function
 from axlearn.common.flash_attention import tpu_attention
 from axlearn.common.flash_attention.utils import mha_reference
 from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 from axlearn.common.utils import Tensor
 
-if jax.default_backend() != "tpu":
-    pytest.skip(reason="Incompatible hardware", allow_module_level=True)
+
+def setUpModule():
+    chex.set_n_cpu_devices(4)
+    # Comment out to test on CPU.
+    if jax.default_backend() != "tpu":
+        pytest.skip(reason="Incompatible hardware", allow_module_level=True)
 
 
 def jax_fn_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
@@ -71,19 +77,21 @@ class TestFlashAttention(TestCase):
 
     @parameterized.product(
         batch_size=[4],
-        seq_len=[32768],
+        seq_len=[1024, 32768],
+        mask_fn=[None, "causal", "sliding", "sliding_fn"],
         sliding_window_size=[1024],
         num_heads=[4],
         per_head_dim=[256],
         mesh=[(4, 1)],
         mesh_axis_names=[("data", "model")],
     )
-    def test_sliding_window_mask(
+    def test_forward(
         self,
         batch_size,
         seq_len,
         num_heads,
         per_head_dim,
+        mask_fn,
         sliding_window_size,
         mesh,
         mesh_axis_names,
@@ -117,10 +125,23 @@ class TestFlashAttention(TestCase):
                 )
 
                 softmax_scale = q.shape[-1] ** -0.5
-                mask = sliding_window_causal_mask(sliding_window_size)
-
+                if mask_fn is None:
+                    mask = None
+                elif mask_fn == "causal":
+                    mask = causal_mask
+                elif mask_fn.startswith("sliding"):
+                    mask = config_for_function(sliding_window_causal_mask).set(
+                        sliding_window_size=sliding_window_size
+                    )
+                    if mask_fn == "sliding_fn":
+                        mask = mask.instantiate()
                 attn = lambda q, k, v: tpu_attention.tpu_flash_attention(
-                    q, k, v, mask=mask, softmax_scale=softmax_scale
+                    q,
+                    k,
+                    v,
+                    mask=mask,
+                    softmax_scale=softmax_scale,
+                    interpret=(jax.default_backend() == "cpu"),
                 )
 
                 partitioned_mha = shard_map(
@@ -209,9 +230,17 @@ class TestFlashAttention(TestCase):
             )
             with record_legacy_call:
                 return tpu_attention.tpu_flash_attention(
-                    q, k, v, bias, ids, mask=mask, softmax_scale=softmax_scale
+                    q,
+                    k,
+                    v,
+                    bias,
+                    ids,
+                    mask=mask,
+                    softmax_scale=softmax_scale,
+                    interpret=(jax.default_backend() == "cpu"),
                 )
 
+        # TODO(dhwang2): this has been broken for a while on CPU.
         # Compare outputs.
         out = fn(q, k, v, attention_bias, segment_ids)
         ref_out = ref_fn(q, k, v, attention_bias, segment_ids)
@@ -231,3 +260,7 @@ class TestFlashAttention(TestCase):
             legacy_flash_wrapper.assert_called()
         else:
             legacy_flash_wrapper.assert_not_called()
+
+
+if __name__ == "__main__":
+    absltest.main()
