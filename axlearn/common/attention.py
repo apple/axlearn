@@ -4135,7 +4135,6 @@ def save_only_these(*names_to_save):
     # Save all values, including unnamed ones, excluding the specified names.
     names_to_save = frozenset(names_to_save)
     def policy(prim, *_, **params):
-        return True
         if 'name' in params and params['name'] in names_to_save:
             print(f"[WIP] Saving {params['name']}")
             return True
