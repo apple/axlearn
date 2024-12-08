@@ -155,6 +155,9 @@ class BaseScheduler(Configurable):
             project_limits: The effective resource limits.
             project_usages: The resource usages.
             job_verdicts: A mapping of job_id -> run_or_not.
+                The entries will be ordered by descending scheduling priorities (not necessarily
+                JobMetadata.priority), where the higher priority jobs will be scheduled before
+                lower priority ones. The jobs not getting scheduled will also be ordered.
         """
 
         project_limits: ProjectResourceMap[int]
