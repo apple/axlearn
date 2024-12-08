@@ -89,6 +89,6 @@ class UnschedulableCleaner(Cleaner):
             schedule_result = scheduler.schedule(
                 dict(my_job=job_spec.metadata),
             )
-            if schedule_result.job_verdicts[job_spec.metadata.project_id]["my_job"].over_limits:
+            if schedule_result.job_verdicts["my_job"].over_limits:
                 result.append(job_name)
         return result

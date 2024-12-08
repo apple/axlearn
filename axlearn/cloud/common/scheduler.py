@@ -154,12 +154,15 @@ class BaseScheduler(Configurable):
         Attributes:
             project_limits: The effective resource limits.
             project_usages: The resource usages.
-            job_verdicts: A mapping of project_id -> (job_id -> run_or_not).
+            job_verdicts: A mapping of job_id -> run_or_not.
+                The entries will be ordered by descending scheduling priorities (not necessarily
+                JobMetadata.priority), where the higher priority jobs will be scheduled before
+                lower priority ones. The jobs not getting scheduled will also be ordered.
         """
 
         project_limits: ProjectResourceMap[int]
         project_usages: ProjectResourceMap[int]
-        job_verdicts: dict[str, dict[str, JobVerdict]]
+        job_verdicts: dict[str, JobVerdict]
 
     def schedule(
         self,
@@ -345,8 +348,8 @@ class TierScheduler(BaseScheduler):
                     break
             return tier_usages
 
-        job_verdicts = collections.defaultdict(dict)
-        while not project_queue.empty() and remaining_limits:
+        job_verdicts = {}
+        while not project_queue.empty():
             project_usage_ratio, _, project_id = project_queue.get()
             job_id, job_metadata = project_jobs[project_id].popleft()
 
@@ -381,16 +384,9 @@ class TierScheduler(BaseScheduler):
                     "Schedule %s(%s)/%s: %s", project_id, project_usage_ratio, job_id, verdict
                 )
 
-            job_verdicts[project_id][job_id] = verdict
+            job_verdicts[job_id] = verdict
             if project_jobs[project_id]:
                 project_queue.put(project_queue_item(project_id))
-
-        # Remaining jobs are rejected.
-        for project_id, job_queue in project_jobs.items():
-            for job_id, job_metadata in job_queue:
-                job_verdicts[project_id][job_id] = JobVerdict(
-                    over_limits=set(job_metadata.resources.keys())
-                )
 
         return BaseScheduler.ScheduleResults(
             # Treat the usages as the limits.
@@ -472,14 +468,15 @@ class JobScheduler(Configurable):
             logging.info("")
             logging.info("==Begin scheduling report")
             logging.info("Total resource limits: %s", resource_limits)
-            for project_id, project_verdicts in schedule_results.job_verdicts.items():
+            for project_id, project_job_queue in project_jobs.items():
                 logging.info(
                     "Verdicts for Project [%s] Quota [%s] Effective limits [%s]:",
                     project_id,
                     project_quotas.get(project_id, {}),
                     schedule_results.project_limits.get(project_id, {}),
                 )
-                for job_name, job_verdict in project_verdicts.items():
+                for job_name, job_metadata in project_job_queue:
+                    job_verdict = schedule_results.job_verdicts[job_name]
                     logging.info(
                         "Job %s: Resources [%s] Over limits [%s] Should Run? [%s] Metadata [%s]",
                         job_name,
@@ -500,9 +497,6 @@ class JobScheduler(Configurable):
             schedule_results = BaseScheduler.ScheduleResults(
                 project_limits=schedule_results.project_limits,
                 project_usages=project_usages,
-                job_verdicts={
-                    project_id: {job_name: JobVerdict() for job_name in project_verdicts}
-                    for project_id, project_verdicts in schedule_results.job_verdicts.items()
-                },
+                job_verdicts={job_name: JobVerdict() for job_name in schedule_results.job_verdicts},
             )
         return schedule_results
