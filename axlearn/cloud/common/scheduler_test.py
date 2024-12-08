@@ -15,7 +15,6 @@ from axlearn.cloud.common.scheduler import (
     JobMetadata,
     JobQueue,
     JobScheduler,
-    JobVerdict,
     ProjectJobSorter,
     TierScheduler,
     _compute_total_limits,
