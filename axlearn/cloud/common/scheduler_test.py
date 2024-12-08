@@ -435,6 +435,8 @@ class TierSchedulerTest(parameterized.TestCase):
             resource_limits=[{"v4": 1}, {"v4": 1}, {"v4": 1}],
             expected_project_limits={"a": {"v4": 0, "v3": 0}, "b": {"v4": 3}},
             expected_verdicts={"a1": False, "b1": True, "b2": False},
+            # While both "a1" and "b2" are not scheduled, "b2" is ranked ahead of "a1" because
+            # its demand/limit ratio is lower (there's no v3 resource, so a1's ratio is infinite).
             expected_tiers={"b1": 2, "b2": None, "a1": None},
         ),
         # Test that we can accumulate across tiers across resource types.
