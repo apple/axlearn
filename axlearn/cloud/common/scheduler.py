@@ -494,8 +494,6 @@ class JobScheduler(Configurable):
             schedule_results = BaseScheduler.ScheduleResults(
                 project_limits=schedule_results.project_limits,
                 project_usages=project_usages,
-                job_verdicts={
-                    job_name: JobVerdict() for job_name in schedule_results.job_verdicts
-                },
+                job_verdicts={job_name: JobVerdict() for job_name in schedule_results.job_verdicts},
             )
         return schedule_results
