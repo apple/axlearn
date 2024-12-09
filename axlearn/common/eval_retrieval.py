@@ -16,7 +16,7 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common import file_system as fs
 from axlearn.common import utils
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.evaler import GlobalMetricCalculator, PredictionOutputs

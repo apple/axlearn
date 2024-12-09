@@ -19,7 +19,6 @@ from jax.sharding import Mesh
 
 from axlearn.common import causal_lm, decoding, logit_modifiers, utils
 from axlearn.common.attention import (
-    NEG_INF,
     ALiBiAttentionLogitBiasLayer,
     CausalAttentionLogitBiasLayer,
     MultiheadAttention,
@@ -28,6 +27,7 @@ from axlearn.common.attention import (
     TransformerAttentionLayer,
     TransformerLayer,
 )
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.base_layer import DefaultTensorStats, RematSpec
 from axlearn.common.causal_lm import gpt_decoder_config
 from axlearn.common.config import InstantiableConfig, config_for_function

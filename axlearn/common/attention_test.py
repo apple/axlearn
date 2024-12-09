@@ -13,6 +13,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
 """Tests attention layers."""
+
 import contextlib
 import copy
 import itertools
@@ -38,14 +39,12 @@ from transformers.models.roberta import modeling_roberta as hf_roberta
 from transformers.models.roformer import modeling_roformer as hf_roformer
 from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
-from axlearn.common import attention, test_utils, utils
+from axlearn.common import attention, attention_bias, test_utils, utils
 from axlearn.common.attention import (
     FEED_FORWARD_SAVE_PATTERN,
-    NEG_INF,
     BaseStackedTransformerLayer,
     BaseTransformerLayer,
     BottleNeckAdapterTransformerLayer,
-    ForwardMode,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
     KVState,
@@ -69,19 +68,22 @@ from axlearn.common.attention import (
     _save_and_offload_only_these_names_regex,
     apply_attention_logit_biases,
     apply_rotary_position_embeddings,
-    bool_to_bias,
     build_remat_spec,
-    causal_mask,
     compute_padding_biases,
-    make_causal_biases,
-    make_sliding_window_causal_biases,
     rel_pos_to_abs_pos,
     scaled_hidden_dim,
     set_double_shard_weights_config,
     sinusoidal_positional_embeddings,
-    sliding_window_causal_mask,
     update_data_with_skip_connection,
     xl_attention_logits,
+)
+from axlearn.common.attention_bias import (
+    NEG_INF,
+    bool_to_bias,
+    causal_mask,
+    make_causal_biases,
+    make_sliding_window_causal_biases,
+    sliding_window_causal_mask,
 )
 from axlearn.common.base_layer import (
     BaseLayer,
@@ -172,7 +174,7 @@ class MaskTest(absltest.TestCase):
 
     def test_causal_mask(self):
         expected = jnp.array([[0.0, NEG_INF, NEG_INF], [0.0, 0.0, NEG_INF], [0.0, 0.0, 0.0]])
-        actual = attention.make_causal_biases(3)
+        actual = attention_bias.make_causal_biases(3)
         self.assertTrue(jnp.all(actual <= expected))
 
     def test_segment_mask(self):
@@ -188,7 +190,7 @@ class MaskTest(absltest.TestCase):
                 ]
             ]
         )
-        actual = attention.make_segment_mask(
+        actual = attention_bias.make_segment_mask(
             target_segments=jnp.asarray([[1, 1, 2, 0]]),
             source_segments=jnp.asarray([[2, 2, 0, 1]]),
         )
@@ -2180,55 +2182,6 @@ class MultiheadAttentionTest(TestCase):
         # The outputs are equivalent.
         self.assertNestedAllClose(outputs[0], outputs[1])
 
-    def test_logit_biases_for_mask(self):
-        model_dim = 16
-        num_heads = 4
-        cfg = attention.MultiheadAttention.default_config().set(
-            name="test",
-            query_dim=model_dim,
-            key_dim=model_dim,
-            value_dim=model_dim,
-            num_heads=num_heads,
-            mask=causal_mask,
-        )
-        layer = cfg.instantiate(parent=None)
-        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
-
-        query_len, kv_len = 2, 3
-        query_pos = jnp.arange(query_len)[None]
-        kv_pos = jnp.arange(kv_len)[None]
-        inputs = dict(mode=ForwardMode.FORWARD, query_pos=query_pos, kv_pos=kv_pos)
-        layer_outputs, _ = F(
-            layer,
-            state=layer_params,
-            is_training=True,
-            prng_key=jax.random.PRNGKey(456),
-            inputs=inputs,
-            method="_logit_biases_for_mask",
-        )
-        self.assertNestedAllClose(
-            layer_outputs,
-            bool_to_bias(jnp.array([[1, 0, 0], [1, 1, 0]], dtype=jnp.bool))[None, None],
-        )
-
-        time_step = jnp.array([1, 2])
-        query_pos = time_step[:, None]
-        kv_len = 4
-        kv_pos = jnp.arange(kv_len)[None]
-        inputs = dict(mode=ForwardMode.EXTEND_STEP, query_pos=query_pos, kv_pos=kv_pos)
-        layer_outputs, _ = F(
-            layer,
-            state=layer_params,
-            is_training=True,
-            prng_key=jax.random.PRNGKey(456),
-            inputs=inputs,
-            method="_logit_biases_for_mask",
-        )
-        self.assertNestedAllClose(
-            layer_outputs,
-            bool_to_bias(jnp.array([[1, 1, 0, 0], [1, 1, 1, 0]], dtype=jnp.bool))[:, None, None, :],
-        )
-
     @parameterized.product(
         base_cfg=(
             attention.MultiheadAttention.default_config(),
@@ -2374,7 +2327,7 @@ class MultiheadAttentionTest(TestCase):
             ),
             key=None,
             value=None,
-            attention_logit_biases=attention.make_causal_biases(tgt_len),
+            attention_logit_biases=attention_bias.make_causal_biases(tgt_len),
         )
         # Get outputs.
         forward_key = jax.random.PRNGKey(456)
@@ -2437,7 +2390,7 @@ class MultiheadAttentionTest(TestCase):
             # Make key and value distinct from query. Otherwise, it is equivalent
             # to the query only case.
             key = value = query + 0.1
-        attention_logit_biases = attention.make_causal_biases(tgt_len)
+        attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
         return_aux = {"probs"}
         inputs = dict(
             query=query,
@@ -2600,7 +2553,7 @@ class MultiheadAttentionTest(TestCase):
             # Make key and value distinct from query. Otherwise, it is equivalent
             # to the query only case.
             key = value = query + 0.1
-        attention_logit_biases = attention.make_causal_biases(tgt_len)
+        attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
         return_aux = {"probs"}
 
         forward_outputs, _ = F(
@@ -2809,6 +2762,7 @@ class MultiheadAttentionTest(TestCase):
         q = jax.random.uniform(data_key, (batch, seq_len, num_heads, per_head_dim))
         k = jax.random.uniform(data_key, (batch, seq_len, num_kv_heads, per_head_dim))
         v = jax.random.uniform(data_key, (batch, seq_len, num_kv_heads, per_head_dim))
+        attention_logit_biases = attention_logit_biases = attention_bias.ZeroAttentionBias()
 
         (test_context, ref_probs), _ = F(
             test_layer,
@@ -2816,7 +2770,9 @@ class MultiheadAttentionTest(TestCase):
             state=state,
             is_training=False,
             prng_key=prng_key,
-            inputs=dict(q_proj=q, k_proj=k, v_proj=v),
+            inputs=dict(
+                q_proj=q, k_proj=k, v_proj=v, attention_logit_biases=attention_logit_biases
+            ),
         )
 
         k = jnp.repeat(k, num_heads // num_kv_heads, axis=2)
@@ -2828,7 +2784,9 @@ class MultiheadAttentionTest(TestCase):
             state=state,
             is_training=False,
             prng_key=prng_key,
-            inputs=dict(q_proj=q, k_proj=k, v_proj=v),
+            inputs=dict(
+                q_proj=q, k_proj=k, v_proj=v, attention_logit_biases=attention_logit_biases
+            ),
         )
 
         assert_allclose(ref_context, test_context)
@@ -2999,7 +2957,7 @@ class MultiheadAttentionTest(TestCase):
             q_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             k_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             v_proj=jnp.full(qkv_shape, fill_value=qkv_value),
-            attention_logit_biases=attention.make_causal_biases(seq_len),
+            attention_logit_biases=attention_bias.CausalAttentionBias(shape=(seq_len, seq_len)),
         )
 
         # Get outputs.
@@ -3831,7 +3789,7 @@ class ParallelTransformerTest(TestCase):
         batch_size, tgt_len = 2, 6
         rng = np.random.default_rng(seed=123)
         target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
-        mask = attention.make_causal_biases(tgt_len)
+        mask = attention_bias.make_causal_biases(tgt_len)
         mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
         layer_outputs, _ = F(
             layer,
@@ -4075,7 +4033,7 @@ class StackedTransformerTest(BaseTransformerTest):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
+        self_attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
@@ -4203,7 +4161,7 @@ class StackedTransformerTest(BaseTransformerTest):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
+        self_attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
@@ -5207,7 +5165,7 @@ class BottleNeckAdapterTransformerLayerTest(TestCase):
         state = adapter.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
 
         data = jax.random.normal(jax.random.PRNGKey(1), [batch_size, tgt_len, model_dim])
-        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
+        self_attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
 
         outputs, _ = F(
             adapter,

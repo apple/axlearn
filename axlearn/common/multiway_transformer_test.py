@@ -9,14 +9,13 @@ import numpy as np
 from absl.testing import absltest, parameterized
 
 from axlearn.common.attention import (
-    NEG_INF,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
     TransformerFeedForwardLayer,
     TransformerLayer,
     build_remat_spec,
-    make_causal_biases,
 )
+from axlearn.common.attention_bias import NEG_INF, make_causal_biases
 from axlearn.common.module import functional as F
 from axlearn.common.multiway_transformer import (
     IMAGE_MODALITY,

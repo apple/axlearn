@@ -16,7 +16,11 @@ from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
-from axlearn.common.attention import causal_mask, sliding_window_causal_mask
+from axlearn.common.attention_bias import (
+    MaskFnAttentionBias,
+    causal_mask,
+    sliding_window_causal_mask,
+)
 from axlearn.common.flash_attention import tpu_attention
 from axlearn.common.flash_attention.utils import mha_reference
 from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
@@ -32,7 +36,7 @@ def jax_fn_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
     The mask is the same as `causal_mask`.
 
     However, this implementation requires specially handling to use with
-    SplashAttention since `tpu_flash-attention()` needs to wrap this function
+    SplashAttention since `tpu_flash_attention()` needs to wrap this function
     to return numpy values if the input is numpy. (Otherwise we get tracer errors in jit.)
     """
     return jnp.greater_equal(query_position, key_position)
@@ -117,7 +121,9 @@ class TestFlashAttention(TestCase):
                 )
 
                 softmax_scale = q.shape[-1] ** -0.5
-                mask = sliding_window_causal_mask(sliding_window_size)
+                mask = MaskFnAttentionBias(
+                    sliding_window_causal_mask(sliding_window_size), shape=(seq_len, seq_len)
+                )
 
                 attn = lambda q, k, v: tpu_attention.tpu_flash_attention(
                     q, k, v, mask=mask, softmax_scale=softmax_scale
@@ -171,6 +177,12 @@ class TestFlashAttention(TestCase):
             or with_segment_ids
             or (query_length_multiplier != 1 and mask is not None)
         )
+        print(
+            f"{batch_size=}, {kv_len=}, {num_heads=}, \n"
+            f"{per_head_dim=}, {query_length_multiplier=}, {mask=}, \n"
+            f"{attention_bias_type=}, {with_segment_ids=} \n"
+            f"{causal=}, {fallback_to_legacy=}"
+        )
 
         if fallback_to_legacy and mask is jax_fn_mask:
             pytest.skip("Custom masks are not supported by legacy attention.")
@@ -202,6 +214,9 @@ class TestFlashAttention(TestCase):
             return mha_reference(q, k, v, bias, ids, causal=causal, softmax_scale=softmax_scale)
 
         legacy_flash_wrapper = unittest.mock.Mock(wraps=tpu_attention._legacy_tpu_flash_attention)
+
+        if mask is not None:
+            mask = MaskFnAttentionBias(mask, shape=(query_len, kv_len))
 
         def fn(q, k, v, bias, ids):
             record_legacy_call = unittest.mock.patch.object(

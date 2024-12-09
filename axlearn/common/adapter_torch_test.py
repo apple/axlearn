@@ -13,6 +13,7 @@ import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
+from axlearn.common import attention_bias
 from axlearn.common.adapter_torch import (
     NEG_INF,
     AdapterCausalLmModelBuilder,
@@ -355,8 +356,8 @@ class AttentionModulesTest(TestCase):
 
         rng = np.random.RandomState(123)
         target = rng.randn(2, 7, target_dim).astype(np.float32)
-        attention_logit_biases = np.zeros(target.shape[:-1]).astype(bool)[:, :, None]
-        attention_logit_biases[:, -2:] = True
+        attention_logit_biases = np.zeros(target.shape[:-1]).astype(float)[:, :, None]
+        attention_logit_biases[:, -2:] = attention_bias.NEG_INF
         torch_inputs = {
             "target": torch.as_tensor(target),
             "attention_logit_biases": torch.as_tensor(attention_logit_biases),

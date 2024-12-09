@@ -1,10 +1,14 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests FlashAttention layers."""
-
+# pylint: disable=ungrouped-imports
 import math
 import os
 from unittest import mock
+
+from jax.sharding import PartitionSpec
+
+from axlearn.common.utils import Tensor
 
 # Due to reference layer using XLA,
 # set the following environment variables to avoid OOM in GPU tests.
@@ -20,9 +24,11 @@ from absl.testing import parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
-from axlearn.common.attention import (
-    GroupedQueryAttention,
-    apply_attention_logit_biases,
+from axlearn.common.attention import GroupedQueryAttention, apply_attention_logit_biases
+from axlearn.common.attention_bias import (
+    CompositeAttentionBias,
+    SegmentIdAttentionBias,
+    TensorAttentionBias,
     bool_to_bias,
     make_causal_biases,
     sliding_window_causal_mask,
@@ -72,8 +78,9 @@ def _fake_inputs(
             jax.random.PRNGKey(3), p=0.5, shape=[batch, num_heads, query_len, kv_len]
         )
         bias = bool_to_bias(bias)
+        bias = TensorAttentionBias(bias)
     else:
-        bias = None
+        bias = CompositeAttentionBias([])
     if use_segment_ids:
         segment_ids = jnp.ones([batch, kv_len], dtype=jnp.int32)
     else:
@@ -314,6 +321,16 @@ class TestFlashAttention(TestCase):
     def test_shard_biases(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
+
+        def as_tensor_bias(bias: Tensor) -> CompositeAttentionBias:
+            return CompositeAttentionBias([TensorAttentionBias(bias)])
+
+        def as_partition_spec(pytree: CompositeAttentionBias) -> PartitionSpec:
+            self.assertIsInstance(pytree, CompositeAttentionBias)
+            pytree = jax.tree.leaves(pytree)
+            self.assertLen(pytree, 1)
+            return next(iter(pytree))
+
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             test_layer, _, _, _ = _prepare_layers(
                 num_heads=num_heads,
@@ -323,17 +340,31 @@ class TestFlashAttention(TestCase):
                 sliding_window_size=None,
             )
             bias = jnp.ones((batch, num_heads, seq_len, seq_len))
+            bias = as_tensor_bias(bias)
             spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            spec = as_partition_spec(spec)
             self.assertEqual(spec, test_layer.config.mha_dim_to_partition_spec["bnts"])
 
             bias = jnp.ones((batch, 1, seq_len, seq_len))
+            bias = as_tensor_bias(bias)
             spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            spec = as_partition_spec(spec)
             self.assertEqual(spec[1], None)
 
             bias = jnp.ones((1, 1, seq_len, seq_len))
+            bias = as_tensor_bias(bias)
             spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            spec = as_partition_spec(spec)
             self.assertEqual(spec[0], None)
             self.assertEqual(spec[1], None)
+
+            segment_ids = CompositeAttentionBias(
+                [SegmentIdAttentionBias(jnp.ones((batch, seq_len)))]
+            )
+            spec = test_layer._logit_biases_spec(segment_ids)  # pylint: disable=protected-access
+            spec = as_partition_spec(spec)
+            self.assertIsInstance(spec, PartitionSpec)
+            self.assertEqual(spec, test_layer.config.mha_dim_to_partition_spec["btnh"][:2])
 
     @parameterized.product(
         _TEST_CONFIGS,
@@ -572,6 +603,11 @@ class TestFlashAttention(TestCase):
         causal,
         sliding_window_size,
     ):
+        print(
+            f"batch={batch}, seq_len={seq_len} (ignored->16), num_heads={num_heads}, \n"
+            f"per_head_dim={per_head_dim}, mesh={mesh}, mesh_axis_names={mesh_axis_names}, \n"
+            f"causal={causal}, sliding_window_size={sliding_window_size}"
+        )
         # Limit generation length to 16 to save test time.
         seq_len = 16
         dtype = jnp.bfloat16
