@@ -5,6 +5,7 @@
 Note that these utilities do not handle resource management.
 """
 import atexit
+import importlib
 import io
 import logging
 import math
@@ -455,6 +456,7 @@ class TPUGKEJob(GKEJob):
         enable_tpu_ici_resiliency: Optional[bool] = None
         location_hint: Optional[str] = None
         enable_tpu_smart_repair: bool = False
+        import_modules: list[str] = []
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -468,6 +470,9 @@ class TPUGKEJob(GKEJob):
             "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
             "not all TPU types support this flag.",
             **common_kwargs,
+        )
+        flags.DEFINE_list(
+            "import_modules", [], "Modules to enable pathways proxy.", **common_kwargs
         )
 
     @classmethod
@@ -492,6 +497,15 @@ class TPUGKEJob(GKEJob):
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         super().__init__(cfg)
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
+        if len(cfg.import_modules) > 0:
+            self._import_modules(cfg.import_modules)
+
+    def _import_modules(self, import_modules: list[str]):
+        try:
+            for module in import_modules:
+                importlib.import_module(module)
+        except ModuleNotFoundError:
+            logging.error("An error occurred while importing dependencies.")
 
     def _maybe_add_volume_mount(self, volume_mounts: list[dict], *, spec: Optional[VolumeMount]):
         if spec:
