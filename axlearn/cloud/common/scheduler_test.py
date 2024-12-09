@@ -220,7 +220,7 @@ class TierSchedulerTest(parameterized.TestCase):
             expected_project_limits={"a": {"v4": 5}, "b": {"v4": 5}},
             expected_verdicts={"a1": True, "b1": True, "b2": True},
             # The order of entries in `expected_tiers` should reflect the job priorities.
-            # Here "b1" is ahead of "a1" because it requests less resources.
+            # Here "b1" is ahead of "a1" because it requests fewer resources.
             expected_tiers={"b1": 0, "a1": 0, "b2": 0},
         ),
         # Test tie-break. Although both are requesting the same amount, "b" is requesting more
@@ -301,7 +301,7 @@ class TierSchedulerTest(parameterized.TestCase):
             },
             expected_project_limits={"a": {"v4": 7}, "b": {"v4": 8}},
             expected_verdicts={"a1": True, "b1": True, "b2": True},
-            # "b1" is ahead of "a1" since it requests less resource.
+            # "b1" is ahead of "a1" since it requests fewer resource.
             expected_tiers={"b1": 0, "a1": 0, "b2": 1},
         ),
         # Test load balance.
