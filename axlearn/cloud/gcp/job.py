@@ -587,6 +587,9 @@ class TPUGKEJob(GKEJob):
             pathways_port = 38677
             rm_address = f"{cfg.name}-rm-0-0.{cfg.name}.default.svc.{cluster}-domain:{pathways_port}"
             #rm_address = f"{cfg.name}-rm-0-0.{cfg.name}:{pathways_port}"
+            env_vars.update(
+                XLA_FLAGS=f"--xla_dump_to={cfg.output_dir}/{cfg.name}/xla/"
+            )
 
             if job_type == "worker":
                 args.extend(
