@@ -38,7 +38,13 @@ from typing import Callable, Optional
 import jax
 import jax.numpy as jnp
 
-from axlearn.common.attention import causal_mask, sliding_window_causal_mask
+from axlearn.common.attention_bias import (
+    CompositeAttentionBias,
+    MaskFnAttentionBias,
+    TensorAttentionBias,
+    causal_mask,
+    sliding_window_causal_mask,
+)
 from axlearn.common.flash_attention.utils import flash_attention_implementation, mha_reference
 
 _BENCHMARK_CONFIGS = {
@@ -132,18 +138,23 @@ def _benchmark(
         mask = causal_mask
     elif causal:
         mask = sliding_window_causal_mask(sliding_window_size)
+    mask = MaskFnAttentionBias(mask, shape=(seq_len, seq_len))
+    if use_bias:
+        bias = CompositeAttentionBias([mask, TensorAttentionBias(bias)])
+    else:
+        bias = CompositeAttentionBias([mask])
 
     # Get fwd & bwd timing information when softmax scaling applied before calling the kernel.
     mha_impl = flash_attention_implementation(
-        "tpu", mask=mask, softmax_scale=softmax_scale, block_size=block_size
+        "tpu", softmax_scale=softmax_scale, block_size=block_size
     )
 
-    flash_fwd_time = _time_call(lambda: mha_impl(q, k, v, bias, segment_ids))
+    flash_fwd_time = _time_call(lambda: mha_impl(q, k, v, bias))
 
     flash_grad_fn = jax.jit(
-        jax.grad(lambda q, k, v, b, s: mha_impl(q, k, v, b, s).mean(), argnums=(0, 1, 2))
+        jax.grad(lambda q, k, v, b: mha_impl(q, k, v, b).mean(), argnums=(0, 1, 2))
     )
-    flash_bwd_time = _time_call(lambda: flash_grad_fn(q, k, v, bias, segment_ids)[0])
+    flash_bwd_time = _time_call(lambda: flash_grad_fn(q, k, v, bias)[0])
 
     print(f"ref_fwd:{ref_fwd_time:.4f}s, flash_fwd:{flash_fwd_time:.4f}s")
     print(f"ref_bwd:{ref_bwd_time:.4f}s, flash_bwd:{flash_bwd_time:.4f}s\n")

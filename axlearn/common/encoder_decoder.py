@@ -6,7 +6,7 @@ from typing import Optional
 
 from jax import numpy as jnp
 
-from axlearn.common.attention import NEG_INF, make_segment_mask
+from axlearn.common.attention_bias import NEG_INF, make_segment_mask
 from axlearn.common.base_encoder_decoder import BaseEncoderDecoderModel
 from axlearn.common.config import ConfigOr, config_class
 from axlearn.common.decoder import Decoder
