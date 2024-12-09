@@ -12,7 +12,8 @@ from absl.testing import absltest, parameterized
 from transformers.models.bert import modeling_bert as hf_bert
 
 from axlearn.common import bert, utils
-from axlearn.common.attention import NEG_INF, BaseStackedTransformerLayer
+from axlearn.common.attention import BaseStackedTransformerLayer
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.layers import (
     BinaryClassificationMetric,
     Dropout,

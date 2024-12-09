@@ -8,7 +8,18 @@ import jax
 import jax.numpy as jnp
 from absl import logging
 
-from axlearn.common.attention import NEG_INF, MaskFn, causal_mask, softmax_with_biases
+from axlearn.common.attention import softmax_with_biases
+from axlearn.common.attention_bias import (
+    NEG_INF,
+    BaseAttentionBias,
+    CausalAttentionBias,
+    CompositeAttentionBias,
+    MaskFnAttentionBias,
+    SegmentIdAttentionBias,
+    TensorAttentionBias,
+    ZeroAttentionBias,
+    split,
+)
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
 from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
 from axlearn.common.flash_attention.tpu_attention import tpu_flash_attention
@@ -38,7 +49,6 @@ def mha_reference(
         segment_ids: segment ids tensor with shape [batch_size, seq_len].
         causal: whether the attention is causal.
         softmax_scale: a scalar value applied to the logits before softmax.
-        bias_type: the type of bias to apply. "matrix" for matrix bias, "vector" for additive bias.
 
     Returns:
         A tensor with shape [batch_size, seq_len, num_heads, per_head_dim].
@@ -77,7 +87,6 @@ MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tens
 def flash_attention_implementation(
     backend: Literal["cpu", "tpu", "gpu", "xla"],
     *,
-    mask: Optional[MaskFn] = None,
     softmax_scale: float,
     block_size: int = 128,
 ) -> MultiHeadAttentionImpl:
@@ -85,8 +94,6 @@ def flash_attention_implementation(
 
     Args:
         backend: A valid XLA backend name. 'cpu' intended for testing only.
-        mask: A mask to use when computing the attention. This allows for more efficient
-            computation than setting bias = -inf on certain backends.
         softmax_scale: A scalar value applied to the logits before softmax.
         block_size: The size of the computation-block unit, only applies to the 'tpu' backend.
             A multiple of 128, and should be less than the target sequence length.
@@ -98,24 +105,71 @@ def flash_attention_implementation(
     Raises:
         NotImplementedError: If implementation for the backend is not available.
     """
-    causal = mask is causal_mask
-    if mask is not None and not causal and backend != "tpu":
-        raise NotImplementedError(
-            "Custom (non-causal, non-full) mask only supported on TPU.\n"
-            "You can use NEG_INF biases instead, but it won't "
-            "have the sparsity optimizations."
-        )
-    if backend == "gpu":
-        # shard_map-decorated function needs to be jitted.
-        @jax.jit
-        def jit_attn(query, key, value, bias, segment_ids):
+
+    # shard_map-decorated function needs to be jitted.
+    @jax.jit
+    def jit_attn(
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        *,
+        backend: str = backend,
+    ) -> Tensor:
+        # Fall back to plain MHA implementation when the seq_len is not be divisible by
+        # block size.
+        if query.shape[1] % block_size != 0:
+            backend = "xla"
+        # For decoding, fall back to non-flash implementation and merge all biases
+        # into a dense floating point bias tensor since that implementation does not
+        # support target_positions.
+        if query.shape[1] == 1:
+            # TODO(senyut): Implement FlashDecoding kernel and support TPU decoding.
+            backend = "xla"
+            bias = TensorAttentionBias(bias.value())
+
+        bias = CompositeAttentionBias([bias])
+
+        def get_segment_ids(segment_ids: SegmentIdAttentionBias) -> Optional[Tensor]:
+            """Return the segment ids Tensor from the sequence of segment ids attention
+            biases or None if there are no segment ids.
+            """
+            if segment_ids is None or segment_ids.value() is None:
+                return None
+            if query.shape[1] != key.shape[1]:
+                raise ValueError(
+                    "segment_ids is only supported for query and key with identical lengths."
+                )
+            if segment_ids.eval_shape()[0] != query.shape[0]:
+                raise ValueError(
+                    "segment_ids must have matching batch dim: "
+                    f"{segment_ids.eval_shape()} vs. {query.shape[0]}"
+                )
+            return segment_ids.segment_ids
+
+        if backend == "gpu":
+            if query.shape[1] != key.shape[1]:
+                # TODO(xuan-zou): Generalize GPU Flash Attention for q_len != kv_len.
+                # Remove pytest.skip corresponding to q_len != kv_len in layer_test.py once fixed.
+                raise NotImplementedError(
+                    f"Query length {query.shape[1]} must be equal to KV length "
+                    f"{key.shape[1]} for correctly supported GPU flash attention usage."
+                )
+
+            # We have two implementations to choose from.
+            # Both support `causal`.
+            # One supports `segment_ids`.
+            causal, segment_ids, explicit_bias = split(
+                bias, CausalAttentionBias, SegmentIdAttentionBias
+            )
+
             # Fall back to triton gpu kernel if:
-            # - segment_ids is not None,
-            # - bias is not None,
-            # - query/key/value are in float32.
+            # - segment_ids is not None, or
+            # - explicit_bias is not empty, or
+            # - query/key/value is in float32.
             if (
-                segment_ids is not None
-                or bias is not None
+                segment_ids.value() is not None
+                or explicit_bias.value() is not None
                 or jnp.float32 in (query.dtype, key.dtype, value.dtype)
             ):
                 logging.warning("Flash attention falling back to Triton GPU kernel.")
@@ -123,61 +177,65 @@ def flash_attention_implementation(
                     query,
                     key,
                     value,
-                    bias=bias,
-                    segment_ids=segment_ids,
+                    bias=explicit_bias.value(),
+                    segment_ids=get_segment_ids(segment_ids),
                     softmax_scale=softmax_scale,
-                    causal=causal,
+                    causal=causal.value() is not None,
                 )
             else:
+                explicit_bias += segment_ids
                 return cudnn_dot_product_attention(
                     query,
                     key,
                     value,
-                    bias=bias,
+                    bias=explicit_bias.value(),
                     softmax_scale=softmax_scale,
-                    causal=causal,
+                    causal=causal.value() is not None,
                     dropout_rate=0.0,
                 )
 
-        return jit_attn
-
-    elif backend == "tpu":
-        # shard_map-decorated function needs to be jitted.
-        @jax.jit
-        def jit_attn(query, key, value, bias, segment_ids):
-            context = tpu_flash_attention(
+        elif backend == "tpu":
+            # `mask` is supported.
+            # `segment_ids` is supported.
+            # Optimized handling for the above two types.
+            # Fallback for types that aren't instances of either of the above.
+            mask, segment_ids, explicit_bias = split(
+                bias, MaskFnAttentionBias, SegmentIdAttentionBias
+            )
+            return tpu_flash_attention(
                 query,
                 key,
                 value,
-                bias=bias,
-                segment_ids=segment_ids,
-                mask=mask,
+                bias=explicit_bias.value(),
+                segment_ids=get_segment_ids(segment_ids),
+                # The `from_sequence()` function guarantees that if there is only one
+                # mask, it is returned without modification.
+                # This allows the `causal` path in `_legacy_tpu_flash_attention()` to work.
+                mask=mask if not isinstance(mask, ZeroAttentionBias) else None,
                 softmax_scale=softmax_scale,
                 block_size=block_size,
             )
-            return context
 
-        return jit_attn
+        elif backend in ("cpu", "xla"):
+            if backend == "cpu":
+                logging.warning("Flash attention CPU backend is for testing only.")
+            logging.warning("Flash attention falling back using plain MHA implementation")
 
-    elif backend in ("cpu", "xla"):
-        if backend == "cpu":
-            logging.warning("Flash attention CPU backend is for testing only.")
-        logging.warning("Flash attention falling back using plain MHA implementation")
-
-        # shard_map-decorated function needs to be jitted.
-        @jax.jit
-        def jit_attn(query, key, value, bias, segment_ids):
+            # `causal` is supported.
+            # `segment_ids` is supported.
+            causal, segment_ids, explicit_bias = split(
+                bias, CausalAttentionBias, SegmentIdAttentionBias
+            )
             return mha_reference(
                 query,
                 key,
                 value,
-                bias=bias,
-                segment_ids=segment_ids,
-                causal=causal,
+                bias=explicit_bias.value(),
+                segment_ids=get_segment_ids(segment_ids),
+                causal=causal.value() is not None,
                 softmax_scale=softmax_scale,
             )
 
-        return jit_attn
-
-    else:
         raise NotImplementedError(f"Backend ({backend}) does not have an implementation.")
+
+    return jit_attn

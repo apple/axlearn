@@ -21,9 +21,9 @@ from axlearn.common.attention import (
     MultiheadAttention,
     TransformerAttentionLayer,
     apply_attention_logit_biases,
-    make_segment_mask,
     softmax_with_biases,
 )
+from axlearn.common.attention_bias import make_segment_mask
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, config_class
 from axlearn.common.layers import get_stochastic_depth_linear_rate

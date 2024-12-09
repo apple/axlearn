@@ -20,7 +20,7 @@ from absl.testing import parameterized
 from timm.models.vision_transformer import Attention, Mlp, PatchEmbed
 from torch import nn
 
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.dit import (
     AdaptiveLayerNormModulation,
     DiTAttentionLayer,

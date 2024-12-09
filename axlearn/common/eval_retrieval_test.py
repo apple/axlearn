@@ -11,7 +11,7 @@ import numpy as np
 from absl.testing import parameterized
 from jax.experimental.pjit import pjit
 
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.eval_retrieval import (
     CLIPRetrievalMetricCalculator,
     CxcImageRetrievalMetricCalculator,

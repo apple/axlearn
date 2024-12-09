@@ -5,7 +5,7 @@ from typing import Optional
 
 from jax import numpy as jnp
 
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.evaler import GlobalMetricCalculator, PredictionOutputs
 from axlearn.common.loss import contrastive_logits

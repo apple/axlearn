@@ -36,7 +36,7 @@ from jax._src.cudnn.fused_attention_stablehlo import MaskType, dot_product_atten
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import gpu as plgpu
 
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention_bias import NEG_INF
 
 Tensor = jax.Array
 
@@ -217,6 +217,8 @@ def flash_attention(
     debug: bool = False,
 ):
     """Computes attention outputs following FlashAttention.
+
+    If provided, bias, segment_ids, and any causal mask are applied on top of one another.
 
     Args:
         query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
@@ -812,6 +814,8 @@ def cudnn_dot_product_attention(
     qkv_layout: str = "BTNH",
 ):
     """Computes dot-product attention given query (Q), key (K), and value (V).
+
+    If provided, bias, segment_ids, and any causal mask are applied on top of one another.
 
     Reference implementation:
     https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/cudnn/fused_attention_stablehlo.py#L927.
