@@ -756,7 +756,7 @@ class Bastion(Configurable):
         ) as f:
             for job_id, verdict in schedule_results.job_verdicts.items():
                 job_metadata = jobs[job_id]
-                f.write(f"{job_id} {job_metadata}\n")
+                f.write(f"{job_id} [{job_metadata}] {verdict}\n")
         for project_id, limits in schedule_results.project_limits.items():
             job_verdicts = {
                 job_id: verdict
