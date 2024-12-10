@@ -2,13 +2,9 @@ import os
 from absl import logging
 import jax
 import jax.numpy as jnp
-import functools
 from functools import partial
 import jax.numpy as jnp
-import neuronxcc.nki.language as nl
-import numpy as np
-from jax_neuronx import nki_call
-from neuronxcc.nki._private_kernels.legacy.attention import flash_attn_bwd, flash_fwd
+
 
 # enable buffer donation in neuron
 jax._src.interpreters.mlir._platforms_with_donation.append("neuron")
