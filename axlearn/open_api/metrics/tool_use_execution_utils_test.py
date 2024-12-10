@@ -55,6 +55,22 @@ class TestToolUseExecutionUtils(parameterized.TestCase):
             lenient=False,
             strict=False,
         ),
+        # non-string argument values.
+        dict(
+            pred={"soundType": "nature", "intensity": "medium", "duration": 45},
+            target={"soundType": "nature", "intensity": "medium", "duration": 45},
+            lenient_bow=True,
+            lenient=True,
+            strict=True,
+        ),
+        # non-dict arguments.
+        dict(
+            pred=[{"soundType": "nature"}, {"intensity": "medium", "duration": 45}],
+            target={"soundType": "nature", "intensity": "medium", "duration": 45},
+            lenient_bow=False,
+            lenient=False,
+            strict=False,
+        ),
     )
     def test_all_matches(self, pred, target, lenient_bow, lenient, strict):
         self.assertEqual(
