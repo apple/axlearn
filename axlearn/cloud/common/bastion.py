@@ -702,6 +702,8 @@ class Bastion(Configurable):
         tf_io.gfile.makedirs(self._job_history_dir)
         self._project_history_dir = os.path.join(self._output_dir, "history", "projects")
         tf_io.gfile.makedirs(self._project_history_dir)
+        self._scheduler_history_dir = os.path.join(self._output_dir, "history", "scheduler")
+        tf_io.gfile.makedirs(self._scheduler_history_dir)
         # Mapping from project_id to previous job verdicts.
         self._project_history_previous_verdicts = {}
         # Jobs that have fully completed.
@@ -745,10 +747,16 @@ class Bastion(Configurable):
                 )
             )
 
-    def _append_to_project_history(
+    def _append_to_history(
         self, jobs: dict[str, JobMetadata], schedule_results: BaseScheduler.ScheduleResults
     ):
         now = datetime.now(timezone.utc)
+        with tf_io.gfile.GFile(
+            os.path.join(self._scheduler_history_dir, now.strftime("%Y%m%d-%H%M%S")), "a"
+        ) as f:
+            for job_id, verdict in schedule_results.job_verdicts.items():
+                job_metadata = jobs[job_id]
+                f.write(f"{job_id} [{job_metadata}] {verdict}\n")
         for project_id, limits in schedule_results.project_limits.items():
             job_verdicts = {
                 job_id: verdict
@@ -1079,7 +1087,7 @@ class Bastion(Configurable):
             dry_run=schedule_options["dry_run"],
             verbosity=schedule_options["verbosity"],
         )
-        self._append_to_project_history(schedulable_jobs, schedule_results)
+        self._append_to_history(schedulable_jobs, schedule_results)
         for job_name, verdict in schedule_results.job_verdicts.items():
             job = self._active_jobs[job_name]
             assert job.state.status in {JobStatus.PENDING, JobStatus.ACTIVE}
