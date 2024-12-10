@@ -95,6 +95,10 @@ ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.h
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN pip install .[core,tpu]
 RUN if [ -n "$EXTRAS" ]; then pip install .[$EXTRAS]; fi
+# V6E requires using jax 0.4.37 so temporarily override before AXLearn
+# upgrades to Jax 0.4.37.
+RUN pip install -U "jax[tpu]==0.4.37" "jax==0.4.37" "jaxlib==0.4.36" \
+    -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 COPY . .
 
 ################################################################################
