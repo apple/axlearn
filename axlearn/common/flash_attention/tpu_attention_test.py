@@ -23,7 +23,7 @@ from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 from axlearn.common.utils import Tensor
 
 if jax.default_backend() != "tpu":
-    pytest.skip(reason="Incompatible hardware", allow_module_level=True)
+    pytestmark = pytest.mark.skip(reason="Incompatible hardware, TPU only test.")
 
 
 def jax_fn_mask(query_position: Tensor, key_position: Tensor) -> Tensor:

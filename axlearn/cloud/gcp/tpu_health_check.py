@@ -61,10 +61,9 @@ def _parse_spec_and_check_if_should_skip(
             timeout = float(check_split[1])
             break
     else:
-        logging.info(
-            "Skipping %s slice health check because check spec is %s.", check_type, check_spec
+        pytest.skip(
+            reason=f"Skipping {check_type} slice health check because check spec is {check_spec}.",
         )
-        return None
 
     # These environment variables are set by GKE.
     if "MEGASCALE_NUM_SLICES" not in os.environ or "NODE_NAME" not in os.environ:
@@ -74,12 +73,9 @@ def _parse_spec_and_check_if_should_skip(
 
     total_slices = int(os.environ["MEGASCALE_NUM_SLICES"])
     if total_slices < num_slices_lower_bound:
-        logging.info(
-            "Skipping %s slice health check since num_slices < %d.",
-            check_type,
-            num_slices_lower_bound,
+        pytest.skip(
+            reason=f"Skipping {check_type} slice health check since num_slices < {num_slices_lower_bound}.",
         )
-        return None
     return timeout
 
 

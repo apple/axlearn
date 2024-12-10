@@ -25,7 +25,7 @@ from axlearn.common.flash_attention.gpu_attention import (
 from axlearn.common.flash_attention.utils import mha_reference
 
 if jax.default_backend() != "gpu":
-    pytest.skip(reason="Incompatible hardware", allow_module_level=True)
+    pytestmark = pytest.mark.skip(reason="Incompatible hardware, GPU only test.")
 
 
 @pytest.mark.parametrize(

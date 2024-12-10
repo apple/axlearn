@@ -178,12 +178,15 @@ def is_supported(
     # TODO(xuan-zou): jax 0.4.25 breaks bfloat16 on CPU due to high variance on
     # the final result (up to 10% precision diff), will re-enable when fixed.
     # NOTE: bfloat16 test on GPU is added and verified.
-    return (
-        test_utils.is_supported_platform(platform)
-        and np.prod(mesh_shape) == jax.device_count()
-        and (data_partition != DataPartitionType.FULL or global_batch_size >= jax.device_count())
-        and ((inference_dtype != jnp.bfloat16) or platform != "cpu")
-    )
+    if not test_utils.is_supported_platform(platform):
+        return False, f'Platform "{platform}" not supported with devices "{jax.devices()}".'
+    if np.prod(mesh_shape) != jax.device_count():
+        return False, f'mesh_shape "{mesh_shape}" mush add up to number of devices "{jax.device_count()}"'
+    if not (data_partition != DataPartitionType.FULL or global_batch_size >= jax.device_count()):
+        return False, f"Either data_partition ('{data_partition}') is not DataPartitionType.FULL or global_batch_size ('{global_batch_size}') is >= to jax.device_count() ({jax.device_count()})."
+    if not ((inference_dtype != jnp.bfloat16) or platform != "cpu"):
+        return False, f"Either inference_dtype ('{inference_dtype}') is jnp.bfloat16 or platform ('{platform}') is not cpu."
+    return True, ""
 
 
 class InferenceTest(test_utils.TestCase):
@@ -292,17 +295,14 @@ class InferenceTest(test_utils.TestCase):
             return state, ckpt_dir
 
     @parameterized.parameters(
-        filter(
-            lambda params: is_supported(*params),
-            itertools.product(
-                ("cpu", "gpu", "tpu"),  # platform,
-                ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
-                (jnp.float32, jnp.bfloat16),  # param_dtype
-                (None, jnp.float32, jnp.bfloat16),  # inference_dtype
-                (1, 16),  # global_batch_size
-                (DataPartitionType.FULL, DataPartitionType.REPLICATED),  # data_partition
-                (True, False),  # whether use ema weight
-            ),
+        itertools.product(
+            ("cpu", "gpu", "tpu"),  # platform,
+            ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
+            (jnp.float32, jnp.bfloat16),  # param_dtype
+            (None, jnp.float32, jnp.bfloat16),  # inference_dtype
+            (1, 16),  # global_batch_size
+            (DataPartitionType.FULL, DataPartitionType.REPLICATED),  # data_partition
+            (True, False),  # whether use ema weight
         )
     )
     def test_runner(
@@ -322,6 +322,9 @@ class InferenceTest(test_utils.TestCase):
             global_batch_size,
             data_partition,
         )
+        supported, reason = is_supported(platform, mesh_shape, inference_dtype, global_batch_size, data_partition)
+        if not supported:
+            pytest.skip(reason=reason)
         with tempfile.TemporaryDirectory() as local_tmp_dir:
             prng_key = jax.random.PRNGKey(11)
             local_run = jax.process_count() == 1
@@ -402,16 +405,13 @@ class InferenceTest(test_utils.TestCase):
         self.assertNestedAllClose(global_outputs, expected_outputs)
 
     @parameterized.parameters(
-        filter(
-            lambda params: is_supported(*params),
-            itertools.product(
-                ("cpu", "gpu"),  # platform,
-                ((1, 1), (4, 1), (8, 1)),  # mesh_shape
-                (jnp.float32,),  # param_dtype
-                (jnp.float32,),  # inference_dtype
-                (16,),  # global_batch_size
-                (DataPartitionType.FULL,),  # data_partition
-            ),
+        itertools.product(
+            ("cpu", "gpu"),  # platform,
+            ((1, 1), (4, 1), (8, 1)),  # mesh_shape
+            (jnp.float32,),  # param_dtype
+            (jnp.float32,),  # inference_dtype
+            (16,),  # global_batch_size
+            (DataPartitionType.FULL,),  # data_partition
         )
     )
     def test_runner_module_outputs(
@@ -430,6 +430,9 @@ class InferenceTest(test_utils.TestCase):
             global_batch_size,
             data_partition,
         )
+        supported, reason = is_supported(platform, mesh_shape, inference_dtype, global_batch_size, data_partition)
+        if not supported:
+            pytest.skip(reason=reason)
         with tempfile.TemporaryDirectory() as local_tmp_dir:
             prng_key = jax.random.PRNGKey(11)
             local_run = jax.process_count() == 1
@@ -486,17 +489,14 @@ class InferenceTest(test_utils.TestCase):
         self.assertEqual(output.module_outputs, {})
 
     @parameterized.parameters(
-        filter(
-            lambda params: is_supported(*params),
-            itertools.product(
-                ("cpu", "gpu", "tpu"),  # platform,
-                ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
-                (jnp.float32, jnp.bfloat16),  # param_dtype
-                (None, jnp.float32, jnp.bfloat16),  # inference_dtype
-                (1, 16),  # global_batch_size
-                (DataPartitionType.FULL, DataPartitionType.REPLICATED),  # data_partition
-                (True, False),  # whether use ema weight
-            ),
+        itertools.product(
+            ("cpu", "gpu", "tpu"),  # platform,
+            ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
+            (jnp.float32, jnp.bfloat16),  # param_dtype
+            (None, jnp.float32, jnp.bfloat16),  # inference_dtype
+            (1, 16),  # global_batch_size
+            (DataPartitionType.FULL, DataPartitionType.REPLICATED),  # data_partition
+            (True, False),  # whether use ema weight
         )
     )
     def test_pipeline(
@@ -509,6 +509,9 @@ class InferenceTest(test_utils.TestCase):
         data_partition: DataPartitionType,
         use_ema: bool,
     ):
+        supported, reason = is_supported(platform, mesh_shape, inference_dtype, global_batch_size, data_partition)
+        if not supported:
+            pytest.skip(reason=reason)
         del platform  # only used by is_supported_platform().
         local_run = jax.process_count() == 1
         with tempfile.TemporaryDirectory() as local_tmp_dir:
@@ -634,16 +637,13 @@ class InferenceTest(test_utils.TestCase):
             merge_with_string_tensors(batch, batch_str_tensors)
 
     @parameterized.parameters(
-        filter(
-            lambda params: is_supported(*params),
-            itertools.product(
-                ("cpu", "gpu", "tpu"),  # platform,
-                ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
-                (jnp.float32,),  # param_dtype
-                (jnp.float32,),  # inference_dtype
-                (1, 64),  # global_batch_size
-                (DataPartitionType.FULL, DataPartitionType.REPLICATED),  # data_partition
-            ),
+        itertools.product(
+            ("cpu", "gpu", "tpu"),  # platform,
+            ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
+            (jnp.float32,),  # param_dtype
+            (jnp.float32,),  # inference_dtype
+            (1, 64),  # global_batch_size
+            (DataPartitionType.FULL, DataPartitionType.REPLICATED),  # data_partition
         )
     )
     def test_pipeline_with_string_tensors(
@@ -655,6 +655,9 @@ class InferenceTest(test_utils.TestCase):
         global_batch_size: int,
         data_partition: DataPartitionType,
     ):
+        supported, reason = is_supported(platform, mesh_shape, inference_dtype, global_batch_size, data_partition)
+        if not supported:
+            pytest.skip(reason=reason)
         del platform  # only used by is_supported_platform().
         local_run = jax.process_count() == 1
         mesh_axis_names = ("data", "model")
@@ -748,20 +751,17 @@ class InferenceTest(test_utils.TestCase):
                     )
 
     @parameterized.parameters(
-        filter(
-            lambda params: is_supported(*params),
-            itertools.product(
-                ("cpu", "gpu"),  # platform,
-                (
-                    (1, 1),
-                    (4, 1),
-                    (8, 1),
-                ),  # mesh_shape
-                (jnp.float32,),  # param_dtype
-                (jnp.float32,),  # inference_dtype
-                (16,),  # global_batch_size
-                (DataPartitionType.FULL,),  # data_partition
-            ),
+        itertools.product(
+            ("cpu", "gpu"),  # platform,
+            (
+                (1, 1),
+                (4, 1),
+                (8, 1),
+            ),  # mesh_shape
+            (jnp.float32,),  # param_dtype
+            (jnp.float32,),  # inference_dtype
+            (16,),  # global_batch_size
+            (DataPartitionType.FULL,),  # data_partition
         )
     )
     def test_pipeline_summary_writer(
