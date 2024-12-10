@@ -166,4 +166,4 @@ def infer_xsc_compiler_options(
     return options
 
 
-_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p")
+_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e")
