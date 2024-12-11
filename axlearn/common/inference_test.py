@@ -20,6 +20,7 @@ from absl import logging
 from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
+import pytest
 
 from axlearn.common import layers, test_utils, utils
 from axlearn.common.base_model import BaseModel
@@ -168,13 +169,10 @@ class DummyModel(BaseModel):
 def is_supported(
     platform: str,
     mesh_shape: tuple[int, int],
-    param_dtype: jnp.dtype,
     inference_dtype: Optional[jnp.dtype],
     global_batch_size: int,
     data_partition: DataPartitionType,
-    use_ema: bool = False,
 ):
-    del param_dtype, use_ema  # not used
     # TODO(xuan-zou): jax 0.4.25 breaks bfloat16 on CPU due to high variance on
     # the final result (up to 10% precision diff), will re-enable when fixed.
     # NOTE: bfloat16 test on GPU is added and verified.

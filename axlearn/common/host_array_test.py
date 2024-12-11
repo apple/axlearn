@@ -12,6 +12,7 @@ from absl import logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.experimental import mesh_utils
+import pytest
 
 from axlearn.common.test_utils import TestCase, is_supported_mesh_shape, is_supported_platform
 from axlearn.common.utils import (

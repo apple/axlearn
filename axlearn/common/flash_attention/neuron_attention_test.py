@@ -11,6 +11,10 @@ from axlearn.common.flash_attention.neuron_attention import flash_attention
 from axlearn.common.flash_attention.utils import mha_reference
 
 
+if jax.default_backend() != "neuron":
+    pytestmark = pytest.mark.skip(reason="Incompatible hardware, AWS Neuron only test.")
+
+
 @pytest.mark.parametrize(
     "batch_size,seq_len,num_heads,per_head_dim",
     [
@@ -25,7 +29,6 @@ from axlearn.common.flash_attention.utils import mha_reference
 @pytest.mark.parametrize("use_fwd", [True, False])
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.bfloat16, jnp.float32])
-@pytest.mark.skipif(jax.devices()[0].platform != "neuron", reason="Test only runs on Neuron.")
 def test_fwd_against_ref(
     batch_size: int,
     seq_len: int,
@@ -81,7 +84,6 @@ def test_fwd_against_ref(
 )
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("input_dtype", [jnp.bfloat16, jnp.float16, jnp.float32])
-@pytest.mark.skipif(jax.devices()[0].platform != "neuron", reason="Test only runs on Neuron.")
 def test_bwd_against_ref(
     batch_size: int,
     num_heads: int,
