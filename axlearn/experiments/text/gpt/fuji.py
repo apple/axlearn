@@ -179,6 +179,12 @@ def get_trainer_kwargs(
             train_batch_size=train_batch_size,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+            mesh_rules=(
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    mesh_shape_from_axes(fsdp=-1, model=4),
+                ),
+            )
         )
     elif model_size == "3B":
         trainer_kwargs = dict(
@@ -197,6 +203,12 @@ def get_trainer_kwargs(
             train_batch_size=train_batch_size,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+            mesh_rules=(
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    mesh_shape_from_axes(fsdp=-1, model=4),
+                ),
+            )
         )
     elif model_size == "7B":
         trainer_kwargs = dict(
@@ -380,6 +392,10 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    mesh_shape_from_axes(fsdp=-1, model=4),
                 ),
             ),
         )
