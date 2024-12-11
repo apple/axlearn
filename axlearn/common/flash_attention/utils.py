@@ -75,7 +75,7 @@ MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tens
 
 
 def flash_attention_implementation(
-    backend: Literal["cpu", "tpu", "gpu", "xla"],
+    backend: Literal["cpu", "tpu", "gpu", "xla", "neuron"],
     *,
     mask: Optional[MaskFn] = None,
     softmax_scale: float,
@@ -156,6 +156,21 @@ def flash_attention_implementation(
                 block_size=block_size,
             )
             return context
+
+        return jit_attn
+
+    elif backend == "neuron":
+        from axlearn.common.flash_attention.neuron_attention import (
+            flash_attention as neuron_flash_attention,
+        )
+
+        # shard_map-decorated function needs to be jitted.
+        @jax.jit
+        def jit_attn(query, key, value, bias, segment_ids):
+            if segment_ids != None:
+                raise Exception("Sequence Packing is not supported on Neuron backend")
+            return neuron_flash_attention(
+                query, key, value, bias, causal, softmax_scale)
 
         return jit_attn
 
