@@ -717,8 +717,9 @@ def get_trainer_config_fn(
         cfg.evalers = {}
         for name, evaler_cfg in evalers.items():
             evaler_cfg.input.batcher.set(global_batch_size=eval_batch_size or train_batch_size)
-            evaler_cfg.set(input_partition_type=input_partition_type)
-            evaler_cfg.set(batch_axis_names=cfg.batch_axis_names)
+            if input_partition_type:
+                evaler_cfg.set(input_partition_type=input_partition_type)
+                evaler_cfg.set(batch_axis_names=cfg.batch_axis_names)
             evaler_cfg.set(
                 eval_policy=config_for_function(eval_every_n_steps_policy).set(
                     n=eval_every_n_steps,
