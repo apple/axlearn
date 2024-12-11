@@ -18,9 +18,9 @@ if jax.default_backend() != "neuron":
 @pytest.mark.parametrize(
     "batch_size,seq_len,num_heads,per_head_dim",
     [
-        # (1, 2048, 1, 64),
+        (1, 2048, 1, 64),
         (2, 2048, 2, 64),
-        # (1, 2048, 1, 128),
+        (1, 2048, 1, 128),
         (2, 2048, 2, 128),
         (1, 2048, 8, 128),
         (2, 2048, 8, 128),
@@ -74,9 +74,9 @@ def test_fwd_against_ref(
 @pytest.mark.parametrize(
     "batch_size,num_heads,seq_len,per_head_dim",
     [
-        # (1, 1, 2048, 64),
+        (1, 1, 2048, 64),
         (2, 2, 2048, 64),
-        # (1, 1, 2048, 128),
+        (1, 1, 2048, 128),
         (2, 2, 2048, 128),
         (1, 8, 2048, 128),
         (2, 8, 2048, 128),

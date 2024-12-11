@@ -12,7 +12,6 @@ lnc = 2 if jax.devices()[0].device_kind == "NC_v3d" else 1
 def flash_attention(query, key, value, bias, causal, softmax_scale):
     # NOTE : Merge with upstream. Old code supports both 2d and 4d bias but upstream code only supports 4d.
     #       We no longer need 2d logit_bias but should sync how we merge this check with upstream.
-    #   assert bias.ndim == 4, f"Neuron flash_attention is only expecting bias.ndim = 4 but got {bias.ndim}"
     out, _ = _mha_forward(query, key, value, bias, causal, softmax_scale)
     return out
 
@@ -20,7 +19,6 @@ def flash_attention(query, key, value, bias, causal, softmax_scale):
 def _mha_forward(query, key, value, bias, causal, softmax_scale):
     # Get the batch size, sequence lengths, number of heads, and hidden dimension
     batch_size, q_seq_len, num_heads, d_model = query.shape
-    _, kv_seq_len, _, _ = key.shape
 
     # Transpose the query, key, and value tensors
     q = query.transpose(0, 2, 3, 1)  # [batch_size, num_heads, d_model, q_seq_len]
@@ -38,6 +36,7 @@ def _mha_forward(query, key, value, bias, causal, softmax_scale):
         grid = batch_size, num_heads
     
     if bias != None:
+        assert bias.ndim == 4, f"Neuron flash_attention is only expecting bias.ndim = 4 but got {bias.ndim}"
         attn_output, lse = flash_fwd[grid](
             q,
             k,
@@ -88,6 +87,7 @@ def _mha_backward(causal, softmax_scale, res, d_attn_output):
         grid = batch_size, num_heads
 
     if bias != None:
+        assert bias.ndim == 4, f"Neuron flash_attention is only expecting bias.ndim = 4 but got {bias.ndim}"
         d_query, d_key, d_value = flash_attn_bwd[grid](
             q,
             k,
