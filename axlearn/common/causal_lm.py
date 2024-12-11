@@ -298,6 +298,8 @@ class Model(BaseModel):
         target_labels: Tensor,
         target_num_bytes: Optional[Tensor],
     ) -> dict[str, Tensor]:
+        if logits.dtype in (jnp.bfloat16, jnp.float16):
+            logits = logits.astype(jnp.float32)
         live_targets = (target_labels != self.decoder.config.pad_token_id) & (target_labels >= 0)
         num_targets = live_targets.sum()
         accuracy = (
