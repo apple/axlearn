@@ -31,7 +31,7 @@ def default_xla_options(
     if backend != "tpu":
         raise NotImplementedError(backend)
     version = infer_tpu_version(infer_tpu_type(instance_type))
-    options: Dict[str, int | str | bool] = dict(
+    options: Dict[str, Union[int, str, bool]] = dict(
         xla_tpu_spmd_rng_bit_generator_unsafe=True,  # SPMD partition-aware RngBitGenerator.
         xla_tpu_enable_latency_hiding_scheduler="true",  # Try to schedule ops efficiently.
         xla_tpu_perform_spmd_cse_prevention="false",
@@ -130,7 +130,7 @@ def default_xla_options(
     return options
 
 
-def xla_flags_from_options(xla_options: dict[str, Union[str, bool]]) -> str:
+def xla_flags_from_options(xla_options: dict[str, Union[str, bool, int]]) -> str:
     """Convert an XLA options dict suitable for
     `jitted_fn.lower(...).compile(compiler_options=xla_options)`
     to XLA flags suitable for the `XLA_FLAGS` environment variable.
