@@ -105,7 +105,7 @@ def default_xla_options(
             # of latency side.
             xla_latency_hiding_scheduler_rerun=0,
         )
-        options["2a886c8_chip_config_name"] = "megachip_tccontrol" 
+        options["2a886c8_chip_config_name"] = "megachip_tccontrol"
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
         options.update(

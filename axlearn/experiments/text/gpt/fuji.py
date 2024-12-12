@@ -15,8 +15,10 @@ import functools
 import itertools
 from typing import Any, Optional, Union
 
+from absl import flags
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
+from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
     BaseStackedTransformerLayer,
@@ -53,10 +55,6 @@ from axlearn.experiments.text.gpt.common import (
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
-from axlearn.cloud.gcp.system_characteristics import (
-    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
-)
-from absl import flags
 
 FLAGS = flags.FLAGS
 
@@ -130,6 +128,7 @@ def get_trainer_kwargs(
     train_batch_size = tokens_per_batch // max_sequence_length
     if FLAGS.pdbs:
         import jax
+
         train_batch_size = len(jax.devices()) * int(FLAGS.pdbs)
 
     # Whether to use grouped query attention.
@@ -446,7 +445,7 @@ def get_trainer_kwargs(
             max_sequence_length=max_sequence_length,
             train_batch_size=train_batch_size,
             max_step=max_step,
-            #eval_every_n_steps=500,
+            # eval_every_n_steps=500,
             save_every_n_steps=100,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
