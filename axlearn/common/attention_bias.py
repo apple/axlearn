@@ -440,6 +440,7 @@ class MaskFn(Protocol):
           x = f(jnp.asarray([1,2]), jnp.asarray([3,4]))
           assert x[0] == f(jnp.asarray(1), jnp.asarray(3))[None]
           ```
+        * Both tensors have the same rank (either 2 or 3), as batch dim is optional.
         * If given non-scalar arguments of different shapes, the result must be the same if we
           first broadcast the arguments against each other to make them have the same shape.
         * Beyond requiring broadcastability, must not impose any constraints on the shapes of its
@@ -494,14 +495,14 @@ class MaskFnAttentionBias(BoolAttentionBias):
             NotImplementedError. If `target_positions.ndim not in [1,2]`.
         """
         target_positions, source_positions = jnp.indices(self.shape, sparse=True)
-        # Shape: [batch, target_len, source_len].
+        # Shape: [1, target_len, 1], [1, 1, source_len].
         target_positions, source_positions = target_positions[None], source_positions[None]
         if self.target_positions is not None:
             target_positions = self.target_positions
             if target_positions.ndim not in [1, 2]:
                 raise NotImplementedError(f"Shape of target_positions: {target_positions.shape}.")
             if target_positions.ndim == 1:
-                # Shape: [batch, target_len].
+                # Shape: [batch, 1] + [target_len] = [batch, target_len]
                 # pylint: disable-next=unsubscriptable-object
                 target_positions = target_positions[:, None] + jnp.arange(self.shape[0])
             elif target_positions.ndim == 2:
