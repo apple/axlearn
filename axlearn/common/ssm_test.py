@@ -15,7 +15,6 @@
 
 
 """Tests Mamba/Mamba2 and Jamba implementations."""
-
 import math
 from typing import Optional
 
@@ -31,7 +30,7 @@ from jax.sharding import Mesh, PartitionSpec
 from transformers.activations import ACT2FN
 from transformers.configuration_utils import PretrainedConfig
 
-from axlearn.common.attention import make_causal_biases
+from axlearn.common.attention_bias import make_causal_biases
 from axlearn.common.config import InstantiableConfig
 from axlearn.common.module import functional as F
 from axlearn.common.ssm import (
@@ -969,12 +968,12 @@ class Mamba2RecurrenceTest(TestCase):
     def setup_class(cls):
         devices = mesh_utils.create_device_mesh((2, 1, 1, 1, 2))
         global_mesh = Mesh(devices, axis_names=("data", "expert", "fsdp", "seq", "model"))
-        new_env = ResourceEnv(physical_mesh=global_mesh, loops=())
+        new_env = ResourceEnv(physical_mesh=global_mesh)
         thread_resources.env = new_env
 
     @classmethod
     def teardown_class(cls):
-        init_env = ResourceEnv(physical_mesh=(), loops=())
+        init_env = ResourceEnv(physical_mesh=())
         thread_resources.env = init_env
 
     def test_ssd_parameterization(self):
@@ -1030,12 +1029,12 @@ class Mamba2MixerLayerTest(TestCase):
     def setup_class(cls):
         devices = mesh_utils.create_device_mesh((2, 1, 1, 1, 2))
         global_mesh = Mesh(devices, axis_names=("data", "expert", "fsdp", "seq", "model"))
-        new_env = ResourceEnv(physical_mesh=global_mesh, loops=())
+        new_env = ResourceEnv(physical_mesh=global_mesh)
         thread_resources.env = new_env
 
     @classmethod
     def teardown_class(cls):
-        init_env = ResourceEnv(physical_mesh=(), loops=())
+        init_env = ResourceEnv(physical_mesh=())
         thread_resources.env = init_env
 
     @parameterized.product(
@@ -1083,7 +1082,10 @@ class Mamba2MixerLayerTest(TestCase):
             inputs=inputs,
         )
 
-        mamba2_cache = layer.init_states(target_batch_size=batch_size, target_max_len=seq_len)
+        mamba2_cache, _ = layer.init_states(
+            time_step=None,
+            query=TensorSpec([batch_size, seq_len]),
+        )
         self.assertEqual(mamba2_cache.x_conv_state.dtype, cache_dtype)
         self.assertEqual(mamba2_cache.b_conv_state.dtype, cache_dtype)
         self.assertEqual(mamba2_cache.c_conv_state.dtype, cache_dtype)
@@ -1170,7 +1172,7 @@ class Mamba2MixerLayerTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(3),
             inputs=dict(time_step=time_step, query=inputs_data),
-            method="prefill_states",
+            method="init_states",
         )
         self.assertTrue(initial_state.x_conv_state.dtype, cache_dtype)
         self.assertTrue(initial_state.b_conv_state.dtype, cache_dtype)
@@ -1217,12 +1219,12 @@ class JambaMamba2BlockTest(TestCase):
     def setup_class(cls):
         devices = mesh_utils.create_device_mesh((2, 1, 1, 1, 2))
         global_mesh = Mesh(devices, axis_names=("data", "expert", "fsdp", "seq", "model"))
-        new_env = ResourceEnv(physical_mesh=global_mesh, loops=())
+        new_env = ResourceEnv(physical_mesh=global_mesh)
         thread_resources.env = new_env
 
     @classmethod
     def teardown_class(cls):
-        init_env = ResourceEnv(physical_mesh=(), loops=())
+        init_env = ResourceEnv(physical_mesh=())
         thread_resources.env = init_env
 
     @parameterized.product(
@@ -1306,7 +1308,10 @@ class JambaMamba2BlockTest(TestCase):
             inputs=inputs,
         )
 
-        init_state = layer.init_states(target_batch_size=batch_size, target_max_len=seq_len)
+        init_state = layer.init_states(
+            time_step=None,
+            data=TensorSpec([batch_size, seq_len]),
+        )
         self.assertEqual(init_state["mamba_block"].x_conv_state.dtype, dtype)
         self.assertEqual(init_state["mamba_block"].b_conv_state.dtype, dtype)
         self.assertEqual(init_state["mamba_block"].c_conv_state.dtype, dtype)
@@ -1382,7 +1387,7 @@ class JambaMamba2BlockTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(3),
             inputs=dict(time_step=time_step, data=inputs_data),
-            method="prefill_states",
+            method="init_states",
         )
 
         time_step_mask = (jnp.arange(seq_len) < time_step[:, None]).astype(dtype)
@@ -1425,12 +1430,12 @@ class GPUMamba2MixerLayerTest(TestCase):
         num_devices = jax.device_count()
         devices = mesh_utils.create_device_mesh((1, 1, 1, 1, num_devices))
         global_mesh = Mesh(devices, axis_names=("data", "expert", "fsdp", "seq", "model"))
-        new_env = ResourceEnv(physical_mesh=global_mesh, loops=())
+        new_env = ResourceEnv(physical_mesh=global_mesh)
         thread_resources.env = new_env
 
     @classmethod
     def teardown_class(cls):
-        init_env = ResourceEnv(physical_mesh=(), loops=())
+        init_env = ResourceEnv(physical_mesh=())
         thread_resources.env = init_env
 
     @parameterized.product(

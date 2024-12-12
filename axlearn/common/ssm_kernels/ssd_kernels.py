@@ -358,7 +358,6 @@ def _ssd_backward_kernel(
         k_block = k_ref[subchunk_idx, :].astype(jnp.float32)
         v_block = v_ref[subchunk_idx, :].astype(jnp.float32)
         do_block = mutable_do_ref[subchunk_idx, :].astype(jnp.float32)
-        causal_mask = jnp.tril(jnp.ones((subchunk_size, subchunk_size)), k=0).astype(jnp.float32)
 
         lambda_block = cum_log_alpha_ref[subchunk_idx, :]
         gamma_block = gamma_ref[subchunk_idx]
@@ -596,14 +595,14 @@ def ssd_linear_scan(
     q = repeat(q, "b ng l dk -> b (ng nhg) l dk", nhg=num_head_per_group)
     k = repeat(k, "b ng l dk -> b (ng nhg) l dk", nhg=num_head_per_group)
 
-    # ITt's more convenient for vmap to have internal states of size [dv, dk]
+    # It's more convenient for vmap to have internal states of size [dv, dk]
     if h0 is None:
         h0 = jnp.zeros((bs, nh, dv, dk), dtype=jnp.float32)
     else:
         # to be consistent with pallas api, h0 is in dk x dv as input
         h0 = rearrange(h0, "b h dk dv -> b h dv dk")
 
-    # All inputs are upcasted to float32, making this function a good reference funciton to
+    # All inputs are upcasted to float32, making this function a good reference function to
     # test pallas kernel's numerical precision in the case of bf16 inputs.
     dtype = q.dtype
     if dtype == jnp.bfloat16:
