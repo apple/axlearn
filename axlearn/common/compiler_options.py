@@ -138,7 +138,7 @@ def xla_flags_from_options(xla_options: dict[str, Union[str, bool, int]]) -> str
     flags = []
     for k, v in xla_options.items():
         if isinstance(v, bool):
-            v = "1" if v else "0"
+            v = "true" if v else "false"
         flags.append(f"--{k}={v}")
     return " ".join(flags)
 
