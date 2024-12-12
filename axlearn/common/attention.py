@@ -3042,7 +3042,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         if isinstance(cfg.activation, tuple):
             activations = [
                 self._get_activation(
-                    self.children[f"linear1_{i}"](x), activation_fn_name=activation
+                    self._remat_name(self.children[f"linear1_{i}"](x), f"linear1_{i}"), activation_fn_name=activation
                 )
                 for i, activation in enumerate(cfg.activation)
             ]
