@@ -31,7 +31,7 @@ def default_xla_options(
     if backend != "tpu":
         raise NotImplementedError(backend)
     version = infer_tpu_version(infer_tpu_type(instance_type))
-    options: Dict[str, Union[int, str, bool]] = dict(
+    options: Dict[str, Union[str, bool, int]] = dict(
         xla_tpu_spmd_rng_bit_generator_unsafe=True,  # SPMD partition-aware RngBitGenerator.
         xla_tpu_enable_latency_hiding_scheduler="true",  # Try to schedule ops efficiently.
         xla_tpu_perform_spmd_cse_prevention="false",
