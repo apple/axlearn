@@ -771,6 +771,9 @@ class InferenceTest(test_utils.TestCase):
         global_batch_size: int,
         data_partition: DataPartitionType,
     ):
+        supported, reason = is_supported(platform, mesh_shape, inference_dtype, global_batch_size, data_partition)
+        if not supported:
+            pytest.skip(reason=reason)
         del platform  # only used by is_supported_platform().
         local_run = jax.process_count() == 1
         mesh_axis_names = ("data", "model")
