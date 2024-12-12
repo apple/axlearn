@@ -51,30 +51,8 @@ def default_xla_options(
             # further if you see "Allocator failed to allocate". A feature
             # to dynamically allocate may come later: b/380514965
             megascale_grpc_premap_memory_bytes=17179869184,
-            # Improved performance for v6e.
-            xla_tpu_scoped_vmem_limit_kib=98304,
-            xla_tpu_enable_async_collective_fusion="true",
-            xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
-            xla_tpu_enable_async_collective_fusion_multiple_steps="true",
-            xla_tpu_overlap_compute_collective_tc="true",
-            xla_enable_async_all_gather="true",
-            # Host offloading flags
-            xla_tpu_enable_all_experimental_scheduler_features="true",
-            # Flag to enable memory tracking scheduling. The default AUTO only enables
-            # it in some situations. Not needed if
-            # xla_tpu_enable_all_experimental_scheduler_features is set to true already.
-            xla_tpu_enable_scheduler_memory_pressure_tracking="true",
             # Flag controlling the maximum number of overlapping host offloadings.
             xla_tpu_host_transfer_overlap_limit=24,
-            # Flag to enable the aggressive removal of opt-barriers.
-            xla_tpu_aggressive_opt_barrier_removal="true",
-            # Flag to enable more aggressive scheduling for async ops, such as pushing
-            # the async start to the beginning of the loop body.
-            xla_lhs_prioritize_async_depth_over_stall="true",
-            # Flag to enable pipelining of cross-DCN all-gathers.
-            xla_tpu_enable_ag_backward_pipelining="true",
-            xla_should_allow_loop_variant_parameter_in_chain="true",
-            xla_should_add_loop_invariant_op_in_chain="true",
             # Flag controlling the maximum number of overlapping cross-DCN send/recv.
             xla_max_concurrent_host_send_recv=100,
             # Flag controlling the HBM memory limit as a percentage of the total HBM size.
@@ -92,6 +70,31 @@ def default_xla_options(
             # though, may make the scheduler weighting too much on the memory usage instead
             # of latency side.
             xla_latency_hiding_scheduler_rerun=2,
+            # Improved performance for v6e.
+            xla_tpu_scoped_vmem_limit_kib=98304,
+        )
+        options.update(
+            # Improved performance for v6e.
+            xla_tpu_enable_async_collective_fusion="true",
+            xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
+            xla_tpu_enable_async_collective_fusion_multiple_steps="true",
+            xla_tpu_overlap_compute_collective_tc="true",
+            xla_enable_async_all_gather="true",
+            # Host offloading flags
+            xla_tpu_enable_all_experimental_scheduler_features="true",
+            # Flag to enable memory tracking scheduling. The default AUTO only enables
+            # it in some situations. Not needed if
+            # xla_tpu_enable_all_experimental_scheduler_features is set to true already.
+            xla_tpu_enable_scheduler_memory_pressure_tracking="true",
+            # Flag to enable the aggressive removal of opt-barriers.
+            xla_tpu_aggressive_opt_barrier_removal="true",
+            # Flag to enable more aggressive scheduling for async ops, such as pushing
+            # the async start to the beginning of the loop body.
+            xla_lhs_prioritize_async_depth_over_stall="true",
+            # Flag to enable pipelining of cross-DCN all-gathers.
+            xla_tpu_enable_ag_backward_pipelining="true",
+            xla_should_allow_loop_variant_parameter_in_chain="true",
+            xla_should_add_loop_invariant_op_in_chain="true",
             xla_tpu_use_enhanced_launch_barrier="true",
             # Sparsecore offloading for all reduce.
             # Uncomment below flags to enable it.
