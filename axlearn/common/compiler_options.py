@@ -46,6 +46,11 @@ def default_xla_options(
         )
     if version == "v6e":
         options.update(
+            # Change to 16GB. The default is 4GB which is too small for larger models. This
+            # cause the step time to be double. You should increase this
+            # further if you see "Allocator failed to allocate". A feature
+            # to dynamically allocate may come later: b/380514965
+            megascale_grpc_premap_memory_bytes=17179869184,
             # Improved performance for v6e.
             xla_tpu_scoped_vmem_limit_kib=98304,
             xla_tpu_enable_async_collective_fusion="true",
@@ -99,7 +104,8 @@ def default_xla_options(
             # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
         )
         # This flag can be removed after upgrading to Jax 0.4.38.
-        options["2a886c8_chip_config_name"] = "megachip_tccontrol"
+        # Uncomment for sparsecore offloading.
+        # options["2a886c8_chip_config_name"] = "megachip_tccontrol"
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
         options.update(
@@ -111,11 +117,6 @@ def default_xla_options(
             xla_tpu_data_parallel_opt_different_sized_ops="true",
             # Group non-blocking DCN collectives into as few stages as possible.
             xla_tpu_enable_sunk_dcn_allreduce_done_with_host_reduction="true",
-            # Change to 16GB. The default is 4GB which is too small for larger models. This
-            # cause the step time to be double. You should increase this
-            # further if you see "Allocator failed to allocate". A feature
-            # to dynamically allocate may come later: b/380514965
-            megascale_grpc_premap_memory_bytes=17179869184,
         )
 
     # Validate options. Will never fail if this function is implemented correctly.
