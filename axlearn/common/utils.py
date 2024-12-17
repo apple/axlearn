@@ -444,6 +444,12 @@ def with_sharding_constraint(x, shardings):
     return jax.lax.with_sharding_constraint(x, shardings)
 
 
+def maybe_shard(x: NestedTensor, partition_spec: Optional[PartitionSpec]) -> NestedTensor:
+    if partition_spec is None:
+        return x
+    return with_sharding_constraint(x, PartitionSpec(*partition_spec))
+
+
 def replicate_to_local_data(x: NestedTensor) -> NestedTensor:
     """Replicates and converts Tensors in `x` to local DeviceArrays.
 
