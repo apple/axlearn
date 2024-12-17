@@ -41,7 +41,7 @@ if jax.default_backend() != "gpu":
 )
 @pytest.mark.parametrize("block_size", [64, 128])
 @pytest.mark.parametrize("causal", [True, False])
-@pytest.mark.parametrize("sm_scale", [1.0, 0.123])
+@pytest.mark.parametrize("softmax_scale", [1.0, 0.123])
 @pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
 @pytest.mark.parametrize("use_segment_ids", [True, False])
 @pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
@@ -52,7 +52,7 @@ def test_triton_fwd_only_against_ref(
     per_head_dim: int,
     block_size: int,
     causal: bool,
-    sm_scale: float,
+    softmax_scale: float,
     attention_bias_type: Literal["2d", "4d", None],
     use_segment_ids: bool,
     input_dtype: jnp.dtype,
@@ -82,13 +82,13 @@ def test_triton_fwd_only_against_ref(
             block_q=block_size,
             block_k=block_size,
             causal=causal,
-            softmax_scale=sm_scale,
+            softmax_scale=softmax_scale,
         )
         out, _ = jax.vjp(fn, q, k, v, bias, segment_ids)
         return out
 
     o = impl(q, k, v, bias, segment_ids)
-    o_ref = mha_reference(q, k, v, bias, segment_ids, causal=causal, softmax_scale=sm_scale)
+    o_ref = mha_reference(q, k, v, bias, segment_ids, causal=causal, softmax_scale=softmax_scale)
     chex.assert_trees_all_close(o, o_ref, atol=0.07)
 
 
@@ -147,7 +147,7 @@ def test_triton_against_xla_ref(
         jnp.concatenate([segment_left, segment_right], axis=-1) if use_segment_ids else None
     )
 
-    sm_scale = q.shape[-1] ** -0.5
+    softmax_scale = q.shape[-1] ** -0.5
 
     # Compare outputs.
     jax_out = flash_attention(
@@ -157,11 +157,11 @@ def test_triton_against_xla_ref(
         bias,
         segment_ids,
         causal=causal,
-        softmax_scale=sm_scale,
+        softmax_scale=softmax_scale,
         block_q=block_size,
         block_k=block_size,
     )
-    jax_ref_out = mha_reference(q, k, v, bias, segment_ids, causal=causal, softmax_scale=sm_scale)
+    jax_ref_out = mha_reference(q, k, v, bias, segment_ids, causal=causal, softmax_scale=softmax_scale)
     if input_dtype == jnp.float16:
         chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005)
     elif input_dtype == jnp.float32:
@@ -177,14 +177,14 @@ def test_triton_against_xla_ref(
             bias,
             segment_ids,
             causal=causal,
-            softmax_scale=sm_scale,
+            softmax_scale=softmax_scale,
             block_q=block_size,
             block_k=block_size,
         ).sum()
 
     def ref_fn(q, k, v, bias, segment_ids):
         return mha_reference(
-            q, k, v, bias, segment_ids, causal=causal, softmax_scale=sm_scale
+            q, k, v, bias, segment_ids, causal=causal, softmax_scale=softmax_scale
         ).sum()
 
     # Compare gradients.
@@ -224,11 +224,11 @@ def test_cudnn_against_triton_ref(
         jax.random.PRNGKey(2), (batch_size, seq_len, num_heads, per_head_dim), dtype=dtype
     )
 
-    sm_scale = q.shape[-1] ** -0.5
+    softmax_scale = q.shape[-1] ** -0.5
 
     # Compare outputs.
-    jax_out = cudnn_dot_product_attention(q, k, v, bias=None, causal=causal, softmax_scale=sm_scale)
-    jax_ref_out = flash_attention(q, k, v, bias=None, causal=causal, softmax_scale=sm_scale)
+    jax_out = cudnn_dot_product_attention(q, k, v, bias=None, causal=causal, softmax_scale=softmax_scale)
+    jax_ref_out = flash_attention(q, k, v, bias=None, causal=causal, softmax_scale=softmax_scale)
     if dtype == jnp.bfloat16:
         # We relax the atol to support bf16 in the unit test.
         chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.02, rtol=1e-5)
@@ -239,11 +239,11 @@ def test_cudnn_against_triton_ref(
 
     def fn(q, k, v):
         return cudnn_dot_product_attention(
-            q, k, v, bias=None, causal=causal, softmax_scale=sm_scale
+            q, k, v, bias=None, causal=causal, softmax_scale=softmax_scale
         ).sum()
 
     def ref_fn(q, k, v):
-        return flash_attention(q, k, v, bias=None, causal=causal, softmax_scale=sm_scale).sum()
+        return flash_attention(q, k, v, bias=None, causal=causal, softmax_scale=softmax_scale).sum()
 
     # Compare gradients.
     jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v)
