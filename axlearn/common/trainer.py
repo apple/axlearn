@@ -47,6 +47,7 @@ from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.update_transformation import ForwardOutputs
 from axlearn.common.utils import (
+    DataPartitionType,
     HybridMeshShape,
     MeshShape,
     Nested,
@@ -200,6 +201,10 @@ class SpmdTrainer(Module):
         # The provided config should instantiate to a thunk that returns the context manager.
         context_manager: Optional[ConfigOr[Callable[[], ContextManager]]] = None
 
+        # The input partition:
+        # Options: FULL (default), BATCH, REPLICATED
+        input_partition_type: Optional[DataPartitionType] = DataPartitionType.FULL
+
     def __init__(
         self,
         cfg: Config,
@@ -343,7 +348,7 @@ class SpmdTrainer(Module):
 
     def _train_step_input_partition_specs(self):
         # By default, each input tensor is fully partitioned along the batch axis.
-        return utils.input_partition_spec()
+        return utils.data_partition_type_to_spec(self.config.input_partition_type, batch_axis_names=self.config.batch_axis_names)
 
     def model_params_for_eval(self):
         state = self.trainer_state
@@ -568,7 +573,7 @@ class SpmdTrainer(Module):
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
                     output = self._run_step(
-                        utils.host_to_global_device_array(input_batch),
+                        utils.host_to_global_device_array(input_batch, partition=self.config.input_partition_type, batch_axis_names=self.config.batch_axis_names),
                         force_run_evals=(
                             force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
                         ),
