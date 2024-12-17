@@ -396,7 +396,9 @@ def pallas_tpu_flash_attention(
         block_sizes = LegacyBlockSizes.get_default(
             batch_size, num_heads, q_seq_len, kv_seq_len, d_model
         )
-    return _flash_attention(q, k, v, ab, segment_ids, False, causal, softmax_scale, block_sizes, debug)
+    return _flash_attention(
+        q, k, v, ab, segment_ids, False, causal, softmax_scale, block_sizes, debug
+    )
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=range(5, 10))
@@ -443,7 +445,9 @@ def _flash_attention_fwd(
 ):
     if save_residuals:
         raise NotImplementedError("Higher-order AD not supported")
-    o, l, m = _flash_attention(q, k, v, ab, segment_ids, True, causal, softmax_scale, block_sizes, debug)
+    o, l, m = _flash_attention(
+        q, k, v, ab, segment_ids, True, causal, softmax_scale, block_sizes, debug
+    )
     return o, (q, k, v, ab, segment_ids, o, l, m)
 
 
