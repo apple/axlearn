@@ -737,18 +737,24 @@ class SymmetricALiBiAttentionLogitBiasLayerTest(TestCase):
 class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
     """Tests RoFormerSinusoidalPositionalEmbedding."""
 
-    @parameterized.parameters(
-        (2, 3, 10, 32, True),
-        (2, 3, 8, 32, False),
-        (2, 4, 6, 32, True),
-        (2, 4, 8, 16, False),
-        (2, 5, 8, 48, True),
-        (2, 5, 8, 64, False),
+    @parameterized.product(
+        tensor_dimensions=(
+            (2, 3, 10, 32),
+            (2, 3, 8, 32),
+            (2, 4, 6, 32),
+            (2, 4, 8, 16),
+            (2, 5, 8, 48),
+            (2, 5, 8, 64),
+        ),
+        rotary_key=(True, False),
+        rotary_value=(True, False),
     )
     def test_apply_rotary_position_embeddings(
-        self, batch_size, num_heads, max_len, dim, rotary_value
+        self, tensor_dimensions: tuple[int, int, int, int], rotary_key: bool, rotary_value: bool
     ):
         # Unittest against the apply_rotary_position_embeddings in HF.
+        batch_size, num_heads, max_len, dim = tensor_dimensions
+
         token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
         sinusoidal_pos_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
         sinusoidal_pos = sinusoidal_pos_layer(as_torch_tensor(token_ids).shape)[None, None, :, :]
@@ -771,11 +777,15 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
                 sinusoidal_pos, as_torch_tensor(query), as_torch_tensor(key)
             )
             ref_v_proj = as_torch_tensor(value)
+        if not rotary_key:
+            ref_k_proj = as_torch_tensor(key)
+
         test_q_proj, test_k_proj, test_v_proj = test_layer(
             sinusoidal_pos=as_tensor(sinusoidal_pos),
             query=query,
             key=key,
             value=value,
+            rotary_key=rotary_key,
             rotary_value=rotary_value,
         )
         np.testing.assert_allclose(test_q_proj, ref_q_proj, atol=5e-7)
@@ -1128,6 +1138,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             key=jnp.asarray(key),
             value=jnp.asarray(value),
             sinusoidal_pos=axlearn_rope,
+            rotary_key=True,
             rotary_value=False,
         )
 
@@ -1382,11 +1393,22 @@ class QKVLinearTest(TestCase):
             layer = cfg.instantiate(parent=None)
             self.assertEqual(expected, layer.num_kv_heads)
 
-    def test_qlinear(self):
+    @parameterized.parameters(
+        (QKVLinear.default_config(), QLinear.default_config()),
+        (
+            RoFormerQKVLinear.default_config().set(
+                input_linear=QKVLinear.default_config(), rotary_value=False
+            ),
+            RoFormerQKVLinear.default_config().set(
+                input_linear=QLinear.default_config(), rotary_value=False
+            ),
+        ),
+    )
+    def test_qlinear(self, base_cfg, test_cfg):
         """Tests that QLinear is equivalent to QKVLinear with the same kv_state."""
         with utils.numeric_checks(True):
             model_dim = 12
-            num_heads = 4
+            num_heads = 3
             per_head_dim = model_dim // num_heads
             layer_kwargs = dict(
                 query_dim=model_dim,
@@ -1395,8 +1417,8 @@ class QKVLinearTest(TestCase):
                 num_heads=num_heads,
                 per_head_dim=per_head_dim,
             )
-            base_cfg = QKVLinear.default_config().set(**layer_kwargs)
-            test_cfg = QLinear.default_config().set(**layer_kwargs)
+            base_cfg = base_cfg.set(**layer_kwargs)
+            test_cfg = test_cfg.set(**layer_kwargs)
             maybe_set_config(test_cfg, num_kv_heads=num_heads)
             base_layer = base_cfg.set(name="base").instantiate(parent=None)
             test_layer = test_cfg.set(name="test").instantiate(parent=None)
@@ -1404,7 +1426,12 @@ class QKVLinearTest(TestCase):
             # Construct base layer state.
             base_state = base_layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
             # Map state to QLinear.
-            test_state = {"q_proj": base_state["q_proj"]}
+            if "q_proj" in base_state:
+                test_state = {"q_proj": base_state["q_proj"]}
+            elif "i_proj" in base_state:
+                test_state = {"i_proj": {"q_proj": base_state["i_proj"]["q_proj"]}}
+            else:
+                raise ValueError("Cannot find expected q_proj state.")
 
             # Construct test inputs.
             batch_size, src_len, tgt_len = 2, 6, 6
