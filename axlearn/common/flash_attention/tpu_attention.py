@@ -212,8 +212,8 @@ def _legacy_tpu_flash_attention(
         ab=bias,
         segment_ids=SegmentIds(q=segment_ids, kv=segment_ids) if segment_ids is not None else None,
         causal=causal,
-        # If sm_scale==1.0, the kernel skips applying it.
-        sm_scale=1.0,
+        # If softmax_scale==1.0, the kernel skips applying it.
+        softmax_scale=1.0,
         block_sizes=block_sizes,
         debug=False,
     )
@@ -332,7 +332,7 @@ def _tpu_splash_attention(
     jax.jit,
     static_argnames=[
         "causal",
-        "sm_scale",
+        "softmax_scale",
         "block_sizes",
         "debug",
     ],
@@ -345,7 +345,7 @@ def pallas_tpu_flash_attention(
     segment_ids=None,  # q of [batch_size, q_seq_len] and kv of [batch_size, kv_seq_len]
     *,
     causal: bool = False,
-    sm_scale: float = 1.0,
+    softmax_scale: float = 1.0,
     block_sizes: Optional[LegacyBlockSizes] = None,
     debug: bool = False,
 ):
@@ -396,7 +396,9 @@ def pallas_tpu_flash_attention(
         block_sizes = LegacyBlockSizes.get_default(
             batch_size, num_heads, q_seq_len, kv_seq_len, d_model
         )
-    return _flash_attention(q, k, v, ab, segment_ids, False, causal, sm_scale, block_sizes, debug)
+    return _flash_attention(
+        q, k, v, ab, segment_ids, False, causal, softmax_scale, block_sizes, debug
+    )
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=range(5, 10))
@@ -408,7 +410,7 @@ def _flash_attention(
     segment_ids,
     save_residuals,
     causal,
-    sm_scale,
+    softmax_scale,
     block_sizes,
     debug,
 ):
@@ -420,7 +422,7 @@ def _flash_attention(
         segment_ids,
         save_residuals,
         causal,
-        sm_scale,
+        softmax_scale,
         block_sizes.block_b,
         block_sizes.block_q,
         block_sizes.block_k_major,
@@ -437,20 +439,22 @@ def _flash_attention_fwd(
     segment_ids,
     save_residuals,
     causal,
-    sm_scale,
+    softmax_scale,
     block_sizes,
     debug,
 ):
     if save_residuals:
         raise NotImplementedError("Higher-order AD not supported")
-    o, l, m = _flash_attention(q, k, v, ab, segment_ids, True, causal, sm_scale, block_sizes, debug)
+    o, l, m = _flash_attention(
+        q, k, v, ab, segment_ids, True, causal, softmax_scale, block_sizes, debug
+    )
     return o, (q, k, v, ab, segment_ids, o, l, m)
 
 
 def _flash_attention_bwd(
     save_residuals: bool,
     causal: bool,
-    sm_scale: float,
+    softmax_scale: float,
     block_sizes: LegacyBlockSizes,
     debug: bool,
     residuals,
@@ -483,7 +487,7 @@ def _flash_attention_bwd(
         block_k_major=block_sizes.block_k_major_dkv,
         block_k=block_sizes.block_k_dkv,
         block_q=block_sizes.block_q_dkv,
-        sm_scale=sm_scale,
+        softmax_scale=softmax_scale,
         causal=causal,
         mask_value=DEFAULT_MASK_VALUE,
         debug=debug,
@@ -502,7 +506,7 @@ def _flash_attention_bwd(
         block_q_major=block_sizes.block_q_dq,
         block_k_major=block_sizes.block_k_major_dq,
         block_k=block_sizes.block_k_dq,
-        sm_scale=sm_scale,
+        softmax_scale=softmax_scale,
         causal=causal,
         mask_value=DEFAULT_MASK_VALUE,
         debug=debug,
@@ -521,7 +525,7 @@ def _flash_attention_impl(
     segment_ids,
     save_residuals,
     causal,
-    sm_scale,
+    softmax_scale,
     block_b,
     block_q,
     block_k_major,
@@ -590,7 +594,7 @@ def _flash_attention_impl(
         _flash_attention_kernel,
         causal=causal,
         mask_value=DEFAULT_MASK_VALUE,
-        sm_scale=sm_scale,
+        softmax_scale=softmax_scale,
         block_k=block_k,
         kv_seq_len=kv_seq_len,
     )
@@ -722,7 +726,7 @@ def _flash_attention_bwd_dkv(
     block_q: Optional[int],
     block_k_major: Optional[int],
     block_k: Optional[int],
-    sm_scale: float,
+    softmax_scale: float,
     causal: bool = False,
     mask_value: float = DEFAULT_MASK_VALUE,
     debug: bool = False,
@@ -874,7 +878,7 @@ def _flash_attention_bwd_dkv(
         _flash_attention_dkv_kernel,
         block_q=block_q,
         block_k=block_k,
-        sm_scale=sm_scale,
+        softmax_scale=softmax_scale,
         causal=causal,
         mask_value=mask_value,
         q_seq_len=q_seq_len,
@@ -922,7 +926,7 @@ def _flash_attention_bwd_dq(
     block_q_major: Optional[int],
     block_k_major: Optional[int],
     block_k: Optional[int],
-    sm_scale: float,
+    softmax_scale: float,
     causal: bool,
     mask_value: float,
     debug: bool,
@@ -1064,7 +1068,7 @@ def _flash_attention_bwd_dq(
 
     kernel = functools.partial(
         _flash_attention_dq_kernel,
-        sm_scale=sm_scale,
+        softmax_scale=softmax_scale,
         causal=causal,
         mask_value=mask_value,
         block_k=block_k,
