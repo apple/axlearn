@@ -267,6 +267,26 @@ class AttentionBiasTest(test_utils.TestCase):
         expected = attention_bias.bool_to_bias(expected)[:, None, :]
         self.assertNestedEqual(bias.value(), expected)
 
+    def test_mask_fn_attention_bias_target_positions_ndim(self):
+        """Tests mask_fn_attention_bias` when `target_positions.ndim == 2."""
+        bias = attention_bias.MaskFnAttentionBias(
+            mask=attention_bias.causal_mask,
+            shape=(5, 5),
+            target_positions=jnp.asarray([[0, 1, 2, 3, 4], [4, 3, 2, 1, 0]]),
+        )
+        expected = jnp.asarray(
+            [
+                [
+                    attention_bias.causal_mask(*jnp.indices([5, 5])),
+                ],
+                [
+                    attention_bias.causal_mask(*jnp.indices([5, 5]))[::-1, :],
+                ],
+            ],
+            dtype=bool,
+        )
+        self.assertNestedEqual(bias.bool_value(), expected)
+
     def test_bool_tensor_attention_bias(self):
         bias = attention_bias.BoolTensorAttentionBias.from_tensor(jnp.ones((5, 7), dtype=bool))
         self.assertNestedEqual(
