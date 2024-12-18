@@ -233,7 +233,7 @@ def bench_flash_attention(
             fn = jax.grad(triton_fn, argnums=(0, 1, 2))
         else:
             if q_seq_len == 1:
-                fn = partial(flash_decoding, sm_scale=1.0, mask_fn=mask_fn)
+                fn = partial(flash_decoding, kv_seq_len=None, mask_fn=mask_fn)
                 args = (q, k, v)
             else:
                 fn = partial(flash_attention, causal=True)
