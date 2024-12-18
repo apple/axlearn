@@ -22,6 +22,7 @@ from axlearn.common.attention_bias import (
 )
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
 from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
+from axlearn.common.flash_attention.gpu_decoding import flash_decoding
 from axlearn.common.flash_attention.tpu_attention import tpu_flash_attention
 from axlearn.common.utils import Tensor
 
@@ -80,6 +81,18 @@ def mha_reference(
     return context
 
 
+def _repeat_kv_heads(num_q_heads: int, key_or_value: Tensor) -> Tensor:
+    """Repeats key or value heads dim to match the query.
+
+    TODO(dhwang2): optimize computation like GroupedQueryAttention.
+    """
+    num_head_repeats = num_q_heads // key_or_value.shape[-2]
+    if num_head_repeats == 1:
+        return key_or_value
+    # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
+    return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
+
+
 # Accepts [query, key, value, attention_bias, segment_ids] tensors and returns the context Tensor.
 MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tensor]
 
@@ -118,13 +131,14 @@ def flash_attention_implementation(
     ) -> Tensor:
         # Fall back to plain MHA implementation when the seq_len is not be divisible by
         # block size.
-        if query.shape[1] % block_size != 0:
+        is_gpu_decoding = query.shape[1] == 1 and backend == "gpu"
+        if not is_gpu_decoding and query.shape[1] % block_size != 0:
             backend = "xla"
-        # For decoding, fall back to non-flash implementation and merge all biases
+        # For non-GPU decoding, fall back to non-flash implementation and merge all biases
         # into a dense floating point bias tensor since that implementation does not
         # support target_positions.
-        if query.shape[1] == 1:
-            # TODO(senyut): Implement FlashDecoding kernel and support TPU decoding.
+        if not is_gpu_decoding and query.shape[1] == 1:
+            # TODO(senyut): Support TPU decoding.
             backend = "xla"
             bias = TensorAttentionBias(bias.value())
 
@@ -148,6 +162,35 @@ def flash_attention_implementation(
             return segment_ids.segment_ids
 
         if backend == "gpu":
+            # TODO(hanzhi-zhou): supports small q sequence length for future use cases such as
+            # speculative decoding.
+            if query.shape[1] == 1:
+                # Decoding case. We should not repeat kv heads to match q heads for FlashDecoding.
+                # Note: decoding is always causal. Discard the causal mask if present.
+                mask, explicit_bias = split(bias, MaskFnAttentionBias)
+                if mask is None or mask.target_positions is None:
+                    raise RuntimeError("Cannot retrive MaskFnAttentionBias or target_positions.")
+                mask_fn = mask.mask
+                kv_seq_len = mask.target_positions + 1
+                logging.info("Using mask_fn=%s for FlashDecoding.", mask_fn)
+
+                bias = explicit_bias.value()
+                if bias is not None:
+                    logging.info(
+                        "Using explicit_bias=%s for FlashDecoding. "
+                        "This is not expected unless an explicit Tensor bias is used.",
+                        bias,
+                    )
+                return flash_decoding(
+                    query,
+                    key,
+                    value,
+                    bias=bias,
+                    mask_fn=mask_fn,
+                    kv_seq_len=kv_seq_len,
+                    softmax_scale=softmax_scale,
+                )
+
             if query.shape[1] != key.shape[1]:
                 # TODO(xuan-zou): Generalize GPU Flash Attention for q_len != kv_len.
                 # Remove pytest.skip corresponding to q_len != kv_len in layer_test.py once fixed.
@@ -155,6 +198,9 @@ def flash_attention_implementation(
                     f"Query length {query.shape[1]} must be equal to KV length "
                     f"{key.shape[1]} for correctly supported GPU flash attention usage."
                 )
+
+            key = _repeat_kv_heads(query.shape[2], key)
+            value = _repeat_kv_heads(query.shape[2], value)
 
             # We have two implementations to choose from.
             # Both support `causal`.
@@ -195,6 +241,8 @@ def flash_attention_implementation(
                 )
 
         elif backend == "tpu":
+            key = _repeat_kv_heads(query.shape[2], key)
+            value = _repeat_kv_heads(query.shape[2], value)
             # `mask` is supported.
             # `segment_ids` is supported.
             # Optimized handling for the above two types.
@@ -217,6 +265,8 @@ def flash_attention_implementation(
             )
 
         elif backend in ("cpu", "xla"):
+            key = _repeat_kv_heads(query.shape[2], key)
+            value = _repeat_kv_heads(query.shape[2], value)
             if backend == "cpu":
                 logging.warning("Flash attention CPU backend is for testing only.")
             logging.warning("Flash attention falling back using plain MHA implementation")
