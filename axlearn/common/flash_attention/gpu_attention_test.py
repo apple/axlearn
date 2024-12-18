@@ -114,6 +114,7 @@ class FlashDecodingTest(TestCase):
         input_dtype=[jnp.float32, jnp.float16],
         padding=[0, 111],
         kv_head_factor=[1, 4, 8],
+        window_len=[-1, 16, 127],
     )
     def test_decode_against_ref(
         self,
@@ -126,6 +127,7 @@ class FlashDecodingTest(TestCase):
         input_dtype: jnp.dtype,
         padding: int,
         kv_head_factor: int,
+        window_len: int,
     ):
         self.assertEqual(num_heads % kv_head_factor, 0)
         assert num_heads % kv_head_factor == 0
@@ -151,11 +153,18 @@ class FlashDecodingTest(TestCase):
         else:
             bias = None
 
-        impl = functools.partial(flash_decoding, softmax_scale=softmax_scale, kv_seq_len=seq_len)
-
-        o = impl(q, k, v, bias)
+        mask_fn = None
+        if window_len > 0:
+            mask_fn = sliding_window_causal_mask(window_len)
+        o = flash_decoding(
+            q, k, v, bias=bias, softmax_scale=softmax_scale, kv_seq_len=seq_len, mask_fn=mask_fn
+        )
         if bias is not None:
             bias = bias[:, :, :, :seq_len]
+        if window_len > 0:
+            if bias is None:
+                bias = jnp.zeros((1, 1, 1, seq_len), dtype=input_dtype)
+            bias = bias.at[:, :, :, : -window_len - 1].set(NEG_INF)
         o_ref = mha_reference(
             q,
             _repeat_kv_heads(num_heads, k[:, :seq_len]),
@@ -170,56 +179,6 @@ class FlashDecodingTest(TestCase):
             self.assertNestedAllClose(o, o_ref, rtol=0.01, atol=0.01)
         else:
             self.assertNestedAllClose(o, o_ref, rtol=0.05, atol=0.05)
-
-    @parameterized.product(
-        [
-            dict(zip(["batch_size", "seq_len", "num_heads", "per_head_dim"], args))
-            for args in [
-                (1, 1024 * 16, 8, 128),
-                (1, 1128, 32, 64),
-                (8, 305, 48, 128),
-                (8, 4042, 64, 128),
-            ]
-        ],
-        input_dtype=[jnp.float32, jnp.float16],
-        padding=[0, 123],
-        window_len=[16, 127],
-    )
-    def test_decode_sliding_window(
-        self,
-        batch_size: int,
-        seq_len: int,
-        num_heads: int,
-        per_head_dim: int,
-        input_dtype: jnp.dtype,
-        padding: int,
-        window_len: int,
-    ):
-        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(42), 3)
-        q = jax.random.normal(k1, (batch_size, 1, num_heads, per_head_dim), dtype=input_dtype)
-        k = jax.random.normal(
-            k2, (batch_size, seq_len + padding, num_heads, per_head_dim), dtype=input_dtype
-        )
-        v = jax.random.normal(
-            k3, (batch_size, seq_len + padding, num_heads, per_head_dim), dtype=input_dtype
-        )
-
-        o = flash_decoding(
-            q,
-            k,
-            v,
-            mask_fn=sliding_window_causal_mask(window_len),
-            kv_seq_len=seq_len,
-        )
-        mask = jnp.zeros((1, 1, 1, seq_len), dtype=input_dtype)
-        mask = mask.at[:, :, :, : -window_len - 1].set(NEG_INF)
-        o_ref = mha_reference(q, k[:, :seq_len], v[:, :seq_len], mask, None, causal=False)
-
-        self.assertGreaterEqual(jnp.median(jnp.abs(o_ref)).item(), 0.25)
-        if input_dtype is jnp.float32:
-            self.assertNestedAllClose(o, o_ref, atol=0.01)
-        else:
-            self.assertNestedAllClose(o, o_ref, atol=0.025)
 
 
 @pytest.mark.parametrize(

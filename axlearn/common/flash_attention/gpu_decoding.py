@@ -281,8 +281,8 @@ def flash_decoding(
     q: Tensor,
     k: Tensor,
     v: Tensor,
+    kv_seq_len: Optional[Tensor],
     bias: Optional[Tensor] = None,
-    kv_seq_len: Optional[Tensor] = None,
     *,
     softmax_scale: float = 1.0,
     mask_fn: Optional[MaskFn] = None,
@@ -299,11 +299,11 @@ def flash_decoding(
         q: Tensor of shape [batch_size, 1, num_q_heads, head_dim].
         k: Tensor of shape [batch_size, padded_kv_seq_len, num_kv_heads, head_dim].
         v: Tensor of shape [batch_size, padded_kv_seq_len, num_kv_heads, head_dim].
-        bias: Tensor can broadcast to [batch_size, q_heads, 1, padded_kv_seq_len].
-            Defaults to None.
         kv_seq_len: Tensor that can broadcast to [batch_size], indicating the actual kv sequence
-            length for each sequence in the batch. Default to None, meaning that we assume k and v
-            are not padded in the sequence dimension.
+            length for each sequence in the batch. If None, assumes k and v are not padded in the
+            sequence dimension.
+        bias: Tensor that can broadcast to [batch_size, q_heads, 1, padded_kv_seq_len].
+            Defaults to None.
         softmax_scale: Softmax scale.
         mask_fn: Mask function to use. Preferred over bias.
         block_h: Block dimension for num_q_heads // num_kv_heads. Defaults to 16, which is the
