@@ -24,13 +24,12 @@ from absl.testing import parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
-from axlearn.common.attention import GroupedQueryAttention, apply_attention_logit_biases
+from axlearn.common.attention import GroupedQueryAttention
 from axlearn.common.attention_bias import (
     CompositeAttentionBias,
     SegmentIdAttentionBias,
     TensorAttentionBias,
     bool_to_bias,
-    make_causal_biases,
     sliding_window_causal_mask,
 )
 from axlearn.common.base_layer import BaseLayer
@@ -446,7 +445,7 @@ class TestFlashAttention(TestCase):
             )
             # TODO(markblee): Test probs.
             self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
-        jax.clear_backends()
+        jax.extend.backend.clear_backends()
 
     @parameterized.product(
         _TEST_CONFIGS,
@@ -589,9 +588,11 @@ class TestFlashAttention(TestCase):
 
             self.assertNestedAllClose(ref_value, test_value, atol=atol, rtol=rtol)
             self.assertNestedAllClose(ref_grads, test_grads, atol=atol, rtol=rtol)
-        jax.clear_backends()
+        jax.extend.backend.clear_backends()
 
-    @parameterized.product(_TEST_CONFIGS, causal=[True], sliding_window_size=[None, 4])
+    @parameterized.product(
+        _TEST_CONFIGS, causal=[True], sliding_window_size=[None, 4], use_bias=[True, False]
+    )
     def test_extend_step(
         self,
         batch,
@@ -602,6 +603,7 @@ class TestFlashAttention(TestCase):
         mesh_axis_names,
         causal,
         sliding_window_size,
+        use_bias,
     ):
         print(
             f"batch={batch}, seq_len={seq_len} (ignored->16), num_heads={num_heads}, \n"
@@ -646,15 +648,13 @@ class TestFlashAttention(TestCase):
                 [batch, seq_len, hidden_dim],
                 dtype=dtype,
             )
-            bias = jax.random.normal(
-                jax.random.PRNGKey(0),
-                [batch, num_heads, seq_len, seq_len],
-                dtype=dtype,
-            )
-            # Note: We need to use causal bias for flash attention input in case of decoding.
-            causal_bias = apply_attention_logit_biases(bias, make_causal_biases(seq_len)).astype(
-                dtype
-            )
+            causal_bias = None
+            if use_bias:
+                causal_bias = jax.random.normal(
+                    jax.random.PRNGKey(0),
+                    [batch, num_heads, seq_len, seq_len],
+                    dtype=dtype,
+                )
             kv_state = None
             return_aux = {"probs"}
 
@@ -713,7 +713,10 @@ class TestFlashAttention(TestCase):
                 attention_logit_biases=None,
             )
             ref_inputs = dict(
-                cached_states=ref_initial_state, kv_state=kv_state, return_aux=return_aux
+                cached_states=ref_initial_state,
+                kv_state=kv_state,
+                return_aux=return_aux,
+                attention_logit_biases=None,
             )
 
             decoder_output = jnp.zeros(shape=[seq_len, batch, hidden_dim]).astype(dtype)
@@ -721,12 +724,16 @@ class TestFlashAttention(TestCase):
             for t in range(seq_len):
                 cur_query = jnp.expand_dims(query[:, t, :], axis=1)
                 inputs["query"] = cur_query
-                inputs["attention_logit_biases"] = jnp.expand_dims(causal_bias[:, :, t, :], axis=2)
+                if use_bias:
+                    inputs["attention_logit_biases"] = jnp.expand_dims(
+                        causal_bias[:, :, t, :], axis=2
+                    )
 
                 ref_inputs["query"] = cur_query
-                ref_inputs["attention_logit_biases"] = jnp.expand_dims(
-                    causal_bias[:, :, t, :], axis=2
-                )
+                if use_bias:
+                    ref_inputs["attention_logit_biases"] = jnp.expand_dims(
+                        causal_bias[:, :, t, :], axis=2
+                    )
 
                 ref_extend_step_outputs, _ = F(
                     ref_layer,
@@ -778,4 +785,4 @@ class TestFlashAttention(TestCase):
                 test_out.data,
                 atol=2e-2,
             )
-        jax.clear_backends()
+        jax.extend.backend.clear_backends()

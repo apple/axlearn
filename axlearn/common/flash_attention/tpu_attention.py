@@ -236,7 +236,7 @@ def _tpu_splash_attention(
     bias: Optional[Tensor] = None,  # [batch_size, num_heads, target_len, source_len]
     segment_ids: Optional[Tensor] = None,  # [batch_size, target_len]
     *,
-    mask: Union[MaskFnAttentionBias | ZeroAttentionBias],
+    mask: Union[MaskFnAttentionBias, ZeroAttentionBias],
     block_sizes: Optional[splash_attention_kernel.BlockSizes] = None,
 ) -> Tensor:  # [batch_size, num_heads, target_len, head_dim].
     """Wraps JAX's sparse TPU flash-attention.
