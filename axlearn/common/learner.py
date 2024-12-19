@@ -526,15 +526,12 @@ class CompositeLearner(BaseLearner):
             sub_learner_updates = sub_learner_updates.mask(
                 # pylint: disable-next=cell-var-from-loop
                 lambda _: should_apply(updates.opt_params),
-                fields=(
-                    "opt_params",
-                    "delta_updates",
-                ),
+                fields=("opt_params", "delta_updates"),
             )
             sub_learner_updated_model_params = getattr(self, name).update(sub_learner_updates)
             updated_model_params = jax.tree.map(
                 lambda apply, new_v, old_v: new_v if apply else old_v,
-                should_apply(updates.param_values()),
+                should_apply(updated_model_params),
                 sub_learner_updated_model_params,
                 updated_model_params,
             )
@@ -712,7 +709,7 @@ def _value_and_grad(
 
     split_params = split_params_fn(opt_params)
     model_params_grad, model_params_nograd = jax.tree.map(lambda p: p.value, split_params)
-    (_, forward_pass), grads = jax.value_and_grad(loss_fun, has_aux=True)(
+    (unused_loss, forward_pass), grads = jax.value_and_grad(loss_fun, has_aux=True)(
         model_params_grad, inputs=(model_params_nograd, inputs)
     )
     return Updates(
