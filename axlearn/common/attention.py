@@ -2508,16 +2508,19 @@ class TransformerAttentionLayer(BaseLayer):
                 atten_state, atten_output = attention_thunk(TensorSpec(target.shape, target.dtype))
                 return dict(attention=atten_state), atten_output
 
+        remat_pt1 = "attention_output"
         if cfg.structure == "prenorm":
             skip_input = target  # pre-norm: where normalization happens within the residual part.
             norm_target = self.norm(target)
             atten_state, atten_output = attention_thunk(norm_target)
             data = skip_input + self.stochastic_depth(self.dropout(atten_output.data))
+            data = self._remat_name(data, remat_pt1)
         elif cfg.structure == "postnorm":
             # This is the structure used by the original Transformer, BERT, and RoBERTa.
             atten_state, atten_output = attention_thunk(target)
             # Post-norm: norm applied on the sum of input and attention output.
             data = self.norm(target + self.stochastic_depth(self.dropout(atten_output.data)))
+            data = self._remat_name(data, remat_pt1)
         elif cfg.structure == "hybridnorm":
             skip_input = target  # pre-norm: where normalization happens within the residual part.
             norm_target = self.prenorm(target)
@@ -2525,6 +2528,7 @@ class TransformerAttentionLayer(BaseLayer):
             data = skip_input + self.stochastic_depth(
                 self.dropout(self.postnorm(atten_output.data))
             )
+            data = self._remat_name(data, remat_pt1)
         else:
             raise NotImplementedError(cfg.structure)
         return dict(attention=atten_state), self.Output(
@@ -2801,6 +2805,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         self._add_tensor_stats("inputs", inputs)
 
         remat_pt2 = "linear2"
+        remat_pt3 = "feed_forward_output"
         if cfg.structure == "prenorm":
             x = self.norm(inputs)
             x = self._linear1_activation(x)
@@ -2812,6 +2817,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
             x += inputs
+            x = self._remat_name(x, remat_pt3)
         elif cfg.structure == "postnorm":
             x = self._linear1_activation(inputs)
             x = _linear2(x)
@@ -2821,6 +2827,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
             x = self.norm(x + inputs)
+            x = self._remat_name(x, remat_pt3)
         elif cfg.structure == "hybridnorm":
             x = self.prenorm(inputs)
             x = self._linear1_activation(x)
@@ -2833,6 +2840,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
             x += inputs
+            x = self._remat_name(x, remat_pt3)
         elif cfg.structure == "nonorm":
             x = inputs
             x = self._linear1_activation(x)
@@ -2845,6 +2853,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             # this layer, e.g., in ParallelTransformerLayer.
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
+            x = self._remat_name(x, remat_pt3)
         else:
             raise NotImplementedError(cfg.structure)
         return x
@@ -3956,15 +3965,21 @@ def _save_and_offload_only_these_names_regex(
     return policy
 
 
-SELF_ATTENTION_SAVE_PATTERN = ".*([qkvo]_proj|context)"
-FEED_FORWARD_SAVE_PATTERN = ".*linear[12]_.*"
+# Regex patterns for matching remat names
+class RematRegexSavePatterns(enum.Enum):
+    QKV_PROJ = r".*\.?(k|q|v)_proj"
+    LINEAR1_X = r".*\.?linear1_[01]"
+    ATTENTION_OUTPUT = r"TransformerAttentionLayer\.attention_output"
+    FEED_FORWARD_OUTPUT = r"TransformerFeedForwardLayer\.feed_forward_output"
+    SELF_ATTENTION = ".*([qkvo]_proj|context)"
+    FEED_FORWARD = ".*linear[12]_.*"
 
 
 def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
     ],
-    save_pattern: _SavePattern = SELF_ATTENTION_SAVE_PATTERN,
+    save_pattern: _SavePattern = RematRegexSavePatterns.SELF_ATTENTION.value,
     offload_pattern: _SavePattern = None,
     offload_dst: str = "pinned_host",
 ) -> Optional[RematSpec]:
