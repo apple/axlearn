@@ -11,6 +11,7 @@ from absl import logging
 from axlearn.common.attention import NEG_INF, MaskFn, causal_mask, softmax_with_biases
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
 from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
+from axlearn.common.flash_attention.neuron_attention import flash_attention as neuron_flash_attention
 from axlearn.common.flash_attention.tpu_attention import tpu_flash_attention
 from axlearn.common.utils import Tensor
 
@@ -160,10 +161,6 @@ def flash_attention_implementation(
         return jit_attn
 
     elif backend == "neuron":
-        from axlearn.common.flash_attention.neuron_attention import (
-            flash_attention as neuron_flash_attention,
-        )
-
         # shard_map-decorated function needs to be jitted.
         @jax.jit
         def jit_attn(query, key, value, bias, segment_ids):
