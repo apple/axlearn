@@ -68,8 +68,6 @@ class BaseFrontend(BaseLayer):
 
         # Number of output channels.
         output_dim: Required[int] = REQUIRED
-        # Number of filters/bands in the output spectrogram.
-        num_filters: Required[int] = REQUIRED
         # Number of input samples per second, e.g., 24000 for 24KHz inputs.
         sample_rate: Required[int] = REQUIRED
         # Size of each frame in ms.
@@ -132,6 +130,8 @@ class LogMelFrontend(BaseFrontend):
     class Config(BaseFrontend.Config):
         """Configures LogMelFrontend."""
 
+        # Number of filters/bands in the output spectrogram.
+        num_filters: Required[int] = REQUIRED
         # Number of output channels. Should always be 1.
         output_dim: int = 1
         # Optional output transformation. See `normalize_by_mean_std` for an example.
