@@ -24,8 +24,10 @@ from axlearn.common.attention import (
     FusedQKVLinear,
     GroupedQueryAttention,
     MultiheadAttention,
+    RematRegexSavePatterns,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
+    _save_and_offload_only_these_names_regex,
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
@@ -84,7 +86,6 @@ ROPE_THETA = {
     Version.V2: 1e4,
     Version.V3: 5e5,
 }
-
 
 # Mapping from Fuji versions to total number of tokens used in training.
 TOTAL_TOKENS = {
@@ -416,6 +417,38 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
+                ),
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=config_for_function(
+                                            _save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved="|".join(
+                                                [
+                                                    RematRegexSavePatterns.QKV_PROJ.value,
+                                                    RematRegexSavePatterns.LINEAR1_X.value,
+                                                    RematRegexSavePatterns.RESIDUAL_ADD.value,
+                                                    RematRegexSavePatterns.MLP_RESIDUAL.value,
+                                                ]
+                                            ),
+                                            names_which_can_be_offloaded=None,
+                                            offload_src=None,
+                                            offload_dst=None,
+                                        ),
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
                 ),
             ),
         )
