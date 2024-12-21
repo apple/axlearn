@@ -141,8 +141,11 @@ def runtime_checks(enabled: bool = True):
         jax.config.update("jax_experimental_unsafe_xla_runtime_errors", value)
 
     switch(enabled)
-    yield
-    switch(old_state)
+    try:
+        yield
+        jax.effects_barrier()
+    finally:
+        switch(old_state)
 
 
 @contextlib.contextmanager
