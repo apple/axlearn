@@ -594,7 +594,7 @@ def _flash_attention_impl(
         _flash_attention_kernel,
         causal=causal,
         mask_value=DEFAULT_MASK_VALUE,
-        softmax_scale=softmax_scale,
+        sm_scale=softmax_scale,
         block_k=block_k,
         kv_seq_len=kv_seq_len,
     )
@@ -878,7 +878,7 @@ def _flash_attention_bwd_dkv(
         _flash_attention_dkv_kernel,
         block_q=block_q,
         block_k=block_k,
-        softmax_scale=softmax_scale,
+        sm_scale=softmax_scale,
         causal=causal,
         mask_value=mask_value,
         q_seq_len=q_seq_len,
@@ -1068,7 +1068,7 @@ def _flash_attention_bwd_dq(
 
     kernel = functools.partial(
         _flash_attention_dq_kernel,
-        softmax_scale=softmax_scale,
+        sm_scale=softmax_scale,
         causal=causal,
         mask_value=mask_value,
         block_k=block_k,
