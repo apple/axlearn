@@ -341,7 +341,7 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                                mesh_shape=mesh_shape_from_axes(data=1, fsdp=512)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
@@ -359,7 +359,7 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                                mesh_shape=mesh_shape_from_axes(data=1, fsdp=1024)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
