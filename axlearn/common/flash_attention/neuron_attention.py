@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import jax.numpy as jnp
 from jax import custom_vjp
+import jax_neuronx
 import os
 
 lnc = 2 if jax.devices()[0].device_kind == "NC_v3d" else 1
