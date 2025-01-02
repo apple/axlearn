@@ -174,7 +174,7 @@ class CausalEncoder(Encoder):
         cfg: CausalEncoder.Config = self.config
         init_state, _ = self.transformer.init_states(
             time_step=None,
-            data=TensorSpec([batch_size, max_sequence_length, cfg.dim]),
+            data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=jnp.float32),
         )
         return dict(
             transformer_state=init_state,

@@ -36,6 +36,7 @@ from axlearn.common.attention import apply_attention_logit_biases
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
     MaskFnAttentionBias,
+    SlidingWindowAttentionBias,
     ZeroAttentionBias,
     as_attention_bias,
 )
@@ -144,11 +145,12 @@ def tpu_flash_attention(
             # and 1.14x in 539.5b.
             use_fused_bwd_kernel=True,
         )
+        splash_mask = _to_splash_mask(mask, mask_shape=(query.shape[2], key.shape[2]))
         context = _tpu_splash_attention(
             query,
             key,
             value,
-            mask=mask,
+            splash_mask=splash_mask,
             segment_ids=segment_ids,
             block_sizes=block_sizes,
             interpret=interpret,
@@ -169,13 +171,16 @@ def tpu_flash_attention(
             block_k_dq=block_size,
             block_q_dq=block_size,
         )
+        causal = isinstance(mask, CausalAttentionBias)
+        if not causal and mask.has_value():
+            bias = apply_attention_logit_biases(mask.value(), bias)
         context = _legacy_tpu_flash_attention(
             query,
             key,
             value,
             bias,
             segment_ids=segment_ids,
-            mask=mask,
+            causal=causal,
             block_sizes=block_sizes,
             interpret=interpret,
         )
@@ -192,7 +197,7 @@ def tpu_flash_attention(
 @functools.partial(
     jax.jit,
     static_argnames=[
-        "mask",  # Mask objects don't actually contain jax arrays, so they are static.
+        "causal",
         "block_sizes",
         "interpret",
     ],
@@ -204,7 +209,7 @@ def _legacy_tpu_flash_attention(
     bias: Tensor = None,  # [batch_size, num_heads, target_len, source_len]
     segment_ids: Tensor = None,  # [batch_size, target_len]
     *,
-    mask: MaskFnOrZero,
+    causal: bool = False,
     block_sizes: Optional[LegacyBlockSizes] = None,
     interpret: bool = False,
 ) -> Tensor:  # [batch_size, num_heads, target_len, head_dim].
@@ -220,7 +225,7 @@ def _legacy_tpu_flash_attention(
         segment_ids: The id of which segment each token belongs to. Attention is not computed
              between tokens in different segments.
              Shape:  [batch_size, target_len].
-        mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
+        causal: Whether it's causal attention.
         block_sizes: An object containing values that can be used to tune the performance
             such as the block size to chunk things into.
         interpret: If True, interpret the kernel using the pallas interpreter. CPU needs it.
@@ -231,10 +236,6 @@ def _legacy_tpu_flash_attention(
     Raises:
         NotImplementedError: If a custom (non-causal, non-full) mask is specified.
     """
-    causal = isinstance(mask, CausalAttentionBias)
-    if not causal and mask.has_value():
-        bias = apply_attention_logit_biases(mask.value(), bias)
-
     context = pallas_tpu_flash_attention(
         q=query,
         k=key,
@@ -248,7 +249,6 @@ def _legacy_tpu_flash_attention(
         debug=False,
         interpret=interpret,
     )
-
     return context
 
 
@@ -300,11 +300,6 @@ def check_tpu_splash_attention(
             raise SplashAttentionUnsupportedError(
                 "Query and key/value must have same length when mask is used."
             )
-        if isinstance(mask.target_positions, jax.core.Tracer):
-            raise SplashAttentionUnsupportedError(
-                "Non-static value of `target_positions` is not supported.\n"
-                "Are you decoding using SplashAttention? That's not supported."
-            )
 
 
 def _to_splash_mask(
@@ -319,10 +314,8 @@ def _to_splash_mask(
     assert isinstance(mask, MaskFnAttentionBias)
     if isinstance(mask, CausalAttentionBias):
         return splash_attention_mask.CausalMask(shape=mask_shape, shard_count=q_seq_shards)
-    if hasattr(mask.mask, "_sliding_window_size"):
-        # TODO(dhwang2): introduce SlidingWindowAttentionBias instead of "_sliding_window_size".
-        # This is set in sliding_window_causal_mask().
-        left_size = getattr(mask.mask, "_sliding_window_size")
+    if isinstance(mask, SlidingWindowAttentionBias):
+        left_size = mask.left_context
         return splash_attention_mask.LocalMask(
             shape=mask_shape, window_size=(left_size, 0), offset=0, shard_count=q_seq_shards
         )
@@ -340,14 +333,14 @@ def _to_splash_mask(
 
 @functools.partial(
     jax.jit,
-    static_argnames=["block_sizes", "interpret"],
+    static_argnames=["splash_mask", "block_sizes", "interpret"],
 )
 def _tpu_splash_attention(
     query: Tensor,  # [batch_size, num_heads, target_len, head_dim]
     key: Tensor,  # [batch_size, num_heads, source_len, head_dim]
     value: Tensor,  # [batch_size, num_heads, source_len, head_dim]
     *,
-    mask: MaskFnOrZero,
+    splash_mask: splash_attention_mask.Mask,
     segment_ids: Optional[Tensor] = None,  # [batch_size, target_len]
     block_sizes: Optional[splash_attention_kernel.BlockSizes] = None,
     interpret: bool = False,
@@ -381,9 +374,6 @@ def _tpu_splash_attention(
     # TODO(dhwang2): splash attention can support segment_ids. Support it when needed.
     del segment_ids
     num_heads = query.shape[1]
-    mask_shape = (query.shape[2], key.shape[2])
-    splash_mask = _to_splash_mask(mask, mask_shape=mask_shape)
-
     kernel = splash_attention_kernel.make_splash_mha(
         mask=splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads),
         block_sizes=block_sizes,
