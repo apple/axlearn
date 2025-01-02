@@ -41,7 +41,6 @@ from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
 from axlearn.common import attention, attention_bias, test_utils, utils
 from axlearn.common.attention import (
-    FEED_FORWARD_SAVE_PATTERN,
     BaseStackedTransformerLayer,
     BaseTransformerLayer,
     BottleNeckAdapterTransformerLayer,
@@ -58,6 +57,7 @@ from axlearn.common.attention import (
     PipelinedTransformerLayer,
     QKVLinear,
     QLinear,
+    RematRegexSavePatterns,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
     StackedTransformerLayer,
@@ -3420,7 +3420,7 @@ class TransformerFeedForwardLayerTest(TestCase):
             jax.remat(
                 f,
                 policy=_save_and_offload_only_these_names_regex(
-                    names_which_can_be_saved=FEED_FORWARD_SAVE_PATTERN,
+                    names_which_can_be_saved=RematRegexSavePatterns.FEED_FORWARD.value,
                     names_which_can_be_offloaded=None,
                     offload_src="device",
                     offload_dst="pinned_host",
@@ -3868,6 +3868,72 @@ class ParallelTransformerTest(TestCase):
             layer_params,
         )
         # Eliminated the remat of qkv_proj, context and o_proj = 5 dots. This assumes
+        # FlashAttention is not enabled.
+        self.assertEqual(
+            str(full_remat_backward).count(" dot_general")
+            - str(default_policy_backward).count(" dot_general"),
+            5,
+        )
+
+    def test_build_remat_spec_neuron(self):
+        model_dim, num_heads = 6, 2
+        cfg: TransformerLayer.Config = TransformerLayer.default_config().set(input_dim=model_dim)
+        cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
+        cfg.feed_forward.hidden_dim = model_dim * 4
+        cfg.vlog = 5
+
+        layer: BaseTransformerLayer = cfg.clone(name="layer").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        batch_size, tgt_len = 2, 5
+        rng = np.random.default_rng(seed=123)
+        target = rng.random([batch_size, tgt_len, cfg.input_dim], dtype=np.float32)
+
+        def f(x, layer_params):
+            forward_outputs, _ = F(
+                layer,
+                inputs=dict(
+                    data=x,
+                ),
+                state=layer_params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(0),
+            )
+            return forward_outputs
+
+        # Ignore type errors.
+        spec: Any = build_remat_spec(mock.MagicMock())
+
+        policy = (
+            config_for_function(_save_and_offload_only_these_names_regex)
+            .set(
+                names_which_can_be_saved="|".join(
+                    [
+                        RematRegexSavePatterns.QKV_PROJ.value,
+                        RematRegexSavePatterns.LINEAR1_X.value,
+                        RematRegexSavePatterns.ATTENTION_OUTPUT.value,
+                        RematRegexSavePatterns.FEED_FORWARD_OUTPUT.value,
+                    ]
+                ),
+                names_which_can_be_offloaded=None,
+                offload_src=None,
+                offload_dst=None,
+            )
+            .instantiate()
+        )
+
+        _, default_policy_backward = jax.linearize(
+            jax.remat(f, policy=policy, prevent_cse=spec.prevent_cse),
+            jnp.asarray(target),
+            layer_params,
+        )
+        _, full_remat_backward = jax.linearize(
+            jax.remat(f),
+            jnp.asarray(target),
+            layer_params,
+        )
+
+        # Eliminated the remat of qkv_proj, o_proj and linear1_0 = 5 dots. This assumes
         # FlashAttention is not enabled.
         self.assertEqual(
             str(full_remat_backward).count(" dot_general")
