@@ -49,8 +49,9 @@ from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import check_compute_capability
 from jax.experimental import pallas as pl
 
-from axlearn.common.attention import NEG_INF, MaskFn, Tensor
+from axlearn.common.attention_bias import NEG_INF, MaskFn
 from axlearn.common.flash_attention.gpu_attention import NoPopDict
+from axlearn.common.utils import Tensor
 
 
 # Note: split_k_seq_len must be a multiple of block_k.

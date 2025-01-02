@@ -17,6 +17,7 @@ from typing import Any, Optional, Union
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
     FusedQKVLinear,
+    KVCache,
     RoFormerQKVLinear,
     ScaleKey,
     ScaleQuery,
@@ -202,8 +203,11 @@ def model_config(
     attention_mask = None
     # RoPE embeddings: https://arxiv.org/abs/2104.09864.
     attention_qkv_linear = RoFormerQKVLinear.default_config().set(
-        input_linear=FusedQKVLinear.default_config().set(cache_dtype=STEP_DTYPE),
+        input_linear=FusedQKVLinear.default_config(),
         rotary_value=False,
+    )
+    attention_qkv_linear.input_linear.set(
+        kv_cache=KVCache.default_config().set(cache_dtype=STEP_DTYPE)
     )
 
     transformer_layer_cfg = TransformerLayer.default_config()

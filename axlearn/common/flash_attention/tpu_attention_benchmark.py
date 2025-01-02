@@ -35,6 +35,7 @@ import jax.numpy as jnp
 from axlearn.common.attention_bias import (
     CompositeAttentionBias,
     MaskFnAttentionBias,
+    SlidingWindowAttentionBias,
     TensorAttentionBias,
     causal_mask,
     sliding_window_causal_mask,
@@ -94,7 +95,7 @@ def _benchmark(
     causal: bool = True,
     use_bias: bool = False,
     use_segment_ids: bool = False,
-    sliding_window_size: Optional[int] = None,
+    left_context: Optional[int] = None,
 ):
     """Benchmarks TPU FlashAttention vs reference impl."""
     k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
@@ -129,11 +130,19 @@ def _benchmark(
     ref_bwd_time = _time_call(lambda: grad_fn(q, k, v, bias, segment_ids)[0])
 
     mask = None
-    if causal and sliding_window_size is None:
-        mask = causal_mask
+    if causal and left_context is None:
+        mask = MaskFnAttentionBias(
+            causal_mask,
+            target_positions=jnp.arange(seq_len)[None],
+            source_positions=jnp.arange(seq_len)[None],
+        )
     elif causal:
-        mask = sliding_window_causal_mask(sliding_window_size)
-    mask = MaskFnAttentionBias(mask, shape=(seq_len, seq_len))
+        mask = SlidingWindowAttentionBias(
+            sliding_window_causal_mask(left_context),
+            left_context=left_context,
+            target_positions=jnp.arange(seq_len)[None],
+            source_positions=jnp.arange(seq_len)[None],
+        )
     if use_bias:
         bias = CompositeAttentionBias([mask, TensorAttentionBias(bias)])
     else:
@@ -164,6 +173,6 @@ if __name__ == "__main__":
             batch_size=2,
             seq_len=1024 * 8,
             block_size=4 * 128,
-            sliding_window_size=1024,
+            left_context=1024 - 1,
             **cfg,
         )
