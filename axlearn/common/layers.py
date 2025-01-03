@@ -18,6 +18,7 @@
 """Basic layers."""
 
 import enum
+import math
 from collections.abc import Sequence
 from typing import Any, Callable, Optional, Union
 
@@ -781,6 +782,21 @@ class Embedding(BaseLayer):
     Batched map for int in [0, <num_embeddings>) -> <dim> float vector.
     """
 
+    class Scale(enum.Enum):
+        """Defines the scale method on embedding activations.
+
+        Available types:
+        1. **UNIT**: Scale the activation components to ~1.
+
+        The activation component should roughly have a magnitude of 1. Since the embedding tensor is
+        initialized with a scale of `1/√dim`, the activation is multiplied by `√dim` to
+        maintain the desired scale. e.g. Gemma [1]
+        [1]
+        https://github.com/google-deepmind/gemma/blob/0d6ae857591248422127ca14c027909546362e6a/gemma/modules.py#L80
+        """
+
+        UNIT = "unit"
+
     @config_class
     class Config(BaseLayer.Config):
         """Configures Embedding."""
@@ -793,6 +809,8 @@ class Embedding(BaseLayer):
         embedding_partition_spec: Optional[tuple[Optional[str]]] = None
         # If not None, how to partition output activation values.
         output_partition_spec: Optional[tuple[Optional[str]]] = None
+        # Optional scaling of the embedding activations.
+        scale: Optional["Embedding.Scale"] = None
 
     @classmethod
     def default_config(cls):
@@ -832,8 +850,26 @@ class Embedding(BaseLayer):
         emb = self.parameters["weight"]
         emb = maybe_shard(emb, cfg.embedding_partition_spec)
         activation = emb[x]
+        activation = self._scale(activation)
         activation = maybe_shard(activation, cfg.output_partition_spec)
         return activation
+
+    def _scale(self, x: Tensor) -> Tensor:
+        """Scale the activation if needed."""
+        cfg = self.config
+        if cfg.scale is None:
+            return x
+
+        # Unsloth [1] discovered that `sqrt(dim)` needs to be computed in float32.
+        # [1] Sec 3 in https://unsloth.ai/blog/gemma-bugs.html
+        x_dtype = x.dtype
+        x = x.astype(jnp.float32)
+        if cfg.scale == self.Scale.UNIT:
+            x = x * math.sqrt(x.shape[-1])
+        else:
+            raise ValueError(f"Unknown scale {cfg.scale}.")
+        x = x.astype(x_dtype)
+        return x
 
     def attend(self, x: Tensor) -> Tensor:
         """Apply query array 'x' to the embedding weight array.
