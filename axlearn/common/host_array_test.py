@@ -21,7 +21,6 @@ from axlearn.common.utils import (
     host_to_global_device_array,
 )
 
-
 def is_supported(
     platform: str,
     mesh_shape: tuple[int, int],
@@ -37,16 +36,15 @@ def is_supported(
         )
     )
 
-
 class HostArrayTest(TestCase):
     @parameterized.parameters(
         filter(
             lambda params: is_supported(*params),
             itertools.product(
                 ("cpu", "tpu"),  # platform,
-                ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
+                ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2), (16, 4)),  # mesh_shape
                 (1, 16),  # global_batch_size
-                (DataPartitionType.FULL, DataPartitionType.REPLICATED),  # data_partition
+                (DataPartitionType.FULL, DataPartitionType.REPLICATED, DataPartitionType,BATCH),  # data_partition
             ),
         )
     )

@@ -39,7 +39,7 @@ from axlearn.common.trainer_config_modifier import (
     MeshShapeModifier,
     RematSpecModifier,
 )
-from axlearn.common.utils import extended_checkpoint_policies
+from axlearn.common.utils import DataPartitionType, extended_checkpoint_policies
 from axlearn.experiments.text.gpt.common import (
     STEP_DTYPE,
     SourceBuilder,
@@ -423,6 +423,7 @@ def get_trainer_kwargs(
         raise NotImplementedError(f"Unknown model size {model_size}.")
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
+    trainer_kwargs["input_partition_type"] = None if backend != "neuron" else DataPartitionType.BATCH
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
     trainer_kwargs["learner_cfg"] = adamw_decoupled_learner_config(
         max_step=trainer_kwargs["max_step"],
