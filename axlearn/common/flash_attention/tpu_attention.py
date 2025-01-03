@@ -2,7 +2,7 @@
 
 """Wrappers for FlashAttention on TPU in JAX with logit bias support."""
 import functools
-from typing import Optional, Union
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -40,6 +40,8 @@ from axlearn.common.attention_bias import (
 )
 from axlearn.common.utils import Tensor
 
+MaskFnOrZero = MaskFnAttentionBias | ZeroAttentionBias
+
 
 def tpu_flash_attention(
     query: Tensor,  # [batch_size, target_len, num_heads, head_dim]
@@ -48,7 +50,7 @@ def tpu_flash_attention(
     bias: Tensor = None,  # [batch_size, num_heads, target_len, source_len]
     segment_ids: Tensor = None,  # [batch_size, target_len]
     *,
-    mask: Optional[MaskFnAttentionBias] = None,
+    mask: MaskFnOrZero,
     softmax_scale: float = 1.0,
     block_size: int = 128,
     interpret: bool = False,
@@ -113,7 +115,7 @@ def tpu_flash_attention(
             f"Source seq len {key.shape[1]} must be divisible by block size {block_size}."
         )
 
-    mask: Union[MaskFnAttentionBias | ZeroAttentionBias] = as_attention_bias(mask)
+    mask: MaskFnOrZero = as_attention_bias(mask)
 
     # Switch num_heads and seq_len axes.
     query = jnp.einsum("btnh->bnth", query)
@@ -121,8 +123,9 @@ def tpu_flash_attention(
     value = jnp.einsum("bsnh->bnsh", value)
     try:
         check_tpu_splash_attention(
-            query=query,
-            key=key,
+            target_len=query.shape[2],
+            source_len=key.shape[2],
+            head_dim=query.shape[3],
             mask=mask,
             has_segment_ids=(segment_ids is not None),
             has_bias=(bias is not None),
@@ -199,7 +202,7 @@ def _legacy_tpu_flash_attention(
     bias: Tensor = None,  # [batch_size, num_heads, target_len, source_len]
     segment_ids: Tensor = None,  # [batch_size, target_len]
     *,
-    mask: MaskFnAttentionBias,
+    mask: MaskFnOrZero,
     block_sizes: Optional[LegacyBlockSizes] = None,
     interpret: bool = False,
 ) -> Tensor:  # [batch_size, num_heads, target_len, head_dim].
@@ -253,17 +256,19 @@ class SplashAttentionUnsupportedError(NotImplementedError):
 
 def check_tpu_splash_attention(
     *,
-    query: Tensor,  # [batch_size, num_heads, source_len, head_dim]
-    key: Tensor,  # [batch_size, num_heads, target_len, head_dim]
-    mask: Union[MaskFnAttentionBias | ZeroAttentionBias],
+    target_len: int,
+    source_len: int,
+    head_dim: int,
+    mask: MaskFnOrZero,
     has_segment_ids: bool = False,
     has_bias: bool = False,
 ):
     """Checks if splash attention is supported on TPU for the given arguments.
 
     Args:
-        query: The query tensor, of shape [batch_size, num_heads, target_len, head_dim].
-        key: The key tensor, of shape [batch_size, num_heads, source_len, head_dim].
+        target_len: The length of the target sequence.
+        source_len: The length of the source sequence.
+        head_dim: The dimension of each head.
         mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
         has_segment_ids: Whether segment_ids is None or not.
         has_bias: Whether attention involves a bias.
@@ -272,12 +277,8 @@ def check_tpu_splash_attention(
         SplashAttentionUnsupportedError: If splash attention is not supported for the given
             arguments.
     """
-    target_len = query.shape[2]
-    source_len = key.shape[2]
-    head_dim = query.shape[3]
-
     if has_bias:
-        return False  # SplashAttention does not support specifying a bias.
+        raise SplashAttentionUnsupportedError("SplashAttention does not support specifying a bias.")
     with jax.ensure_compile_time_eval():
         if jnp.any(
             jnp.asarray([target_len, source_len, head_dim]) % splash_attention_kernel.NUM_LANES != 0
@@ -305,7 +306,7 @@ def check_tpu_splash_attention(
 
 
 def _to_splash_mask(
-    mask: Union[MaskFnAttentionBias | ZeroAttentionBias],
+    mask: MaskFnOrZero,
     *,
     mask_shape: tuple[int, int],
     q_seq_shards: int = 1,
@@ -344,7 +345,7 @@ def _tpu_splash_attention(
     key: Tensor,  # [batch_size, num_heads, source_len, head_dim]
     value: Tensor,  # [batch_size, num_heads, source_len, head_dim]
     *,
-    mask: Union[MaskFnAttentionBias | ZeroAttentionBias],
+    mask: MaskFnOrZero,
     segment_ids: Optional[Tensor] = None,  # [batch_size, target_len]
     block_sizes: Optional[splash_attention_kernel.BlockSizes] = None,
     interpret: bool = False,
