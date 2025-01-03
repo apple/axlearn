@@ -432,14 +432,13 @@ class KmeansVectorQuantizer(BaseQuantizer):
     @classmethod
     def default_config(cls) -> Config:
         cfg: KmeansVectorQuantizer.Config = super().default_config()
-        # Fairseq uses Gaussian initialization with std=0.01.
-        # https://github.com/facebookresearch/fairseq/blob/d871f6169f8185837d1c11fb28da56abfd83841c/fairseq/modules/kmeans_vector_quantizer.py#L42
-        # Praxis uses uniform initialization with fan_in.
-        # https://github.com/google/praxis/blob/179774fb688aa8fe048307d2184c9f2b338e935f/praxis/layers/quantizer.py#L378
+        # The original VQ-VAE implementation initializes codebook by uniform(1/sqrt(dim)).
+        # https://github.com/google-deepmind/sonnet/blob/cd5b5fa48e15e4d020f744968f5209949ebe750f/sonnet/python/modules/nets/vqvae.py#L62C24-L64
+        # Note: fan_out of the codebook is `num_codebooks * codebook_dim`.
         cfg.param_init = DefaultInitializer.default_config().set(
             init_by_param_name={
                 ".*codebook$": WeightInitializer.default_config().set(
-                    scale=1.0, fan="fan_in", distribution="uniform"
+                    scale=1.0, fan="fan_out", distribution="uniform"
                 )
             }
         )
