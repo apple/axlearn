@@ -19,12 +19,12 @@ from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
-    SELF_ATTENTION_SAVE_PATTERN,
     BaseStackedTransformerLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
     GroupedQueryAttention,
     MultiheadAttention,
+    RematRegexSavePatterns,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
 )
@@ -40,7 +40,10 @@ from axlearn.common.trainer_config_modifier import (
     MeshShapeModifier,
     RematSpecModifier,
 )
-from axlearn.common.utils import extended_checkpoint_policies
+from axlearn.common.utils import (
+    extended_checkpoint_policies,
+    save_and_offload_only_these_names_regex,
+)
 from axlearn.experiments.text.gpt.common import (
     STEP_DTYPE,
     SourceBuilder,
@@ -85,7 +88,6 @@ ROPE_THETA = {
     Version.V2: 1e4,
     Version.V3: 5e5,
 }
-
 
 # Mapping from Fuji versions to total number of tokens used in training.
 TOTAL_TOKENS = {
@@ -147,7 +149,7 @@ def get_trainer_kwargs(
         extended_checkpoint_policies.save_and_offload_only_these_names_regex
     ).set(
         names_which_can_be_saved=None,
-        names_which_can_be_offloaded=SELF_ATTENTION_SAVE_PATTERN,
+        names_which_can_be_offloaded=RematRegexSavePatterns.SELF_ATTENTION.value,
         offload_src="device",
         offload_dst="pinned_host",
     )
@@ -491,6 +493,36 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
+                ),
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved="|".join(
+                                                [
+                                                    RematRegexSavePatterns.QKV_PROJ.value,
+                                                    RematRegexSavePatterns.LINEAR1_X.value,
+                                                ]
+                                            ),
+                                            names_which_can_be_offloaded=None,
+                                            offload_src=None,
+                                            offload_dst=None,
+                                        ),
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
                 ),
             ),
         )

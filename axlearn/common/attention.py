@@ -4001,15 +4001,22 @@ def _save_and_offload_only_these_names_regex(
     )
 
 
-SELF_ATTENTION_SAVE_PATTERN = ".*([qkvo]_proj|context)"
-FEED_FORWARD_SAVE_PATTERN = ".*linear[12]_.*"
+# Regex patterns for matching remat names
+class RematRegexSavePatterns(enum.Enum):
+    QKV_PROJ = r".*[kqv]_proj"
+    O_PROJ = r".*o_proj"
+    CONTEXT = r".*context"
+    LINEAR1_X = r".*linear1_[01]"
+    LINEAR2_X = r".*linear2_[01]"
+    SELF_ATTENTION = ".*([qkvo]_proj|context)"
+    FEED_FORWARD = "|".join([LINEAR1_X, LINEAR2_X])
 
 
 def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
     ],
-    save_pattern: SavePattern = SELF_ATTENTION_SAVE_PATTERN,
+    save_pattern: SavePattern = RematRegexSavePatterns.SELF_ATTENTION.value,
     offload_pattern: SavePattern = None,
     offload_dst: str = "pinned_host",
 ) -> Optional[RematSpec]:
