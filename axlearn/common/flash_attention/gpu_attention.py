@@ -438,9 +438,6 @@ def _mha_backward_kernel_dkdv(
     pl.store(dk_ref, (curr_k_slice, slice(None)), dk.astype(dk_ref.dtype))
 
 
-# This kernel computes dK_i, dV_i and dQ_i in parallel across the sequence
-# length. Inspired by the triton tutorial:
-# https://github.com/triton-lang/triton/blob/main/python/tutorials/06-fused-attention.py
 def _mha_backward_kernel_dq(
     # Inputs.
     q_ref,
@@ -549,9 +546,9 @@ def _mha_backward(
     """Calls Pallas kernels to compute dQ, dK and dV.
 
     Note: separating dKdV and dQ loops into two kernels in flash backward improved performance by
-    10~15% when head_dim >= 128. Note that technically fusing dKdVdQ into a single loop and use
-    atomic add for dQ is the fastest solution, but pallas atomics are extremely slow according
-    to empirical testing.
+    10~15% when head_dim >= 128. Technically, fusing dKdVdQ into a single loop and use atomic add
+    for dQ is the fastest solution, but pallas atomics are extremely slow according to empirical
+    testing.
     """
     del num_warps, grid, output_activations
     q, k, v, bias, segment_ids, prng_key, out, lse = res
