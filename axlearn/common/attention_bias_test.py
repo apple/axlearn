@@ -21,6 +21,15 @@ from axlearn.common.utils import Tensor
 
 
 class AttentionBiasTest(test_utils.TestCase):
+    @parameterized.parameters(
+        [attention_bias.ZeroAttentionBias(), False],
+        [attention_bias.CausalAttentionBias(shape=(5, 5)), True],
+        [attention_bias.MaskFnAttentionBias(attention_bias.causal_mask, shape=(5, 5)), True],
+        [attention_bias.TensorAttentionBias.from_tensor(jnp.ones((5, 5))), True],
+    )
+    def test_has_bias(self, bias, expected):
+        self.assertEqual(bias.has_value(), expected)
+
     def test_causal_attention_bias(self):
         bias = attention_bias.CausalAttentionBias(shape=(5, 5))
         chex.assert_trees_all_close(bias.value(), attention_bias.make_causal_biases(5)[None, None])
@@ -45,19 +54,19 @@ class AttentionBiasTest(test_utils.TestCase):
         # pylint: disable=function-redefined
 
         class TestAttentionBias(attention_bias.BaseAttentionBias):
-            def _value(self) -> Optional[Tensor]:
+            def _value(self) -> Tensor:
                 return jnp.ones((5, 7))
 
         self.assertEqual(TestAttentionBias().value().shape, (1, 1, 5, 7))
 
         class TestAttentionBias(attention_bias.BaseAttentionBias):
-            def _value(self) -> Optional[Tensor]:
+            def _value(self) -> Tensor:
                 return jnp.ones((3, 5, 7))
 
         self.assertEqual(TestAttentionBias().value().shape, (3, 1, 5, 7))
 
         class TestAttentionBias(attention_bias.BaseAttentionBias):
-            def _value(self) -> Optional[Tensor]:
+            def _value(self) -> Tensor:
                 return jnp.ones((2, 3, 5, 7))
 
         self.assertEqual(TestAttentionBias().value().shape, (2, 3, 5, 7))
@@ -76,6 +85,56 @@ class AttentionBiasTest(test_utils.TestCase):
         self.assertEqual(
             bias.bias_and_residual(int), attention_bias.BiasAndResidual(bias=None, residual=bias)
         )
+
+    @parameterized.parameters(
+        [
+            attention_bias.CompositeAttentionBias(
+                [attention_bias.ZeroAttentionBias(), attention_bias.ZeroAttentionBias()]
+            ),
+            False,
+        ],
+        [
+            attention_bias.CompositeAttentionBias(
+                [
+                    attention_bias.CausalAttentionBias(shape=(5, 5)),
+                    attention_bias.CausalAttentionBias(shape=(5, 5)),
+                ]
+            ),
+            True,
+        ],
+        [
+            attention_bias.CompositeAttentionBias(
+                [
+                    attention_bias.CausalAttentionBias(shape=(5, 5)),
+                    attention_bias.ZeroAttentionBias(),
+                ]
+            ),
+            True,
+        ],
+        [
+            attention_bias.CompositeAttentionBias(
+                [
+                    attention_bias.ZeroAttentionBias(),
+                    attention_bias.CausalAttentionBias(shape=(5, 5)),
+                ]
+            ),
+            True,
+        ],
+    )
+    def test_composite_attention_has_bias(self, bias, expected):
+        self.assertEqual(bias.has_value(), expected)
+
+    def test_bias_and_residual_has_bias(self):
+        bias = attention_bias.CompositeAttentionBias(
+            [
+                attention_bias.CausalAttentionBias(shape=(5, 5)),
+                attention_bias.MaskFnAttentionBias(attention_bias.causal_mask, shape=(5, 5)),
+            ]
+        )
+        bias_and_residual = bias.bias_and_residual(attention_bias.CausalAttentionBias)
+        self.assertTrue(bias_and_residual.has_value())
+        bias_and_residual = bias.bias_and_residual(attention_bias.MaskFnAttentionBias)
+        self.assertTrue(bias_and_residual.has_value())
 
     def test_composite_attention_bias_zero(self):
         # Test handling of zero biases.
@@ -191,7 +250,7 @@ class AttentionBiasTest(test_utils.TestCase):
             attention_bias.SegmentIdAttentionBias,
             attention_bias.MaskFnAttentionBias,
         )
-        new_bias_list = [b if b.value() is not None else None for b in new_bias_list]
+        new_bias_list = [b if b.has_value() else None for b in new_bias_list]
         expected = [causal, segment_ids, mask, None]
         for b1, b2 in jax.util.safe_zip(new_bias_list, expected):
             self.assertIs(b1, b2)

@@ -60,6 +60,28 @@ class BaseAttentionBias:
     dtype: Optional[jnp.dtype] = struct.field(kw_only=True, default=None, pytree_node=False)
 
     @final
+    def eval_shape(self) -> tuple[int, int, int, int]:
+        """Return the shape of the bias tensor.
+
+        Note: this doesn't materialize the value. jax.eval_shape calls value(), but it only does so
+        using tracers.
+
+        Returns
+            shape: [batch or 1, num_heads or 1, target_len, source_len].
+
+        Raises:
+            ValueError: If the bias has no value.
+        """
+        if not self.has_value():
+            raise ValueError("AttentionBias has no value.")
+        return jax.eval_shape(self.value).shape
+
+    @final
+    def has_value(self) -> bool:
+        """Return whether to the bias has a value."""
+        return jax.eval_shape(self.value) is not None
+
+    @final
     def value(self) -> Optional[Tensor]:
         """Return a tensor with the biases or None if there are no biases.
 
@@ -115,9 +137,6 @@ class BaseAttentionBias:
             # Shape: [batch, 1, target_length, source_length].
             return value[:, None, :, :]
         raise ValueError(f"Invalid attention_logit_biases shape: {value.shape}.")
-
-    def eval_shape(self):
-        return jax.eval_shape(self.value).shape
 
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
@@ -233,7 +252,7 @@ class CompositeAttentionBias(BaseAttentionBias):
 
         Returned biases are not guaranteed to be nonzero, but are guaranteed to not return None.
         """
-        filt = lambda b: b.value() is not None
+        filt = lambda b: b.has_value()
         return list(filter(filt, self.biases))
 
     def bias_and_residual(self, cls: Type[B]) -> "BiasAndResidual[B]":
@@ -260,7 +279,7 @@ class CompositeAttentionBias(BaseAttentionBias):
                 send_residual_to = remaining_biases
             else:
                 send_residual_to = residuals
-            if bias_and_residual.residual.value() is not None:
+            if bias_and_residual.residual.has_value():
                 send_residual_to.append(bias_and_residual.residual)
         return BiasAndResidual(
             bias=cls.from_sequence(cls_biases), residual=CompositeAttentionBias(residuals)

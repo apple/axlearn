@@ -162,7 +162,7 @@ def flash_attention_implementation(
             """Return the segment ids Tensor from the sequence of segment ids attention
             biases or None if there are no segment ids.
             """
-            if segment_ids is None or segment_ids.value() is None:
+            if not segment_ids.has_value():
                 return None
             if query.shape[1] != key.shape[1]:
                 raise ValueError(
@@ -220,8 +220,8 @@ def flash_attention_implementation(
             # - explicit_bias is not empty, or
             # - query/key/value is in float32.
             if (
-                segment_ids.value() is not None
-                or explicit_bias.value() is not None
+                segment_ids.has_value()
+                or explicit_bias.has_value()
                 or jnp.float32 in (query.dtype, key.dtype, value.dtype)
                 or query.shape[1] != key.shape[1]
                 or dropout_rate != 0.0
@@ -235,7 +235,7 @@ def flash_attention_implementation(
                     segment_ids=get_segment_ids(segment_ids),
                     prng_key=prng_key,
                     softmax_scale=softmax_scale,
-                    causal=causal.value() is not None,
+                    causal=causal.has_value(),
                     dropout_rate=dropout_rate,
                 )
             else:
@@ -246,7 +246,7 @@ def flash_attention_implementation(
                     value,
                     bias=explicit_bias.value(),
                     softmax_scale=softmax_scale,
-                    causal=causal.value() is not None,
+                    causal=causal.has_value(),
                     dropout_rate=0.0,
                 )
 
@@ -295,7 +295,7 @@ def flash_attention_implementation(
                 bias=explicit_bias.value(),
                 segment_ids=get_segment_ids(segment_ids),
                 prng_key=prng_key,
-                causal=causal.value() is not None,
+                causal=causal.has_value(),
                 softmax_scale=softmax_scale,
                 dropout_rate=dropout_rate,
             )
