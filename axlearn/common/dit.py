@@ -211,16 +211,16 @@ class AdaptiveLayerNormModulation(BaseLayer):
         """Generate the parameters for modulation.
 
         Args:
-            input: A tensor with shape [batch_size, dim].
+            input: A tensor with shape [batch_size, ..., dim].
 
         Returns:
             A list of tensors with length num_outputs.
-                Each tensor has shape [batch_size, dim].
+                Each tensor has shape [batch_size, ..., dim].
         """
         cfg = self.config
         x = get_activation_fn(cfg.activation)(input)
         output = self.linear(x)
-        output = jnp.split(output, cfg.num_outputs, axis=1)
+        output = jnp.split(output, cfg.num_outputs, axis=-1)
         return output
 
 

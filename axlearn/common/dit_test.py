@@ -326,6 +326,35 @@ class TestAdaptiveLayerNormModulation(parameterized.TestCase):
 
         assert_allclose(layer_output, as_tensor(ref_output))
 
+    @parameterized.product(prefix_shape=[(2,), (2, 3), (2, 3, 4)])
+    def test_shape(self, prefix_shape):
+        dim = 8
+        num_outputs = 6
+
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, data_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(data_key, shape=(*prefix_shape, dim))
+
+        cfg = AdaptiveLayerNormModulation.default_config().set(
+            name="test",
+            dim=dim,
+            num_outputs=num_outputs,
+        )
+        layer = cfg.instantiate(parent=None)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        layer_output, _ = F(
+            layer,
+            inputs=dict(input=inputs),
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertEqual(len(layer_output), num_outputs)
+        for i in range(num_outputs):
+            self.assertEqual(layer_output[i].shape, (*prefix_shape, dim))
+
 
 class TestDiTFFN(parameterized.TestCase):
     """Tests DiTFFN."""
