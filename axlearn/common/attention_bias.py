@@ -205,7 +205,9 @@ class BiasAndResidual(BaseAttentionBias, Generic[B]):
     residual: BaseAttentionBias
 
     def _value(self) -> Optional[Tensor]:
-        return CompositeAttentionBias([self.bias, self.residual]).value()
+        biases = [self.bias] if self.bias is not None else []
+        biases.append(self.residual)
+        return CompositeAttentionBias(biases).value()
 
     def __iter__(self):
         return iter((self.bias, self.residual))

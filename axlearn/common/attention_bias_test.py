@@ -152,6 +152,8 @@ class AttentionBiasTest(test_utils.TestCase):
         self.assertTrue(bias_and_residual.has_value())
         bias_and_residual = bias.bias_and_residual(attention_bias.MaskFnAttentionBias)
         self.assertTrue(bias_and_residual.has_value())
+        bias_and_residual = bias.bias_and_residual(attention_bias.ZeroAttentionBias)
+        self.assertTrue(bias_and_residual.has_value())
 
     def test_composite_attention_bias_zero(self):
         # Test handling of zero biases.
