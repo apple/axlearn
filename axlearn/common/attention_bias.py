@@ -687,7 +687,11 @@ def sliding_window_causal_mask(sliding_window_size: int) -> MaskFn:
     def mask(query_position: Tensor, key_position: Tensor):
         return query_position - key_position <= sliding_window_size
 
-    return and_masks(causal_mask, mask)
+    fun = and_masks(causal_mask, mask)
+    # Flash attention needs to recognize sliding window size in _to_splash_mask().
+    # pylint: disable-next=protected-access
+    fun._sliding_window_size = sliding_window_size
+    return fun
 
 
 def make_causal_biases(seq_len: int) -> Tensor:
