@@ -146,17 +146,20 @@ class FujiV3Vocabulary:
             s = tf.reshape(s, (1,))
             need_unpack = True
 
-        def helper(s):
-            s = s.numpy()
-            res = self._tokenizer.encode_batch(
-                [item.decode("utf-8") for item in s], add_special_tokens=True
-            )
-            # The return does not include EOS, but we need to remove BOS.
-            res = [item.ids[1:] if item.ids[0] == self.bos_id else item.ids for item in res]
+        def helper_en(s):
+            res = []
+            for item in s.numpy():
+                item = item.decode("utf-8")
+                encoded = self._tokenizer.encode(item, add_special_tokens=True)
+                ids = encoded.ids
+                # The return does not include EOS, but we need to remove BOS.
+                if len(ids) > 0 and ids[0] == self.bos_id:
+                    ids = ids[1:]
+                res.append(ids)
             return tf.ragged.constant(res, dtype=tf.int32)
 
         ret = tf.py_function(
-            helper, inp=[s], Tout=tf.RaggedTensorSpec([None, None], dtype=tf.int32)
+            helper_en, inp=[s], Tout=tf.RaggedTensorSpec([None, None], dtype=tf.int32)
         )
         if need_unpack:
             return ret[0]
