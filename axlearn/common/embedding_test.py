@@ -111,6 +111,36 @@ class TestTransformerTextEmbeddings(TestCase):
             ref = soft_cap_logits * jnp.tanh(ref / soft_cap_logits)
         assert_allclose(ref, actual_attends)
 
+    def test_embed_with_emb_scale(self):
+        seq_len = 5
+        vocab_size = 24
+        hidden_dim = 256
+
+        emb = TransformerTextEmbeddings.default_config().set(
+            name="embed",
+            dim=hidden_dim,
+            vocab_size=vocab_size,
+        )
+        emb.token_emb.set(scale=emb.token_emb.klass.Scale.UNIT)
+        layer = emb.instantiate(parent=None)
+
+        prng_key = jax.random.PRNGKey(1)
+        prng_key, init_key, data_key, fwd_key = jax.random.split(prng_key, num=4)
+        state = layer.initialize_parameters_recursively(init_key)
+
+        input_ids = jax.random.randint(data_key, shape=(3, seq_len), minval=1, maxval=vocab_size)
+        test_inputs = dict(inputs=input_ids)
+        outputs, _ = module.functional(
+            layer,
+            prng_key=fwd_key,
+            state=state,
+            inputs=dict(input_batch=test_inputs),
+            is_training=False,
+        )
+
+        assert_allclose(jnp.mean(outputs), 0.0, atol=0.05)
+        assert_allclose(jnp.std(outputs), 1.0, atol=0.05)
+
 
 if __name__ == "__main__":
     with utils.numeric_checks(True):
