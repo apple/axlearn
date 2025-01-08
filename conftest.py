@@ -2,7 +2,11 @@
 
 """Configures pytest to distribute tests to multiple GPUs.
 
-Usage on 8 GPU machines: PARALLEL_GPU_TEST=1 pytest -n 8 gpu_attention_test.py
+This is not enabled by default and requires explicit opt-in by setting the environment variable
+PARALLEL_GPU_TEST. This is because not all GPU tests are single-GPU tests.
+
+Example usage on 8 GPU machines:
+PARALLEL_GPU_TEST=1 pytest -n 8 axlearn/common/flash_attention/gpu_attention_test.py
 """
 import os
 
