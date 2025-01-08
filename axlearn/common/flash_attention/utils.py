@@ -24,10 +24,11 @@ from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_atten
 from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
 from axlearn.common.flash_attention.gpu_decoding import flash_decoding
 from axlearn.common.flash_attention.tpu_attention import tpu_flash_attention
+from axlearn.common.layers import dropout
 from axlearn.common.utils import Tensor
 
 
-@functools.partial(jax.jit, static_argnames=["causal", "softmax_scale"])
+@functools.partial(jax.jit, static_argnames=["causal", "softmax_scale", "dropout_rate"])
 @jax.default_matmul_precision("bfloat16")
 def mha_reference(
     q: Tensor,
@@ -35,9 +36,12 @@ def mha_reference(
     v: Tensor,
     bias: Optional[Tensor] = None,
     segment_ids: Optional[Tensor] = None,
+    prng_key: Optional[Tensor] = None,
     *,
     causal: bool = False,
     softmax_scale: float = 1.0,
+    dropout_rate: float = 0.0,
+    dropout_mask: Optional[Tensor] = None,
 ) -> Tensor:
     """Reference multi-headed attention implementation.
 
@@ -48,9 +52,10 @@ def mha_reference(
         bias: bias tensor with a shape that can broadcast to
             [batch_size, num_heads, seq_len, seq_len], e.g. [1, 1, seq_len, seq_len].
         segment_ids: segment ids tensor with shape [batch_size, seq_len].
+        prng_key: prng key for dropout.
         causal: whether the attention is causal.
         softmax_scale: a scalar value applied to the logits before softmax.
-
+        dropout_rate: dropout rate.
     Returns:
         A tensor with shape [batch_size, seq_len, num_heads, per_head_dim].
     """
@@ -77,6 +82,9 @@ def mha_reference(
         logits = jnp.where(mask, NEG_INF, logits)
 
     probs = softmax_with_biases(logits, bias)
+    if dropout_rate > 0:
+        probs = dropout(probs, prng_key=prng_key, rate=dropout_rate, mask=dropout_mask)
+
     context = jnp.einsum("bnts,bsnh->btnh", probs, v).astype(v.dtype)
     return context
 
@@ -93,8 +101,8 @@ def _repeat_kv_heads(num_q_heads: int, key_or_value: Tensor) -> Tensor:
     return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
 
 
-# Accepts [query, key, value, attention_bias, segment_ids] tensors and returns the context Tensor.
-MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tensor]
+# Accepts [query, key, value, attention_bias, prng_key] tensors and returns the context Tensor.
+MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor, Optional[Tensor]], Tensor]
 
 
 def flash_attention_implementation(
@@ -102,6 +110,7 @@ def flash_attention_implementation(
     *,
     softmax_scale: float,
     block_size: int = 128,
+    dropout_rate: Optional[float] = 0.0,
 ) -> MultiHeadAttentionImpl:
     """Returns a jitted "flash" multihead-attention implementation for the given backend.
 
@@ -118,6 +127,8 @@ def flash_attention_implementation(
     Raises:
         NotImplementedError: If implementation for the backend is not available.
     """
+    if dropout_rate is None:
+        dropout_rate = 0.0
 
     # shard_map-decorated function needs to be jitted.
     @jax.jit
@@ -126,6 +137,7 @@ def flash_attention_implementation(
         key: Tensor,
         value: Tensor,
         bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
         *,
         backend: str = backend,
     ) -> Tensor:
@@ -141,6 +153,8 @@ def flash_attention_implementation(
             # TODO(senyut): Support TPU decoding.
             backend = "xla"
             bias = TensorAttentionBias(bias.value())
+        if dropout_rate != 0.0 and backend not in ("gpu", "xla", "cpu"):
+            raise NotImplementedError("Dropout is only implemented for GPU, CPU and XLA.")
 
         bias = CompositeAttentionBias([bias])
 
@@ -191,14 +205,6 @@ def flash_attention_implementation(
                     softmax_scale=softmax_scale,
                 )
 
-            if query.shape[1] != key.shape[1]:
-                # TODO(xuan-zou): Generalize GPU Flash Attention for q_len != kv_len.
-                # Remove pytest.skip corresponding to q_len != kv_len in layer_test.py once fixed.
-                raise NotImplementedError(
-                    f"Query length {query.shape[1]} must be equal to KV length "
-                    f"{key.shape[1]} for correctly supported GPU flash attention usage."
-                )
-
             key = _repeat_kv_heads(query.shape[2], key)
             value = _repeat_kv_heads(query.shape[2], value)
 
@@ -217,6 +223,8 @@ def flash_attention_implementation(
                 segment_ids.value() is not None
                 or explicit_bias.value() is not None
                 or jnp.float32 in (query.dtype, key.dtype, value.dtype)
+                or query.shape[1] != key.shape[1]
+                or dropout_rate != 0.0
             ):
                 logging.warning("Flash attention falling back to Triton GPU kernel.")
                 return gpu_flash_attention(
@@ -225,8 +233,10 @@ def flash_attention_implementation(
                     value,
                     bias=explicit_bias.value(),
                     segment_ids=get_segment_ids(segment_ids),
+                    prng_key=prng_key,
                     softmax_scale=softmax_scale,
                     causal=causal.value() is not None,
+                    dropout_rate=dropout_rate,
                 )
             else:
                 explicit_bias += segment_ids
@@ -284,8 +294,10 @@ def flash_attention_implementation(
                 value,
                 bias=explicit_bias.value(),
                 segment_ids=get_segment_ids(segment_ids),
+                prng_key=prng_key,
                 causal=causal.value() is not None,
                 softmax_scale=softmax_scale,
+                dropout_rate=dropout_rate,
             )
 
         raise NotImplementedError(f"Backend ({backend}) does not have an implementation.")
