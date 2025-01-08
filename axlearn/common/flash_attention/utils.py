@@ -224,7 +224,6 @@ def flash_attention_implementation(
                 or explicit_bias.has_value()
                 or jnp.float32 in (query.dtype, key.dtype, value.dtype)
                 or query.shape[1] != key.shape[1]
-                or dropout_rate != 0.0
             ):
                 logging.warning("Flash attention falling back to Triton GPU kernel.")
                 return gpu_flash_attention(
@@ -248,7 +247,7 @@ def flash_attention_implementation(
                     bias=explicit_bias.value(),
                     softmax_scale=softmax_scale,
                     causal=causal.has_value(),
-                    dropout_rate=0.0,
+                    dropout_rate=dropout_rate,
                 )
 
         elif backend == "tpu":
