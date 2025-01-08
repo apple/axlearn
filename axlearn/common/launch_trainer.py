@@ -116,6 +116,8 @@ def get_trainer_config(
         from axlearn.cloud.gcp.monitoring.tpu_device_monitor import create_tpu_monitor
 
         trainer_config.device_monitor = create_tpu_monitor()
+    if hasattr(trainer_config.checkpointer, "unique_str"):
+        trainer_config.checkpointer.unique_str = trainer_config.dir
     return trainer_config
 
 
