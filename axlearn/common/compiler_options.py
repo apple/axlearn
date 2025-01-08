@@ -72,6 +72,8 @@ def default_xla_options(
             xla_latency_hiding_scheduler_rerun=2,
             # Improved performance for v6e.
             xla_tpu_scoped_vmem_limit_kib=98304,
+            # For megascale performance.
+            xla_jf_crs_combiner_threshold_count=10,
         )
         options.update(
             # Improved performance for v6e.
@@ -98,13 +100,14 @@ def default_xla_options(
             xla_tpu_use_enhanced_launch_barrier="true",
             # Sparsecore offloading for all reduce.
             # Uncomment below flags to enable it.
-            # xla_sc_disable_megacore_partitioning="true",
-            # xla_tpu_use_tc_device_shape_on_sc="true",
-            # tpu_use_continuations="true",
-            # xla_jf_crs_combiner_threshold_count=10,
-            # xla_sc_enable_instruction_fusion="false",
-            # xla_sc_disjoint_spmem="false",
-            # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            xla_sc_disable_megacore_partitioning="true",
+            xla_tpu_use_tc_device_shape_on_sc="true",
+            tpu_use_continuations="true",
+            xla_sc_enable_instruction_fusion="false",
+            xla_sc_disjoint_spmem="false",
+            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
+            megascale_grpc_enable_xor_tracer="false",
         )
         # This flag can be removed after upgrading to Jax 0.4.38.
         # Uncomment for sparsecore offloading.

@@ -56,7 +56,6 @@ On `segment_ids`:
 import enum
 import functools
 import math
-import re
 from collections.abc import Sequence
 from enum import Enum, unique
 from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
@@ -64,9 +63,6 @@ from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 import einops
 import jax
 from jax import numpy as jnp
-from jax._src.ad_checkpoint import name_p
-from jax._src.interpreters import partial_eval as pe
-from jax.core import Primitive
 
 from axlearn.common import ops, param_init
 from axlearn.common.attention_bias import (
@@ -120,13 +116,16 @@ from axlearn.common.repeat import Repeat
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
+    OffloadPolicy,
     PartitionSpec,
+    SavePattern,
     Tensor,
     TensorSpec,
     VDict,
     check_numerics,
     flatten_items,
     get_or_none,
+    save_and_offload_only_these_names_regex,
     shapes,
     split_prng_key,
 )
@@ -3930,30 +3929,23 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
     # TODO(sneha): extend_step
 
 
-OffloadPolicy = Callable[[Primitive, list[Any], dict[str, Any]], Union[bool, Any]]
-_SavePattern = Union[str, re.Pattern, None]
-
-
 # Adapted from jax source code to support regex. Reference:
 # https://github.com/jax-ml/jax/blob/0d36b0b433a93c707f86dac89b0c05d40302775a/jax/_src/ad_checkpoint.py#L120
+# TODO(kelvin-zou): deprecated, keep it here to minimize distruption to the golden configs.
+# Please use axlearn.common.utils.extended_checkpoint_policies instead.
 def _save_and_offload_only_these_names_regex(
     *,
-    names_which_can_be_saved: _SavePattern,
-    names_which_can_be_offloaded: _SavePattern,
+    names_which_can_be_saved: SavePattern,
+    names_which_can_be_offloaded: SavePattern,
     offload_src: str,
     offload_dst: str,
 ) -> OffloadPolicy:
-    def policy(prim, *_, **params):
-        if prim is name_p:
-            if names_which_can_be_saved and re.fullmatch(names_which_can_be_saved, params["name"]):
-                return pe.Saveable
-            if names_which_can_be_offloaded and re.fullmatch(
-                names_which_can_be_offloaded, params["name"]
-            ):
-                return pe.Offloadable(src=offload_src, dst=offload_dst)
-        return pe.Recompute  # not saveable unless it's in the allow-list
-
-    return policy
+    return save_and_offload_only_these_names_regex(
+        names_which_can_be_saved=names_which_can_be_saved,
+        names_which_can_be_offloaded=names_which_can_be_offloaded,
+        offload_src=offload_src,
+        offload_dst=offload_dst,
+    )
 
 
 SELF_ATTENTION_SAVE_PATTERN = ".*([qkvo]_proj|context)"
@@ -3964,8 +3956,8 @@ def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
     ],
-    save_pattern: _SavePattern = SELF_ATTENTION_SAVE_PATTERN,
-    offload_pattern: _SavePattern = None,
+    save_pattern: SavePattern = SELF_ATTENTION_SAVE_PATTERN,
+    offload_pattern: SavePattern = None,
     offload_dst: str = "pinned_host",
 ) -> Optional[RematSpec]:
     """Configures how the Transformer or Conformer stack will save the linearization points.
