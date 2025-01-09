@@ -499,6 +499,7 @@ class Decoder(BaseLayer):
     ) -> tuple[Optional[NestedTensor], Tensor]:
         validate_contains_paths(input_batch, paths=["input_ids"])
         input_segment_ids = input_batch.get("input_segment_ids", None)
+        positions = input_batch.get("positions", None)
 
         emb_batch = {**input_batch}
         emb_batch["inputs"] = emb_batch["input_ids"]
@@ -511,6 +512,7 @@ class Decoder(BaseLayer):
                     x,
                     self_attention_logit_biases=self_attention_logit_biases,
                     target_segment_ids=input_segment_ids,
+                    target_positions=positions,
                     cross_attention_data=cross_attention_data,
                     cross_attention_logit_biases=cross_attention_logit_biases,
                 ),
@@ -780,18 +782,15 @@ class Decoder(BaseLayer):
             Attention logit biases of shape [batch_size, num_heads, seq_len, seq_len],
             or None if cfg.attention_mask is None.
 
-        Raises:
-            ValueError: If segment_ids and positions are not both provided, or both omitted.
         """
         if "attention_mask" not in self.children:
             return None
-        if (segment_ids is None) != (positions is None):
-            raise ValueError("segment_ids and positions must be provided together.")
         cfg = self.config
-        if segment_ids is None or positions is None:
+        if segment_ids is None:
             segment_ids = _segment_ids_from_causal_input_ids(
                 input_ids, pad_token_id=cfg.pad_token_id
             )
+        if positions is None:
             positions = jnp.arange(input_ids.shape[-1])[None, :]  # [batch=1, seq_len].
         return self.attention_mask(segment_ids=segment_ids, positions=positions)
 

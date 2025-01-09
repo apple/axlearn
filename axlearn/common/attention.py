@@ -50,6 +50,24 @@ On `segment_ids`:
 * Tokens are only allowed to attend to other tokens within the same segment.
 * segment_ids == 0 represents paddings.
 * None represents an all-one tensor, i.e. all positions are in the same segment.
+
+On `positions`:
+* A tensor of shape [batch, target_length]. Note that this is conceptually different from
+  `time_step`. To disambiguate:
+  * `positions`: A [batch, target_length] tensor indicating the position ids of each input token
+    during training (i.e. in `forward`).
+  * `time_step`: a [batch] tensor indicating the current decode position of each sample during
+    decoding (i.e. in `init_states` and `extend_step`).
+* In most typical cases, the values of `positions` are integers in [0, target_length - 1].
+  However, this should not be assumed by the implementation in order to support other positional
+  encoding schemes, e.g. RandPos (https://arxiv.org/pdf/2305.16843), where positions are
+  non-consecutive integers that can be larger than target_length - 1.
+* None represents jnp.arange(target_length).
+* When the accompanying argument is `query`, the `positions` argument is named as
+  `query_position`. Similarly, when the argument `target`, it is named as `target_positions`.
+
+TODO(changlan): Merge the use of `positions` and `time_step` to reduce cognitive complexity.
+
 """
 
 # pylint: disable=abstract-method,too-many-lines
@@ -211,6 +229,7 @@ class BaseTransformerLayer(BaseLayer):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         target_segment_ids: Optional[Tensor] = None,
+        target_positions: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes transformer layer outputs given full-sequence inputs.
@@ -228,6 +247,7 @@ class BaseTransformerLayer(BaseLayer):
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
             target_segment_ids: See ``segment_ids`` in the file comments.
+            target_positions: See ``positions`` in the file comments.
             return_aux: A set of auxiliary output fields to return. Each element must be an
                 optional field of `Output`, e.g.,
                 `return_aux = {"self_attention_probs", "self_attention_kv_state"}` means that
@@ -745,7 +765,7 @@ class BaseQKVLinear(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        time_step: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> Output:
         """Computes per-head query, key, and value for the input query, key, value.
 
@@ -756,7 +776,7 @@ class BaseQKVLinear(BaseLayer):
             value: An optional Tensor of shape [batch, source_length, source_dim].
                    If None, will use `query`.
             kv_state: An optional KVState. If not None, both key and value must be None.
-            time_step: An optional Tensor of shape [batch]. If None, will ignore.
+            query_positions: An optional Tensor of shape [batch, target_length].
 
         Returns:
             An Output instance, where query is of size
@@ -808,9 +828,13 @@ class BaseQKVLinear(BaseLayer):
             kv_kwargs = dict(kv_state=kv_state)
         else:
             kv_kwargs = dict(key=key, value=value)
+
         num_query_steps = query.shape[1]
+        query_positions = jnp.arange(num_query_steps)[None]
+        query_positions += time_step[:, None]
+
         # Project inputs to key, value and query. Each has shape [B, steps, N, H].
-        q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, time_step=time_step)
+        q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, query_positions=query_positions)
         updated_state = dict(time_step=time_step + num_query_steps)
         if kv_state is None:
             # Update the cache via dynamic slice. [B, S, N, H].
@@ -868,7 +892,7 @@ class QKVLinear(BaseQKVLinear):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[Tensor] = None,
-        time_step: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         """Computes attention for the given query, key, value.
 
@@ -881,6 +905,7 @@ class QKVLinear(BaseQKVLinear):
                 "QKVLinear computes key and value projections "
                 "and does not expect external `kv_state`."
             )
+        del query_positions
 
         key = query if key is None else key
         value = query if value is None else value
@@ -945,7 +970,7 @@ class QLinear(BaseQKVLinear):
         kv_state: KVState,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
-        time_step: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         """Computes projects for the given query. Uses {k,v}_proj from `kv_state`.
 
@@ -1027,7 +1052,7 @@ class FusedQKVLinear(BaseQKVLinear):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        time_step: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         """Computes multi-head query, key, and value for the input query, key, value
         using a fused weight.
@@ -1044,6 +1069,7 @@ class FusedQKVLinear(BaseQKVLinear):
                 "FusedQKVLinear computes key and value projections "
                 "and does not expect external `kv_state`."
             )
+        del query_positions
 
         with child_context("qkv_proj"):
             params = self.qkv_proj.parameters
@@ -1126,7 +1152,7 @@ class FusedGroupedQKVLinear(BaseQKVLinear):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[Tensor] = None,
-        time_step: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> FusedQKVLinear.Output:
         """See FusedQKVLinear for full docstring.
 
@@ -1139,6 +1165,7 @@ class FusedGroupedQKVLinear(BaseQKVLinear):
             )
         if key is not None or value is not None:
             raise ValueError("Key and value should be both None.")
+        del query_positions
         cfg = self.config
         proj = self.qkv_proj(query)
         q_proj, k_proj, v_proj = jnp.split(
@@ -1311,15 +1338,14 @@ class RoFormerQKVLinear(BaseQKVLinear):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        time_step: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         cfg = self.config
         # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
         query, key, value = self.i_proj(query, key=key, value=value, kv_state=kv_state)
-        query_pos = jnp.arange(query.shape[1])[None]  # [batch_size=1, seq_len].
-        if time_step is not None:
-            query_pos = query_pos + time_step[:, None]  # [batch_size, seq_len].
-        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(query_pos).astype(query.dtype)
+        if query_positions is None:
+            query_positions = jnp.arange(query.shape[1])[None]
+        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(query_positions).astype(query.dtype)
         # sinusoidal_pos_emb shape should be [batch_size, seq_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(sinusoidal_pos_emb, 2)
 
@@ -1656,6 +1682,7 @@ class MultiheadAttention(BaseLayer):
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Union[None, Tensor, BaseAttentionBias] = None,
         segment_ids: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Nested[Tensor], Optional[Output]]:
@@ -1672,6 +1699,7 @@ class MultiheadAttention(BaseLayer):
             kv_state: An optional KVState. If specified, both `key` and `value` should be None.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             segment_ids: See ``On segment_ids`` in the file comments.
+            query_positions: See ``On positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on `Output`.
 
@@ -1700,14 +1728,19 @@ class MultiheadAttention(BaseLayer):
             kv_kwargs = dict(key=key, value=value)
 
         if mode == ForwardMode.FORWARD:
-            i_proj_state, i_proj_output = None, self.i_proj(query, **kv_kwargs)
+            i_proj_state, i_proj_output = (
+                None,
+                self.i_proj(query, query_positions=query_positions, **kv_kwargs),
+            )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
+            assert query_positions is None
             i_proj_state, i_proj_output = self.i_proj.init_states(
                 time_step=cached_states["i_proj"], query=query, **kv_kwargs
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
+            assert query_positions is None
             i_proj_state, i_proj_output = self.i_proj.extend_step(
                 cached_states["i_proj"], query, **kv_kwargs
             )
@@ -1809,6 +1842,7 @@ class MultiheadAttention(BaseLayer):
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
         segment_ids: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes attention for the given query, key, value, and attention logit biases.
@@ -1822,6 +1856,7 @@ class MultiheadAttention(BaseLayer):
             kv_state: An optional KVState. If not None, both key and value must be None.
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
             segment_ids: See `On segment_ids` in the file comments.
+            query_positions: See ``On positions`` in the file comments.
             return_aux: See comments on `Output`.
 
         Returns:
@@ -1839,6 +1874,7 @@ class MultiheadAttention(BaseLayer):
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
             segment_ids=segment_ids,
+            query_positions=query_positions,
             return_aux=return_aux,
         )
         return output
@@ -2432,6 +2468,7 @@ class TransformerAttentionLayer(BaseLayer):
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
         segment_ids: Optional[Tensor] = None,
+        target_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Optional[Nested[Tensor]], Optional[Output]]:
@@ -2444,7 +2481,8 @@ class TransformerAttentionLayer(BaseLayer):
             source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention).
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            segment_ids: segment_ids: See ``On segment_ids`` in the file comments.
+            segment_ids: See ``On segment_ids`` in the file comments.
+            target_positions: See ``On positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on `Output`.
 
@@ -2480,10 +2518,13 @@ class TransformerAttentionLayer(BaseLayer):
                         **kv_kwargs,
                         attention_logit_biases=attention_logit_biases,
                         segment_ids=segment_ids,
+                        query_positions=target_positions,
                     ),
                 )
             elif mode == ForwardMode.INIT_STATES:
                 assert cached_states is not None
+                assert segment_ids is None
+                assert target_positions is None
                 atten_state, atten_output = self.attention.init_states(
                     time_step=cached_states["attention"],
                     query=target,
@@ -2492,6 +2533,8 @@ class TransformerAttentionLayer(BaseLayer):
                 )
             elif mode == ForwardMode.EXTEND_STEP:
                 assert cached_states is not None
+                assert segment_ids is None
+                assert target_positions is None
                 atten_state, atten_output = self.attention.extend_step(
                     cached_states["attention"],
                     target,
@@ -2538,6 +2581,7 @@ class TransformerAttentionLayer(BaseLayer):
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
         segment_ids: Optional[Tensor] = None,
+        target_positions: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes attention with target as query and source as key and value.
@@ -2548,6 +2592,7 @@ class TransformerAttentionLayer(BaseLayer):
                 If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             segment_ids: See ``segment_ids`` in the file comments.
+            target_positions: See ``positions`` in the file comments.
             return_aux: See comments on `Output`.
 
         Returns:
@@ -2563,6 +2608,7 @@ class TransformerAttentionLayer(BaseLayer):
             source=source,
             attention_logit_biases=attention_logit_biases,
             segment_ids=segment_ids,
+            target_positions=target_positions,
             cached_states=None,
             return_aux=return_aux,
         )
@@ -2945,6 +2991,7 @@ class TransformerLayer(BaseTransformerLayer):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         target_segment_ids: Optional[Tensor] = None,
+        target_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Optional[NestedTensor], Optional[BaseTransformerLayer.Output]]:
@@ -2960,6 +3007,7 @@ class TransformerLayer(BaseTransformerLayer):
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
             target_segment_ids: See ``segment_ids`` in the file comments.
+            target_positions: See ``positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on BaseTransformerLayer.forward.
 
@@ -2991,6 +3039,7 @@ class TransformerLayer(BaseTransformerLayer):
                 self.self_attention(
                     target=data,
                     segment_ids=target_segment_ids,
+                    target_positions=target_positions,
                     source=self_attention_kv_state,
                     attention_logit_biases=self_attention_logit_biases,
                     return_aux=self_attention_return_aux,
@@ -3000,6 +3049,8 @@ class TransformerLayer(BaseTransformerLayer):
             assert cached_states is not None
             if target_segment_ids is not None:
                 raise NotImplementedError("target_segment_ids is not supported in INIT_STATES.")
+            if target_positions is not None:
+                raise NotImplementedError("target_positions is not supported in INIT_STATES.")
             self_atten_state, self_atten_outputs = self.self_attention.init_states(
                 time_step=cached_states["self_attention"],
                 target=data,
@@ -3011,6 +3062,8 @@ class TransformerLayer(BaseTransformerLayer):
             assert cached_states is not None
             if target_segment_ids is not None:
                 raise NotImplementedError("target_segment_ids is not supported in EXTEND_STEP.")
+            if target_positions is not None:
+                raise NotImplementedError("target_positions is not supported in EXTEND_STEP.")
             self_atten_state, self_atten_outputs = self.self_attention.extend_step(
                 cached_states=cached_states["self_attention"],
                 target=data,
