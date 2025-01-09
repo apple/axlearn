@@ -592,13 +592,13 @@ class GPUGKEJobTest(TestCase):
     ):
         with mock_gcp_settings([job.__name__, bundler.__name__], self._mock_settings):
             fv = flags.FlagValues()
-            job.GPUGKEJob.define_flags(fv)
+            job.GPUGKEA3HighJob.define_flags(fv)
             if service_account:
                 fv.set_default("service_account", service_account)
             if num_replicas:
                 fv.set_default("num_replicas", num_replicas)
             fv.mark_as_parsed()
-            cfg = job.GPUGKEJob.from_flags(fv)
+            cfg = job.GPUGKEA3HighJob.from_flags(fv)
             cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             cfg.accelerator.instance_type = "gpu-a3-highgpu-8g-256"
             cfg.queue = queue
@@ -646,8 +646,8 @@ class GPUGKEJobTest(TestCase):
                 retry_interval=1,
                 name="test",
             )
-            gke_job: job.GPUGKEJob = cfg.instantiate()
-            job_cfg: job.GPUGKEJob.Config = gke_job.config
+            gke_job: job.GPUGKEA3HighJob = cfg.instantiate()
+            job_cfg: job.GPUGKEA3HighJob.Config = gke_job.config
             self.assertEqual("gpu-a3-highgpu-8g-256", job_cfg.accelerator.instance_type)
             if num_replicas is None:
                 self.assertEqual(1, job_cfg.accelerator.num_replicas)
@@ -666,7 +666,7 @@ class GPUGKEJobTest(TestCase):
         num_replicas: Optional[int] = None,
     ):
         with self._job_config(bundler_cls, env_vars=env_vars, num_replicas=num_replicas) as cfg:
-            gke_job: job.GPUGKEJob = cfg.set(
+            gke_job: job.GPUGKEA3HighJob = cfg.set(
                 name="test",
             ).instantiate()
             # pylint: disable-next=protected-access
@@ -700,7 +700,7 @@ class GPUGKEJobTest(TestCase):
         queue: Optional[str] = None,
     ):
         with self._job_config(bundler_cls, queue=queue) as cfg:
-            gke_job: job.GPUGKEJob = cfg.set(
+            gke_job: job.GPUGKEA3HighJob = cfg.set(
                 name="test",
             ).instantiate()
             # pylint: disable-next=protected-access

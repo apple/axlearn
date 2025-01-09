@@ -48,7 +48,14 @@ from axlearn.cloud.common.utils import (
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
-from axlearn.cloud.gcp.job import BASTION_JOB_VERSION_LABEL, GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import (
+    BASTION_JOB_VERSION_LABEL,
+    GCPJob,
+    GKEJob,
+    GPUGKEA3HighJob,
+    GPUGKEA3UltraJob,
+    TPUGKEJob,
+)
 from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.jobs.tpu_runner import with_tpu_training_defaults
 from axlearn.cloud.gcp.node_pool import (
@@ -530,14 +537,20 @@ class TPUGKERunnerJob(GKERunnerJob):
 class GPUGKERunnerJob(GKERunnerJob):
     """A GKERunnerJob that uses GPUGKEJob."""
 
-    inner = GPUGKEJob
+    @classmethod
+    def class_from_instance_type(cls, instance_type: str):
+        if instance_type.startswith("gpu-a3-high"):
+            cls.inner = GPUGKEA3HighJob
+        elif instance_type.startswith("gpu-a3-ultra"):
+            cls.inner = GPUGKEA3UltraJob
+        return cls
 
 
 def _get_runner_or_exit(instance_type: str):
     if instance_type.startswith("tpu"):
         return TPUGKERunnerJob
     elif instance_type.startswith("gpu-a3"):
-        return GPUGKERunnerJob
+        return GPUGKERunnerJob.class_from_instance_type(instance_type)
     else:
         raise app.UsageError(f"Unknown instance_type {instance_type}")
 

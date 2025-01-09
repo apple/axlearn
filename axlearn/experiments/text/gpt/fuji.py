@@ -504,6 +504,12 @@ def get_trainer_kwargs(
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
                 ),
+                # v2 on a3-ultragpu-8g-256 8x32, step time 15.493s.
+                # v2 on a3-ultragpu-8g-512 8x64, step time 8.184s.
+                (
+                    "gpu-(a3-ultragpu-8g)-(256|512|1024)",
+                    mesh_shape_from_axes(data=-1, fsdp=64),
+                ),
                 (
                     "neuron-(trn2|trn2n).48xlarge-64",
                     ChainConfigModifier.default_config().set(

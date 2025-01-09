@@ -14,7 +14,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
-from axlearn.cloud.gcp.job import BASTION_JOB_VERSION_LABEL, GPUGKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import BASTION_JOB_VERSION_LABEL, GPUGKEA3HighJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import gke_runner
 from axlearn.cloud.gcp.jobs.bastion_vm_test import _mock_job
 from axlearn.cloud.gcp.jobs.gke_runner import (
@@ -112,7 +112,7 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
             self.assertEqual(cfg.cluster, cluster or mock_settings["gke_cluster"])
             self.assertEqual(cfg.service_account, service_account or "default")
             if gcsfuse_mount_spec:
-                fuse = cast(GPUGKEJob.Config, cfg.inner).gcsfuse_mount
+                fuse = cast(GPUGKEA3HighJob.Config, cfg.inner).gcsfuse_mount
                 self.assertEqual(fuse.gcs_path, "my-test-path")
 
     @parameterized.product(
