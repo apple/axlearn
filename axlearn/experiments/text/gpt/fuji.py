@@ -22,11 +22,13 @@ from axlearn.common.attention import (
     BaseStackedTransformerLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
+    GroupedQKVLinear,
     GroupedQueryAttention,
     MultiheadAttention,
     RematRegexSavePatterns,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
+    StackedTransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
@@ -38,6 +40,8 @@ from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     GradientAccumulationModifier,
     MeshShapeModifier,
+    ModelConfigModifier,
+    PartitionSpecModifier,
     RematSpecModifier,
 )
 from axlearn.common.utils import (
@@ -151,6 +155,60 @@ def get_trainer_kwargs(
 
     rope_theta = ROPE_THETA[version]
 
+    # TRN2 specific model config modifications
+    trn2_model_modifications = [
+        # Neuron compiler has a module to detect repeating blocks and reuse them during compilation.
+        # So compile time does not grow with the number of layers.
+        ModelConfigModifier.default_config().set(
+            target_config="model.decoder.transformer",
+            modification=StackedTransformerLayer.default_config(),
+        )
+    ]
+    if version != Version.V1:
+        trn2_model_modifications.append(
+            ModelConfigModifier.default_config().set(
+                target_config="model.decoder.transformer.layer.self_attention.attention."
+                "input_linear.input_linear",
+                modification=GroupedQKVLinear.default_config(),
+            )
+        )
+
+    trn2_partition_spec_modifications = [
+        PartitionSpecModifier.default_config().set(
+            partition_specs={
+                # Vocab parallel embeddings sharding from Megatron LM.
+                "model.decoder.emb.token_emb": {
+                    "param_partition_spec": (
+                        "model",
+                        ("expert", "fsdp", "seq"),
+                    ),
+                    "input_partition_spec": ("fsdp", None),
+                    "output_partition_spec": ("fsdp", "model"),
+                    "embedding_partition_spec": ("model", "fsdp"),
+                },
+                "model.decoder.lm_head": {
+                    "param_partition_spec": (
+                        "model",
+                        ("expert", "fsdp", "seq"),
+                    ),
+                },
+                # Sequence parallel shardings for norms.
+                "model.decoder.transformer.layer.self_attention.norm": {
+                    "input_partition_spec": ("fsdp", "model", None),
+                    "output_partition_spec": ("fsdp", None, None),
+                },
+                "model.decoder.transformer.layer.feed_forward.norm": {
+                    "input_partition_spec": ("fsdp", "model", None),
+                    "output_partition_spec": ("fsdp", None, None),
+                },
+                "model.decoder.output_norm": {
+                    "input_partition_spec": ("fsdp", "model", None),
+                    "output_partition_spec": ("fsdp", None, None),
+                },
+            },
+        ),
+    ]
+
     offload_dots_saveable_policy = config_for_function(
         extended_checkpoint_policies.offload_dots_saveable
     ).set(offload_src="device", offload_dst="pinned_host")
@@ -204,6 +262,22 @@ def get_trainer_kwargs(
             train_batch_size=train_batch_size,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+            mesh_rules=(
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                # TP within the chip, FSDP across chips.
+                                # Each TRN2 chip has 4 XLA cores.
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                            ),
+                            *trn2_model_modifications,
+                            *trn2_partition_spec_modifications,
+                        ],
+                    ),
+                ),
+            ),
         )
     elif model_size == "3B":
         trainer_kwargs = dict(
@@ -222,6 +296,22 @@ def get_trainer_kwargs(
             train_batch_size=train_batch_size,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+            mesh_rules=(
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                # TP within the chip, FSDP across chips.
+                                # Each TRN2 chip has 4 XLA cores.
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                            ),
+                            *trn2_model_modifications,
+                            *trn2_partition_spec_modifications,
+                        ],
+                    ),
+                ),
+            ),
         )
     elif model_size == "7B":
         trainer_kwargs = dict(
@@ -336,6 +426,20 @@ def get_trainer_kwargs(
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                # TP within the chip, FSDP across chips.
+                                # Each TRN2 chip has 4 XLA cores.
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                            ),
+                            *trn2_model_modifications,
+                            *trn2_partition_spec_modifications,
+                        ],
+                    ),
+                ),
             ),
         )
     elif model_size == "8B":
@@ -416,6 +520,20 @@ def get_trainer_kwargs(
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                # TP within the chip, FSDP across chips.
+                                # Each TRN2 chip has 4 XLA cores.
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                            ),
+                            *trn2_model_modifications,
+                            *trn2_partition_spec_modifications,
+                        ],
+                    ),
+                ),
             ),
         )
     elif model_size == "70B":
@@ -434,7 +552,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=8,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -512,6 +630,8 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
+                                # TP within the chip, FSDP across chips.
+                                # Each TRN2 chip has 4 XLA cores.
                                 mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
                             ),
                             RematSpecModifier.default_config().set(
@@ -534,6 +654,8 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
+                            *trn2_model_modifications,
+                            *trn2_partition_spec_modifications,
                         ],
                     ),
                 ),
