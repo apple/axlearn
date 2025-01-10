@@ -822,6 +822,7 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         tgt_len,
         batch_size,
         ref_rope_emb,
+        positions,
     ):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
         layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
@@ -838,12 +839,18 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
                 mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
             layer_outputs, _ = F(
                 layer,
-                inputs=dict(target=jnp.asarray(target), attention_logit_biases=mask),
+                inputs=dict(
+                    target=jnp.asarray(target),
+                    attention_logit_biases=mask,
+                    target_positions=positions,
+                ),
                 state=layer_params,
                 is_training=True,
                 prng_key=jax.random.PRNGKey(0),
             )
             attn_mask = None if mask is None else as_torch_tensor(mask)
+            print("ref_rope_emb", ref_rope_emb.shape)
+            print("target", target.shape)
             (ref_outputs,) = ref.forward(
                 torch.as_tensor(target, dtype=torch.float32),
                 attention_mask=attn_mask,
@@ -852,8 +859,8 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             )
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
 
-    @parameterized.parameters([True, False])
-    def test_rope_self_attention(self, rotary_value: bool):
+    @parameterized.product(rotary_value=[True, False], override_positions=[True, False])
+    def test_rope_self_attention(self, rotary_value: bool, override_positions: bool):
         model_dim = 32
         num_heads = 4
         max_sequence_length = 12
@@ -870,9 +877,17 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             .set(name="test_rope_emb", dim=model_dim // num_heads)
             .instantiate(parent=None)
         )
-        ref_rope_emb = as_torch_tensor(
-            rope_emb_layer.forward(jnp.expand_dims(jnp.arange(max_sequence_length), 0))
+        positions = (
+            jax.random.randint(
+                jax.random.PRNGKey(0),
+                shape=(batch_size, max_sequence_length),
+                minval=0,
+                maxval=max_sequence_length,
+            )
+            if override_positions
+            else jnp.expand_dims(jnp.arange(max_sequence_length), 0)
         )
+        ref_rope_emb = as_torch_tensor(rope_emb_layer.forward(positions)).unsqueeze(1)
         layer = attention.TransformerAttentionLayer.default_config().set(
             source_dim=model_dim,
             target_dim=model_dim,
@@ -891,7 +906,12 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         print(f"roformer_config={roformer_config}")
         ref = hf_roformer.RoFormerAttention(roformer_config)
         self._compare_against_roformer_attention(
-            ref, layer, max_sequence_length, batch_size, ref_rope_emb
+            ref,
+            layer,
+            max_sequence_length,
+            batch_size,
+            ref_rope_emb,
+            positions if override_positions else None,
         )
 
 
@@ -1271,10 +1291,15 @@ class MultiheadLinearInitTest(TestCase):
 class QKVLinearTest(TestCase):
     """Tests QKVLinear, FusedQKVLinear, and associated layers."""
 
-    @parameterized.parameters(
-        attention.FusedQKVLinear, attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear
+    @parameterized.product(
+        test_cls=[
+            attention.FusedQKVLinear,
+            attention.GroupedQKVLinear,
+            attention.FusedGroupedQKVLinear,
+        ],
+        with_positions=[True, False],
     )
-    def test_qkv_equality(self, test_cls: type[attention.BaseQKVLinear]):
+    def test_qkv_equality(self, test_cls: type[attention.BaseQKVLinear], with_positions: bool):
         """Tests that the QKVLinear variants are equivalent when num_kv_heads=num_heads."""
         with utils.numeric_checks(True):
             model_dim = 12
@@ -1325,7 +1350,8 @@ class QKVLinearTest(TestCase):
             if test_cls == attention.FusedGroupedQKVLinear:
                 key = value = None
 
-            inputs = dict(query=query, key=key, value=value)
+            positions = jnp.ones((1, tgt_len)) if with_positions else None
+            inputs = dict(query=query, key=key, value=value, query_positions=positions)
             outputs = {}
             layer_names = ("base", "test")
             for name, layer, state in zip(
