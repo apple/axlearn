@@ -7,6 +7,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Attention layers for ViT variant vision transformers."""
+
 import math
 from collections.abc import Sequence
 from typing import NamedTuple, Optional
@@ -170,6 +171,7 @@ class WindowedAttention(MultiheadAttention):
         value: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
         segment_ids: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> MultiheadAttention.Output:
         """Computes self-windowed attention for the given query and attention logit biases.
@@ -182,6 +184,7 @@ class WindowedAttention(MultiheadAttention):
             value: an optional Tensor of shape [batch, source_length, source_dim].
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
             segment_ids: See `On segment_ids` in MultiheadAttention's file comments.
+            query_positions: See ``positions`` in MultiheadAttention's file comments.
             return_aux: See comments in MultiheadAttention.Output.
 
         Returns:
@@ -202,7 +205,9 @@ class WindowedAttention(MultiheadAttention):
         cfg = self.config
         batch, height, width, _ = query.shape
         query = jnp.reshape(query, (batch, height * width, -1))
-        q_proj, k_proj, v_proj = self.i_proj(query, key=key, value=value)
+        q_proj, k_proj, v_proj = self.i_proj(
+            query, key=key, value=value, query_positions=query_positions
+        )
         q_proj = self._remat_name(q_proj, "q_proj")
         k_proj = self._remat_name(k_proj, "k_proj")
         v_proj = self._remat_name(v_proj, "v_proj")
@@ -265,6 +270,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
         source: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
         segment_ids: Optional[Tensor] = None,
+        target_positions: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> TransformerAttentionLayer.Output:
         """Computes attention with target as query and source as key and value.
@@ -274,6 +280,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
             source: None, uses norm(target) as source for self-attention
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             segment_ids: See `On segment_ids` in MultiheadAttention's file comments.
+            target_positions: See ``positions`` in MultiheadAttention's file comments.
             return_aux: See comments in TransformerAttentionLayer.Output.
 
         Returns:
@@ -300,6 +307,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
                 value=source,
                 attention_logit_biases=attention_logit_biases,
                 segment_ids=segment_ids,
+                query_positions=target_positions,
                 return_aux=return_aux,
             )
             x = atten_output.data

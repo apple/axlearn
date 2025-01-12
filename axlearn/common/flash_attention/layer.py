@@ -11,7 +11,7 @@ from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
 
-from axlearn.common.attention import GroupedQueryAttention
+from axlearn.common.attention import Dropout, GroupedQueryAttention
 from axlearn.common.attention_bias import BaseAttentionBias
 from axlearn.common.config import config_class
 from axlearn.common.flash_attention.utils import (
@@ -69,9 +69,14 @@ class FlashAttention(GroupedQueryAttention):
         cfg = self.config
         if getattr(cfg, "atten_logit_cap", None) is not None:
             raise NotImplementedError("cfg.atten_logit_cap is not supported.")
-        # TODO(kelvinzou): enable dropout for flash attention.
-        if cfg.dropout.rate:
-            raise NotImplementedError("cfg.dropout.rate is not supported.")
+        # We're checking for an exact class match here.
+        # pylint: disable-next=unidiomatic-typecheck
+        if type(self.dropout) is not Dropout:
+            raise NotImplementedError(
+                f"Only {Dropout.__module__}.{Dropout.__qualname__} is supported for "
+                "FlashAttention. Got "
+                f"{type(self.dropout).__module__}.{type(self.dropout).__qualname__}"
+            )
         if cfg.tpu_block_size % 128 != 0:
             raise ValueError("cfg.tpu_block_size must divide 128.")
 
@@ -105,17 +110,6 @@ class FlashAttention(GroupedQueryAttention):
         cfg = self.config
         return attention_logit_biases.partition_spec(cfg.mha_dim_to_partition_spec)
 
-    def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
-        """Repeats key or value heads dim to match the query.
-
-        TODO(dhwang2): optimize computation like GroupedQueryAttention.
-        """
-        num_head_repeats = self.config.num_heads // key_or_value.shape[-2]
-        if num_head_repeats == 1:
-            return key_or_value
-        # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
-        return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
-
     def _compute_attention(
         self,
         *,
@@ -124,12 +118,8 @@ class FlashAttention(GroupedQueryAttention):
         v_proj: Tensor,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
-        cfg = self.config
+        cfg: FlashAttention.Config = self.config
         backend = self._backend()
-
-        # Repeats key/value heads dim if necessary.
-        k_proj = self._repeat_kv_heads(k_proj)
-        v_proj = self._repeat_kv_heads(v_proj)
 
         batch, target_len, num_heads, _ = q_proj.shape
         _, source_len, _, _ = k_proj.shape
@@ -140,6 +130,7 @@ class FlashAttention(GroupedQueryAttention):
             backend=backend,
             softmax_scale=1.0,
             block_size=cfg.tpu_block_size,
+            dropout_rate=cfg.dropout.rate,
         )
 
         attention_logit_biases_spec = self._logit_biases_spec(attention_logit_biases)
@@ -162,12 +153,17 @@ class FlashAttention(GroupedQueryAttention):
             jit_attn,
             mesh=thread_resources.env.physical_mesh,
             in_specs=(
-                # QKV [batch_size, seq_len, num_heads, per_head_dim].
+                # Q [batch_size, seq_len, num_heads, per_head_dim].
                 cfg.mha_dim_to_partition_spec["btnh"],
+                # KV [batch_size, seq_len, num_kv_heads, per_head_dim].
+                # Note: while num_kv_heads can be different from num_heads, their partition spec
+                # should be the same.
                 cfg.mha_dim_to_partition_spec["bsnh"],
                 cfg.mha_dim_to_partition_spec["bsnh"],
                 # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].
                 attention_logit_biases_spec,
+                # PRNG Key.
+                PartitionSpec(None),
             ),
             # O [batch_size, seq_len, num_heads, per_head_dim].
             out_specs=cfg.mha_dim_to_partition_spec["btnh"],
@@ -177,7 +173,15 @@ class FlashAttention(GroupedQueryAttention):
         )
 
         outputs = with_sharding_constraint(
-            partitioned_mha(q_proj, k_proj, v_proj, attention_logit_biases),
+            partitioned_mha(
+                # Note: we use dropout layer's prng_key so the dropout result is identical to
+                # using self.dropout.forward because we will produce identical mask.
+                q_proj,
+                k_proj,
+                v_proj,
+                attention_logit_biases,
+                self.dropout.get_prng_key(),
+            ),
             cfg.output_dim_to_partition_spec["btnh"],
         )
 

@@ -1230,11 +1230,10 @@ class LayerTest(TestCase, tf.test.TestCase):
 
 class EmbedTest(parameterized.TestCase):
     @staticmethod
-    def build_embedder(dim, num_embeddings, rng):
-        cfg = Embedding.default_config()
-        cfg.dim = dim
-        cfg.num_embeddings = num_embeddings
-        cfg.name = "embed"
+    def build_embedder(dim, num_embeddings, rng, **kwargs):
+        cfg = Embedding.default_config().set(name="embed", dim=dim, num_embeddings=num_embeddings)
+        if kwargs:
+            cfg = cfg.set(**kwargs)
         emb = cfg.instantiate(parent=None)
         state = emb.initialize_parameters_recursively(rng)
         return (emb, state)
@@ -1248,6 +1247,28 @@ class EmbedTest(parameterized.TestCase):
             embedder, rng, state=state, inputs=[ixs], is_training=is_training
         )
         np.testing.assert_array_equal(state["weight"][ixs], actual_embeds)
+
+    def test_embed_with_scale(self):
+        dim = 256
+        num_embeddings = 16
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, input_key, fwd_key = jax.random.split(prng_key, num=3)
+        embedder, state = EmbedTest.build_embedder(
+            dim, num_embeddings, input_key, scale=Embedding.Scale.UNIT
+        )
+        batch, seq_len = 5, 8
+        ixs = jax.random.randint(input_key, minval=0, maxval=num_embeddings, shape=(batch, seq_len))
+
+        outputs, _ = F(
+            embedder,
+            inputs=(ixs,),
+            is_training=True,
+            state=state,
+            prng_key=fwd_key,
+        )
+
+        assert_allclose(jnp.mean(outputs), 0.0, atol=0.05)
+        assert_allclose(jnp.std(outputs), 1.0, atol=0.05)
 
     @parameterized.parameters(itertools.product((5, 7), (2, 16), (10, 100), (True, False)))
     def test_embed_attend(self, seq_len, dim, num_embeddings, is_training):

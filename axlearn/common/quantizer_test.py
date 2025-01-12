@@ -600,6 +600,29 @@ class KmeansVectorQuantizerTest(TestCase):
         )
         # TODO(xianzhi): add tests against reference code and tests for backward pass.
 
+    def test_codebook_init(self):
+        num_groups = 2
+        vocab_size, dim_from_all_codebooks = 256, 512
+        codebook_dim = dim_from_all_codebooks // num_groups
+        layer: KmeansVectorQuantizer = (
+            KmeansVectorQuantizer.default_config()
+            .set(
+                name="test",
+                codebook_dim=codebook_dim,
+                codebook_size=vocab_size,
+                num_codebooks=num_groups,
+                beta=0.1,
+            )
+            .instantiate(parent=None)
+        )
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        codebook = layer_params["codebook"]
+        self.assertEqual(codebook.shape, (vocab_size, num_groups, codebook_dim))
+        fan_out_axis = (1, 2)  # [num_groups, codebook_dim]
+        inverse_scale = jnp.sqrt(num_groups * codebook_dim)
+        assert_allclose(jnp.mean(codebook, axis=fan_out_axis), 0.0, atol=0.05)
+        assert_allclose(jnp.std(codebook, axis=fan_out_axis) * inverse_scale, 1.0, atol=0.1)
+
     def test_backward(self):
         batch_size, seq_len = 4, 6
         dim_from_all_codebooks, vocab_size, num_groups = 15, 4, 3
