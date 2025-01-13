@@ -6,6 +6,9 @@ ARG BASE_IMAGE=python:3.10-slim
 FROM ${BASE_IMAGE} AS base
 
 # Install curl and gpupg first so that we can use them to install google-cloud-cli.
+# Any RUN apt-get install step needs to have apt-get update otherwise stale package
+# list may occur when previous apt-get update step is cached. See here for more info:
+# https://docs.docker.com/build/building/best-practices/#apt-get
 RUN apt-get update && apt-get install -y curl gnupg
 
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
