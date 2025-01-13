@@ -227,7 +227,7 @@ def _legacy_tpu_flash_attention(
         NotImplementedError: If a custom (non-causal, non-full) mask is specified.
     """
     causal = isinstance(mask, CausalAttentionBias)
-    if not causal and mask.value() is not None:
+    if not causal and mask.has_value():
         bias = apply_attention_logit_biases(mask.value(), bias)
 
     context = pallas_tpu_flash_attention(
@@ -291,7 +291,7 @@ def check_tpu_splash_attention(
             "The public API for SplashAttention that we "
             "currently use does not support segment ids."
         )
-    if mask.value() is not None:
+    if mask.has_value():
         assert isinstance(mask, MaskFnAttentionBias)
         if target_len != source_len:
             raise SplashAttentionUnsupportedError(
@@ -311,7 +311,7 @@ def _to_splash_mask(
     q_seq_shards: int = 1,
 ) -> splash_attention_mask.Mask:
     """Converts a mask to a splash mask."""
-    if mask.value() is None:
+    if not mask.has_value():
         return splash_attention_mask.FullMask(mask_shape)
     assert isinstance(mask, MaskFnAttentionBias)
     if isinstance(mask, CausalAttentionBias):
