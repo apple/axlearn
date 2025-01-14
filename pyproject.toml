@@ -44,7 +44,6 @@ core = [
     "aqtp==0.8.1", # Updated from 0.4.0; compatible with Python 3.10
     "flax==0.8.5", # for AQT, param converter and adapter.
     "prefixed==0.7.1", # For formatting file sizes, param counts, etc.
-    "pyyaml",
 ]
 # Apple Silicon dependencies.
 # Need to run `conda install -c apple tensorflow-deps` separately.
