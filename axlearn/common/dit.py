@@ -234,9 +234,10 @@ class AdaptiveLayerNormModulation(BaseLayer):
                 Each tensor has shape [batch_size, 1|num_length, dim].
         """
         cfg = self.config
+        if input.ndim not in (2, 3):
+            raise ValueError(f"The input must be rank 2 or 3, but got the {input.shape} tensor.")
         x = get_activation_fn(cfg.activation)(input)
         output = self.linear(x)
-        assert output.ndim in (2, 3)
         if output.ndim == 2:
             output = einops.rearrange(output, "b d -> b 1 d")
         output = jnp.split(output, cfg.num_outputs, axis=-1)
