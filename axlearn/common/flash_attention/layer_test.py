@@ -146,6 +146,32 @@ def _prepare_layers(
     return test_layer, ref_layer, params, hidden_dim
 
 
+class DummyModel(BaseLayer):
+    """A dummy model."""
+
+    @config_class
+    class Config(BaseLayer.Config):
+        layer: GroupedQueryAttention.Config = GroupedQueryAttention.default_config()
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._add_child("layer", cfg.layer)
+
+    def forward(self, *, query, key, value, attention_logit_biases, segment_ids):
+        # [batch, target_length, target_dim].
+        x = self.layer(
+            query,
+            key=key,
+            value=value,
+            attention_logit_biases=attention_logit_biases,
+            segment_ids=segment_ids,
+        )
+        # TODO(markblee,zhaoyi-zhang): The atol needs to increase significantly if using
+        # jnp.sum, as we no longer scale by the size of the data dims.
+        return jnp.mean(x.data, dtype=query.dtype)
+
+
 class TestFlashAttention(TestCase):
     """Tests FlashAttention layer."""
 
@@ -512,34 +538,7 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason="Only one of causal and use_bias can be True.")
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
-
-            class DummyModel(BaseLayer):
-                """A dummy model."""
-
-                @config_class
-                class Config(BaseLayer.Config):
-                    layer: GroupedQueryAttention.Config = GroupedQueryAttention.default_config()
-
-                def __init__(self, cfg: Config, *, parent: Module):
-                    super().__init__(cfg, parent=parent)
-                    cfg = self.config
-                    self._add_child("layer", cfg.layer)
-
-                def forward(self, *, query, key, value, attention_logit_biases, segment_ids):
-                    # [batch, target_length, target_dim].
-                    x = self.layer(
-                        query,
-                        key=key,
-                        value=value,
-                        attention_logit_biases=attention_logit_biases,
-                        segment_ids=segment_ids,
-                    )
-                    # TODO(markblee,zhaoyi-zhang): The atol needs to increase significantly if using
-                    # jnp.sum, as we no longer scale by the size of the data dims.
-                    return jnp.mean(x.data, dtype=query.dtype)
-
             hidden_dim = num_heads * per_head_dim
-
             if sliding_window_size is not None:
                 mask_fn = config_for_function(sliding_window_causal_mask).set(
                     sliding_window_size=sliding_window_size

@@ -94,6 +94,9 @@ def _mha_forward_kernel(
 
     See also `_mha_backward_kernel` for the backward pass.
 
+    Note: the kernel name is used to do string matching for rematerialization in `remat.py`. Be
+    careful when renaming this.
+
     Args:
         q_ref: Input query ref.
         k_ref: Input key ref.
