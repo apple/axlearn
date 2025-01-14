@@ -40,7 +40,6 @@ import numpy as np
 from absl import logging
 from array_record.python.array_record_data_source import PathLikeOrFileInstruction
 from grain._src.python.data_loader import _determine_worker_count
-from grain._src.python.dataset import stats as dataset_stats
 from grain._src.python.dataset.transformations import packing
 from grain._src.python.dataset.transformations import slice as slice_dataset
 from jax.experimental import multihost_utils
@@ -181,8 +180,7 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
     """An iterator that unbatches np.arrays along dim=0."""
 
     def __init__(self, parent: grain.DatasetIterator):
-        super().__init__(stats=None)
-        self._parent = parent
+        super().__init__(parent)
         # Index within the unbatched inputs.
         self._index = 0
         self._current_batch = None
@@ -467,10 +465,8 @@ class _FixedLengthDatasetIterator(grain.DatasetIterator):
         *,
         pad_example: Any,
         length: int,
-        stats: dataset_stats.Stats,
     ):
-        super().__init__(stats)
-        self._parent = parent
+        super().__init__(parent)
         self._pad_example = pad_example
         self._length = length
         self._i = 0
@@ -516,7 +512,6 @@ class _FixedLengthIterDataset(grain.IterDataset):
             parent_iter,
             pad_example=self._pad_example,
             length=self._length,
-            stats=self._stats,
         )
 
 

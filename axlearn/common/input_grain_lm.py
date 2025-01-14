@@ -3,10 +3,12 @@
 """Input processing for language modeling using Grain."""
 
 import functools
+import logging
 import sys
 from typing import Optional, Protocol
 
 import numpy as np
+from grain._src.python.dataset.transformations.prefetch import MultiprocessPrefetchIterDataset
 
 from axlearn.common import input_grain, input_grain_text
 from axlearn.common.config import ConfigOr, maybe_instantiate
@@ -124,8 +126,11 @@ def text_to_lm_training_input(
     split_fn = functools.partial(
         _trim_or_pad_and_batch, max_padding_fraction=max_padding_fraction, pad_id=vocab.pad_id
     )
-    # Only repeat if not already infinite.
-    if len(ds) != sys.maxsize:
+    if isinstance(ds, MultiprocessPrefetchIterDataset):
+        # Dataset types like MultiprocessPrefetchIterDataset have no len() or repeat() function
+        logging.info("Skipping repeat for ds: %s`", ds)
+    elif len(ds) != sys.maxsize:
+        # Only repeat if not already infinite.
         ds = ds.repeat(num_epochs=None)
     ds = input_grain_text.tokenize(ds, vocab={"text": vocab}, with_eos=True)
     ds = input_grain.rekey(ds, key_map={"target_labels": "text"})

@@ -258,7 +258,7 @@ class UtilsTest(TestCase):
 
         ds = range_dataset(start=1, stop=10)
         ds = ds.repeat(None).batch(3)
-        ds = ds.map(convert_examples, seed=123)
+        ds = ds.random_map(convert_examples, seed=123)
         ds = unbatch(maybe_to_iter_dataset(ds))
         ds = iter(ds)
         self._test_checkpointing(ds)
