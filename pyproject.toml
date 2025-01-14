@@ -150,7 +150,7 @@ orbax = [
 ]
 # Grain input processing. Currently does not support macos.
 grain = [
-    "grain==0.2.1; platform_machine == 'x86_64'",
+    "grain==0.2.3; platform_machine == 'x86_64'",
 ]
 # Audio dependencies.
 audio = [
