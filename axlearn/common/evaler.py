@@ -31,6 +31,7 @@ from axlearn.common.metrics import MetricAccumulator, WeightedScalar
 from axlearn.common.module import Module, OutputCollection
 from axlearn.common.module import functional as F
 from axlearn.common.utils import (
+    DataPartitionType,
     NestedPartitionSpec,
     NestedTensor,
     Tensor,
@@ -81,6 +82,11 @@ class BaseMetricCalculator(Module):
         # evalers, not setting prefix will show the accuracies on the same plot for comparison
         # across evalers.
         prefix: Optional[str] = None
+        # Subset of mesh axis names over which the leaves of the input batch are sharded.
+        batch_axis_names: Union[str, Sequence[str]] = "data"
+        # The input partition:
+        # Options: FULL (default), BATCH, REPLICATED
+        input_partition_type: Optional[DataPartitionType] = DataPartitionType.FULL
 
     def __init__(
         self,
@@ -188,11 +194,11 @@ class BaseMetricCalculator(Module):
             in_shardings=(
                 self._model_param_partition_specs,  # model_params.
                 None,  # replicated_inputs (e.g., prng_key).
-                utils.input_partition_spec(),  # per_example_inputs.
+                utils.data_partition_type_to_spec(partition=self.config.input_partition_type, batch_axis_names=self.config.batch_axis_names),  # per_example_inputs.
             ),
             out_shardings=dict(
                 replicated=None,
-                per_example=utils.input_partition_spec(),
+                per_example=utils.data_partition_type_to_spec( partition=self.config.input_partition_type, batch_axis_names=self.config.batch_axis_names),
             ),
         )
 
@@ -574,6 +580,11 @@ class SpmdEvaler(Module):
         metric_calculator: BaseMetricCalculator.Config = ModelSummaryAccumulator.default_config()
         # If not None, writes input batches and `metric_calculator` forward outputs.
         output_writer: Optional[BaseOutputWriter.Config] = None
+        # Subset of mesh axis names over which the leaves of the input batch are sharded.
+        batch_axis_names: Union[str, Sequence[str]] = "data"
+        # The input partition:
+        # Options: FULL (default), BATCH, REPLICATED
+        input_partition_type: Optional[DataPartitionType] = DataPartitionType.FULL
 
     def __init__(
         self,
@@ -595,7 +606,7 @@ class SpmdEvaler(Module):
         self._add_child("input", maybe_set_config(cfg.input, is_training=False))
         self._add_child(
             "metric_calculator",
-            cfg.metric_calculator.set(eval_dtype=cfg.eval_dtype),
+            cfg.metric_calculator.set(eval_dtype=cfg.eval_dtype, batch_axis_names=cfg.batch_axis_names, input_partition_type=cfg.input_partition_type),
             model=model,
             model_param_partition_specs=model_param_partition_specs,
         )
@@ -691,7 +702,7 @@ class SpmdEvaler(Module):
 
             with jax.profiler.StepTraceAnnotation(cfg.name, step_num=step):
                 with jax.profiler.TraceAnnotation(f"{cfg.name}.forward"):
-                    global_input_batch = utils.host_to_global_device_array(input_batch)
+                    global_input_batch = utils.host_to_global_device_array(input_batch, partition=self.config.input_partition_type, batch_axis_names=self.config.batch_axis_names)
                     forward_outputs = self.metric_calculator.forward(
                         global_input_batch,
                         model_params=model_params,

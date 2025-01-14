@@ -44,6 +44,7 @@ from axlearn.common.test_utils import (
 )
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import (
+    DataPartitionType,
     PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
     HybridMeshShape,
     MeshShape,
@@ -1703,6 +1704,31 @@ class HybridMeshShapeTest(TestCase):
 
 class HostToGlobalArrayTest(TestCase):
     """Tests host_to_global_device_array."""
+
+    @pytest.mark.neuron
+    def test_partition_batch(self):
+        """Test a case where each process produces a slice."""
+        device_count = jax.device_count()
+        process_count = jax.process_count()
+        print(f"{device_count=}, {process_count=}")
+        assert device_count > 1
+
+        global_shape = (device_count // 2, 1)
+        assert global_shape[0] % process_count == 0
+        per_feed_size = global_shape[0] // process_count
+        feed_index = jax.process_index()
+
+        with jax.sharding.Mesh(np.array(jax.devices()).reshape(device_count // 2, 2), ("x", "y")):
+            start = feed_index * per_feed_size
+            local_x = jnp.arange(start, start + per_feed_size)[:, None]
+
+            # Construct global array.
+            global_x = host_to_global_device_array(local_x, partition=DataPartitionType.BATCH, batch_axis_names="x")
+
+            # Compare against expected.
+            expected = jnp.arange(global_shape[0])[:, None]
+            self.assertEqual(jnp.mean(expected), jnp.mean(global_x))
+            self.assertNestedEqual(expected, replicate_to_local_data(global_x))
 
     @pytest.mark.tpu
     def test_partition_full(self):
