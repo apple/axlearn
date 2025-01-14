@@ -34,6 +34,7 @@ from axlearn.common.attention import (
     BaseQKVLinear,
     MultiheadAttention,
     RepeatedTransformerLayer,
+    StackedTransformerLayer,
     TransformerLayer,
     build_remat_spec,
     set_double_shard_weights_config,
@@ -190,20 +191,12 @@ def update_model_remat_config(
 ):
     """Recomputes and sets the remat_spec based on provided layer_cfg.
 
-    Only applied if the stack_cfg is a RepeatedTransformerLayer.
-
     Args:
         stack_cfg: The transformer stack config.
         layer_cfg: The transformer layer config.
         offload_dst: Destination of remat checkptoing offloading.
 
-    Raises:
-        NotImplementedError: If `stack_cfg.klass` is not a RepeatedTransformerLayer.
     """
-    if stack_cfg.klass is not RepeatedTransformerLayer:
-        raise NotImplementedError(
-            f"Remat spec is not implemented for stack_cfg with klass={type(stack_cfg.klass)}"
-        )
 
     remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg))
     layer_cfg.set(remat_spec=remat_spec)
@@ -277,7 +270,7 @@ def model_config(
         layer_cfg.self_attention.attention.input_linear = attention_qkv_linear
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
-    if stack_cfg.klass is RepeatedTransformerLayer:
+    if issubclass(stack_cfg.klass, (RepeatedTransformerLayer, StackedTransformerLayer)):
         update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
     # Stack.
     transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
