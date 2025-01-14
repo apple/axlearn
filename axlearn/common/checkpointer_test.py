@@ -1223,11 +1223,13 @@ class TfIteratorTest(test_utils.TestCase):
         ckpt_dir = os.path.join(tmpdir, "tf_ckpt")
         self.assertEqual(0, len(fs.listdir(tmpdir)))
         # Test that when we don't save input iterator, tf dirs are not created.
-        async_save_tf_savables({}, executor=executor, dir=ckpt_dir)
+        fut = async_save_tf_savables({}, executor=executor, dir=ckpt_dir)
+        fut.result()
         self.assertEqual([], fs.listdir(tmpdir))
         # Test that dirs are created if we save.
         ds = tf.data.Dataset.from_tensor_slices([])
-        async_save_tf_savables({"it": iter(ds)}, executor=executor, dir=ckpt_dir)
+        fut = async_save_tf_savables({"it": iter(ds)}, executor=executor, dir=ckpt_dir)
+        fut.result()
         self.assertEqual(["tf_ckpt"], fs.listdir(tmpdir))
 
 
