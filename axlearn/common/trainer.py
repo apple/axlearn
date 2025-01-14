@@ -200,9 +200,6 @@ class SpmdTrainer(Module):
         # The provided config should instantiate to a thunk that returns the context manager.
         context_manager: Optional[ConfigOr[Callable[[], ContextManager]]] = None
 
-        # The Global Batch Size
-        train_batch_size: Optional[int] = None
-
     def __init__(
         self,
         cfg: Config,
@@ -572,11 +569,13 @@ class SpmdTrainer(Module):
                     self.vlog(3, "Start step %s", self.step)
                     output = self._run_step(
                         utils.host_to_global_device_array(input_batch),
-                        force_run_evals=None,
+                        force_run_evals=(
+                            force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
+                        ),
                     )
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
-                    if num_steps % 5 == 0:
+                    if num_steps % 100 == 0:
                         now = time.perf_counter()
                         average_step_time = (now - start_time) / num_steps
                         self._step_log("Average step time: %s seconds", average_step_time)
@@ -1021,12 +1020,12 @@ class SpmdTrainer(Module):
             # Run the compiled function.
             self._trainer_state, outputs = compiled_train_step_fn(self.trainer_state, input_batch)
 
-        # if self.step % 100 == 0 or 0 <= self.step <= 5:
-        self._step_log(
-            "loss=%s aux=%s",
-            outputs["loss"],
-            jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
-        )
+        if self.step % 100 == 0 or 0 <= self.step <= 5:
+            self._step_log(
+                "loss=%s aux=%s",
+                outputs["loss"],
+                jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
+            )
 
         self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
         # Aggregate summaries across evalers.
