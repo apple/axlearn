@@ -576,12 +576,7 @@ class TPUGKEJob(GKEJob):
         ]
 
         if self.using_pathways:
-            staging_location = f"{cfg.output_dir}/pathways-staging/tmp"
-            env_vars.update(
-                # dump XLA flags to GCS bucket for troubleshooting purposes.
-                XLA_FLAGS="--xla_dump_to=gs://ttl-30d-us-central2/axlearn/users/jesusfc/pathways/v6e/xla/"
-            )
-
+            staging_location = f"{cfg.output_dir}/pathways-staging"
             if job_type == "pathways-head":
                 env_vars.update(
                     # JAX_BACKEND_TARGET="grpc://$(HOST_ADDRESS):29000",
@@ -851,8 +846,7 @@ class TPUGKEJob(GKEJob):
                 labels.update({"bastion-tier": "reserved"})
             else:
                 logging.info("Found tier=%s in env. Using spot quota", tier)
-                # Comment out selector when running against internal v6e test project
-                # selector.update({"cloud.google.com/gke-spot": "true"})
+                selector.update({"cloud.google.com/gke-spot": "true"})
                 tolerations.append(
                     {
                         "key": "cloud.google.com/gke-spot",
@@ -893,7 +887,7 @@ class TPUGKEJob(GKEJob):
                     # the original jobset attempts to restart (node pool conflict). This is more
                     # reliable at the moment but doesn't take advantage of node pool sharing. GCP is
                     # working on a fix.
-                    # "provisioner-nodepool-id": cfg.name,
+                    "provisioner-nodepool-id": cfg.name,
                 }
             )
 
@@ -933,7 +927,7 @@ class TPUGKEJob(GKEJob):
             )
 
         if job_type == "pathways-head":
-            # selector.update({"pathways-head": "true"})
+            # Target a specific CPU nodepool for Pathways containers
             selector.update({"cloud.google.com/gke-nodepool": "pathways-head"})
             initContainers.extend(self._build_pathways_containers())
         else:
@@ -965,6 +959,7 @@ class TPUGKEJob(GKEJob):
             initContainers=initContainers,
             serviceAccountName=cfg.service_account,
             volumes=volumes,
+            # Enable host network for optimal performance with Pathways
             hostNetwork=True if self.using_pathways else False,
             dnsPolicy="ClusterFirstWithHostNet" if self.using_pathways else None,
         )
@@ -999,9 +994,6 @@ class TPUGKEJob(GKEJob):
                 template=self._build_pod(job_type),
             )
         elif job_type == "pathways-head":
-            #annotations.update(
-            #    {"alpha.jobset.sigs.k8s.io/exclusive-topology": "kubernetes.io/hostname"}
-            #)
             spec.update(
                 parallelism=1,
                 completions=1,
@@ -1108,11 +1100,6 @@ class TPUGKEJob(GKEJob):
             kind="JobSet",
             **self._build_jobset(),
         )
-        with open(f"jobsets/{cfg.name}.yaml", "w") as f:
-            logging.info("Output jobset to yaml file...")
-            import yaml
-
-            yaml.dump(custom_object, f, default_flow_style=False)
         logging.info("Submitting JobSet body=%s api_kwargs=%s", custom_object, api_kwargs)
         return k8s.client.CustomObjectsApi().create_namespaced_custom_object(
             namespace=cfg.namespace,
