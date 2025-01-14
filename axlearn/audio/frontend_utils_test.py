@@ -31,6 +31,7 @@ from axlearn.audio.frontend_utils import (
     next_power_of_2,
     pre_emphasis,
     sharded_fft,
+    window_coffs,
     windowing,
 )
 from axlearn.audio.test_utils import fake_audio
@@ -159,6 +160,20 @@ class WindowingTest(parameterized.TestCase, tf.test.TestCase):
             ),
             windowing(inputs, window_type=window_type, periodic=periodic),
         )
+
+    @parameterized.product(
+        window_size=[400, 401],
+        window_type=list(WindowType),
+        periodic=[True, False],
+    )
+    def test_window_coffs(self, window_size, window_type: WindowType, periodic: bool):
+        ref_coffs = _ref_window_coffs(
+            window_size=window_size, window_type=window_type, periodic=periodic
+        )
+        test_coeffs = window_coffs(
+            window_size=window_size, window_type=window_type, periodic=periodic
+        )
+        self.assertAllClose(ref_coffs, test_coeffs)
 
 
 class SpectrogramTest(parameterized.TestCase, tf.test.TestCase):
@@ -296,19 +311,30 @@ def _ref_pre_emphasis(*, inputs: ArrayLike, coeff: float):
     return inputs[:, :, 1:] - coeff * inputs[:, :, :-1]
 
 
-def _ref_window(*, inputs: ArrayLike, window_type: WindowType, **kwargs):
+def _ref_window_coffs(
+    *, window_size: int, window_type: WindowType, periodic: bool = True, dtype=tf.float32
+):
+    if window_type == WindowType.HANN:
+        tf_window = tf.signal.hann_window(window_size, periodic=periodic, dtype=dtype)
+    elif window_type == WindowType.HAMMING:
+        tf_window = tf.signal.hamming_window(window_size, periodic=periodic, dtype=dtype)
+    else:
+        raise NotImplementedError(f"Unrecognized window type: {window_type}")
+    return tf_window
+
+
+def _ref_window(
+    *, inputs: ArrayLike, window_type: WindowType, periodic: bool = True, dtype=tf.float32
+):
     """Lingvo window.
 
     Reference:
     https://github.com/tensorflow/lingvo/blob/4a9097a212622d99d7f8e2379804dbffdc44a97f/lingvo/tasks/asr/frontend.py#L244
     """
     frame_size = inputs.shape[-1]
-    if window_type == WindowType.HANN:
-        tf_window = tf.signal.hann_window(frame_size, **kwargs)
-    elif window_type == WindowType.HAMMING:
-        tf_window = tf.signal.hamming_window(frame_size, **kwargs)
-    else:
-        raise NotImplementedError(f"Unrecognized window type: {window_type}")
+    tf_window = _ref_window_coffs(
+        window_size=frame_size, window_type=window_type, periodic=periodic, dtype=dtype
+    )
     return inputs * tf_window
 
 

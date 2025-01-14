@@ -1,10 +1,14 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests FlashAttention layers."""
-
+# pylint: disable=ungrouped-imports
 import math
 import os
 from unittest import mock
+
+from jax.sharding import PartitionSpec
+
+from axlearn.common.utils import Tensor
 
 # Due to reference layer using XLA,
 # set the following environment variables to avoid OOM in GPU tests.
@@ -20,11 +24,12 @@ from absl.testing import parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
-from axlearn.common.attention import (
-    GroupedQueryAttention,
-    apply_attention_logit_biases,
+from axlearn.common.attention import Dropout, GroupedQueryAttention
+from axlearn.common.attention_bias import (
+    CompositeAttentionBias,
+    SegmentIdAttentionBias,
+    TensorAttentionBias,
     bool_to_bias,
-    make_causal_biases,
     sliding_window_causal_mask,
 )
 from axlearn.common.base_layer import BaseLayer
@@ -72,8 +77,9 @@ def _fake_inputs(
             jax.random.PRNGKey(3), p=0.5, shape=[batch, num_heads, query_len, kv_len]
         )
         bias = bool_to_bias(bias)
+        bias = TensorAttentionBias(bias)
     else:
-        bias = None
+        bias = CompositeAttentionBias([])
     if use_segment_ids:
         segment_ids = jnp.ones([batch, kv_len], dtype=jnp.int32)
     else:
@@ -92,6 +98,7 @@ def _prepare_layers(
     sliding_window_size,
     inference=False,
     set_layer_bias_recursively=False,
+    dropout_rate=0.0,
 ):
     hidden_dim = num_heads * per_head_dim
     kwargs = dict(
@@ -100,6 +107,7 @@ def _prepare_layers(
         value_dim=hidden_dim,
         num_heads=num_heads,
         dtype=jnp.bfloat16,
+        dropout=Dropout.default_config().set(rate=dropout_rate),
     )
     ref_cfg = GroupedQueryAttention.default_config().set(**kwargs)
 
@@ -288,6 +296,22 @@ class TestFlashAttention(TestCase):
         ),
     ]
 
+    def test_dropout_support(self):
+        """Tests that FlashAttention errors out when custom dropout is used."""
+
+        class OtherDropout(Dropout):
+            pass
+
+        required_kwargs = dict(query_dim=128, key_dim=128, value_dim=128, num_heads=2, name="test")
+        FlashAttention.default_config().set(
+            dropout=Dropout.default_config(), **required_kwargs
+        ).instantiate(parent=None)
+
+        with self.assertRaises(NotImplementedError):
+            FlashAttention.default_config().set(
+                dropout=OtherDropout.default_config(), **required_kwargs
+            ).instantiate(parent=None)
+
     @parameterized.parameters(
         [kwargs for kwargs in _TEST_CONFIGS if math.prod(kwargs["mesh"]) == 1]
     )
@@ -314,6 +338,16 @@ class TestFlashAttention(TestCase):
     def test_shard_biases(self, batch, seq_len, num_heads, per_head_dim, mesh, mesh_axis_names):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
+
+        def as_tensor_bias(bias: Tensor) -> CompositeAttentionBias:
+            return CompositeAttentionBias([TensorAttentionBias(bias)])
+
+        def as_partition_spec(pytree: CompositeAttentionBias) -> PartitionSpec:
+            self.assertIsInstance(pytree, CompositeAttentionBias)
+            pytree = jax.tree.leaves(pytree)
+            self.assertLen(pytree, 1)
+            return next(iter(pytree))
+
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             test_layer, _, _, _ = _prepare_layers(
                 num_heads=num_heads,
@@ -323,17 +357,31 @@ class TestFlashAttention(TestCase):
                 sliding_window_size=None,
             )
             bias = jnp.ones((batch, num_heads, seq_len, seq_len))
+            bias = as_tensor_bias(bias)
             spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            spec = as_partition_spec(spec)
             self.assertEqual(spec, test_layer.config.mha_dim_to_partition_spec["bnts"])
 
             bias = jnp.ones((batch, 1, seq_len, seq_len))
+            bias = as_tensor_bias(bias)
             spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            spec = as_partition_spec(spec)
             self.assertEqual(spec[1], None)
 
             bias = jnp.ones((1, 1, seq_len, seq_len))
+            bias = as_tensor_bias(bias)
             spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            spec = as_partition_spec(spec)
             self.assertEqual(spec[0], None)
             self.assertEqual(spec[1], None)
+
+            segment_ids = CompositeAttentionBias(
+                [SegmentIdAttentionBias(jnp.ones((batch, seq_len)))]
+            )
+            spec = test_layer._logit_biases_spec(segment_ids)  # pylint: disable=protected-access
+            spec = as_partition_spec(spec)
+            self.assertIsInstance(spec, PartitionSpec)
+            self.assertEqual(spec, test_layer.config.mha_dim_to_partition_spec["btnh"][:2])
 
     @parameterized.product(
         _TEST_CONFIGS,
@@ -343,6 +391,7 @@ class TestFlashAttention(TestCase):
         use_bias=[False, True],
         use_segment_ids=[False, True],
         input_dtype=[jnp.bfloat16, jnp.float32],
+        dropout_rate=[0.0, 0.1],
     )
     def test_forward(
         self,
@@ -358,6 +407,7 @@ class TestFlashAttention(TestCase):
         use_bias,
         use_segment_ids,
         input_dtype,
+        dropout_rate,
     ):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
@@ -371,6 +421,8 @@ class TestFlashAttention(TestCase):
         # Data=1 with bias matrix in all fp32 format would OOM the H100 SRAM.
         if use_bias and mesh[mesh_axis_names.index("data")] == 1 and input_dtype == jnp.float32:
             pytest.skip(reason="Unsupported large bias matrix in fp32 format.")
+        if dropout_rate > 0.0 and jax.default_backend() == "tpu":
+            pytest.skip("Dropout is implemented for GPU only.")
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             test_layer, ref_layer, params, hidden_dim = _prepare_layers(
@@ -379,12 +431,8 @@ class TestFlashAttention(TestCase):
                 mesh_axis_names=mesh_axis_names,
                 causal=causal,
                 sliding_window_size=sliding_window_size,
+                dropout_rate=dropout_rate,
             )
-            # pylint: disable-next=protected-access
-            if test_layer._backend() == "gpu" and query_len_multiplier != 1:
-                pytest.skip(
-                    reason="GPU flash attention does not support different query and key lengths."
-                )
 
             query_len = int(query_len_multiplier * seq_len)
             inputs = _fake_inputs(
@@ -414,8 +462,11 @@ class TestFlashAttention(TestCase):
                 is_training=True,
             )
             # TODO(markblee): Test probs.
-            self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
-        jax.clear_backends()
+            # Note: cannot compare results when dropout_rate > 0 and not using segment ids, because
+            # cudnn dropout will be used and it uses different PRNG than ours.
+            if dropout_rate == 0.0 or use_segment_ids:
+                self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
+        jax.extend.backend.clear_backends()
 
     @parameterized.product(
         _TEST_CONFIGS,
@@ -425,6 +476,7 @@ class TestFlashAttention(TestCase):
         use_bias=[False, True],
         use_segment_ids=[False, True],
         set_layer_bias_recursively=[False, True],
+        dropout_rate=[0.0, 0.1],
     )
     def test_backward(
         self,
@@ -440,6 +492,7 @@ class TestFlashAttention(TestCase):
         use_bias,
         use_segment_ids,
         set_layer_bias_recursively,
+        dropout_rate,
     ):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
@@ -447,6 +500,12 @@ class TestFlashAttention(TestCase):
             pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
         if not causal and sliding_window_size is not None:
             pytest.skip(reason="Sliding window attention must be causal.")
+        if sliding_window_size is not None and query_len_multiplier > 1:
+            # When sliding window is enabled and q_len > kv_len, there might be be fully masked
+            # rows.
+            pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
+        if dropout_rate > 0.0 and jax.default_backend() == "tpu":
+            pytest.skip("Dropout is implemented for GPU only.")
 
         if causal and use_bias:
             # TODO(c_lan): Investigate the numerical errors when both causal and bias are used.
@@ -496,6 +555,7 @@ class TestFlashAttention(TestCase):
                 dtype=jnp.bfloat16,
                 causal=causal and (mask_fn is None),
                 mask=mask_fn,
+                dropout=Dropout.default_config().set(rate=dropout_rate),
             )
             ref_cfg = DummyModel.default_config().set(
                 layer=GroupedQueryAttention.default_config().set(**kwargs),
@@ -514,11 +574,6 @@ class TestFlashAttention(TestCase):
             set_bias_recursively(test_cfg, set_layer_bias_recursively)
             ref_layer = ref_cfg.set(name="ref").instantiate(parent=None)
             test_layer = test_cfg.set(name="test").instantiate(parent=None)
-            # pylint: disable-next=protected-access
-            if test_layer.layer._backend() == "gpu" and query_len_multiplier != 1:
-                pytest.skip(
-                    reason="GPU flash attention does not support different query and key lengths."
-                )
 
             # Use the same params for both. Only attention implementation differs.
             params = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
@@ -551,16 +606,23 @@ class TestFlashAttention(TestCase):
             # pylint: disable-next=protected-access
             if set_layer_bias_recursively and test_layer.layer._backend() == "gpu":
                 atol, rtol = 5e-4, 5e-2
-
+            # pylint: disable-next=protected-access
+            elif dropout_rate > 0.0 and test_layer.layer._backend() == "gpu":
+                atol, rtol = 2.5e-4, 1e-3
             # Can be 1e-5 on x86_64/GPU/TPU, needed to be slightly higher on ARM.
             else:
                 atol, rtol = 1e-4, 1e-3
 
-            self.assertNestedAllClose(ref_value, test_value, atol=atol, rtol=rtol)
-            self.assertNestedAllClose(ref_grads, test_grads, atol=atol, rtol=rtol)
-        jax.clear_backends()
+            # Note: cannot compare results when dropout_rate > 0 and not using segment ids, because
+            # cudnn dropout will be used and it uses different PRNG than ours.
+            if dropout_rate == 0.0 or use_segment_ids:
+                self.assertNestedAllClose(ref_value, test_value, atol=atol, rtol=rtol)
+                self.assertNestedAllClose(ref_grads, test_grads, atol=atol, rtol=rtol)
+        jax.extend.backend.clear_backends()
 
-    @parameterized.product(_TEST_CONFIGS, causal=[True], sliding_window_size=[None, 4])
+    @parameterized.product(
+        _TEST_CONFIGS, causal=[True], sliding_window_size=[None, 4], use_bias=[True, False]
+    )
     def test_extend_step(
         self,
         batch,
@@ -571,7 +633,13 @@ class TestFlashAttention(TestCase):
         mesh_axis_names,
         causal,
         sliding_window_size,
+        use_bias,
     ):
+        print(
+            f"batch={batch}, seq_len={seq_len} (ignored->16), num_heads={num_heads}, \n"
+            f"per_head_dim={per_head_dim}, mesh={mesh}, mesh_axis_names={mesh_axis_names}, \n"
+            f"causal={causal}, sliding_window_size={sliding_window_size}"
+        )
         # Limit generation length to 16 to save test time.
         seq_len = 16
         dtype = jnp.bfloat16
@@ -610,15 +678,13 @@ class TestFlashAttention(TestCase):
                 [batch, seq_len, hidden_dim],
                 dtype=dtype,
             )
-            bias = jax.random.normal(
-                jax.random.PRNGKey(0),
-                [batch, num_heads, seq_len, seq_len],
-                dtype=dtype,
-            )
-            # Note: We need to use causal bias for flash attention input in case of decoding.
-            causal_bias = apply_attention_logit_biases(bias, make_causal_biases(seq_len)).astype(
-                dtype
-            )
+            causal_bias = None
+            if use_bias:
+                causal_bias = jax.random.normal(
+                    jax.random.PRNGKey(0),
+                    [batch, num_heads, seq_len, seq_len],
+                    dtype=dtype,
+                )
             kv_state = None
             return_aux = {"probs"}
 
@@ -677,7 +743,10 @@ class TestFlashAttention(TestCase):
                 attention_logit_biases=None,
             )
             ref_inputs = dict(
-                cached_states=ref_initial_state, kv_state=kv_state, return_aux=return_aux
+                cached_states=ref_initial_state,
+                kv_state=kv_state,
+                return_aux=return_aux,
+                attention_logit_biases=None,
             )
 
             decoder_output = jnp.zeros(shape=[seq_len, batch, hidden_dim]).astype(dtype)
@@ -685,12 +754,16 @@ class TestFlashAttention(TestCase):
             for t in range(seq_len):
                 cur_query = jnp.expand_dims(query[:, t, :], axis=1)
                 inputs["query"] = cur_query
-                inputs["attention_logit_biases"] = jnp.expand_dims(causal_bias[:, :, t, :], axis=2)
+                if use_bias:
+                    inputs["attention_logit_biases"] = jnp.expand_dims(
+                        causal_bias[:, :, t, :], axis=2
+                    )
 
                 ref_inputs["query"] = cur_query
-                ref_inputs["attention_logit_biases"] = jnp.expand_dims(
-                    causal_bias[:, :, t, :], axis=2
-                )
+                if use_bias:
+                    ref_inputs["attention_logit_biases"] = jnp.expand_dims(
+                        causal_bias[:, :, t, :], axis=2
+                    )
 
                 ref_extend_step_outputs, _ = F(
                     ref_layer,
@@ -742,4 +815,4 @@ class TestFlashAttention(TestCase):
                 test_out.data,
                 atol=2e-2,
             )
-        jax.clear_backends()
+        jax.extend.backend.clear_backends()

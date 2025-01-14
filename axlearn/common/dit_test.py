@@ -16,11 +16,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from timm.models.vision_transformer import Attention, Mlp, PatchEmbed
 from torch import nn
 
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention_bias import NEG_INF, causal_mask, sliding_window_causal_mask
+from axlearn.common.config import config_for_function
 from axlearn.common.dit import (
     AdaptiveLayerNormModulation,
     DiTAttentionLayer,
@@ -34,7 +35,7 @@ from axlearn.common.layers import LayerNormStateless
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
-from axlearn.common.utils import as_tensor
+from axlearn.common.utils import TensorSpec, as_tensor
 from axlearn.common.vision_transformer import ConvertToSequence
 
 
@@ -325,6 +326,35 @@ class TestAdaptiveLayerNormModulation(parameterized.TestCase):
 
         assert_allclose(layer_output, as_tensor(ref_output))
 
+    @parameterized.product(prefix_shape=[(2,), (2, 3), (2, 3, 4)])
+    def test_shape(self, prefix_shape):
+        dim = 8
+        num_outputs = 6
+
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, data_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(data_key, shape=(*prefix_shape, dim))
+
+        cfg = AdaptiveLayerNormModulation.default_config().set(
+            name="test",
+            dim=dim,
+            num_outputs=num_outputs,
+        )
+        layer = cfg.instantiate(parent=None)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        layer_output, _ = F(
+            layer,
+            inputs=dict(input=inputs),
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertEqual(len(layer_output), num_outputs)
+        for i in range(num_outputs):
+            self.assertEqual(layer_output[i].shape, (*prefix_shape, dim))
+
 
 class TestDiTFFN(parameterized.TestCase):
     """Tests DiTFFN."""
@@ -565,6 +595,73 @@ class TestDiTAttn(parameterized.TestCase):
             )
             assert_allclose(layer_output.shape, inputs.shape)
 
+    @parameterized.parameters(
+        [causal_mask, config_for_function(sliding_window_causal_mask).set(sliding_window_size=10)]
+    )
+    def test_dit_attn_extend_step(self, mask):
+        batch_size = 2
+        seq_len = 12
+        dim = 32
+        num_heads = 2
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, data_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(data_key, shape=(batch_size, seq_len, dim))
+        shift = jax.random.normal(data_key, shape=(batch_size, dim))
+        scale = jax.random.normal(data_key, shape=(batch_size, dim))
+        gate = jax.random.normal(data_key, shape=(batch_size, dim))
+
+        layer_cfg = DiTAttentionLayer.default_config().set(
+            name="test",
+            source_dim=dim,
+            target_dim=dim,
+        )
+        layer_cfg.attention.num_heads = num_heads
+        layer_cfg.attention.mask = mask
+
+        layer = layer_cfg.instantiate(parent=None)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        fwd_output, _ = F(
+            layer,
+            inputs=dict(
+                input=inputs,
+                shift=shift,
+                scale=scale,
+                gate=gate,
+                attention_logit_biases=None,
+            ),
+            state=layer_params,
+            is_training=False,
+            prng_key=prng_key,
+        )
+
+        cached_states = layer.init_states(input_spec=TensorSpec(inputs.shape, inputs.dtype))
+        step_sizes = (1, 2, 3)
+        step_outputs = []
+        i = 0
+        while i < seq_len:
+            step_size = step_sizes[i % len(step_sizes)]
+            step_inputs = dict(
+                cached_states=cached_states,
+                target=inputs[:, i : i + step_size],
+                shift=shift,
+                scale=scale,
+                gate=gate,
+            )
+            i += step_size
+            (cached_states, step_output), _ = F(
+                layer,
+                inputs=step_inputs,
+                state=layer_params,
+                is_training=False,
+                prng_key=prng_key,
+                method="extend_step",
+            )
+            step_outputs.append(step_output)
+        step_outputs = jnp.concatenate(step_outputs, axis=1)
+        assert_allclose(step_outputs, fwd_output)
+
 
 class TestDiTBlock(parameterized.TestCase):
     """Tests DiTBlock."""
@@ -603,6 +700,62 @@ class TestDiTBlock(parameterized.TestCase):
         )
 
         assert_allclose(layer_output, as_tensor(ref_output))
+
+    @parameterized.parameters(
+        [causal_mask, config_for_function(sliding_window_causal_mask).set(sliding_window_size=10)]
+    )
+    def test_dit_block_extend_step(self, mask):
+        batch_size = 2
+        seq_len = 12
+        dim = 32
+        num_heads = 2
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, data_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(data_key, shape=(batch_size, seq_len, dim))
+        condition = jax.random.normal(data_key, shape=(batch_size, dim))
+
+        layer_cfg = DiTBlock.default_config().set(name="test", input_dim=dim)
+        layer_cfg.attention.attention.num_heads = num_heads
+        layer_cfg.attention.attention.mask = mask
+
+        layer = layer_cfg.instantiate(parent=None)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        fwd_output, _ = F(
+            layer,
+            inputs=dict(
+                input=inputs,
+                condition=condition,
+            ),
+            state=layer_params,
+            is_training=False,
+            prng_key=prng_key,
+        )
+
+        cached_states = layer.init_states(input_spec=TensorSpec(inputs.shape, inputs.dtype))
+        step_sizes = (1, 2, 3)
+        step_outputs = []
+        i = 0
+        while i < seq_len:
+            step_size = step_sizes[i % len(step_sizes)]
+            step_inputs = dict(
+                cached_states=cached_states,
+                target=inputs[:, i : i + step_size],
+                condition=condition,
+            )
+            i += step_size
+            (cached_states, step_output), _ = F(
+                layer,
+                inputs=step_inputs,
+                state=layer_params,
+                is_training=False,
+                prng_key=prng_key,
+                method="extend_step",
+            )
+            step_outputs.append(step_output)
+        step_outputs = jnp.concatenate(step_outputs, axis=1)
+        assert_allclose(step_outputs, fwd_output)
 
 
 class TestDiTFinalLayer(parameterized.TestCase):
@@ -682,3 +835,7 @@ class TestDiTPatchEmbed(parameterized.TestCase):
         )
 
         assert_allclose(layer_output, as_tensor(ref_output))
+
+
+if __name__ == "__main__":
+    absltest.main()

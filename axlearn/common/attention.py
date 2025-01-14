@@ -33,26 +33,47 @@
 """Attention layers with pjit partition specs.
 
 On `attention_logit_biases`:
-* A biases tensor can have one of the following shapes:
+* For methods that take a tensor, a biases Tensor can have one of the following shapes:
   * [target_length, source_length]
   * [batch, target_length, source_length]
   * [batch, num_heads, target_length, source_length].
 * Each value represents a bias to be added to the attention logits
   (therefore a -inf represents a disconnected position pair).
 * biases=None represents an all-zero tensor, i.e., all position pairs are connected.
+* For methods that take a BaseAttentionBias, the value() will always be None or a 4d Tensor with
+  the above semantics.
+
+TODO(apghml) Convert everything to take an instance of BaseAttentionBias rather than a Tensor.
 
 On `segment_ids`:
 * A tensor of shape [batch, target_length] with values in [0, num_segments].
 * Tokens are only allowed to attend to other tokens within the same segment.
 * segment_ids == 0 represents paddings.
 * None represents an all-one tensor, i.e. all positions are in the same segment.
+
+On `positions`:
+* A tensor of shape [batch, target_length]. Note that this is conceptually different from
+  `time_step`. To disambiguate:
+  * `positions`: A [batch, target_length] tensor indicating the position ids of each input token
+    during training (i.e. in `forward`).
+  * `time_step`: a [batch] tensor indicating the current decode position of each sample during
+    decoding (i.e. in `init_states` and `extend_step`).
+* In most typical cases, the values of `positions` are integers in [0, target_length - 1].
+  However, this should not be assumed by the implementation in order to support other positional
+  encoding schemes, e.g. RandPos (https://arxiv.org/pdf/2305.16843), where positions are
+  non-consecutive integers that can be larger than target_length - 1.
+* None represents jnp.arange(target_length).
+* When the accompanying argument is `query`, the `positions` argument is named as
+  `query_position`. Similarly, when the argument `target`, it is named as `target_positions`.
+
+TODO(changlan): Merge the use of `positions` and `time_step` to reduce cognitive complexity.
+
 """
 
 # pylint: disable=abstract-method,too-many-lines
 import enum
 import functools
 import math
-import re
 from collections.abc import Sequence
 from enum import Enum, unique
 from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
@@ -60,11 +81,19 @@ from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 import einops
 import jax
 from jax import numpy as jnp
-from jax._src.ad_checkpoint import name_p
-from jax._src.interpreters import partial_eval as pe
-from jax.core import Primitive
 
 from axlearn.common import ops, param_init
+from axlearn.common.attention_bias import (
+    NEG_INF,
+    BaseAttentionBias,
+    CausalAttentionBias,
+    MaskFn,
+    MaskFnAttentionBias,
+    SegmentIdAttentionBias,
+    as_attention_bias,
+    causal_mask,
+    make_segment_mask,
+)
 from axlearn.common.base_layer import (
     BaseLayer,
     FactorizationSpec,
@@ -105,18 +134,19 @@ from axlearn.common.repeat import Repeat
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
+    OffloadPolicy,
     PartitionSpec,
+    SavePattern,
     Tensor,
     TensorSpec,
     VDict,
     check_numerics,
     flatten_items,
     get_or_none,
+    save_and_offload_only_these_names_regex,
     shapes,
     split_prng_key,
 )
-
-NEG_INF = -1e15
 
 
 class ForwardMode(enum.Enum):
@@ -198,6 +228,7 @@ class BaseTransformerLayer(BaseLayer):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         target_segment_ids: Optional[Tensor] = None,
+        target_positions: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes transformer layer outputs given full-sequence inputs.
@@ -215,6 +246,7 @@ class BaseTransformerLayer(BaseLayer):
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
             target_segment_ids: See ``segment_ids`` in the file comments.
+            target_positions: See ``positions`` in the file comments.
             return_aux: A set of auxiliary output fields to return. Each element must be an
                 optional field of `Output`, e.g.,
                 `return_aux = {"self_attention_probs", "self_attention_kv_state"}` means that
@@ -301,66 +333,6 @@ class BaseTransformerLayer(BaseLayer):
             same shape as the input data.
         """
         raise NotImplementedError(type(self))
-
-
-def make_causal_biases(seq_len: int) -> Tensor:
-    """Generates attention logit biases for causal masking.
-
-    Args:
-        seq_len: Sequence length.
-
-    Returns:
-        A float tensor of shape [seq_len, seq_len] where the value at [i, j] = -inf if i < j,
-        0 otherwise.
-    """
-    # TODO(sneha): support batching
-    return bool_to_bias(causal_mask(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
-
-
-def make_sliding_window_causal_biases(seq_len: int, sliding_window_size: int) -> Tensor:
-    """Generates attention logit biases for sliding window attention.
-
-    Args:
-        seq_len: Sequence length.
-
-    Returns:
-        A float tensor of shape [seq_len, seq_len] where the value at [i, j] = -inf
-        if i - j > sliding_window_size or i < j, 0 otherwise.
-    """
-    mask_fn = sliding_window_causal_mask(sliding_window_size)
-    return bool_to_bias(mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]))
-
-
-def bool_to_bias(mask: Tensor) -> Tensor:
-    """Converts a bool mask tensor to a bias mask tensor.
-
-    Maps:
-    0 -> -NEG_INF
-    1 -> 0.
-    """
-    if mask.dtype != jnp.bool:
-        raise ValueError("mask must be a Boolean tensor.")
-    return (~mask) * NEG_INF
-
-
-def make_segment_mask(*, source_segments: Tensor, target_segments: Tensor) -> Tensor:
-    """Generates attention logit biases given the segment ids.
-
-    ... such that positions belonging to different segments cannot attend to each other.
-
-    Args:
-        source_segments: An integer tensor of shape [batch, ..., source_length].
-        target_segments: An integer tensor of shape [batch, ..., target_length].
-
-    Returns:
-        A float Tensor of shape [batch, 1, ..., target_length, source_length] where the
-        value at [..., i, j] = 0 if target_segments[..., i] == source_segments[..., j], or -inf
-        otherwise.
-    """
-    target_segments = jnp.expand_dims(target_segments, -1)
-    source_segments = jnp.expand_dims(source_segments, -2)
-    res = (jax.lax.ne(source_segments, target_segments) * NEG_INF)[:, None, ...]
-    return res
 
 
 class LearnedPositionalEmbedding(BaseLayer):
@@ -792,7 +764,7 @@ class BaseQKVLinear(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        time_step: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> Output:
         """Computes per-head query, key, and value for the input query, key, value.
 
@@ -803,7 +775,7 @@ class BaseQKVLinear(BaseLayer):
             value: An optional Tensor of shape [batch, source_length, source_dim].
                    If None, will use `query`.
             kv_state: An optional KVState. If not None, both key and value must be None.
-            time_step: An optional Tensor of shape [batch]. If None, will ignore.
+            query_positions: An optional Tensor of shape [batch, target_length].
 
         Returns:
             An Output instance, where query is of size
@@ -855,9 +827,13 @@ class BaseQKVLinear(BaseLayer):
             kv_kwargs = dict(kv_state=kv_state)
         else:
             kv_kwargs = dict(key=key, value=value)
+
         num_query_steps = query.shape[1]
+        query_positions = jnp.arange(num_query_steps)[None]
+        query_positions += time_step[:, None]
+
         # Project inputs to key, value and query. Each has shape [B, steps, N, H].
-        q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, time_step=time_step)
+        q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, query_positions=query_positions)
         updated_state = dict(time_step=time_step + num_query_steps)
         if kv_state is None:
             # Update the cache via dynamic slice. [B, S, N, H].
@@ -914,7 +890,8 @@ class QKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
-        time_step: Optional[Tensor] = None,
+        kv_state: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         """Computes attention for the given query, key, value.
 
@@ -922,6 +899,13 @@ class QKVLinear(BaseQKVLinear):
 
         See parent class for full docstring.
         """
+        if kv_state is not None:
+            raise ValueError(
+                "QKVLinear computes key and value projections "
+                "and does not expect external `kv_state`."
+            )
+        del query_positions
+
         key = query if key is None else key
         value = query if value is None else value
         q_proj = self.q_proj(query)
@@ -985,7 +969,7 @@ class QLinear(BaseQKVLinear):
         kv_state: KVState,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
-        time_step: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         """Computes projects for the given query. Uses {k,v}_proj from `kv_state`.
 
@@ -1066,7 +1050,8 @@ class FusedQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
-        time_step: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         """Computes multi-head query, key, and value for the input query, key, value
         using a fused weight.
@@ -1076,8 +1061,15 @@ class FusedQKVLinear(BaseQKVLinear):
         See parent class for full docstring.
 
         Raises:
-            ValueError: If key and value are not both set or both None.
+            ValueError: If key and value are not both set or both None; or if kv_state is not None.
         """
+        if kv_state is not None:
+            raise ValueError(
+                "FusedQKVLinear computes key and value projections "
+                "and does not expect external `kv_state`."
+            )
+        del query_positions
+
         with child_context("qkv_proj"):
             params = self.qkv_proj.parameters
             if key is None and value is None:
@@ -1158,14 +1150,21 @@ class FusedGroupedQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
-        time_step: Optional[Tensor] = None,
+        kv_state: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> FusedQKVLinear.Output:
         """See FusedQKVLinear for full docstring.
 
         N.B. Only supports cases where key and value are both None.
         """
+        if kv_state is not None:
+            raise ValueError(
+                "FusedGroupedQKVLinear computes key and value projections "
+                "and does not expect external `kv_state`."
+            )
         if key is not None or value is not None:
             raise ValueError("Key and value should be both None.")
+        del query_positions
         cfg = self.config
         proj = self.qkv_proj(query)
         q_proj, k_proj, v_proj = jnp.split(
@@ -1240,6 +1239,7 @@ def apply_rotary_position_embeddings(
     key: Tensor,
     value: Tensor,
     sinusoidal_pos: Tensor,
+    rotary_key: bool,
     rotary_value: bool,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """This is a jax implementation (a copy) of the RoPE apply_rotary_position_embeddings.
@@ -1252,7 +1252,8 @@ def apply_rotary_position_embeddings(
         key: Key embeddings with shape [batch_size, seq_len, num_heads, dim].
         value: Value embeddings with shape [batch_size, seq_len, num_heads, dim].
         sinusoidal_pos: Rotary position embeddings with shape [batch_size, seq_len, 1, dim].
-        rotary_value: Whether to apply rotary position embeddings on value layer.
+        rotary_key: Whether to apply rotary position embeddings on key.
+        rotary_value: Whether to apply rotary position embeddings on value.
 
     Returns:
         A tuple of:
@@ -1273,9 +1274,13 @@ def apply_rotary_position_embeddings(
         jnp.stack([-query[..., 1::2], query[..., ::2]], axis=-1), query.shape
     )
     query = query * cos_pos + rotate_half_query * sin_pos
-    # rotate_half_key_layer [-k1,k0,-k3,k2......,-kd-1,kd-2]
-    rotate_half_key = jnp.reshape(jnp.stack([-key[..., 1::2], key[..., ::2]], axis=-1), key.shape)
-    key = key * cos_pos + rotate_half_key * sin_pos
+
+    if rotary_key:
+        # rotate_half_key_layer [-k1,k0,-k3,k2......,-kd-1,kd-2]
+        rotate_half_key = jnp.reshape(
+            jnp.stack([-key[..., 1::2], key[..., ::2]], axis=-1), key.shape
+        )
+        key = key * cos_pos + rotate_half_key * sin_pos
     if rotary_value:
         # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
         rotate_half_value = jnp.reshape(
@@ -1299,6 +1304,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
             RoFormerSinusoidalPositionalEmbedding.default_config()
         )
         input_linear: BaseQKVLinear.Config = QKVLinear.default_config()
+        # Whether to apply RoPE rotations to the value embeddings.
         rotary_value: Required[bool] = REQUIRED
 
     def __init__(self, cfg: QKVLinear.Config, *, parent: Module):
@@ -1330,23 +1336,26 @@ class RoFormerQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
-        time_step: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         cfg = self.config
         # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
-        query, key, value = self.i_proj(query, key=key, value=value)
-        query_pos = jnp.arange(query.shape[1])[None]  # [batch_size=1, seq_len].
-        if time_step is not None:
-            query_pos = query_pos + time_step[:, None]  # [batch_size, seq_len].
-        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(query_pos).astype(query.dtype)
+        query, key, value = self.i_proj(query, key=key, value=value, kv_state=kv_state)
+        if query_positions is None:
+            query_positions = jnp.arange(query.shape[1])[None]
+        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(query_positions).astype(query.dtype)
         # sinusoidal_pos_emb shape should be [batch_size, seq_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(sinusoidal_pos_emb, 2)
+
+        i_proj_computes_kv = kv_state is None
         query, key, value = apply_rotary_position_embeddings(
             sinusoidal_pos=sinusoidal_pos_emb,
             query=query,
             key=key,
             value=value,
-            rotary_value=cfg.rotary_value,
+            rotary_key=i_proj_computes_kv,
+            rotary_value=i_proj_computes_kv and cfg.rotary_value,
         )
 
         return self.Output(query, key, value)
@@ -1555,83 +1564,6 @@ class ScaleKey(BaseScaleQK):
         return config_for_function(constant_scale_fn).set(value=1)
 
 
-class MaskFn(Protocol):
-    """A broadcastable function for computing a boolean logit mask."""
-
-    def __call__(self, query_position: Tensor, key_position: Tensor) -> Tensor:
-        """Returns a bool Tensor of whether the query token at `query_position` should attend
-        to the key token at `key_position`.
-
-        Implementations have the following contract:
-        * Must support scalar arguments.
-        * If given non-scalar arguments of the same shape, the result must be the same as
-          applying the function elementwise over these arugments. I.e.,
-          ```
-          x = f(jnp.asarray([1,2]), jnp.asarray([3,4]))
-          assert x[0] == f(jnp.asarray(1), jnp.asarray(3))[None]
-          ```
-        * If given non-scalar arguments of different shapes, the result must be the same if we
-          first broadcast the arguments against each other to make them have the same shape.
-        * Beyond requiring broadcastability, must not impose any constraints on the shapes of its
-          arguments.
-
-        Args:
-            query_position: The index in the sequence of query vectors.
-            key_position: The index in the sequence of key vectors.
-
-        Returns:
-            Whether the query and key vectors with the given index should attend to one another.
-            True means they should attend. False means they should not.
-            The shape is the same as the shape obtained after broadcasting the inputs against each
-            other.
-        """
-
-
-def _composite_masks(op: Callable[[Tensor, Tensor], Tensor], *mask_fns: ConfigOr[MaskFn]):
-    if len(mask_fns) == 0:
-        raise RuntimeError(f"Input must not be empty: {mask_fns}")
-
-    def mask(query_position: Tensor, key_position: Tensor):
-        fns = [maybe_instantiate(arg) for arg in mask_fns]
-        result = fns[0](query_position, key_position)
-        for mask in fns[1:]:
-            result = op(result, mask(query_position, key_position))
-        return result
-
-    return mask
-
-
-def or_masks(*mask_fns: ConfigOr[MaskFn]) -> MaskFn:
-    """Returns a MaskFn that's the union of provided MaskFn's."""
-    return _composite_masks(jnp.logical_or, *mask_fns)
-
-
-def and_masks(*mask_fns: ConfigOr[MaskFn]) -> MaskFn:
-    """Returns a MaskFn that's the intersection of provided MaskFn's."""
-    return _composite_masks(jnp.logical_and, *mask_fns)
-
-
-def causal_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
-    """Returns the given entry of a causal attention mask.
-
-    Implements the `MaskFn` protocol.
-    See that and `MultiheadAttention.Config.mask`.
-    """
-    return query_position >= key_position
-
-
-def sliding_window_causal_mask(sliding_window_size: int):
-    """Returns a causal MaskFn for sliding window attentions of a given window size.
-
-    Implements the `MaskFn` protocol.
-    """
-
-    def mask(query_position: Tensor, key_position: Tensor):
-        return query_position - key_position <= sliding_window_size
-
-    return and_masks(causal_mask, mask)
-
-
 class MultiheadAttention(BaseLayer):
     """A basic multi-head attention layer.
 
@@ -1747,8 +1679,9 @@ class MultiheadAttention(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        attention_logit_biases: Optional[Tensor] = None,
+        attention_logit_biases: Union[None, Tensor, BaseAttentionBias] = None,
         segment_ids: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Nested[Tensor], Optional[Output]]:
@@ -1765,6 +1698,7 @@ class MultiheadAttention(BaseLayer):
             kv_state: An optional KVState. If specified, both `key` and `value` should be None.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             segment_ids: See ``On segment_ids`` in the file comments.
+            query_positions: See ``On positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on `Output`.
 
@@ -1793,14 +1727,19 @@ class MultiheadAttention(BaseLayer):
             kv_kwargs = dict(key=key, value=value)
 
         if mode == ForwardMode.FORWARD:
-            i_proj_state, i_proj_output = None, self.i_proj(query, **kv_kwargs)
+            i_proj_state, i_proj_output = (
+                None,
+                self.i_proj(query, query_positions=query_positions, **kv_kwargs),
+            )
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
+            assert query_positions is None
             i_proj_state, i_proj_output = self.i_proj.init_states(
                 time_step=cached_states["i_proj"], query=query, **kv_kwargs
             )
         elif mode == ForwardMode.EXTEND_STEP:
             assert cached_states is not None
+            assert query_positions is None
             i_proj_state, i_proj_output = self.i_proj.extend_step(
                 cached_states["i_proj"], query, **kv_kwargs
             )
@@ -1819,36 +1758,35 @@ class MultiheadAttention(BaseLayer):
         self.vlog(3, "atten.q_proj=%s", q_proj.sum())
         self.vlog(3, "atten.k_proj=%s", k_proj.sum())
         self.vlog(3, "atten.v_proj=%s", v_proj.sum())
-        if attention_logit_biases is not None:
-            if attention_logit_biases.ndim == 3:
-                # [batch, 1, target_length, source_length].
-                attention_logit_biases = attention_logit_biases[:, None, :, :]
-            elif attention_logit_biases.ndim == 2:
-                # [1, 1, target_length, source_length].
-                attention_logit_biases = attention_logit_biases[None, None, :, :]
-            elif attention_logit_biases.ndim != 4:
-                raise ValueError(
-                    f"Invalid attention_logit_biases shape: {attention_logit_biases.shape}."
-                )
+        attention_logit_biases = as_attention_bias(attention_logit_biases)
         if self._mask_fn is not None:
-            kv_pos = jnp.arange(k_proj.shape[1])[None, :]  # [1, source_len]
-            query_pos = jnp.arange(q_proj.shape[1])[None]  # [1, target_length]
+            target_positions = None
             if mode == ForwardMode.EXTEND_STEP:
-                time_step = cached_states["i_proj"]["time_step"]  # [B]
-                # [B, target_length], target_length is often 1 for decoding, but not always.
-                query_pos = query_pos + time_step[:, None]
-            mask = self._logit_biases_for_mask(mode=mode, query_pos=query_pos, kv_pos=kv_pos)
-            if mask is not None:
-                attention_logit_biases = apply_attention_logit_biases(
-                    mask.astype(q_proj.dtype),
-                    attention_logit_biases,
+                target_positions = cached_states["i_proj"]["time_step"]
+            if self._mask_fn is causal_mask:
+                # Needed for legacy flash attention implementations that don't have
+                # sparse mask support.
+                # E.g., the legacy tpu flash attention, all current gpu flash attention
+                # implementations.
+                attention_logit_biases += CausalAttentionBias(
+                    shape=(q_proj.shape[1], k_proj.shape[1]),
+                    target_positions=target_positions,
+                    dtype=q_proj.dtype,
                 )
+            else:
+                attention_logit_biases += MaskFnAttentionBias(
+                    self._mask_fn,
+                    shape=(q_proj.shape[1], k_proj.shape[1]),
+                    target_positions=target_positions,
+                    dtype=q_proj.dtype,
+                )
+        if segment_ids is not None:
+            attention_logit_biases += SegmentIdAttentionBias(segment_ids)
         context, probs = self._compute_attention(
             q_proj=q_proj,
             k_proj=k_proj,
             v_proj=v_proj,
             attention_logit_biases=attention_logit_biases,
-            segment_ids=segment_ids,
         )
         self.vlog(3, "atten.prob=%s", probs[0, 0, 0, :])
         self.vlog(3, "atten.context=%s", context.sum())
@@ -1865,38 +1803,13 @@ class MultiheadAttention(BaseLayer):
         )
         return dict(i_proj=i_proj_state), output
 
-    def _logit_biases_for_mask(
-        self, *, mode: ForwardMode, query_pos: Tensor, kv_pos: Tensor
-    ) -> Optional[Tensor]:
-        """Returns the configured attention mask in the form of logit biases.
-
-        ... or None if the implementation of _compute_attention supports applying masks natively.
-
-        Args:
-            mode: The forward propagation mode, chosen from
-                (ForwardMode.FORWARD, ForwardMode.INIT_STATES, ForwardMode.EXTEND_STEP).
-            query_pos: The index in the sequence of query vectors, [1|batch, target_length].
-            kv_pos: The index in the sequence of kv vectors, [1|batch, source_length].
-
-        Returns:
-            A logit bias tensor [1|batch, 1, target_length, source_length].
-        """
-        del mode
-        kv_pos = kv_pos[:, None]  # [1|B, 1, source_len]
-        query_pos = query_pos[..., None]  # [1|B, target_len, 1]
-        # [1|B, 1, target_len, source_len]
-        mask = self._mask_fn(query_pos, kv_pos)[:, None]
-        mask = bool_to_bias(mask)
-        return mask
-
     def _compute_attention(
         self,
         *,
         q_proj: Tensor,
         k_proj: Tensor,
         v_proj: Tensor,
-        attention_logit_biases: Optional[Tensor] = None,
-        segment_ids: Optional[Tensor] = None,
+        attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
         """Computes attention context and probs.
 
@@ -1905,27 +1818,15 @@ class MultiheadAttention(BaseLayer):
             k_proj: [batch_size, source_length, num_heads, per_head_dim].
             v_proj: [batch_size, source_length, num_heads, per_head_dim].
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            segment_ids: See ``segment_ids`` in the file comments.
 
         Returns:
             The context of shape [batch_size, target_length, num_heads, per_head_dim],
             and probs of shape [batch, num_heads, target_length, source_length].
         """
-        # Merge segment ids into attention_logit_biases.
-        if segment_ids is not None:
-            if q_proj.shape[1] != k_proj.shape[1]:
-                raise ValueError(
-                    "segment_ids is only supported for query and key with identical lengths."
-                )
-            attention_logit_biases = apply_attention_logit_biases(
-                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
-                attention_logit_biases,
-            )
-
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
-        probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases)
+        probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases.value())
         probs = self.dropout(probs)
         context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
@@ -1940,6 +1841,7 @@ class MultiheadAttention(BaseLayer):
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
         segment_ids: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes attention for the given query, key, value, and attention logit biases.
@@ -1953,6 +1855,7 @@ class MultiheadAttention(BaseLayer):
             kv_state: An optional KVState. If not None, both key and value must be None.
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
             segment_ids: See `On segment_ids` in the file comments.
+            query_positions: See ``On positions`` in the file comments.
             return_aux: See comments on `Output`.
 
         Returns:
@@ -1970,6 +1873,7 @@ class MultiheadAttention(BaseLayer):
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
             segment_ids=segment_ids,
+            query_positions=query_positions,
             return_aux=return_aux,
         )
         return output
@@ -2203,7 +2107,7 @@ class SigmoidAttention(MultiheadAttention):
     class Config(MultiheadAttention.Config):
         """Configures SigmoidAttention."""
 
-        seq_len: Required[int] = REQUIRED  #  Maximum sequence length used.
+        seq_len: Required[int] = REQUIRED  # Maximum sequence length used.
 
     def _compute_attention(
         self,
@@ -2211,26 +2115,15 @@ class SigmoidAttention(MultiheadAttention):
         q_proj: Tensor,
         k_proj: Tensor,
         v_proj: Tensor,
-        attention_logit_biases: Optional[Tensor] = None,
-        segment_ids: Optional[Tensor] = None,
+        attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
-        # Merge segment ids into attention_logit_biases.
-        if segment_ids is not None:
-            if q_proj.shape[1] != k_proj.shape[1]:
-                raise ValueError(
-                    "segment_ids is only supported for query and key with identical lengths."
-                )
-            attention_logit_biases = apply_attention_logit_biases(
-                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
-                attention_logit_biases,
-            )
-
         cfg = self.config
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
 
+        attention_logit_biases = attention_logit_biases.value()
         if attention_logit_biases is None:
             attention_logit_biases = 0
         # To approximate softmax, we subtract a bias dependent on sequence length.
@@ -2574,6 +2467,7 @@ class TransformerAttentionLayer(BaseLayer):
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
         segment_ids: Optional[Tensor] = None,
+        target_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Optional[Nested[Tensor]], Optional[Output]]:
@@ -2586,7 +2480,8 @@ class TransformerAttentionLayer(BaseLayer):
             source: An optional KVState or Tensor of shape [batch, source_length, source_dim].
                 If None, uses norm(target) as source (self-attention).
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            segment_ids: segment_ids: See ``On segment_ids`` in the file comments.
+            segment_ids: See ``On segment_ids`` in the file comments.
+            target_positions: See ``On positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on `Output`.
 
@@ -2622,10 +2517,13 @@ class TransformerAttentionLayer(BaseLayer):
                         **kv_kwargs,
                         attention_logit_biases=attention_logit_biases,
                         segment_ids=segment_ids,
+                        query_positions=target_positions,
                     ),
                 )
             elif mode == ForwardMode.INIT_STATES:
                 assert cached_states is not None
+                assert segment_ids is None
+                assert target_positions is None
                 atten_state, atten_output = self.attention.init_states(
                     time_step=cached_states["attention"],
                     query=target,
@@ -2634,6 +2532,8 @@ class TransformerAttentionLayer(BaseLayer):
                 )
             elif mode == ForwardMode.EXTEND_STEP:
                 assert cached_states is not None
+                assert segment_ids is None
+                assert target_positions is None
                 atten_state, atten_output = self.attention.extend_step(
                     cached_states["attention"],
                     target,
@@ -2680,6 +2580,7 @@ class TransformerAttentionLayer(BaseLayer):
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
         segment_ids: Optional[Tensor] = None,
+        target_positions: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> Output:
         """Computes attention with target as query and source as key and value.
@@ -2690,6 +2591,7 @@ class TransformerAttentionLayer(BaseLayer):
                 If None, uses norm(target) as source (self-attention)
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             segment_ids: See ``segment_ids`` in the file comments.
+            target_positions: See ``positions`` in the file comments.
             return_aux: See comments on `Output`.
 
         Returns:
@@ -2705,6 +2607,7 @@ class TransformerAttentionLayer(BaseLayer):
             source=source,
             attention_logit_biases=attention_logit_biases,
             segment_ids=segment_ids,
+            target_positions=target_positions,
             cached_states=None,
             return_aux=return_aux,
         )
@@ -3087,6 +2990,7 @@ class TransformerLayer(BaseTransformerLayer):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         target_segment_ids: Optional[Tensor] = None,
+        target_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Optional[NestedTensor], Optional[BaseTransformerLayer.Output]]:
@@ -3102,6 +3006,7 @@ class TransformerLayer(BaseTransformerLayer):
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
             target_segment_ids: See ``segment_ids`` in the file comments.
+            target_positions: See ``positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on BaseTransformerLayer.forward.
 
@@ -3133,6 +3038,7 @@ class TransformerLayer(BaseTransformerLayer):
                 self.self_attention(
                     target=data,
                     segment_ids=target_segment_ids,
+                    target_positions=target_positions,
                     source=self_attention_kv_state,
                     attention_logit_biases=self_attention_logit_biases,
                     return_aux=self_attention_return_aux,
@@ -3142,6 +3048,8 @@ class TransformerLayer(BaseTransformerLayer):
             assert cached_states is not None
             if target_segment_ids is not None:
                 raise NotImplementedError("target_segment_ids is not supported in INIT_STATES.")
+            if target_positions is not None:
+                raise NotImplementedError("target_positions is not supported in INIT_STATES.")
             self_atten_state, self_atten_outputs = self.self_attention.init_states(
                 time_step=cached_states["self_attention"],
                 target=data,
@@ -3153,6 +3061,8 @@ class TransformerLayer(BaseTransformerLayer):
             assert cached_states is not None
             if target_segment_ids is not None:
                 raise NotImplementedError("target_segment_ids is not supported in EXTEND_STEP.")
+            if target_positions is not None:
+                raise NotImplementedError("target_positions is not supported in EXTEND_STEP.")
             self_atten_state, self_atten_outputs = self.self_attention.extend_step(
                 cached_states=cached_states["self_attention"],
                 target=data,
@@ -4072,30 +3982,23 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
     # TODO(sneha): extend_step
 
 
-OffloadPolicy = Callable[[Primitive, list[Any], dict[str, Any]], Union[bool, Any]]
-_SavePattern = Union[str, re.Pattern, None]
-
-
 # Adapted from jax source code to support regex. Reference:
 # https://github.com/jax-ml/jax/blob/0d36b0b433a93c707f86dac89b0c05d40302775a/jax/_src/ad_checkpoint.py#L120
+# TODO(kelvin-zou): deprecated, keep it here to minimize distruption to the golden configs.
+# Please use axlearn.common.utils.extended_checkpoint_policies instead.
 def _save_and_offload_only_these_names_regex(
     *,
-    names_which_can_be_saved: _SavePattern,
-    names_which_can_be_offloaded: _SavePattern,
+    names_which_can_be_saved: SavePattern,
+    names_which_can_be_offloaded: SavePattern,
     offload_src: str,
     offload_dst: str,
 ) -> OffloadPolicy:
-    def policy(prim, *_, **params):
-        if prim is name_p:
-            if names_which_can_be_saved and re.fullmatch(names_which_can_be_saved, params["name"]):
-                return pe.Saveable
-            if names_which_can_be_offloaded and re.fullmatch(
-                names_which_can_be_offloaded, params["name"]
-            ):
-                return pe.Offloadable(src=offload_src, dst=offload_dst)
-        return pe.Recompute  # not saveable unless it's in the allow-list
-
-    return policy
+    return save_and_offload_only_these_names_regex(
+        names_which_can_be_saved=names_which_can_be_saved,
+        names_which_can_be_offloaded=names_which_can_be_offloaded,
+        offload_src=offload_src,
+        offload_dst=offload_dst,
+    )
 
 
 SELF_ATTENTION_SAVE_PATTERN = ".*([qkvo]_proj|context)"
@@ -4106,8 +4009,8 @@ def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
     ],
-    save_pattern: _SavePattern = SELF_ATTENTION_SAVE_PATTERN,
-    offload_pattern: _SavePattern = None,
+    save_pattern: SavePattern = SELF_ATTENTION_SAVE_PATTERN,
+    offload_pattern: SavePattern = None,
     offload_dst: str = "pinned_host",
 ) -> Optional[RematSpec]:
     """Configures how the Transformer or Conformer stack will save the linearization points.

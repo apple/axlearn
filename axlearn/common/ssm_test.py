@@ -27,7 +27,7 @@ from absl.testing import parameterized
 from transformers.activations import ACT2FN
 from transformers.configuration_utils import PretrainedConfig
 
-from axlearn.common.attention import make_causal_biases
+from axlearn.common.attention_bias import make_causal_biases
 from axlearn.common.config import InstantiableConfig
 from axlearn.common.module import functional as F
 from axlearn.common.ssm import (

@@ -29,10 +29,12 @@ import jax
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
+from jax._src.ad_checkpoint import name_p
 from jax._src.interpreters import partial_eval as pe
 from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
+from jax.core import Primitive
 from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
 
@@ -103,9 +105,46 @@ class TensorSpec:
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
+SavePattern = Union[str, re.Pattern, None]
+OffloadPolicy = Callable[[Primitive, list[Any], dict[str, Any]], Union[bool, Any]]
 
 
-def offload_dots_saveable(offload_src: str, offload_dst: str) -> Callable[[Any], Any]:
+def save_and_offload_only_these_names_regex(
+    *,
+    names_which_can_be_saved: SavePattern,
+    names_which_can_be_offloaded: SavePattern,
+    offload_src: str,
+    offload_dst: str,
+) -> OffloadPolicy:
+    """Adapted from jax source code to support regex.
+    Reference:
+    https://github.com/jax-ml/jax/blob/0d36b0b433a93c707f86dac89b0c05d40302775a/jax/_src/ad_checkpoint.py#L120
+
+    Args:
+        names_which_can_be_saved: A regex pattern for names which can be saved.
+        names_which_can_be_offloaded: A regex pattern for names which can be offloaded.
+        offload_src: The source device for offloading.
+        offload_dst: The target device for offloading.
+
+    Returns:
+        A policy function that offloads and saves only the tensors that match the given
+        regex patterns.
+    """
+
+    def policy(prim, *_, **params):
+        if prim is name_p:
+            if names_which_can_be_saved and re.fullmatch(names_which_can_be_saved, params["name"]):
+                return pe.Saveable
+            if names_which_can_be_offloaded and re.fullmatch(
+                names_which_can_be_offloaded, params["name"]
+            ):
+                return pe.Offloadable(src=offload_src, dst=offload_dst)
+        return pe.Recompute  # not saveable unless it's in the allow-list
+
+    return policy
+
+
+def offload_dots_saveable(offload_src: str, offload_dst: str) -> OffloadPolicy:
     """Extract from offload_dot_with_no_batch_dims and remove no-batch-dims limit.
 
     https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/ad_checkpoint.py#L81C1-L90C1
@@ -128,7 +167,10 @@ def offload_dots_saveable(offload_src: str, offload_dst: str) -> Callable[[Any],
     return policy
 
 
-extended_checkpoint_policies = types.SimpleNamespace(offload_dots_saveable=offload_dots_saveable)
+extended_checkpoint_policies = types.SimpleNamespace(
+    offload_dots_saveable=offload_dots_saveable,
+    save_and_offload_only_these_names_regex=save_and_offload_only_these_names_regex,
+)
 
 
 @contextlib.contextmanager
@@ -442,6 +484,12 @@ def with_sharding_constraint(x, shardings):
     if mesh.empty or mesh.size == 1:
         return x
     return jax.lax.with_sharding_constraint(x, shardings)
+
+
+def maybe_shard(x: NestedTensor, partition_spec: Optional[PartitionSpec]) -> NestedTensor:
+    if partition_spec is None:
+        return x
+    return with_sharding_constraint(x, PartitionSpec(*partition_spec))
 
 
 def replicate_to_local_data(x: NestedTensor) -> NestedTensor:

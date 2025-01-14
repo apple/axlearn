@@ -68,7 +68,7 @@ dev = [
     "pytest",  # test runner
     "pytest-xdist",  # pytest plugin for test parallelism
     "pytype==2022.4.22",  # type checking
-    "scikit-learn>=1.1.1",  # test-only
+    "scikit-learn>=1.1.1,<=1.5.2",  # test-only. v1.6.0 causes ValueError: Input arrays use different devices: cpu, TFRT_CPU_0
     # Fix AttributeError: module 'scipy.linalg' has no attribute 'tril' and related scipy import errors.
     "scipy==1.12.0",
     "sentencepiece != 0.1.92",

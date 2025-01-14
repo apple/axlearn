@@ -13,6 +13,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
 """Tests attention layers."""
+
 import contextlib
 import copy
 import itertools
@@ -38,14 +39,12 @@ from transformers.models.roberta import modeling_roberta as hf_roberta
 from transformers.models.roformer import modeling_roformer as hf_roformer
 from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
-from axlearn.common import attention, test_utils, utils
+from axlearn.common import attention, attention_bias, test_utils, utils
 from axlearn.common.attention import (
     FEED_FORWARD_SAVE_PATTERN,
-    NEG_INF,
     BaseStackedTransformerLayer,
     BaseTransformerLayer,
     BottleNeckAdapterTransformerLayer,
-    ForwardMode,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
     KVState,
@@ -69,19 +68,22 @@ from axlearn.common.attention import (
     _save_and_offload_only_these_names_regex,
     apply_attention_logit_biases,
     apply_rotary_position_embeddings,
-    bool_to_bias,
     build_remat_spec,
-    causal_mask,
     compute_padding_biases,
-    make_causal_biases,
-    make_sliding_window_causal_biases,
     rel_pos_to_abs_pos,
     scaled_hidden_dim,
     set_double_shard_weights_config,
     sinusoidal_positional_embeddings,
-    sliding_window_causal_mask,
     update_data_with_skip_connection,
     xl_attention_logits,
+)
+from axlearn.common.attention_bias import (
+    NEG_INF,
+    bool_to_bias,
+    causal_mask,
+    make_causal_biases,
+    make_sliding_window_causal_biases,
+    sliding_window_causal_mask,
 )
 from axlearn.common.base_layer import (
     BaseLayer,
@@ -172,7 +174,7 @@ class MaskTest(absltest.TestCase):
 
     def test_causal_mask(self):
         expected = jnp.array([[0.0, NEG_INF, NEG_INF], [0.0, 0.0, NEG_INF], [0.0, 0.0, 0.0]])
-        actual = attention.make_causal_biases(3)
+        actual = attention_bias.make_causal_biases(3)
         self.assertTrue(jnp.all(actual <= expected))
 
     def test_segment_mask(self):
@@ -188,7 +190,7 @@ class MaskTest(absltest.TestCase):
                 ]
             ]
         )
-        actual = attention.make_segment_mask(
+        actual = attention_bias.make_segment_mask(
             target_segments=jnp.asarray([[1, 1, 2, 0]]),
             source_segments=jnp.asarray([[2, 2, 0, 1]]),
         )
@@ -735,18 +737,24 @@ class SymmetricALiBiAttentionLogitBiasLayerTest(TestCase):
 class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
     """Tests RoFormerSinusoidalPositionalEmbedding."""
 
-    @parameterized.parameters(
-        (2, 3, 10, 32, True),
-        (2, 3, 8, 32, False),
-        (2, 4, 6, 32, True),
-        (2, 4, 8, 16, False),
-        (2, 5, 8, 48, True),
-        (2, 5, 8, 64, False),
+    @parameterized.product(
+        tensor_dimensions=(
+            (2, 3, 10, 32),
+            (2, 3, 8, 32),
+            (2, 4, 6, 32),
+            (2, 4, 8, 16),
+            (2, 5, 8, 48),
+            (2, 5, 8, 64),
+        ),
+        rotary_key=(True, False),
+        rotary_value=(True, False),
     )
     def test_apply_rotary_position_embeddings(
-        self, batch_size, num_heads, max_len, dim, rotary_value
+        self, tensor_dimensions: tuple[int, int, int, int], rotary_key: bool, rotary_value: bool
     ):
         # Unittest against the apply_rotary_position_embeddings in HF.
+        batch_size, num_heads, max_len, dim = tensor_dimensions
+
         token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
         sinusoidal_pos_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
         sinusoidal_pos = sinusoidal_pos_layer(as_torch_tensor(token_ids).shape)[None, None, :, :]
@@ -769,11 +777,15 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
                 sinusoidal_pos, as_torch_tensor(query), as_torch_tensor(key)
             )
             ref_v_proj = as_torch_tensor(value)
+        if not rotary_key:
+            ref_k_proj = as_torch_tensor(key)
+
         test_q_proj, test_k_proj, test_v_proj = test_layer(
             sinusoidal_pos=as_tensor(sinusoidal_pos),
             query=query,
             key=key,
             value=value,
+            rotary_key=rotary_key,
             rotary_value=rotary_value,
         )
         np.testing.assert_allclose(test_q_proj, ref_q_proj, atol=5e-7)
@@ -810,6 +822,7 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         tgt_len,
         batch_size,
         ref_rope_emb,
+        positions,
     ):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
         layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
@@ -826,12 +839,18 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
                 mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
             layer_outputs, _ = F(
                 layer,
-                inputs=dict(target=jnp.asarray(target), attention_logit_biases=mask),
+                inputs=dict(
+                    target=jnp.asarray(target),
+                    attention_logit_biases=mask,
+                    target_positions=positions,
+                ),
                 state=layer_params,
                 is_training=True,
                 prng_key=jax.random.PRNGKey(0),
             )
             attn_mask = None if mask is None else as_torch_tensor(mask)
+            print("ref_rope_emb", ref_rope_emb.shape)
+            print("target", target.shape)
             (ref_outputs,) = ref.forward(
                 torch.as_tensor(target, dtype=torch.float32),
                 attention_mask=attn_mask,
@@ -840,8 +859,8 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             )
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
 
-    @parameterized.parameters([True, False])
-    def test_rope_self_attention(self, rotary_value: bool):
+    @parameterized.product(rotary_value=[True, False], override_positions=[True, False])
+    def test_rope_self_attention(self, rotary_value: bool, override_positions: bool):
         model_dim = 32
         num_heads = 4
         max_sequence_length = 12
@@ -858,9 +877,17 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             .set(name="test_rope_emb", dim=model_dim // num_heads)
             .instantiate(parent=None)
         )
-        ref_rope_emb = as_torch_tensor(
-            rope_emb_layer.forward(jnp.expand_dims(jnp.arange(max_sequence_length), 0))
+        positions = (
+            jax.random.randint(
+                jax.random.PRNGKey(0),
+                shape=(batch_size, max_sequence_length),
+                minval=0,
+                maxval=max_sequence_length,
+            )
+            if override_positions
+            else jnp.expand_dims(jnp.arange(max_sequence_length), 0)
         )
+        ref_rope_emb = as_torch_tensor(rope_emb_layer.forward(positions)).unsqueeze(1)
         layer = attention.TransformerAttentionLayer.default_config().set(
             source_dim=model_dim,
             target_dim=model_dim,
@@ -879,7 +906,12 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         print(f"roformer_config={roformer_config}")
         ref = hf_roformer.RoFormerAttention(roformer_config)
         self._compare_against_roformer_attention(
-            ref, layer, max_sequence_length, batch_size, ref_rope_emb
+            ref,
+            layer,
+            max_sequence_length,
+            batch_size,
+            ref_rope_emb,
+            positions if override_positions else None,
         )
 
 
@@ -1126,6 +1158,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             key=jnp.asarray(key),
             value=jnp.asarray(value),
             sinusoidal_pos=axlearn_rope,
+            rotary_key=True,
             rotary_value=False,
         )
 
@@ -1258,10 +1291,15 @@ class MultiheadLinearInitTest(TestCase):
 class QKVLinearTest(TestCase):
     """Tests QKVLinear, FusedQKVLinear, and associated layers."""
 
-    @parameterized.parameters(
-        attention.FusedQKVLinear, attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear
+    @parameterized.product(
+        test_cls=[
+            attention.FusedQKVLinear,
+            attention.GroupedQKVLinear,
+            attention.FusedGroupedQKVLinear,
+        ],
+        with_positions=[True, False],
     )
-    def test_qkv_equality(self, test_cls: type[attention.BaseQKVLinear]):
+    def test_qkv_equality(self, test_cls: type[attention.BaseQKVLinear], with_positions: bool):
         """Tests that the QKVLinear variants are equivalent when num_kv_heads=num_heads."""
         with utils.numeric_checks(True):
             model_dim = 12
@@ -1312,7 +1350,8 @@ class QKVLinearTest(TestCase):
             if test_cls == attention.FusedGroupedQKVLinear:
                 key = value = None
 
-            inputs = dict(query=query, key=key, value=value)
+            positions = jnp.ones((1, tgt_len)) if with_positions else None
+            inputs = dict(query=query, key=key, value=value, query_positions=positions)
             outputs = {}
             layer_names = ("base", "test")
             for name, layer, state in zip(
@@ -1380,11 +1419,22 @@ class QKVLinearTest(TestCase):
             layer = cfg.instantiate(parent=None)
             self.assertEqual(expected, layer.num_kv_heads)
 
-    def test_qlinear(self):
+    @parameterized.parameters(
+        (QKVLinear.default_config(), QLinear.default_config()),
+        (
+            RoFormerQKVLinear.default_config().set(
+                input_linear=QKVLinear.default_config(), rotary_value=False
+            ),
+            RoFormerQKVLinear.default_config().set(
+                input_linear=QLinear.default_config(), rotary_value=False
+            ),
+        ),
+    )
+    def test_qlinear(self, base_cfg, test_cfg):
         """Tests that QLinear is equivalent to QKVLinear with the same kv_state."""
         with utils.numeric_checks(True):
             model_dim = 12
-            num_heads = 4
+            num_heads = 3
             per_head_dim = model_dim // num_heads
             layer_kwargs = dict(
                 query_dim=model_dim,
@@ -1393,8 +1443,8 @@ class QKVLinearTest(TestCase):
                 num_heads=num_heads,
                 per_head_dim=per_head_dim,
             )
-            base_cfg = QKVLinear.default_config().set(**layer_kwargs)
-            test_cfg = QLinear.default_config().set(**layer_kwargs)
+            base_cfg = base_cfg.set(**layer_kwargs)
+            test_cfg = test_cfg.set(**layer_kwargs)
             maybe_set_config(test_cfg, num_kv_heads=num_heads)
             base_layer = base_cfg.set(name="base").instantiate(parent=None)
             test_layer = test_cfg.set(name="test").instantiate(parent=None)
@@ -1402,7 +1452,12 @@ class QKVLinearTest(TestCase):
             # Construct base layer state.
             base_state = base_layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
             # Map state to QLinear.
-            test_state = {"q_proj": base_state["q_proj"]}
+            if "q_proj" in base_state:
+                test_state = {"q_proj": base_state["q_proj"]}
+            elif "i_proj" in base_state:
+                test_state = {"i_proj": {"q_proj": base_state["i_proj"]["q_proj"]}}
+            else:
+                raise ValueError("Cannot find expected q_proj state.")
 
             # Construct test inputs.
             batch_size, src_len, tgt_len = 2, 6, 6
@@ -2180,55 +2235,6 @@ class MultiheadAttentionTest(TestCase):
         # The outputs are equivalent.
         self.assertNestedAllClose(outputs[0], outputs[1])
 
-    def test_logit_biases_for_mask(self):
-        model_dim = 16
-        num_heads = 4
-        cfg = attention.MultiheadAttention.default_config().set(
-            name="test",
-            query_dim=model_dim,
-            key_dim=model_dim,
-            value_dim=model_dim,
-            num_heads=num_heads,
-            mask=causal_mask,
-        )
-        layer = cfg.instantiate(parent=None)
-        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
-
-        query_len, kv_len = 2, 3
-        query_pos = jnp.arange(query_len)[None]
-        kv_pos = jnp.arange(kv_len)[None]
-        inputs = dict(mode=ForwardMode.FORWARD, query_pos=query_pos, kv_pos=kv_pos)
-        layer_outputs, _ = F(
-            layer,
-            state=layer_params,
-            is_training=True,
-            prng_key=jax.random.PRNGKey(456),
-            inputs=inputs,
-            method="_logit_biases_for_mask",
-        )
-        self.assertNestedAllClose(
-            layer_outputs,
-            bool_to_bias(jnp.array([[1, 0, 0], [1, 1, 0]], dtype=jnp.bool))[None, None],
-        )
-
-        time_step = jnp.array([1, 2])
-        query_pos = time_step[:, None]
-        kv_len = 4
-        kv_pos = jnp.arange(kv_len)[None]
-        inputs = dict(mode=ForwardMode.EXTEND_STEP, query_pos=query_pos, kv_pos=kv_pos)
-        layer_outputs, _ = F(
-            layer,
-            state=layer_params,
-            is_training=True,
-            prng_key=jax.random.PRNGKey(456),
-            inputs=inputs,
-            method="_logit_biases_for_mask",
-        )
-        self.assertNestedAllClose(
-            layer_outputs,
-            bool_to_bias(jnp.array([[1, 1, 0, 0], [1, 1, 1, 0]], dtype=jnp.bool))[:, None, None, :],
-        )
-
     @parameterized.product(
         base_cfg=(
             attention.MultiheadAttention.default_config(),
@@ -2374,7 +2380,7 @@ class MultiheadAttentionTest(TestCase):
             ),
             key=None,
             value=None,
-            attention_logit_biases=attention.make_causal_biases(tgt_len),
+            attention_logit_biases=attention_bias.make_causal_biases(tgt_len),
         )
         # Get outputs.
         forward_key = jax.random.PRNGKey(456)
@@ -2437,7 +2443,7 @@ class MultiheadAttentionTest(TestCase):
             # Make key and value distinct from query. Otherwise, it is equivalent
             # to the query only case.
             key = value = query + 0.1
-        attention_logit_biases = attention.make_causal_biases(tgt_len)
+        attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
         return_aux = {"probs"}
         inputs = dict(
             query=query,
@@ -2600,7 +2606,7 @@ class MultiheadAttentionTest(TestCase):
             # Make key and value distinct from query. Otherwise, it is equivalent
             # to the query only case.
             key = value = query + 0.1
-        attention_logit_biases = attention.make_causal_biases(tgt_len)
+        attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
         return_aux = {"probs"}
 
         forward_outputs, _ = F(
@@ -2809,6 +2815,7 @@ class MultiheadAttentionTest(TestCase):
         q = jax.random.uniform(data_key, (batch, seq_len, num_heads, per_head_dim))
         k = jax.random.uniform(data_key, (batch, seq_len, num_kv_heads, per_head_dim))
         v = jax.random.uniform(data_key, (batch, seq_len, num_kv_heads, per_head_dim))
+        attention_logit_biases = attention_logit_biases = attention_bias.ZeroAttentionBias()
 
         (test_context, ref_probs), _ = F(
             test_layer,
@@ -2816,7 +2823,9 @@ class MultiheadAttentionTest(TestCase):
             state=state,
             is_training=False,
             prng_key=prng_key,
-            inputs=dict(q_proj=q, k_proj=k, v_proj=v),
+            inputs=dict(
+                q_proj=q, k_proj=k, v_proj=v, attention_logit_biases=attention_logit_biases
+            ),
         )
 
         k = jnp.repeat(k, num_heads // num_kv_heads, axis=2)
@@ -2828,7 +2837,9 @@ class MultiheadAttentionTest(TestCase):
             state=state,
             is_training=False,
             prng_key=prng_key,
-            inputs=dict(q_proj=q, k_proj=k, v_proj=v),
+            inputs=dict(
+                q_proj=q, k_proj=k, v_proj=v, attention_logit_biases=attention_logit_biases
+            ),
         )
 
         assert_allclose(ref_context, test_context)
@@ -2999,7 +3010,7 @@ class MultiheadAttentionTest(TestCase):
             q_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             k_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             v_proj=jnp.full(qkv_shape, fill_value=qkv_value),
-            attention_logit_biases=attention.make_causal_biases(seq_len),
+            attention_logit_biases=attention_bias.CausalAttentionBias(shape=(seq_len, seq_len)),
         )
 
         # Get outputs.
@@ -3831,7 +3842,7 @@ class ParallelTransformerTest(TestCase):
         batch_size, tgt_len = 2, 6
         rng = np.random.default_rng(seed=123)
         target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
-        mask = attention.make_causal_biases(tgt_len)
+        mask = attention_bias.make_causal_biases(tgt_len)
         mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
         layer_outputs, _ = F(
             layer,
@@ -4075,7 +4086,7 @@ class StackedTransformerTest(BaseTransformerTest):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
+        self_attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
@@ -4203,7 +4214,7 @@ class StackedTransformerTest(BaseTransformerTest):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
+        self_attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
@@ -5207,7 +5218,7 @@ class BottleNeckAdapterTransformerLayerTest(TestCase):
         state = adapter.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
 
         data = jax.random.normal(jax.random.PRNGKey(1), [batch_size, tgt_len, model_dim])
-        self_attention_logit_biases = attention.make_causal_biases(tgt_len)
+        self_attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
 
         outputs, _ = F(
             adapter,
