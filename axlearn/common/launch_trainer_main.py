@@ -2,6 +2,8 @@
 
 """Main function for launching the trainer."""
 
+# Temp hack to bypass invalid backend error
+import pathwaysutils
 from absl import app, flags
 
 from axlearn.common import launch, launch_trainer, measurement
