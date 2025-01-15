@@ -13,8 +13,6 @@ Ref: https://github.com/facebookresearch/DiT
 
 from typing import Optional, Union
 
-import chex
-import einops
 import jax
 import jax.numpy as jnp
 
@@ -33,21 +31,7 @@ from axlearn.common.utils import NestedTensor, TensorSpec
 
 
 def modulate(*, x, shift, scale):
-    """Modulates the input x tensor.
-
-    Note: shift and scale must have the same shape.
-
-    Args:
-        x: input tensor with shape [batch_size, num_length, input_dim].
-        shift: shifting the norm tensor with shape [batch_size, 1|num_length, input_dim].
-        scale: scaling the norm tensor with shape [batch_size, 1|num_length, input_dim].
-
-    Returns:
-        A tensor with shape [batch_size, num_length, input_dim].
-    """
-    chex.assert_equal_shape((shift, scale))
-    chex.assert_equal_rank((x, shift, scale))
-    return x * (1 + scale) + shift
+    return x * (1 + jnp.expand_dims(scale, 1)) + jnp.expand_dims(shift, 1)
 
 
 class TimeStepEmbedding(BaseLayer):
@@ -227,18 +211,15 @@ class AdaptiveLayerNormModulation(BaseLayer):
         """Generate the parameters for modulation.
 
         Args:
-            input: A tensor with shape [batch_size, dim] or [batch_size, num_length, dim].
+            input: A tensor with shape [batch_size, ..., dim].
 
         Returns:
             A list of tensors with length num_outputs.
-                Each tensor has shape [batch_size, 1|num_length, dim].
+                Each tensor has shape [batch_size, ..., dim].
         """
         cfg = self.config
         x = get_activation_fn(cfg.activation)(input)
         output = self.linear(x)
-        assert output.ndim in (2, 3)
-        if output.ndim == 2:
-            output = einops.rearrange(output, "b d -> b 1 d")
         output = jnp.split(output, cfg.num_outputs, axis=-1)
         return output
 
@@ -311,16 +292,14 @@ class DiTFeedForwardLayer(BaseLayer):
 
         Args:
             input: input tensor with shape [batch_size, num_length, input_dim].
-            shift: shifting the norm tensor with shape [batch_size, 1|num_length, input_dim].
-            scale: scaling the norm tensor with shape [batch_size, 1|num_length, input_dim].
+            shift: shifting the norm tensor with shape [batch_size, input_dim].
+            scale: scaling the norm tensor with shape [batch_size, input_dim].
             gate: applying before the residual addition with shape
-                [batch_size, 1|num_length, input_dim].
+                [batch_size, input_dim].
 
         Returns:
             A tensor with shape [batch_size, num_length, input_dim].
         """
-        chex.assert_equal_shape((shift, scale, gate))
-        chex.assert_equal_rank((input, shift))
         cfg = self.config
         remat_pt1 = "linear1_0"
         remat_pt2 = "linear2"
@@ -346,7 +325,7 @@ class DiTFeedForwardLayer(BaseLayer):
             x = self.postnorm(x)
 
         x = self.dropout2(x)
-        x = x * gate
+        x = x * jnp.expand_dims(gate, 1)
         x += input
         return x
 
@@ -404,18 +383,19 @@ class DiTAttentionLayer(BaseLayer):
         shift: Optional[Tensor] = None,
         scale: Optional[Tensor] = None,
         gate: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
     ) -> Tensor:
         """The forward function of DiTAttentionLayer.
 
         Args:
             input: input tensor with shape [batch_size, num_length, target_dim].
-            shift: If provided, shifting the norm tensor with shape [batch_size, 1|num_length,
-                target_dim] and scale should be provided.
-            scale: If provided, scaling the norm tensor with shape [batch_size, 1|num_length,
-                target_dim] and shift should be provided.
+            shift: If provided, shifting the norm tensor with shape [batch_size, target_dim] and
+                scale should be provided.
+            scale: If provided, scaling the norm tensor with shape [batch_size, target_dim] and
+                shift should be provided.
             gate: If provided, applying before the residual addition with shape
-                [batch_size, 1|num_length, target_dim].
+                [batch_size, target_dim].
             attention_logit_biases: Optional Tensor representing the self attention biases.
 
         Returns:
@@ -439,7 +419,9 @@ class DiTAttentionLayer(BaseLayer):
         if shift is not None and scale is not None:
             x = modulate(x=x, shift=shift, scale=scale)
 
-        x = self.attention(query=x, attention_logit_biases=attention_logit_biases).data
+        x = self.attention(
+            query=x, query_positions=query_positions, attention_logit_biases=attention_logit_biases
+        ).data
 
         if cfg.structure == "postnorm":
             x = self.norm(x)
@@ -447,7 +429,7 @@ class DiTAttentionLayer(BaseLayer):
             x = self.postnorm(x)
 
         if gate is not None:
-            x = x * gate
+            x = x * jnp.expand_dims(gate, 1)
 
         output = input + x
         return output
@@ -484,12 +466,12 @@ class DiTAttentionLayer(BaseLayer):
                 results of previous attentions, and index used for fast decoding. Contains
                 "attention" cached states.
             target: target tensor with shape [batch_size, step_length, target_dim].
-            shift: If provided, shifting the norm tensor with shape [batch_size, 1|num_length,
-                target_dim] and scale should be provided.
-            scale: If provided, scaling the norm tensor with shape [batch_size, 1|num_length,
-                target_dim] and shift should be provided.
+            shift: If provided, shifting the norm tensor with shape [batch_size, target_dim] and
+                scale should be provided.
+            scale: If provided, scaling the norm tensor with shape [batch_size, target_dim] and
+                shift should be provided.
             gate: If provided, applying before the residual addition with shape
-                [batch_size, 1|num_length, target_dim].
+                [batch_size, target_dim].
 
         Returns:
             A tuple (cached_states, output):
@@ -525,7 +507,7 @@ class DiTAttentionLayer(BaseLayer):
             x = self.postnorm(x)
 
         if gate is not None:
-            x = x * gate
+            x = x * jnp.expand_dims(gate, 1)
 
         output = target + x
         return dict(attention=attn_states), output
@@ -563,8 +545,8 @@ class DiTBlock(BaseLayer):
 
         Args:
             input: input tensor with shape [batch_size, num_length, input_dim].
-            condition: tensor with shape [batch_size, input_dim] or [batch_size, num_length,
-                input_dim] for generating layer norm shift, scale, and gate.
+            condition: tensor with shape [batch_size, input_dim] for generating
+                layer norm shift, scale, and gate.
 
         Returns:
             A tensor with shape [batch_size, num_length, input_dim].
@@ -605,8 +587,8 @@ class DiTBlock(BaseLayer):
                 results of previous attentions, and index used for fast decoding. Contains
                 "attention" cached states.
             target: target tensor with shape [batch_size, step_length, input_dim].
-            condition: tensor with shape [batch_size, input_dim] or [batch_size, step_length,
-                input_dim] for generating layer norm shift, scale, and gate.
+            condition: tensor with shape [batch_size, input_dim] for generating
+                layer norm shift, scale, and gate.
 
         Returns:
             A tuple (cached_states, output):
@@ -660,8 +642,8 @@ class DiTFinalLayer(BaseLayer):
 
         Args:
             input: input tensor with shape [batch_size, num_length, input_dim].
-            condition: tensor with shape [batch_size, input_dim] or [batch_size, num_length,
-                input_dim] for generating layer norm shift and scale.
+            condition: tensor with shape [batch_size, input_dim] for generating
+                layer norm shift and scale.
 
         Returns:
             A tensor with shape [batch_size, num_length, output_dim].
