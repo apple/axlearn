@@ -503,11 +503,7 @@ class TPUGKEJob(GKEJob):
     def _is_pathways_used(self) -> bool:
         # identify if a job is configured to use pathways by
         # checking jax_backend flag and optional import for pathways utils
-        # brittle implementation
-        return (
-            "pathwaysutils" in self.config.import_modules
-            and "jax_backend proxy" in self.config.command
-        )
+        return "jax_backend=proxy" in self.config.command.replace(" ", "=")
 
     def _import_modules(self):
         try:
@@ -726,7 +722,7 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        staging_location = f"{cfg.output_dir}/pathways-staging/tmp"
+        staging_location = f"{cfg.output_dir}/pathways-staging"
         tpu_type = self._get_pathways_tpu_type(system.device_type)
 
         return [
@@ -928,7 +924,7 @@ class TPUGKEJob(GKEJob):
 
         if job_type == "pathways-head":
             # Target a specific CPU nodepool for Pathways containers
-            selector.update({"cloud.google.com/gke-nodepool": "pathways-head"})
+            selector.update({"node.kubernetes.io/instance-type": "n2-standard-32"})
             initContainers.extend(self._build_pathways_containers())
         else:
             selector.update(
