@@ -17,7 +17,6 @@ from axlearn.common.attention_bias import (
     MaskFnAttentionBias,
     SegmentIdAttentionBias,
     TensorAttentionBias,
-    ZeroAttentionBias,
     split,
 )
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
@@ -203,6 +202,7 @@ def flash_attention_implementation(
                     mask_fn=mask_fn,
                     kv_seq_len=kv_seq_len,
                     softmax_scale=softmax_scale,
+                    interpret=(backend == "cpu"),
                 )
 
             key = _repeat_kv_heads(query.shape[2], key)
@@ -237,6 +237,7 @@ def flash_attention_implementation(
                     softmax_scale=softmax_scale,
                     causal=causal.has_value(),
                     dropout_rate=dropout_rate,
+                    interpret=(backend == "cpu"),
                 )
             else:
                 explicit_bias += segment_ids
@@ -268,20 +269,18 @@ def flash_attention_implementation(
                 value,
                 bias=explicit_bias.value(),
                 segment_ids=get_segment_ids(segment_ids),
-                # The `from_sequence()` function guarantees that if there is only one
-                # mask, it is returned without modification.
-                # This allows the `causal` path in `_legacy_tpu_flash_attention()` to work.
-                mask=mask if not isinstance(mask, ZeroAttentionBias) else None,
+                mask=mask,
                 softmax_scale=softmax_scale,
                 block_size=block_size,
+                interpret=(backend == "cpu"),
             )
 
         elif backend in ("cpu", "xla"):
             key = _repeat_kv_heads(query.shape[2], key)
             value = _repeat_kv_heads(query.shape[2], value)
             if backend == "cpu":
-                logging.warning("Flash attention CPU backend is for testing only.")
-            logging.warning("Flash attention falling back using plain MHA implementation")
+                logging.info("Flash attention CPU backend is for testing only.")
+            logging.info("Flash attention falling back using plain MHA implementation")
 
             # `causal` is supported.
             # `segment_ids` is supported.
