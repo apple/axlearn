@@ -501,7 +501,7 @@ class LoraFusedQKVLinear(BaseQKVLinear):
             "adapter",
             cfg.adapter.set(
                 input_dim=cfg.query_dim,
-                output_dim=cfg.query_dim,
+                output_dim=cfg.num_heads * cfg.per_head_dim,
                 num_heads=cfg.num_heads,
             ),
         )

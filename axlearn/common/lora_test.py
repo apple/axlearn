@@ -137,7 +137,7 @@ class LoraLinearTest(TestCase):
 
 class LoraFusedQKVLinearTest(TestCase):
     def test_forward(self):
-        model_dim = 6
+        model_dim = 16
         num_heads = 2
         per_head_dim = 3
         seq_len = 4
@@ -197,7 +197,7 @@ class LoraFusedQKVLinearTest(TestCase):
         ),
     )
     def test_extend_step(self, layer):
-        model_dim = 8
+        model_dim = 16
         num_heads = 2
         per_head_dim = 4  # change this to 4 to adapt the need of RoPE.
         seq_len = 4
@@ -267,7 +267,7 @@ class LoraFusedQKVLinearTest(TestCase):
         )
 
     def test_prefill_states(self):
-        model_dim = 6
+        model_dim = 16
         num_heads = 2
         per_head_dim = 3
         seq_len = 4
