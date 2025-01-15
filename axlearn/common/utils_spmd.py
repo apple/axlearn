@@ -53,13 +53,17 @@ def setup(
             init_kwargs["initialization_timeout"] = initialization_timeout
 
         if jax_backend == "tpu":
-            if not (
-                distributed_coordinator is None and num_processes is None and process_id is None
-            ):
+            if (distributed_coordinator is None) ^ (process_id is None):
                 raise ValueError(
-                    "distributed_coordinator, num_processes, and process_id "
-                    "should all be None for tpu backend."
+                    "distributed_coordinator and process_id should be both None or both "
+                    f"not-None, but got {distributed_coordinator=}, {process_id=}"
                 )
+            init_kwargs.update(
+                coordinator_address=distributed_coordinator,
+                process_id=process_id,
+                # This is optional.
+                num_processes=num_processes,
+            )
         else:
             if distributed_coordinator is None and num_processes is None and process_id is None:
                 logging.info(
