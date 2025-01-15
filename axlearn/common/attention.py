@@ -74,6 +74,7 @@ TODO(changlan): Merge the use of `positions` and `time_step` to reduce cognitive
 import enum
 import functools
 import math
+import re
 from collections.abc import Sequence
 from enum import Enum, unique
 from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
@@ -81,6 +82,9 @@ from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 import einops
 import jax
 from jax import numpy as jnp
+from jax._src.ad_checkpoint import name_p
+from jax._src.interpreters import partial_eval as pe
+from jax.core import Primitive
 
 from axlearn.common import ops, param_init
 from axlearn.common.attention_bias import (
@@ -134,16 +138,13 @@ from axlearn.common.repeat import Repeat
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
-    OffloadPolicy,
     PartitionSpec,
-    SavePattern,
     Tensor,
     TensorSpec,
     VDict,
     check_numerics,
     flatten_items,
     get_or_none,
-    save_and_offload_only_these_names_regex,
     shapes,
     split_prng_key,
 )
@@ -1216,18 +1217,37 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
         dim: Required[int] = REQUIRED  # The dimensionality of the positional embedding.
         theta: float = 10000.0  # The scale of base frequency.
 
-    def forward(self, positions: Tensor) -> Tensor:
+    def default_query_positions(self, max_seq_len: int) -> Tensor:
+        """Compute default `positions` value to be inputed into forward when `positions` is
+        not provided to the corresponding QKVLinear class such as `RoFormerQKVLinear`
+        """
+        return jnp.arange(max_seq_len)[None]  # [batch_size=1, max_seq_len].
+
+    def forward(
+        self, positions: Optional[Tensor] = None, max_seq_len: Optional[int] = None
+    ) -> Tensor:
         """
         TODO(bwzhang): 1. verify the performance under float32.
 
         Args:
             positions: A tensor representing the token position IDs.
                 The shape is [batch_size, seq_len].
+            max_seq_len: Max length of sequence, required if positions is not provided
 
         Returns:
             Rotary Positional Embedding. Shape is [seq_len, dim].
+
+        Raises:
+            ValueError: If positions is None and max_seq_len is None.
         """
         cfg = self.config
+        if positions is None:
+            if max_seq_len is None:
+                raise ValueError(
+                    "Must provide `max_seq_len` for computing default query positions if "
+                    "`positions` is None."
+                )
+            positions = self.default_query_positions(max_seq_len)
         return _rotary_sinusoidal_positional_embeddings(
             positions=positions, dim=cfg.dim, theta=cfg.theta
         )
@@ -1300,7 +1320,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
     class Config(BaseQKVLinear.Config):
         """Configures RoFormerQKVLinear."""
 
-        rope_pos_emb_layer: InstantiableConfig = (
+        rope_pos_emb_layer: RoFormerSinusoidalPositionalEmbedding.Config = (
             RoFormerSinusoidalPositionalEmbedding.default_config()
         )
         input_linear: BaseQKVLinear.Config = QKVLinear.default_config()
@@ -1342,9 +1362,10 @@ class RoFormerQKVLinear(BaseQKVLinear):
         cfg = self.config
         # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
         query, key, value = self.i_proj(query, key=key, value=value, kv_state=kv_state)
-        if query_positions is None:
-            query_positions = jnp.arange(query.shape[1])[None]
-        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(query_positions).astype(query.dtype)
+        seq_len = query.shape[1]
+        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(
+            positions=query_positions, max_seq_len=seq_len
+        ).astype(query.dtype)
         # sinusoidal_pos_emb shape should be [batch_size, seq_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(sinusoidal_pos_emb, 2)
 
@@ -3982,42 +4003,42 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
     # TODO(sneha): extend_step
 
 
+OffloadPolicy = Callable[[Primitive, list[Any], dict[str, Any]], Union[bool, Any]]
+_SavePattern = Union[str, re.Pattern, None]
+
+
 # Adapted from jax source code to support regex. Reference:
 # https://github.com/jax-ml/jax/blob/0d36b0b433a93c707f86dac89b0c05d40302775a/jax/_src/ad_checkpoint.py#L120
-# TODO(kelvin-zou): deprecated, keep it here to minimize distruption to the golden configs.
-# Please use axlearn.common.utils.extended_checkpoint_policies instead.
 def _save_and_offload_only_these_names_regex(
     *,
-    names_which_can_be_saved: SavePattern,
-    names_which_can_be_offloaded: SavePattern,
+    names_which_can_be_saved: _SavePattern,
+    names_which_can_be_offloaded: _SavePattern,
     offload_src: str,
     offload_dst: str,
 ) -> OffloadPolicy:
-    return save_and_offload_only_these_names_regex(
-        names_which_can_be_saved=names_which_can_be_saved,
-        names_which_can_be_offloaded=names_which_can_be_offloaded,
-        offload_src=offload_src,
-        offload_dst=offload_dst,
-    )
+    def policy(prim, *_, **params):
+        if prim is name_p:
+            if names_which_can_be_saved and re.fullmatch(names_which_can_be_saved, params["name"]):
+                return pe.Saveable
+            if names_which_can_be_offloaded and re.fullmatch(
+                names_which_can_be_offloaded, params["name"]
+            ):
+                return pe.Offloadable(src=offload_src, dst=offload_dst)
+        return pe.Recompute  # not saveable unless it's in the allow-list
+
+    return policy
 
 
-# Regex patterns for matching remat names
-class RematRegexSavePatterns(enum.Enum):
-    QKV_PROJ = r".*[kqv]_proj"
-    O_PROJ = r".*o_proj"
-    CONTEXT = r".*context"
-    LINEAR1_X = r".*linear1_[01]"
-    LINEAR2_X = r".*linear2_[01]"
-    SELF_ATTENTION = ".*([qkvo]_proj|context)"
-    FEED_FORWARD = "|".join([LINEAR1_X, LINEAR2_X])
+SELF_ATTENTION_SAVE_PATTERN = ".*([qkvo]_proj|context)"
+FEED_FORWARD_SAVE_PATTERN = ".*linear[12]_.*"
 
 
 def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
     ],
-    save_pattern: SavePattern = RematRegexSavePatterns.SELF_ATTENTION.value,
-    offload_pattern: SavePattern = None,
+    save_pattern: _SavePattern = SELF_ATTENTION_SAVE_PATTERN,
+    offload_pattern: _SavePattern = None,
     offload_dst: str = "pinned_host",
 ) -> Optional[RematSpec]:
     """Configures how the Transformer or Conformer stack will save the linearization points.
