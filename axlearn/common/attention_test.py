@@ -812,8 +812,72 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             .set(name="test_rope_emb", dim=dim)
             .instantiate(parent=None)
         )
-        test_output = test_layer.forward(positions)
+        test_output = test_layer.forward(positions=positions)
         np.testing.assert_allclose(np.expand_dims(ref_output, 0), test_output, atol=5e-7)
+
+    @parameterized.parameters(
+        (None, True),
+        (10, False),
+    )
+    def test_rope_emb_no_pos(self, max_len, should_raise):
+        test_layer = (
+            attention.RoFormerSinusoidalPositionalEmbedding.default_config()
+            .set(name="test_rope_emb", dim=10)
+            .instantiate(parent=None)
+        )
+        if should_raise:
+            with self.assertRaises(ValueError):
+                test_layer.forward(max_seq_len=max_len)
+        else:
+            test_layer.forward(max_seq_len=max_len)
+
+    @parameterized.parameters(
+        (2, 10, 32, 4),
+    )
+    def test_default_rope_emb(self, batch_size, max_len, dim, num_heads):
+        rng = np.random.default_rng(seed=123)
+        query = jnp.asarray(rng.random([batch_size, max_len, dim]))
+        key = jnp.asarray(rng.random([batch_size, max_len, dim]))
+        value = jnp.asarray(rng.random([batch_size, max_len, dim]))
+        per_head_dim = dim // num_heads
+
+        emb_layer_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
+            dim=per_head_dim,
+        )
+        linear_layer_cfg = attention.RoFormerQKVLinear.default_config().set(
+            query_dim=dim,
+            key_dim=dim,
+            value_dim=dim,
+            num_heads=num_heads,
+            per_head_dim=per_head_dim,
+            rope_pos_emb_layer=emb_layer_cfg,
+            rotary_value=False,
+            name="test_rope_linear",
+        )
+        rope_linear_layer = linear_layer_cfg.instantiate(parent=None)
+        state = rope_linear_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        rope_emb_layer = emb_layer_cfg.set(name="test_rope_emb").instantiate(parent=None)
+        default_positions = rope_emb_layer.default_query_positions(max_len)
+
+        input_dict = dict(query=query, key=key, value=value)
+
+        layer_outputs_no_position, _ = F(
+            rope_linear_layer,
+            inputs=input_dict,
+            state=state,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        layer_outputs, _ = F(
+            rope_linear_layer,
+            inputs=dict(**input_dict, query_positions=default_positions),
+            state=state,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        # test RoFormerQKVLinear uses default positions in RoFormerSinusoidalPositionalEmbedding
+        np.testing.assert_allclose(layer_outputs_no_position, layer_outputs, atol=1e-5)
 
     def _compare_against_roformer_attention(
         self,
@@ -887,7 +951,7 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             if override_positions
             else jnp.expand_dims(jnp.arange(max_sequence_length), 0)
         )
-        ref_rope_emb = as_torch_tensor(rope_emb_layer.forward(positions)).unsqueeze(1)
+        ref_rope_emb = as_torch_tensor(rope_emb_layer.forward(positions=positions)).unsqueeze(1)
         layer = attention.TransformerAttentionLayer.default_config().set(
             source_dim=model_dim,
             target_dim=model_dim,
@@ -1075,9 +1139,13 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             attention.QKVLinear.default_config(),
             attention.GroupedQKVLinear.default_config(),
         ),
+        has_query_positions=(True, False),
     )
     def test_roformer_qkv_linear(
-        self, dtype: jnp.dtype, input_linear: attention.BaseQKVLinear.Config
+        self,
+        dtype: jnp.dtype,
+        input_linear: attention.BaseQKVLinear.Config,
+        has_query_positions: bool,
     ):
         seq_len = 6
         batch_size = 2
@@ -1116,6 +1184,14 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             jax.random.PRNGKey(0)
         )
         input_batch = dict(query=query, key=key, value=value)
+        if has_query_positions:
+            input_batch["query_positions"] = jax.random.permutation(
+                jax.random.PRNGKey(1),
+                jnp.arange(seq_len)[None, :].repeat(batch_size, axis=0),
+                axis=1,
+                independent=True,
+            )
+
         layer_outputs, _ = F(
             roformer_qkv_linear,
             inputs=utils.cast_floats(input_batch, to_dtype=dtype),
@@ -2168,17 +2244,24 @@ class MultiheadAttentionTest(TestCase):
             lambda query_len, kv_len: _random_mask(jax.random.PRNGKey(1), query_len, kv_len),
         ),
         kv_length_multiplier=(0.5, 1, 2),
+        has_query_positions=(False, True),
     )
     def test_causal(
         self,
         base_cfg: attention.MultiheadAttention.Config,
         attention_logit_biases_fn: Callable[[int, int], Tensor],
         kv_length_multiplier: float,
+        has_query_positions: bool,
     ):
         """Tests that base_cfg(causal=True) is equivalent to applying a causal mask."""
-        if kv_length_multiplier != 1 and isinstance(
-            base_cfg.input_linear,
-            (FusedGroupedQKVLinear.Config, RoFormerQKVLinear.Config, FusedQKVLinear.Config),
+        if (
+            has_query_positions
+            and not isinstance(base_cfg.input_linear, RoFormerQKVLinear.Config)
+            or kv_length_multiplier != 1
+            and isinstance(
+                base_cfg.input_linear,
+                (FusedGroupedQKVLinear.Config, RoFormerQKVLinear.Config, FusedQKVLinear.Config),
+            )
         ):
             pytest.skip(reason="Incompatible test setting that does not need testing.")
 
@@ -2202,6 +2285,14 @@ class MultiheadAttentionTest(TestCase):
         query = jnp.zeros([batch_size, query_len, model_dim], dtype=jnp.float32)
         outputs = []
 
+        if has_query_positions:
+            query_positions = jax.random.permutation(
+                jax.random.PRNGKey(1),
+                jnp.arange(query_len)[None, :].repeat(batch_size, axis=0),
+                axis=1,
+                independent=True,
+            )
+
         for layer in (ref_layer, test_layer):
             inputs = dict(query=query)
             kv_len = int(kv_length_multiplier * query_len)
@@ -2223,6 +2314,8 @@ class MultiheadAttentionTest(TestCase):
                         attention_logit_biases, causal_biases
                     )
             inputs["attention_logit_biases"] = attention_logit_biases
+            if has_query_positions:
+                inputs["query_positions"] = query_positions
 
             layer_outputs, _ = F(
                 layer,
@@ -2261,16 +2354,21 @@ class MultiheadAttentionTest(TestCase):
             lambda seq_len: None,
             lambda seq_len: _random_mask(jax.random.PRNGKey(1), seq_len, seq_len),
         ),
+        has_query_positions=(False, True),
     )
     def test_sliding_window(
         self,
         base_cfg: attention.MultiheadAttention.Config,
         attention_logit_biases_fn: Callable[[int], Tensor],
+        has_query_positions: bool,
     ):
         """
         Tests that base_cfg with sliding window causal mask fns is equivalent to applying a
         causal sliding window mask.
         """
+        if has_query_positions and not isinstance(base_cfg.input_linear, RoFormerQKVLinear.Config):
+            return
+
         model_dim = 16
         num_heads = 4
         ref_cfg = base_cfg.clone(
@@ -2296,6 +2394,15 @@ class MultiheadAttentionTest(TestCase):
         batch_size, seq_len = 2, 4
         query = jnp.zeros([batch_size, seq_len, model_dim], dtype=jnp.float32)
         outputs = []
+
+        if has_query_positions:
+            query_positions = jax.random.permutation(
+                jax.random.PRNGKey(1),
+                jnp.arange(seq_len)[None, :].repeat(batch_size, axis=0),
+                axis=1,
+                independent=True,
+            )
+
         for layer in (ref_layer, test_layer):
             attention_logit_biases = attention_logit_biases_fn(seq_len)
             if layer is ref_layer:
@@ -2305,6 +2412,8 @@ class MultiheadAttentionTest(TestCase):
                     attention_logit_biases,
                 )
             inputs = dict(query=query, attention_logit_biases=attention_logit_biases)
+            if has_query_positions:
+                inputs["query_positions"] = query_positions
             layer_outputs, _ = F(
                 layer,
                 state=layer_params,
