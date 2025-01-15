@@ -149,7 +149,7 @@ def get_trainer_kwargs(
         extended_checkpoint_policies.save_and_offload_only_these_names_regex
     ).set(
         names_which_can_be_saved=None,
-        names_which_can_be_offloaded=RematRegexSavePatterns.SELF_ATTENTION.value,
+        names_which_can_be_offloaded=RematRegexSavePatterns.NATIVE_ATTENTION.value,
         offload_src="device",
         offload_dst="pinned_host",
     )
