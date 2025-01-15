@@ -4188,16 +4188,22 @@ def build_remat_spec(
             checkpoints.extend(
                 [f"{attention_name}.{el}" for el in ["q_proj", "k_proj", "v_proj", "context", "o_proj"]]
             )
+        elif jax.device_count() > (64 * 8):
+            checkpoints.extend(
+                [f"{attention_name}.{el}" for el in ['q_proj', 'k_proj', 'v_proj']] + ["TransformerAttentionLayer.residual_add", "TransformerFeedForwardLayer.mlp_residual"]
+            )
         else:
             checkpoints.extend(
-                [f"{attention_name}.{el}" for el in ['q_proj', 'k_proj', 'v_proj']] + ["input_to_qkvee", "TransformerAttentionLayer.residual_add", "TransformerFeedForwardLayer.mlp_residual"]
+                [f"{attention_name}.{el}" for el in ['q_proj', 'k_proj', 'v_proj']]
             )
     if feed_forward and hasattr(stack_cfg.layer, "feed_forward"):
         ffn_name = stack_cfg.layer.feed_forward.klass.__name__
         if backend != "neuron":
             checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
-        else:
+        elif jax.device_count() > (64 * 8):
             checkpoints.extend([f"{ffn_name}.{el}" for el in ["linear1_0", "linear1_1"]])
+        else:
+            checkpoints.extend([f"{ffn_name}.{el}" for el in ["linear1_0"]])
 
     if backend != "neuron":
         policy = config_for_function(jax_remat_policies.save_only_these_names).set(
