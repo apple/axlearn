@@ -46,6 +46,7 @@ from axlearn.common.config import (
 from axlearn.common.module import Module
 from axlearn.common.utils import (
     PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
+    Nested,
     Tensor,
     get_data_dir,
     get_recursively,
@@ -1208,6 +1209,16 @@ class Input(input_base.Input):
 
     def dataset(self) -> tf.data.Dataset:
         return self._batcher(self._processor(self._source()))
+
+    def element_spec(self) -> Nested[jax.ShapeDtypeStruct]:
+        """Returns the tfds element spec."""
+
+        return jax.tree.map(
+            lambda tf_spec: jax.ShapeDtypeStruct(
+                shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
+            ),
+            self.dataset().element_spec,
+        )
 
 
 def disable_shuffle_recursively(cfg: Input.Config):
