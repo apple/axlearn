@@ -575,8 +575,7 @@ class TPUGKEJob(GKEJob):
             staging_location = f"{cfg.output_dir}/pathways-staging"
             if job_type == "pathways-head":
                 env_vars.update(
-                    # JAX_BACKEND_TARGET="grpc://$(HOST_ADDRESS):29000",
-                    JAX_BACKEND_TARGET=f"grpc://{cfg.name}-{job_type}-0-0.{cfg.name}:29000",
+                    JAX_BACKEND_TARGET=f"grpc://{cfg.name}-pathways-head-0-0.{cfg.name}:29000",
                     XCLOUD_ENVIRONMENT="GCP",
                     JAX_PLATFORMS="proxy",
                     ENABLE_PATHWAYS_PERSISTENCE="1",
@@ -584,12 +583,14 @@ class TPUGKEJob(GKEJob):
                 )
             elif job_type == "pathways-workers":
                 env_vars.update(
-                    MEGASCALE_COORDINATOR_ADDRESS="$(PATHWAYS_HEAD)",
+                    MEGASCALE_COORDINATOR_ADDRESS=f"{cfg.name}-pathways-head-0-0.{cfg.name}",
+                    MEGASCALE_NUM_SLICES=cfg.accelerator.num_replicas,
+                    MEGASCALE_SLICE_ID=0,
                 )
                 args.extend(
                     [
                         "--server_port=29001",
-                        "--resource_manager_address=$(PATHWAYS_HEAD):29001",
+                        f"--resource_manager_address={cfg.name}-pathways-head-0-0.{cfg.name}:29001",
                         f"--gcs_scratch_location={staging_location}",
                     ]
                 )
@@ -618,46 +619,6 @@ class TPUGKEJob(GKEJob):
                 },
             },
         )
-        if job_type == "pathways-head":
-            k8s_env_vars.append(
-                {
-                    "name": "HOST_ADDRESS",
-                    "valueFrom": {
-                        "fieldRef": {
-                            "fieldPath": "metadata.labels['jobset.sigs.k8s.io/coordinator']",
-                        }
-                    },
-                },
-            )
-        if job_type == "pathways-workers":
-            k8s_env_vars.extend(
-                [
-                    {
-                        "name": "PATHWAYS_HEAD",
-                        "valueFrom": {
-                            "fieldRef": {
-                                "fieldPath": "metadata.labels['jobset.sigs.k8s.io/coordinator']",
-                            }
-                        },
-                    },
-                    {
-                        "name": "MEGASCALE_NUM_SLICES",
-                        "valueFrom": {
-                            "fieldRef": {
-                                "fieldPath": "metadata.labels['jobset.sigs.k8s.io/replicatedjob-replicas']",
-                            }
-                        },
-                    },
-                    {
-                        "name": "MEGASCALE_SLICE_ID",
-                        "valueFrom": {
-                            "fieldRef": {
-                                "fieldPath": "metadata.labels['jobset.sigs.k8s.io/job-index']",
-                            }
-                        },
-                    },
-                ]
-            )
 
         return dict(
             name=cfg.name,
@@ -732,18 +693,8 @@ class TPUGKEJob(GKEJob):
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
-                env=[
-                    {
-                        "name": "PATHWAYS_HEAD",
-                        "valueFrom": {
-                            "fieldRef": {
-                                "fieldPath": "metadata.labels['jobset.sigs.k8s.io/coordinator']",
-                            }
-                        },
-                    }
-                ],
                 args=[
-                    "--resource_manager_address=$(PATHWAYS_HEAD):29001",
+                    f"--resource_manager_address={cfg.name}-pathways-head-0-0.{cfg.name}:29001",
                     "--server_port=29000",
                     f"--gcs_scratch_location={staging_location}",
                 ],
@@ -756,14 +707,6 @@ class TPUGKEJob(GKEJob):
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
                 env=[
-                    {
-                        "name": "HOST_ADDRESS",
-                        "valueFrom": {
-                            "fieldRef": {
-                                "fieldPath": "metadata.labels['jobset.sigs.k8s.io/coordinator']",
-                            }
-                        },
-                    },
                     {
                         "name": "TPU_SKIP_MDS_QUERY",
                         "value": "true",
@@ -1042,11 +985,6 @@ class TPUGKEJob(GKEJob):
         if self.using_pathways:
             logging.info("Building pathways jobset.")
             spec = dict(
-                coordinator=dict(
-                    replicatedJob="pathways-head",
-                    jobIndex=0,
-                    podIndex=0,
-                ),
                 failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
                 successPolicy=dict(operator="All", targetReplicatedJobs=["pathways-head"]),
                 replicatedJobs=[
