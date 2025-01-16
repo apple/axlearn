@@ -200,12 +200,13 @@ class SpmdTrainer(Module):
         # The provided config should instantiate to a thunk that returns the context manager.
         context_manager: Optional[ConfigOr[Callable[[], ContextManager]]] = None
 
-        # If True, assumes the train_step may need to be recompiled and go through the lowering
+        # If False, assumes the train_step may need to be recompiled and go through the lowering
         # and compilation process every train step and rely on compilation cache to prevent
         # excessive recompilations. Note: this could introduce overhead to training due to
         # pre-compilation checks (such as sharding check) that increases the step time for some
         # models. Note that this cache is always disabled at steps when xsc is enabled.
-        disable_python_train_step_cache: Optional[bool] = None
+        # Defaults to None which is interpreted as True.
+        enable_python_train_step_cache: Optional[bool] = None
 
     def __init__(
         self,
@@ -984,7 +985,7 @@ class SpmdTrainer(Module):
             RuntimeError: If `with_xsc` is requested on heterogenous device kinds.
         """
         if (
-            not self.config.disable_python_train_step_cache
+            not (self.config.enable_python_train_step_cache is False)
             and not with_xsc
             and self._compiled_train_step is not None
         ):
@@ -1009,8 +1010,7 @@ class SpmdTrainer(Module):
                 replicate_llo=device_kinds.pop() in ["TPU v5e", "TPU v6e"],
             ),
         )
-        self._compiled_train_step = compiled_jit_train_step_fn
-        return self._compiled_train_step
+        return compiled_jit_train_step_fn
 
     def _run_step(
         self, input_batch: NestedTensor, *, force_run_evals: Optional[set[str]] = None

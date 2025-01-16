@@ -454,7 +454,7 @@ class TrainerTest(test_utils.TestCase):
 
     @parameterized.product(
         [{"platform": "cpu", "mesh_shape": (1, 1)}, {"platform": "tpu", "mesh_shape": (4, 1)}],
-        disable_python_cache=[True, False],
+        enable_python_cache=[True, False],
     )
     # pylint: enable=duplicate-code
     def test_xsc_check_policy_and_compilation_cache(
@@ -462,7 +462,7 @@ class TrainerTest(test_utils.TestCase):
         *,
         platform,
         mesh_shape,
-        disable_python_cache,
+        enable_python_cache,
     ):
         if not test_utils.is_supported_platform(platform):
             return
@@ -488,7 +488,7 @@ class TrainerTest(test_utils.TestCase):
         cfg.vlog = 2
         # Set XSC policy.
         cfg.xsc_check_policy = lambda step: (step in [7, 8])
-        cfg.disable_python_train_step_cache = disable_python_cache
+        cfg.enable_python_train_step_cache = enable_python_cache
 
         # Test training run.
         trainer: SpmdTrainer = cfg.set(max_step=12).instantiate(parent=None)
@@ -513,7 +513,7 @@ class TrainerTest(test_utils.TestCase):
             end_cache_hits = pjit_lib._pjit_lower_cached.cache_info().hits
             # pylint: enable=protected-access
             if platform == "tpu":
-                if disable_python_cache:
+                if not enable_python_cache:
                     # We expect to have hit the lowering cache on all but one step.
                     self.assertEqual(end_cache_hits - start_cache_hits, cfg.max_step - 1)
                     self.assertEqual(mocked_compile_fn.call_count, cfg.max_step)
@@ -524,7 +524,7 @@ class TrainerTest(test_utils.TestCase):
                 # Should have been called with compile options on two steps.
                 self.assertEqual(compiled_with_options_call_count[0], 2)
             else:
-                if disable_python_cache:
+                if not enable_python_cache:
                     self.assertEqual(end_cache_hits - start_cache_hits, cfg.max_step - 1)
                     self.assertEqual(mocked_compile_fn.call_count, cfg.max_step)
                 else:
