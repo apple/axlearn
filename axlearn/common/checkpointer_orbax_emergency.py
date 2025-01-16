@@ -422,6 +422,8 @@ def get_consistent_proc_info(
 
     Args:
         local_address: A IP:Port that can be used as the coordinator if this rank is elected.
+            This Port must be free in the coordinator pod and IP:Port must be reachable from all
+            other processes.
         barrier_timeout_seconds: Timeout in seconds for the barrier and key_value_set operations.
         trainer_dir: Path to the trainer dir.
         local_ckpt_dir: Path to the local checkpoint dir.
