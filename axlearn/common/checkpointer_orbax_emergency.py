@@ -62,7 +62,7 @@ def setup(spec: str):
     See the docstring of `get_consistent_proc_info` for more details.
 
     Args:
-        spec (str): Key=Value pairs separated by comma. Key must be one of ("local_address",
+        spec: Key=Value pairs separated by comma. Key must be one of ("local_address",
             "barrier_timeout_seconds", "local_ckpt_dir"). See the docstring of
             `get_consistent_proc_info`.
     """
@@ -184,13 +184,13 @@ _PROCESS_ID_FILE_NAME: str = "process_id.txt"
 
 
 @dataclass
-class ProcessInfo:
+class _ProcessInfo:
     """Records the process id and address information for this node.
 
     Attributes:
         address: The global coordinator address. This is set during the first run and stays and
             stays the same unless process 0 failed.
-        inv_proc_id: The invaiant process id of this node. This process id is set during the first
+        inv_proc_id: The invariant process id of this node. This process id is set during the first
             run and stays the same for all subsequent runs unless this node failed.
         cur_proc_id: Internal field. The new process id assigned externally after failover. Used
             during ID negotiation after failover.
@@ -224,17 +224,17 @@ class ProcessInfo:
         return cls(ls[0], int(ls[1]), int(ls[2]), key=key, num_proc_per_slice=num_proc_per_slice)
 
 
-def _get_previous_process_info(local_dir: str, *, unique_str: str) -> ProcessInfo:
+def _get_previous_process_info(local_dir: str, *, unique_str: str) -> _ProcessInfo:
     """Gets process info from local checkpoint directory."""
     path = os.path.join(local_dir, _get_unique_id(unique_str), _PROCESS_ID_FILE_NAME)
     if not fs.exists(path):
-        return ProcessInfo("", -1, -1)
+        return _ProcessInfo(address="", inv_proc_id=-1, cur_proc_id=-1)
 
     with fs.open(path) as f:
-        return ProcessInfo.from_string(f.read())
+        return _ProcessInfo.from_string(f.read())
 
 
-def _dump_process_info(local_dir: str, *, unique_str: str, proc_info: ProcessInfo):
+def _dump_process_info(local_dir: str, *, unique_str: str, proc_info: _ProcessInfo):
     """Dumps process info to local checkpoint directory."""
     local_dir = os.path.join(local_dir, _get_unique_id(unique_str))
     fs.makedirs(local_dir)
@@ -312,9 +312,9 @@ def _init_consistent_proc_ids(
     # coordinator address.
     if local_proc_info.cur_proc_id == 0:
         ids = client.key_value_dir_get(key_prefix)
-        proc_infos: list[ProcessInfo] = []
+        proc_infos: list[_ProcessInfo] = []
 
-        def first_run_assign_fn(info: ProcessInfo):
+        def first_run_assign_fn(info: _ProcessInfo):
             info.inv_proc_id = info.cur_proc_id
 
         inv_id_assign_fn = first_run_assign_fn
@@ -329,7 +329,7 @@ def _init_consistent_proc_ids(
             # Mapping from new slice ids to assigned slice ids forfailed slices.
             failed_slices_new_ids = {}
             for k, data in ids:
-                info = ProcessInfo.from_string(data, key=k, num_proc_per_slice=num_proc_per_slice)
+                info = _ProcessInfo.from_string(data, key=k, num_proc_per_slice=num_proc_per_slice)
                 proc_infos.append(info)
                 if info.inv_proc_id == -1:
                     failed_slices_new_ids[info.cur_slice_id] = -1
@@ -339,13 +339,15 @@ def _init_consistent_proc_ids(
                 if info.cur_slice_id not in failed_slices_new_ids:
                     already_assigned_slice_ids.add(info.prev_slice_id)
 
+            # If there're no assigned slice ids, that means all slices have failed or we're in the
+            # very first run. In that case, first_run_assign_fn will be used.
             if already_assigned_slice_ids:
                 to_be_assigned_slice_ids = set(range(num_slices)) - already_assigned_slice_ids
                 assert len(to_be_assigned_slice_ids) == len(failed_slices_new_ids)
                 for k, new_id in zip(failed_slices_new_ids.keys(), to_be_assigned_slice_ids):
                     failed_slices_new_ids[k] = new_id
 
-                def assign_fn(info: ProcessInfo):
+                def assign_fn(info: _ProcessInfo):
                     proc_id = info.inv_proc_id
                     if (new_slice_id := failed_slices_new_ids.get(info.cur_slice_id)) is not None:
                         proc_id = (
@@ -362,14 +364,16 @@ def _init_consistent_proc_ids(
             # range with arbitrary order.
             assigned_ids = set()
             for key, data in ids:
-                info = ProcessInfo.from_string(data, key=key)
+                info = _ProcessInfo.from_string(data, key=key)
                 proc_infos.append(info)
                 assigned_ids.add(info.inv_proc_id)
 
+            # If there're no assigned ids, that means all slices have failed or we're in the
+            # very first run. In that case, first_run_assign_fn will be used.
             if assigned_ids:
                 to_be_assigned_ids = iter(set(range(num_processes)) - assigned_ids)
 
-                def assign_fn(info: ProcessInfo):
+                def assign_fn(info: _ProcessInfo):
                     if info.inv_proc_id == -1:
                         info.inv_proc_id = next(to_be_assigned_ids)
 
@@ -385,7 +389,7 @@ def _init_consistent_proc_ids(
             info.address = coordinator_address
             client.key_value_set(info.key + "/get", info.to_string())
 
-    new_info = ProcessInfo.from_string(
+    new_info = _ProcessInfo.from_string(
         client.blocking_key_value_get(local_proc_info.key + "/get", timeout_in_ms=timeout_ms)
     )
     logging.info(
@@ -403,11 +407,11 @@ def _init_consistent_proc_ids(
 def get_consistent_proc_info(
     *,
     local_address: Optional[str] = None,
-    barrier_timeout_seconds: int = 300 * 1000,
+    barrier_timeout_seconds: int = 300,
     trainer_dir: str,
     local_ckpt_dir: str,
     **setup_kwargs,
-) -> ProcessInfo:
+) -> _ProcessInfo:
     """Gets the invariant process id of the current process and global coordinator's address.
 
     This function guarantees process id <-> node mapping stays the same for healthy nodes after a
@@ -422,39 +426,47 @@ def get_consistent_proc_info(
         trainer_dir: Path to the trainer dir.
         local_ckpt_dir: Path to the local checkpoint dir.
         **setup_kwargs: Args to `utils_spmd.setup()`.
+
     Returns:
-        A ProcessInfo whose `inv_proc_id` should be used as the process id and `address` should be
+        A _ProcessInfo whose `inv_proc_id` should be used as the process id and `address` should be
         used as the global coordinator address.
     """
-    start_t = time.perf_counter()
     platform = os.environ.get("JAX_PLATFORMS", "")
-    # Patch platform so the process doesn't waste time initializing accelerators.
-    os.environ["JAX_PLATFORMS"] = "cpu"
-    proc = mp.get_context("spawn").Process(
-        target=_init_consistent_proc_ids,
-        kwargs=dict(
-            local_address=local_address,
-            barrier_timeout_seconds=barrier_timeout_seconds,
-            trainer_dir=trainer_dir,
-            local_ckpt_dir=local_ckpt_dir,
-            **setup_kwargs,
-        ),
-    )
-    proc.start()
-    proc.join()
-    assert proc.exitcode == 0
-    # Restore previous platform settings.
-    if platform != "":
-        os.environ["JAX_PLATFORMS"] = platform
-    else:
-        del os.environ["JAX_PLATFORMS"]
+    try:
+        start_t = time.perf_counter()
+        # Patch platform so the process doesn't waste time initializing accelerators.
+        os.environ["JAX_PLATFORMS"] = "cpu"
+        proc = mp.get_context("spawn").Process(
+            target=_init_consistent_proc_ids,
+            kwargs=dict(
+                local_address=local_address,
+                barrier_timeout_seconds=barrier_timeout_seconds,
+                trainer_dir=trainer_dir,
+                local_ckpt_dir=local_ckpt_dir,
+                **setup_kwargs,
+            ),
+        )
+        proc.start()
+        proc.join()
+        if proc.exitcode != 0:
+            raise RuntimeError(
+                "Expects id assignment process to finish normally. "
+                f"Got exit code {proc.exitcode}. Please check the log above for errors."
+            )
 
-    info = _get_previous_process_info(local_ckpt_dir, unique_str=trainer_dir)
-    assert info.inv_proc_id != -1
-    logging.info(
-        "Successfully finished process ID assignment in %fs", time.perf_counter() - start_t
-    )
-    return info
+        info = _get_previous_process_info(local_ckpt_dir, unique_str=trainer_dir)
+        if info.inv_proc_id == -1:
+            raise RuntimeError("Expects inv process id != -1, but got -1.")
+        logging.info(
+            "Successfully finished process ID assignment in %fs", time.perf_counter() - start_t
+        )
+        return info
+    finally:
+        # Restore previous platform settings.
+        if platform != "":
+            os.environ["JAX_PLATFORMS"] = platform
+        else:
+            del os.environ["JAX_PLATFORMS"]
 
 
 class OrbaxEmergencyCheckpointer(BaseCheckpointer):
