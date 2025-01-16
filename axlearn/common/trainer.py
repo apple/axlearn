@@ -279,8 +279,6 @@ class SpmdTrainer(Module):
                     "xsc_check_policy was set for non-TPU XLA backend. Running without XSC."
                 )
             else:
-                if cfg.cache_python_train_step is True:
-                    raise ValueError("cache_python_train_step cannot be True when xsc is enabled.")
                 xsc_check_policy = maybe_instantiate(cfg.xsc_check_policy)
         self._xsc_check_policy: Optional[Callable[[int], bool]] = xsc_check_policy
         self._compiled_train_step: Optional[jax.stages.Compiled] = None
