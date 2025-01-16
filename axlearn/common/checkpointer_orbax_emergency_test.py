@@ -21,11 +21,11 @@ from jax import numpy as jnp
 from axlearn.common import utils_spmd
 from axlearn.common.checkpointer_orbax_emergency import (
     OrbaxEmergencyCheckpointer,
-    ProcessInfo,
     _dump_process_info,
     _get_previous_process_info,
     _init_consistent_proc_ids,
     _logger_init,
+    _ProcessInfo,
     config_for_function,
     every_n_steps_policy,
     get_consistent_proc_info,
@@ -161,7 +161,7 @@ def _test_init_proc_id_main(
         _dump_process_info(
             local_ckpt_dir,
             unique_str=trainer_dir,
-            proc_info=ProcessInfo(distributed_coordinator, new_idx_map[process_id], process_id),
+            proc_info=_ProcessInfo(distributed_coordinator, new_idx_map[process_id], process_id),
         )
 
     prev_setup = utils_spmd.setup
