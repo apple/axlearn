@@ -2,10 +2,12 @@
 
 """Tests SpmdTrainer."""
 
-# pylint: disable=no-self-use
 import copy
 import dataclasses
 import math
+
+# pylint: disable=no-self-use
+import os
 import os.path
 import shutil
 import tempfile
@@ -69,6 +71,8 @@ from axlearn.common.utils import (
 FLAGS = flags.FLAGS
 
 NUM_CLASSES = 16
+
+os.environ["TPU_SKIP_MDS_QUERY"] = "1"
 
 
 class DummyInput(Module):
@@ -171,6 +175,14 @@ class DummyInput(Module):
         # checkpointed properly even with a custom __iter__ (note that a custom __iter__ is not
         # guaranteed to be savable).
         yield from self.dataset()
+
+    def element_spec(self):
+        return jax.tree.map(
+            lambda tf_spec: jax.ShapeDtypeStruct(
+                shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
+            ),
+            self.dataset().element_spec,
+        )
 
 
 class DummyModel(BaseModel):
