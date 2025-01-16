@@ -206,7 +206,7 @@ class SpmdTrainer(Module):
         # pre-compilation checks (such as sharding check) that increases the step time for some
         # models. Note that this cache is always disabled at steps when xsc is enabled.
         # Defaults to None which is interpreted as True.
-        cache_python_train_step: Optional[bool] = None
+        cache_compiled_train_step: Optional[bool] = None
 
     def __init__(
         self,
@@ -974,7 +974,7 @@ class SpmdTrainer(Module):
         """Build a fully compiled train step function.
 
         Relies on the JAX pjit cache to avoid recompilation when with_xsc=True or
-        cache_python_train_step=False.
+        cache_compiled_train_step=False.
 
         Args:
             train_state: A TrainerState instance.
@@ -988,7 +988,7 @@ class SpmdTrainer(Module):
             RuntimeError: If `with_xsc` is requested on heterogenous device kinds.
         """
         if (
-            not (self.config.cache_python_train_step is False)
+            not (self.config.cache_compiled_train_step is False)
             and not with_xsc
             and self._compiled_train_step is not None
         ):
