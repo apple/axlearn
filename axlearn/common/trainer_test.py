@@ -488,7 +488,7 @@ class TrainerTest(test_utils.TestCase):
         cfg.vlog = 2
         # Set XSC policy.
         cfg.xsc_check_policy = lambda step: (step in [7, 8])
-        cfg.enable_python_train_step_cache = enable_python_cache
+        cfg.cache_python_train_step = enable_python_cache
 
         # Test training run.
         trainer: SpmdTrainer = cfg.set(max_step=12).instantiate(parent=None)

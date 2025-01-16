@@ -206,7 +206,7 @@ class SpmdTrainer(Module):
         # pre-compilation checks (such as sharding check) that increases the step time for some
         # models. Note that this cache is always disabled at steps when xsc is enabled.
         # Defaults to None which is interpreted as True.
-        enable_python_train_step_cache: Optional[bool] = None
+        cache_python_train_step: Optional[bool] = None
 
     def __init__(
         self,
@@ -279,6 +279,8 @@ class SpmdTrainer(Module):
                     "xsc_check_policy was set for non-TPU XLA backend. Running without XSC."
                 )
             else:
+                if cfg.cache_python_train_step is True:
+                    raise ValueError("cache_python_train_step cannot be True when xsc is enabled.")
                 xsc_check_policy = maybe_instantiate(cfg.xsc_check_policy)
         self._xsc_check_policy: Optional[Callable[[int], bool]] = xsc_check_policy
         self._compiled_train_step: Optional[jax.stages.Compiled] = None
@@ -973,6 +975,9 @@ class SpmdTrainer(Module):
     ) -> Callable[[TrainerState, NestedTensor], tuple[TrainerState, NestedTensor]]:
         """Build a fully compiled train step function.
 
+        Relies on the JAX pjit cache to avoid recompilation when with_xsc=True or
+        cache_python_train_step=False.
+
         Args:
             train_state: A TrainerState instance.
             input_batch: A NestedTensor containing global arrays.
@@ -985,7 +990,7 @@ class SpmdTrainer(Module):
             RuntimeError: If `with_xsc` is requested on heterogenous device kinds.
         """
         if (
-            not (self.config.enable_python_train_step_cache is False)
+            not (self.config.cache_python_train_step is False)
             and not with_xsc
             and self._compiled_train_step is not None
         ):
