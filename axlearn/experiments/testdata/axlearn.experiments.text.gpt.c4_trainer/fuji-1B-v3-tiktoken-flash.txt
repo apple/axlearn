@@ -273,12 +273,15 @@ model.decoder.transformer.repeat.klass: 'axlearn.common.attention._TransformerRe
 model.decoder.vocab_size: 128256
 model.dtype: 'jax.numpy.float32'
 model.klass: 'axlearn.common.causal_lm.Model'
+model.metrics.klass: 'axlearn.common.causal_lm.CompositeLossMetrics'
+model.metrics.metrics['lm'].klass: 'axlearn.common.causal_lm.CrossEntropyLossMetrics'
+model.metrics.metrics['lm'].z_loss_scale: 0.0
+model.metrics.metrics['aux'].klass: 'axlearn.common.causal_lm.AuxLossMetrics'
 model.param_init.init_by_param_name['.*weight$'].distribution: 'normal'
 model.param_init.init_by_param_name['.*weight$'].fan: 'fan_in'
 model.param_init.init_by_param_name['.*weight$'].klass: 'axlearn.common.param_init.WeightInitializer'
 model.param_init.init_by_param_name['.*weight$'].scale: 1.0
 model.param_init.klass: 'axlearn.common.param_init.DefaultInitializer'
-model.z_loss_scale: 0.0
 name: 'gpt_trainer'
 prune_empty_state_updates: True
 save_input_iterator: False

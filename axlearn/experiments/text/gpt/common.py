@@ -301,11 +301,12 @@ def model_config(
         }
     )
     batch_axis_names = ("data", "expert", "fsdp")
-    cfg = causal_lm.Model.default_config().set(
+    cfg: causal_lm.Model.Config = causal_lm.Model.default_config().set(
         decoder=decoder_cfg,
         param_init=model_param_init,
         batch_axis_names=None,  # We use input dispatch to partition batches.
     )
+    cfg.metrics.metrics["lm"].z_loss_scale = z_loss_scale
     cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(
@@ -318,7 +319,6 @@ def model_config(
     cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
     set_bias_recursively(cfg, False)
     set_norm_recursively(cfg, normalization)
-    cfg.z_loss_scale = z_loss_scale
     return cfg
 
 

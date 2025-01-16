@@ -171,9 +171,13 @@ class ModelMetricsTest(TestCase):
             _, output_collection = functional(
                 model,
                 inputs=dict(
-                    logits=logits[i],
-                    target_labels=target_labels[i],
-                    target_num_bytes=target_num_bytes[i],
+                    input_batch=dict(
+                        target_labels=target_labels[i],
+                        target_num_bytes=target_num_bytes[i],
+                    ),
+                    predict_outputs=dict(
+                        logits=logits[i],
+                    ),
                 ),
                 is_training=True,
                 prng_key=prng_key,
@@ -324,23 +328,21 @@ class ModelMetricsTest(TestCase):
         input_batch = dict(input_ids=input_ids, target_labels=target_labels)
 
         # Ensure that forward outputs are consistent with metrics output.
-        ctx = InvocationContext(
-            name="root",
-            parent=None,
-            module=model,
-            state=model_params,
-            output_collection=new_output_collection(),
-            is_training=True,
-            prng_key=prng_key,
+        common_kwargs = dict(module=model, prng_key=prng_key, state=model_params, is_training=True)
+        (loss, aux), _ = functional(
+            **common_kwargs,
+            inputs=dict(input_batch=input_batch, return_aux=True),
         )
-        with set_current_context(ctx):
-            loss, aux = model.forward(input_batch=input_batch, return_aux=True)
-            # pylint: disable-next=protected-access
-            ref_outputs = model._metrics(
-                logits=aux["logits"], target_labels=target_labels, target_num_bytes=None
-            )
-            self.assertAlmostEqual(loss, ref_outputs["loss"])
-            self.assertTrue(jnp.allclose(aux["per_label_loss"], ref_outputs["per_token_loss"]))
+        (ref_loss, metrics), _ = functional(
+            **common_kwargs,
+            inputs=dict(
+                input_batch=dict(target_labels=target_labels),
+                predict_outputs=dict(logits=aux["logits"]),
+            ),
+            method="_metrics",
+        )
+        self.assertAlmostEqual(loss, ref_loss)
+        self.assertNestedAllClose(aux["metrics"], metrics)
 
     # TODO(markblee): Add a pytest marker for multi-device tests.
     @pytest.mark.skipif(
@@ -421,7 +423,7 @@ class DummyFeedForwardWithAuxLoss(TransformerFeedForwardLayer):
         return inputs
 
 
-class ModelAuxLossTest(parameterized.TestCase):
+class ModelAuxLossTest(TestCase):
     @parameterized.product(
         aux_loss_regex=(None, ".*/aux_loss", ".*/apple"),
         stack_cfg=(
@@ -448,9 +450,11 @@ class ModelAuxLossTest(parameterized.TestCase):
             decoder_cfg.transformer.layer.feed_forward = (
                 DummyFeedForwardWithAuxLoss.default_config().set(hidden_dim=4 * hidden_dim)
             )
-        model_cfg = causal_lm.Model.default_config().set(
-            decoder=decoder_cfg, name="metrics_test", aux_loss_regex=aux_loss_regex
+        model_cfg: causal_lm.Model.Config = causal_lm.Model.default_config().set(
+            decoder=decoder_cfg,
+            name="metrics_test",
         )
+        model_cfg.metrics.metrics["aux"].aux_loss_regex = aux_loss_regex
         model = model_cfg.instantiate(parent=None)
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
         model_params = model.initialize_parameters_recursively(init_key)
@@ -464,32 +468,24 @@ class ModelAuxLossTest(parameterized.TestCase):
         input_batch = dict(input_ids=input_ids, target_labels=target_labels)
 
         # Ensure that forward outputs are consistent with metrics output.
-        ctx = InvocationContext(
-            name="root",
-            parent=None,
-            module=model,
-            state=model_params,
-            output_collection=new_output_collection(),
-            is_training=True,
-            prng_key=prng_key,
+        # NOTE: invoking _metrics directly can give different outputs due to missing aux loss from
+        # module outputs in the invocation context.
+        common_kwargs = dict(module=model, prng_key=prng_key, state=model_params, is_training=True)
+        (loss, aux), _ = functional(
+            **common_kwargs,
+            inputs=dict(input_batch=input_batch, return_aux=True),
         )
-        with set_current_context(ctx):
-            loss, aux = model.forward(input_batch=input_batch, return_aux=True)
-            # pylint: disable-next=protected-access
-            ref = model._metrics(
-                logits=aux["logits"], target_labels=target_labels, target_num_bytes=None
-            )
-            # `aux_loss` is only collected when `aux_loss_regex` is set.
-            if aux_loss_regex is not None:
-                self.assertIn("aux_loss", aux)
-                if aux_loss_regex == ".*/aux_loss" and use_aux_layer:
-                    self.assertEqual(aux["aux_loss"], 1.0)
-                else:
-                    self.assertEqual(aux["aux_loss"], 0.0)
-                self.assertEqual(ref["cross_entropy"] + aux["aux_loss"], loss)
+        # `aux_loss` is only collected when `aux_loss_regex` is set.
+        if aux_loss_regex is not None:
+            self.assertIn("aux_loss", aux["metrics"])
+            if aux_loss_regex == ".*/aux_loss" and use_aux_layer:
+                self.assertEqual(aux["metrics"]["aux_loss"], 1.0)
             else:
-                self.assertNotIn("aux_loss", aux)
-                self.assertEqual(ref["cross_entropy"], loss)
+                self.assertEqual(aux["metrics"]["aux_loss"], 0.0)
+            self.assertEqual(aux["metrics"]["cross_entropy"] + aux["metrics"]["aux_loss"], loss)
+        else:
+            self.assertNotIn("aux_loss", aux)
+            self.assertEqual(aux["metrics"]["cross_entropy"], loss)
 
 
 if __name__ == "__main__":
