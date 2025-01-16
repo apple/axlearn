@@ -202,9 +202,9 @@ class SpmdTrainer(Module):
 
         # If True, assumes the train_step may need to be recompiled and go through the lowering
         # and compilation process every train step and rely on compilation cache to prevent
-        # excessive recompilations. Note: this could introduce overhead during the pre-compilation
-        # stage (such as sharding check) that increases the step time for some models. Note that
-        # this cache is always disable when at steps when xsc is enabled.
+        # excessive recompilations. Note: this could introduce overhead to training due to
+        # pre-compilation checks (such as sharding check) that increases the step time for some
+        # models. Note that this cache is always disabled at steps when xsc is enabled.
         disable_python_train_step_cache: Optional[bool] = None
 
     def __init__(
