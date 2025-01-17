@@ -24,6 +24,7 @@ from axlearn.common.attention import (
     FusedQKVLinear,
     GroupedQueryAttention,
     MultiheadAttention,
+    RematRegexSavePatterns,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
 )
@@ -39,7 +40,10 @@ from axlearn.common.trainer_config_modifier import (
     MeshShapeModifier,
     RematSpecModifier,
 )
-from axlearn.common.utils import extended_checkpoint_policies
+from axlearn.common.utils import (
+    extended_checkpoint_policies,
+    save_and_offload_only_these_names_regex,
+)
 from axlearn.experiments.text.gpt.common import (
     STEP_DTYPE,
     SourceBuilder,
@@ -85,7 +89,6 @@ ROPE_THETA = {
     Version.V3: 5e5,
 }
 
-
 # Mapping from Fuji versions to total number of tokens used in training.
 TOTAL_TOKENS = {
     Version.V1: {
@@ -107,6 +110,14 @@ TOTAL_TOKENS = {
     },
 }
 
+# Llama3 uses 16m tokens after 2.87T tokens.
+# https://arxiv.org/pdf/2407.21783
+TOKENS_PER_BATCH = {
+    Version.V1: 4 * (1024**2),
+    Version.V2: 4 * (1024**2),
+    Version.V3: 16 * (1024**2),
+}
+
 
 def get_trainer_kwargs(
     model_size: str,
@@ -116,7 +127,7 @@ def get_trainer_kwargs(
     flash_attention: bool = False,
 ) -> dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
-    tokens_per_batch = 4 * (1024**2)  # 4M tokens.
+    tokens_per_batch = TOKENS_PER_BATCH[version]
     if model_size not in TOTAL_TOKENS[version]:
         return {}
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
@@ -133,6 +144,15 @@ def get_trainer_kwargs(
     offload_dots_saveable_policy = config_for_function(
         extended_checkpoint_policies.offload_dots_saveable
     ).set(offload_src="device", offload_dst="pinned_host")
+    # To make it work better with v3 8k sequence length.
+    offload_attention_proj_policy = config_for_function(
+        extended_checkpoint_policies.save_and_offload_only_these_names_regex
+    ).set(
+        names_which_can_be_saved=None,
+        names_which_can_be_offloaded=RematRegexSavePatterns.NATIVE_ATTENTION.value,
+        offload_src="device",
+        offload_dst="pinned_host",
+    )
     # dict() is more readable here.
     # pylint: disable=use-dict-literal
     if model_size == "test":
@@ -275,6 +295,24 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
+                (
+                    "tpu-v6e-256-(2|4|8)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=offload_attention_proj_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
                 # tpu-v5p.
                 ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
                 # H100/A100 80G.
@@ -411,11 +449,80 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
+                # V2 on tpu-v6e-256x4, step time: 4.9s.
+                (
+                    "tpu-v6e-256-(4|8)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=offload_attention_proj_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+                # V2 on tpu-v6e-256, step time: 19.5s.
+                (
+                    "tpu-v6e-256",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=offload_attention_proj_policy,
+                                    ),
+                                }
+                            ),
+                            GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
+                        ],
+                    ),
+                ),
                 # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
                 # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
+                ),
+                (
+                    "neuron-(trn2|trn2n).48xlarge-64",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved="|".join(
+                                                [
+                                                    RematRegexSavePatterns.QKV_PROJ.value,
+                                                    RematRegexSavePatterns.LINEAR1_X.value,
+                                                ]
+                                            ),
+                                            names_which_can_be_offloaded=None,
+                                            offload_src=None,
+                                            offload_dst=None,
+                                        ),
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
                 ),
             ),
         )
@@ -582,9 +689,11 @@ def trainer_configs(
                 # pytype: enable=annotation-type-mismatch
 
                 # The original config was supposed to run on >= 32 machines.
-                cfg.input.batcher.global_batch_size //= 32
+                # pylint: disable=cell-var-from-loop
+                cfg.input.batcher.global_batch_size //= 128 if version == Version.V3 else 32
                 for evaler in cfg.evalers.values():
-                    evaler.input.batcher.global_batch_size //= 32
+                    evaler.input.batcher.global_batch_size //= 128 if version == Version.V3 else 32
+                # pylint: enable=cell-var-from-loop
                 return cfg
 
             # Make single-host config

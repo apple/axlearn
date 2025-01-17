@@ -148,3 +148,10 @@ class Input(Module):
                 global_physical_batch, batch_axis_names=batch_axis_names
             )
         return constrain_batch_axis(global_logical_batch)
+
+    def element_spec(self) -> Nested[jax.ShapeDtypeStruct]:
+        """Returns the per-feed logical batch spec.
+
+        This is used e.g. for AOT compilation and is not strictly required for training.
+        """
+        raise NotImplementedError(type(self))

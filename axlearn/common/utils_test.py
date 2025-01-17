@@ -19,6 +19,7 @@ import tensorflow as tf
 import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
+from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
 
@@ -28,6 +29,7 @@ from axlearn.common.config import config_class, config_for_function, similar_nam
 from axlearn.common.layers import BatchNorm, LayerNorm, Linear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
+from axlearn.common.module import functional as F
 from axlearn.common.repeat import Repeat
 from axlearn.common.test_utils import (
     Nested,
@@ -72,6 +74,7 @@ from axlearn.common.utils import (
     pytree_children,
     replicate_to_local_data,
     runtime_checks,
+    save_and_offload_only_these_names_regex,
     set_data_dir,
     set_recursively,
     split_prng_key,
@@ -1802,6 +1805,85 @@ class ValidateContainsPathsTest(TestCase):
 
         with ctx:
             validate_contains_paths(x, paths=paths)
+
+
+class _TestRematLayer(BaseLayer):
+    """A dummy 2 layer feed forward with saved activation."""
+
+    @config_class
+    class Config(BaseLayer.Config):
+        linear1: Linear.Config = Linear.default_config().set(input_dim=2, output_dim=4)
+        linear2: Linear.Config = Linear.default_config().set(input_dim=4, output_dim=1)
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        # Reuse child 2 config for child 3.
+        self._add_child("linear1", cfg.linear1)
+        self._add_child("linear2", cfg.linear2)
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        x = self.linear1(inputs)
+        x = self._remat_name(x, "linear1")
+        x = self.linear2(x)
+        return x
+
+
+class TestRematPolicy(TestCase):
+    """Test remat policy."""
+
+    def test_linear_remat(self):
+        """Test remat policy for linear layers."""
+        batch, dim = 8, 2
+        layer = _TestRematLayer.default_config().set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        x = jax.random.normal(jax.random.PRNGKey(1), shape=[batch, dim])
+
+        def f(x, layer_params):
+            y, _ = F(
+                layer,
+                inputs=dict(inputs=x),
+                state=layer_params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(0),
+            )
+            return y
+
+        _, save_name_backward = jax.linearize(
+            jax.remat(
+                f,
+                policy=save_and_offload_only_these_names_regex(
+                    names_which_can_be_saved=".*linear1",
+                    names_which_can_be_offloaded=None,
+                    offload_src="device",
+                    offload_dst="pinned_host",
+                ),
+            ),
+            x,
+            layer_params,
+        )
+        _, save_dots_backward = jax.linearize(
+            jax.remat(f, policy=jax_remat_policies.dots_saveable),
+            x,
+            layer_params,
+        )
+
+        _, remat_backward = jax.linearize(
+            jax.remat(f, policy=jax_remat_policies.nothing_saveable),
+            x,
+            layer_params,
+        )
+
+        # We have 2 forward and 2 backward and they are:
+        # f = matmul(x, l1), g = matmul(f, l2)
+        # l2' = matmul(f^t, g'), l1' = matmul(x^t, f')
+        self.assertEqual(str(save_name_backward).count(" dot_general"), 4)
+        self.assertEqual(
+            str(save_name_backward).count(" dot_general"),
+            str(save_dots_backward).count(" dot_general"),
+        )
+        # We have one more recompute of f for remat during backward.
+        self.assertEqual(str(remat_backward).count(" dot_general"), 5)
 
 
 if __name__ == "__main__":

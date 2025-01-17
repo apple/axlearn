@@ -1,235 +1,375 @@
 # Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# jax-ml/jax:
+# Copyright 2023 The JAX Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+# pylint: disable=line-too-long
 
 """FlashAttention kernel benchmarks.
 
-Sample outputs on A100:
-
-bench-head32-seq1024-d64:
-   batch_size       Jax  Jax Triton    Pallas    PyTorch  PyTorch Triton
-0         2.0  1.294677    0.308249  0.178258   2.774377        0.198660
-1         4.0  2.337943    0.417789  0.268292   5.449353        0.327930
-2         8.0  4.341445    0.625852  0.587789  10.795019        0.585716
-3        16.0  8.209461    1.210101  0.736935  21.485954        1.101084
-batch2-seq2048-d64:
-   num_heads       Jax  Jax Triton    Pallas    PyTorch  PyTorch Triton
-0       12.0  1.758803    0.377092  0.292216   4.154821        0.282745
-1       16.0  2.274562    0.437537  0.324150   5.495135        0.334550
-2       32.0  4.111703    0.646520  0.599221  10.850373        0.558403
-3       40.0  5.044082    0.765017  0.676835  13.539443        0.675699
-4       56.0  6.987845    1.035317  0.764956  18.896891        0.900977
-5       72.0  8.709219    1.234217  0.836006  24.280788        1.129773
-batch2-head32-d64:
-   seq_len       Jax  Jax Triton    Pallas    PyTorch  PyTorch Triton
-0    128.0  0.141517    0.127410  0.274202   0.102813        0.022059
-1    256.0  0.224241    0.128345  0.268729   0.212434        0.042063
-2    512.0  0.426494    0.148231  0.268689   0.770047        0.081487
-3   1024.0  1.298753    0.316831  0.156720   2.774356        0.198292
-4   2048.0  4.031973    0.626030  0.589759  10.851770        0.558741
-batch2-head32-seq2048:
-   per_head_dim       Jax  Jax Triton    Pallas    PyTorch  PyTorch Triton
-0          16.0  3.858791    0.437569  0.213704  10.560411        0.331421
-1          32.0  3.955815    0.514656  0.261292  10.627665        0.437445
-2          64.0  4.121394    0.636113  0.584212  10.851702        0.558101
-3         128.0  4.439079    0.973939  0.371719  11.237614        0.754280
-
-With backward pass:
-
-grad-head32-seq1024-d64:
-   batch_size        Jax  Jax Triton    Pallas    PyTorch  PyTorch Triton
-0         2.0   2.848025    1.942416  1.694485   6.299916        1.133216
-1         4.0   5.322315    1.991064  2.380001  12.186511        1.898364
-2         8.0  10.041783    2.945663  4.342529  23.935926        2.966447
-3        16.0  19.633947    5.056746  7.604803  47.527328        5.060277
-grad-batch2-seq2048-d64:
-   num_heads        Jax  Jax Triton    Pallas    PyTorch  PyTorch Triton
-0       12.0   3.776024    2.353134  3.311361   9.244321        2.498945
-1       16.0   5.015553    2.435218  3.501143  12.162596        2.632030
-2       32.0   9.679915    2.942006  4.506633  24.000723        3.347016
-3       40.0  11.839152    3.409772  5.224550  29.938248        3.646133
-4       56.0  16.324726    5.345623  8.512093  41.617474        5.386331
-5       72.0  20.826162    5.967896  9.429584  53.344563        6.108087
-grad-batch2-head32-d64:
-   seq_len       Jax  Jax Triton    Pallas    PyTorch  PyTorch Triton
-0    128.0  2.084800    1.946231  1.715087   1.179843        0.623846
-1    256.0  2.205729    2.110186  1.704993   0.648029        0.340229
-2    512.0  2.259852    2.102726  1.554168   1.883081        0.480496
-3   1024.0  2.859227    2.069817  1.645913   6.291944        1.120009
-4   2048.0  9.606998    2.954207  4.540852  23.863083        2.998823
-grad-batch2-head32-seq2048:
-   per_head_dim        Jax  Jax Triton    Pallas    PyTorch  PyTorch Triton
-0          16.0   9.076053    2.093116  2.735943  23.176823        1.625986
-1          32.0   9.133391    2.438204  3.100990  23.311085        2.156206
-2          64.0   9.490566    3.001139  4.537563  23.846561        3.010464
-3         128.0  10.347649    5.208034  6.846362  24.728912        5.447452
-
-In addition to the dependencies in attention.py, also requires:
-torch==2.1.0.dev20230726+cu121
-pytorch-triton==2.1.0+9e3e10c5ed
+Tor run: python3 gpu_attention_benchmark.py > out.txt
+Requires Jax >= 0.4.36. Sample numbers on H100 SXM5 with Jax == 0.4.36:
+is_decode=True, use_bwd=False, num_heads=8, num_kv_heads=8, per_head_dim=128, sw_sz=-1
+                                        jax           axlearn       jax-cudnn
+bs=1,seq_len=1024                       0.020832      0.017536      0.024128
+bs=1,seq_len=4096                       0.037472      0.021248      0.058656
+bs=1,seq_len=8192                       0.034016      0.032576      0.108576
+bs=1,seq_len=131072                     0.229856      0.198944      1.558464
+bs=4,seq_len=1024                       0.021632      0.023296      0.024352
+bs=4,seq_len=4096                       0.068064      0.055168      0.061312
+bs=4,seq_len=8192                       0.080352      0.075968      0.109696
+bs=4,seq_len=131072                     0.824576      0.703360      1.560768
+bs=8,seq_len=1024                       0.033536      0.030304      0.024448
+bs=8,seq_len=4096                       0.089056      0.071712      0.062944
+bs=8,seq_len=8192                       0.128960      0.114848      0.112736
+bs=8,seq_len=131072                     1.620032      1.373088      1.566208
+bs=16,seq_len=1024                      0.050368      0.048064      0.036608
+bs=16,seq_len=4096                      0.134816      0.116320      0.104320
+bs=16,seq_len=8192                      0.234880      0.200384      0.191936
+bs=16,seq_len=131072                    3.219008      2.726912      2.784768
+bs=32,seq_len=1024                      0.078112      0.070816      0.061568
+bs=32,seq_len=4096                      0.235648      0.203296      0.191936
+bs=32,seq_len=8192                      0.442080      0.371936      0.365152
+bs=32,seq_len=131072                    6.404832      5.448480      5.541504
+is_decode=True, use_bwd=False, num_heads=8, seq_len=32768, per_head_dim=128, sw_sz=-1
+                                        jax           axlearn       jax-cudnn
+bs=1,num_kv_heads=1                     0.027648      0.058464      0.398816
+bs=1,num_kv_heads=8                     0.076096      0.070368      0.398912
+bs=8,num_kv_heads=1                     0.101696      0.078560      0.399040
+bs=8,num_kv_heads=8                     0.426656      0.367616      0.403360
+is_decode=True, use_bwd=False, num_heads=8, num_kv_heads=8, per_head_dim=128
+                                        jax           axlearn       jax-cudnn
+bs=1,seq_len=131072,sw_sz=-1            0.230336      0.199968      1.559168
+bs=1,seq_len=131072,sw_sz=4096          0.235296      0.051296      4.414048
+bs=1,seq_len=131072,sw_sz=16384         0.235904      0.062976      4.385216
+bs=8,seq_len=131072,sw_sz=-1            1.619008      1.372768      1.570272
+bs=8,seq_len=131072,sw_sz=4096          1.635424      0.194720      4.390976
+bs=8,seq_len=131072,sw_sz=16384         1.632832      0.321280      4.361984
+is_decode=False, use_bwd=False, num_heads=32, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
+                                        jax           axlearn       jax-cudnn     jax-pallas
+bs=2                                    3.583424      0.894912      0.488480      0.852960
+bs=4                                    7.107168      1.712448      0.922592      1.629888
+bs=8                                    14.202400     3.341568      1.801920      3.184064
+is_decode=False, use_bwd=False, bs=2, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
+                                        jax           axlearn       jax-cudnn     jax-pallas
+num_heads=12                            1.287712      0.383200      0.214400      0.365120
+num_heads=16                            1.803232      0.485408      0.270496      0.463040
+num_heads=32                            3.578208      0.896576      0.488544      2.468096
+num_heads=48                            5.346112      1.305856      0.707872      1.241728
+num_heads=72                            8.001568      1.915776      1.035200      1.820288
+is_decode=False, use_bwd=False, bs=2, num_heads=32, num_kv_heads=None, per_head_dim=128, sw_sz=-1
+                                        jax           axlearn       jax-cudnn     jax-pallas
+seq_len=256                             0.049184      0.015360      0.016352      0.015488
+seq_len=512                             0.110400      0.038624      0.028480      0.037760
+seq_len=1024                            0.302304      0.094560      0.056736      0.090464
+seq_len=2048                            0.936832      0.269856      0.154304      0.258944
+seq_len=4096                            3.584800      0.895776      0.487104      2.462560
+seq_len=8192                            14.260608     3.268320      1.742048      3.104640
+is_decode=False, use_bwd=False, bs=2, num_heads=32, num_kv_heads=None, seq_len=4096, sw_sz=-1
+                                        jax           axlearn       jax-cudnn     jax-pallas
+per_head_dim=16                         3.262592      0.518912      0.356544      0.477120
+per_head_dim=32                         3.323552      0.563520      0.358944      0.533344
+per_head_dim=64                         3.411744      0.690464      0.360192      0.635296
+per_head_dim=128                        3.585920      0.896032      0.488416      2.461696
+is_decode=False, use_bwd=True, num_heads=32, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
+                                        jax           axlearn       jax-cudnn     jax-pallas
+bs=2                                    10.878624     3.924992      2.123008      4.504256
+bs=4                                    21.626017     8.043040      4.071552      9.186080
+bs=8                                    43.269279     16.195999     8.124896      18.184799
+is_decode=False, use_bwd=True, bs=2, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
+                                        jax           axlearn       jax-cudnn     jax-pallas
+num_heads=12                            4.159424      1.519680      0.898816      1.711808
+num_heads=16                            5.486912      2.001952      1.142144      2.256960
+num_heads=32                            10.886848     3.928896      2.114496      4.502976
+num_heads=48                            16.224319     6.085408      3.093696      6.888640
+num_heads=72                            24.367489     9.190560      4.642720      10.323552
+is_decode=False, use_bwd=True, bs=2, num_heads=32, num_kv_heads=None, per_head_dim=128, sw_sz=-1
+                                        jax           axlearn       jax-cudnn     jax-pallas
+seq_len=256                             0.094496      0.060096      0.053184      0.065760
+seq_len=512                             0.297440      0.139328      0.112736      0.161664
+seq_len=1024                            0.886304      0.361536      0.246848      0.418720
+seq_len=2048                            2.857952      1.118368      0.675168      1.294144
+seq_len=4096                            10.880512     3.914048      2.119808      4.503936
+seq_len=8192                            43.000095     14.913824     7.484128      16.730017
+is_decode=False, use_bwd=True, bs=2, num_heads=32, num_kv_heads=None, seq_len=4096, sw_sz=-1
+                                        jax           axlearn       jax-cudnn     jax-pallas
+per_head_dim=16                         10.150080     1.826656      1.288192      1.718688
+per_head_dim=32                         10.277440     2.028608      1.316512      2.048864
+per_head_dim=64                         10.463904     2.569408      1.364448      2.540512
+per_head_dim=128                        10.875328     3.929568      2.124192      4.502912
 """
-# pylint: skip-file
+# pylint: enable=line-too-long
+import itertools
+from functools import partial
+from typing import Any, Optional, Protocol, Union
 
 import jax
 import jax.numpy as jnp
-import triton  # pytype: disable=import-error
+from jax.experimental.mosaic.gpu.profiler import _event_elapsed, _event_record, has_registrations
 from jax.experimental.pallas.ops.gpu.attention import mha as pallas_mha
 
+from axlearn.common.attention_bias import sliding_window_causal_mask
 from axlearn.common.flash_attention.gpu_attention import (
     cudnn_dot_product_attention,
     flash_attention,
 )
+from axlearn.common.flash_attention.gpu_decoding import Tensor, flash_decoding
 from axlearn.common.flash_attention.utils import mha_reference
 
+X = jnp.zeros((8192, 8192))
+Y = jnp.zeros((8192, 8192))
 
-def _perf_report(prefix: str):
-    # 128 is the most common value for per_head_dim.
-    batch_size, num_heads, seq_len, per_head_dim = 2, 32, 2048, 128
-
-    # Vary batch size for fixed heads and seq length.
-    batch_size_bench = triton.testing.Benchmark(
-        x_names=["batch_size"],
-        x_vals=[2, 4, 8, 16],
-        line_arg="library",
-        line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
-        line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
-        styles=[("blue", "-"), ("purple", "-"), ("green", "-"), ("red", "-")],
-        ylabel="ms",
-        plot_name=f"{prefix}-head{num_heads}-seq1024-d{per_head_dim}",
-        args={"num_heads": num_heads, "seq_len": 1024, "per_head_dim": per_head_dim},
-    )
-    # Vary num heads for fixed batch and seq length.
-    num_heads_bench = triton.testing.Benchmark(
-        x_names=["num_heads"],
-        x_vals=[12, 16, 32, 48, 72],
-        line_arg="library",
-        line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
-        line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
-        styles=[("blue", "-"), ("purple", "-"), ("green", "-"), ("red", "-")],
-        ylabel="ms",
-        plot_name=f"{prefix}-batch{batch_size}-seq{seq_len}-d{per_head_dim}",
-        args={"batch_size": batch_size, "seq_len": seq_len, "per_head_dim": per_head_dim},
-    )
-    # Vary seq length for fixed heads and batch size.
-    seq_len_bench = triton.testing.Benchmark(
-        x_names=["seq_len"],
-        x_vals=[2**i for i in range(7, 12)],  # 128 to 2048.
-        line_arg="library",
-        line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
-        line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
-        styles=[("blue", "-"), ("purple", "-"), ("green", "-"), ("red", "-")],
-        ylabel="ms",
-        plot_name=f"{prefix}-batch{batch_size}-head{num_heads}-d{per_head_dim}",
-        args={"batch_size": batch_size, "num_heads": num_heads, "per_head_dim": per_head_dim},
-    )
-    # Vary per head dim for fixed batch and seq length.
-    per_head_dim_bench = triton.testing.Benchmark(
-        x_names=["per_head_dim"],
-        x_vals=[16, 32, 64, 128],
-        line_arg="library",
-        line_vals=["jax", "jax-triton", "jax-pallas", "jax-cudnn"],
-        line_names=["Jax", "Jax Triton", "Pallas", "jax-cudnn"],
-        styles=[("blue", "-"), ("purple", "-"), ("green", "-"), ("red", "-")],
-        ylabel="ms",
-        plot_name=f"{prefix}-batch{batch_size}-head{num_heads}-seq{seq_len}",
-        args={"batch_size": batch_size, "num_heads": num_heads, "seq_len": seq_len},
-    )
-    return triton.testing.perf_report(
-        [batch_size_bench, num_heads_bench, seq_len_bench, per_head_dim_bench]
-    )
+BenchFnResult = Union[tuple[Tensor], Tensor]
 
 
-@_perf_report("fwd")
+class BenchFn(Protocol):
+    def __call__(self, *args: Tensor) -> BenchFnResult:
+        ...
+
+
+class SweepFn(Protocol):
+    def __call__(self, library: str, *args: Any, **kwargs: Any) -> tuple[BenchFnResult, float]:
+        ...
+
+
+def measure(f: BenchFn, *args: Tensor) -> tuple[Tensor, float]:
+    """Measures the time it takes to execute the function on the GPU.
+
+    This function is modified from
+    https://github.com/jax-ml/jax/blob/978d35f69704ce95a9d792f9ca9c7e3ee356417f/jax/experimental/mosaic/gpu/profiler.py#L72
+    to support measuring fast kernels more accurately. This is done by queueing expensive GEMM
+    kernels before the benchmarked function is launched to avoid including dispatch and kernel
+    launch overhead to cuda event.
+
+    Args:
+      f: The function to measure. It must accept at least one argument and return
+        at least one output to be measurable.
+      *args: The arguments to pass to ``f``.
+      **kwargs: The keyword arguments to pass to ``f``.
+
+    Returns:
+      The return value of ``f`` and the elapsed time in milliseconds.
+    """
+    if not has_registrations:
+        raise RuntimeError("This function requires jaxlib >=0.4.36 with CUDA support.")
+
+    if not args:
+        # We require at least one argument and at least one output to ensure
+        # that there is a data dependency between `_event_record` calls in
+        # the resulting HLO program.
+        raise ValueError("Can only measure functions with arguments")
+
+    @jax.jit
+    def run(*args):
+        start_event, args = _event_record(args, copy_before=True)
+        end_event, outs = _event_record(f(*args), copy_before=False)
+        if jax.tree.structure(outs).num_leaves == 0:
+            raise ValueError("Can only measure functions with at least one output")
+        return outs, _event_elapsed(start_event, end_event)
+
+    jax.block_until_ready(run(*args))  # Warmup.
+    # Queue some expensive kernels into the stream to make events more accurate.
+    for _ in range(2):
+        _ = X @ Y
+    outs, elapsed = run(*args)
+    return outs, float(elapsed)
+
+
 def bench_flash_attention(
-    batch_size: int, num_heads: int, seq_len: int, per_head_dim: int, library: str
+    library: str,
+    bs: int,
+    num_heads: int,
+    num_kv_heads: Optional[int],
+    seq_len: int,
+    per_head_dim: int,
+    is_decode: bool,
+    use_bwd: bool,
+    sw_sz: int = -1,
 ):
-    warmup = 25
-    rep = 500
+    if use_bwd and is_decode:
+        raise ValueError("use_bwd and is_decode cannot both be true.")
 
-    if library.startswith("jax"):
-        q = jax.random.normal(
-            jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
-        )
-        k = jax.random.normal(
-            jax.random.PRNGKey(1), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
-        )
-        v = jax.random.normal(
-            jax.random.PRNGKey(2), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
-        )
-        # Bias is not supported in pallas, so we don't include it here.
-        bias = None
-
-        if "triton" in library:
-            fn = lambda: flash_attention(q, k, v, bias, causal=True)
-        elif "pallas" in library:
-            fn = lambda: pallas_mha(q, k, v, segment_ids=None, causal=True)
-        elif "cudnn" in library:
-            fn = lambda: cudnn_dot_product_attention(q, k, v, bias=bias, causal=True)
+    if num_kv_heads is None:
+        num_kv_heads = num_heads
+    q_seq_len = 1 if is_decode else seq_len
+    if is_decode:
+        if "pallas" in library:
+            q_seq_len = 16  # min supported seq length for triton and pallas
         else:
-            fn = lambda: mha_reference(q, k, v, bias, causal=True)
-        ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
-
+            q_seq_len = 1
     else:
-        raise ValueError(f"Unsupported: {library}")
-    return ms
-
-
-@_perf_report("grad")
-def bench_flash_attention_backward(
-    batch_size: int, num_heads: int, seq_len: int, per_head_dim: int, library: str
-):
-    warmup = 25
-    rep = 500
-
-    if library.startswith("jax"):
-        q = jax.random.normal(
-            jax.random.PRNGKey(0), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
-        )
-        k = jax.random.normal(
-            jax.random.PRNGKey(1), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
-        )
-        v = jax.random.normal(
-            jax.random.PRNGKey(2), (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.float16
-        )
-        # Bias is not supported in pallas, so we don't include it here.
-        bias = None
-
-        if "triton" in library:
+        q_seq_len = seq_len
+    q = jax.random.normal(
+        jax.random.PRNGKey(0),
+        (bs, q_seq_len, num_heads, per_head_dim),
+        dtype=jnp.float16,
+    )
+    k = jax.random.normal(
+        jax.random.PRNGKey(1), (bs, seq_len, num_kv_heads, per_head_dim), dtype=jnp.float16
+    )
+    v = jax.random.normal(
+        jax.random.PRNGKey(2), (bs, seq_len, num_kv_heads, per_head_dim), dtype=jnp.float16
+    )
+    # Bias is not supported in pallas, so we don't include it here.
+    bias = None
+    if sw_sz != -1:
+        mask_fn = sliding_window_causal_mask(sw_sz)
+        assert bias is None
+        bias = jnp.zeros((1, 1, 1, seq_len), dtype=jnp.float16)
+        bias = bias.at[:, :, :, :-sw_sz].set(jnp.finfo(jnp.float16).min)
+    else:
+        mask_fn = None
+    args = (q, k, v, bias)
+    if "axlearn" in library:
+        if use_bwd:
 
             @jax.jit
-            def test_fn(q, k, v, bias):
-                return flash_attention(q, k, v, bias, causal=True).sum()
+            def triton_fn(q, k, v, bias):
+                # Use mean rather than sum so that gradients won't overflow.
+                return flash_attention(q, k, v, bias, causal=True).mean()
 
-            test_bwd = jax.grad(test_fn, argnums=(0, 1, 2))
-            fn = lambda: test_bwd(q, k, v, bias)
-        elif "pallas" in library:
+            fn = jax.grad(triton_fn, argnums=(0, 1, 2))
+        else:
+            if q_seq_len == 1:
+                fn = partial(flash_decoding, kv_seq_len=None, mask_fn=mask_fn)
+                args = (q, k, v)
+            else:
+                fn = partial(flash_attention, causal=True)
+    elif "pallas" in library:
+        k = k.repeat(num_heads // num_kv_heads, axis=2)
+        v = v.repeat(num_heads // num_kv_heads, axis=2)
+        args = (q, k, v)
+        if use_bwd:
 
             @jax.jit
             def pallas_fn(q, k, v):
-                return pallas_mha(q, k, v, segment_ids=None, causal=True).sum()
+                return pallas_mha(q, k, v, segment_ids=None, causal=True).mean()
 
-            pallas_bwd = jax.grad(pallas_fn, argnums=(0, 1, 2))
-            fn = lambda: pallas_bwd(q, k, v)
-        elif "cudnn" in library:
+            fn = jax.grad(pallas_fn, argnums=(0, 1, 2))
+        else:
+            fn = partial(pallas_mha, segment_ids=None, causal=not is_decode)
+    elif "cudnn" in library:
+        k = k.repeat(num_heads // num_kv_heads, axis=2)
+        v = v.repeat(num_heads // num_kv_heads, axis=2)
+        if use_bwd:
 
             @jax.jit
-            def cudnn_fn(q, k, v):
-                return cudnn_dot_product_attention(q, k, v, bias=bias, causal=True).sum()
+            def cudnn_fn(q, k, v, bias):
+                return cudnn_dot_product_attention(q, k, v, bias=bias, causal=True).mean()
 
-            cudnn_bwd = jax.grad(cudnn_fn, argnums=(0, 1, 2))
-            fn = lambda: cudnn_bwd(q, k, v)
+            fn = jax.grad(cudnn_fn, argnums=(0, 1, 2))
         else:
+            fn = partial(cudnn_dot_product_attention, causal=not is_decode)
+    else:
+        k = k.repeat(num_heads // num_kv_heads, axis=2)
+        v = v.repeat(num_heads // num_kv_heads, axis=2)
+        if use_bwd:
 
             @jax.jit
             def ref_fn(q, k, v, bias):
-                return mha_reference(q, k, v, bias, causal=True).sum()
+                return mha_reference(q, k, v, bias, causal=True).mean()
 
-            ref_bwd = jax.grad(ref_fn, argnums=(0, 1, 2))
-            fn = lambda: ref_bwd(q, k, v, bias)
-        ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
+            fn = jax.grad(ref_fn, argnums=(0, 1, 2))
+        else:
+            fn = partial(mha_reference, causal=not is_decode)
 
-    else:
-        raise ValueError(f"Unsupported: {library}")
-    return ms
+    return measure(fn, *args)
 
 
-bench_flash_attention.run(save_path=".", print_data=True)
-bench_flash_attention_backward.run(save_path=".", print_data=True)
+def _sweep(
+    fn: SweepFn, libraries: list[str], common_kwargs: dict[str, Any], **_sweep_kwargs: list[Any]
+):
+    """Benchmarks `fn` by sweeping through combinations of parameters.
+
+    Args:
+        fn: The function to benchmark.
+        libraries: Libraries to benchmark.
+        common_kwargs: kwargs (k=v) that stays unchanged in the sweep.
+        sweep_kwargs: kwargs (k=[...]) that will be pass in as cartesian products to `fn`.
+    """
+    sweep_kwargs: dict[str, list[tuple[str, Any]]] = {}
+    for k, args in _sweep_kwargs.items():
+        common_kwargs.pop(k, None)
+        sweep_kwargs[k] = [(k, v) for v in args]
+
+    # Simple sanity check for results.
+    def check_fn(result, ref_result):
+        if not jax.numpy.allclose(result, ref_result, atol=0.1):
+            raise ValueError(
+                f"{library} not equal to jax reference. Args: {common_kwargs} {bench_kwargs}."
+                f"Diff: {result - ref_result}"
+            )
+
+    results = []
+    ref_result = None
+    for comb in itertools.product(*sweep_kwargs.values()):
+        bench_kwargs = dict(comb)
+        bench_key = ",".join(f"{k}={v}" for k, v in comb)
+        lib_results = [bench_key]
+        for i, library in enumerate(libraries):
+            result, t = fn(library=library, **bench_kwargs, **common_kwargs)
+            if i == 0:
+                ref_result = result
+            elif i > 0 and library != "jax-pallas":
+                jax.tree.map(check_fn, result, ref_result)
+            lib_results.append(t)
+        results.append(lib_results)
+
+    # Header.
+    print(", ".join(f"{k}={v}" for k, v in common_kwargs.items()))
+    print(("{:<40}" + "{:<14}" * len(libraries)).format("", *libraries))
+    # Result rows.
+    format_str = "{:<40}" + "{:<14.6f}" * len(libraries)
+    for lib_results in results:
+        print(format_str.format(*lib_results))
+
+
+def benchmark_sweep(libraries: list[str], common_kwargs: dict[str, Any], **sweep_args: list[Any]):
+    _sweep(bench_flash_attention, libraries, common_kwargs.copy(), **sweep_args)
+
+
+def benchmark_decode():
+    libraries = ["jax", "axlearn", "jax-cudnn"]
+    common_kwargs = dict(
+        is_decode=True,
+        use_bwd=False,
+        bs=1,
+        num_heads=8,
+        num_kv_heads=8,
+        seq_len=32 * 1024,
+        per_head_dim=128,
+        sw_sz=-1,
+    )
+    benchmark_sweep(
+        libraries, common_kwargs, bs=[1, 4, 8, 16, 32], seq_len=[1024, 4096, 8192, 128 * 1024]
+    )
+    benchmark_sweep(libraries, common_kwargs, bs=[1, 8], num_kv_heads=[1, 8])
+    benchmark_sweep(
+        libraries, common_kwargs, bs=[1, 8], seq_len=[128 * 1024], sw_sz=[-1, 4096, 16 * 1024]
+    )
+
+
+def bench_flash_attention_fwd_bwd(use_bwd: bool):
+    common_kwargs = dict(
+        is_decode=False,
+        use_bwd=use_bwd,
+        bs=2,
+        num_heads=32,
+        num_kv_heads=None,
+        seq_len=4096,
+        per_head_dim=128,
+        sw_sz=-1,
+    )
+    libraries = ["jax", "axlearn", "jax-cudnn", "jax-pallas"]
+    benchmark_sweep(libraries, common_kwargs, bs=[2, 4, 8])
+    benchmark_sweep(libraries, common_kwargs, num_heads=[12, 16, 32, 48, 72])
+    # 256 to 8192.
+    benchmark_sweep(libraries, common_kwargs, seq_len=[int(2**i) for i in range(8, 14)])
+    benchmark_sweep(libraries, common_kwargs, per_head_dim=[16, 32, 64, 128])
+
+
+benchmark_decode()
+bench_flash_attention_fwd_bwd(False)
+bench_flash_attention_fwd_bwd(True)

@@ -201,6 +201,31 @@ class LmTrainingInputTest(TestCase):
             max_padding_fraction=0.0,
         )
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_training_lm_processor_dataset_no_len_func(self):
+        max_len = 32
+        vocab = seqio.SentencePieceVocabulary(
+            sentencepiece_model_file=t5_sentence_piece_vocab_file,
+        )
+        examples = [{"text": f"test_str_#{i}", "index": i} for i in range(10)]
+        ds = prefetch_dataset(
+            maybe_to_iter_dataset(fake_grain_source(examples)),
+            multiprocessing_options=grain.MultiprocessingOptions(
+                num_workers=1,
+                per_worker_buffer_size=1,
+                enable_profiling=False,
+            ),
+        )
+        ds = text_to_lm_training_input(
+            ds,  # check if prefetch dataset breaks the pipeline
+            vocab=vocab,
+            max_len=max_len,
+            window_size=3,
+            max_padding_fraction=0.0,
+        )
+
     @parameterized.parameters(
         dict(
             expected_batches=[

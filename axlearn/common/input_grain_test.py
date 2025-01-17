@@ -258,7 +258,7 @@ class UtilsTest(TestCase):
 
         ds = range_dataset(start=1, stop=10)
         ds = ds.repeat(None).batch(3)
-        ds = ds.map(convert_examples, seed=123)
+        ds = ds.random_map(convert_examples, seed=123)
         ds = unbatch(maybe_to_iter_dataset(ds))
         ds = iter(ds)
         self._test_checkpointing(ds)
@@ -567,3 +567,24 @@ class InputTest(parameterized.TestCase):
                 # Should contain the right ids.
                 self.assertEqual([0, 1, 2, 3], replicate_to_local_data(batch)["input_ids"].tolist())
                 break
+
+    def test_element_spec(self):
+        ds = range_dataset(start=0, stop=10, seed=123).map(lambda x: {"input_ids": x})
+        grain_input: Input = self._input_config(ds).instantiate(parent=None)
+        # element_spec() requires Tensor-like leaves.
+        with self.assertRaisesRegex(ValueError, "Tensor"):
+            grain_input.element_spec()
+
+        ds = range_dataset(start=0, stop=10, seed=123).map(lambda x: {"input_ids": np.array(x)})
+        cfg = self._input_config(
+            ds.repeat(num_epochs=None),
+            per_process=lambda ds: ds.batch(2),
+            process_count=4,
+            process_index=0,
+        )
+        grain_input: Input = cfg.instantiate(parent=None)
+        self.assertEqual(
+            # Element spec should reflect the per-process shape.
+            {"input_ids": jax.ShapeDtypeStruct(shape=(2,), dtype=np.int64)},
+            grain_input.element_spec(),
+        )

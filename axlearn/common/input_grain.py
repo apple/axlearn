@@ -40,7 +40,6 @@ import numpy as np
 from absl import logging
 from array_record.python.array_record_data_source import PathLikeOrFileInstruction
 from grain._src.python.data_loader import _determine_worker_count
-from grain._src.python.dataset import stats as dataset_stats
 from grain._src.python.dataset.transformations import packing
 from grain._src.python.dataset.transformations import slice as slice_dataset
 from jax.experimental import multihost_utils
@@ -160,6 +159,7 @@ def sample_from_datasets(
             ds = ds.repeat()
         return ds
 
+    # TODO(markblee): Support mixing grain.IterDataset.
     return grain.MapDataset.mix(
         datasets=[maybe_repeat(source) for source in sources],
         weights=weights,
@@ -181,8 +181,7 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
     """An iterator that unbatches np.arrays along dim=0."""
 
     def __init__(self, parent: grain.DatasetIterator):
-        super().__init__(stats=None)
-        self._parent = parent
+        super().__init__(parent)
         # Index within the unbatched inputs.
         self._index = 0
         self._current_batch = None
@@ -467,10 +466,8 @@ class _FixedLengthDatasetIterator(grain.DatasetIterator):
         *,
         pad_example: Any,
         length: int,
-        stats: dataset_stats.Stats,
     ):
-        super().__init__(stats)
-        self._parent = parent
+        super().__init__(parent)
         self._pad_example = pad_example
         self._length = length
         self._i = 0
@@ -516,7 +513,6 @@ class _FixedLengthIterDataset(grain.IterDataset):
             parent_iter,
             pad_example=self._pad_example,
             length=self._length,
-            stats=self._stats,
         )
 
 
@@ -634,3 +630,22 @@ class Input(input_base.Input):
                     f"Please make sure to call {shard_dataset.__name__} if using input dispatch."
                 )
         return maybe_to_iter_dataset(ds)
+
+    def element_spec(self) -> utils.Nested[jax.ShapeDtypeStruct]:
+        """Infers the element spec.
+
+        Grain requires fetching an example from the dataset to extract the spec. To avoid reading
+        actual data, replace your source dataset with one from `input_fake.fake_grain_source`.
+        """
+        ds = self.dataset()
+        if isinstance(ds, grain.MapDataset):
+            example = ds[0]
+        else:
+            example = next(ds.__iter__())  # pylint: disable=unnecessary-dunder-call
+
+        def shape_dtype(x):
+            if not hasattr(x, "shape") or not hasattr(x, "dtype"):
+                raise ValueError(f"element_spec() requires Tensor-like leaves, got: {x}.")
+            return jax.ShapeDtypeStruct(shape=x.shape, dtype=x.dtype)
+
+        return jax.tree.map(shape_dtype, example)

@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import unittest
 
+import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.shard_map import shard_map
@@ -17,7 +18,9 @@ from jax.interpreters.pxla import thread_resources
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from axlearn.common.attention_bias import (
+    CausalAttentionBias,
     MaskFnAttentionBias,
+    ZeroAttentionBias,
     causal_mask,
     sliding_window_causal_mask,
 )
@@ -26,8 +29,14 @@ from axlearn.common.flash_attention.utils import mha_reference
 from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 from axlearn.common.utils import Tensor
 
+# Comment out to test on CPU manually. Technically, this test runs on the CPU, albeit very slowly.
 if jax.default_backend() != "tpu":
     pytest.skip(reason="Incompatible hardware", allow_module_level=True)
+
+
+def setUpModule():
+    # If on CPU, emulate 4 devices.
+    chex.set_n_cpu_devices(4)
 
 
 def jax_fn_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
@@ -73,21 +82,36 @@ class TestFlashAttention(TestCase):
         for i in range(seq_len):
             self.assertNestedAllClose(ref_mask[i:, i:], test_mask[i:, i:])
 
+    @parameterized.parameters(
+        [ZeroAttentionBias(), splash_attention_mask.FullMask((8, 8))],
+        [CausalAttentionBias(shape=(8, 8)), splash_attention_mask.CausalMask(shape=(8, 8))],
+        [
+            MaskFnAttentionBias(sliding_window_causal_mask(4), shape=(8, 8)),
+            splash_attention_mask.LocalMask(shape=(8, 8), window_size=(4, 0), offset=0),
+        ],
+    )
+    def test_to_splash_mask(self, mask, expected):
+        # pylint: disable-next=protected-access
+        splash_mask = tpu_attention._to_splash_mask(mask, mask_shape=(8, 8))
+        self.assertEqual(splash_mask, expected)
+
     @parameterized.product(
         batch_size=[4],
-        seq_len=[32768],
+        seq_len=[1024, 32768],
+        mask_fn=["zero", "causal", "sliding"],
         sliding_window_size=[1024],
         num_heads=[4],
         per_head_dim=[256],
         mesh=[(4, 1)],
         mesh_axis_names=[("data", "model")],
     )
-    def test_sliding_window_mask(
+    def test_forward(
         self,
         batch_size,
         seq_len,
         num_heads,
         per_head_dim,
+        mask_fn,
         sliding_window_size,
         mesh,
         mesh_axis_names,
@@ -121,12 +145,22 @@ class TestFlashAttention(TestCase):
                 )
 
                 softmax_scale = q.shape[-1] ** -0.5
-                mask = MaskFnAttentionBias(
-                    sliding_window_causal_mask(sliding_window_size), shape=(seq_len, seq_len)
-                )
+                if mask_fn == "zero":
+                    mask = ZeroAttentionBias()
+                elif mask_fn == "causal":
+                    mask = CausalAttentionBias(shape=(seq_len, seq_len))
+                elif mask_fn.startswith("sliding"):
+                    mask = MaskFnAttentionBias(
+                        sliding_window_causal_mask(sliding_window_size), shape=(seq_len, seq_len)
+                    )
 
                 attn = lambda q, k, v: tpu_attention.tpu_flash_attention(
-                    q, k, v, mask=mask, softmax_scale=softmax_scale
+                    q,
+                    k,
+                    v,
+                    mask=mask,
+                    softmax_scale=softmax_scale,
+                    interpret=(jax.default_backend() == "cpu"),
                 )
 
                 partitioned_mha = shard_map(
@@ -168,6 +202,9 @@ class TestFlashAttention(TestCase):
         attention_bias_type,
         with_segment_ids,
     ):
+        if jax.default_backend() == "cpu":
+            # TODO(dhwang2): this has been broken for a while on CPU.
+            pytest.skip(reason="Backward path is broken on CPU")
         # pylint: disable=protected-access
         causal = mask in [causal_mask, jax_fn_mask]
 
@@ -224,7 +261,14 @@ class TestFlashAttention(TestCase):
             )
             with record_legacy_call:
                 return tpu_attention.tpu_flash_attention(
-                    q, k, v, bias, ids, mask=mask, softmax_scale=softmax_scale
+                    q,
+                    k,
+                    v,
+                    bias,
+                    ids,
+                    mask=mask,
+                    softmax_scale=softmax_scale,
+                    interpret=(jax.default_backend() == "cpu"),
                 )
 
         # Compare outputs.
@@ -246,3 +290,7 @@ class TestFlashAttention(TestCase):
             legacy_flash_wrapper.assert_called()
         else:
             legacy_flash_wrapper.assert_not_called()
+
+
+if __name__ == "__main__":
+    absltest.main()

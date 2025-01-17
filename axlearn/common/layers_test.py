@@ -18,6 +18,7 @@ import math
 from collections.abc import Sequence
 from functools import partial
 from typing import Optional, Union
+from unittest import mock
 
 import jax.random
 import numpy as np
@@ -506,6 +507,57 @@ class LayerTest(TestCase, tf.test.TestCase):
         output_norm = jnp.sqrt((outputs**2).sum(axis=-1))
         # The output_norm should be close to 2 * sqrt(dim).
         assert_allclose(output_norm, np.ones_like(output_norm) * 2.0 * math.sqrt(dim))
+
+    @mock.patch("axlearn.common.utils.with_sharding_constraint")
+    def test_rms_norm_partition_specs_constraint(self, mock_with_sharding_constraint):
+        # Configure mock to return its input.
+        mock_with_sharding_constraint.side_effect = lambda x, *args: x
+
+        dim = 6
+        cfg = RMSNorm.default_config().set(
+            name="norm",
+            input_dim=dim,
+            input_partition_spec=("fsdp", "model", None),
+            output_partition_spec=("fsdp", None, None),
+        )
+        layer: RMSNorm = cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [2, 3, dim])
+
+        # Run forward pass.
+        outputs, _ = F(
+            layer,
+            inputs=(inputs,),
+            is_training=True,
+            state=layer_params,
+            prng_key=prng_key,
+        )
+
+        # Verify with_sharding_constraint calls.
+        calls = mock_with_sharding_constraint.call_args_list
+        # Should be called twice - once for input, once for output.
+        self.assertEqual(len(calls), 2)
+
+        # 1. Input tensor constraint.
+        input_spec = calls[0].args[1]
+        self.assertEqual(input_spec, ("fsdp", "model", None))
+        self.assertEqual(calls[0].args[0].shape, (2, 3, dim))
+        self.assertEqual(calls[0].args[0].dtype, jnp.float32)
+        np.testing.assert_array_equal(calls[0].args[0], inputs)
+
+        # 2. Output tensor constraint.
+        output_spec = calls[1].args[1]
+        self.assertEqual(output_spec, ("fsdp", None, None))
+        self.assertEqual(calls[1].args[0].shape, (2, 3, dim))
+        self.assertEqual(calls[1].args[0].dtype, jnp.float32)
+        np.testing.assert_array_equal(calls[1].args[0], outputs)
 
     def test_l2_norm(self):
         cfg = L2Norm.default_config().set(name="norm")
@@ -1178,11 +1230,10 @@ class LayerTest(TestCase, tf.test.TestCase):
 
 class EmbedTest(parameterized.TestCase):
     @staticmethod
-    def build_embedder(dim, num_embeddings, rng):
-        cfg = Embedding.default_config()
-        cfg.dim = dim
-        cfg.num_embeddings = num_embeddings
-        cfg.name = "embed"
+    def build_embedder(dim, num_embeddings, rng, **kwargs):
+        cfg = Embedding.default_config().set(name="embed", dim=dim, num_embeddings=num_embeddings)
+        if kwargs:
+            cfg = cfg.set(**kwargs)
         emb = cfg.instantiate(parent=None)
         state = emb.initialize_parameters_recursively(rng)
         return (emb, state)
@@ -1197,6 +1248,28 @@ class EmbedTest(parameterized.TestCase):
         )
         np.testing.assert_array_equal(state["weight"][ixs], actual_embeds)
 
+    def test_embed_with_scale(self):
+        dim = 256
+        num_embeddings = 16
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, input_key, fwd_key = jax.random.split(prng_key, num=3)
+        embedder, state = EmbedTest.build_embedder(
+            dim, num_embeddings, input_key, scale=Embedding.Scale.UNIT
+        )
+        batch, seq_len = 5, 8
+        ixs = jax.random.randint(input_key, minval=0, maxval=num_embeddings, shape=(batch, seq_len))
+
+        outputs, _ = F(
+            embedder,
+            inputs=(ixs,),
+            is_training=True,
+            state=state,
+            prng_key=fwd_key,
+        )
+
+        assert_allclose(jnp.mean(outputs), 0.0, atol=0.05)
+        assert_allclose(jnp.std(outputs), 1.0, atol=0.05)
+
     @parameterized.parameters(itertools.product((5, 7), (2, 16), (10, 100), (True, False)))
     def test_embed_attend(self, seq_len, dim, num_embeddings, is_training):
         rng = jax.random.PRNGKey(1)
@@ -1206,6 +1279,59 @@ class EmbedTest(parameterized.TestCase):
             embedder, rng, state=state, inputs=[x], is_training=is_training, method="attend"
         )[0]
         assert_allclose(jnp.dot(x, state["weight"].T), actual_attends)
+
+    @mock.patch("axlearn.common.utils.with_sharding_constraint")
+    def test_embed_partition_specs_constraint(self, mock_with_sharding_constraint):
+        # Configure mock to return its input.
+        mock_with_sharding_constraint.side_effect = lambda x, *args: x
+
+        dim = 16
+        num_embeddings = 100
+        seq_len = 5
+        rng = jax.random.PRNGKey(1)
+
+        # Configure embedding with partition specs.
+        cfg = Embedding.default_config().set(
+            name="embed",
+            dim=dim,
+            num_embeddings=num_embeddings,
+            input_partition_spec=("fsdp", None),
+            output_partition_spec=("fsdp", "model"),
+            embedding_partition_spec=("model", "fsdp"),
+        )
+
+        # Instantiate embedding.
+        emb = cfg.instantiate(parent=None)
+        state = emb.initialize_parameters_recursively(rng)
+
+        # Test lookup functionality.
+        ixs = jax.random.randint(rng, minval=0, maxval=num_embeddings, shape=(3, seq_len))
+        actual_embeds, _ = module.functional(emb, rng, state=state, inputs=[ixs], is_training=True)
+
+        # Verify with_sharding_constraint was called in correct order with proper specs.
+        calls = mock_with_sharding_constraint.call_args_list
+        self.assertEqual(len(calls), 3)
+
+        # 1. Input activation constraint (indices tensor).
+        input_spec = calls[0].args[1]
+        self.assertEqual(input_spec, ("fsdp", None))
+        self.assertEqual(calls[0].args[0].shape, (3, seq_len))
+        self.assertEqual(calls[0].args[0].dtype, jnp.int32)
+        np.testing.assert_array_equal(calls[0].args[0], ixs)
+
+        # 2. Embedding weight constraint.
+        weight_spec = calls[1].args[1]
+        self.assertEqual(weight_spec, ("model", "fsdp"))
+        self.assertEqual(calls[1].args[0].shape, (num_embeddings, dim))
+        self.assertEqual(calls[1].args[0].dtype, jnp.float32)
+        np.testing.assert_array_equal(calls[1].args[0], state["weight"])
+
+        # 3. Output activation constraint (after lookup).
+        output_spec = calls[2].args[1]
+        self.assertEqual(output_spec, ("fsdp", "model"))
+        self.assertEqual(calls[2].args[0].shape, (3, seq_len, dim))
+        self.assertEqual(calls[2].args[0].dtype, jnp.float32)
+        np.testing.assert_array_equal(calls[2].args[0], actual_embeds)
 
 
 class BiasLayer(BaseLayer):

@@ -60,6 +60,28 @@ class BaseAttentionBias:
     dtype: Optional[jnp.dtype] = struct.field(kw_only=True, default=None, pytree_node=False)
 
     @final
+    def eval_shape(self) -> tuple[int, int, int, int]:
+        """Return the shape of the bias tensor.
+
+        Note: this doesn't materialize the value. jax.eval_shape calls value(), but it only does so
+        using tracers.
+
+        Returns
+            shape: [batch or 1, num_heads or 1, target_len, source_len].
+
+        Raises:
+            ValueError: If the bias has no value.
+        """
+        if not self.has_value():
+            raise ValueError("AttentionBias has no value.")
+        return jax.eval_shape(self.value).shape
+
+    @final
+    def has_value(self) -> bool:
+        """Return whether to the bias has a value."""
+        return jax.eval_shape(self.value) is not None
+
+    @final
     def value(self) -> Optional[Tensor]:
         """Return a tensor with the biases or None if there are no biases.
 
@@ -115,9 +137,6 @@ class BaseAttentionBias:
             # Shape: [batch, 1, target_length, source_length].
             return value[:, None, :, :]
         raise ValueError(f"Invalid attention_logit_biases shape: {value.shape}.")
-
-    def eval_shape(self):
-        return jax.eval_shape(self.value).shape
 
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
@@ -233,7 +252,7 @@ class CompositeAttentionBias(BaseAttentionBias):
 
         Returned biases are not guaranteed to be nonzero, but are guaranteed to not return None.
         """
-        filt = lambda b: b.value() is not None
+        filt = lambda b: b.has_value()
         return list(filter(filt, self.biases))
 
     def bias_and_residual(self, cls: Type[B]) -> "BiasAndResidual[B]":
@@ -260,7 +279,7 @@ class CompositeAttentionBias(BaseAttentionBias):
                 send_residual_to = remaining_biases
             else:
                 send_residual_to = residuals
-            if bias_and_residual.residual.value() is not None:
+            if bias_and_residual.residual.has_value():
                 send_residual_to.append(bias_and_residual.residual)
         return BiasAndResidual(
             bias=cls.from_sequence(cls_biases), residual=CompositeAttentionBias(residuals)
@@ -440,6 +459,7 @@ class MaskFn(Protocol):
           x = f(jnp.asarray([1,2]), jnp.asarray([3,4]))
           assert x[0] == f(jnp.asarray(1), jnp.asarray(3))[None]
           ```
+        * Both tensors have the same rank (either 2 or 3), as batch dim is optional.
         * If given non-scalar arguments of different shapes, the result must be the same if we
           first broadcast the arguments against each other to make them have the same shape.
         * Beyond requiring broadcastability, must not impose any constraints on the shapes of its
@@ -473,30 +493,47 @@ class MaskFnAttentionBias(BoolAttentionBias):
     shape: tuple[int, ...] = struct.field(kw_only=True, pytree_node=False)
     # The positions in the query sequence that the mask should be computed for.
     # I.e., `self.value()[batch, num_heads, i]` is the mask specifying what the query token at
-    # `target_positions[batch, num_heads i]`  may attend to.
-    # If None, set `target_positions[batch, num_heads, i] = i`.
-    # Shape: [batch].
+    # `target_positions[batch, i]`  may attend to.
+    # If None, set `target_positions[batch, i] = i`.
+    # Shape: [batch] or [batch, target_len]`.
     # This is typically used during decoding to specify the locations in the sequence being
     # being decoded. E.g., if we are decoding position 5 and 7 of the first and second batch
     # entry respectively, we would set `target_positions = jnp.asarray([5, 7])`.
+    # The motivation for supporting such shapes is for use cases where time_step in transformers
+    # is not necessarily contiguous. E.g., speculative decoding, non-contiguous prompts,
+    # various papers that need it.
     target_positions: Optional[Tensor] = None
 
     def _bool_value(self) -> Optional[Tensor]:
         """Return a tensor with the boolean values from `self.mask` before they have been converted
         to biases.
 
-        Shape:
-            - If `target_positions` is None: [target_len, source_len]
-            - Else: [batch, target_len, source_len].
+        Shape: [batch, target_len, source_len].
+
+        Raises:
+            NotImplementedError. If `target_positions.ndim not in [1,2]`.
         """
         target_positions, source_positions = jnp.indices(self.shape, sparse=True)
+        # Shape: [1, target_len, 1], [1, 1, source_len].
+        target_positions, source_positions = target_positions[None], source_positions[None]
         if self.target_positions is not None:
             target_positions = self.target_positions
+            if target_positions.ndim not in [1, 2]:
+                raise NotImplementedError(f"Shape of target_positions: {target_positions.shape}.")
             if target_positions.ndim == 1:
+                # Shape: [batch, 1] + [target_len] = [batch, target_len]
                 # pylint: disable-next=unsubscriptable-object
                 target_positions = target_positions[:, None] + jnp.arange(self.shape[0])
-            while target_positions.ndim < 3:
-                target_positions = target_positions[..., None]
+            elif target_positions.ndim == 2:
+                shape_with_batch_dim = (1, *self.shape)
+                # Raise an exception if shapes aren't compatible. We don't use the output.
+                jnp.broadcast_shapes(
+                    (target_positions.shape[0], 1, target_positions.shape[1]), shape_with_batch_dim
+                )
+            else:
+                raise NotImplementedError(f"Invalid value {target_positions.ndim=}.")
+            target_positions = target_positions[..., None]  # Shape: [batch, target_len, 1].
+
         return self.mask(target_positions, source_positions)  # pylint: disable=not-callable
 
     @classmethod
@@ -669,7 +706,11 @@ def sliding_window_causal_mask(sliding_window_size: int) -> MaskFn:
     def mask(query_position: Tensor, key_position: Tensor):
         return query_position - key_position <= sliding_window_size
 
-    return and_masks(causal_mask, mask)
+    fun = and_masks(causal_mask, mask)
+    # Flash attention needs to recognize sliding window size in _to_splash_mask().
+    # pylint: disable-next=protected-access
+    fun._sliding_window_size = sliding_window_size
+    return fun
 
 
 def make_causal_biases(seq_len: int) -> Tensor:

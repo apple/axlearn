@@ -18,6 +18,7 @@
 """Basic layers."""
 
 import enum
+import math
 from collections.abc import Sequence
 from typing import Any, Callable, Optional, Union
 
@@ -54,6 +55,7 @@ from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.utils import (
     NestedTensor,
     Tensor,
+    maybe_shard,
     partial_with_fn_metadata,
     with_sharding_constraint,
 )
@@ -137,6 +139,35 @@ class RedirectToSharedModule(BaseLayer):
         return getattr(shared_module.module, redirection_target_method)(*args, **kwargs)
 
 
+def get_dropout_mask(shape: tuple[int, ...], *, prng_key: Tensor, rate: float):
+    """Returns a bool dropout mask for the specified tensor shape where True indicates dropout."""
+    return jax.random.bernoulli(prng_key, rate, shape)
+
+
+def dropout(
+    x: Tensor, *, rate: float, prng_key: Optional[Tensor] = None, mask: Optional[Tensor] = None
+):
+    """Performs dropout on `x` according to dropout rate or mask.
+
+    After dropout, `x` will be rescaled by 1 / (1 - rate). If `mask` is provided, use `mask`.
+    Otherwise, generate a dropout mask using `prng_key` and `rate`.
+
+    Args:
+        x: Input tensor.
+        rate: Dropout rate.
+        prng_key: PRNG key used for mask generation. Required if `mask` is None.
+        mask: A boolean mask with the same shape as x. If provided, `prng_key` will be ignored.
+            Any values in `x` where `mask` is True will be dropped.
+    """
+    if not 0 < rate < 1:
+        raise ValueError(f"Dropout rate must be between 0 and 1. Got {rate=}")
+    if mask is None:
+        if prng_key is None:
+            raise ValueError("prng_key must be provided when mask is not specified.")
+        mask = get_dropout_mask(x.shape, prng_key=prng_key, rate=rate)
+    return jnp.where(mask, 0, x) / (1 - rate)
+
+
 class Dropout(BaseLayer):
     """The dropout layer."""
 
@@ -148,12 +179,10 @@ class Dropout(BaseLayer):
         cfg = self.config
         if not self.is_training or cfg.rate is None or cfg.rate == 0:
             return x
-        assert 0 < cfg.rate < 1
-        samples = jax.random.uniform(
-            self.prng_key, shape=x.shape, dtype=x.dtype, minval=0.0, maxval=1.0
-        )
-        dropout = jnp.floor(1 - cfg.rate + samples)
-        return x * dropout / (1.0 - cfg.rate)
+        return dropout(x, prng_key=self.prng_key, rate=cfg.rate)
+
+    def get_prng_key(self) -> Tensor:
+        return self.prng_key
 
 
 class DropToken(BaseLayer):
@@ -331,6 +360,10 @@ class RMSNorm(BaseNormalizationLayer):
         eps: float = 1e-8
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
+        # If not None, how to partition input activation values.
+        input_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition output activation values.
+        output_partition_spec: Optional[tuple[Optional[str]]] = None
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
@@ -341,6 +374,7 @@ class RMSNorm(BaseNormalizationLayer):
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
         del paddings  # paddings do not affect LayerNorm results
         cfg = self.config
+        x = maybe_shard(x, cfg.input_partition_spec)
         x_dtype = x.dtype
         if cfg.forward_dtype is not None:
             x = x.astype(cfg.forward_dtype)
@@ -348,6 +382,7 @@ class RMSNorm(BaseNormalizationLayer):
         x = x * jax.lax.rsqrt(moment2 + cfg.eps)
         x = x.astype(x_dtype)
         x = x * self.parameters["scale"]
+        x = maybe_shard(x, cfg.output_partition_spec)
         return x
 
 
@@ -774,12 +809,35 @@ class Embedding(BaseLayer):
     Batched map for int in [0, <num_embeddings>) -> <dim> float vector.
     """
 
+    class Scale(enum.Enum):
+        """Defines the scale method on embedding activations.
+
+        Available types:
+        1. **UNIT**: Scale the activation components to ~1.
+
+        The activation component should roughly have a magnitude of 1. Since the embedding tensor is
+        initialized with a scale of `1/√dim`, the activation is multiplied by `√dim` to
+        maintain the desired scale. e.g. Gemma [1]
+        [1]
+        https://github.com/google-deepmind/gemma/blob/0d6ae857591248422127ca14c027909546362e6a/gemma/modules.py#L80
+        """
+
+        UNIT = "unit"
+
     @config_class
     class Config(BaseLayer.Config):
         """Configures Embedding."""
 
         num_embeddings: Required[int] = REQUIRED  # Maximum number of embeddings in table.
         dim: Required[int] = REQUIRED  # Embedding vector dimensionality.
+        # If not None, how to partition input activation values.
+        input_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition embedding table.
+        embedding_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition output activation values.
+        output_partition_spec: Optional[tuple[Optional[str]]] = None
+        # Optional scaling of the embedding activations.
+        scale: Optional["Embedding.Scale"] = None
 
     @classmethod
     def default_config(cls):
@@ -814,8 +872,31 @@ class Embedding(BaseLayer):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        cfg = self.config
+        x = maybe_shard(x, cfg.input_partition_spec)
         emb = self.parameters["weight"]
-        return emb[x]
+        emb = maybe_shard(emb, cfg.embedding_partition_spec)
+        activation = emb[x]
+        activation = self._scale(activation)
+        activation = maybe_shard(activation, cfg.output_partition_spec)
+        return activation
+
+    def _scale(self, x: Tensor) -> Tensor:
+        """Scale the activation if needed."""
+        cfg = self.config
+        if cfg.scale is None:
+            return x
+
+        # Unsloth [1] discovered that `sqrt(dim)` needs to be computed in float32.
+        # [1] Sec 3 in https://unsloth.ai/blog/gemma-bugs.html
+        x_dtype = x.dtype
+        x = x.astype(jnp.float32)
+        if cfg.scale == self.Scale.UNIT:
+            x = x * math.sqrt(x.shape[-1])
+        else:
+            raise ValueError(f"Unknown scale {cfg.scale}.")
+        x = x.astype(x_dtype)
+        return x
 
     def attend(self, x: Tensor) -> Tensor:
         """Apply query array 'x' to the embedding weight array.

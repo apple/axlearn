@@ -250,9 +250,7 @@ def pre_emphasis(x: Tensor, *, coeff: Tensor) -> Tensor:
     return x[..., 1:] - coeff * x[..., :-1]
 
 
-def windowing(x: Tensor, *, window_type: WindowType, periodic: bool = True) -> Tensor:
-    """Applies windowing to the input frames of shape `[..., num_windows, window_size]`."""
-    window_size = x.shape[-1]
+def window_coffs(window_size: int, *, window_type: WindowType, periodic: bool = True) -> Tensor:
     is_even = (1 - window_size % 2) * periodic
 
     if window_type == WindowType.HANN:
@@ -261,7 +259,12 @@ def windowing(x: Tensor, *, window_type: WindowType, periodic: bool = True) -> T
         coeffs = jnp.hamming(window_size + is_even)[:window_size]
     else:
         raise NotImplementedError(f"Unrecognized window_type {window_type}.")
+    return coeffs
 
+
+def windowing(x: Tensor, *, window_type: WindowType, periodic: bool = True) -> Tensor:
+    """Applies windowing to the input frames of shape `[..., num_windows, window_size]`."""
+    coeffs = window_coffs(x.shape[-1], window_type=window_type, periodic=periodic)
     return (x * coeffs).astype(x.dtype)
 
 

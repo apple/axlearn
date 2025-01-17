@@ -41,7 +41,6 @@ from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
 from axlearn.common import attention, attention_bias, test_utils, utils
 from axlearn.common.attention import (
-    FEED_FORWARD_SAVE_PATTERN,
     BaseStackedTransformerLayer,
     BaseTransformerLayer,
     BottleNeckAdapterTransformerLayer,
@@ -58,6 +57,7 @@ from axlearn.common.attention import (
     PipelinedTransformerLayer,
     QKVLinear,
     QLinear,
+    RematRegexSavePatterns,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
     StackedTransformerLayer,
@@ -65,7 +65,6 @@ from axlearn.common.attention import (
     TransformerFeedForwardLayer,
     TransformerLayer,
     _next_power_of_two,
-    _save_and_offload_only_these_names_regex,
     apply_attention_logit_biases,
     apply_rotary_position_embeddings,
     build_remat_spec,
@@ -124,6 +123,7 @@ from axlearn.common.utils import (
     VDict,
     as_tensor,
     flatten_items,
+    save_and_offload_only_these_names_regex,
     shapes,
 )
 
@@ -737,18 +737,24 @@ class SymmetricALiBiAttentionLogitBiasLayerTest(TestCase):
 class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
     """Tests RoFormerSinusoidalPositionalEmbedding."""
 
-    @parameterized.parameters(
-        (2, 3, 10, 32, True),
-        (2, 3, 8, 32, False),
-        (2, 4, 6, 32, True),
-        (2, 4, 8, 16, False),
-        (2, 5, 8, 48, True),
-        (2, 5, 8, 64, False),
+    @parameterized.product(
+        tensor_dimensions=(
+            (2, 3, 10, 32),
+            (2, 3, 8, 32),
+            (2, 4, 6, 32),
+            (2, 4, 8, 16),
+            (2, 5, 8, 48),
+            (2, 5, 8, 64),
+        ),
+        rotary_key=(True, False),
+        rotary_value=(True, False),
     )
     def test_apply_rotary_position_embeddings(
-        self, batch_size, num_heads, max_len, dim, rotary_value
+        self, tensor_dimensions: tuple[int, int, int, int], rotary_key: bool, rotary_value: bool
     ):
         # Unittest against the apply_rotary_position_embeddings in HF.
+        batch_size, num_heads, max_len, dim = tensor_dimensions
+
         token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
         sinusoidal_pos_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
         sinusoidal_pos = sinusoidal_pos_layer(as_torch_tensor(token_ids).shape)[None, None, :, :]
@@ -771,11 +777,15 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
                 sinusoidal_pos, as_torch_tensor(query), as_torch_tensor(key)
             )
             ref_v_proj = as_torch_tensor(value)
+        if not rotary_key:
+            ref_k_proj = as_torch_tensor(key)
+
         test_q_proj, test_k_proj, test_v_proj = test_layer(
             sinusoidal_pos=as_tensor(sinusoidal_pos),
             query=query,
             key=key,
             value=value,
+            rotary_key=rotary_key,
             rotary_value=rotary_value,
         )
         np.testing.assert_allclose(test_q_proj, ref_q_proj, atol=5e-7)
@@ -812,6 +822,7 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         tgt_len,
         batch_size,
         ref_rope_emb,
+        positions,
     ):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
         layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
@@ -828,12 +839,18 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
                 mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
             layer_outputs, _ = F(
                 layer,
-                inputs=dict(target=jnp.asarray(target), attention_logit_biases=mask),
+                inputs=dict(
+                    target=jnp.asarray(target),
+                    attention_logit_biases=mask,
+                    target_positions=positions,
+                ),
                 state=layer_params,
                 is_training=True,
                 prng_key=jax.random.PRNGKey(0),
             )
             attn_mask = None if mask is None else as_torch_tensor(mask)
+            print("ref_rope_emb", ref_rope_emb.shape)
+            print("target", target.shape)
             (ref_outputs,) = ref.forward(
                 torch.as_tensor(target, dtype=torch.float32),
                 attention_mask=attn_mask,
@@ -842,8 +859,8 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             )
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
 
-    @parameterized.parameters([True, False])
-    def test_rope_self_attention(self, rotary_value: bool):
+    @parameterized.product(rotary_value=[True, False], override_positions=[True, False])
+    def test_rope_self_attention(self, rotary_value: bool, override_positions: bool):
         model_dim = 32
         num_heads = 4
         max_sequence_length = 12
@@ -860,9 +877,17 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             .set(name="test_rope_emb", dim=model_dim // num_heads)
             .instantiate(parent=None)
         )
-        ref_rope_emb = as_torch_tensor(
-            rope_emb_layer.forward(jnp.expand_dims(jnp.arange(max_sequence_length), 0))
+        positions = (
+            jax.random.randint(
+                jax.random.PRNGKey(0),
+                shape=(batch_size, max_sequence_length),
+                minval=0,
+                maxval=max_sequence_length,
+            )
+            if override_positions
+            else jnp.expand_dims(jnp.arange(max_sequence_length), 0)
         )
+        ref_rope_emb = as_torch_tensor(rope_emb_layer.forward(positions)).unsqueeze(1)
         layer = attention.TransformerAttentionLayer.default_config().set(
             source_dim=model_dim,
             target_dim=model_dim,
@@ -881,7 +906,12 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         print(f"roformer_config={roformer_config}")
         ref = hf_roformer.RoFormerAttention(roformer_config)
         self._compare_against_roformer_attention(
-            ref, layer, max_sequence_length, batch_size, ref_rope_emb
+            ref,
+            layer,
+            max_sequence_length,
+            batch_size,
+            ref_rope_emb,
+            positions if override_positions else None,
         )
 
 
@@ -1128,6 +1158,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             key=jnp.asarray(key),
             value=jnp.asarray(value),
             sinusoidal_pos=axlearn_rope,
+            rotary_key=True,
             rotary_value=False,
         )
 
@@ -1260,10 +1291,15 @@ class MultiheadLinearInitTest(TestCase):
 class QKVLinearTest(TestCase):
     """Tests QKVLinear, FusedQKVLinear, and associated layers."""
 
-    @parameterized.parameters(
-        attention.FusedQKVLinear, attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear
+    @parameterized.product(
+        test_cls=[
+            attention.FusedQKVLinear,
+            attention.GroupedQKVLinear,
+            attention.FusedGroupedQKVLinear,
+        ],
+        with_positions=[True, False],
     )
-    def test_qkv_equality(self, test_cls: type[attention.BaseQKVLinear]):
+    def test_qkv_equality(self, test_cls: type[attention.BaseQKVLinear], with_positions: bool):
         """Tests that the QKVLinear variants are equivalent when num_kv_heads=num_heads."""
         with utils.numeric_checks(True):
             model_dim = 12
@@ -1314,7 +1350,8 @@ class QKVLinearTest(TestCase):
             if test_cls == attention.FusedGroupedQKVLinear:
                 key = value = None
 
-            inputs = dict(query=query, key=key, value=value)
+            positions = jnp.ones((1, tgt_len)) if with_positions else None
+            inputs = dict(query=query, key=key, value=value, query_positions=positions)
             outputs = {}
             layer_names = ("base", "test")
             for name, layer, state in zip(
@@ -1382,11 +1419,22 @@ class QKVLinearTest(TestCase):
             layer = cfg.instantiate(parent=None)
             self.assertEqual(expected, layer.num_kv_heads)
 
-    def test_qlinear(self):
+    @parameterized.parameters(
+        (QKVLinear.default_config(), QLinear.default_config()),
+        (
+            RoFormerQKVLinear.default_config().set(
+                input_linear=QKVLinear.default_config(), rotary_value=False
+            ),
+            RoFormerQKVLinear.default_config().set(
+                input_linear=QLinear.default_config(), rotary_value=False
+            ),
+        ),
+    )
+    def test_qlinear(self, base_cfg, test_cfg):
         """Tests that QLinear is equivalent to QKVLinear with the same kv_state."""
         with utils.numeric_checks(True):
             model_dim = 12
-            num_heads = 4
+            num_heads = 3
             per_head_dim = model_dim // num_heads
             layer_kwargs = dict(
                 query_dim=model_dim,
@@ -1395,8 +1443,8 @@ class QKVLinearTest(TestCase):
                 num_heads=num_heads,
                 per_head_dim=per_head_dim,
             )
-            base_cfg = QKVLinear.default_config().set(**layer_kwargs)
-            test_cfg = QLinear.default_config().set(**layer_kwargs)
+            base_cfg = base_cfg.set(**layer_kwargs)
+            test_cfg = test_cfg.set(**layer_kwargs)
             maybe_set_config(test_cfg, num_kv_heads=num_heads)
             base_layer = base_cfg.set(name="base").instantiate(parent=None)
             test_layer = test_cfg.set(name="test").instantiate(parent=None)
@@ -1404,7 +1452,12 @@ class QKVLinearTest(TestCase):
             # Construct base layer state.
             base_state = base_layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
             # Map state to QLinear.
-            test_state = {"q_proj": base_state["q_proj"]}
+            if "q_proj" in base_state:
+                test_state = {"q_proj": base_state["q_proj"]}
+            elif "i_proj" in base_state:
+                test_state = {"i_proj": {"q_proj": base_state["i_proj"]["q_proj"]}}
+            else:
+                raise ValueError("Cannot find expected q_proj state.")
 
             # Construct test inputs.
             batch_size, src_len, tgt_len = 2, 6, 6
@@ -3392,8 +3445,8 @@ class TransformerFeedForwardLayerTest(TestCase):
         _, save_name_backward = jax.linearize(
             jax.remat(
                 f,
-                policy=_save_and_offload_only_these_names_regex(
-                    names_which_can_be_saved=FEED_FORWARD_SAVE_PATTERN,
+                policy=save_and_offload_only_these_names_regex(
+                    names_which_can_be_saved=RematRegexSavePatterns.FEED_FORWARD.value,
                     names_which_can_be_offloaded=None,
                     offload_src="device",
                     offload_dst="pinned_host",
@@ -3846,6 +3899,69 @@ class ParallelTransformerTest(TestCase):
             str(full_remat_backward).count(" dot_general")
             - str(default_policy_backward).count(" dot_general"),
             5,
+        )
+
+    def test_build_remat_spec_neuron(self):
+        model_dim, num_heads = 6, 2
+        cfg: TransformerLayer.Config = TransformerLayer.default_config().set(input_dim=model_dim)
+        cfg.self_attention.attention.set(num_heads=num_heads, causal=True)
+        cfg.feed_forward.hidden_dim = model_dim * 4
+        cfg.vlog = 5
+
+        layer: BaseTransformerLayer = cfg.clone(name="layer").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        batch_size, tgt_len = 2, 5
+        rng = np.random.default_rng(seed=123)
+        target = rng.random([batch_size, tgt_len, cfg.input_dim], dtype=np.float32)
+
+        def f(x, layer_params):
+            forward_outputs, _ = F(
+                layer,
+                inputs=dict(
+                    data=x,
+                ),
+                state=layer_params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(0),
+            )
+            return forward_outputs
+
+        # Ignore type errors.
+        spec: Any = build_remat_spec(mock.MagicMock())
+
+        policy = (
+            config_for_function(save_and_offload_only_these_names_regex)
+            .set(
+                names_which_can_be_saved="|".join(
+                    [
+                        RematRegexSavePatterns.QKV_PROJ.value,
+                        RematRegexSavePatterns.LINEAR1_X.value,
+                    ]
+                ),
+                names_which_can_be_offloaded=None,
+                offload_src=None,
+                offload_dst=None,
+            )
+            .instantiate()
+        )
+
+        _, default_policy_backward = jax.linearize(
+            jax.remat(f, policy=policy, prevent_cse=spec.prevent_cse),
+            jnp.asarray(target),
+            layer_params,
+        )
+        _, full_remat_backward = jax.linearize(
+            jax.remat(f),
+            jnp.asarray(target),
+            layer_params,
+        )
+
+        # Eliminated the remat of qkv_proj and linear1_0 = 4 dots.
+        self.assertEqual(
+            str(full_remat_backward).count(" dot_general")
+            - str(default_policy_backward).count(" dot_general"),
+            4,
         )
 
 
