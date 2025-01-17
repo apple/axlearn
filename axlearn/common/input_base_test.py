@@ -94,6 +94,13 @@ class PartitionByPathNdimTest(TestCase):
 class InputTest(TestCase):
     """Tests Input."""
 
+    @pytest.mark.skipif(
+        jax.device_count() != 4 or jax.process_count() != 1,
+        reason=(
+            "Incorrect device & process count for mesh.\n"
+            "Use XLA_FLAGS=--xla_force_host_platform_device_count=4 to run locally."
+        ),
+    )
     def test_dispatch_global_batch(self):
         batch_size = 4
         seq_len = 8
